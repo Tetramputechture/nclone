@@ -98,6 +98,41 @@ class Ninja:
         self.speedlog = []
         self.xposlog = [] #Used to produce trace
         self.yposlog = []
+        
+        # inputs
+        self.hor_input = 0
+        self.jump_input = 0
+        
+        # positions
+        self.xpos_old = 0
+        self.ypos_old = 0
+        self.xpos = 0
+        self.ypos = 0
+        self.death_xpos = 0
+        self.death_ypos = 0
+        
+        # speeds
+        self.xspeed_old = 0
+        self.yspeed_old = 0
+        self.xspeed = 0
+        self.yspeed = 0
+        self.death_xspeed = 0
+        self.death_yspeed = 0
+        
+        # collisions
+        self.floor_count = 0
+        self.wall_count = 0
+        self.ceiling_count = 0
+        self.floor_normal_x = 0
+        self.floor_normal_y = 0
+        self.ceiling_normal_x = 0
+        self.ceiling_normal_y = 0
+        self.is_crushable = False
+        self.x_crush = 0
+        self.y_crush = 0
+        self.crush_len = 0
+        
+        
         self.log()
         
     def integrate(self):
@@ -657,6 +692,10 @@ class Ninja:
         self.speedlog.append((self.sim.frame, round(self.xspeed, 6), round(self.yspeed, 6)))
         self.xposlog.append(self.xpos)
         self.yposlog.append(self.ypos)
+        
+    def has_won_or_died(self):
+        """Return whether the ninja has won or died."""
+        return self.state in (6, 8)
 
 
 class Ragdoll:
@@ -812,9 +851,9 @@ class Entity:
     """Class that all entity types (gold, bounce blocks, thwumps, etc.) inherit from."""
     entity_counts = [0] * 40
 
-    def __init__(self, type, sim, xcoord, ycoord):
+    def __init__(self, entity_type, sim, xcoord, ycoord):
         """Inititate a member from map data"""
-        self.type = type
+        self.type = entity_type
         self.index = self.entity_counts[self.type]
         self.entity_counts[self.type] += 1
         self.sim = sim
@@ -1896,20 +1935,14 @@ class Simulator:
                                  12:((24, 24), (-1, -1), True), 13:((0, 24), (1, -1), True),
                                  14:((24, 24), (-1, -1), False), 15:((0, 24), (1, -1), False),
                                  16:((0, 0), (1, 1), False), 17:((24, 0), (-1, 1), False)}
-      
-    def load(self, map_data):
-        """From the given map data, initiate the level geometry, the entities and the ninja."""
+    
+    def __init__(self):
         self.frame = 0
         self.collisionlog = []
         self.gold_collected = 0
 
-        #initiate a dictionary mapping each tile id to its cell. Start by filling it with full tiles (id of 1).
+        self.ninja = None
         self.tile_dic = {}
-        for x in range(44):
-            for y in range(25):
-                self.tile_dic[(x, y)] = 1
-        
-        #Initiate dictionaries and list containing interactable segments and entities
         self.segment_dic = {}
         for x in range(45):
             for y in range(26):
@@ -1919,39 +1952,49 @@ class Simulator:
             for y in range(25):
                 self.grid_entity[(x, y)] = []
         self.entity_dic = dict([(i, []) for i in range(1, 29)])
-
-        #Initiate dictionaries of grid edges and segments. They are all set to zero initialy,
-        #except for the edges of the frame, which are solid.
         self.hor_grid_edge_dic = {}
         for x in range(88):
             for y in range(51):
-                value = 1 if y in (0, 50) else 0
-                self.hor_grid_edge_dic[(x, y)] = value
+                self.hor_grid_edge_dic[(x, y)] = 1 if y in (0, 50) else 0
         self.ver_grid_edge_dic = {}
         for x in range(89):
             for y in range(50):
-                value = 1 if x in (0, 88) else 0
-                self.ver_grid_edge_dic[(x, y)] = value
+                self.ver_grid_edge_dic[(x, y)] = 1 if x in (0, 88) else 0
         self.hor_segment_dic = {}
         for x in range(88):
             for y in range(51):
-                value = 0
-                if y == 0:
-                    value = 1
-                if y == 50:
-                    value = -1
-                self.hor_segment_dic[(x, y)] = value
+                self.hor_segment_dic[(x, y)] = 0
         self.ver_segment_dic = {}
         for x in range(89):
             for y in range(50):
-                value = 0
-                if x == 0:
-                    value = 1
-                if x == 88:
-                    value = -1
-                self.ver_segment_dic[(x, y)] = value
+                self.ver_segment_dic[(x, y)] = 0
+        self.map_data = None
+        
+    def reset(self):
+        """Reset the simulation to the initial state. Keeps the current map tiles, and resets the ninja,
+        entities and the collision log."""
+        self.frame = 0
+        self.collisionlog = []
+        self.gold_collected = 0
+        self.ninja = None
+        self.grid_entity = {}
+        for x in range(44):
+            for y in range(25):
+                self.grid_entity[(x, y)] = []
+        self.entity_dic = dict([(i, []) for i in range(1, 29)])
+        self.load_map_entities()
 
+    def load(self, map_data):
+        """From the given map data, initiate the level geometry, the entities and the ninja."""
+        self.reset()
         self.map_data = map_data
+        self.load_map_tiles()
+        self.load_map_entities()
+                        
+    def load_map_tiles(self):
+        """Load the map tiles into the simulation. These shouldn't change during the simulation,
+        only when a new map is loaded."""
+        
         #extract tile data from map data
         tile_data = self.map_data[184:1150]
 
@@ -2010,64 +2053,68 @@ class Simulator:
                 if state == -1:
                     point1, point2 = point2, point1
                 self.segment_dic[cell].append(GridSegmentLinear(point1, point2))
-
-        #initiate player 1 instance of Ninja at spawn coordinates
+                
+    def load_map_entities(self):
+        """Load the map entities into the simulation. These should change during the simulation,
+        and are reset when a new map is loaded."""
+        
+        # initiate player 1 instance of Ninja at spawn coordinates
         self.ninja = Ninja(self)
 
-        #Initiate each entity (other than ninjas)
+        # initiate each entity (other than ninjas)
         index = 1230
         exit_door_count = self.map_data[1156]
         Entity.entity_counts = [0] * 40
-        while (index < len(map_data)):
-            type = self.map_data[index]
+        while (index < len(self.map_data)):
+            entity_type = self.map_data[index]
             xcoord = self.map_data[index+1]
             ycoord = self.map_data[index+2]
             orientation = self.map_data[index+3]
             mode = self.map_data[index+4]
-            if type == 1:
-                entity = EntityToggleMine(type, self, xcoord, ycoord, 0)
-            elif type == 2:
-                entity = EntityGold(type, self, xcoord, ycoord)
-            elif type == 3:
-                parent = EntityExit(type, self, xcoord, ycoord)
+            if entity_type == 1:
+                entity = EntityToggleMine(entity_type, self, xcoord, ycoord, 0)
+            elif entity_type == 2:
+                entity = EntityGold(entity_type, self, xcoord, ycoord)
+            elif entity_type == 3:
+                parent = EntityExit(entity_type, self, xcoord, ycoord)
                 self.entity_dic[type].append(parent)
                 child_xcoord = self.map_data[index + 5*exit_door_count + 1]
                 child_ycoord = self.map_data[index + 5*exit_door_count + 2]
                 entity = EntityExitSwitch(4, self, child_xcoord, child_ycoord, parent)
-            elif type == 5:
-                entity = EntityDoorRegular(type, self, xcoord, ycoord, orientation, xcoord, ycoord)
-            elif type == 6:
+            elif entity_type == 5:
+                entity = EntityDoorRegular(entity_type, self, xcoord, ycoord, orientation, xcoord, ycoord)
+            elif entity_type == 6:
                 switch_xcoord = self.map_data[index + 6]
                 switch_ycoord = self.map_data[index + 7]
-                entity = EntityDoorLocked(type, self, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
-            elif type == 8:
+                entity = EntityDoorLocked(entity_type, self, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
+            elif entity_type == 8:
                 switch_xcoord = self.map_data[index + 6]
                 switch_ycoord = self.map_data[index + 7]
-                entity = EntityDoorTrap(type, self, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
-            elif type == 10:
-                entity = EntityLaunchPad(type, self, xcoord, ycoord, orientation)
-            elif type == 11:
-                entity = EntityOneWayPlatform(type, self, xcoord, ycoord, orientation)
-            elif type == 14 and not ARGUMENTS.basic_sim:
-                entity = EntityDroneZap(type, self, xcoord, ycoord, orientation, mode)
+                entity = EntityDoorTrap(entity_type, self, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
+            elif entity_type == 10:
+                entity = EntityLaunchPad(entity_type, self, xcoord, ycoord, orientation)
+            elif entity_type == 11:
+                entity = EntityOneWayPlatform(entity_type, self, xcoord, ycoord, orientation)
+            elif entity_type == 14 and not ARGUMENTS.basic_sim:
+                entity = EntityDroneZap(entity_type, self, xcoord, ycoord, orientation, mode)
             #elif type == 15 and not ARGUMENTS.basic_sim:
             #    entity = EntityDroneChaser(type, self, xcoord, ycoord, orientation, mode)
-            elif type == 17:
-                entity = EntityBounceBlock(type, self, xcoord, ycoord)
-            elif type == 20:
-                entity = EntityThwump(type, self, xcoord, ycoord, orientation)
-            elif type == 21:
-                entity = EntityToggleMine(type, self, xcoord, ycoord, 1)
-            #elif type == 23 and not ARGUMENTS.basic_sim:
-            #    entity = EntityLaser(type, self, xcoord, ycoord, orientation, mode)
-            elif type == 24:
-                entity = EntityBoostPad(type, self, xcoord, ycoord)
-            elif type == 25 and not ARGUMENTS.basic_sim:
-                entity = EntityDeathBall(type, self, xcoord, ycoord)
-            elif type == 26 and not ARGUMENTS.basic_sim:
-                entity = EntityMiniDrone(type, self, xcoord, ycoord, orientation, mode)
-            elif type == 28:
-                entity = EntityShoveThwump(type, self, xcoord, ycoord)
+            elif entity_type == 17:
+                entity = EntityBounceBlock(entity_type, self, xcoord, ycoord)
+            elif entity_type == 20:
+                entity = EntityThwump(entity_type, self, xcoord, ycoord, orientation)
+            elif entity_type == 21:
+                entity = EntityToggleMine(entity_type, self, xcoord, ycoord, 1)
+            #elif entity_type == 23 and not ARGUMENTS.basic_sim:
+            #    entity = EntityLaser(entity_type, self, xcoord, ycoord, orientation, mode)
+            elif entity_type == 24:
+                entity = EntityBoostPad(entity_type, self, xcoord, ycoord)
+            elif entity_type == 25 and not ARGUMENTS.basic_sim:
+                entity = EntityDeathBall(entity_type, self, xcoord, ycoord)
+            elif entity_type == 26 and not ARGUMENTS.basic_sim:
+                entity = EntityMiniDrone(entity_type, self, xcoord, ycoord, orientation, mode)
+            elif entity_type == 28:
+                entity = EntityShoveThwump(entity_type, self, xcoord, ycoord)
             else:
                 entity = None
             if entity:
@@ -2075,8 +2122,8 @@ class Simulator:
                 self.grid_entity[entity.cell].append(entity)
             index += 5
 
-        for list in self.entity_dic.values():
-            for entity in list:
+        for entity_list in self.entity_dic.values():
+            for entity in entity_list:
                 entity.log_position()
 
     def tick(self, hor_input, jump_input):
