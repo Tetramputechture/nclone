@@ -12,3 +12,11 @@ map_data_2
 map_data_3
 map_data_4
 ntrace_manual.py
+
+__pycache__/
+
+# python builds
+build/
+dist/
+
+*.egg-info/

@@ -202,7 +202,7 @@ class NSimRenderer:
             self.render_context.fill()
 
         buffer = self.render_surface.get_data()
-        return pygame.image.frombuffer(buffer, self.width, self.height, "BGRA")
+        return pygame.image.frombuffer(buffer, self.screen.get_size(), "BGRA")
 
     def _draw_entities(self, init):
         if init:
@@ -279,4 +279,4 @@ class NSimRenderer:
             context.stroke()
 
         buffer = self.entitydraw_surface.get_data()
-        return pygame.image.frombuffer(buffer, (self.width, self.height), "BGRA")
+        return pygame.image.frombuffer(buffer, self.screen.get_size(), "BGRA")
