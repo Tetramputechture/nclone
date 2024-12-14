@@ -60,7 +60,8 @@ class NPlayHeadless:
         """
         Render the current frame to a NumPy array.
         """
-        surface = self.sim_renderer.draw(init=False)
+        init = self.sim.frame >= 1
+        surface = self.sim_renderer.draw(init)
         return pygame.surfarray.array2d(surface)
 
     def ninja_has_won_or_died(self):

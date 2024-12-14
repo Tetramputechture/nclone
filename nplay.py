@@ -7,6 +7,11 @@ import zlib
 from nsim import *
 from nsim_renderer import NSimRenderer
 
+
+SRCWIDTH = 1056
+SRCHEIGHT = 600
+
+
 pygame.init()
 pygame.display.set_caption("N++")
 screen = pygame.display.set_mode((SRCWIDTH, SRCHEIGHT), pygame.RESIZABLE)
