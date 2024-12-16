@@ -1,3 +1,4 @@
+from PIL import Image
 import cairo
 import pygame
 import math
@@ -20,7 +21,7 @@ running = True
 running_mode = "playing"
 
 sim = Simulator()
-with open("map_data", "rb") as f:
+with open("maps/map_data_simple", "rb") as f:
     mapdata = [int(b) for b in f.read()]
 sim.load(mapdata)
 inputs = None
@@ -71,7 +72,6 @@ while running:
 
     sim.tick(hor_input, jump_input)
 
-    pygame.display.flip()
     clock.tick(60)
 
 pygame.quit()

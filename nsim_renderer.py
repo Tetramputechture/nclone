@@ -54,12 +54,12 @@ class NSimRenderer:
         self._update_screen_size()
         self._update_tile_offsets()
         self.screen.fill("#"+TILECOLOR)
-        self.screen.blit(self._draw_tiles(
-            init), (self.tile_x_offset, self.tile_y_offset))
         self.screen.blit(self._draw_entities(
             init), (self.tile_x_offset, self.tile_y_offset))
-        pygame.draw.rect(self.screen, "#"+TILECOLOR,
-                         (self.tile_x_offset-1, self.tile_y_offset-1, self.width+2, self.height+2), 1)
+        self.screen.blit(self._draw_tiles(
+            init), (self.tile_x_offset, self.tile_y_offset))
+        pygame.draw.rect(self.screen, "#"+TILECOLOR, (self.tile_x_offset,
+                         self.tile_y_offset, self.width, self.height), 24)
         pygame.display.flip()
 
         return self.screen
