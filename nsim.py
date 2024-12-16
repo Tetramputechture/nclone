@@ -247,8 +247,6 @@ class Simulator:
         index = 1230
         exit_door_count = self.map_data[1156]
         Entity.entity_counts = [0] * 40
-        print(len(self.map_data))
-        print(exit_door_count)
         while (index < len(self.map_data)):
             entity_type = self.map_data[index]
             xcoord = self.map_data[index+1]

@@ -7,8 +7,17 @@ import zlib
 
 from nsim import *
 from nsim_renderer import NSimRenderer
-from map import Map
+from map import Map, MapGenerator
 from sim_config import init_sim_config
+
+# Create a new map
+map_gen = MapGenerator()
+
+# Generate a random level (optionally with a seed for reproducibility)
+map_gen.generate_random_level("SIMPLE_HORIZONTAL_NO_BACKTRACK", seed=42)
+
+# Get the map data
+map_data = map_gen.generate()
 
 SRCWIDTH = 1056
 SRCHEIGHT = 600
@@ -29,16 +38,6 @@ sim_config = init_sim_config(ARGUMENTS)
 
 sim = Simulator(sim_config)
 
-# Create a new map
-map = Map()
-
-# Add entities if desired
-map.add_entity(2, 10, 10)  # Add gold at (10,10)
-
-map.set_tile(4, 7, 1)
-# Set the ninja spawn point
-map.set_ninja_spawn(24, 28)  # Ninja will spawn at coordinates (3,3)
-
 pygame.init()
 pygame.display.set_caption("N++")
 screen = pygame.display.set_mode((SRCWIDTH, SRCHEIGHT), pygame.RESIZABLE)
@@ -48,7 +47,7 @@ running_mode = "playing"
 
 # with open("maps/map_data_simple", "rb") as f:
 #     mapdata = [int(b) for b in f.read()]
-sim.load_from_created(map)
+sim.load_from_created(map_gen)
 inputs = None
 if os.path.isfile("inputs"):
     with open("inputs", "rb") as f:
@@ -92,6 +91,11 @@ while running:
         if inputs:
             sim.reset()
             running_mode = "replaying"
+    if keys[pygame.K_g]:
+        # Generate a random level (optionally with a seed for reproducibility)
+        sim.reset()
+        map_gen.generate_random_level("SIMPLE_HORIZONTAL_NO_BACKTRACK")
+        sim.load_from_created(map_gen)
 
     sim_renderer.draw(resize)
 
