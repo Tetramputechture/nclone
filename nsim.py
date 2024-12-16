@@ -10,19 +10,6 @@ from ninja import Ninja
 from sim_config import init_sim_config
 from entities import *
 
-# Create argument parser so that we can pass parameters when executing the tool
-# Run the tool with the -h option to see the complete help
-parser = argparse.ArgumentParser(description='N++ physics clone')
-parser.add_argument('--basic-sim', action='store_true',
-                    help='Only simulate entities with physical collision')
-parser.add_argument('--full-export', action='store_true',
-                    help="Export coordinates of moving entities")
-parser.add_argument('-t', '--tolerance', type=float, default=1.0,
-                    help='Minimum units to consider an entity moved')
-ARGUMENTS = parser.parse_args()
-
-sim_config = init_sim_config(ARGUMENTS)
-
 
 class Simulator:
     """Main class that handles ninjas, entities and tile geometry for simulation."""
@@ -112,12 +99,12 @@ class Simulator:
                                  14: ((24, 24), (-1, -1), False), 15: ((0, 24), (1, -1), False),
                                  16: ((0, 0), (1, 1), False), 17: ((24, 0), (-1, 1), False)}
 
-    def __init__(self):
+    def __init__(self, sim_config):
         self.frame = 0
         self.collisionlog = []
         self.gold_collected = 0
 
-        init_sim_config(ARGUMENTS)
+        self.sim_config = sim_config
         self.ninja = None
         self.tile_dic = {}
         self.segment_dic = {}
@@ -135,6 +122,10 @@ class Simulator:
         self.reset_map_tile_data()
         self.load_map_tiles()
         self.reset()
+
+    def load_from_created(self, created_map):
+        """Load a map that was manually constructed using the Map class."""
+        self.load(created_map.generate())
 
     def reset(self):
         """Reset the simulation to the initial state. Keeps the current map tiles, and resets the ninja,
@@ -249,12 +240,15 @@ class Simulator:
         and are reset when a new map is loaded."""
 
         # initiate player 1 instance of Ninja at spawn coordinates
-        self.ninja = Ninja(self, ninja_anim_mode=(not sim_config.basic_sim))
+        self.ninja = Ninja(self, ninja_anim_mode=(
+            not self.sim_config.basic_sim))
 
         # initiate each entity (other than ninjas)
         index = 1230
         exit_door_count = self.map_data[1156]
         Entity.entity_counts = [0] * 40
+        print(len(self.map_data))
+        print(exit_door_count)
         while (index < len(self.map_data)):
             entity_type = self.map_data[index]
             xcoord = self.map_data[index+1]
@@ -291,7 +285,7 @@ class Simulator:
             elif entity_type == 11:
                 entity = EntityOneWayPlatform(
                     entity_type, self, xcoord, ycoord, orientation)
-            elif entity_type == 14 and not sim_config.basic_sim:
+            elif entity_type == 14 and not self.sim_config.basic_sim:
                 entity = EntityDroneZap(
                     entity_type, self, xcoord, ycoord, orientation, mode)
             # elif type == 15 and not ARGUMENTS.basic_sim:
@@ -307,9 +301,9 @@ class Simulator:
             #    entity = EntityLaser(entity_type, self, xcoord, ycoord, orientation, mode)
             elif entity_type == 24:
                 entity = EntityBoostPad(entity_type, self, xcoord, ycoord)
-            elif entity_type == 25 and not sim_config.basic_sim:
+            elif entity_type == 25 and not self.sim_config.basic_sim:
                 entity = EntityDeathBall(entity_type, self, xcoord, ycoord)
-            elif entity_type == 26 and not sim_config.basic_sim:
+            elif entity_type == 26 and not self.sim_config.basic_sim:
                 entity = EntityMiniDrone(
                     entity_type, self, xcoord, ycoord, orientation, mode)
             elif entity_type == 28:
@@ -359,7 +353,7 @@ class Simulator:
             self.ninja.think()  # Make ninja think
             self.ninja.update_graphics()  # Update limbs of ninja
 
-        if self.ninja.state == 6 and not sim_config.basic_sim:  # Placeholder because no ragdoll!
+        if self.ninja.state == 6 and not self.sim_config.basic_sim:  # Placeholder because no ragdoll!
             self.ninja.anim_frame = 105
             self.ninja.anim_state = 7
             self.ninja.calc_ninja_position()

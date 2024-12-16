@@ -161,7 +161,7 @@ class Entity:
         last = self.last_exported_coords
         dist = abs(last[0] - self.xpos) + \
             abs(last[1] - self.ypos) if last else 0
-        if last and dist < sim_config.tolerance:
+        if last and dist < self.sim.sim_config.tolerance:
             return
 
         # Determine if a new chunk needs to be started or the last one extended
@@ -470,7 +470,7 @@ class EntityDroneBase(Entity):
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode, speed):
         super().__init__(type, sim, xcoord, ycoord)
-        self.log_positions = sim_config.full_export
+        self.log_positions = self.sim.sim_config.full_export
         self.is_movable = True
         self.speed = speed
         self.dir = None
@@ -483,7 +483,7 @@ class EntityDroneBase(Entity):
         """Change the drone's direction and log it."""
         self.dir_old = self.dir or dir
         self.dir = dir
-        if sim_config.full_export:
+        if self.sim.sim_config.full_export:
             self.log_collision(dir)
 
     def move(self):
@@ -600,7 +600,7 @@ class EntityBounceBlock(Entity):
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
-        self.log_positions = sim_config.full_export
+        self.log_positions = self.sim.sim_config.full_export
         self.is_physical_collidable = True
         self.is_logical_collidable = True
         self.is_movable = True
@@ -651,7 +651,7 @@ class EntityThwump(Entity):
 
     def __init__(self, type, sim, xcoord, ycoord, orientation):
         super().__init__(type, sim, xcoord, ycoord)
-        self.log_positions = sim_config.full_export
+        self.log_positions = self.sim.sim_config.full_export
         self.is_movable = True
         self.is_thinkable = True
         self.is_logical_collidable = True
@@ -665,7 +665,7 @@ class EntityThwump(Entity):
     def set_state(self, state):
         """Set the thwump's state and log it. 0:immobile, 1:forward, -1:backward"""
         self.state = state
-        if sim_config.full_export:
+        if self.sim.sim_config.full_export:
             self.log_collision(state % 3)  # The logged value goes from 0 to 2
 
     def move(self):
@@ -911,7 +911,7 @@ class EntityDeathBall(Entity):
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
-        self.log_positions = sim_config.full_export
+        self.log_positions = self.sim.sim_config.full_export
         self.is_thinkable = True
         self.is_logical_collidable = True
         self.xspeed, self.yspeed = 0, 0
@@ -1039,7 +1039,7 @@ class EntityShoveThwump(Entity):
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
-        self.log_positions = sim_config.full_export
+        self.log_positions = self.sim.sim_config.full_export
         self.is_thinkable = True
         self.is_logical_collidable = True
         self.is_physical_collidable = True
@@ -1052,7 +1052,7 @@ class EntityShoveThwump(Entity):
         """Changes the state of the shwump. 0:immobile, 1:activated, 2:launching, 3:retreating
         Also logs it, combined with the direction information into a single integer."""
         self.state = state
-        if sim_config.full_export:
+        if self.sim.sim_config.full_export:
             dir = map_vector_to_orientation(self.xdir, self.ydir)
             self.log_collision(4 * state + dir // 2)
 
