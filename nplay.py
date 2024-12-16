@@ -7,11 +7,37 @@ import zlib
 
 from nsim import *
 from nsim_renderer import NSimRenderer
-
+from map import Map
+from sim_config import init_sim_config
 
 SRCWIDTH = 1056
 SRCHEIGHT = 600
 
+# Create argument parser so that we can pass parameters when executing the tool
+# Run the tool with the -h option to see the complete help
+parser = argparse.ArgumentParser(description='N++ physics clone')
+parser.add_argument('--basic-sim', action='store_true',
+                    help='Only simulate entities with physical collision')
+parser.add_argument('--full-export', action='store_true',
+                    help="Export coordinates of moving entities")
+parser.add_argument('-t', '--tolerance', type=float, default=1.0,
+                    help='Minimum units to consider an entity moved')
+ARGUMENTS = parser.parse_args()
+
+sim_config = init_sim_config(ARGUMENTS)
+
+
+sim = Simulator(sim_config)
+
+# Create a new map
+map = Map()
+
+# Add entities if desired
+map.add_entity(2, 10, 10)  # Add gold at (10,10)
+
+map.set_tile(4, 7, 1)
+# Set the ninja spawn point
+map.set_ninja_spawn(24, 28)  # Ninja will spawn at coordinates (3,3)
 
 pygame.init()
 pygame.display.set_caption("N++")
@@ -20,10 +46,9 @@ clock = pygame.time.Clock()
 running = True
 running_mode = "playing"
 
-sim = Simulator()
-with open("maps/map_data_simple", "rb") as f:
-    mapdata = [int(b) for b in f.read()]
-sim.load(mapdata)
+# with open("maps/map_data_simple", "rb") as f:
+#     mapdata = [int(b) for b in f.read()]
+sim.load_from_created(map)
 inputs = None
 if os.path.isfile("inputs"):
     with open("inputs", "rb") as f:
@@ -61,11 +86,11 @@ while running:
             hor_input = hor_inputs[sim.frame]
             jump_input = jump_inputs[sim.frame]
     if keys[pygame.K_SPACE]:
-        sim.load(mapdata)
+        sim.reset()
         running_mode = "playing"
     if keys[pygame.K_r]:
         if inputs:
-            sim.load(mapdata)
+            sim.reset()
             running_mode = "replaying"
 
     sim_renderer.draw(resize)

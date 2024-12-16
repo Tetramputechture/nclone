@@ -1,256 +1,95 @@
-"""Class that contains map data, including tile and entity data.
-Contains methods to reset the map data to initial state, and to load a map from a file.
-"""
-
-
 class Map:
+    """Class for manually constructing simulator maps."""
+
+    MAP_WIDTH = 42
+    MAP_HEIGHT = 23
+
     def __init__(self):
-        self.map_data = None
+        # Initialize empty tile data (all tiles are empty, type 0)
+        self.tile_data = [0] * (self.MAP_WIDTH * self.MAP_HEIGHT)
 
-        self.ninja = None
-        self.tile_dic = {}
-        self.segment_dic = {}
-        self.grid_entity = {}
-        self.entity_dic = {}
-        self.hor_grid_edge_dic = {}
-        self.ver_grid_edge_dic = {}
-        self.hor_segment_dic = {}
-        self.ver_segment_dic = {}
-        self.map_data = None
+        # Initialize empty entity data
+        self.entity_data = []
 
-    def load(self, map_data):
-        self.map_data = map_data
+        # Initialize entity counts
+        self.entity_counts = {
+            'exit_door': 0,
+            'gold': 0,
+            'death_ball': 0
+        }
 
-    def reset(self):
-        """Reset the simulation to the initial state. Keeps the current map tiles, and resets the ninja,
-        entities and the collision log."""
-        self.frame = 0
-        self.collisionlog = []
-        self.gold_collected = 0
-        self.ninja = None
-        self.reset_map_entity_data()
-        self.load_map_entities()
+        # Initialize ninja spawn point (defaults to top-left corner)
+        self.ninja_spawn_x = 1
+        self.ninja_spawn_y = 1
 
-    def reset_map_entity_data(self):
-        """Reset the map entity data. This is used when a new map is loaded or when the map is reset."""
-        self.grid_entity = {}
-        for x in range(44):
-            for y in range(25):
-                self.grid_entity[(x, y)] = []
-        self.entity_dic = {i: [] for i in range(1, 29)}
+    def set_tile(self, x, y, tile_type):
+        """Set a tile at the given coordinates to the specified type."""
+        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+            self.tile_data[x + y * self.MAP_WIDTH] = tile_type
 
-    def reset_map_tile_data(self):
-        """Reset the map cell data. This is used when a new map is loaded."""
-        self.segment_dic = {}
-        for x in range(45):
-            for y in range(26):
-                self.segment_dic[(x, y)] = []
-        for x in range(88):
-            for y in range(51):
-                self.hor_grid_edge_dic[(x, y)] = 1 if y in (0, 50) else 0
-        for x in range(89):
-            for y in range(50):
-                self.ver_grid_edge_dic[(x, y)] = 1 if x in (0, 88) else 0
-        for x in range(88):
-            for y in range(51):
-                self.hor_segment_dic[(x, y)] = 0
-        for x in range(89):
-            for y in range(50):
-                self.ver_segment_dic[(x, y)] = 0
+    def set_ninja_spawn(self, x, y):
+        """Set the ninja spawn point coordinates."""
+        self.ninja_spawn_x = x
+        self.ninja_spawn_y = y
 
-    def load_map_tiles(self):
-        """Load the map tiles into the simulation. These shouldn't change during the simulation,
-        only when a new map is loaded."""
-        # extract tile data from map data
-        tile_data = self.map_data[184:1150]
+    def add_entity(self, entity_type, x, y, orientation=0, mode=0, switch_x=None, switch_y=None):
+        """Add an entity to the map.
+        For doors that require switch coordinates (types 6 and 8), provide switch_x and switch_y.
+        For exit doors (type 3), provide switch_x and switch_y for the switch location."""
 
-        # map each tile to its cell
-        for x in range(42):
-            for y in range(23):
-                self.tile_dic[(x+1, y+1)] = tile_data[x + y*42]
+        # Basic entity data
+        entity_data = [entity_type, x, y, orientation, mode]
 
-        # This loops makes the inventory of grid edges and orthogonal linear segments,
-        # and initiates non-orthogonal linear segments and circular segments.
-        for coord, tile_id in self.tile_dic.items():
-            xcoord, ycoord = coord
-            # Assign every grid edge and orthogonal linear segment to the dictionaries.
-            if tile_id in self.TILE_GRID_EDGE_MAP and tile_id in self.TILE_SEGMENT_ORTHO_MAP:
-                grid_edge_list = self.TILE_GRID_EDGE_MAP[tile_id]
-                segment_ortho_list = self.TILE_SEGMENT_ORTHO_MAP[tile_id]
-                for y in range(3):
-                    for x in range(2):
-                        self.hor_grid_edge_dic[(2*xcoord + x, 2*ycoord + y)] = (
-                            (self.hor_grid_edge_dic[(2*xcoord + x, 2*ycoord + y)] + grid_edge_list[2*y + x]) % 2)
-                        self.hor_segment_dic[(
-                            2*xcoord + x, 2*ycoord + y)] += segment_ortho_list[2*y + x]
-                for x in range(3):
-                    for y in range(2):
-                        self.ver_grid_edge_dic[(2*xcoord + x, 2*ycoord + y)] = (
-                            (self.ver_grid_edge_dic[(2*xcoord + x, 2*ycoord + y)] + grid_edge_list[2*x + y + 6]) % 2)
-                        self.ver_segment_dic[(
-                            2*xcoord + x, 2*ycoord + y)] += segment_ortho_list[2*x + y + 6]
+        # Handle special cases
+        if entity_type == 3:  # Exit door
+            # Store the exit door data
+            self.entity_data.extend(entity_data)
+            # Store the switch data right after all exit doors
+            self.entity_counts['exit_door'] += 1
+            self.entity_data.extend(
+                [4, switch_x, switch_y, 0, 0])  # Switch is type 4
+        elif entity_type in (6, 8):  # Locked door or trap door
+            if switch_x is None or switch_y is None:
+                raise ValueError(
+                    f"Door type {entity_type} requires switch coordinates")
+            entity_data.extend([switch_x, switch_y])
+            self.entity_data.extend(entity_data)
+        else:
+            self.entity_data.extend(entity_data)
 
-            # Initiate non-orthogonal linear and circular segments.
-            xtl = xcoord * 24
-            ytl = ycoord * 24
-            if tile_id in self.TILE_SEGMENT_DIAG_MAP:
-                ((x1, y1), (x2, y2)) = self.TILE_SEGMENT_DIAG_MAP[tile_id]
-                self.segment_dic[coord].append(
-                    GridSegmentLinear((xtl+x1, ytl+y1), (xtl+x2, ytl+y2)))
-            if tile_id in self.TILE_SEGMENT_CIRCULAR_MAP:
-                ((x, y), quadrant,
-                 convex) = self.TILE_SEGMENT_CIRCULAR_MAP[tile_id]
-                self.segment_dic[coord].append(
-                    GridSegmentCircular((xtl+x, ytl+y), quadrant, convex))
+        # Update other entity counts
+        if entity_type == 2:  # Gold
+            self.entity_counts['gold'] += 1
+        elif entity_type == 25:  # Death ball
+            self.entity_counts['death_ball'] += 1
 
-        # Initiate segments from the dictionaries of orthogonal linear segments.
-        # Note that two segments of the same position but opposite orientation cancel each other,
-        # and no segment is initiated.
-        for coord, state in self.hor_segment_dic.items():
-            if state:
-                xcoord, ycoord = coord
-                cell = (math.floor(xcoord/2),
-                        math.floor((ycoord - 0.1*state) / 2))
-                point1 = (12*xcoord, 12*ycoord)
-                point2 = (12*xcoord+12, 12*ycoord)
-                if state == -1:
-                    point1, point2 = point2, point1
-                self.segment_dic[cell].append(
-                    GridSegmentLinear(point1, point2))
-        for coord, state in self.ver_segment_dic.items():
-            if state:
-                xcoord, ycoord = coord
-                cell = (math.floor((xcoord - 0.1*state) / 2),
-                        math.floor(ycoord/2))
-                point1 = (12*xcoord, 12*ycoord+12)
-                point2 = (12*xcoord, 12*ycoord)
-                if state == -1:
-                    point1, point2 = point2, point1
-                self.segment_dic[cell].append(
-                    GridSegmentLinear(point1, point2))
+    def generate(self):
+        """Generate the map data in the format expected by the simulator.
+        The map data format is:
+        [0-183]: Header (zeros)
+        [184-1149]: Tile data (42x23 = 966 tiles)
+        [1150-1155]: Unknown (zeros)
+        [1156]: Exit door count
+        [1157-1199]: Unknown (zeros)
+        [1200]: Death ball count
+        [1201-1229]: Unknown (zeros)
+        [1230-1231]: Ninja spawn coordinates
+        [1232-1234]: Unknown (zeros)
+        [1235+]: Entity data"""
 
-    def load_map_entities(self):
-        """Load the map entities into the simulation. These should change during the simulation,
-        and are reset when a new map is loaded."""
+        # Create the map data array
+        map_data = [0] * 184  # Header
+        map_data.extend(self.tile_data)  # Tile data (184-1149)
+        map_data.extend([0] * 6)  # Unknown section (1150-1155)
+        # Exit door count at 1156
+        map_data.append(self.entity_counts['exit_door'])
+        map_data.extend([0] * 43)  # Unknown section (1157-1199)
+        # Death ball count at 1200
+        map_data.append(self.entity_counts['death_ball'])
+        map_data.extend([0] * 30)  # Unknown section (1201-1230)
+        # Ninja spawn at 1231-1232 to match Ninja class expectations
+        map_data.extend([self.ninja_spawn_x, self.ninja_spawn_y])
+        map_data.extend([0] * 2)  # Unknown section (1233-1234)
+        map_data.extend(self.entity_data)  # Entity data starts at 1235
 
-        # initiate player 1 instance of Ninja at spawn coordinates
-        self.ninja = Ninja(self, ninja_anim_mode=(not ARGUMENTS.basic_sim))
-
-        # initiate each entity (other than ninjas)
-        index = 1230
-        exit_door_count = self.map_data[1156]
-        Entity.entity_counts = [0] * 40
-        while (index < len(self.map_data)):
-            entity_type = self.map_data[index]
-            xcoord = self.map_data[index+1]
-            ycoord = self.map_data[index+2]
-            orientation = self.map_data[index+3]
-            mode = self.map_data[index+4]
-            if entity_type == 1:
-                entity = EntityToggleMine(entity_type, self, xcoord, ycoord, 0)
-            elif entity_type == 2:
-                entity = EntityGold(entity_type, self, xcoord, ycoord)
-            elif entity_type == 3:
-                parent = EntityExit(entity_type, self, xcoord, ycoord)
-                self.entity_dic[entity_type].append(parent)
-                child_xcoord = self.map_data[index + 5*exit_door_count + 1]
-                child_ycoord = self.map_data[index + 5*exit_door_count + 2]
-                entity = EntityExitSwitch(
-                    4, self, child_xcoord, child_ycoord, parent)
-            elif entity_type == 5:
-                entity = EntityDoorRegular(
-                    entity_type, self, xcoord, ycoord, orientation, xcoord, ycoord)
-            elif entity_type == 6:
-                switch_xcoord = self.map_data[index + 6]
-                switch_ycoord = self.map_data[index + 7]
-                entity = EntityDoorLocked(
-                    entity_type, self, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
-            elif entity_type == 8:
-                switch_xcoord = self.map_data[index + 6]
-                switch_ycoord = self.map_data[index + 7]
-                entity = EntityDoorTrap(
-                    entity_type, self, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
-            elif entity_type == 10:
-                entity = EntityLaunchPad(
-                    entity_type, self, xcoord, ycoord, orientation)
-            elif entity_type == 11:
-                entity = EntityOneWayPlatform(
-                    entity_type, self, xcoord, ycoord, orientation)
-            elif entity_type == 14 and not ARGUMENTS.basic_sim:
-                entity = EntityDroneZap(
-                    entity_type, self, xcoord, ycoord, orientation, mode)
-            # elif type == 15 and not ARGUMENTS.basic_sim:
-            #    entity = EntityDroneChaser(type, self, xcoord, ycoord, orientation, mode)
-            elif entity_type == 17:
-                entity = EntityBounceBlock(entity_type, self, xcoord, ycoord)
-            elif entity_type == 20:
-                entity = EntityThwump(
-                    entity_type, self, xcoord, ycoord, orientation)
-            elif entity_type == 21:
-                entity = EntityToggleMine(entity_type, self, xcoord, ycoord, 1)
-            # elif entity_type == 23 and not ARGUMENTS.basic_sim:
-            #    entity = EntityLaser(entity_type, self, xcoord, ycoord, orientation, mode)
-            elif entity_type == 24:
-                entity = EntityBoostPad(entity_type, self, xcoord, ycoord)
-            elif entity_type == 25 and not ARGUMENTS.basic_sim:
-                entity = EntityDeathBall(entity_type, self, xcoord, ycoord)
-            elif entity_type == 26 and not ARGUMENTS.basic_sim:
-                entity = EntityMiniDrone(
-                    entity_type, self, xcoord, ycoord, orientation, mode)
-            elif entity_type == 28:
-                entity = EntityShoveThwump(entity_type, self, xcoord, ycoord)
-            else:
-                entity = None
-            if entity:
-                self.entity_dic[entity_type].append(entity)
-                self.grid_entity[entity.cell].append(entity)
-            index += 5
-
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                entity.log_position()
-
-    def tick(self, hor_input, jump_input):
-        """Gets called every frame to update the whole physics simulation."""
-        # Increment the current frame
-        self.frame += 1
-
-        # Store inputs as ninja variables
-        self.ninja.hor_input = hor_input
-        self.ninja.jump_input = jump_input
-
-        # Move all movable entities
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                if entity.is_movable and entity.active:
-                    entity.move()
-        # Make all thinkable entities think
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                if entity.is_thinkable and entity.active:
-                    entity.think()
-
-        if self.ninja.state != 9:
-            # if dead, apply physics to ragdoll instead.
-            ninja = self.ninja if self.ninja.state != 6 else self.ninja.ragdoll
-            ninja.integrate()  # Do preliminary speed and position updates.
-            ninja.pre_collision()  # Do pre collision calculations.
-            for _ in range(4):
-                # Handle PHYSICAL collisions with entities.
-                ninja.collide_vs_objects()
-                # Handle physical collisions with tiles.
-                ninja.collide_vs_tiles()
-            ninja.post_collision()  # Do post collision calculations.
-            self.ninja.think()  # Make ninja think
-            self.ninja.update_graphics()  # Update limbs of ninja
-
-        if self.ninja.state == 6 and not ARGUMENTS.basic_sim:  # Placeholder because no ragdoll!
-            self.ninja.anim_frame = 105
-            self.ninja.anim_state = 7
-            self.ninja.calc_ninja_position()
-
-        # Update all the logs for debugging purposes and for tracing the route.
-        self.ninja.log()
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                entity.log_position()
+        return map_data
