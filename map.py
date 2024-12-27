@@ -154,8 +154,12 @@ class MapGenerator(Map):
             actual_height = play_y2 - play_y1
 
             # Pre-generate all random tiles at once
-            tile_types = [self.rng.randint(0, 37) for _ in range(
-                self.MAP_WIDTH * self.MAP_HEIGHT)]
+            # Choose if tiles will be random or solid for the border
+            if self.rng.choice([True, False]):
+                tile_types = [self.rng.randint(0, 37) for _ in range(
+                    self.MAP_WIDTH * self.MAP_HEIGHT)]
+            else:
+                tile_types = [1] * (self.MAP_WIDTH * self.MAP_HEIGHT)
             self.set_tiles_bulk(tile_types)
 
             # Create the empty play space
