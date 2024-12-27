@@ -199,7 +199,8 @@ class MapGenerator(Map):
 
             # Handle surface deviations
             deviations = {}
-            should_deviate = True
+            should_deviate = self.rng.choice([True, False])
+            should_deviate_tiles = self.rng.choice([True, False])
 
             for x in range(play_x1, play_x2 + 1):
                 if should_deviate:
@@ -209,15 +210,19 @@ class MapGenerator(Map):
 
                 deviations[x] = deviation
 
-                if deviation < 0:
-                    for y in range(play_y2 + 2, play_y2 - deviation, 1):
-                        self.set_tile(x, y, 0)
-                elif deviation > 0:
-                    for y in range(play_y2, play_y2 - deviation, -1):
-                        self.set_tile(x, y, 1)
+                if should_deviate_tiles:
+                    if deviation < 0:
+                        for y in range(play_y2 + 2, play_y2 - deviation, 1):
+                            self.set_tile(x, y, 0)
+                    elif deviation > 0:
+                        for y in range(play_y2, play_y2 - deviation, -1):
+                            self.set_tile(x, y, 1)
 
             # Calculate final entity positions
-            ninja_y = play_y2 - deviations.get(ninja_x, 0)
+            if should_deviate_tiles:
+                ninja_y = play_y2 - deviations.get(ninja_x, 0)
+            else:
+                ninja_y = play_y2
             door_y = play_y2 - deviations.get(door_x, 0)
             switch_y = play_y2 - deviations.get(switch_x, 0)
 
