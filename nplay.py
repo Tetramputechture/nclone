@@ -4,17 +4,18 @@ import pygame
 import math
 import os.path
 import zlib
-
+import numpy as np
 from nsim import *
 from nsim_renderer import NSimRenderer
 from map import Map, MapGenerator
 from sim_config import init_sim_config
-
+from nplay_headless import NPlayHeadless
+import cv2
 # Create a new map
 map_gen = MapGenerator()
 
 # Generate a random level (optionally with a seed for reproducibility)
-map_gen.generate_random_level("SIMPLE_HORIZONTAL_NO_BACKTRACK", seed=42)
+map_gen.generate_random_map("SIMPLE_HORIZONTAL_NO_BACKTRACK", seed=42)
 
 # Get the map data
 map_data = map_gen.generate()
@@ -61,6 +62,15 @@ if os.path.isfile("inputs"):
 
 sim_renderer = NSimRenderer(sim)
 
+# Print space of NplayHeadless state, only ninja and exit and switch
+np_headless = NPlayHeadless()
+np_headless.load_random_map(seed=42)
+ninja_state = np_headless.get_ninja_state()
+entity_states = np_headless.get_entity_states(only_one_exit_and_switch=True)
+total_state = np.concatenate([ninja_state, entity_states])
+# Print the total state
+print(total_state.shape)
+
 
 while running:
     resize = False
@@ -92,9 +102,8 @@ while running:
             sim.reset()
             running_mode = "replaying"
     if keys[pygame.K_g]:
-        # Generate a random level (optionally with a seed for reproducibility)
         sim.reset()
-        map_gen.generate_random_level("SIMPLE_HORIZONTAL_NO_BACKTRACK")
+        map_gen.generate_random_map("SIMPLE_HORIZONTAL_NO_BACKTRACK")
         sim.load_from_created(map_gen)
 
     sim_renderer.draw(resize)

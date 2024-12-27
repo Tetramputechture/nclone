@@ -17,6 +17,9 @@ ENTITYCOLORS = {1: "9E2126", 2: "DBE149", 3: "838384", 4: "6D97C3", 5: "000000",
                 19: "000000", 20: "838384", 21: "9E2126", 22: "000000", 23: "000000", 24: "666666",
                 25: "15A7BD", 26: "6EC9E0", 27: "000000", 28: "6EC9E0"}
 
+BASIC_BG_COLOR = "ffffff"
+BASIC_TILE_COLOR = "000000"
+
 SEGMENTWIDTH = 1
 NINJAWIDTH = 1.25
 DOORWIDTH = 2
@@ -35,7 +38,7 @@ def hex2float(string):
 
 
 class NSimRenderer:
-    def __init__(self, sim):
+    def __init__(self, sim, render_mode: str = 'rgb_array'):
         self.sim = sim
         self.screen = pygame.display.set_mode(
             (SRCWIDTH, SRCHEIGHT), pygame.RESIZABLE)
@@ -64,6 +67,17 @@ class NSimRenderer:
 
         return self.screen
 
+    def draw_collision_map(self, init: bool):
+        """Draws only the tiles, no entities. The background is white and the tiles are drawn in black."""
+        self._update_screen_size()
+        self._update_tile_offsets()
+        self.screen.fill("#"+BASIC_BG_COLOR)
+        self.screen.blit(self._draw_tiles(
+            init, tile_color=BASIC_TILE_COLOR), (self.tile_x_offset, self.tile_y_offset))
+        # pygame.display.flip()
+
+        return self.screen
+
     def _update_screen_size(self):
         self.adjust = min(self.screen.get_width()/SRCWIDTH,
                           self.screen.get_height()/SRCHEIGHT)
@@ -74,7 +88,7 @@ class NSimRenderer:
         self.tile_x_offset = (self.screen.get_width() - self.width)/2
         self.tile_y_offset = (self.screen.get_height() - self.height)/2
 
-    def _draw_tiles(self, init: bool) -> pygame.Surface:
+    def _draw_tiles(self, init: bool, tile_color: str = TILECOLOR) -> pygame.Surface:
         if init:
             self.render_surface = cairo.ImageSurface(
                 cairo.Format.RGB24, *self.screen.get_size())
@@ -87,7 +101,7 @@ class NSimRenderer:
         self.render_context.fill()
         self.render_context.set_operator(cairo.Operator.ADD)
 
-        self.render_context.set_source_rgb(*hex2float(TILECOLOR))
+        self.render_context.set_source_rgb(*hex2float(tile_color))
         for coords, tile in self.sim.tile_dic.items():
             x, y = coords
             if tile == 1 or tile > 33:

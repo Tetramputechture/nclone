@@ -114,6 +114,9 @@ class Map:
 class MapGenerator(Map):
     """Class for generating maps with common patterns and features."""
 
+    GLOBAL_MAX_UP_DEVIATION = 5
+    GLOBAL_MAX_DOWN_DEVIATION = 2
+
     def __init__(self):
         super().__init__()
         self.rng = random.Random()
@@ -182,7 +185,7 @@ class MapGenerator(Map):
             for x in range(x1, x2 + 1):
                 self.set_tile(x, y, 0)
 
-    def generate_random_level(self, level_type="SIMPLE_HORIZONTAL_NO_BACKTRACK", seed=None):
+    def generate_random_map(self, level_type="SIMPLE_HORIZONTAL_NO_BACKTRACK", seed=None):
         """Generate a random level based on the specified type.
 
         Args:
@@ -196,9 +199,8 @@ class MapGenerator(Map):
 
         if level_type == "SIMPLE_HORIZONTAL_NO_BACKTRACK":
             # Generate random dimensions for play space
-            # Increased minimum width to ensure enough space
-            width = self.rng.randint(9, 40)
-            height = self.rng.randint(1, 21)
+            width = self.rng.randint(4, 6)
+            height = self.rng.randint(1, 4)
 
             # Calculate maximum possible starting positions while leaving room for the play space
             max_start_x = self.MAP_WIDTH - width - 1
@@ -209,6 +211,9 @@ class MapGenerator(Map):
             play_y1 = self.rng.randint(2, max(3, max_start_y))
             play_x2 = min(play_x1 + width, self.MAP_WIDTH - 2)
             play_y2 = min(play_y1 + height, self.MAP_HEIGHT - 2)
+
+            actual_width = play_x2 - play_x1
+            actual_height = play_y2 - play_y1
 
             # Fill the entire map with random tile types
             for y in range(self.MAP_HEIGHT):
@@ -223,12 +228,18 @@ class MapGenerator(Map):
             # at the bottom of the play space
             for x in range(play_x1, play_x2 + 1):
                 self.set_tile(x, play_y2 + 1, 1)
+                self.set_tile(x, play_y1 - 1, 1)
+
+            # Lets do the same for the left and right sides of the play space
+            for y in range(play_y1, play_y2 + 1):
+                self.set_tile(play_x1 - 1, y, 1)
+                self.set_tile(play_x2 + 1, y, 1)
 
             # Floor Y coordinate (where entities will be placed)
             floor_y = play_y2 * 4  # Bottom of the play space
 
             # Calculate available space for elements
-            usable_width = play_x2 - play_x1 - 2  # -2 for wall padding
+            usable_width = actual_width - 2  # -2 for wall padding
 
             # Divide the usable space into three sections
             # Ensure minimum section width
@@ -246,7 +257,7 @@ class MapGenerator(Map):
                 # Ninja spawns to the left of the switch a random distance
                 # away from the switch, where the max distance is the
                 # distance between the switch and the left edge of the play space +1
-                ninja_x = switch_x * 4 - \
+                ninja_x = switch_x - \
                     self.rng.randint(1, max(1, switch_x - play_x1 - 1))
             else:  # Door on left, switch on right
                 # Place door in first third of space
@@ -259,14 +270,94 @@ class MapGenerator(Map):
                 # Ninja spawns to the right of the switch a random distance
                 # away from the switch, where the max distance is the
                 # distance between the switch and the right edge of the play space -1
-                ninja_x = switch_x * 4 + \
-                    self.rng.randint(1, max(1, play_x2 - switch_x)) + 10
+                ninja_x = switch_x + \
+                    self.rng.randint(1, max(1, play_x2 - switch_x))
 
-            self.set_ninja_spawn(ninja_x, floor_y + 6)
+            # Now, we want to randomly deviate the surface of the play space vertically,
+            # where the surface can be can either deviate at most 2 tiles below the floor,
+            # or at most 5 tiles above the floor (or less when the room height is less than 5)
+            # We want to:
+            # - Iterate over each surface tile in the play space
+            # - Calculate a random vertical deviation for each surface tile. This should be between
+            #   - 2 tiles below the floor (if the floor is more than 2 tiles above the play space)
+            #   - 5 tiles above the floor (or less when the room height is less than 5)
+            #  - If the deviation is negative, set the surface tile to an empty tile, and then each tile
+            #    below the surface tile to an empty tile until we reach the deviation count or the floor
+            #  - If the deviation is positive, set each tile
+            #    above the surface tile to a solid tile until we reach the deviation count or the ceiling - 1
+            #  - If the deviation is 0, noop
+            #
+            # While we do this, if we encounter a surface tile with the same X coordinate as an entity (the ninja spawn, switch, or exit door),
+            # we want to offset the entity by the deviation amount, so that it is not blocked by the surface tiles.
+            # Each entity should spawn at the floor level, so we need to offset the entity by the deviation amount
+            # in the Y direction.
+            # Track vertical deviations to adjust entity positions
+            deviations = {}
+
+            # Print our play coordinates
+            # print(
+            #     f"\n---Play space: {play_x1}, {play_y1}, {play_x2}, {play_y2}---\n")
+
+            should_deviate = False
+
+            # Iterate over each surface tile in play space
+            for x in range(play_x1, play_x2 + 1):
+                if should_deviate:
+                    # Calculate random deviation
+                    # Maximum upward deviation is min(self.GLOBAL_MAX_UP_DEVIATION, distance to ceiling)
+                    max_up = max(self.GLOBAL_MAX_UP_DEVIATION,
+                                 min(5, actual_height))
+                    # Maximum downward deviation is max(self.GLOBAL_MAX_DOWN_DEVIATION, count of vertical tiles between the floor and height)
+                    max_down = min(self.GLOBAL_MAX_DOWN_DEVIATION,
+                                   max(5, 21 - actual_height))
+
+                    # print(f"Max up: {max_up}, max down: {max_down}")
+                    deviation = self.rng.randint(-max_down, max_up)
+                else:
+                    deviation = 0
+
+                # print(f"Deviation: {deviation}")
+
+                # Store deviation for entity position adjustment
+                deviations[x] = deviation
+
+                if deviation < 0:
+                    # Clear tiles below surface
+                    for y in range(play_y2 + 2, play_y2 - deviation, 1):
+                        self.set_tile(x, y, 0)  # Empty tile
+                elif deviation > 0:
+                    # Add solid tiles above surface
+                    for y in range(play_y2, play_y2 - deviation, -1):
+                        self.set_tile(x, y, 1)  # Solid tile
+
+            # Adjust entity positions based on surface deviations
+            ninja_tile_x = ninja_x
+            if ninja_tile_x in deviations:
+                ninja_y = play_y2 - deviations[ninja_tile_x]
+            else:
+                ninja_y = play_y2
+
+            door_tile_x = door_x
+            if door_tile_x in deviations:
+                door_y = play_y2 - deviations[door_tile_x]
+            else:
+                door_y = play_y2
+
+            switch_tile_x = switch_x
+            if switch_tile_x in deviations:
+                switch_y = play_y2 - deviations[switch_tile_x]
+            else:
+                switch_y = play_y2
+
+            ninja_y *= 4
+            door_y *= 4
+            switch_y *= 4
+
+            self.set_ninja_spawn(ninja_x * 4 + 6, ninja_y + 6)
 
             # Add exit door and switch (convert from tile coordinates to screen coordinates)
-            self.add_entity(3, door_x * 4 + 6, floor_y +
-                            6, 0, 0, switch_x * 4 + 6, floor_y + 6)
+            self.add_entity(3, door_x * 4 + 6, door_y + 6, 0, 0,
+                            switch_x * 4 + 6, switch_y + 6)
 
             return True
 
