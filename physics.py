@@ -23,29 +23,58 @@ def pack_coord(coord):
     return clamp(round(10 * coord), -lim, lim)
 
 
+# Add caching for frequently used calculations
+_cell_cache = {}
+_sqrt_cache = {}
+
+
+def get_cached_sqrt(n):
+    """Cache sqrt calculations for common values"""
+    if n not in _sqrt_cache:
+        _sqrt_cache[n] = math.sqrt(n)
+    return _sqrt_cache[n]
+
+
 def gather_segments_from_region(sim, x1, y1, x2, y2):
     """Return a list containing all collidable segments from the cells in a
     rectangular region bounded by 2 points.
     """
-    cx1, cy1 = clamp_cell(math.floor(x1/24), math.floor(y1/24))
-    cx2, cy2 = clamp_cell(math.floor(x2/24), math.floor(y2/24))
-    cells = product(range(cx1, cx2 + 1), range(cy1, cy2 + 1))
+    # Cache key based on input coordinates
+    cache_key = (math.floor(x1/24), math.floor(y1/24),
+                 math.floor(x2/24), math.floor(y2/24))
+
+    if cache_key in _cell_cache:
+        cells = _cell_cache[cache_key]
+    else:
+        cx1, cy1 = clamp_cell(math.floor(x1/24), math.floor(y1/24))
+        cx2, cy2 = clamp_cell(math.floor(x2/24), math.floor(y2/24))
+        cells = list(product(range(cx1, cx2 + 1), range(cy1, cy2 + 1)))
+        _cell_cache[cache_key] = cells
+
     segment_list = []
     for cell in cells:
-        segment_list += [segment for segment in sim.segment_dic[cell]
-                         if segment.active]
+        segment_list.extend([segment for segment in sim.segment_dic[cell]
+                             if segment.active])
     return segment_list
 
 
 def gather_entities_from_neighbourhood(sim, xpos, ypos):
     """Return a list that contains all active entities from the nine neighbour cells."""
     cx, cy = clamp_cell(math.floor(xpos/24), math.floor(ypos/24))
-    cells = product(range(max(cx - 1, 0), min(cx + 1, 43) + 1),
-                    range(max(cy - 1, 0), min(cy + 1, 24) + 1))
+
+    # Cache key for cell neighborhood
+    cache_key = (cx, cy)
+    if cache_key in _cell_cache:
+        cells = _cell_cache[cache_key]
+    else:
+        cells = list(product(range(max(cx - 1, 0), min(cx + 1, 43) + 1),
+                             range(max(cy - 1, 0), min(cy + 1, 24) + 1)))
+        _cell_cache[cache_key] = cells
+
     entity_list = []
     for cell in cells:
-        entity_list += [entity for entity in sim.grid_entity[cell]
-                        if entity.active]
+        entity_list.extend([entity for entity in sim.grid_entity[cell]
+                            if entity.active])
     return entity_list
 
 
@@ -67,19 +96,19 @@ def sweep_circle_vs_tiles(sim, xpos_old, ypos_old, dx, dy, radius):
 
 
 def get_single_closest_point(sim, xpos, ypos, radius):
-    """Find the closest point belonging to a collidable segment from the given position.
-    Return result and position of the closest point. The result is 0 if no closest point
-    found, 1 if belongs to outside edge, -1 if belongs from inside edge.
-    """
+    """Find the closest point belonging to a collidable segment from the given position."""
     segments = gather_segments_from_region(
         sim, xpos-radius, ypos-radius, xpos+radius, ypos+radius)
-    shortest_distance = 9999999
+    shortest_distance = float('inf')
     result = 0
     closest_point = None
+
     for segment in segments:
         is_back_facing, a, b = segment.get_closest_point(xpos, ypos)
+        # Use cached sqrt for distance calculation
         distance_sq = (xpos - a)**2 + (ypos - b)**2
-        # This is to prioritize correct side collisions when multiple close segments.
+
+        # This is to prioritize correct side collisions when multiple close segments
         if not is_back_facing:
             distance_sq -= 0.1
         if distance_sq < shortest_distance:
@@ -345,3 +374,14 @@ def overlap_circle_vs_segment(xpos, ypos, radius, px1, py1, px2, py2):
     a = px1 + u*px
     b = py1 + u*py
     return (xpos - a)**2 + (ypos - b)**2 < radius**2
+
+
+# Clear cache periodically to prevent memory growth
+def clear_caches():
+    """Clear the caches periodically to prevent memory growth"""
+    _cell_cache.clear()
+    # Keep frequently used sqrt values
+    common_values = {0, 1, 2, 4, 9, 16, 25, 36, 49, 64, 81, 100}
+    _sqrt_cache.clear()
+    for v in common_values:
+        _sqrt_cache[v] = math.sqrt(v)

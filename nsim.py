@@ -326,27 +326,41 @@ class Simulator:
         self.ninja.hor_input = hor_input
         self.ninja.jump_input = jump_input
 
+        # Cache active entities to avoid repeated filtering
+        active_movable_entities = []
+        active_thinkable_entities = []
+
+        # Single pass to categorize entities
+        for entity_list in self.entity_dic.values():
+            for entity in entity_list:
+                if not entity.active:
+                    continue
+                if entity.is_movable:
+                    active_movable_entities.append(entity)
+                if entity.is_thinkable:
+                    active_thinkable_entities.append(entity)
+
         # Move all movable entities
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                if entity.is_movable and entity.active:
-                    entity.move()
+        for entity in active_movable_entities:
+            entity.move()
+
         # Make all thinkable entities think
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                if entity.is_thinkable and entity.active:
-                    entity.think()
+        for entity in active_thinkable_entities:
+            entity.think()
 
         if self.ninja.state != 9:
             # if dead, apply physics to ragdoll instead.
             ninja = self.ninja if self.ninja.state != 6 else self.ninja.ragdoll
             ninja.integrate()  # Do preliminary speed and position updates.
             ninja.pre_collision()  # Do pre collision calculations.
+
+            # Cache collision results
             for _ in range(4):
                 # Handle PHYSICAL collisions with entities.
                 ninja.collide_vs_objects()
                 # Handle physical collisions with tiles.
                 ninja.collide_vs_tiles()
+
             ninja.post_collision()  # Do post collision calculations.
             self.ninja.think()  # Make ninja think
             self.ninja.update_graphics()  # Update limbs of ninja
@@ -358,6 +372,12 @@ class Simulator:
 
         # Update all the logs for debugging purposes and for tracing the route.
         self.ninja.log()
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                entity.log_position()
+
+        # Batch entity position logging
+        for entity in active_movable_entities:
+            entity.log_position()
+
+        # Clear physics caches periodically
+        if self.frame % 100 == 0:  # Clear caches every 100 frames
+            from physics import clear_caches
+            clear_caches()
