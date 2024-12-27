@@ -46,9 +46,9 @@ clock = pygame.time.Clock()
 running = True
 running_mode = "playing"
 
-# with open("maps/map_data_simple", "rb") as f:
-#     mapdata = [int(b) for b in f.read()]
-sim.load_from_created(map_gen)
+with open("maps/map_data_simple", "rb") as f:
+    mapdata = [int(b) for b in f.read()]
+sim.load(mapdata)
 inputs = None
 if os.path.isfile("inputs"):
     with open("inputs", "rb") as f:

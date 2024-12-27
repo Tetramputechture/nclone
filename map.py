@@ -30,6 +30,11 @@ class Map:
         if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
             self.tile_data[x + y * self.MAP_WIDTH] = tile_type
 
+    def set_tiles_bulk(self, tile_types):
+        """Set all tiles at once using a pre-generated array."""
+        if len(tile_types) == len(self.tile_data):
+            self.tile_data = tile_types
+
     def set_ninja_spawn(self, x, y):
         """Set the ninja spawn point coordinates.
         Converts tile coordinates to screen coordinates (x6 multiplier)."""
@@ -69,19 +74,7 @@ class Map:
             self.entity_counts['death_ball'] += 1
 
     def generate(self):
-        """Generate the map data in the format expected by the simulator.
-        The map data format is:
-        [0-183]: Header (zeros)
-        [184-1149]: Tile data (42x23 = 966 tiles)
-        [1150-1155]: Unknown (zeros)
-        [1156]: Exit door count
-        [1157-1199]: Unknown (zeros)
-        [1200]: Death ball count
-        [1201-1229]: Unknown (zeros)
-        [1230-1231]: Ninja spawn coordinates
-        [1232-1234]: Unknown (zeros)
-        [1235+]: Entity data"""
-
+        """Generate the map data in the format expected by the simulator."""
         # Create the map data array
         map_data = [0] * 184  # Header
         map_data.extend(self.tile_data)  # Tile data (184-1149)
@@ -110,6 +103,21 @@ class Map:
             'death_ball': 0
         }
 
+    def set_empty_rectangle(self, x1, y1, x2, y2):
+        """Set a rectangular area to empty tiles efficiently."""
+        x1 = max(0, min(x1, self.MAP_WIDTH - 1))
+        x2 = max(0, min(x2, self.MAP_WIDTH - 1))
+        y1 = max(0, min(y1, self.MAP_HEIGHT - 1))
+        y2 = max(0, min(y2, self.MAP_HEIGHT - 1))
+
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+
+        for y in range(y1, y2 + 1):
+            start_idx = x1 + y * self.MAP_WIDTH
+            end_idx = x2 + 1 + y * self.MAP_WIDTH
+            self.tile_data[start_idx:end_idx] = [0] * (x2 - x1 + 1)
+
 
 class MapGenerator(Map):
     """Class for generating maps with common patterns and features."""
@@ -121,78 +129,8 @@ class MapGenerator(Map):
         super().__init__()
         self.rng = random.Random()
 
-    def random_tile_type(self):
-        """Return a random tile type. Tile types defined in TILE_GRID_EDGE_MAP."""
-        return self.rng.randint(0, 37)
-
-    def fill_boundaries(self, width=1, left_width=None, right_width=None, top_width=None, bottom_width=None):
-        """Fill the map boundaries with solid tiles.
-
-        Args:
-            width (int or tuple): Default width for all boundaries if no specific width is provided
-            left_width (int): Width of left boundary (max 26)
-            right_width (int): Width of right boundary (max 26)
-            top_width (int): Width of top boundary (max 11)
-            bottom_width (int): Width of bottom boundary (max 12)
-        """
-        # Set default widths if not specified
-        left = min(left_width if left_width is not None else width, 26)
-        right = min(right_width if right_width is not None else width, 26)
-        top = min(top_width if top_width is not None else width, 11)
-        bottom = min(bottom_width if bottom_width is not None else width, 12)
-
-        # Fill left boundary
-        for x in range(left):
-            for y in range(self.MAP_HEIGHT):
-                self.set_tile(x, y, 1)
-
-        # Fill right boundary
-        for x in range(self.MAP_WIDTH - right, self.MAP_WIDTH):
-            for y in range(self.MAP_HEIGHT):
-                self.set_tile(x, y, 1)
-
-        # Fill top boundary
-        for y in range(top):
-            for x in range(self.MAP_WIDTH):
-                self.set_tile(x, y, 1)
-
-        # Fill bottom boundary
-        for y in range(self.MAP_HEIGHT - bottom, self.MAP_HEIGHT):
-            for x in range(self.MAP_WIDTH):
-                self.set_tile(x, y, 1)
-
-    def set_empty_rectangle(self, x1, y1, x2, y2):
-        """Set a rectangular area to empty tiles.
-
-        Args:
-            x1 (int): Starting X coordinate
-            y1 (int): Starting Y coordinate
-            x2 (int): Ending X coordinate (inclusive)
-            y2 (int): Ending Y coordinate (inclusive)
-        """
-        # Ensure coordinates are within bounds
-        x1 = max(0, min(x1, self.MAP_WIDTH - 1))
-        x2 = max(0, min(x2, self.MAP_WIDTH - 1))
-        y1 = max(0, min(y1, self.MAP_HEIGHT - 1))
-        y2 = max(0, min(y2, self.MAP_HEIGHT - 1))
-
-        # Ensure x1,y1 is top-left and x2,y2 is bottom-right
-        x1, x2 = min(x1, x2), max(x1, x2)
-        y1, y2 = min(y1, y2), max(y1, y2)
-
-        # Fill the rectangle with empty tiles
-        for y in range(y1, y2 + 1):
-            for x in range(x1, x2 + 1):
-                self.set_tile(x, y, 0)
-
     def generate_random_map(self, level_type="SIMPLE_HORIZONTAL_NO_BACKTRACK", seed=None):
-        """Generate a random level based on the specified type.
-
-        Args:
-            level_type (str): Type of level to generate. Currently supports:
-                - SIMPLE_HORIZONTAL_NO_BACKTRACK: A simple horizontal level with ninja, switch, and exit
-            seed (int, optional): Random seed for level generation
-        """
+        """Generate a random level based on the specified type."""
         self.reset()
         if seed is not None:
             self.rng.seed(seed)
@@ -202,11 +140,11 @@ class MapGenerator(Map):
             width = self.rng.randint(4, 6)
             height = self.rng.randint(1, 4)
 
-            # Calculate maximum possible starting positions while leaving room for the play space
+            # Calculate maximum possible starting positions
             max_start_x = self.MAP_WIDTH - width - 1
             max_start_y = self.MAP_HEIGHT - height - 1
 
-            # Randomize the starting position (but keep at least 1 tile from edges)
+            # Randomize the starting position
             play_x1 = self.rng.randint(2, max(3, max_start_x))
             play_y1 = self.rng.randint(2, max(3, max_start_y))
             play_x2 = min(play_x1 + width, self.MAP_WIDTH - 2)
@@ -215,150 +153,75 @@ class MapGenerator(Map):
             actual_width = play_x2 - play_x1
             actual_height = play_y2 - play_y1
 
-            # Fill the entire map with random tile types
-            for y in range(self.MAP_HEIGHT):
-                for x in range(self.MAP_WIDTH):
-                    self.set_tile(x, y, self.random_tile_type())
+            # Pre-generate all random tiles at once
+            tile_types = [self.rng.randint(0, 37) for _ in range(
+                self.MAP_WIDTH * self.MAP_HEIGHT)]
+            self.set_tiles_bulk(tile_types)
 
             # Create the empty play space
             self.set_empty_rectangle(play_x1, play_y1, play_x2, play_y2)
 
-            # Now, to make sure the play space is bounded on the bottom, create
-            # a line of type 1 tiles with a width of the level
-            # at the bottom of the play space
+            # Create boundary tiles
             for x in range(play_x1, play_x2 + 1):
                 self.set_tile(x, play_y2 + 1, 1)
                 self.set_tile(x, play_y1 - 1, 1)
 
-            # Lets do the same for the left and right sides of the play space
             for y in range(play_y1, play_y2 + 1):
                 self.set_tile(play_x1 - 1, y, 1)
                 self.set_tile(play_x2 + 1, y, 1)
 
-            # Floor Y coordinate (where entities will be placed)
-            floor_y = play_y2 * 4  # Bottom of the play space
-
-            # Calculate available space for elements
-            usable_width = actual_width - 2  # -2 for wall padding
-
-            # Divide the usable space into three sections
-            # Ensure minimum section width
+            # Calculate entity positions
+            usable_width = actual_width - 2
             section_width = max(3, usable_width // 3)
 
-            # Place switch and door with proper spacing
-            if self.rng.choice([True, False]):  # Switch on left, door on right
-                # Place switch in first third of space
+            # Pre-calculate max deviation values
+            max_up = max(self.GLOBAL_MAX_UP_DEVIATION, min(5, actual_height))
+            max_down = min(self.GLOBAL_MAX_DOWN_DEVIATION,
+                           max(5, 21 - actual_height))
+
+            # Place entities
+            if self.rng.choice([True, False]):
                 switch_x = play_x1 + 1 + self.rng.randint(1, section_width - 1)
-                # Place door to the right of the switch, a random distance
-                # away from the switch, where the max distance is the
-                # distance between the switch and the right edge of the play space -1
                 door_x = switch_x + \
                     self.rng.randint(1, max(1, play_x2 - switch_x - 1))
-                # Ninja spawns to the left of the switch a random distance
-                # away from the switch, where the max distance is the
-                # distance between the switch and the left edge of the play space +1
                 ninja_x = switch_x - \
                     self.rng.randint(1, max(1, switch_x - play_x1 - 1))
-            else:  # Door on left, switch on right
-                # Place door in first third of space
+            else:
                 door_x = play_x1 + self.rng.randint(1, section_width - 1)
-                # Place switch to the right of the door, a random distance
-                # away from the door, where the max distance is the
-                # distance between the door and the right edge of the play space -1
                 switch_x = door_x + \
                     self.rng.randint(1, max(1, play_x2 - door_x - 1))
-                # Ninja spawns to the right of the switch a random distance
-                # away from the switch, where the max distance is the
-                # distance between the switch and the right edge of the play space -1
                 ninja_x = switch_x + \
                     self.rng.randint(1, max(1, play_x2 - switch_x))
 
-            # Now, we want to randomly deviate the surface of the play space vertically,
-            # where the surface can be can either deviate at most 2 tiles below the floor,
-            # or at most 5 tiles above the floor (or less when the room height is less than 5)
-            # We want to:
-            # - Iterate over each surface tile in the play space
-            # - Calculate a random vertical deviation for each surface tile. This should be between
-            #   - 2 tiles below the floor (if the floor is more than 2 tiles above the play space)
-            #   - 5 tiles above the floor (or less when the room height is less than 5)
-            #  - If the deviation is negative, set the surface tile to an empty tile, and then each tile
-            #    below the surface tile to an empty tile until we reach the deviation count or the floor
-            #  - If the deviation is positive, set each tile
-            #    above the surface tile to a solid tile until we reach the deviation count or the ceiling - 1
-            #  - If the deviation is 0, noop
-            #
-            # While we do this, if we encounter a surface tile with the same X coordinate as an entity (the ninja spawn, switch, or exit door),
-            # we want to offset the entity by the deviation amount, so that it is not blocked by the surface tiles.
-            # Each entity should spawn at the floor level, so we need to offset the entity by the deviation amount
-            # in the Y direction.
-            # Track vertical deviations to adjust entity positions
+            # Handle surface deviations
             deviations = {}
-
-            # Print our play coordinates
-            # print(
-            #     f"\n---Play space: {play_x1}, {play_y1}, {play_x2}, {play_y2}---\n")
-
             should_deviate = False
 
-            # Iterate over each surface tile in play space
             for x in range(play_x1, play_x2 + 1):
                 if should_deviate:
-                    # Calculate random deviation
-                    # Maximum upward deviation is min(self.GLOBAL_MAX_UP_DEVIATION, distance to ceiling)
-                    max_up = max(self.GLOBAL_MAX_UP_DEVIATION,
-                                 min(5, actual_height))
-                    # Maximum downward deviation is max(self.GLOBAL_MAX_DOWN_DEVIATION, count of vertical tiles between the floor and height)
-                    max_down = min(self.GLOBAL_MAX_DOWN_DEVIATION,
-                                   max(5, 21 - actual_height))
-
-                    # print(f"Max up: {max_up}, max down: {max_down}")
                     deviation = self.rng.randint(-max_down, max_up)
                 else:
                     deviation = 0
 
-                # print(f"Deviation: {deviation}")
-
-                # Store deviation for entity position adjustment
                 deviations[x] = deviation
 
                 if deviation < 0:
-                    # Clear tiles below surface
                     for y in range(play_y2 + 2, play_y2 - deviation, 1):
-                        self.set_tile(x, y, 0)  # Empty tile
+                        self.set_tile(x, y, 0)
                 elif deviation > 0:
-                    # Add solid tiles above surface
                     for y in range(play_y2, play_y2 - deviation, -1):
-                        self.set_tile(x, y, 1)  # Solid tile
+                        self.set_tile(x, y, 1)
 
-            # Adjust entity positions based on surface deviations
-            ninja_tile_x = ninja_x
-            if ninja_tile_x in deviations:
-                ninja_y = play_y2 - deviations[ninja_tile_x]
-            else:
-                ninja_y = play_y2
+            # Calculate final entity positions
+            ninja_y = play_y2 - deviations.get(ninja_x, 0)
+            door_y = play_y2 - deviations.get(door_x, 0)
+            switch_y = play_y2 - deviations.get(switch_x, 0)
 
-            door_tile_x = door_x
-            if door_tile_x in deviations:
-                door_y = play_y2 - deviations[door_tile_x]
-            else:
-                door_y = play_y2
-
-            switch_tile_x = switch_x
-            if switch_tile_x in deviations:
-                switch_y = play_y2 - deviations[switch_tile_x]
-            else:
-                switch_y = play_y2
-
-            ninja_y *= 4
-            door_y *= 4
-            switch_y *= 4
-
-            self.set_ninja_spawn(ninja_x * 4 + 6, ninja_y + 6)
-
-            # Add exit door and switch (convert from tile coordinates to screen coordinates)
-            self.add_entity(3, door_x * 4 + 6, door_y + 6, 0, 0,
-                            switch_x * 4 + 6, switch_y + 6)
+            # Convert to screen coordinates and place entities
+            self.set_ninja_spawn(ninja_x * 4 + 6, ninja_y * 4 + 6)
+            self.add_entity(3, door_x * 4 + 6, door_y * 4 + 6, 0, 0,
+                            switch_x * 4 + 6, switch_y * 4 + 6)
 
             return True
 
-        return False  # Unsupported level type
+        return False
