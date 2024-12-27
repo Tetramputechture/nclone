@@ -88,6 +88,7 @@ class NPlayHeadless:
         """
         self.sim.tick(horizontal_input, jump_input)
         if self.render_mode == 'human':
+            print('NO')
             pygame.display.update()
             pygame.event.pump()
             self.clock.tick(60)

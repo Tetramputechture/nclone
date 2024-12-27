@@ -60,7 +60,7 @@ if os.path.isfile("inputs"):
     jump_inputs = [JUMP_INPUTS_DIC[inp] for inp in inputs]
     inp_len = len(inputs)
 
-sim_renderer = NSimRenderer(sim)
+sim_renderer = NSimRenderer(sim, render_mode='human')
 
 # Print space of NplayHeadless state, only ninja and exit and switch
 np_headless = NPlayHeadless()
