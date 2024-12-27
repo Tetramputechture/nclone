@@ -679,21 +679,37 @@ class Ninja:
     def calc_ninja_position(self):
         """Calculate the positions of ninja's joints. The positions are fetched from the animation data,
         after applying mirroring, rotation or interpolation if necessary."""
-        new_bones = copy.deepcopy(self.ninja_animation[self.anim_frame])
+        # Reuse lists instead of deep copying
+        if not hasattr(self, 'new_bones'):
+            self.new_bones = [[0, 0] for _ in range(13)]
+
+        anim_frame_bones = self.ninja_animation[self.anim_frame]
+        for i in range(13):
+            self.new_bones[i][0] = anim_frame_bones[i][0]
+            self.new_bones[i][1] = anim_frame_bones[i][1]
+
         if self.anim_state == 1:
             interpolation = (self.run_cycle % 6) / 6
             if interpolation > 0:
                 next_bones = self.ninja_animation[(
                     self.anim_frame - 12) % 72 + 12]
-                new_bones = [[new_bones[i][j] + interpolation*(
-                    next_bones[i][j] - new_bones[i][j]) for j in range(2)] for i in range(13)]
+                for i in range(13):
+                    self.new_bones[i][0] += interpolation * \
+                        (next_bones[i][0] - self.new_bones[i][0])
+                    self.new_bones[i][1] += interpolation * \
+                        (next_bones[i][1] - self.new_bones[i][1])
+
         for i in range(13):
-            new_bones[i][0] *= self.facing
-            x, y = new_bones[i]
+            self.new_bones[i][0] *= self.facing
+            x, y = self.new_bones[i]
             tcos, tsin = math.cos(self.tilt), math.sin(self.tilt)
-            new_bones[i][0] = x*tcos - y*tsin
-            new_bones[i][1] = x*tsin + y*tcos
-        self.bones = new_bones
+            self.new_bones[i][0] = x*tcos - y*tsin
+            self.new_bones[i][1] = x*tsin + y*tcos
+
+        # Swap references instead of copying
+        self.bones_old = self.bones
+        self.bones = self.new_bones
+        self.new_bones = self.bones_old
 
     def win(self):
         """Set ninja's state to celebrating."""
