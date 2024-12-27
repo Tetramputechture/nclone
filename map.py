@@ -123,7 +123,7 @@ class MapGenerator(Map):
     """Class for generating maps with common patterns and features."""
 
     GLOBAL_MAX_UP_DEVIATION = 5
-    GLOBAL_MAX_DOWN_DEVIATION = 2
+    GLOBAL_MAX_DOWN_DEVIATION = 0
 
     def __init__(self):
         super().__init__()
@@ -175,11 +175,11 @@ class MapGenerator(Map):
             section_width = max(3, usable_width // 3)
 
             # Pre-calculate max deviation values
-            max_up = max(self.GLOBAL_MAX_UP_DEVIATION, min(5, actual_height))
+            max_up = min(actual_height, max(5, self.GLOBAL_MAX_UP_DEVIATION))
             max_down = min(self.GLOBAL_MAX_DOWN_DEVIATION,
                            max(5, 21 - actual_height))
 
-            # Place entities
+            # Place entities on X axis, choosing switch or door first
             if self.rng.choice([True, False]):
                 switch_x = play_x1 + 1 + self.rng.randint(1, section_width - 1)
                 door_x = switch_x + \
@@ -195,7 +195,7 @@ class MapGenerator(Map):
 
             # Handle surface deviations
             deviations = {}
-            should_deviate = False
+            should_deviate = True
 
             for x in range(play_x1, play_x2 + 1):
                 if should_deviate:
