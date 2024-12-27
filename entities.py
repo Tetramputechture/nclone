@@ -135,6 +135,28 @@ class Entity:
         self.last_exported_coords = None
         self.exported_chunks = array.array('H')
 
+    def get_state(self, minimal_state: bool = False):
+        """Get the entity's state as a list of normalized float values between 0 and 1."""
+        # Basic attributes that all entities have
+        state = [
+            max(0.0, min(1.0, self.xpos / 1056)),  # SRCWIDTH, clamped to [0,1]
+            max(0.0, min(1.0, self.ypos / 600)),   # SRCHEIGHT, clamped to [0,1]
+            float(self.active),  # Already 0 or 1
+            max(0.0, min(1.0, float(self.type) / 28.0))  # Normalize type by max type (28)
+        ]
+        
+        if not minimal_state:
+            # Add padding for state attribute
+            state.append(0.0)
+            
+            # Add padding for laser-specific attributes
+            state.extend([0.0, 0.0])
+            
+            # Add padding for orientation
+            state.append(0.0)
+        
+        return state
+
     def grid_move(self):
         """As the entity is moving, if its center goes from one grid cell to another,
         remove it from the previous cell and insert it into the new cell.
@@ -178,7 +200,9 @@ class Entity:
 
 class EntityToggleMine(Entity):
     """This class handles both toggle mines (untoggled state) and regular mines (toggled state)."""
+    ENTITY_TYPE = 1  # Also handles type 21 for toggled state
     RADII = {0: 4, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
+    MAX_COUNT_PER_LEVEL = 8192
 
     def __init__(self, entity_type, sim, xcoord, ycoord, state):
         super().__init__(entity_type, sim, xcoord, ycoord)
@@ -218,9 +242,16 @@ class EntityToggleMine(Entity):
             self.RADIUS = self.RADII[state]
             self.log_collision(state)
 
+    def get_state(self):
+        state = super().get_state()
+        state[4] = max(0.0, min(1.0, float(self.state) / 2))  # Normalize state (0, 1, or 2)
+        return state
+
 
 class EntityGold(Entity):
+    ENTITY_TYPE = 2
     RADIUS = 6
+    MAX_COUNT_PER_LEVEL = 8192
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
@@ -238,7 +269,9 @@ class EntityGold(Entity):
 
 
 class EntityExit(Entity):
+    ENTITY_TYPE = 3
     RADIUS = 12
+    MAX_COUNT_PER_LEVEL = 16
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
@@ -255,6 +288,7 @@ class EntityExit(Entity):
 
 
 class EntityExitSwitch(Entity):
+    ENTITY_TYPE = 4
     RADIUS = 6
 
     def __init__(self, type, sim, xcoord, ycoord, parent):
@@ -328,9 +362,17 @@ class EntityDoorBase(Entity):
             else:
                 self.sim.hor_grid_edge_dic[grid_edge] += 1 if closed else -1
 
+    def get_state(self):
+        state = super().get_state()
+        state[4] = float(self.closed)  # Already 0 or 1
+        state[7] = float(self.orientation) / 7  # Normalize orientation
+        return state
+
 
 class EntityDoorRegular(EntityDoorBase):
+    ENTITY_TYPE = 5
     RADIUS = 10
+    MAX_COUNT_PER_LEVEL = 256
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord):
         super().__init__(type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord)
@@ -357,7 +399,9 @@ class EntityDoorRegular(EntityDoorBase):
 
 
 class EntityDoorLocked(EntityDoorBase):
+    ENTITY_TYPE = 6
     RADIUS = 5
+    MAX_COUNT_PER_LEVEL = 256
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord):
         super().__init__(type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord)
@@ -372,7 +416,9 @@ class EntityDoorLocked(EntityDoorBase):
 
 
 class EntityDoorTrap(EntityDoorBase):
+    ENTITY_TYPE = 8
     RADIUS = 5
+    MAX_COUNT_PER_LEVEL = 256
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord):
         super().__init__(type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord)
@@ -388,8 +434,10 @@ class EntityDoorTrap(EntityDoorBase):
 
 
 class EntityLaunchPad(Entity):
+    ENTITY_TYPE = 10
     RADIUS = 6
     BOOST = 36/7
+    MAX_COUNT_PER_LEVEL = 256
 
     def __init__(self, type, sim, xcoord, ycoord, orientation):
         super().__init__(type, sim, xcoord, ycoord)
@@ -414,7 +462,9 @@ class EntityLaunchPad(Entity):
 
 
 class EntityOneWayPlatform(Entity):
+    ENTITY_TYPE = 11
     SEMI_SIDE = 12
+    MAX_COUNT_PER_LEVEL = 512
 
     def __init__(self, type, sim, xcoord, ycoord, orientation):
         super().__init__(type, sim, xcoord, ycoord)
@@ -552,8 +602,18 @@ class EntityDroneBase(Entity):
         self.xtarget, self.ytarget = xtarget, ytarget
         return True
 
+    def get_state(self):
+        state = super().get_state()
+        state[4] = max(0.0, min(1.0, float(self.mode) / 3))  # Normalize mode (0-3)
+        state[6] = max(0.0, min(1.0, (float(self.dir) + 1) / 2 if self.dir is not None else 0.5))  # Normalize direction
+        state[7] = max(0.0, min(1.0, float(self.orientation) / 7))  # Normalize orientation
+        return state
+
 
 class EntityDroneZap(EntityDroneBase):
+    ENTITY_TYPE = 14
+    MAX_COUNT_PER_LEVEL = 256
+
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):
         super().__init__(type, sim, xcoord, ycoord, orientation, mode, 8/7)
         self.is_logical_collidable = True
@@ -568,6 +628,8 @@ class EntityDroneZap(EntityDroneBase):
 
 
 class EntityDroneChaser(EntityDroneZap):
+    MAX_COUNT_PER_LEVEL = 256
+
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):
         super().__init__(type, sim, xcoord, ycoord, orientation, mode)
         self.is_thinkable = True
@@ -593,10 +655,12 @@ class EntityDroneChaser(EntityDroneZap):
 
 
 class EntityBounceBlock(Entity):
+    ENTITY_TYPE = 17
     SEMI_SIDE = 9
     STIFFNESS = 0.02222222222222222
     DAMPENING = 0.98
     STRENGTH = 0.2
+    MAX_COUNT_PER_LEVEL = 512
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
@@ -645,9 +709,11 @@ class EntityBounceBlock(Entity):
 
 
 class EntityThwump(Entity):
+    ENTITY_TYPE = 20
     SEMI_SIDE = 9
     FORWARD_SPEED = 20/7
     BACKWARD_SPEED = 8/7
+    MAX_COUNT_PER_LEVEL = 128
 
     def __init__(self, type, sim, xcoord, ycoord, orientation):
         super().__init__(type, sim, xcoord, ycoord)
@@ -872,9 +938,17 @@ class EntityLaser(Entity):
                     self.xvec = math.cos(angle)
                     self.yvec = math.sin(angle)
 
+    def get_state(self):
+        state = super().get_state()
+        state[5] = max(0.0, min(1.0, self.angle / (2 * math.pi)))  # Normalize angle
+        state[6] = max(0.0, min(1.0, (float(self.dir) + 1) / 2))  # Normalize direction (-1 or 1)
+        return state
+
 
 class EntityBoostPad(Entity):
+    ENTITY_TYPE = 24
     RADIUS = 6
+    MAX_COUNT_PER_LEVEL = 128
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
@@ -902,12 +976,14 @@ class EntityBoostPad(Entity):
 
 
 class EntityDeathBall(Entity):
+    ENTITY_TYPE = 25
     RADIUS = 5  # radius for collisions against ninjas
     RADIUS2 = 8  # radius for collisions against other balls and tiles
     ACCELERATION = 0.04
     MAX_SPEED = 0.85
     DRAG_MAX_SPEED = 0.9
     DRAG_NO_TARGET = 0.95
+    MAX_COUNT_PER_LEVEL = 64
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
@@ -1018,6 +1094,9 @@ class EntityDeathBall(Entity):
 
 
 class EntityMiniDrone(EntityDroneBase):
+    ENTITY_TYPE = 26
+    MAX_COUNT_PER_LEVEL = 512
+
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):
         super().__init__(type, sim, xcoord, ycoord, orientation, mode, 1.3)
         self.is_logical_collidable = True
@@ -1034,8 +1113,10 @@ class EntityMiniDrone(EntityDroneBase):
 
 
 class EntityShoveThwump(Entity):
+    ENTITY_TYPE = 28
     SEMI_SIDE = 12
     RADIUS = 8  # for the projectile inside
+    MAX_COUNT_PER_LEVEL = 128
 
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
