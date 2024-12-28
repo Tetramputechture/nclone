@@ -216,7 +216,8 @@ class MapGenerator(Map):
                             self.set_tile(x, y, 0)
                     elif deviation > 0:
                         for y in range(play_y2, play_y2 - deviation, -1):
-                            self.set_tile(x, y, 1)
+                            random_tile = self.rng.randint(1, 33)
+                            self.set_tile(x, y, random_tile)
 
             # Calculate final entity positions
             if should_deviate_tiles:
