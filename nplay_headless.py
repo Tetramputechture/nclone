@@ -48,6 +48,9 @@ class NPlayHeadless:
         if self.render_mode == 'rgb_array':
             # set pygame env to headless
             os.environ["SDL_VIDEODRIVER"] = "dummy"
+            # Pre-allocate buffer for surface to array conversion
+            self._render_buffer = np.empty(
+                (SRCWIDTH, SRCHEIGHT, 3), dtype=np.uint8)
         else:
             print('Setting up pygame display')
             pygame.display.set_mode((SRCWIDTH, SRCHEIGHT))
@@ -88,7 +91,6 @@ class NPlayHeadless:
         """
         self.sim.tick(horizontal_input, jump_input)
         if self.render_mode == 'human':
-            print('NO')
             pygame.display.update()
             pygame.event.pump()
             self.clock.tick(60)
@@ -96,15 +98,18 @@ class NPlayHeadless:
     def render(self):
         """
         Render the current frame to a NumPy array.
+        Uses a pre-allocated buffer and direct pixel access for better performance.
         """
         init = self.sim.frame <= 1
         surface = self.sim_renderer.draw(init)
-        # if self.render_mode == 'rgb_array':
-        imgdata = pygame.surfarray.array3d(surface)
-        imgdata = imgdata.swapaxes(0, 1)
-        return imgdata
-        # else:
-        #     return surface
+
+        if self.render_mode == 'rgb_array':
+            # Use our pre-allocated buffer
+            pygame.pixelcopy.surface_to_array(
+                self._render_buffer, surface)
+            return self._render_buffer  # Already in correct shape (H, W, 3)
+        else:
+            return surface
 
     def render_collision_map(self):
         """Render the collision map to a NumPy array."""
