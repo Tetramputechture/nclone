@@ -122,6 +122,11 @@ class Map:
 class MapGenerator(Map):
     """Class for generating maps with common patterns and features."""
 
+    SIMPLE_MAP_MIN_WIDTH = 4
+    SIMPLE_MAP_MAX_WIDTH = 6
+    SIMPLE_MAP_MIN_HEIGHT = 1
+    SIMPLE_MAP_MAX_HEIGHT = 3
+
     GLOBAL_MAX_UP_DEVIATION = 5
     GLOBAL_MAX_DOWN_DEVIATION = 0
 
@@ -137,8 +142,10 @@ class MapGenerator(Map):
 
         if level_type == "SIMPLE_HORIZONTAL_NO_BACKTRACK":
             # Generate random dimensions for play space
-            width = self.rng.randint(4, 6)
-            height = self.rng.randint(1, 4)
+            width = self.rng.randint(
+                self.SIMPLE_MAP_MIN_WIDTH, self.SIMPLE_MAP_MAX_WIDTH)
+            height = self.rng.randint(
+                self.SIMPLE_MAP_MIN_HEIGHT, self.SIMPLE_MAP_MAX_HEIGHT)
 
             # Calculate maximum possible starting positions
             max_start_x = self.MAP_WIDTH - width - 1
@@ -200,7 +207,8 @@ class MapGenerator(Map):
             # Handle surface deviations
             deviations = {}
             should_deviate = self.rng.choice([True, False])
-            should_deviate_tiles = self.rng.choice([True, False])
+            # should_deviate_tiles = self.rng.choice([True, False])
+            should_deviate_tiles = False
 
             for x in range(play_x1, play_x2 + 1):
                 if should_deviate:
