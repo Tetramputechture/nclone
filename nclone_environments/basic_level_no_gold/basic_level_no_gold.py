@@ -5,16 +5,16 @@ from typing import Tuple
 import os
 from nplay_headless import NPlayHeadless
 import uuid
-from environments.basic_level_no_gold.constants import (
+from nclone_environments.basic_level_no_gold.constants import (
     GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
     MAX_TIME_IN_FRAMES_SMALL_LEVEL
 )
-from environments.basic_level_no_gold.reward_calculation.main_reward_calculator import RewardCalculator
-from environments.basic_level_no_gold.observation_processor import ObservationProcessor
-from environments.base_environment import BaseEnvironment
+from nclone_environments.basic_level_no_gold.reward_calculation.main_reward_calculator import RewardCalculator
+from nclone_environments.basic_level_no_gold.observation_processor import ObservationProcessor
+from nclone_environments.base_environment import BaseEnvironment
 
 
 class BasicLevelNoGold(BaseEnvironment):
