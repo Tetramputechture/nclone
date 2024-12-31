@@ -48,13 +48,13 @@ class NPlayHeadless:
         if self.render_mode == 'rgb_array':
             # set pygame env to headless
             os.environ["SDL_VIDEODRIVER"] = "dummy"
-            # Pre-allocate buffer for surface to array conversion
-            self._render_buffer = np.empty(
-                (SRCWIDTH, SRCHEIGHT, 3), dtype=np.uint8)
         else:
             print('Setting up pygame display')
             pygame.display.set_mode((SRCWIDTH, SRCHEIGHT))
 
+        # Pre-allocate buffer for surface to array conversion
+        self._render_buffer = np.empty(
+            (SRCWIDTH, SRCHEIGHT, 3), dtype=np.uint8)
         # init display
         pygame.display.init()
 
@@ -103,13 +103,13 @@ class NPlayHeadless:
         init = self.sim.frame <= 1
         surface = self.sim_renderer.draw(init)
 
-        if self.render_mode == 'rgb_array':
-            # Use our pre-allocated buffer
-            pygame.pixelcopy.surface_to_array(
-                self._render_buffer, surface)
-            return self._render_buffer  # Already in correct shape (H, W, 3)
-        else:
-            return surface
+        # if self.render_mode == 'rgb_array':
+        # Use our pre-allocated buffer
+        pygame.pixelcopy.surface_to_array(
+            self._render_buffer, surface)
+        return self._render_buffer  # Already in correct shape (H, W, 3)
+        # else:
+        #     return surface
 
     def render_collision_map(self):
         """Render the collision map to a NumPy array."""
@@ -218,7 +218,7 @@ class NPlayHeadless:
         return np.array(state, dtype=np.float32)
 
     def get_ninja_state(self):
-        """Get ninja state information as a 12-element list of floats, all normalized between 0 and 1.
+        """Get ninja state information as a 10-element list of floats, all normalized between 0 and 1.
 
         Returns:
             numpy.ndarray: A 1D array containing:
@@ -229,8 +229,6 @@ class NPlayHeadless:
             - Airborn boolean
             - Walled boolean
             - Jump duration normalized
-            - Facing normalized
-            - Tilt angle normalized
             - Applied gravity normalized
             - Applied drag normalized
             - Applied friction normalized
@@ -246,8 +244,6 @@ class NPlayHeadless:
             float(ninja.airborn),  # Boolean already 0 or 1
             float(ninja.walled),
             ninja.jump_duration / ninja.MAX_JUMP_DURATION,  # Already normalized
-            (float(ninja.facing) + 1) / 2,  # Facing (-1 or 1) normalized
-            (ninja.tilt + math.pi) / (2 * math.pi),  # Tilt angle normalized
             # Physics parameters normalized based on their typical ranges
             (ninja.applied_gravity - ninja.GRAVITY_JUMP) / \
             (ninja.GRAVITY_FALL - ninja.GRAVITY_JUMP),
