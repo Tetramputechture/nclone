@@ -264,6 +264,12 @@ class NPlayHeadless:
         """
         state = []
 
+        # If we are only interested in the exit and switch, we can reduce the number of attributes
+        # And only return:
+        # [switch_active, exit_active]
+        if only_one_exit_and_switch:
+            return [float(self._sim_exit_switch().active), float(self._sim_exit_door().active)]
+
         # Maximum number of attributes per entity (padding with zeros if entity has fewer attributes)
         MAX_ATTRIBUTES = 8
 
@@ -298,21 +304,14 @@ class NPlayHeadless:
             # Default to 16 if not specified
             max_count = MAX_COUNTS.get(entity_type, 16)
 
-            if only_one_exit_and_switch:
-                max_count = 1
-
-            # Add count of this entity type (normalize by max count for this type)
-            # We only need to do this if we are not only getting the exit and switch
-            if not only_one_exit_and_switch:
-                state.append(float(len(entities)) / max_count)
+            state.append(float(len(entities)) / max_count)
 
             # Process each entity up to max_count
             for entity_idx in range(max_count):
                 # If we have an actual entity at this index
                 if entity_idx < len(entities):
                     entity = entities[entity_idx]
-                    entity_state = entity.get_state(
-                        minimal_state=only_one_exit_and_switch)
+                    entity_state = entity.get_state()
 
                     # Assert that all entity states are between 0 and 1. If not
                     # print an informative error message containing the entity type,
@@ -323,10 +322,8 @@ class NPlayHeadless:
                         raise ValueError(
                             f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds")
 
-                    # Pad remaining attributes to reach MAX_ATTRIBUTES if needed
-                    if not only_one_exit_and_switch:
-                        while len(entity_state) < MAX_ATTRIBUTES:
-                            entity_state.append(0.0)
+                    while len(entity_state) < MAX_ATTRIBUTES:
+                        entity_state.append(0.0)
 
                     state.extend(entity_state)
                 else:

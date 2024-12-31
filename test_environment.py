@@ -1,6 +1,6 @@
 import pygame
 import numpy as np
-from environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
+from nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 
 # Initialize pygame
 pygame.init()

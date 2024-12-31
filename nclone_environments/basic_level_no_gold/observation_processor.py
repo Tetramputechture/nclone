@@ -44,7 +44,7 @@ import os
 from collections import deque
 import cv2
 from typing import Dict, Any, Tuple
-from environments.basic_level_no_gold.constants import (
+from nclone_environments.basic_level_no_gold.constants import (
     PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT,
     LEVEL_WIDTH, LEVEL_HEIGHT,
 )
@@ -110,10 +110,9 @@ def calculate_vector(from_x: float, from_y: float, to_x: float, to_y: float) -> 
 class ObservationProcessor:
     """Processes raw game observations into frame stacks and normalized feature vectors."""
 
-    def __init__(self, enable_frame_stack: bool = False):
+    def __init__(self):
         # Keep only 3 frames in history: current, last, and second to last
         self.frame_history = deque(maxlen=3)
-        self.enable_frame_stack = enable_frame_stack
 
     def frame_around_player(self, frame: np.ndarray, player_x: float, player_y: float) -> np.ndarray:
         """Crop the frame to a rectangle centered on the player."""
@@ -215,34 +214,28 @@ class ObservationProcessor:
             'game_state': self.process_game_state(obs)
         }
 
-        if self.enable_frame_stack:
-            # Update frame history with cropped player frame instead of full frame
+        # Update frame history with cropped player frame instead of full frame
+        self.frame_history.append(player_frame)
+
+        # Fill frame history if needed
+        while len(self.frame_history) < 3:
             self.frame_history.append(player_frame)
 
-            # Fill frame history if needed
-            while len(self.frame_history) < 3:
-                self.frame_history.append(player_frame)
+        # Get player frames from history
+        player_frames = []
+        # Reverse to get [current, last, second_to_last]
+        for frame in reversed(self.frame_history):
+            # Ensure each frame has shape (H, W, 1)
+            if len(frame.shape) == 2:
+                frame = frame[..., np.newaxis]
+            player_frames.append(frame)
 
-            # Get player frames from history
-            player_frames = []
-            # Reverse to get [current, last, second_to_last]
-            for frame in reversed(self.frame_history):
-                # Ensure each frame has shape (H, W, 1)
-                if len(frame.shape) == 2:
-                    frame = frame[..., np.newaxis]
-                player_frames.append(frame)
+        # Stack frames along channel dimension
+        result['player_frame'] = np.concatenate(player_frames, axis=-1)
 
-            # Stack frames along channel dimension
-            result['player_frame'] = np.concatenate(player_frames, axis=-1)
-
-            # Verify we have exactly 3 channels
-            assert result['player_frame'].shape[
-                -1] == 3, f"Expected 3 channels, got {result['player_frame'].shape[-1]}"
-        else:
-            # Ensure single frame has shape (H, W, 1)
-            if len(player_frame.shape) == 2:
-                player_frame = player_frame[..., np.newaxis]
-            result['player_frame'] = player_frame
+        # Verify we have exactly 3 channels
+        assert result['player_frame'].shape[
+            -1] == 3, f"Expected 3 channels, got {result['player_frame'].shape[-1]}"
 
         return result
 
