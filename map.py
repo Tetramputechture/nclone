@@ -207,8 +207,7 @@ class MapGenerator(Map):
             # Handle surface deviations
             deviations = {}
             should_deviate = self.rng.choice([True, False])
-            # should_deviate_tiles = self.rng.choice([True, False])
-            should_deviate_tiles = False
+            should_deviate_tiles = self.rng.choice([True, False])
 
             for x in range(play_x1, play_x2 + 1):
                 if should_deviate:
