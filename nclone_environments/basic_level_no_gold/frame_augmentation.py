@@ -7,6 +7,7 @@ The augmentations are applied randomly to input frames to increase training dive
 import numpy as np
 import albumentations as A
 from typing import Optional
+from nclone_environments.basic_level_no_gold.constants import PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT
 
 
 def get_augmentation_pipeline(p: float = 0.5) -> A.Compose:
@@ -20,11 +21,10 @@ def get_augmentation_pipeline(p: float = 0.5) -> A.Compose:
     """
     return A.Compose([
         # Crop - Randomly crop and resize back
-        A.RandomSizedCrop(
-            min_height=60,
-            max_height=120,
-            height=120,
-            width=120,
+        A.RandomResizedCrop(
+            height=PLAYER_FRAME_HEIGHT,
+            width=PLAYER_FRAME_WIDTH,
+            scale=(0.5, 1.0),
             p=p
         ),
 
@@ -63,7 +63,7 @@ def get_augmentation_pipeline(p: float = 0.5) -> A.Compose:
             p=p
         ),
 
-        # Random Convolution
+        # Random Gaussian Noise
         A.GaussNoise(
             var_limit=(5.0, 30.0),
             p=p
