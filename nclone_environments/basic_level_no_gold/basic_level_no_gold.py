@@ -28,7 +28,7 @@ class BasicLevelNoGold(BaseEnvironment):
 
     MAP_DATA_PATH = "../nclone/maps/map_di"
 
-    def __init__(self, render_mode: str = 'rgb_array'):
+    def __init__(self, render_mode: str = 'rgb_array', enable_frame_stack: bool = True):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode)
 
@@ -36,19 +36,21 @@ class BasicLevelNoGold(BaseEnvironment):
         self.nplay_headless.load_map(self.MAP_DATA_PATH)
 
         # Initialize observation processor
-        self.observation_processor = ObservationProcessor()
+        self.observation_processor = ObservationProcessor(
+            enable_frame_stack=enable_frame_stack)
 
         # Initialize reward calculator
         self.reward_calculator = RewardCalculator()
 
         # Initialize observation space as a Dict space with player_frame, base_frame, and game_state
+        player_frame_channels = TEMPORAL_FRAMES if enable_frame_stack else 1
         self.observation_space = Dict({
             # Player-centered frame
             'player_frame': box.Box(
                 low=0,
                 high=255,
                 shape=(PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH,
-                       TEMPORAL_FRAMES),
+                       player_frame_channels),
                 dtype=np.uint8
             ),
             # Game state features

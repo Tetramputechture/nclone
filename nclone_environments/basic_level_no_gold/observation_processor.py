@@ -29,8 +29,6 @@ This class should handle returning:
         - Airborn boolean
         - Walled boolean
         - Jump duration normalized
-        - Facing normalized
-        - Tilt angle normalized
         - Applied gravity normalized
         - Applied drag normalized
         - Applied friction normalized
@@ -39,6 +37,7 @@ This class should handle returning:
     - Vector between ninja and switch
     - Vector between ninja and exit door
 """
+from ninja import Ninja
 import numpy as np
 import os
 from collections import deque
@@ -47,8 +46,9 @@ from typing import Dict, Any, Tuple
 from nclone_environments.basic_level_no_gold.constants import (
     PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT,
     LEVEL_WIDTH, LEVEL_HEIGHT,
+    TEMPORAL_FRAMES
 )
-from ninja import Ninja
+from nclone_environments.basic_level_no_gold.frame_augmentation import apply_augmentation
 
 
 def frame_to_grayscale(frame: np.ndarray) -> np.ndarray:
@@ -110,9 +110,14 @@ def calculate_vector(from_x: float, from_y: float, to_x: float, to_y: float) -> 
 class ObservationProcessor:
     """Processes raw game observations into frame stacks and normalized feature vectors."""
 
-    def __init__(self):
+    def __init__(self, enable_frame_stack=True, enable_augmentation=True):
         # Keep only 3 frames in history: current, last, and second to last
-        self.frame_history = deque(maxlen=3)
+        self.enable_frame_stack = enable_frame_stack
+        self.enable_augmentation = enable_augmentation
+        if self.enable_frame_stack:
+            self.frame_history = deque(maxlen=TEMPORAL_FRAMES)
+        else:
+            self.frame_history = None
 
     def frame_around_player(self, frame: np.ndarray, player_x: float, player_y: float) -> np.ndarray:
         """Crop the frame to a rectangle centered on the player."""
@@ -210,32 +215,39 @@ class ObservationProcessor:
             obs['player_y']
         )
 
+        # Apply frame augmentation if enabled
+        if self.enable_augmentation:
+            player_frame = apply_augmentation(player_frame)
+
         result = {
             'game_state': self.process_game_state(obs)
         }
 
         # Update frame history with cropped player frame instead of full frame
-        self.frame_history.append(player_frame)
-
-        # Fill frame history if needed
-        while len(self.frame_history) < 3:
+        if self.enable_frame_stack:
             self.frame_history.append(player_frame)
 
-        # Get player frames from history
-        player_frames = []
-        # Reverse to get [current, last, second_to_last]
-        for frame in reversed(self.frame_history):
-            # Ensure each frame has shape (H, W, 1)
-            if len(frame.shape) == 2:
-                frame = frame[..., np.newaxis]
-            player_frames.append(frame)
+            # Fill frame history if needed
+            while len(self.frame_history) < TEMPORAL_FRAMES:
+                self.frame_history.append(player_frame)
 
-        # Stack frames along channel dimension
-        result['player_frame'] = np.concatenate(player_frames, axis=-1)
+            # Get player frames from history
+            player_frames = []
+            # Reverse to get [current, last, second_to_last]
+            for frame in reversed(self.frame_history):
+                # Ensure each frame has shape (H, W, 1)
+                if len(frame.shape) == 2:
+                    frame = frame[..., np.newaxis]
+                player_frames.append(frame)
 
-        # Verify we have exactly 3 channels
-        assert result['player_frame'].shape[
-            -1] == 3, f"Expected 3 channels, got {result['player_frame'].shape[-1]}"
+            # Stack frames along channel dimension
+            result['player_frame'] = np.concatenate(player_frames, axis=-1)
+
+            # Verify we have exactly 3 channels
+            assert result['player_frame'].shape[
+                -1] == TEMPORAL_FRAMES, f"Expected {TEMPORAL_FRAMES} channels, got {result['player_frame'].shape[-1]}"
+        else:
+            result['player_frame'] = player_frame
 
         return result
 
