@@ -49,8 +49,6 @@ class RewardCalculator:
         # Add gold reward for the difference in gold collected
         gold_diff = obs.get('gold_collected', 0) - \
             prev_obs.get('gold_collected', 0)
-        if gold_diff > 0:
-            print(f'gold collected: {gold_diff}')
         reward += self.GOLD_REWARD * gold_diff
 
         # Navigation reward with progressive scaling
