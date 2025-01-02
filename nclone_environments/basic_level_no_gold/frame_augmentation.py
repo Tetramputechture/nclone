@@ -20,45 +20,13 @@ def get_augmentation_pipeline(p: float = 0.5) -> A.ReplayCompose:
         ReplayCompose pipeline that can record and replay exact transformations
     """
     return A.ReplayCompose([
-        # Crop - Randomly crop and resize back
-        A.RandomResizedCrop(
-            height=PLAYER_FRAME_HEIGHT,
-            width=PLAYER_FRAME_WIDTH,
-            scale=(0.5, 1.0),
-            p=p
-        ),
-
-        # Translate - Shift image
-        A.ShiftScaleRotate(
-            shift_limit=0.15,
-            scale_limit=0,
-            rotate_limit=0,
-            p=p
-        ),
-
-        # Window - Apply random window mask
-        A.RandomBrightnessContrast(
-            brightness_limit=(-0.2, 0.2),
-            contrast_limit=(-0.2, 0.2),
-            p=p
-        ),
-
         # Cutout - Apply random rectangular masks
         A.CoarseDropout(
-            max_holes=2,
+            max_holes=1,
             max_height=12,
             max_width=12,
             min_height=6,
             min_width=6,
-            p=p
-        ),
-
-        # Flip - Horizontal flip
-        A.HorizontalFlip(p=p),
-
-        # Rotate - Random rotation
-        A.Rotate(
-            limit=45,
             p=p
         ),
     ])
