@@ -138,6 +138,9 @@ class Ninja:
         self.y_crush = 0
         self.crush_len = 0
 
+        # gold collected
+        self.gold_collected = 0
+
         self.log()
 
     def integrate(self):

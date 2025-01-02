@@ -217,6 +217,9 @@ class NPlayHeadless:
 
         return np.array(state, dtype=np.float32)
 
+    def get_gold_collected(self):
+        return self.sim.ninja.gold_collected
+
     def get_ninja_state(self):
         """Get ninja state information as a 10-element list of floats, all normalized between 0 and 1.
 
