@@ -267,7 +267,7 @@ class EntityGold(Entity):
         if ninja.state != 8:
             if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
                                         ninja.xpos, ninja.ypos, ninja.RADIUS):
-                self.sim.gold_collected += 1
+                ninja.gold_collected += 1
                 self.active = False
                 self.log_collision()
 

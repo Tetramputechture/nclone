@@ -49,6 +49,8 @@ while running:
     if terminated or truncated:
         observation, info = env.reset()
 
+    # print(f'Gold collected: {env.get_gold_collected()}')
+
     # Maintain 60 FPS
     clock.tick(60)
 

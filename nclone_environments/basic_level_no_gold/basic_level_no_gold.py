@@ -87,7 +87,11 @@ class BasicLevelNoGold(BaseEnvironment):
             'exit_door_y': self.nplay_headless.exit_door_position()[1],
             'time_remaining': time_remaining,
             'sim_frame': self.nplay_headless.sim.frame,
+            'gold_collected': self.nplay_headless.get_gold_collected(),
         }
+
+    def get_gold_collected(self):
+        return self.nplay_headless.get_gold_collected()
 
     def _check_termination(self) -> Tuple[bool, bool]:
         """Check if the episode should be terminated.

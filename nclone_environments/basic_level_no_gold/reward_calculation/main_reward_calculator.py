@@ -15,7 +15,9 @@ class RewardCalculator:
     automatically adjusting based on the agent's demonstrated competence.
     """
     TERMINAL_REWARD = 1.0
+    DEATH_PENALTY = -0.1
     BASE_TIME_PENALTY = -0.001
+    GOLD_REWARD = 0.01
 
     def __init__(self):
         """Initialize reward calculator with all components."""
@@ -32,7 +34,7 @@ class RewardCalculator:
         """
         # Termination penalties
         if obs.get('player_dead', False):
-            return 0
+            return self.DEATH_PENALTY
 
         # Win condition
         if obs.get('player_won', False):
@@ -43,6 +45,13 @@ class RewardCalculator:
 
         # Add time pressure
         reward += self.BASE_TIME_PENALTY
+
+        # Add gold reward for the difference in gold collected
+        gold_diff = obs.get('gold_collected', 0) - \
+            prev_obs.get('gold_collected', 0)
+        if gold_diff > 0:
+            print(f'gold collected: {gold_diff}')
+        reward += self.GOLD_REWARD * gold_diff
 
         # Navigation reward with progressive scaling
         navigation_reward = self.navigation_calculator.calculate_navigation_reward(
