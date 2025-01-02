@@ -48,7 +48,7 @@ from nclone_environments.basic_level_no_gold.constants import (
     LEVEL_WIDTH, LEVEL_HEIGHT,
     TEMPORAL_FRAMES
 )
-from nclone_environments.basic_level_no_gold.frame_augmentation import apply_augmentation
+from nclone_environments.basic_level_no_gold.frame_augmentation import apply_consistent_augmentation
 
 
 def frame_to_grayscale(frame: np.ndarray) -> np.ndarray:
@@ -215,10 +215,6 @@ class ObservationProcessor:
             obs['player_y']
         )
 
-        # Apply frame augmentation if enabled
-        if self.enable_augmentation:
-            player_frame = apply_augmentation(player_frame)
-
         result = {
             'game_state': self.process_game_state(obs)
         }
@@ -240,17 +236,29 @@ class ObservationProcessor:
                     frame = frame[..., np.newaxis]
                 player_frames.append(frame)
 
+            # Apply consistent augmentation across all frames if enabled
+            if self.enable_augmentation:
+                player_frames = apply_consistent_augmentation(player_frames)
+
             # Stack frames along channel dimension
             result['player_frame'] = np.concatenate(player_frames, axis=-1)
+
+            # Save our player frame in a file for debugging if our 'sim_frame' is 1
+            if obs['sim_frame'] == 1:
+                cv2.imwrite('player_frame.png', result['player_frame'])
 
             # Verify we have exactly 3 channels
             assert result['player_frame'].shape[
                 -1] == TEMPORAL_FRAMES, f"Expected {TEMPORAL_FRAMES} channels, got {result['player_frame'].shape[-1]}"
         else:
+            # Apply augmentation to single frame if enabled
+            if self.enable_augmentation:
+                player_frame = apply_consistent_augmentation([player_frame])[0]
             result['player_frame'] = player_frame
 
         return result
 
     def reset(self) -> None:
         """Reset processor state."""
-        self.frame_history.clear()
+        if self.frame_history is not None:
+            self.frame_history.clear()
