@@ -34,7 +34,8 @@ class NPlayHeadless:
         """
         self.render_mode = render_mode
 
-        self.sim = Simulator(SimConfig(enable_anim=False, log_data=False))
+        self.sim = Simulator(
+            SimConfig(enable_anim=False, log_data=False))
         self.sim_renderer = NSimRenderer(self.sim, render_mode)
         self.current_map_data = None
 
@@ -44,9 +45,8 @@ class NPlayHeadless:
 
         # init pygame
         pygame.init()
-
+        pygame.display.init()
         if self.render_mode == 'rgb_array':
-            # set pygame env to headless
             os.environ["SDL_VIDEODRIVER"] = "dummy"
         else:
             print('Setting up pygame display')
@@ -55,8 +55,6 @@ class NPlayHeadless:
         # Pre-allocate buffer for surface to array conversion
         self._render_buffer = np.empty(
             (SRCWIDTH, SRCHEIGHT, 3), dtype=np.uint8)
-        # init display
-        pygame.display.init()
 
     def load_map(self, map_path: str):
         """

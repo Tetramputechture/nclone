@@ -7,7 +7,7 @@ pygame.init()
 pygame.display.set_caption("N++ Environment Test")
 
 # Create environment
-env = BasicLevelNoGold(render_mode='human')
+env = BasicLevelNoGold(render_mode='human', enable_frame_stack=False)
 
 # Initialize clock for 60 FPS
 clock = pygame.time.Clock()
