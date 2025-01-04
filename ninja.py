@@ -70,7 +70,7 @@ class Ninja:
         """Initiate ninja position at spawn point, and initiate other values to their initial state"""
         self.ninja_anim_mode = ninja_anim_mode and os.path.isfile(ANIM_DATA)
         self.ninja_animation = []
-        if ninja_anim_mode:
+        if self.ninja_anim_mode:
             self.ninja_animation = get_ninja_animation()
 
         self.sim = sim

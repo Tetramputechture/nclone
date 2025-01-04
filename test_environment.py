@@ -29,7 +29,7 @@ while running:
 
     # Map keyboard inputs to environment actions
     action = 0  # Default to NOOP
-    if keys[pygame.K_SPACE]:
+    if keys[pygame.K_SPACE] or keys[pygame.K_UP]:
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:
             action = 4  # Jump + Left
         elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:

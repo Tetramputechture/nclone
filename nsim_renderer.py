@@ -342,18 +342,23 @@ class NSimRenderer:
 
     def _draw_ninja(self, context):
         """Helper method to draw ninja"""
-        bones = self.sim.ninja.bones
-        segments = [[bones[limb[0]], bones[limb[1]]] for limb in LIMBS]
         radius = self.sim.ninja.RADIUS*self.adjust
         x = self.sim.ninja.xpos*self.adjust
         y = self.sim.ninja.ypos*self.adjust
 
-        # Batch draw ninja segments
-        for segment in segments:
-            x1 = segment[0][0]*2*radius + x
-            y1 = segment[0][1]*2*radius + y
-            x2 = segment[1][0]*2*radius + x
-            y2 = segment[1][1]*2*radius + y
-            context.move_to(x1, y1)
-            context.line_to(x2, y2)
-        context.stroke()
+        if self.sim.sim_config.enable_anim:
+            bones = self.sim.ninja.bones
+            segments = [[bones[limb[0]], bones[limb[1]]] for limb in LIMBS]
+
+            # Batch draw ninja segments
+            for segment in segments:
+                x1 = segment[0][0]*2*radius + x
+                y1 = segment[0][1]*2*radius + y
+                x2 = segment[1][0]*2*radius + x
+                y2 = segment[1][1]*2*radius + y
+                context.move_to(x1, y1)
+                context.line_to(x2, y2)
+            context.stroke()
+        else:
+            context.arc(x, y, radius, 0, 2 * math.pi)
+            context.fill()

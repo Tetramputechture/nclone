@@ -7,7 +7,7 @@ import struct
 import copy
 import random
 from ninja import Ninja
-from sim_config import init_sim_config
+from sim_config import init_sim_config, SimConfig
 from entities import *
 
 
@@ -99,12 +99,12 @@ class Simulator:
                                  14: ((24, 24), (-1, -1), False), 15: ((0, 24), (1, -1), False),
                                  16: ((0, 0), (1, 1), False), 17: ((24, 0), (-1, 1), False)}
 
-    def __init__(self, sim_config):
+    def __init__(self, sc: SimConfig):
         self.frame = 0
         self.collisionlog = []
         self.gold_collected = 0
 
-        self.sim_config = sim_config
+        self.sim_config = sc
         self.ninja = None
         self.tile_dic = {}
         self.segment_dic = {}
@@ -241,7 +241,7 @@ class Simulator:
 
         # initiate player 1 instance of Ninja at spawn coordinates
         self.ninja = Ninja(self, ninja_anim_mode=(
-            not self.sim_config.basic_sim))
+            self.sim_config.enable_anim and not self.sim_config.basic_sim))
 
         # initiate each entity (other than ninjas)
         index = 1230
@@ -363,19 +363,21 @@ class Simulator:
 
             ninja.post_collision()  # Do post collision calculations.
             self.ninja.think()  # Make ninja think
-            self.ninja.update_graphics()  # Update limbs of ninja
+            if not self.sim_config.enable_anim:
+                self.ninja.update_graphics()  # Update limbs of ninja
 
-        if self.ninja.state == 6 and not self.sim_config.basic_sim:  # Placeholder because no ragdoll!
+        if self.ninja.state == 6 and self.sim_config.enable_anim:  # Placeholder because no ragdoll!
             self.ninja.anim_frame = 105
             self.ninja.anim_state = 7
             self.ninja.calc_ninja_position()
 
-        # Update all the logs for debugging purposes and for tracing the route.
-        self.ninja.log()
+        if self.sim_config.log_data:
+            # Update all the logs for debugging purposes and for tracing the route.
+            self.ninja.log()
 
-        # Batch entity position logging
-        for entity in active_movable_entities:
-            entity.log_position()
+            # Batch entity position logging
+            for entity in active_movable_entities:
+                entity.log_position()
 
         # Clear physics caches periodically
         if self.frame % 100 == 0:  # Clear caches every 100 frames

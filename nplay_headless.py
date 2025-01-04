@@ -34,7 +34,7 @@ class NPlayHeadless:
         """
         self.render_mode = render_mode
 
-        self.sim = Simulator(SimConfig())
+        self.sim = Simulator(SimConfig(enable_anim=False, log_data=False))
         self.sim_renderer = NSimRenderer(self.sim, render_mode)
         self.current_map_data = None
 
