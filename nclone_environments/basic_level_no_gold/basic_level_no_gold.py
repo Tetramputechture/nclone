@@ -3,7 +3,6 @@ from gymnasium.spaces import discrete, box, Dict
 import numpy as np
 from typing import Tuple
 import os
-from nplay_headless import NPlayHeadless
 import uuid
 from nclone_environments.basic_level_no_gold.constants import (
     GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,

@@ -7,7 +7,7 @@ import struct
 import copy
 import random
 from ninja import Ninja
-from sim_config import init_sim_config, SimConfig
+from sim_config import SimConfig
 from entities import *
 
 

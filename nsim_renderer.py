@@ -13,7 +13,7 @@ NINJACOLOR = "000000"
 ENTITYCOLORS = {1: "9E2126", 2: "DBE149", 3: "838384", 4: "6D97C3", 5: "000000", 6: "000000",
                 7: "000000", 8: "000000", 9: "000000", 10: "868793", 11: "666666", 12: "000000",
                 13: "000000", 14: "6EC9E0", 15: "6EC9E0", 16: "000000", 17: "E3E3E5", 18: "000000",
-                19: "000000", 20: "838384", 21: "9E2126", 22: "000000", 23: "000000", 24: "666666",
+                19: "000000", 20: "838384", 21: "CE4146", 22: "000000", 23: "000000", 24: "666666",
                 25: "15A7BD", 26: "6EC9E0", 27: "000000", 28: "6EC9E0"}
 
 BASIC_BG_COLOR = "ffffff"
@@ -50,8 +50,11 @@ def hex2float(string):
 class NSimRenderer:
     def __init__(self, sim, render_mode: str = 'rgb_array'):
         self.sim = sim
-        self.screen = pygame.display.set_mode(
-            (SRCWIDTH, SRCHEIGHT), pygame.RESIZABLE)
+        if render_mode == 'human':
+            self.screen = pygame.display.set_mode(
+                (SRCWIDTH, SRCHEIGHT), pygame.RESIZABLE)
+        else:
+            self.screen = pygame.Surface((SRCWIDTH, SRCHEIGHT))
 
         self.render_mode = render_mode
         self.adjust = 1
@@ -76,11 +79,10 @@ class NSimRenderer:
             init), (self.tile_x_offset, self.tile_y_offset))
         self.screen.blit(self._draw_tiles(
             init), (self.tile_x_offset, self.tile_y_offset))
-        pygame.draw.rect(self.screen, "#"+TILECOLOR, (self.tile_x_offset,
-                         self.tile_y_offset, self.width, self.height), 24)
         if self.render_mode == 'human':
             pygame.display.flip()
-
+            # pygame.draw.rect(self.screen, "#"+TILECOLOR, (self.tile_x_offset,
+            #                                               self.tile_y_offset, self.width, self.height), 24)
         return self.screen
 
     def draw_collision_map(self, init: bool):

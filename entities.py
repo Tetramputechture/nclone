@@ -2,7 +2,6 @@ import math
 import array
 import struct
 from physics import *
-from sim_config import sim_config
 
 
 class GridSegmentLinear:
@@ -110,13 +109,15 @@ class GridSegmentCircular:
 
 class Entity:
     """Class that all entity types (gold, bounce blocks, thwumps, etc.) inherit from."""
-    entity_counts = [0] * 40
 
     def __init__(self, entity_type, sim, xcoord, ycoord):
         """Inititate a member from map data"""
         self.type = entity_type
-        self.index = self.entity_counts[self.type]
-        self.entity_counts[self.type] += 1
+        # Initialize entity_counts for this simulator instance if not already present
+        if not hasattr(sim, 'entity_counts'):
+            sim.entity_counts = [0] * 40
+        self.index = sim.entity_counts[self.type]
+        sim.entity_counts[self.type] += 1
         self.sim = sim
         self.xpos = xcoord*6
         self.ypos = ycoord*6
