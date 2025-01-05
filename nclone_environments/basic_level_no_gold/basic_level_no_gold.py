@@ -27,9 +27,10 @@ class BasicLevelNoGold(BaseEnvironment):
 
     MAP_DATA_PATH = "../nclone/maps/map_di"
 
-    def __init__(self, render_mode: str = 'rgb_array', enable_frame_stack: bool = True, enable_animation: bool = False):
+    def __init__(self, render_mode: str = 'rgb_array', enable_frame_stack: bool = True, enable_animation: bool = False, enable_logging: bool = False):
         """Initialize the environment."""
-        super().__init__(render_mode=render_mode, enable_animation=enable_animation)
+        super().__init__(render_mode=render_mode,
+                         enable_animation=enable_animation, enable_logging=enable_logging)
 
         # self.nplay_headless.load_random_map()
         self.nplay_headless.load_map(self.MAP_DATA_PATH)
