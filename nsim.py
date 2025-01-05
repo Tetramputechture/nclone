@@ -363,7 +363,7 @@ class Simulator:
 
             ninja.post_collision()  # Do post collision calculations.
             self.ninja.think()  # Make ninja think
-            if not self.sim_config.enable_anim:
+            if self.sim_config.enable_anim:
                 self.ninja.update_graphics()  # Update limbs of ninja
 
         if self.ninja.state == 6 and self.sim_config.enable_anim:  # Placeholder because no ragdoll!
