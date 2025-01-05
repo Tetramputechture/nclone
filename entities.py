@@ -174,7 +174,7 @@ class Entity:
 
     def log_collision(self, state=1):
         """Log an interaction with this entity"""
-        if self.log_collisions and self.sim.frame > 0 and state != self.last_exported_state:
+        if self.log_collisions and self.sim.sim_config.log_data and self.sim.frame > 0 and state != self.last_exported_state:
             self.sim.collisionlog.append(struct.pack(
                 '<HBHB', self.sim.frame, self.type, self.index, state))
             self.last_exported_state = state
@@ -182,7 +182,7 @@ class Entity:
     def log_position(self):
         """Log position of entity on current frame"""
         # Only export position if enabled and the entity has moved enough
-        if not (self.active and self.log_positions):
+        if not (self.active and self.sim.sim_config.log_data and self.log_positions):
             return
         last = self.last_exported_coords
         dist = abs(last[0] - self.xpos) + \
