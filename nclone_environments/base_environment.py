@@ -12,13 +12,14 @@ class BaseEnvironment(gymnasium.Env):
 
     MAP_DATA_PATH = None
 
-    def __init__(self, render_mode: str = 'rgb_array'):
+    def __init__(self, render_mode: str = 'rgb_array', enable_animation: bool = False):
         """Initialize the environment."""
         super().__init__()
 
         self.render_mode = render_mode
 
-        self.nplay_headless = NPlayHeadless(render_mode=render_mode)
+        self.nplay_headless = NPlayHeadless(
+            render_mode=render_mode, enable_animation=enable_animation)
 
         # Initialize action space
         self.action_space = discrete.Discrete(6)
@@ -98,7 +99,7 @@ class BaseEnvironment(gymnasium.Env):
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
 
-        return processed_obs, {}
+        return (processed_obs, {})
 
     def render(self):
         """Render the environment."""
