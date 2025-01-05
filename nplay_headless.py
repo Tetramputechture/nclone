@@ -27,7 +27,7 @@ class NPlayHeadless:
     or jumping, loading a map, resetting and ticking the simulation).
     """
 
-    def __init__(self, render_mode: str = 'rgb_array'):
+    def __init__(self, render_mode: str = 'rgb_array', enable_animation: bool = False):
         """
         Initialize the simulation and renderer, as well as the headless pygame
         interface and display.
@@ -35,7 +35,7 @@ class NPlayHeadless:
         self.render_mode = render_mode
 
         self.sim = Simulator(
-            SimConfig(enable_anim=False, log_data=False))
+            SimConfig(enable_anim=enable_animation, log_data=False))
         self.sim_renderer = NSimRenderer(self.sim, render_mode)
         self.current_map_data = None
 
