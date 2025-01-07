@@ -7,15 +7,13 @@ import zlib
 import numpy as np
 from nsim import *
 from nsim_renderer import NSimRenderer
-from map import Map, MapGenerator
-from sim_config import init_sim_config
+from map_generation.map_generator import MapGenerator
+from sim_config import SimConfig
 from nplay_headless import NPlayHeadless
 import cv2
+import random
 # Create a new map
-map_gen = MapGenerator()
-
-# Generate a random level (optionally with a seed for reproducibility)
-map_gen.generate_random_map("SIMPLE_HORIZONTAL_NO_BACKTRACK", seed=42)
+map_gen = MapGenerator(seed=42)
 
 # Get the map data
 map_data = map_gen.generate()
@@ -34,10 +32,7 @@ parser.add_argument('-t', '--tolerance', type=float, default=1.0,
                     help='Minimum units to consider an entity moved')
 ARGUMENTS = parser.parse_args()
 
-sim_config = init_sim_config(ARGUMENTS)
-
-
-sim = Simulator(sim_config)
+sim = Simulator(SimConfig())
 
 pygame.init()
 pygame.display.set_caption("N++")
@@ -62,14 +57,14 @@ if os.path.isfile("inputs"):
 
 sim_renderer = NSimRenderer(sim, render_mode='human')
 
-# Print space of NplayHeadless state, only ninja and exit and switch
-np_headless = NPlayHeadless()
-np_headless.load_random_map(seed=42)
-ninja_state = np_headless.get_ninja_state()
-entity_states = np_headless.get_entity_states(only_one_exit_and_switch=True)
-total_state = np.concatenate([ninja_state, entity_states])
-# Print the total state
-print(total_state.shape)
+# # Print space of NplayHeadless state, only ninja and exit and switch
+# np_headless = NPlayHeadless()
+# np_headless.load_random_map(seed=42)
+# ninja_state = np_headless.get_ninja_state()
+# entity_states = np_headless.get_entity_states(only_one_exit_and_switch=True)
+# total_state = np.concatenate([ninja_state, entity_states])
+# # Print the total state
+# print(total_state.shape)
 
 
 while running:
@@ -103,8 +98,13 @@ while running:
             running_mode = "replaying"
     if keys[pygame.K_g]:
         sim.reset()
-        map_gen.generate_random_map("SIMPLE_HORIZONTAL_NO_BACKTRACK")
-        sim.load_from_created(map_gen)
+        # Randomly choose between maze and simple horizontal level
+        level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
+        width = random.randint(4, 42)
+        height = random.randint(4, 23)
+        map_gen = MapGenerator(width=width, height=height)
+        created_map = map_gen.generate(level_type)
+        sim.load_from_created(created_map)
 
     sim_renderer.draw(resize)
 

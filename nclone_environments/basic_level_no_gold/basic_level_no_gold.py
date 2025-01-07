@@ -32,8 +32,8 @@ class BasicLevelNoGold(BaseEnvironment):
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation, enable_logging=enable_logging)
 
-        # self.nplay_headless.load_random_map()
-        self.nplay_headless.load_map(self.MAP_DATA_PATH)
+        self.nplay_headless.load_random_map()
+        # self.nplay_headless.load_map(self.MAP_DATA_PATH)
 
         # Initialize observation processor
         self.observation_processor = ObservationProcessor(

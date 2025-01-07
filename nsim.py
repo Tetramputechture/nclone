@@ -125,7 +125,7 @@ class Simulator:
 
     def load_from_created(self, created_map):
         """Load a map that was manually constructed using the Map class."""
-        self.load(created_map.generate())
+        self.load(created_map.map_data())
 
     def reset(self):
         """Reset the simulation to the initial state. Keeps the current map tiles, and resets the ninja,
@@ -174,6 +174,14 @@ class Simulator:
         for x in range(42):
             for y in range(23):
                 self.tile_dic[(x+1, y+1)] = tile_data[x + y*42]
+
+        # Set our outer edges to tile type 1 (full tile)
+        for x in range(44):
+            self.tile_dic[(x, 0)] = 1
+            self.tile_dic[(x, 24)] = 1
+        for y in range(25):
+            self.tile_dic[(0, y)] = 1
+            self.tile_dic[(43, y)] = 1
 
         # This loops makes the inventory of grid edges and orthogonal linear segments,
         # and initiates non-orthogonal linear segments and circular segments.
