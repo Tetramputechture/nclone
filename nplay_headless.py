@@ -3,7 +3,7 @@ import os
 from typing import Optional
 from nsim import Simulator
 from nsim_renderer import NSimRenderer
-from map import MapGenerator
+from map_generation.map_generator import MapGenerator
 from sim_config import SimConfig
 import numpy as np
 import math
@@ -69,11 +69,8 @@ class NPlayHeadless:
         """
         Load a random map from the map_data folder.
         """
-        # Generate a random level (optionally with a seed for reproducibility)
-        self.map_gen.generate_random_map(map_type, seed=seed)
-
         # Get the map data
-        map_data = self.map_gen.generate()
+        map_data = self.map_gen.generate(map_type).map_data()
         self.sim.load(map_data)
         self.current_map_data = map_data
 
