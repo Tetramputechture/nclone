@@ -1,8 +1,9 @@
 """Maze generation module for N++ levels."""
 
-from map import Map
+from map_generation.map import Map
 import random
 from typing import List, Tuple, Optional, Set
+from map_generation.constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
 
 
 class MazeGenerator(Map):
@@ -30,6 +31,7 @@ class MazeGenerator(Map):
         # Initialize tracking variables
         self.visited: Set[Tuple[int, int]] = set()
         self.grid: List[List[int]] = []
+        self.ninja_orientation = -1  # Default orientation (facing right)
 
         # Initialize the map with solid walls
         self._init_solid_map()
@@ -93,64 +95,84 @@ class MazeGenerator(Map):
                 self._carve_path(next_x, next_y)
 
     def _place_ninja(self):
-        """Place the ninja in a random valid starting position."""
-        # Find valid empty cells in the first two columns
+        """Place the ninja in a random valid starting position (corners)."""
+        # Define possible corner regions
+        corners = {
+            'top_left': ((0, 2), (0, 2)),  # (x_range, y_range)
+            'top_right': ((self.width-3, self.width-1), (0, 2)),
+            'bottom_left': ((0, 2), (self.height-3, self.height-1)),
+            'bottom_right': ((self.width-3, self.width-1), (self.height-3, self.height-1))
+        }
+
+        # Randomly select a corner
+        corner_name = self.rng.choice(list(corners.keys()))
+        (x_min, x_max), (y_min, y_max) = corners[corner_name]
+
+        # Find valid positions in the selected corner
         valid_positions = []
-        for y in range(self.height):
-            for x in range(2):
-                if self.grid[y][x + 1] == 0:  # Use grid for checking valid positions
-                    valid_positions.append((x + 1, y))
+        for y in range(y_min, y_max + 1):
+            for x in range(x_min, x_max + 1):
+                if self.grid[y][x] == 0:  # Check if position is empty
+                    valid_positions.append((x, y))
 
         if valid_positions:
             grid_x, grid_y = self.rng.choice(valid_positions)
-            # Convert grid coordinates to pixel coordinates (24 pixel grid)
-            # Add 1 for map border offset and multiply by 4 for pixel coordinates
-            self.set_ninja_spawn((grid_x) * 4 + 6, (grid_y) * 4 + 6)
+            # Set orientation based on position
+            orientation = 1  # Default facing right
+            if 'right' in corner_name:  # If on right side, face left
+                orientation = -1
+            # Convert grid coordinates to pixel coordinates
+            self.set_ninja_spawn(grid_x, grid_y, orientation)
         else:
-            # If no valid positions in first two columns, find first empty cell
+            # Fallback to first empty cell if no valid corner positions
             for y in range(self.height):
                 for x in range(self.width):
                     if self.grid[y][x] == 0:
-                        # Convert grid coordinates to pixel coordinates
-                        # Add 1 for map border offset and multiply by 4 for pixel coordinates
-                        self.set_ninja_spawn((x) * 4 + 6, (y) * 4 + 6)
+                        self.set_ninja_spawn(x, y, 1)
                         return
 
     def _place_exit(self):
         """Place the exit door and switch in valid positions."""
-        # Place exit door on the right edge
-        valid_door_positions = []
-        for y in range(self.height):
-            if self.grid[y][self.width-2] == 0:  # Check if cell next to edge is path
-                valid_door_positions.append((self.width-2, y))
+        # Place exit door on the opposite side from ninja
+        ninja_x, _ = self._from_screen_coordinates(
+            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX)
+
+        # Determine which side to place the exit based on ninja position
+        if ninja_x < self.width // 2:  # Ninja on left side
+            valid_door_positions = []
+            for y in range(self.height):
+                # Check if cell next to right edge is path
+                if self.grid[y][self.width-2] == 0:
+                    valid_door_positions.append((self.width-2, y))
+            door_orientation = 2  # Face left
+        else:  # Ninja on right side
+            valid_door_positions = []
+            for y in range(self.height):
+                if self.grid[y][1] == 0:  # Check if cell next to left edge is path
+                    valid_door_positions.append((1, y))
+            door_orientation = 0  # Face right
 
         if valid_door_positions:
-            grid_x, grid_y = self.rng.choice(valid_door_positions)
-            # Add offset of 6 like in simple horizontal
-            door_x = (grid_x) * 4 + 6
-            door_y = (grid_y) * 4 + 6
+            door_x, door_y = self.rng.choice(valid_door_positions)
 
-            # Find valid switch positions (empty cells not too close to ninja)
+            # Find valid switch positions (empty cells not too close to ninja, and not on top of exit door)
             valid_switch_positions = []
             min_distance = (self.width + self.height) // 4
 
             for y in range(self.height):
                 for x in range(self.width):
                     if self.grid[y][x] == 0:
-                        # Calculate distance using grid coordinates
-                        ninja_x = self.ninja_spawn_x // 4 - 1
-                        ninja_y = self.ninja_spawn_y // 4 - 1
-                        if abs(x - ninja_x) + abs(y - ninja_y) >= min_distance:
+                        ninja_grid_x, ninja_grid_y = self._from_screen_coordinates(
+                            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX)
+                        if abs(x - ninja_grid_x) + abs(y - ninja_grid_y) >= min_distance and (x, y) != (door_x, door_y):
                             valid_switch_positions.append((x, y))
 
             if valid_switch_positions:
-                grid_x, grid_y = self.rng.choice(valid_switch_positions)
-                # Add offset of 6 like in simple horizontal
-                switch_x = (grid_x) * 4 + 6
-                switch_y = (grid_y) * 4 + 6
+                switch_x, switch_y = self.rng.choice(valid_switch_positions)
 
                 # Add exit door and switch using Map's add_entity method
-                self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
+                self.add_entity(3, door_x, door_y,
+                                door_orientation, 0, switch_x, switch_y)
 
     def _place_gold(self, count: int = 5):
         """Place gold pieces in valid positions."""
@@ -158,11 +180,12 @@ class MazeGenerator(Map):
         for y in range(self.height):
             for x in range(self.width):
                 if self.grid[y][x] == 0:
-                    # Convert to pixel coordinates for comparison
-                    pixel_x = (x + 1) * 4 + 6
-                    pixel_y = (y + 1) * 4 + 6
                     # Don't place gold at ninja spawn or switch
-                    if (pixel_x, pixel_y) != (self.ninja_spawn_x, self.ninja_spawn_y):
+                    ninja_pixel_x, ninja_pixel_y = self._to_screen_coordinates(
+                        x + 1, y + 1, NINJA_SPAWN_OFFSET_PX)
+                    switch_pixel_x, switch_pixel_y = self._to_screen_coordinates(
+                        x + 1, y + 1, SWITCH_OFFSET_PX)
+                    if (ninja_pixel_x, ninja_pixel_y) != (self.ninja_spawn_x, self.ninja_spawn_y) and (switch_pixel_x, switch_pixel_y) != (self.ninja_spawn_x, self.ninja_spawn_y):
                         valid_positions.append((x, y))
 
         count = min(count, len(valid_positions))
@@ -170,7 +193,8 @@ class MazeGenerator(Map):
 
         # Add gold entities using Map's add_entity method
         for x, y in selected_positions:
-            self.add_entity(2, (x + 1) * 4 - 6, (y + 1) * 4 - 6, 0, 0)
+            self.add_entity(2, (x + 1),
+                            (y + 1), 0, 0)
 
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a complete maze with entities.
@@ -198,7 +222,7 @@ class MazeGenerator(Map):
         # Pre-generate all random tiles at once
         # Choose if tiles will be random or solid for the border
         if self.rng.choice([True, False]):
-            tile_types = [self.rng.randint(0, 37) for _ in range(
+            tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
                 self.MAP_WIDTH * self.MAP_HEIGHT)]
         else:
             tile_types = [1] * (self.MAP_WIDTH * self.MAP_HEIGHT)

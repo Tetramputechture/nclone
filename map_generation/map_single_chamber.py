@@ -1,8 +1,9 @@
 """Single chamber generation module for N++ levels."""
 
-from map import Map
+from map_generation.map import Map
 import random
 from typing import Optional
+from map_generation.constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX
 
 
 class SingleChamberGenerator(Map):
@@ -65,7 +66,7 @@ class SingleChamberGenerator(Map):
         # Pre-generate all random tiles at once
         # Choose if tiles will be random or solid for the border
         if self.rng.choice([True, False]):
-            tile_types = [self.rng.randint(0, 37) for _ in range(
+            tile_types = [self.rng.randint(0, 33) for _ in range(
                 self.MAP_WIDTH * self.MAP_HEIGHT)]
         else:
             tile_types = [1] * (self.MAP_WIDTH * self.MAP_HEIGHT)
@@ -125,7 +126,7 @@ class SingleChamberGenerator(Map):
                         self.set_tile(x, y, 0)
                 elif deviation > 0:
                     for y in range(play_y2, play_y2 - deviation, -1):
-                        random_tile = self.rng.randint(1, 33)
+                        random_tile = self.rng.randint(1, VALID_TILE_TYPES)
                         self.set_tile(x, y, random_tile)
 
         # Calculate final entity positions
@@ -136,9 +137,12 @@ class SingleChamberGenerator(Map):
         door_y = play_y2 - deviations.get(door_x, 0)
         switch_y = play_y2 - deviations.get(switch_x, 0)
 
+        # Ninja should be facing a random direction
+        ninja_orientation = self.rng.choice([1, -1])
+
         # Convert to screen coordinates and place entities
-        self.set_ninja_spawn(ninja_x * 4 + 6, ninja_y * 4 + 6)
-        self.add_entity(3, door_x * 4 + 6, door_y * 4 + 6, 0, 0,
-                        switch_x * 4 + 6, switch_y * 4 + 6)
+        self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
+        self.add_entity(3, door_x, door_y, 0, 0,
+                        switch_x, switch_y)
 
         return self

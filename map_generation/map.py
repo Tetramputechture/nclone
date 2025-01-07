@@ -1,4 +1,5 @@
-import random
+from typing import Tuple
+from map_generation.constants import GRID_SIZE_FACTOR, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
 
 
 class Map:
@@ -24,6 +25,19 @@ class Map:
         # Initialize ninja spawn point (defaults to top-left corner)
         self.ninja_spawn_x = 1
         self.ninja_spawn_y = 1
+        self.ninja_orientation = -1  # 1 = right, -1 = left
+
+    def _to_screen_coordinates(self, grid_x: int, grid_y: int, offset: int = 0) -> Tuple[int, int]:
+        """Convert grid coordinates to screen coordinates."""
+        if grid_x is None or grid_y is None:
+            return None, None
+        return grid_x * GRID_SIZE_FACTOR + offset, grid_y * GRID_SIZE_FACTOR + offset
+
+    def _from_screen_coordinates(self, screen_x: int, screen_y: int, offset: int = 0) -> Tuple[int, int]:
+        """Convert screen coordinates to grid coordinates."""
+        if screen_x is None or screen_y is None:
+            return None, None
+        return (screen_x - offset) // GRID_SIZE_FACTOR, (screen_y - offset) // GRID_SIZE_FACTOR
 
     def set_tile(self, x, y, tile_type):
         """Set a tile at the given coordinates to the specified type."""
@@ -35,20 +49,36 @@ class Map:
         if len(tile_types) == len(self.tile_data):
             self.tile_data = tile_types
 
-    def set_ninja_spawn(self, x, y):
-        """Set the ninja spawn point coordinates.
-        Converts tile coordinates to screen coordinates (x6 multiplier)."""
-        self.ninja_spawn_x = x
-        self.ninja_spawn_y = y
+    def set_ninja_spawn(self, grid_x, grid_y, orientation=None):
+        """Set the ninja spawn point coordinates and optionally orientation.
+        Converts tile coordinates to screen coordinates (x6 multiplier).
+        Orientation: 1 = right, -1 = left"""
+        self.ninja_spawn_x, self.ninja_spawn_y = self._to_screen_coordinates(
+            grid_x, grid_y, NINJA_SPAWN_OFFSET_PX)
+        if orientation is not None:
+            self.ninja_orientation = orientation
 
-    def add_entity(self, entity_type, x, y, orientation=0, mode=0, switch_x=None, switch_y=None):
+    def add_entity(self, entity_type, grid_x, grid_y, orientation=0, mode=0, switch_x=None, switch_y=None):
         """Add an entity to the map.
         For doors that require switch coordinates (types 6 and 8), provide switch_x and switch_y.
         For exit doors (type 3), provide switch_x and switch_y for the switch location.
         Converts tile coordinates to screen coordinates (x4.5 multiplier)."""
 
+        # Convert grid coords to screen
+        screen_x, screen_y = self._to_screen_coordinates(grid_x, grid_y)
+        switch_screen_x, switch_screen_y = self._to_screen_coordinates(
+            switch_x, switch_y)
+
+        # Handle entity offsets
+        if entity_type == 3:
+            screen_x += EXIT_DOOR_OFFSET_PX
+            screen_y += EXIT_DOOR_OFFSET_PX
+        elif entity_type == 2:
+            screen_x += GOLD_OFFSET_PX
+            screen_y += GOLD_OFFSET_PX
+
         # Basic entity data
-        entity_data = [entity_type, x, y, orientation, mode]
+        entity_data = [entity_type, screen_x, screen_y, orientation, mode]
 
         # Handle special cases
         if entity_type == 3:  # Exit door
@@ -57,12 +87,12 @@ class Map:
             # Store the switch data right after all exit doors
             self.entity_counts['exit_door'] += 1
             self.entity_data.extend(
-                [4, switch_x, switch_y, 0, 0])  # Switch is type 4
+                [4, switch_screen_x + SWITCH_OFFSET_PX, switch_screen_y + SWITCH_OFFSET_PX, 0, 0])  # Switch is type 4
         elif entity_type in (6, 8):  # Locked door or trap door
             if switch_x is None or switch_y is None:
                 raise ValueError(
                     f"Door type {entity_type} requires switch coordinates")
-            entity_data.extend([switch_x, switch_y])
+            entity_data.extend([switch_screen_x, switch_screen_y])
             self.entity_data.extend(entity_data)
         else:
             self.entity_data.extend(entity_data)
@@ -87,7 +117,8 @@ class Map:
         map_data.extend([0] * 30)  # Unknown section (1201-1230)
         # Ninja spawn at 1231-1232 to match Ninja class expectations
         map_data.extend([self.ninja_spawn_x, self.ninja_spawn_y])
-        map_data.extend([0] * 2)  # Unknown section (1233-1234)
+        # Ninja orientation at 1233
+        map_data.extend([self.ninja_orientation, 0])
         map_data.extend(self.entity_data)  # Entity data starts at 1235
 
         return map_data
@@ -96,6 +127,7 @@ class Map:
         self.tile_data = [0] * (self.MAP_WIDTH * self.MAP_HEIGHT)
         self.ninja_spawn_x = 1
         self.ninja_spawn_y = 1
+        self.ninja_orientation = -1
         self.entity_data = []
         self.entity_counts = {
             'exit_door': 0,

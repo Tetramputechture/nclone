@@ -250,6 +250,10 @@ class Simulator:
         # initiate player 1 instance of Ninja at spawn coordinates
         self.ninja = Ninja(self, ninja_anim_mode=(
             self.sim_config.enable_anim and not self.sim_config.basic_sim))
+        self.ninja.facing = self.map_data[1233]
+        # if map data 1233 is not -1 or 1, force it to be -1
+        if self.map_data[1233] not in [-1, 1]:
+            self.map_data[1233] = -1
 
         # initiate each entity (other than ninjas)
         index = 1230
