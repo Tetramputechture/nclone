@@ -5,7 +5,7 @@ import os
 from nsim import Simulator
 from nsim_renderer import NSimRenderer
 from sim_config import init_sim_config
-from map import MapGenerator
+from map_generation.map import MapGenerator
 import random
 from datetime import datetime
 

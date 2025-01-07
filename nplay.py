@@ -40,9 +40,15 @@ clock = pygame.time.Clock()
 running = True
 running_mode = "playing"
 
-with open("maps/map_data_simple", "rb") as f:
-    mapdata = [int(b) for b in f.read()]
-sim.load(mapdata)
+# with open("maps/map_data_simple", "rb") as f:
+#     mapdata = [int(b) for b in f.read()]
+# sim.load(mapdata)
+level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
+width = random.randint(4, 42)
+height = random.randint(4, 23)
+map_gen = generate_map(level_type=level_type,
+                       width=width, height=height)
+sim.load_from_created(map_gen)
 inputs = None
 if os.path.isfile("inputs"):
     with open("inputs", "rb") as f:
@@ -98,7 +104,8 @@ while running:
     if keys[pygame.K_g]:
         sim.reset()
         # Randomly choose between maze and simple horizontal level
-        level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
+        # level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
+        level_type = "MAZE"
         width = random.randint(4, 42)
         height = random.randint(4, 23)
         map_gen = generate_map(level_type=level_type,

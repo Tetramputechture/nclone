@@ -1,7 +1,7 @@
 """Map generator module for procedural level generation."""
 
 from typing import Literal, Optional
-from map import Map
+from map_generation.map import Map
 from map_generation.map_maze import MazeGenerator
 from map_generation.map_single_chamber import SingleChamberGenerator
 
