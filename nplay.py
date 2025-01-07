@@ -105,7 +105,7 @@ while running:
         sim.reset()
         # Randomly choose between maze and simple horizontal level
         # level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
-        level_type = "MAZE"
+        level_type = "MULTI_CHAMBER"
         width = random.randint(4, 42)
         height = random.randint(4, 23)
         map_gen = generate_map(level_type=level_type,
