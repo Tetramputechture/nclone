@@ -3,7 +3,7 @@ import os
 from typing import Optional
 from nsim import Simulator
 from nsim_renderer import NSimRenderer
-from map_generation.map_generator import MapGenerator
+from map_generation.map_generator import generate_map
 from sim_config import SimConfig
 import numpy as np
 import math
@@ -38,9 +38,6 @@ class NPlayHeadless:
             SimConfig(enable_anim=enable_animation, log_data=enable_logging))
         self.sim_renderer = NSimRenderer(self.sim, render_mode)
         self.current_map_data = None
-
-        # Create a new map generator
-        self.map_gen = MapGenerator()
         self.clock = pygame.time.Clock()
 
         # init pygame
@@ -70,7 +67,7 @@ class NPlayHeadless:
         Load a random map from the map_data folder.
         """
         # Get the map data
-        map_data = self.map_gen.generate(map_type).map_data()
+        map_data = generate_map(level_type=map_type, seed=seed).map_data()
         self.sim.load(map_data)
         self.current_map_data = map_data
 

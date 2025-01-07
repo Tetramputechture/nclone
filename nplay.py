@@ -7,16 +7,15 @@ import zlib
 import numpy as np
 from nsim import *
 from nsim_renderer import NSimRenderer
-from map_generation.map_generator import MapGenerator
+from map_generation.map_generator import generate_map
 from sim_config import SimConfig
 from nplay_headless import NPlayHeadless
 import cv2
 import random
 # Create a new map
-map_gen = MapGenerator(seed=42)
 
-# Get the map data
-map_data = map_gen.generate()
+# Get the map
+map_data = generate_map()
 
 SRCWIDTH = 1056
 SRCHEIGHT = 600
@@ -102,9 +101,9 @@ while running:
         level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
         width = random.randint(4, 42)
         height = random.randint(4, 23)
-        map_gen = MapGenerator(width=width, height=height)
-        created_map = map_gen.generate(level_type)
-        sim.load_from_created(created_map)
+        map_gen = generate_map(level_type=level_type,
+                               width=width, height=height)
+        sim.load_from_created(map_gen)
 
     sim_renderer.draw(resize)
 
