@@ -9,7 +9,9 @@ from nclone_environments.basic_level_no_gold.constants import (
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
-    MAX_TIME_IN_FRAMES_SMALL_LEVEL
+    MAX_TIME_IN_FRAMES_SMALL_LEVEL,
+    RENDERED_VIEW_WIDTH,
+    RENDERED_VIEW_HEIGHT
 )
 from nclone_environments.basic_level_no_gold.reward_calculation.main_reward_calculator import RewardCalculator
 from nclone_environments.basic_level_no_gold.observation_processor import ObservationProcessor
@@ -25,15 +27,15 @@ class BasicLevelNoGold(BaseEnvironment):
     """
     metadata = {'render.modes': ['human', 'rgb_array']}
 
-    MAP_DATA_PATH = "../nclone/maps/map_di"
+    MAP_DATA_PATH = "../nclone/maps/official/000 the basics"
 
     def __init__(self, render_mode: str = 'rgb_array', enable_frame_stack: bool = True, enable_animation: bool = False, enable_logging: bool = False):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation, enable_logging=enable_logging)
 
-        self.nplay_headless.load_random_map()
-        # self.nplay_headless.load_map(self.MAP_DATA_PATH)
+        # self.nplay_headless.load_random_map()
+        self.nplay_headless.load_map(self.MAP_DATA_PATH)
 
         # Initialize observation processor
         self.observation_processor = ObservationProcessor(
@@ -51,6 +53,13 @@ class BasicLevelNoGold(BaseEnvironment):
                 high=255,
                 shape=(PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH,
                        player_frame_channels),
+                dtype=np.uint8
+            ),
+            # Global view frame
+            'global_view': box.Box(
+                low=0,
+                high=255,
+                shape=(RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1),
                 dtype=np.uint8
             ),
             # Game state features

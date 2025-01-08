@@ -7,8 +7,15 @@ MAX_TIME_IN_FRAMES_SMALL_LEVEL = 2000
 PLAYER_FRAME_WIDTH = 84
 PLAYER_FRAME_HEIGHT = 84
 
+# Constants for rendered global view
+# We use flipped dimensions because our screen is flipped and we want to preserve the aspect ratio
+RENDERED_VIEW_WIDTH = 100  # 100 / 6
+RENDERED_VIEW_HEIGHT = 176  # 1056 / 6
+RENDERED_VIEW_CHANNELS = 1  # Grayscale
+
+
 # Temporal frames
-TEMPORAL_FRAMES = 3
+TEMPORAL_FRAMES = 4
 
 # Ninja state size
 NINJA_STATE_SIZE = 10

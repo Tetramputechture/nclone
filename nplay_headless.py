@@ -1,5 +1,6 @@
 import pygame
 import os
+import random
 from typing import Optional
 from nsim import Simulator
 from nsim_renderer import NSimRenderer
@@ -64,12 +65,24 @@ class NPlayHeadless:
 
     def load_random_map(self, seed: Optional[int] = None, map_type: Optional[str] = "SIMPLE_HORIZONTAL_NO_BACKTRACK"):
         """
-        Load a random map from the map_data folder.
+        Generate a random map and load it into the simulator.
         """
         # Get the map data
         map_data = generate_map(level_type=map_type, seed=seed).map_data()
         self.sim.load(map_data)
         self.current_map_data = map_data
+
+    def load_random_official_map(self):
+        """
+        Load a random official map from the maps/official folder.
+        """
+        base_map_path = os.path.join(
+            os.path.dirname(__file__), 'maps', 'official')
+        map_files = [f for f in os.listdir(
+            base_map_path) if f.endswith('.bin')]
+        map_file = random.choice(map_files)
+        map_path = os.path.join(base_map_path, map_file)
+        self.load_map(map_path)
 
     def reset(self):
         """ 

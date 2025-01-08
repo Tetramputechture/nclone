@@ -7,7 +7,7 @@ import zlib
 import numpy as np
 from nsim import *
 from nsim_renderer import NSimRenderer
-from map_generation.map_generator import generate_map
+from map_generation.map_generator import generate_map, random_official_map
 from sim_config import SimConfig
 from nplay_headless import NPlayHeadless
 import cv2
@@ -40,7 +40,7 @@ clock = pygame.time.Clock()
 running = True
 running_mode = "playing"
 
-# with open("maps/map_data_simple", "rb") as f:
+# with open("maps/basics", "rb") as f:
 #     mapdata = [int(b) for b in f.read()]
 # sim.load(mapdata)
 level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
@@ -104,14 +104,21 @@ while running:
     if keys[pygame.K_g]:
         sim.reset()
         # Randomly choose between maze and simple horizontal level
-        # level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
-        level_type = "MULTI_CHAMBER"
+        level_type = random.choice(
+            ["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
+        # level_type = "MULTI_CHAMBER"
         width = random.randint(4, 42)
         height = random.randint(4, 23)
-        map_gen = generate_map(level_type=level_type,
-                               width=width, height=height)
-        sim.load_from_created(map_gen)
-
+        # 50% chance to generate a random map, 50% chance to load a random official map
+        if random.random() < 0.5:
+            print("Generating a random map")
+            map_gen = generate_map(level_type=level_type,
+                                   width=width, height=height)
+            sim.load_from_created(map_gen)
+        else:
+            print("Loading a random official map")
+            map_data = random_official_map()
+            sim.load(map_data)
     sim_renderer.draw(resize)
 
     sim.tick(hor_input, jump_input)
