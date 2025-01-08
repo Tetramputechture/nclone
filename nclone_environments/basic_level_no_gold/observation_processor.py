@@ -18,10 +18,10 @@ We get our formatted game observation from the NPlusPlus get_observation() metho
 
 This class should handle returning:
 
-- The base map (single frame OBSERVATION_IMAGE_WIDTH x OBSERVATION_IMAGE_HEIGHT)
-  - This is the current screen frame, processed to grayscale
 - The frame centered on the player (PLAYER_FRAME_WIDTH x PLAYER_FRAME_HEIGHT)
   - This covers the player's movement in detail
+- The global view (RENDERED_VIEW_WIDTH x RENDERED_VIEW_HEIGHT)
+  - This covers the global view of the level at 1/6th resolution
 - The game state
     - Ninja state (12 values)
         - Position normalized
@@ -39,14 +39,14 @@ This class should handle returning:
 """
 from ninja import Ninja
 import numpy as np
-import os
 from collections import deque
 import cv2
 from typing import Dict, Any, Tuple
 from nclone_environments.basic_level_no_gold.constants import (
     PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT,
     LEVEL_WIDTH, LEVEL_HEIGHT,
-    TEMPORAL_FRAMES
+    TEMPORAL_FRAMES,
+    RENDERED_VIEW_WIDTH, RENDERED_VIEW_HEIGHT
 )
 from nclone_environments.basic_level_no_gold.frame_augmentation import apply_consistent_augmentation
 
@@ -74,11 +74,6 @@ def frame_to_grayscale(frame: np.ndarray) -> np.ndarray:
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     """Resize frame to desired dimensions."""
     return cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
-
-
-def clip_frame(frame: np.ndarray) -> np.ndarray:
-    """Clip frame to [0, 255] range and convert to uint8."""
-    return np.clip(frame, 0, 255).astype(np.uint8)
 
 
 def normalize_position(x: float, y: float) -> Tuple[float, float]:
@@ -201,6 +196,33 @@ class ObservationProcessor:
 
         return processed_state
 
+    def process_rendered_global_view(self, screen: np.ndarray) -> np.ndarray:
+        """Process the rendered screen into a downsampled global view.
+
+        Args:
+            screen (np.ndarray): The rendered screen image with shape (H, W, C) or (H, W)
+
+        Returns:
+            np.ndarray: Downsampled grayscale view with shape (RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1)
+            in the range 0-255
+        """
+        # Convert to grayscale if needed
+        if len(screen.shape) == 3 and screen.shape[-1] != 1:
+            screen = frame_to_grayscale(screen)
+
+        # Downsample using area interpolation for better quality
+        downsampled = cv2.resize(
+            screen,
+            (RENDERED_VIEW_WIDTH, RENDERED_VIEW_HEIGHT),
+            interpolation=cv2.INTER_AREA
+        )
+
+        # Ensure we have a channel dimension
+        if len(downsampled.shape) == 2:
+            downsampled = downsampled[..., np.newaxis]
+
+        return downsampled
+
     def process_observation(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
         """Process observation into frame stack, base map, and feature vectors."""
         # Convert to grayscale once at the start
@@ -216,7 +238,8 @@ class ObservationProcessor:
         )
 
         result = {
-            'game_state': self.process_game_state(obs)
+            'game_state': self.process_game_state(obs),
+            'global_view': self.process_rendered_global_view(screen)
         }
 
         # Update frame history with cropped player frame instead of full frame
@@ -242,10 +265,6 @@ class ObservationProcessor:
 
             # Stack frames along channel dimension
             result['player_frame'] = np.concatenate(player_frames, axis=-1)
-
-            # Save our player frame in a file for debugging if our 'sim_frame' is 1
-            if obs['sim_frame'] == 1:
-                cv2.imwrite('player_frame.png', result['player_frame'])
 
             # Verify we have exactly 3 channels
             assert result['player_frame'].shape[

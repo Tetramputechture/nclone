@@ -15,6 +15,8 @@ class MazeGenerator(Map):
     MIN_HEIGHT = 4
     MAX_HEIGHT = 23
 
+    MAX_GOLD = 0
+
     def __init__(self, width: int = 10, height: int = 10, seed: Optional[int] = None):
         """Initialize the maze generator.
 
@@ -174,7 +176,7 @@ class MazeGenerator(Map):
                 self.add_entity(3, door_x, door_y,
                                 door_orientation, 0, switch_x, switch_y)
 
-    def _place_gold(self, count: int = 5):
+    def _place_gold(self):
         """Place gold pieces in valid positions."""
         valid_positions = []
         for y in range(self.height):
@@ -188,7 +190,7 @@ class MazeGenerator(Map):
                     if (ninja_pixel_x, ninja_pixel_y) != (self.ninja_spawn_x, self.ninja_spawn_y) and (switch_pixel_x, switch_pixel_y) != (self.ninja_spawn_x, self.ninja_spawn_y):
                         valid_positions.append((x, y))
 
-        count = min(count, len(valid_positions))
+        count = min(self.MAX_GOLD, len(valid_positions))
         selected_positions = self.rng.sample(valid_positions, count)
 
         # Add gold entities using Map's add_entity method

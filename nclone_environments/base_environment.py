@@ -92,8 +92,8 @@ class BaseEnvironment(gymnasium.Env):
 
         # Reset level and load random map
         self.nplay_headless.reset()
-        self.nplay_headless.load_random_map()
-        # self.nplay_headless.load_map(self.MAP_DATA_PATH)
+        # self.nplay_headless.load_random_map()
+        self.nplay_headless.load_map(self.MAP_DATA_PATH)
 
         # Get initial observation and process it
         initial_obs = self._get_observation()

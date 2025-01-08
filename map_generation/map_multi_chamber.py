@@ -50,13 +50,13 @@ class MultiChamberGenerator(Map):
     MAX_CHAMBERS = 4
     MIN_CHAMBER_WIDTH = 4
     MAX_CHAMBER_WIDTH = 10
-    MIN_CHAMBER_HEIGHT = 4
-    MAX_CHAMBER_HEIGHT = 8
+    MIN_CHAMBER_HEIGHT = 3
+    MAX_CHAMBER_HEIGHT = 6
     MIN_CORRIDOR_LENGTH = 1
     MAX_CORRIDOR_LENGTH = 5
     MIN_CORRIDOR_WIDTH = 1
     MAX_CORRIDOR_WIDTH = 3
-    MAX_GOLD_PER_CHAMBER = 3
+    MAX_GOLD_PER_CHAMBER = 0
 
     def __init__(self, seed: Optional[int] = None):
         """Initialize the multi-chamber generator.
@@ -280,13 +280,16 @@ class MultiChamberGenerator(Map):
         switch_chamber = self.rng.choice(available_chambers or [exit_chamber])
         switch_chamber.has_switch = True
 
-        # Place ninja
+        # Place ninja on the floor
         ninja_x = ninja_chamber.x + \
             self.rng.randint(1, ninja_chamber.width - 2)
-        ninja_y = ninja_chamber.y + \
-            self.rng.randint(1, ninja_chamber.height - 2)
+        # Place ninja one tile above the floor
+        ninja_y = ninja_chamber.y + ninja_chamber.height - 1
         ninja_orientation = self.rng.choice([-1, 1])
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
+
+        # Place a solid tile under ninja spawn so we always spawn grounded
+        self.set_tile(ninja_x, ninja_y + 1, 1)
 
         # Place exit door and switch
         exit_x = exit_chamber.x + self.rng.randint(1, exit_chamber.width - 2)
@@ -305,10 +308,22 @@ class MultiChamberGenerator(Map):
 
         self.add_entity(3, exit_x, exit_y, 0, 0, switch_x, switch_y)
 
+        # Place solid tile under exit so its always available,
+        # but not on top of the switch
+        if exit_y + 1 != switch_y and exit_x != switch_x:
+            self.set_tile(exit_x, exit_y + 1, 1)
+
+        # Place solid tile under switch so its always available,
+        # but not on top of the exit
+        if switch_y + 1 != exit_y or switch_x != exit_x:
+            self.set_tile(switch_x, switch_y + 1, 1)
+
         # Add gold to random chambers
-        for chamber in self.chambers:
-            if self.rng.random() < 0.7:  # 70% chance for gold in each chamber
-                gold_count = self.rng.randint(1, self.MAX_GOLD_PER_CHAMBER)
+        if self.MAX_GOLD_PER_CHAMBER > 0:
+            for chamber in self.chambers:
+                if self.rng.random() < 0.7:  # 70% chance for gold in each chamber
+                    gold_count = self.rng.randint(
+                        1, self.MAX_GOLD_PER_CHAMBER)
                 chamber.gold_count = gold_count
 
                 for _ in range(gold_count):
@@ -338,8 +353,7 @@ class MultiChamberGenerator(Map):
         self.set_tiles_bulk(tile_types)
 
         # Generate chambers
-        # num_chambers = self.rng.randint(self.MIN_CHAMBERS, self.MAX_CHAMBERS)
-        num_chambers = 2
+        num_chambers = self.rng.randint(self.MIN_CHAMBERS, self.MAX_CHAMBERS)
         while len(self.chambers) < num_chambers:
             if chamber := self._try_place_chamber():
                 self.chambers.append(chamber)

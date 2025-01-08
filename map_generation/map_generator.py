@@ -1,5 +1,7 @@
 """Map generator module for procedural level generation."""
 
+import os
+import random
 from typing import Literal, Optional
 from map_generation.map import Map
 from map_generation.map_maze import MazeGenerator
@@ -32,3 +34,14 @@ def generate_map(level_type: Literal["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK", "
         return generator.generate()
     else:
         raise ValueError(f"Unknown level type: {level_type}")
+
+
+def random_official_map():
+    """
+    Load a random official map from the maps/official folder.
+    """
+    map_files = [f for f in os.listdir('maps/official')]
+    map_file = random.choice(map_files)
+    map_path = os.path.join('maps/official', map_file)
+    map_data = [int(b) for b in open(map_path, "rb").read()]
+    return map_data
