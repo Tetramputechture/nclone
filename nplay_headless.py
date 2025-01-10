@@ -224,7 +224,7 @@ class NPlayHeadless:
         """
         state = []
 
-        # Add ninja state (13 values)
+        # Add ninja state (10 values)
         ninja_state = self.get_ninja_state()
         state.extend(ninja_state)
 
@@ -233,8 +233,9 @@ class NPlayHeadless:
         state.extend(entity_states)
 
         # Add environment geometry (fixed size)
-        geometry_state = self._get_geometry_state()
-        state.extend(geometry_state)
+        # Lets avoid this for now
+        # geometry_state = self._get_geometry_state()
+        # state.extend(geometry_state)
 
         return np.array(state, dtype=np.float32)
 
