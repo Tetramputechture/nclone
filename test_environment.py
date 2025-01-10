@@ -51,7 +51,7 @@ while running:
         observation, info = env.reset()
 
     # Print observation shape
-    # print(observation['game_state'].shape)
+    print(observation['game_state'].shape)
 
     # print(f'Gold collected: {env.get_gold_collected()}')
 
