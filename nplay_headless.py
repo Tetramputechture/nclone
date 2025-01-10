@@ -111,9 +111,7 @@ class NPlayHeadless:
         """
         self.sim.tick(horizontal_input, jump_input)
         if self.render_mode == 'human':
-            pygame.display.update()
-            pygame.event.pump()
-            self.clock.tick(60)
+            self.clock.tick(120)
 
     def render(self, debug_info: Optional[dict] = None):
         """

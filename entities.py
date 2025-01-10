@@ -144,9 +144,10 @@ class Entity:
         ]
 
         if not minimal_state:
-            max(0.0, min(1.0, self.xpos / 1056)),  # SRCWIDTH, clamped to [0,1]
+            # SRCWIDTH, clamped to [0,1]
+            state.append(max(0.0, min(1.0, self.xpos / 1056)))
             # SRCHEIGHT, clamped to [0,1]
-            max(0.0, min(1.0, self.ypos / 600)),
+            state.append(max(0.0, min(1.0, self.ypos / 600)))
             # Add entity type
             # Normalize type by max type (28)
             state.append(max(0.0, min(1.0, float(self.type) / 28.0)))
@@ -530,6 +531,7 @@ class EntityDroneBase(Entity):
         self.speed = speed
         self.dir = None
         self.turn(orientation // 2)
+        self.orientation = orientation
         self.mode = mode
         self.xtarget, self.ytarget = self.xpos, self.ypos
         self.xpos2, self.ypos2 = self.xpos, self.ypos
@@ -868,9 +870,12 @@ class EntityLaser(Entity):
         if result == -1:
             self.mode = 1
         else:
-            dist = math.sqrt(
-                (closest_point[0] - self.xpos)**2 + (closest_point[1] - self.ypos)**2)
-            self.mode = 1 if dist < 7 else 0
+            if closest_point is None:
+                self.mode = 1
+            else:   
+                dist = math.sqrt(
+                    (closest_point[0] - self.xpos)**2 + (closest_point[1] - self.ypos)**2)
+                self.mode = 1 if dist < 7 else 0
         if self.mode == 0:  # Spinner mode
             self.xend, self.yend = self.xpos, self.ypos
             dx, dy = map_orientation_to_vector(orientation)

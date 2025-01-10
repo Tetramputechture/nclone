@@ -17,6 +17,9 @@ RENDERED_VIEW_CHANNELS = 1  # Grayscale
 # Temporal frames
 TEMPORAL_FRAMES = 4
 
+# Total game state features including all entities
+GAME_STATE_FEATURES = 159019
+
 # Ninja state size
 NINJA_STATE_SIZE = 10
 
