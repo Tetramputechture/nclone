@@ -334,6 +334,10 @@ class NPlayHeadless:
             # Default to 16 if not specified
             max_count = MAX_COUNTS.get(entity_type, 16)
 
+            # For now, if max_count is greater than 128, set it to 128
+            if max_count > 128:
+                max_count = 128
+
             state.append(float(len(entities)) / max_count)
 
             # Process each entity up to max_count

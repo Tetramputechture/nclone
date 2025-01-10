@@ -6,7 +6,7 @@ import os
 import uuid
 import random
 from nclone_environments.basic_level_no_gold.constants import (
-    GAME_STATE_FEATURES,
+    GAME_STATE_FEATURES_MAX_ENTITY_COUNT_128,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -85,7 +85,7 @@ class BasicLevelNoGold(BaseEnvironment):
             'game_state': box.Box(
                 low=-1,
                 high=1,
-                shape=(GAME_STATE_FEATURES,),
+                shape=(GAME_STATE_FEATURES_MAX_ENTITY_COUNT_128,),
                 dtype=np.float32
             )
         })
