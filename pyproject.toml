@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nclone"
+version = "0.1.0"
+authors = [
+    { name="SimonV42" },
+]
+description = "An N++ simulator with headless mode support"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pygame",
+    "pycairo",
+    "numpy",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/SimonV42/nclone" 
