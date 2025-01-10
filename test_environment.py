@@ -10,6 +10,7 @@ pygame.display.set_caption("N++ Environment Test")
 env = BasicLevelNoGold(render_mode='human',
                        enable_frame_stack=False, enable_debug_overlay=True)
 
+
 # Initialize clock for 60 FPS
 clock = pygame.time.Clock()
 running = True
@@ -53,7 +54,7 @@ while running:
     # print(f'Gold collected: {env.get_gold_collected()}')
 
     # Maintain 60 FPS
-    clock.tick(60)
+    # clock.tick(120)
 
 # Cleanup
 pygame.quit()

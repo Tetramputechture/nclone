@@ -305,8 +305,9 @@ class Simulator:
                     entity_type, self, xcoord, ycoord, orientation)
             elif entity_type == 21:
                 entity = EntityToggleMine(entity_type, self, xcoord, ycoord, 1)
-            # elif entity_type == 23 and not ARGUMENTS.basic_sim:
-            #    entity = EntityLaser(entity_type, self, xcoord, ycoord, orientation, mode)
+            # elif entity_type == 23 and not self.sim_config.basic_sim:
+            #     entity = EntityLaser(
+            #         entity_type, self, xcoord, ycoord, orientation, mode)
             elif entity_type == 24:
                 entity = EntityBoostPad(entity_type, self, xcoord, ycoord)
             elif entity_type == 25 and not self.sim_config.basic_sim:

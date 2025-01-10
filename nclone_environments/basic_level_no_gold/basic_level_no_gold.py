@@ -6,7 +6,7 @@ import os
 import uuid
 import random
 from nclone_environments.basic_level_no_gold.constants import (
-    GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
+    GAME_STATE_FEATURES,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -83,7 +83,7 @@ class BasicLevelNoGold(BaseEnvironment):
             'game_state': box.Box(
                 low=-1,
                 high=1,
-                shape=(GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,),
+                shape=(GAME_STATE_FEATURES,),
                 dtype=np.float32
             )
         })
@@ -107,7 +107,7 @@ class BasicLevelNoGold(BaseEnvironment):
 
         ninja_state = self.nplay_headless.get_ninja_state()
         entity_states = self.nplay_headless.get_entity_states(
-            only_one_exit_and_switch=True)
+            only_one_exit_and_switch=False)
         game_state = np.concatenate([ninja_state, entity_states])
 
         return {
