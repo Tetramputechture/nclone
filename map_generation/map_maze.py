@@ -1,7 +1,6 @@
 """Maze generation module for N++ levels."""
 
 from map_generation.map import Map
-import random
 from typing import List, Tuple, Optional, Set
 from map_generation.constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
 
@@ -28,7 +27,6 @@ class MazeGenerator(Map):
         super().__init__()
         self.width = max(self.MIN_WIDTH, min(width, self.MAX_WIDTH))
         self.height = max(self.MIN_HEIGHT, min(height, self.MAX_HEIGHT))
-        self.rng = random.Random(seed)
 
         # Initialize tracking variables
         self.visited: Set[Tuple[int, int]] = set()

@@ -4,6 +4,7 @@ import numpy as np
 from typing import Tuple
 import os
 import uuid
+import random
 from nclone_environments.basic_level_no_gold.constants import (
     GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
     TEMPORAL_FRAMES,
@@ -18,6 +19,7 @@ from nclone_environments.basic_level_no_gold.observation_processor import Observ
 from nclone_environments.basic_level_no_gold.truncation_checker import TruncationChecker
 from nclone_environments.base_environment import BaseEnvironment
 from map_generation.map import Map
+from map_generation.map_generator import random_official_map
 from map_augmentation.mirror_map import mirror_map_horizontally
 
 
@@ -33,11 +35,20 @@ class BasicLevelNoGold(BaseEnvironment):
     metadata = {'render.modes': ['human', 'rgb_array']}
 
     OFFICIAL_MAP_DATA_PATH = "../nclone/maps/official/"
+    RANDOM_MAP_CHANCE = 0.5
 
-    def __init__(self, render_mode: str = 'rgb_array', enable_frame_stack: bool = True, enable_animation: bool = False, enable_logging: bool = False, enable_debug_overlay: bool = False):
+    def __init__(self,
+                 render_mode: str = 'rgb_array',
+                 enable_frame_stack: bool = True,
+                 enable_animation: bool = False,
+                 enable_logging: bool = False,
+                 enable_debug_overlay: bool = False,
+                 enable_short_episode_truncation: bool = False):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
-                         enable_animation=enable_animation, enable_logging=enable_logging, enable_debug_overlay=enable_debug_overlay)
+                         enable_animation=enable_animation,
+                         enable_logging=enable_logging,
+                         enable_debug_overlay=enable_debug_overlay)
 
         # Initialize observation processor
         self.observation_processor = ObservationProcessor(
@@ -47,7 +58,8 @@ class BasicLevelNoGold(BaseEnvironment):
         self.reward_calculator = RewardCalculator()
 
         # Initialize truncation checker
-        self.truncation_checker = TruncationChecker(self)
+        self.truncation_checker = TruncationChecker(self,
+                                                    enable_short_episode_truncation=enable_short_episode_truncation)
 
         # Initialize observation space as a Dict space with player_frame, base_frame, and game_state
         player_frame_channels = TEMPORAL_FRAMES if enable_frame_stack else 1
@@ -118,18 +130,12 @@ class BasicLevelNoGold(BaseEnvironment):
 
     def _load_map(self):
         """Loads the official map corresponding to the current map cycle index."""
-        self.current_map_name = os.listdir(self.OFFICIAL_MAP_DATA_PATH)[
-            self.map_cycle_index % self.map_cycle_length]
-        with open(self.OFFICIAL_MAP_DATA_PATH + self.current_map_name, 'rb') as file:
-            map_file_data = file.read()
-        map_obj = Map.from_map_data(map_file_data)
-        if self.mirror_map:
-            map_obj = mirror_map_horizontally(map_obj)
-        self.nplay_headless.load_map_from_map_data(map_obj.map_data())
-        self.map_cycle_index += 1
-        # If we've cycled through all maps, mirror the map
-        # if self.map_cycle_index % self.map_cycle_length == 0:
-        #     self.mirror_map = not self.mirror_map
+        # First, choose if we want to generate a random map, or load the next map in the cycle
+        if self.rng.random() < self.RANDOM_MAP_CHANCE:
+            self.current_map_name = f"random_map_{uuid.uuid4()}"
+            self.nplay_headless.load_random_map()
+        else:
+            self.current_map_name = self.nplay_headless.load_random_official_map()
 
     def _check_termination(self) -> Tuple[bool]:
         """Check if the episode should be terminated.
@@ -141,20 +147,23 @@ class BasicLevelNoGold(BaseEnvironment):
             Tuple containing:
             - terminated: True if episode should be terminated, False otherwise
             - truncated: True if episode should be truncated, False otherwise
+            - player_won: True if player won, False otherwise
         """
         player_won = self.nplay_headless.ninja_has_won()
         player_dead = self.nplay_headless.ninja_has_died()
         terminated = player_won or player_dead
 
-        # # Check truncation using our truncation checker
-        # ninja_x, ninja_y = self.nplay_headless.ninja_position()
-        # should_truncate, reason = self.truncation_checker.update(
-        #     ninja_x, ninja_y)
-        # if should_truncate and self.enable_logging:
-        #     print(f"Episode terminated due to time: {reason}")
+        # If player won, output current map name and total reward
+        if player_won:
+            print(
+                f"\n---\nPlayer won on map: {self.current_map_name} on frame {self.nplay_headless.sim.frame}\n---\n")
 
-        # Check truncation using a simple frame check
-        should_truncate = self.nplay_headless.sim.frame >= MAX_TIME_IN_FRAMES
+        # Check truncation using our truncation checker
+        ninja_x, ninja_y = self.nplay_headless.ninja_position()
+        should_truncate, reason = self.truncation_checker.update(
+            ninja_x, ninja_y)
+        if should_truncate and self.enable_logging:
+            print(f"Episode terminated due to time: {reason}")
 
         # We also terminate if the truncation state is reached, that way we can
         # learn from the episode, since our time remaining is in our observation

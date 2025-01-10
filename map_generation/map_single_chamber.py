@@ -1,7 +1,6 @@
 """Single chamber generation module for N++ levels."""
 
 from map_generation.map import Map
-import random
 from typing import Optional
 from map_generation.constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX
 
@@ -16,15 +15,6 @@ class SingleChamberGenerator(Map):
     MAX_HEIGHT = 3
     GLOBAL_MAX_UP_DEVIATION = 5
     GLOBAL_MAX_DOWN_DEVIATION = 0
-
-    def __init__(self, seed: Optional[int] = None):
-        """Initialize the single chamber generator.
-
-        Args:
-            seed: Random seed for reproducible generation
-        """
-        super().__init__()
-        self.rng = random.Random(seed)
 
     def set_empty_rectangle(self, x1: int, y1: int, x2: int, y2: int):
         """Set a rectangular region of the map to empty space."""

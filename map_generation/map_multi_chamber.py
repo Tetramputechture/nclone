@@ -65,7 +65,6 @@ class MultiChamberGenerator(Map):
             seed: Random seed for reproducible generation
         """
         super().__init__()
-        self.rng = random.Random(seed)
         self.chambers: List[Chamber] = []
 
     def _try_place_chamber(self) -> Optional[Chamber]:
