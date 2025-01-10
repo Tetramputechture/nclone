@@ -9,7 +9,7 @@ from nclone_environments.basic_level_no_gold.constants import (
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
-    MAX_TIME_IN_FRAMES_SMALL_LEVEL,
+    MAX_TIME_IN_FRAMES,
     RENDERED_VIEW_WIDTH,
     RENDERED_VIEW_HEIGHT
 )
@@ -90,8 +90,8 @@ class BasicLevelNoGold(BaseEnvironment):
     def _get_observation(self) -> np.ndarray:
         """Get the current observation from the game state."""
         # Calculate time remaining feature
-        time_remaining = (MAX_TIME_IN_FRAMES_SMALL_LEVEL -
-                          self.nplay_headless.sim.frame) / MAX_TIME_IN_FRAMES_SMALL_LEVEL
+        time_remaining = (MAX_TIME_IN_FRAMES -
+                          self.nplay_headless.sim.frame) / MAX_TIME_IN_FRAMES
 
         ninja_state = self.nplay_headless.get_ninja_state()
         entity_states = self.nplay_headless.get_entity_states(
@@ -146,12 +146,15 @@ class BasicLevelNoGold(BaseEnvironment):
         player_dead = self.nplay_headless.ninja_has_died()
         terminated = player_won or player_dead
 
-        # Check truncation using our truncation checker
-        ninja_x, ninja_y = self.nplay_headless.ninja_position()
-        should_truncate, reason = self.truncation_checker.update(
-            ninja_x, ninja_y)
-        if should_truncate and self.enable_logging:
-            print(f"Episode truncated: {reason}")
+        # # Check truncation using our truncation checker
+        # ninja_x, ninja_y = self.nplay_headless.ninja_position()
+        # should_truncate, reason = self.truncation_checker.update(
+        #     ninja_x, ninja_y)
+        # if should_truncate and self.enable_logging:
+        #     print(f"Episode terminated due to time: {reason}")
+
+        # Check truncation using a simple frame check
+        should_truncate = self.nplay_headless.sim.frame >= MAX_TIME_IN_FRAMES
 
         return terminated, should_truncate, player_won
 

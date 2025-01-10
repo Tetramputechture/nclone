@@ -1,7 +1,7 @@
 """Constants for the basic level no gold environment."""
 
 # Max time in frames per level before episode truncation
-MAX_TIME_IN_FRAMES_SMALL_LEVEL = 2000
+MAX_TIME_IN_FRAMES = 20000
 
 # Player frame size
 PLAYER_FRAME_WIDTH = 84
