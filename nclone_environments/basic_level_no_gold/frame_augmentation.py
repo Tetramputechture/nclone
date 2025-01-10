@@ -22,11 +22,9 @@ def get_augmentation_pipeline(p: float = 0.5) -> A.ReplayCompose:
     return A.ReplayCompose([
         # Cutout - Apply random rectangular masks
         A.CoarseDropout(
-            max_holes=1,
-            max_height=12,
-            max_width=12,
-            min_height=6,
-            min_width=6,
+            num_holes_range=(1, 1),
+            hole_height_range=(6, 12),
+            hole_width_range=(6, 12),
             p=p
         ),
     ])
