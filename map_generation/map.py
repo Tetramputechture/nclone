@@ -1,4 +1,5 @@
-from typing import Tuple
+from typing import Tuple, Optional
+import random
 from map_generation.constants import GRID_SIZE_FACTOR, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
 
 
@@ -8,7 +9,7 @@ class Map:
     MAP_WIDTH = 42
     MAP_HEIGHT = 23
 
-    def __init__(self):
+    def __init__(self, seed: Optional[int] = None):
         # Initialize empty tile data (all tiles are empty, type 0)
         self.tile_data = [0] * (self.MAP_WIDTH * self.MAP_HEIGHT)
 
@@ -26,6 +27,8 @@ class Map:
         self.ninja_spawn_x = 1
         self.ninja_spawn_y = 1
         self.ninja_orientation = -1  # 1 = right, -1 = left
+
+        self.rng = random.Random(seed)
 
     def _to_screen_coordinates(self, grid_x: int, grid_y: int, offset: int = 0) -> Tuple[int, int]:
         """Convert grid coordinates to screen coordinates."""

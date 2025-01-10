@@ -36,12 +36,12 @@ def generate_map(level_type: Literal["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK", "
         raise ValueError(f"Unknown level type: {level_type}")
 
 
-def random_official_map():
+def random_official_map(rng: random.Random):
     """
     Load a random official map from the maps/official folder.
     """
     map_files = [f for f in os.listdir('maps/official')]
-    map_file = random.choice(map_files)
+    map_file = rng.choice(map_files)
     map_path = os.path.join('maps/official', map_file)
     map_data = [int(b) for b in open(map_path, "rb").read()]
     return map_data

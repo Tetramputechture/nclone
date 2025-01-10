@@ -33,7 +33,8 @@ class NPlayHeadless:
                  render_mode: str = 'rgb_array',
                  enable_animation: bool = False,
                  enable_logging: bool = False,
-                 enable_debug_overlay: bool = False):
+                 enable_debug_overlay: bool = False,
+                 seed: Optional[int] = None):
         """
         Initialize the simulation and renderer, as well as the headless pygame
         interface and display.
@@ -61,6 +62,8 @@ class NPlayHeadless:
             (SRCWIDTH, SRCHEIGHT, 3), dtype=np.uint8)
 
         self.enable_debug_overlay = enable_debug_overlay
+        self.seed = seed
+        self.rng = random.Random(seed)
 
     def load_map_from_map_data(self, map_data: List[int]):
         """
@@ -77,12 +80,12 @@ class NPlayHeadless:
             map_data = [int(b) for b in map_file.read()]
         self.load_map_from_map_data(map_data)
 
-    def load_random_map(self, seed: Optional[int] = None, map_type: Optional[str] = "SIMPLE_HORIZONTAL_NO_BACKTRACK"):
+    def load_random_map(self, map_type: Optional[str] = "SIMPLE_HORIZONTAL_NO_BACKTRACK"):
         """
         Generate a random map and load it into the simulator.
         """
         # Get the map data
-        map_data = generate_map(level_type=map_type, seed=seed).map_data()
+        map_data = generate_map(level_type=map_type, seed=self.seed).map_data()
         self.load_map_from_map_data(map_data)
 
     def load_random_official_map(self):
@@ -91,11 +94,10 @@ class NPlayHeadless:
         """
         base_map_path = os.path.join(
             os.path.dirname(__file__), 'maps', 'official')
-        map_files = [f for f in os.listdir(
-            base_map_path) if f.endswith('.bin')]
-        map_file = random.choice(map_files)
+        map_file = self.rng.choice(os.listdir(base_map_path))
         map_path = os.path.join(base_map_path, map_file)
         self.load_map(map_path)
+        return map_file
 
     def reset(self):
         """ 

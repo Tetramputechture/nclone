@@ -2,7 +2,8 @@
 
 import gymnasium
 from gymnasium.spaces import discrete
-from typing import Tuple
+import random
+from typing import Tuple, Optional
 from nplay_headless import NPlayHeadless
 
 
@@ -12,7 +13,12 @@ class BaseEnvironment(gymnasium.Env):
 
     MAP_DATA_PATH = None
 
-    def __init__(self, render_mode: str = 'rgb_array', enable_animation: bool = False, enable_logging: bool = False, enable_debug_overlay: bool = False):
+    def __init__(self,
+                 render_mode: str = 'rgb_array',
+                 enable_animation: bool = False,
+                 enable_logging: bool = False,
+                 enable_debug_overlay: bool = False,
+                 seed: Optional[int] = None):
         """Initialize the environment."""
         super().__init__()
 
@@ -20,10 +26,17 @@ class BaseEnvironment(gymnasium.Env):
         self.enable_animation = enable_animation
         self.enable_logging = enable_logging
         self.nplay_headless = NPlayHeadless(
-            render_mode=render_mode, enable_animation=enable_animation, enable_logging=enable_logging, enable_debug_overlay=enable_debug_overlay)
+            render_mode=render_mode,
+            enable_animation=enable_animation,
+            enable_logging=enable_logging,
+            enable_debug_overlay=enable_debug_overlay,
+            seed=seed)
 
         # Initialize action space
         self.action_space = discrete.Discrete(6)
+
+        # Initialize RNG
+        self.rng = random.Random(seed)
 
     def _actions_to_execute(self, action: int) -> Tuple[int, int]:
         """Execute the specified action using the game controller.

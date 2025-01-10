@@ -30,6 +30,7 @@ class TruncationChecker:
     BLOCK_8x8_MOVEMENT_WINDOW = CELL_MOVEMENT_WINDOW * 10  # 1000 frames for 8x8
     BLOCK_16x16_MOVEMENT_WINDOW = CELL_MOVEMENT_WINDOW * 20  # 2000 frames for 16x16
     MAX_FRAMES = 20000
+    SHORT_EPISODE_MAX_FRAMES = 2000
 
     # Movement check configurations
     MOVEMENT_CHECKS = [
@@ -59,7 +60,7 @@ class TruncationChecker:
         }
     ]
 
-    def __init__(self, env):
+    def __init__(self, env, enable_short_episode_truncation: bool = False):
         """Initialize the truncation checker.
 
         Args:
@@ -67,6 +68,7 @@ class TruncationChecker:
         """
         self.env = env
         self.position_history = []  # List of (x, y) tuples
+        self.enable_short_episode_truncation = enable_short_episode_truncation
 
     def _check_movement_at_scale(self, window_size: int, block_size: int, description: str) -> Tuple[bool, str]:
         """Check if the ninja is stuck at a particular movement scale.
@@ -105,19 +107,22 @@ class TruncationChecker:
         """
         self.position_history.append((x, y))
 
-        # Check frame limit
+        # Check frame limits
+        if self.enable_short_episode_truncation and len(self.position_history) >= self.SHORT_EPISODE_MAX_FRAMES:
+            return True, "Max frames reached"
+
         if len(self.position_history) >= self.MAX_FRAMES:
             return True, "Max frames reached"
 
         # Check movement at each scale
-        for check in self.MOVEMENT_CHECKS:
-            is_stuck, reason = self._check_movement_at_scale(
-                check['window'],
-                check['size'],
-                check['description']
-            )
-            if is_stuck:
-                return True, reason
+        # for check in self.MOVEMENT_CHECKS:
+        #     is_stuck, reason = self._check_movement_at_scale(
+        #         check['window'],
+        #         check['size'],
+        #         check['description']
+        #     )
+        #     if is_stuck:
+        #         return True, reason
 
         return False, ""
 
