@@ -156,7 +156,9 @@ class BasicLevelNoGold(BaseEnvironment):
         # Check truncation using a simple frame check
         should_truncate = self.nplay_headless.sim.frame >= MAX_TIME_IN_FRAMES
 
-        return terminated, should_truncate, player_won
+        # We also terminate if the truncation state is reached, that way we can
+        # learn from the episode, since our time remaining is in our observation
+        return terminated or should_truncate, False, player_won
 
     def _calculate_reward(self, curr_obs, prev_obs):
         """Calculate the reward for the environment."""
