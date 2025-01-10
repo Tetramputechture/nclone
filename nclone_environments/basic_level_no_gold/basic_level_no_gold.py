@@ -1,7 +1,7 @@
 import gymnasium
 from gymnasium.spaces import discrete, box, Dict
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional
 import os
 import uuid
 import random
@@ -43,12 +43,14 @@ class BasicLevelNoGold(BaseEnvironment):
                  enable_animation: bool = False,
                  enable_logging: bool = False,
                  enable_debug_overlay: bool = False,
-                 enable_short_episode_truncation: bool = False):
+                 enable_short_episode_truncation: bool = False,
+                 seed: Optional[int] = None):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation,
                          enable_logging=enable_logging,
-                         enable_debug_overlay=enable_debug_overlay)
+                         enable_debug_overlay=enable_debug_overlay,
+                         seed=seed)
 
         # Initialize observation processor
         self.observation_processor = ObservationProcessor(
