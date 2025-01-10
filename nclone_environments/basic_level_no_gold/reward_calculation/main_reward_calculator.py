@@ -4,17 +4,8 @@ from nclone_environments.basic_level_no_gold.reward_calculation.navigation_rewar
 
 
 class RewardCalculator:
-    """
-    A curriculum-based reward calculator for the N++ environment that progressively
-    adapts rewards based on the agent's demonstrated capabilities and learning stage.
-
-    The calculator implements three main learning stages:
-    2. Navigation: Efficient path-finding and objective targeting
-
-    Each stage builds upon the skills learned in previous stages, with rewards
-    automatically adjusting based on the agent's demonstrated competence.
-    """
-    TERMINAL_REWARD = 1.0
+    """Main reward calculator."""
+    BASE_TERMINAL_REWARD = 1.0
     DEATH_PENALTY = -0.1
     BASE_TIME_PENALTY = -0.001
     GOLD_REWARD = 0.01
@@ -22,29 +13,34 @@ class RewardCalculator:
     def __init__(self):
         """Initialize reward calculator with all components."""
         self.navigation_calculator = NavigationRewardCalculator()
+        self.steps_taken = 0
+        self.total_gold_available = 0
+        self.gold_collected = 0
 
     def calculate_reward(self, obs: Dict[str, Any], prev_obs: Dict[str, Any]) -> float:
         """Calculate reward.
 
         Args:
             obs: Current game state
+            prev_obs: Previous game state
 
         Returns:
             float: Total reward for the transition
         """
+        self.steps_taken += 1
+
         # Termination penalties
         if obs.get('player_dead', False):
             return self.DEATH_PENALTY
 
-        # Win condition
-        if obs.get('player_won', False):
-            return self.TERMINAL_REWARD
-
         # Initialize reward
         reward = 0.0
 
-        # Add time pressure
-        reward += self.BASE_TIME_PENALTY
+        # Add time pressure - scales with progress to encourage efficiency
+        progress = self.navigation_calculator.get_progress_estimate(obs)
+
+        # Higher penalty when closer to goal
+        reward += self.BASE_TIME_PENALTY * (1.0 + progress)
 
         # Add gold reward for the difference in gold collected
         gold_diff = obs.get('gold_collected', 0) - \
@@ -57,8 +53,14 @@ class RewardCalculator:
         )
         reward += navigation_reward
 
+        # Win condition
+        if obs.get('player_won', False):
+            # Base completion reward
+            reward += self.BASE_TERMINAL_REWARD
+
         return reward
 
     def reset(self):
         """Reset all components for new episode."""
         self.navigation_calculator.reset()
+        self.steps_taken = 0

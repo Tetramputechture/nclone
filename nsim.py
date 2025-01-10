@@ -102,7 +102,6 @@ class Simulator:
     def __init__(self, sc: SimConfig):
         self.frame = 0
         self.collisionlog = []
-        self.gold_collected = 0
 
         self.sim_config = sc
         self.ninja = None
@@ -132,7 +131,6 @@ class Simulator:
         entities and the collision log."""
         self.frame = 0
         self.collisionlog = []
-        self.gold_collected = 0
         self.ninja = None
         self.reset_map_entity_data()
         self.load_map_entities()

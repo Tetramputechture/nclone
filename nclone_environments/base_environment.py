@@ -12,14 +12,15 @@ class BaseEnvironment(gymnasium.Env):
 
     MAP_DATA_PATH = None
 
-    def __init__(self, render_mode: str = 'rgb_array', enable_animation: bool = False, enable_logging: bool = False):
+    def __init__(self, render_mode: str = 'rgb_array', enable_animation: bool = False, enable_logging: bool = False, enable_debug_overlay: bool = False):
         """Initialize the environment."""
         super().__init__()
 
         self.render_mode = render_mode
-
+        self.enable_animation = enable_animation
+        self.enable_logging = enable_logging
         self.nplay_headless = NPlayHeadless(
-            render_mode=render_mode, enable_animation=enable_animation, enable_logging=enable_logging)
+            render_mode=render_mode, enable_animation=enable_animation, enable_logging=enable_logging, enable_debug_overlay=enable_debug_overlay)
 
         # Initialize action space
         self.action_space = discrete.Discrete(6)
@@ -90,10 +91,9 @@ class BaseEnvironment(gymnasium.Env):
         # Reset reward calculator
         self._reset_reward_calculator()
 
-        # Reset level and load random map
+        # Reset level and load map
         self.nplay_headless.reset()
-        # self.nplay_headless.load_random_map()
-        self.nplay_headless.load_map(self.MAP_DATA_PATH)
+        self._load_map()
 
         # Get initial observation and process it
         initial_obs = self._get_observation()
@@ -103,7 +103,15 @@ class BaseEnvironment(gymnasium.Env):
 
     def render(self):
         """Render the environment."""
-        return self.nplay_headless.render()
+        return self.nplay_headless.render(self._debug_info())
+
+    def _debug_info(self):
+        """Returns a dictionary containing debug information to be displayed on the screen."""
+        return None
+
+    def _load_map(self):
+        """Loads the map."""
+        raise NotImplementedError
 
     def _get_observation(self):
         """Gets the observation from the environment. Unique per each environment, must be implemented in child class."""
