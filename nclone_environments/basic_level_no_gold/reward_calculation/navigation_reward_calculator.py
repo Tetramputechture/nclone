@@ -24,6 +24,34 @@ class NavigationRewardCalculator:
         self.episode_start_switch_distance = None
         self.episode_start_exit_distance = None
 
+    def get_progress_estimate(self, state: Dict[str, Any]) -> float:
+        """Estimate progress through the level (0.0 to 1.0)."""
+        if not state['switch_activated']:
+            if self.episode_start_switch_distance is None:
+                return 0.0
+
+            curr_distance = calculate_distance(
+                state['player_x'], state['player_y'],
+                state['switch_x'], state['switch_y']
+            )
+            # Progress is how close we are to switch relative to starting distance
+            progress = 1.0 - (curr_distance /
+                              self.episode_start_switch_distance)
+            # Scale to 0.0-0.5 range since this is first half of level
+            return max(0.0, min(0.5, progress * 0.5))
+        else:
+            if self.episode_start_exit_distance is None:
+                return 0.5  # Just activated switch
+
+            curr_distance = calculate_distance(
+                state['player_x'], state['player_y'],
+                state['exit_door_x'], state['exit_door_y']
+            )
+            # Progress is how close we are to exit relative to starting distance
+            progress = 1.0 - (curr_distance / self.episode_start_exit_distance)
+            # Scale to 0.5-1.0 range since this is second half of level
+            return 0.5 + max(0.0, min(0.5, progress * 0.5))
+
     def calculate_potential(self, state: Dict[str, Any]) -> float:
         """Calculate state potential for reward shaping."""
         # Scale based on level size

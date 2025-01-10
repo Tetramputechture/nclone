@@ -7,6 +7,7 @@ from nsim_renderer import NSimRenderer
 from map_generation.map_generator import generate_map
 from sim_config import SimConfig
 import numpy as np
+from typing import List
 import math
 from entities import (EntityToggleMine, EntityGold, EntityExit, EntityExitSwitch,
                       EntityDoorRegular, EntityDoorLocked, EntityDoorTrap, EntityLaunchPad,
@@ -28,7 +29,11 @@ class NPlayHeadless:
     or jumping, loading a map, resetting and ticking the simulation).
     """
 
-    def __init__(self, render_mode: str = 'rgb_array', enable_animation: bool = False, enable_logging: bool = False):
+    def __init__(self,
+                 render_mode: str = 'rgb_array',
+                 enable_animation: bool = False,
+                 enable_logging: bool = False,
+                 enable_debug_overlay: bool = False):
         """
         Initialize the simulation and renderer, as well as the headless pygame
         interface and display.
@@ -37,7 +42,8 @@ class NPlayHeadless:
 
         self.sim = Simulator(
             SimConfig(enable_anim=enable_animation, log_data=enable_logging))
-        self.sim_renderer = NSimRenderer(self.sim, render_mode)
+        self.sim_renderer = NSimRenderer(
+            self.sim, render_mode, enable_debug_overlay)
         self.current_map_data = None
         self.clock = pygame.time.Clock()
 
@@ -54,14 +60,22 @@ class NPlayHeadless:
         self._render_buffer = np.empty(
             (SRCWIDTH, SRCHEIGHT, 3), dtype=np.uint8)
 
+        self.enable_debug_overlay = enable_debug_overlay
+
+    def load_map_from_map_data(self, map_data: List[int]):
+        """
+        Load a map from a list of integers.
+        """
+        self.sim.load(map_data)
+        self.current_map_data = map_data
+
     def load_map(self, map_path: str):
         """
         Load a map from a file.
         """
         with open(map_path, "rb") as map_file:
-            mapdata = [int(b) for b in map_file.read()]
-        self.sim.load(mapdata)
-        self.current_map_data = mapdata
+            map_data = [int(b) for b in map_file.read()]
+        self.load_map_from_map_data(map_data)
 
     def load_random_map(self, seed: Optional[int] = None, map_type: Optional[str] = "SIMPLE_HORIZONTAL_NO_BACKTRACK"):
         """
@@ -69,8 +83,7 @@ class NPlayHeadless:
         """
         # Get the map data
         map_data = generate_map(level_type=map_type, seed=seed).map_data()
-        self.sim.load(map_data)
-        self.current_map_data = map_data
+        self.load_map_from_map_data(map_data)
 
     def load_random_official_map(self):
         """
@@ -100,13 +113,16 @@ class NPlayHeadless:
             pygame.event.pump()
             self.clock.tick(60)
 
-    def render(self):
+    def render(self, debug_info: Optional[dict] = None):
         """
         Render the current frame to a NumPy array.
         Uses a pre-allocated buffer and direct pixel access for better performance.
+
+        Args:
+            debug_info: A dictionary containing debug information to be displayed on the screen.
         """
         init = self.sim.frame <= 1
-        surface = self.sim_renderer.draw(init)
+        surface = self.sim_renderer.draw(init, debug_info)
 
         # if self.render_mode == 'rgb_array':
         # Use our pre-allocated buffer
@@ -223,7 +239,12 @@ class NPlayHeadless:
         return np.array(state, dtype=np.float32)
 
     def get_gold_collected(self):
+        """Returns the total gold collected by the ninja."""
         return self.sim.ninja.gold_collected
+
+    def get_total_gold_available(self):
+        """Returns count of all gold (entity type 2) in the map."""
+        return sum(1 for entity in self.sim.entity_dic[2])
 
     def get_ninja_state(self):
         """Get ninja state information as a 10-element list of floats, all normalized between 0 and 1.

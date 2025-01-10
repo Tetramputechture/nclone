@@ -92,8 +92,8 @@ class Map:
             if switch_x is None or switch_y is None:
                 raise ValueError(
                     f"Door type {entity_type} requires switch coordinates")
-            entity_data.extend([switch_screen_x, switch_screen_y])
             self.entity_data.extend(entity_data)
+            # self.entity_data.extend([switch_screen_x, switch_screen_y])
         else:
             self.entity_data.extend(entity_data)
 
@@ -115,7 +115,7 @@ class Map:
         # Death ball count at 1200
         map_data.append(self.entity_counts['death_ball'])
         map_data.extend([0] * 30)  # Unknown section (1201-1230)
-        # Ninja spawn at 1231-1232 to match Ninja class expectations
+    # Ninja spawn at 1231-1232 to match Ninja class expectations
         map_data.extend([self.ninja_spawn_x, self.ninja_spawn_y])
         # Ninja orientation at 1233
         map_data.extend([self.ninja_orientation, 0])
@@ -149,3 +149,50 @@ class Map:
             start_idx = x1 + y * self.MAP_WIDTH
             end_idx = x2 + 1 + y * self.MAP_WIDTH
             self.tile_data[start_idx:end_idx] = [0] * (x2 - x1 + 1)
+
+    @staticmethod
+    def from_map_data(map_data: list) -> 'Map':
+        """Create a new Map instance from map data.
+
+        Args:
+            map_data: List of integers representing the map data in simulator format.
+                     Format:
+                     - 0-183: Header
+                     - 184-1149: Tile data
+                     - 1150-1155: Unknown section
+                     - 1156: Exit door count
+                     - 1157-1199: Unknown section
+                     - 1200: Death ball count
+                     - 1201-1230: Unknown section
+                     - 1231-1232: Ninja spawn coordinates
+                     - 1233-1234: Unknown
+                     - 1235+: Entity data (5 integers per entity)
+
+        Returns:
+            A new Map instance with the data from map_data.
+        """
+        map_instance = Map()
+
+        # Set tile data (indices 184-1149)
+        map_instance.tile_data = map_data[184:1150]
+
+        # Set entity counts
+        map_instance.entity_counts['exit_door'] = map_data[1156]
+        map_instance.entity_counts['death_ball'] = map_data[1200]
+
+        # Set ninja spawn and orientation
+        map_instance.ninja_spawn_x = map_data[1231]
+        map_instance.ninja_spawn_y = map_data[1232]
+
+        # Process entity data starting at index 1235
+        map_instance.entity_data = map_data[1235:]
+
+        # Update gold count by counting type 2 entities
+        gold_count = 0
+        for i in range(0, len(map_instance.entity_data), 5):
+            if i + 4 < len(map_instance.entity_data):  # Ensure we have a complete entity
+                if map_instance.entity_data[i] == 2:  # Type 2 is gold
+                    gold_count += 1
+        map_instance.entity_counts['gold'] = gold_count
+
+        return map_instance

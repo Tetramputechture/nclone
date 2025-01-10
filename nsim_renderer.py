@@ -2,7 +2,7 @@ import cairo
 import math
 import pygame
 import numpy as np
-from typing import Literal
+from typing import Literal, Optional
 
 SRCWIDTH = 1056
 SRCHEIGHT = 600
@@ -48,7 +48,7 @@ def hex2float(string):
 
 
 class NSimRenderer:
-    def __init__(self, sim, render_mode: str = 'rgb_array'):
+    def __init__(self, sim, render_mode: str = 'rgb_array', enable_debug_overlay: bool = False):
         self.sim = sim
         if render_mode == 'human':
             self.screen = pygame.display.set_mode(
@@ -66,12 +66,13 @@ class NSimRenderer:
         self.render_context = None
         self.entitydraw_surface = None
         self.entitydraw_context = None
+        self.enable_debug_overlay = enable_debug_overlay
 
         # Pre-calculate common values
         self.pi_div_2 = math.pi / 2
         self.tile_paths = {}  # Cache for tile rendering paths
 
-    def draw(self, init: bool) -> pygame.Surface:
+    def draw(self, init: bool, debug_info: Optional[dict] = None) -> pygame.Surface:
         self._update_screen_size()
         self._update_tile_offsets()
         self.screen.fill("#"+TILECOLOR)
@@ -79,6 +80,10 @@ class NSimRenderer:
             init), (self.tile_x_offset, self.tile_y_offset))
         self.screen.blit(self._draw_tiles(
             init), (self.tile_x_offset, self.tile_y_offset))
+
+        if self.enable_debug_overlay:
+            self.screen.blit(self._draw_debug_overlay(debug_info), (0, 0))
+
         if self.render_mode == 'human':
             pygame.display.flip()
             # pygame.draw.rect(self.screen, "#"+TILECOLOR, (self.tile_x_offset,
@@ -297,7 +302,7 @@ class NSimRenderer:
                 y = entity.ypos*self.adjust
                 if hasattr(entity, "normal_x") and hasattr(entity, "normal_y"):
                     self._draw_oriented_entity(context, entity, x, y)
-                elif not hasattr(entity, "orientation") or entity.is_physical_collidable:
+                elif entity.type != 23:
                     self._draw_physical_entity(context, entity, x, y)
                 if entity.type == 23:
                     self._draw_type_23_entity(context, entity, x, y)
@@ -364,3 +369,71 @@ class NSimRenderer:
         else:
             context.arc(x, y, radius, 0, 2 * math.pi)
             context.fill()
+
+    def _draw_debug_overlay(self, debug_info: Optional[dict] = None):
+        """Helper method to draw debug overlay with nested dictionary support.
+
+        Args:
+            debug_info: Optional dictionary containing debug information to display
+
+        Returns:
+            pygame.Surface: Surface containing the rendered debug text
+        """
+        # Create a surface for the debug overlay
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        # Base font and settings
+        font = pygame.font.Font(None, 20)  # Small font size
+        line_height = 12  # Reduced from 20 to 16 for tighter spacing
+        base_color = (255, 255, 255, 191)  # White with 75% opacity
+
+        # Calculate total height needed for text
+        def calc_text_height(d: dict, level: int = 0) -> int:
+            height = 0
+            for _, value in d.items():
+                height += line_height
+                if isinstance(value, dict):
+                    height += calc_text_height(value, level + 1)
+            return height
+
+        total_height = line_height  # For frame number
+        if debug_info:
+            total_height += calc_text_height(debug_info)
+
+        # Calculate starting position (bottom right)
+        x_pos = self.screen.get_width() - 250  # Fixed width from right edge
+        y_pos = self.screen.get_height() - total_height - 5  # 10px padding from bottom
+
+        def format_value(value):
+            """Format value with rounding for numbers."""
+            if isinstance(value, (float, np.float32, np.float64)):
+                return f"{value:.2f}"
+            elif isinstance(value, tuple) and all(isinstance(x, (int, float, np.float32, np.float64)) for x in value):
+                return tuple(round(x, 2) if isinstance(x, (float, np.float32, np.float64)) else x for x in value)
+            return value
+
+        def render_dict(d: dict, indent_level: int = 0):
+            nonlocal y_pos
+            indent = "  " * indent_level
+
+            for key, value in d.items():
+                if isinstance(value, dict):
+                    # Render dictionary key as a header
+                    text = font.render(f"{indent}{key}:", True, base_color)
+                    surface.blit(text, (x_pos, y_pos))
+                    y_pos += line_height
+                    # Recursively render nested dictionary
+                    render_dict(value, indent_level + 1)
+                else:
+                    # Format and render key-value pair
+                    formatted_value = format_value(value)
+                    text = font.render(
+                        f"{indent}{key}: {formatted_value}", True, base_color)
+                    surface.blit(text, (x_pos, y_pos))
+                    y_pos += line_height
+
+        # Render debug info if provided
+        if debug_info:
+            render_dict(debug_info)
+
+        return surface
