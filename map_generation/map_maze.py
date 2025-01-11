@@ -9,24 +9,22 @@ class MazeGenerator(Map):
     """Generates maze-style N++ levels."""
 
     # Maze generation constants
-    MIN_WIDTH = 4
-    MAX_WIDTH = 42
-    MIN_HEIGHT = 4
-    MAX_HEIGHT = 23
+    MIN_WIDTH = 6
+    MAX_WIDTH = 40
+    MIN_HEIGHT = 6
+    MAX_HEIGHT = 20
 
     MAX_GOLD = 0
 
-    def __init__(self, width: int = 10, height: int = 10, seed: Optional[int] = None):
+    def __init__(self, seed: Optional[int] = None):
         """Initialize the maze generator.
 
         Args:
-            width: Width of the map (4-42)
-            height: Height of the map (4-23)
             seed: Random seed for reproducible generation
         """
-        super().__init__()
-        self.width = max(self.MIN_WIDTH, min(width, self.MAX_WIDTH))
-        self.height = max(self.MIN_HEIGHT, min(height, self.MAX_HEIGHT))
+        super().__init__(seed)
+        self.width = self.rng.randint(self.MIN_WIDTH, self.MAX_WIDTH)
+        self.height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
 
         # Initialize tracking variables
         self.visited: Set[Tuple[int, int]] = set()
@@ -46,8 +44,8 @@ class MazeGenerator(Map):
 
     def _fill_with_walls(self):
         """Fill the entire map with solid walls."""
-        for y in range(self.height):
-            for x in range(self.width):
+        for y in range(self.height + 1):
+            for x in range(self.width + 1):
                 self.set_tile(x, y, 1)  # 1 = wall
 
     def _is_valid_cell(self, x: int, y: int) -> bool:
@@ -205,6 +203,7 @@ class MazeGenerator(Map):
         3. Place the ninja spawn point near the left side
         4. Place the exit door and switch in valid positions
         5. Add gold pieces in valid positions
+        6. Add random entities outside the playspace
 
         Args:
             seed: Random seed for reproducible generation
@@ -220,17 +219,22 @@ class MazeGenerator(Map):
         self.visited.clear()
 
         # Pre-generate all random tiles at once
-        # Choose if tiles will be random or solid for the border
-        if self.rng.choice([True, False]):
+        # Choose if tiles will be random, solid, or empty for the border
+        choice = self.rng.randint(0, 2)
+        if choice == 0:
             tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
                 self.MAP_WIDTH * self.MAP_HEIGHT)]
+        elif choice == 1:
+            tile_types = [1] * (self.MAP_WIDTH *
+                                self.MAP_HEIGHT)  # Solid walls
         else:
-            tile_types = [1] * (self.MAP_WIDTH * self.MAP_HEIGHT)
+            tile_types = [0] * (self.MAP_WIDTH *
+                                self.MAP_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
         self._init_solid_map()
 
         # Start maze generation from a random position on the left side
-        start_x = 0  # Start from leftmost column
+        start_x = self.rng.randrange(0, self.width, 2)
         start_y = self.rng.randrange(0, self.height, 2)  # Random even row
         self._carve_path(start_x, start_y)
 
@@ -238,5 +242,11 @@ class MazeGenerator(Map):
         self._place_ninja()
         self._place_exit()
         self._place_gold()
+
+        # Add random entities outside the playspace
+        # For maze, playspace is the maze area plus some padding
+        playspace = (2, 2, 2 + self.width * 2, 2 + self.height * 2)
+        self.add_random_entities_outside_playspace(
+            playspace[0], playspace[1], playspace[2], playspace[3])
 
         return self

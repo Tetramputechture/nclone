@@ -1,6 +1,21 @@
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import random
 from map_generation.constants import GRID_SIZE_FACTOR, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
+
+# Valid entity types that can be randomly placed
+VALID_RANDOM_ENTITIES = [
+    1,  # Toggle mine
+    2,  # Gold
+    10,  # Launch pad
+    11,  # One way platform
+    14,  # Drone zap
+    17,  # Bounce block,
+    21,  # Toggle mine (toggled)
+    20,  # Thwump
+    24,  # Boost pad
+    25,  # Death ball
+    26,  # Mini drone
+]
 
 
 class Map:
@@ -199,3 +214,61 @@ class Map:
         map_instance.entity_counts['gold'] = gold_count
 
         return map_instance
+
+    def add_random_entities_outside_playspace(self, playspace_x1: int, playspace_y1: int,
+                                              playspace_x2: int, playspace_y2: int) -> None:
+        """Add random entities outside the playspace of the map.
+
+        Args:
+            playspace_x1: Left bound of playspace
+            playspace_y1: Top bound of playspace
+            playspace_x2: Right bound of playspace
+            playspace_y2: Bottom bound of playspace
+        """
+        # Get number of entities to add (0-128)
+        num_entities = self.rng.randint(0, 128)
+
+        # Get valid positions outside playspace
+        valid_positions: List[Tuple[int, int]] = []
+
+        # Add positions from all regions outside the playspace
+        # Top region
+        for y in range(2, min(playspace_y1, self.MAP_HEIGHT)):
+            for x in range(2, self.MAP_WIDTH - 2):
+                valid_positions.append((x, y))
+
+        # Bottom region
+        for y in range(playspace_y2 + 1, self.MAP_HEIGHT - 2):
+            for x in range(2, self.MAP_WIDTH - 2):
+                valid_positions.append((x, y))
+
+        # Left region (excluding parts already covered by top/bottom)
+        for y in range(playspace_y1, min(playspace_y2 + 1, self.MAP_HEIGHT)):
+            for x in range(2, playspace_x1):
+                valid_positions.append((x, y))
+
+        # Right region (excluding parts already covered by top/bottom)
+        for y in range(playspace_y1, min(playspace_y2 + 1, self.MAP_HEIGHT)):
+            for x in range(playspace_x2 + 1, self.MAP_WIDTH - 2):
+                valid_positions.append((x, y))
+
+        # Add random entities
+        for _ in range(num_entities):
+            if not valid_positions:  # Break if we run out of positions
+                break
+
+            # Choose random position and remove it from available positions
+            pos_idx = self.rng.randint(0, len(valid_positions) - 1)
+            x, y = valid_positions.pop(pos_idx)
+
+            # Choose random entity type
+            entity_type = self.rng.choice(VALID_RANDOM_ENTITIES)
+
+            # Add entity to map
+            # For entities that need orientation, randomly choose one
+            # These entity types need orientation
+            if entity_type in [10, 11, 14, 20, 26]:
+                orientation = self.rng.randint(0, 7)
+                self.add_entity(entity_type, x, y, orientation)
+            else:
+                self.add_entity(entity_type, x, y)
