@@ -100,6 +100,7 @@ class BasicLevelNoGold(BaseEnvironment):
         # self.map_cycle_length = 1
         self.map_cycle_index = 1
         self.mirror_map = False
+        self.random_map_type = None
 
     def _get_observation(self) -> np.ndarray:
         """Get the current observation from the game state."""
@@ -133,9 +134,14 @@ class BasicLevelNoGold(BaseEnvironment):
     def _load_map(self):
         """Loads the official map corresponding to the current map cycle index."""
         # First, choose if we want to generate a random map, or load the next map in the cycle
-        if self.rng.random() < self.RANDOM_MAP_CHANCE:
+        if self.rng.random() < 1:
             self.current_map_name = f"random_map_{uuid.uuid4()}"
-            self.nplay_headless.load_random_map()
+            self.random_map_type = self.rng.choice([
+                # "SIMPLE_HORIZONTAL_NO_BACKTRACK",
+                "JUMP_REQUIRED",
+                # "MAZE",
+            ])
+            self.nplay_headless.load_random_map(self.random_map_type)
         else:
             self.current_map_name = self.nplay_headless.load_random_official_map()
 
@@ -157,8 +163,9 @@ class BasicLevelNoGold(BaseEnvironment):
 
         # If player won, output current map name and total reward
         if player_won:
+            map_to_display = self.current_map_name if self.random_map_type is None else f"Random {self.random_map_type}"
             print(
-                f"\n---\nPlayer won on map: {self.current_map_name} on frame {self.nplay_headless.sim.frame}\n---\n")
+                f"\n---\nPlayer won on map: {map_to_display} on frame {self.nplay_headless.sim.frame}\n---\n")
 
         # Check truncation using our truncation checker
         ninja_x, ninja_y = self.nplay_headless.ninja_position()

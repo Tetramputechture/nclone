@@ -1,7 +1,7 @@
 """Single chamber generation module for N++ levels."""
 
 from map_generation.map import Map
-from typing import Optional
+from typing import List, Tuple, Optional
 from map_generation.constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX
 
 
@@ -134,5 +134,10 @@ class SingleChamberGenerator(Map):
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0,
                         switch_x, switch_y)
+
+        # Add random entities outside playspace
+        playspace = (play_x1 - 4, play_y1 - 4, play_x2 + 4, play_y2 + 4)
+        self.add_random_entities_outside_playspace(
+            playspace[0], playspace[1], playspace[2], playspace[3])
 
         return self
