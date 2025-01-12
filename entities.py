@@ -151,14 +151,6 @@ class Entity:
             # Add entity type
             # Normalize type by max type (28)
             state.append(max(0.0, min(1.0, float(self.type) / 28.0)))
-            # Add padding for state attribute
-            state.append(0.0)
-
-            # Add padding for laser-specific attributes
-            state.extend([0.0, 0.0])
-
-            # Add padding for orientation
-            state.append(0.0)
 
         return state
 
@@ -250,7 +242,7 @@ class EntityToggleMine(Entity):
     def get_state(self):
         state = super().get_state()
         # Normalize state (0, 1, or 2)
-        state[4] = max(0.0, min(1.0, float(self.state) / 2))
+        # state.append(max(0.0, min(1.0, float(self.state) / 2)))
         return state
 
 
@@ -370,8 +362,8 @@ class EntityDoorBase(Entity):
 
     def get_state(self):
         state = super().get_state()
-        state[4] = float(self.closed)  # Already 0 or 1
-        state[7] = float(self.orientation) / 7  # Normalize orientation
+        # state.append(float(self.closed))  # Already 0 or 1
+        # state[7] = float(self.orientation) / 7  # Normalize orientation
         return state
 
 
@@ -417,6 +409,7 @@ class EntityDoorLocked(EntityDoorBase):
         ninja = self.sim.ninja
         if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
                                     ninja.xpos, ninja.ypos, ninja.RADIUS):
+            ninja.doors_opened += 1
             self.change_state(closed=False)
             self.active = False
 
@@ -612,11 +605,11 @@ class EntityDroneBase(Entity):
     def get_state(self):
         state = super().get_state()
         # Normalize mode (0-3)
-        state[4] = max(0.0, min(1.0, float(self.mode) / 3))
-        state[6] = max(0.0, min(1.0, (float(self.dir) + 1) /
-                       2 if self.dir is not None else 0.5))  # Normalize direction
+        # state.append(max(0.0, min(1.0, float(self.mode) / 3)))
+        # state[6] = max(0.0, min(1.0, (float(self.dir) + 1) /
+        #                2 if self.dir is not None else 0.5))  # Normalize direction
         # Normalize orientation
-        state[7] = max(0.0, min(1.0, float(self.orientation) / 7))
+        # state[7] = max(0.0, min(1.0, float(self.orientation) / 7))
         return state
 
 
@@ -872,7 +865,7 @@ class EntityLaser(Entity):
         else:
             if closest_point is None:
                 self.mode = 1
-            else:   
+            else:
                 dist = math.sqrt(
                     (closest_point[0] - self.xpos)**2 + (closest_point[1] - self.ypos)**2)
                 self.mode = 1 if dist < 7 else 0
@@ -953,10 +946,10 @@ class EntityLaser(Entity):
 
     def get_state(self):
         state = super().get_state()
-        # Normalize angle
-        state[5] = max(0.0, min(1.0, self.angle / (2 * math.pi)))
-        # Normalize direction (-1 or 1)
-        state[6] = max(0.0, min(1.0, (float(self.dir) + 1) / 2))
+        # # Normalize angle
+        # state[5] = max(0.0, min(1.0, self.angle / (2 * math.pi)))
+        # # Normalize direction (-1 or 1)
+        # state[6] = max(0.0, min(1.0, (float(self.dir) + 1) / 2))
         return state
 
 

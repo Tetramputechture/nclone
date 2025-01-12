@@ -20,8 +20,8 @@ TEMPORAL_FRAMES = 4
 # Total game state features including all entities
 GAME_STATE_FEATURES = 159019
 
-# Total game state features with entitie max count of 128
-GAME_STATE_FEATURES_MAX_ENTITY_COUNT_128 = 15659
+# Total game state features with limited entity count
+GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT = 2594
 
 # Ninja state size
 NINJA_STATE_SIZE = 10

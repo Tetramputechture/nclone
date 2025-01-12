@@ -141,6 +141,9 @@ class Ninja:
         # gold collected
         self.gold_collected = 0
 
+        # doors opened
+        self.doors_opened = 0
+
         self.log()
 
     def integrate(self):

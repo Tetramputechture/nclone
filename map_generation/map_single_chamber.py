@@ -10,11 +10,11 @@ class SingleChamberGenerator(Map):
 
     # Simple horizontal level constants
     MIN_WIDTH = 4
-    MAX_WIDTH = 6
+    MAX_WIDTH = 30
     MIN_HEIGHT = 1
     MAX_HEIGHT = 3
     GLOBAL_MAX_UP_DEVIATION = 5
-    GLOBAL_MAX_DOWN_DEVIATION = 0
+    GLOBAL_MAX_DOWN_DEVIATION = 1
 
     def set_empty_rectangle(self, x1: int, y1: int, x2: int, y2: int):
         """Set a rectangular region of the map to empty space."""
@@ -79,9 +79,8 @@ class SingleChamberGenerator(Map):
         section_width = max(3, usable_width // 3)
 
         # Pre-calculate max deviation values
-        max_up = min(actual_height, max(5, self.GLOBAL_MAX_UP_DEVIATION))
-        max_down = min(self.GLOBAL_MAX_DOWN_DEVIATION,
-                       max(5, 21 - actual_height))
+        max_up = min(actual_height - 1, self.GLOBAL_MAX_UP_DEVIATION)
+        max_down = 0
 
         # Place entities on X axis, choosing switch or door first
         if self.rng.choice([True, False]):

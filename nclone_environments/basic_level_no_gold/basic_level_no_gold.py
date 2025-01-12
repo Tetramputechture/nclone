@@ -6,7 +6,7 @@ import os
 import uuid
 import random
 from nclone_environments.basic_level_no_gold.constants import (
-    GAME_STATE_FEATURES_MAX_ENTITY_COUNT_128,
+    GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -35,6 +35,7 @@ class BasicLevelNoGold(BaseEnvironment):
     metadata = {'render.modes': ['human', 'rgb_array']}
 
     OFFICIAL_MAP_DATA_PATH = "../nclone/maps/official/"
+    EVAL_MODE_MAP_DATA_PATH = "../nclone/maps/eval/"
     RANDOM_MAP_CHANCE = 0.5
 
     def __init__(self,
@@ -44,7 +45,8 @@ class BasicLevelNoGold(BaseEnvironment):
                  enable_logging: bool = False,
                  enable_debug_overlay: bool = False,
                  enable_short_episode_truncation: bool = False,
-                 seed: Optional[int] = None):
+                 seed: Optional[int] = None,
+                 eval_mode: bool = False):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation,
@@ -85,14 +87,19 @@ class BasicLevelNoGold(BaseEnvironment):
             'game_state': box.Box(
                 low=-1,
                 high=1,
-                shape=(GAME_STATE_FEATURES_MAX_ENTITY_COUNT_128,),
+                shape=(GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,),
                 dtype=np.float32
             )
         })
 
         # Load the first map
-        map_name = os.listdir(self.OFFICIAL_MAP_DATA_PATH)[0]
-        self.nplay_headless.load_map(self.OFFICIAL_MAP_DATA_PATH + map_name)
+        if eval_mode:
+            map_name = os.listdir(self.EVAL_MODE_MAP_DATA_PATH)[0]
+            self.nplay_headless.load_map(
+                self.EVAL_MODE_MAP_DATA_PATH + map_name)
+        else:
+            map_name = os.listdir(self.OFFICIAL_MAP_DATA_PATH)[0]
+            self.nplay_headless.load_random_official_map()
         self.current_map_name = map_name
 
         # Initialize map cycle index. We want our cycle to be deterministic, so we use a counter.
@@ -101,6 +108,10 @@ class BasicLevelNoGold(BaseEnvironment):
         self.map_cycle_index = 1
         self.mirror_map = False
         self.random_map_type = None
+        self.eval_mode = eval_mode
+        self.eval_mode_map_cycle_index = 1
+        self.eval_mode_map_cycle_length = len(
+            os.listdir(self.EVAL_MODE_MAP_DATA_PATH))
 
     def _get_observation(self) -> np.ndarray:
         """Get the current observation from the game state."""
@@ -128,18 +139,29 @@ class BasicLevelNoGold(BaseEnvironment):
             'time_remaining': time_remaining,
             'sim_frame': self.nplay_headless.sim.frame,
             'gold_collected': self.nplay_headless.get_gold_collected(),
+            'doors_opened': self.nplay_headless.get_doors_opened(),
             'total_gold_available': self.nplay_headless.get_total_gold_available(),
         }
 
     def _load_map(self):
         """Loads the official map corresponding to the current map cycle index."""
+        # If we are in eval mode, we want to load the next map in the cycle
+        if self.eval_mode:
+            self.current_map_name = os.listdir(self.EVAL_MODE_MAP_DATA_PATH)[
+                self.eval_mode_map_cycle_index]
+            self.eval_mode_map_cycle_index = (
+                self.eval_mode_map_cycle_index + 1) % self.eval_mode_map_cycle_length
+            self.nplay_headless.load_map(self.EVAL_MODE_MAP_DATA_PATH +
+                                         self.current_map_name)
+            return
+
         # First, choose if we want to generate a random map, or load the next map in the cycle
-        if self.rng.random() < 1:
+        if self.rng.random() < 0.5:
             self.current_map_name = f"random_map_{uuid.uuid4()}"
             self.random_map_type = self.rng.choice([
-                # "SIMPLE_HORIZONTAL_NO_BACKTRACK",
+                "SIMPLE_HORIZONTAL_NO_BACKTRACK",
                 "JUMP_REQUIRED",
-                # "MAZE",
+                "MAZE",
             ])
             self.nplay_headless.load_random_map(self.random_map_type)
         else:
@@ -195,12 +217,33 @@ class BasicLevelNoGold(BaseEnvironment):
         self.reward_calculator.reset()
 
     def _debug_info(self):
+        # Get current cell coordinates
+        ninja_x, ninja_y = self.nplay_headless.ninja_position()
+        cell_x, cell_y = self.reward_calculator.exploration_calculator._get_cell_coords(
+            ninja_x, ninja_y)
+        area_4x4_x = cell_x // 4
+        area_4x4_y = cell_y // 4
+        area_8x8_x = cell_x // 8
+        area_8x8_y = cell_y // 8
+        area_16x16_x = cell_x // 16
+        area_16x16_y = cell_y // 16
+
         return {
             'frame': self.nplay_headless.sim.frame,
+            'current_ep_reward': self.current_ep_reward,
             'current_map_name': self.current_map_name,
             'ninja_position': self.nplay_headless.ninja_position(),
             'ninja_velocity': self.nplay_headless.ninja_velocity(),
-            'truncation_info': self.truncation_checker.get_debug_info()
+            'exploration': {
+                'current_cell': (cell_x, cell_y),
+                'current_4x4_area': (area_4x4_x, area_4x4_y),
+                'current_8x8_area': (area_8x8_x, area_8x8_y),
+                'current_16x16_area': (area_16x16_x, area_16x16_y),
+                'visited_cells_count': np.sum(self.reward_calculator.exploration_calculator.visited_cells),
+                'visited_4x4_count': np.sum(self.reward_calculator.exploration_calculator.visited_4x4),
+                'visited_8x8_count': np.sum(self.reward_calculator.exploration_calculator.visited_8x8),
+                'visited_16x16_count': np.sum(self.reward_calculator.exploration_calculator.visited_16x16),
+            }
         }
 
     def reset(self, seed=None, options=None):

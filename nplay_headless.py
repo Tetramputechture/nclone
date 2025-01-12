@@ -243,6 +243,10 @@ class NPlayHeadless:
         """Returns the total gold collected by the ninja."""
         return self.sim.ninja.gold_collected
 
+    def get_doors_opened(self):
+        """Returns the total doors opened by the ninja."""
+        return self.sim.ninja.doors_opened
+
     def get_total_gold_available(self):
         """Returns count of all gold (entity type 2) in the map."""
         return sum(1 for entity in self.sim.entity_dic[2])
@@ -301,42 +305,39 @@ class NPlayHeadless:
             return [float(self._sim_exit_switch().active), float(self._sim_exit_door().active)]
 
         # Maximum number of attributes per entity (padding with zeros if entity has fewer attributes)
-        MAX_ATTRIBUTES = 8
+        MAX_ATTRIBUTES = 4
 
-        # Entity type to max count mapping based on MAX_COUNT_PER_LEVEL constants
+        # Entity type to max count mapping based on our own constraints
         MAX_COUNTS = {
-            EntityToggleMine.ENTITY_TYPE: EntityToggleMine.MAX_COUNT_PER_LEVEL,
-            EntityGold.ENTITY_TYPE: EntityGold.MAX_COUNT_PER_LEVEL,
-            EntityExit.ENTITY_TYPE: EntityExit.MAX_COUNT_PER_LEVEL,
-            EntityDoorRegular.ENTITY_TYPE: EntityDoorRegular.MAX_COUNT_PER_LEVEL,
-            EntityDoorLocked.ENTITY_TYPE: EntityDoorLocked.MAX_COUNT_PER_LEVEL,
-            EntityDoorTrap.ENTITY_TYPE: EntityDoorTrap.MAX_COUNT_PER_LEVEL,
-            EntityLaunchPad.ENTITY_TYPE: EntityLaunchPad.MAX_COUNT_PER_LEVEL,
-            EntityOneWayPlatform.ENTITY_TYPE: EntityOneWayPlatform.MAX_COUNT_PER_LEVEL,
-            EntityDroneZap.ENTITY_TYPE: EntityDroneZap.MAX_COUNT_PER_LEVEL,
-            EntityBounceBlock.ENTITY_TYPE: EntityBounceBlock.MAX_COUNT_PER_LEVEL,
-            EntityThwump.ENTITY_TYPE: EntityThwump.MAX_COUNT_PER_LEVEL,
-            EntityBoostPad.ENTITY_TYPE: EntityBoostPad.MAX_COUNT_PER_LEVEL,
-            EntityDeathBall.ENTITY_TYPE: EntityDeathBall.MAX_COUNT_PER_LEVEL,
-            EntityMiniDrone.ENTITY_TYPE: EntityMiniDrone.MAX_COUNT_PER_LEVEL,
-            EntityShoveThwump.ENTITY_TYPE: EntityShoveThwump.MAX_COUNT_PER_LEVEL
+            # Support max amount of mines and gold; otherwise, constrain to 32
+            EntityToggleMine.ENTITY_TYPE: 128,
+            EntityGold.ENTITY_TYPE: 128,
+            EntityExit.ENTITY_TYPE: 1,
+            EntityDoorRegular.ENTITY_TYPE: 32,
+            EntityDoorLocked.ENTITY_TYPE: 32,
+            EntityDoorTrap.ENTITY_TYPE: 32,
+            EntityLaunchPad.ENTITY_TYPE: 32,
+            EntityOneWayPlatform.ENTITY_TYPE: 32,
+            EntityDroneZap.ENTITY_TYPE: 32,
+            EntityBounceBlock.ENTITY_TYPE: 32,
+            EntityThwump.ENTITY_TYPE: 32,
+            EntityBoostPad.ENTITY_TYPE: 32,
+            EntityDeathBall.ENTITY_TYPE: 32,
+            EntityMiniDrone.ENTITY_TYPE: 32,
+            EntityShoveThwump.ENTITY_TYPE: 32
         }
 
         exit_entity_type = EntityExit.ENTITY_TYPE
         switch_entity_type = EntityExitSwitch.ENTITY_TYPE
 
         entity_types = [
-            exit_entity_type, switch_entity_type] if only_one_exit_and_switch else range(1, 29)
+            exit_entity_type, switch_entity_type] if only_one_exit_and_switch else list(MAX_COUNTS.keys())
 
         # For each entity type in the simulation
         for entity_type in entity_types:
             entities = self.sim.entity_dic.get(entity_type, [])
             # Default to 16 if not specified
             max_count = MAX_COUNTS.get(entity_type, 16)
-
-            # For now, if max_count is greater than 128, set it to 128
-            if max_count > 128:
-                max_count = 128
 
             state.append(float(len(entities)) / max_count)
 
