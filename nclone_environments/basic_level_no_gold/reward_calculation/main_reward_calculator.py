@@ -7,7 +7,7 @@ from nclone_environments.basic_level_no_gold.reward_calculation.exploration_rewa
 class RewardCalculator:
     """Main reward calculator."""
     BASE_TERMINAL_REWARD = 1.0
-    DEATH_PENALTY = -0.1
+    DEATH_PENALTY = -0.5
     GOLD_REWARD = 0.01
     DOOR_OPEN_REWARD = 0.01
 

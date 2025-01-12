@@ -22,10 +22,10 @@ class ExplorationRewardCalculator:
     CELL_SIZE = 24.0
 
     # Scale rewards to keep total step reward <= 0.1
-    CELL_REWARD = 0.025  # New cell
-    AREA_4x4_REWARD = 0.025  # New 4x4 area
-    AREA_8x8_REWARD = 0.025  # New 8x8 area
-    AREA_16x16_REWARD = 0.025  # New 16x16 area
+    CELL_REWARD = 0.001  # New cell
+    AREA_4x4_REWARD = 0.001  # New 4x4 area
+    AREA_8x8_REWARD = 0.001  # New 8x8 area
+    AREA_16x16_REWARD = 0.001  # New 16x16 area
 
     def __init__(self):
         """Initialize exploration tracking matrices."""
