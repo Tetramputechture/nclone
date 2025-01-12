@@ -54,8 +54,9 @@ class MapJumpRequired(Map):
         pit_x1 = chamber_x1 + (chamber_width - pit_width) // 2
         pit_x2 = pit_x1 + pit_width
 
-        # Pit should extend from bottom of chamber up about 2/3 of chamber height
-        pit_height = (chamber_y2 - chamber_y1) * 2 // 3
+        # Pit should extend from bottom of chamber up about 2/3 of chamber height plus a random deviation of +- 2
+        pit_height = (chamber_y2 - chamber_y1) * \
+            2 // 3 + self.rng.randint(-2, 2)
         pit_top_y = chamber_y2 - pit_height
 
         # Create the pit (empty space)
@@ -206,7 +207,8 @@ class MapJumpRequired(Map):
 
         # Place switch somewhere between pit top and chamber top (-3 so its not too high)
         switch_x = self.rng.randint(pit_x1, pit_x2)
-        switch_y = self.rng.randint(pit_top_y - 3, pit_top_y - 1)
+        switch_y = self.rng.randint(max(pit_top_y - 3, chamber_y1),
+                                    pit_top_y - 1)
 
         # Place mines on the platforms
         self.place_mines_on_platforms(

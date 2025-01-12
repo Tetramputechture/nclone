@@ -38,6 +38,9 @@ class BaseEnvironment(gymnasium.Env):
         # Initialize RNG
         self.rng = random.Random(seed)
 
+        # Track reward for the current episode
+        self.current_ep_reward = 0
+
     def _actions_to_execute(self, action: int) -> Tuple[int, int]:
         """Execute the specified action using the game controller.
 
@@ -88,6 +91,7 @@ class BaseEnvironment(gymnasium.Env):
 
         # Calculate reward
         reward = self._calculate_reward(curr_obs, prev_obs)
+        self.current_ep_reward += reward
 
         # Process observation for training
         processed_obs = self._process_observation(curr_obs)
@@ -103,6 +107,9 @@ class BaseEnvironment(gymnasium.Env):
 
         # Reset reward calculator
         self._reset_reward_calculator()
+
+        # Reset episode reward
+        self.current_ep_reward = 0
 
         # Reset level and load map
         self.nplay_headless.reset()
