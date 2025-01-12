@@ -49,10 +49,16 @@ class RewardCalculator:
         reward += self.DOOR_OPEN_REWARD * door_diff
 
         # Navigation reward with progressive scaling
-        navigation_reward = self.navigation_calculator.calculate_navigation_reward(
+        navigation_reward, switch_active_changed = self.navigation_calculator.calculate_navigation_reward(
             obs, prev_obs
         )
         reward += navigation_reward
+
+        # If our switch was activated or a door was opened, reset our exploration reward calculator
+        # This is so that the agent is curious about areas its already been to when it activates the switch,
+        # since the exit could be in any of the areas it has already explored
+        if switch_active_changed or door_diff > 0:
+            self.exploration_calculator.reset()
 
         # Exploration reward
         exploration_reward = self.exploration_calculator.calculate_exploration_reward(

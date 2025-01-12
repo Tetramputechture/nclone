@@ -92,6 +92,7 @@ class NavigationRewardCalculator:
                                     prev_state: Dict[str, Any]) -> Tuple[float, bool]:
         """Calculate navigation reward based on movement towards/away from goals."""
         reward = 0.0
+        switch_active_changed = False
 
         # Calculate current distances
         curr_distance_to_switch = calculate_distance(
@@ -122,6 +123,7 @@ class NavigationRewardCalculator:
             if not prev_state['switch_activated']:
                 reward += self.SWITCH_ACTIVATION_REWARD
                 self.closest_distance_to_exit = curr_distance_to_exit
+                switch_active_changed = True
             else:
                 # Only reward if we've reached a new closest distance to exit
                 if curr_distance_to_exit < self.closest_distance_to_exit:
@@ -136,7 +138,7 @@ class NavigationRewardCalculator:
             reward += shaping_reward
         self.prev_potential = current_potential
 
-        return reward
+        return reward, switch_active_changed
 
     def reset(self):
         """Reset internal state for new episode."""
