@@ -320,6 +320,7 @@ class MultiChamberGenerator(Map):
         # Add gold to random chambers
         if self.MAX_GOLD_PER_CHAMBER > 0:
             for chamber in self.chambers:
+                gold_count = 0
                 if self.rng.random() < 0.7:  # 70% chance for gold in each chamber
                     gold_count = self.rng.randint(
                         1, self.MAX_GOLD_PER_CHAMBER)

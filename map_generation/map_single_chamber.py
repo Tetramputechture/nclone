@@ -11,8 +11,8 @@ class SingleChamberGenerator(Map):
     # Simple horizontal level constants
     MIN_WIDTH = 4
     MAX_WIDTH = 30
-    MIN_HEIGHT = 1
-    MAX_HEIGHT = 3
+    MIN_HEIGHT = 4
+    MAX_HEIGHT = 10
     GLOBAL_MAX_UP_DEVIATION = 5
     GLOBAL_MAX_DOWN_DEVIATION = 1
 
@@ -55,13 +55,17 @@ class SingleChamberGenerator(Map):
 
         # Pre-generate all random tiles at once
         # Choose if tiles will be random or solid for the border
-        if self.rng.choice([True, False]):
-            tile_types = [self.rng.randint(0, 33) for _ in range(
+        choice = self.rng.randint(0, 2)
+        if choice == 0:
+            tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
                 self.MAP_WIDTH * self.MAP_HEIGHT)]
+        elif choice == 1:
+            tile_types = [1] * (self.MAP_WIDTH *
+                                self.MAP_HEIGHT)  # Solid walls
         else:
-            tile_types = [1] * (self.MAP_WIDTH * self.MAP_HEIGHT)
+            tile_types = [0] * (self.MAP_WIDTH *
+                                self.MAP_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
-
         # Create the empty play space
         self.set_empty_rectangle(play_x1, play_y1, play_x2, play_y2)
 
