@@ -165,6 +165,7 @@ class BasicLevelNoGold(BaseEnvironment):
             ])
             self.nplay_headless.load_random_map(self.random_map_type)
         else:
+            self.random_map_type = None
             self.current_map_name = self.nplay_headless.load_random_official_map()
 
     def _check_termination(self) -> Tuple[bool]:
