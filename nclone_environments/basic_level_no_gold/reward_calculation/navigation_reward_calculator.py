@@ -18,8 +18,8 @@ class NavigationRewardCalculator:
     def __init__(self):
         """Initialize navigation reward calculator."""
         super().__init__()
-        self.prev_distance_to_switch = float('inf')
-        self.prev_distance_to_exit = float('inf')
+        self.closest_distance_to_switch = float('inf')
+        self.closest_distance_to_exit = float('inf')
         self.prev_potential = None
         self.episode_start_switch_distance = None
         self.episode_start_exit_distance = None
@@ -106,26 +106,28 @@ class NavigationRewardCalculator:
         # Initialize episode start distances
         if self.episode_start_switch_distance is None:
             self.episode_start_switch_distance = curr_distance_to_switch
-            self.prev_distance_to_switch = curr_distance_to_switch
+            self.closest_distance_to_switch = curr_distance_to_switch
         if curr_state['switch_activated'] and self.episode_start_exit_distance is None:
             self.episode_start_exit_distance = curr_distance_to_exit
-            self.prev_distance_to_exit = curr_distance_to_exit
+            self.closest_distance_to_exit = curr_distance_to_exit
 
         if not curr_state['switch_activated']:
-            # Calculate distance change to switch
-            distance_change = self.prev_distance_to_switch - curr_distance_to_switch
-            # Positive reward for moving towards, negative for moving away
-            reward += distance_change * self.DISTANCE_IMPROVEMENT_SCALE
+            # Only reward if we've reached a new closest distance to switch
+            if curr_distance_to_switch < self.closest_distance_to_switch:
+                distance_improvement = self.closest_distance_to_switch - curr_distance_to_switch
+                reward += distance_improvement * self.DISTANCE_IMPROVEMENT_SCALE
+                self.closest_distance_to_switch = curr_distance_to_switch
         else:
             # Reward for activating switch
             if not prev_state['switch_activated']:
                 reward += self.SWITCH_ACTIVATION_REWARD
-                self.prev_distance_to_exit = curr_distance_to_exit
+                self.closest_distance_to_exit = curr_distance_to_exit
             else:
-                # Calculate distance change to exit
-                distance_change = self.prev_distance_to_exit - curr_distance_to_exit
-                # Positive reward for moving towards, negative for moving away
-                reward += distance_change * self.DISTANCE_IMPROVEMENT_SCALE
+                # Only reward if we've reached a new closest distance to exit
+                if curr_distance_to_exit < self.closest_distance_to_exit:
+                    distance_improvement = self.closest_distance_to_exit - curr_distance_to_exit
+                    reward += distance_improvement * self.DISTANCE_IMPROVEMENT_SCALE
+                    self.closest_distance_to_exit = curr_distance_to_exit
 
         # Calculate potential-based shaping reward
         current_potential = self.calculate_potential(curr_state)
@@ -134,16 +136,12 @@ class NavigationRewardCalculator:
             reward += shaping_reward
         self.prev_potential = current_potential
 
-        # Update previous distances
-        self.prev_distance_to_switch = curr_distance_to_switch
-        self.prev_distance_to_exit = curr_distance_to_exit
-
         return reward
 
     def reset(self):
         """Reset internal state for new episode."""
-        self.prev_distance_to_switch = float('inf')
-        self.prev_distance_to_exit = float('inf')
+        self.closest_distance_to_switch = float('inf')
+        self.closest_distance_to_exit = float('inf')
         self.prev_potential = None
         self.episode_start_switch_distance = None
         self.episode_start_exit_distance = None
