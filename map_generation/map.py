@@ -252,6 +252,10 @@ class Map:
             for x in range(playspace_x2 + 1, self.MAP_WIDTH - 2):
                 valid_positions.append((x, y))
 
+        # Ensure x is not above 43 and y is not above 24
+        valid_positions = [
+            (x, y) for x, y in valid_positions if x <= 43 and y <= 24]
+
         # Add random entities
         for _ in range(num_entities):
             if not valid_positions:  # Break if we run out of positions
