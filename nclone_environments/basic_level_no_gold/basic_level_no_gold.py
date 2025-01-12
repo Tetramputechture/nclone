@@ -94,13 +94,21 @@ class BasicLevelNoGold(BaseEnvironment):
 
         # Load the first map
         if eval_mode:
-            map_name = os.listdir(self.EVAL_MODE_MAP_DATA_PATH)[0]
-            self.nplay_headless.load_map(
-                self.EVAL_MODE_MAP_DATA_PATH + map_name)
+            self.current_map_name = f"eval_map_{uuid.uuid4()}"
+            self.random_map_type = self.rng.choice([
+                "JUMP_REQUIRED",
+                "MAZE",
+            ])
+            self.nplay_headless.load_random_map(self.random_map_type)
         else:
-            map_name = os.listdir(self.OFFICIAL_MAP_DATA_PATH)[0]
-            self.nplay_headless.load_random_official_map()
-        self.current_map_name = map_name
+            # load random map
+            self.current_map_name = f"random_map_{uuid.uuid4()}"
+            self.random_map_type = self.rng.choice([
+                "SIMPLE_HORIZONTAL_NO_BACKTRACK",
+                "JUMP_REQUIRED",
+                "MAZE",
+            ])
+            self.nplay_headless.load_random_map(self.random_map_type)
 
         # Initialize map cycle index. We want our cycle to be deterministic, so we use a counter.
         self.map_cycle_length = len(os.listdir(self.OFFICIAL_MAP_DATA_PATH))
@@ -109,9 +117,6 @@ class BasicLevelNoGold(BaseEnvironment):
         self.mirror_map = False
         self.random_map_type = None
         self.eval_mode = eval_mode
-        self.eval_mode_map_cycle_index = 1
-        self.eval_mode_map_cycle_length = len(
-            os.listdir(self.EVAL_MODE_MAP_DATA_PATH))
 
     def _get_observation(self) -> np.ndarray:
         """Get the current observation from the game state."""
@@ -147,16 +152,17 @@ class BasicLevelNoGold(BaseEnvironment):
         """Loads the official map corresponding to the current map cycle index."""
         # If we are in eval mode, we want to load the next map in the cycle
         if self.eval_mode:
-            self.current_map_name = os.listdir(self.EVAL_MODE_MAP_DATA_PATH)[
-                self.eval_mode_map_cycle_index]
-            self.eval_mode_map_cycle_index = (
-                self.eval_mode_map_cycle_index + 1) % self.eval_mode_map_cycle_length
-            self.nplay_headless.load_map(self.EVAL_MODE_MAP_DATA_PATH +
-                                         self.current_map_name)
+            # Eval mode will load a random JUMP_REQUIRED or MAZE map
+            self.random_map_type = self.rng.choice([
+                "JUMP_REQUIRED",
+                "MAZE",
+            ])
+            self.current_map_name = f"eval_map_{uuid.uuid4()}"
+            self.nplay_headless.load_random_map(self.random_map_type)
             return
 
         # First, choose if we want to generate a random map, or load the next map in the cycle
-        if self.rng.random() < 0.5:
+        if self.rng.random() < 1:
             self.current_map_name = f"random_map_{uuid.uuid4()}"
             self.random_map_type = self.rng.choice([
                 "SIMPLE_HORIZONTAL_NO_BACKTRACK",
