@@ -149,17 +149,17 @@ class Simulator:
         for x in range(45):
             for y in range(26):
                 self.segment_dic[(x, y)] = []
-        for x in range(88):
+        for x in range(89):
             for y in range(51):
                 self.hor_grid_edge_dic[(x, y)] = 1 if y in (0, 50) else 0
         for x in range(89):
-            for y in range(50):
+            for y in range(51):
                 self.ver_grid_edge_dic[(x, y)] = 1 if x in (0, 88) else 0
-        for x in range(88):
+        for x in range(89):
             for y in range(51):
                 self.hor_segment_dic[(x, y)] = 0
         for x in range(89):
-            for y in range(50):
+            for y in range(51):
                 self.ver_segment_dic[(x, y)] = 0
 
     def load_map_tiles(self):
