@@ -14,7 +14,7 @@ def clamp_cell(xcell, ycell):
 
 def clamp_half_cell(xcell, ycell):
     """If necessary, adjust coordinates of half cell so it is in bounds."""
-    return (clamp(xcell, 0, 88), clamp(ycell, 0, 50))
+    return (clamp(xcell, 0, 87), clamp(ycell, 0, 49))
 
 
 def pack_coord(coord):
