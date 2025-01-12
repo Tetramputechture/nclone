@@ -10,9 +10,9 @@ class MazeGenerator(Map):
 
     # Maze generation constants
     MIN_WIDTH = 6
-    MAX_WIDTH = 40
+    MAX_WIDTH = 20
     MIN_HEIGHT = 6
-    MAX_HEIGHT = 20
+    MAX_HEIGHT = 10
 
     MAX_GOLD = 0
 

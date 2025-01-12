@@ -94,10 +94,21 @@ class NPlayHeadless:
         """
         base_map_path = os.path.join(
             os.path.dirname(__file__), 'maps', 'official')
-        map_file = self.rng.choice(os.listdir(base_map_path))
-        map_path = os.path.join(base_map_path, map_file)
+
+        # Get all subfolders in maps/official
+        subfolders = [f for f in os.listdir(
+            base_map_path) if os.path.isdir(os.path.join(base_map_path, f))]
+
+        # Choose random subfolder
+        subfolder = self.rng.choice(subfolders)
+        subfolder_path = os.path.join(base_map_path, subfolder)
+
+        # Choose random map from subfolder
+        map_file = self.rng.choice(os.listdir(subfolder_path))
+        map_path = os.path.join(subfolder_path, map_file)
+
         self.load_map(map_path)
-        return map_file
+        return os.path.join(subfolder, map_file)
 
     def reset(self):
         """ 
