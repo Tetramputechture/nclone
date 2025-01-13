@@ -7,6 +7,7 @@ import uuid
 import random
 from nclone_environments.basic_level_no_gold.constants import (
     GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
+    GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -37,6 +38,7 @@ class BasicLevelNoGold(BaseEnvironment):
     OFFICIAL_MAP_DATA_PATH = "../nclone/maps/official/"
     EVAL_MODE_MAP_DATA_PATH = "../nclone/maps/eval/"
     RANDOM_MAP_CHANCE = 0.5
+    LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH = True
 
     def __init__(self,
                  render_mode: str = 'rgb_array',
@@ -67,6 +69,7 @@ class BasicLevelNoGold(BaseEnvironment):
 
         # Initialize observation space as a Dict space with player_frame, base_frame, and game_state
         player_frame_channels = TEMPORAL_FRAMES if enable_frame_stack else 1
+        game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH if self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH else GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
         self.observation_space = Dict({
             # Player-centered frame
             'player_frame': box.Box(
@@ -87,7 +90,7 @@ class BasicLevelNoGold(BaseEnvironment):
             'game_state': box.Box(
                 low=-1,
                 high=1,
-                shape=(GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,),
+                shape=(game_state_channels,),
                 dtype=np.float32
             )
         })
@@ -126,7 +129,7 @@ class BasicLevelNoGold(BaseEnvironment):
 
         ninja_state = self.nplay_headless.get_ninja_state()
         entity_states = self.nplay_headless.get_entity_states(
-            only_one_exit_and_switch=False)
+            only_one_exit_and_switch=self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH)
         game_state = np.concatenate([ninja_state, entity_states])
 
         return {
