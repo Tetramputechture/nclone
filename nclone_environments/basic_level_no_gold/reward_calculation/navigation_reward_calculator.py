@@ -10,10 +10,11 @@ class NavigationRewardCalculator:
 
     # Navigation constants
     # Scaled to be meaningful compared to -0.001 per step
-    DISTANCE_IMPROVEMENT_SCALE = 0.001
+    DISTANCE_IMPROVEMENT_SCALE = 0.0001
     MIN_DISTANCE_THRESHOLD = 20.0
     SWITCH_ACTIVATION_REWARD = 0.5
-    POTENTIAL_SCALE = 0.005  # Scale potential-based shaping to be smaller than main rewards
+    # Scale potential-based shaping to be smaller than main rewards
+    POTENTIAL_SCALE = 0.0005
 
     def __init__(self):
         """Initialize navigation reward calculator."""

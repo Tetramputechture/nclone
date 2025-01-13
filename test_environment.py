@@ -27,7 +27,7 @@ while running:
 
     # Get keyboard state
     keys = pygame.key.get_pressed()
-
+    # observation, info = env.reset()
     # Map keyboard inputs to environment actions
     action = 0  # Default to NOOP
     if keys[pygame.K_SPACE] or keys[pygame.K_UP]:
