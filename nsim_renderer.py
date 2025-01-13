@@ -407,7 +407,7 @@ class NSimRenderer:
         def format_value(value):
             """Format value with rounding for numbers."""
             if isinstance(value, (float, np.float32, np.float64)):
-                return f"{value:.2f}"
+                return f"{value:.3f}"
             elif isinstance(value, tuple) and all(isinstance(x, (int, float, np.float32, np.float64)) for x in value):
                 return tuple(round(x, 2) if isinstance(x, (float, np.float32, np.float64)) else x for x in value)
             return value

@@ -8,7 +8,7 @@ class RewardCalculator:
     """Main reward calculator."""
     BASE_TERMINAL_REWARD = 1.0
     DEATH_PENALTY = -0.5
-    GOLD_REWARD = 0.01
+    GOLD_REWARD = 0.00  # No gold reward for now. Lets just focus on completion
     DOOR_OPEN_REWARD = 0.01
 
     def __init__(self):
