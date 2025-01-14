@@ -17,8 +17,8 @@ class ExplorationRewardCalculator:
     """Handles calculation of exploration-based rewards."""
 
     # Grid dimensions in cells (24x24 pixels each)
-    GRID_WIDTH = 42
-    GRID_HEIGHT = 23
+    GRID_WIDTH = 44
+    GRID_HEIGHT = 25
     CELL_SIZE = 24.0
 
     # Scale rewards to keep total step reward <= 0.1
