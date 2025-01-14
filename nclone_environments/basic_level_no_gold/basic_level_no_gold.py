@@ -165,7 +165,7 @@ class BasicLevelNoGold(BaseEnvironment):
             return
 
         # First, choose if we want to generate a random map, or load the next map in the cycle
-        if self.rng.random() < 1:
+        if self.rng.random() < 0.3:
             self.current_map_name = f"random_map_{uuid.uuid4()}"
             self.random_map_type = self.rng.choice([
                 "SIMPLE_HORIZONTAL_NO_BACKTRACK",

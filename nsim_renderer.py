@@ -37,6 +37,21 @@ NINJACOLOR_RGB = tuple(
 ENTITYCOLORS_RGB = {k: tuple(int(
     c, 16)/255 for c in (v[0:2], v[2:4], v[4:6])) for k, v in ENTITYCOLORS.items()}
 
+# Colors for exploration grid visualization
+EXPLORATION_COLORS = {
+    'cell': (0, 0, 0, 0),  # Transparent for unvisited cells
+    # Bright green with 75% opacity for visited cells
+    'cell_visited': (0, 255, 0, 192),
+    'grid_cell': (255, 255, 255, 64)  # White with 25% opacity for cell grid
+}
+
+# Base colors for each area type
+AREA_BASE_COLORS = {
+    '4x4': (255, 50, 50),  # Base red for 4x4
+    '8x8': (50, 50, 255),  # Base blue for 8x8
+    '16x16': (128, 128, 128)  # Base grey for 16x16
+}
+
 
 def hex2float(string):
     """Convert hex color to RGB floats. This is now only used for dynamic colors not in the cache."""
@@ -318,6 +333,7 @@ class NSimRenderer:
 
     def _draw_oriented_entity(self, context, entity, x, y):
         """Helper method to draw oriented entities"""
+        radius = 5
         if hasattr(entity, "RADIUS"):
             radius = entity.RADIUS*self.adjust
         if hasattr(entity, "SEMI_SIDE"):
@@ -370,6 +386,103 @@ class NSimRenderer:
             context.arc(x, y, radius, 0, 2 * math.pi)
             context.fill()
 
+    def _get_area_color(self, base_color: tuple[int, int, int], index: int, max_index: int, opacity: int = 192) -> tuple[int, int, int, int]:
+        """Calculate color based on area index, making it darker as index increases."""
+        # Calculate brightness factor (0.3 to 1.0)
+        brightness = 1.0 - (0.7 * index / max_index)
+        return (
+            int(base_color[0] * brightness),
+            int(base_color[1] * brightness),
+            int(base_color[2] * brightness),
+            opacity
+        )
+
+    def _draw_exploration_grid(self, debug_info: dict) -> pygame.Surface:
+        """Draw the exploration grid overlay."""
+        if 'exploration' not in debug_info:
+            return None
+
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        exploration = debug_info['exploration']
+
+        # Get exploration data
+        visited_cells = exploration.get('visited_cells', None)
+        visited_4x4 = exploration.get('visited_4x4', None)
+        visited_8x8 = exploration.get('visited_8x8', None)
+        visited_16x16 = exploration.get('visited_16x16', None)
+
+        if not all([visited_cells is not None, visited_4x4 is not None,
+                   visited_8x8 is not None, visited_16x16 is not None]):
+            return None
+
+        # Calculate cell size based on grid dimensions
+        cell_size = 24 * self.adjust  # 24 pixels per cell
+        quarter_size = cell_size / 2  # Size of each quarter of the cell
+
+        # Draw individual cells with subdivisions
+        for y in range(visited_cells.shape[0]):
+            for x in range(visited_cells.shape[1]):
+                base_x = x * cell_size + self.tile_x_offset
+                base_y = y * cell_size + self.tile_y_offset
+
+                if visited_cells[y, x]:
+                    # Draw the four quarters of each cell
+                    # Top-left (cell color - green)
+                    rect_cell = pygame.Rect(
+                        base_x, base_y, quarter_size, quarter_size)
+                    pygame.draw.rect(
+                        surface, EXPLORATION_COLORS['cell_visited'], rect_cell)
+
+                    # Top-right (4x4 area color - red)
+                    area_4x4_x, area_4x4_y = x // 4, y // 4
+                    rect_4x4 = pygame.Rect(
+                        base_x + quarter_size, base_y, quarter_size, quarter_size)
+                    if visited_4x4[area_4x4_y, area_4x4_x]:
+                        # Calculate index within 4x4 grid
+                        index_4x4 = area_4x4_y * \
+                            visited_4x4.shape[1] + area_4x4_x
+                        max_index_4x4 = visited_4x4.shape[0] * \
+                            visited_4x4.shape[1] - 1
+                        color_4x4 = self._get_area_color(
+                            AREA_BASE_COLORS['4x4'], index_4x4, max_index_4x4)
+                        pygame.draw.rect(surface, color_4x4, rect_4x4)
+
+                    # Bottom-left (8x8 area color - blue)
+                    area_8x8_x, area_8x8_y = x // 8, y // 8
+                    rect_8x8 = pygame.Rect(
+                        base_x, base_y + quarter_size, quarter_size, quarter_size)
+                    if visited_8x8[area_8x8_y, area_8x8_x]:
+                        # Calculate index within 8x8 grid
+                        index_8x8 = area_8x8_y * \
+                            visited_8x8.shape[1] + area_8x8_x
+                        max_index_8x8 = visited_8x8.shape[0] * \
+                            visited_8x8.shape[1] - 1
+                        color_8x8 = self._get_area_color(
+                            AREA_BASE_COLORS['8x8'], index_8x8, max_index_8x8)
+                        pygame.draw.rect(surface, color_8x8, rect_8x8)
+
+                    # Bottom-right (16x16 area color - grey)
+                    area_16x16_x, area_16x16_y = x // 16, y // 16
+                    rect_16x16 = pygame.Rect(
+                        base_x + quarter_size, base_y + quarter_size, quarter_size, quarter_size)
+                    if visited_16x16[area_16x16_y, area_16x16_x]:
+                        # Calculate index within 16x16 grid
+                        index_16x16 = area_16x16_y * \
+                            visited_16x16.shape[1] + area_16x16_x
+                        max_index_16x16 = visited_16x16.shape[0] * \
+                            visited_16x16.shape[1] - 1
+                        color_16x16 = self._get_area_color(
+                            AREA_BASE_COLORS['16x16'], index_16x16, max_index_16x16)
+                        pygame.draw.rect(surface, color_16x16, rect_16x16)
+
+                    # Draw cell grid
+                    rect_full = pygame.Rect(
+                        base_x, base_y, cell_size, cell_size)
+                    pygame.draw.rect(
+                        surface, EXPLORATION_COLORS['grid_cell'], rect_full, 1)
+
+        return surface
+
     def _draw_debug_overlay(self, debug_info: Optional[dict] = None):
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -379,8 +492,16 @@ class NSimRenderer:
         Returns:
             pygame.Surface: Surface containing the rendered debug text
         """
+        if not debug_info:
+            return pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
         # Create a surface for the debug overlay
         surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        # Draw exploration grid if available
+        exploration_surface = self._draw_exploration_grid(debug_info)
+        if exploration_surface:
+            surface.blit(exploration_surface, (0, 0))
 
         # Base font and settings
         font = pygame.font.Font(None, 20)  # Small font size
@@ -410,6 +531,8 @@ class NSimRenderer:
                 return f"{value:.3f}"
             elif isinstance(value, tuple) and all(isinstance(x, (int, float, np.float32, np.float64)) for x in value):
                 return tuple(round(x, 2) if isinstance(x, (float, np.float32, np.float64)) else x for x in value)
+            elif isinstance(value, np.ndarray):
+                return f"Array({value.shape})"
             return value
 
         def render_dict(d: dict, indent_level: int = 0):
