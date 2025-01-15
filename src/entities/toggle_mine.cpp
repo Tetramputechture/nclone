@@ -11,10 +11,10 @@ void EntityToggleMine::think()
 {
   if (state == 2)
   { // toggling state
-    toggle_timer++;
-    if (toggle_timer >= 30)
+    toggleTimer++;
+    if (toggleTimer >= 30)
     {
-      set_state(0); // set to toggled state
+      setState(0); // set to toggled state
     }
   }
 }
@@ -33,25 +33,25 @@ void EntityToggleMine::logicalCollision()
       sim->getNinja()->kill(0, xpos, ypos, 0, 0);
     }
     else
-    {               // untoggled state
-      set_state(2); // set to toggling state
+    {              // untoggled state
+      setState(2); // set to toggling state
     }
   }
 }
 
-void EntityToggleMine::set_state(int new_state)
+void EntityToggleMine::setState(int newState)
 {
-  state = new_state;
-  toggle_timer = 0;
+  state = newState;
+  toggleTimer = 0;
 }
 
-std::vector<float> EntityToggleMine::getState(bool minimal_state) const
+std::vector<float> EntityToggleMine::getState(bool minimalState) const
 {
-  auto base_state = Entity::getState(minimal_state);
-  if (!minimal_state)
+  auto baseState = Entity::getState(minimalState);
+  if (!minimalState)
   {
-    base_state.push_back(static_cast<float>(state));
-    base_state.push_back(static_cast<float>(toggle_timer));
+    baseState.push_back(static_cast<float>(state));
+    baseState.push_back(static_cast<float>(toggleTimer));
   }
-  return base_state;
+  return baseState;
 }

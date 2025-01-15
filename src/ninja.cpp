@@ -1,7 +1,56 @@
 #include "ninja.hpp"
-#include <cmath>
+#include "simulation.hpp"
+#include "physics/physics.hpp"
+#include <filesystem>
+#include <unordered_map>
+#include <random>
 
-Ninja::Ninja()
+// Initialize static members
+std::vector<std::array<std::pair<float, float>, 13>> Ninja::cachedNinjaAnimation;
+const std::unordered_map<int, Ninja::DanceRange> Ninja::DANCE_DIC = {
+    {0, {104, 104}}, {1, {106, 225}}, {2, {226, 345}}, {3, {346, 465}}, {4, {466, 585}}, {5, {586, 705}}, {6, {706, 825}}, {7, {826, 945}}, {8, {946, 1065}}, {9, {1066, 1185}}, {10, {1186, 1305}}, {11, {1306, 1485}}, {12, {1486, 1605}}, {13, {1606, 1664}}, {14, {1665, 1731}}, {15, {1732, 1810}}, {16, {1811, 1852}}, {17, {1853, 1946}}, {18, {1947, 2004}}, {19, {2005, 2156}}, {20, {2157, 2241}}, {21, {2242, 2295}}};
+
+void Ninja::loadNinjaAnimation()
+{
+  if (!cachedNinjaAnimation.empty())
+  {
+    return;
+  }
+
+  std::ifstream file(ANIM_DATA_FILE, std::ios::binary);
+  if (!file)
+  {
+    return;
+  }
+
+  uint32_t frames;
+  file.read(reinterpret_cast<char *>(&frames), sizeof(frames));
+
+  cachedNinjaAnimation.resize(frames);
+  for (uint32_t i = 0; i < frames; ++i)
+  {
+    for (int j = 0; j < 13; ++j)
+    {
+      double x, y;
+      file.read(reinterpret_cast<char *>(&x), sizeof(x));
+      file.read(reinterpret_cast<char *>(&y), sizeof(y));
+      cachedNinjaAnimation[i][j] = {static_cast<float>(x), static_cast<float>(y)};
+    }
+  }
+}
+
+Ninja::Ninja(Simulation *simulation) : sim(simulation)
+{
+  initializeBones();
+  ninjaAnimMode = std::filesystem::exists(ANIM_DATA_FILE);
+  if (ninjaAnimMode)
+  {
+    loadNinjaAnimation();
+    ninjaAnimation = cachedNinjaAnimation;
+  }
+}
+
+void Ninja::initializeBones()
 {
   // Initialize bone structure relative positions
   bones = {{
@@ -579,9 +628,21 @@ void Ninja::updateGraphics()
     }
     if (animState == 6)
     {
-      // Note: Dance functionality is omitted for now as it requires random number generation
-      // and dance dictionary which wasn't provided in the original C++ code
-      animFrame = 0; // Default dance frame
+      // Choose dance animation
+      if (DANCE_RANDOM)
+      {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(0, DANCE_DIC.size() - 1);
+        auto it = DANCE_DIC.begin();
+        std::advance(it, dis(gen));
+        danceId = it->first;
+      }
+      else
+      {
+        danceId = DANCE_ID_DEFAULT;
+      }
+      animFrame = DANCE_DIC.at(danceId).start;
     }
   }
 
@@ -612,9 +673,207 @@ void Ninja::updateGraphics()
     }
     animFrame = 93 + static_cast<int>(std::floor(9.0f * rate));
   }
-
-  // Note: Dance animation update is omitted as it requires dance dictionary
+  if (animState == 6)
+  {
+    if (animFrame < DANCE_DIC.at(danceId).end)
+    {
+      animFrame++;
+    }
+  }
 
   bonesOld = bones;
-  // Note: calcNinjaPosition() is omitted as it requires animation data
+  if (ninjaAnimMode)
+  {
+    calcNinjaPosition();
+  }
+}
+
+void Ninja::collideVsObjects()
+{
+  // Get entities from neighborhood
+  auto entities = Physics::gatherEntitiesFromNeighbourhood(*sim, xpos, ypos);
+
+  for (const auto &[entityXpos, entityYpos] : entities)
+  {
+    auto depen = Physics::penetrationSquareVsPoint(entityXpos, entityYpos, xpos, ypos, RADIUS);
+    if (!depen)
+      continue;
+
+    const auto &[normal, penetrations] = *depen;
+    const auto &[depenX, depenY] = normal;
+    const auto &[depenLen, _] = penetrations;
+
+    float popX = depenX * depenLen;
+    float popY = depenY * depenLen;
+    xpos += popX;
+    ypos += popY;
+
+    // Update crushing parameters unless collision with bounce block
+    if (entityType != 17)
+    {
+      xCrush += popX;
+      yCrush += popY;
+      crushLen += depenLen;
+    }
+
+    // Ninja can only get crushed if collision with thwump
+    if (entityType == 20)
+    {
+      isCrushable = true;
+    }
+
+    // Depenetration for bounce blocks, thwumps and shwumps
+    if (entityType == 17 || entityType == 20 || entityType == 28)
+    {
+      xspeed += popX;
+      yspeed += popY;
+    }
+
+    // Depenetration for one ways
+    if (entityType == 11)
+    {
+      float xspeedNew = (xspeed * depenY - yspeed * depenX) * depenY;
+      float yspeedNew = (xspeed * depenY - yspeed * depenX) * (-depenX);
+      xspeed = xspeedNew;
+      yspeed = yspeedNew;
+    }
+
+    // Adjust ceiling variables if ninja collides with ceiling (or wall!)
+    if (depenY >= -0.0001f)
+    {
+      ceilingCount++;
+      ceilingNormalX += depenX;
+      ceilingNormalY += depenY;
+    }
+    else // Adjust floor variables if ninja collides with floor
+    {
+      floorCount++;
+      floorNormalX += depenX;
+      floorNormalY += depenY;
+    }
+  }
+}
+
+void Ninja::collideVsTiles()
+{
+  // Interpolation routine mainly to prevent from going through walls
+  float dx = xpos - xposOld;
+  float dy = ypos - yposOld;
+  float time = Physics::sweepCircleVsTiles(*sim, xposOld, yposOld, dx, dy, RADIUS * 0.5f);
+  xpos = xposOld + time * dx;
+  ypos = yposOld + time * dy;
+
+  // Find the closest point from the ninja, apply depenetration and update speed. Loop 32 times.
+  for (int i = 0; i < 32; i++)
+  {
+    auto result = Physics::getSingleClosestPoint(*sim, xpos, ypos, RADIUS);
+    if (!result)
+      break;
+
+    const auto &[isBackFacing, closestPoint] = *result;
+    const auto &[a, b] = closestPoint;
+
+    float dx = xpos - a;
+    float dy = ypos - b;
+
+    // Handle corner cases
+    if (std::abs(dx) <= 0.0000001f)
+    {
+      dx = 0;
+      if (xpos == 50.51197510492316f || xpos == 49.23232124849253f)
+      {
+        dx = -std::pow(2.0f, -47.0f);
+      }
+      if (xpos == 49.153536108584795f)
+      {
+        dx = std::pow(2.0f, -47.0f);
+      }
+    }
+
+    float dist = std::sqrt(dx * dx + dy * dy);
+    float depenLen = RADIUS - dist * (isBackFacing ? -1.0f : 1.0f);
+
+    if (dist == 0 || depenLen < 0.0000001f)
+      return;
+
+    float depenX = dx / dist * depenLen;
+    float depenY = dy / dist * depenLen;
+    xpos += depenX;
+    ypos += depenY;
+    xCrush += depenX;
+    yCrush += depenY;
+    crushLen += depenLen;
+
+    float dotProduct = xspeed * dx + yspeed * dy;
+    if (dotProduct < 0) // Project velocity onto surface only if moving towards surface
+    {
+      float xspeedNew = (xspeed * dy - yspeed * dx) / (dist * dist) * dy;
+      float yspeedNew = (xspeed * dy - yspeed * dx) / (dist * dist) * (-dx);
+      xspeed = xspeedNew;
+      yspeed = yspeedNew;
+    }
+
+    // Adjust ceiling variables if ninja collides with ceiling (or wall!)
+    if (dy >= -0.0001f)
+    {
+      ceilingCount++;
+      ceilingNormalX += dx / dist;
+      ceilingNormalY += dy / dist;
+    }
+    else // Adjust floor variables if ninja collides with floor
+    {
+      floorCount++;
+      floorNormalX += dx / dist;
+      floorNormalY += dy / dist;
+    }
+  }
+}
+
+void Ninja::calcNinjaPosition()
+{
+  if (!ninjaAnimMode || ninjaAnimation.empty())
+  {
+    return;
+  }
+
+  // Create temporary bones array for new positions
+  std::array<std::pair<float, float>, NUM_BONES> newBones;
+
+  // Get bones from animation frame
+  const auto &animFrameBones = ninjaAnimation[animFrame];
+  for (int i = 0; i < NUM_BONES; ++i)
+  {
+    newBones[i] = animFrameBones[i];
+  }
+
+  // Handle running animation interpolation
+  if (animState == 1)
+  {
+    float interpolation = static_cast<float>(runCycle % 6) / 6.0f;
+    if (interpolation > 0)
+    {
+      const auto &nextBones = ninjaAnimation[(animFrame - 12) % 72 + 12];
+      for (int i = 0; i < NUM_BONES; ++i)
+      {
+        newBones[i].first += interpolation * (nextBones[i].first - newBones[i].first);
+        newBones[i].second += interpolation * (nextBones[i].second - newBones[i].second);
+      }
+    }
+  }
+
+  // Apply facing direction and tilt
+  for (int i = 0; i < NUM_BONES; ++i)
+  {
+    newBones[i].first *= facing;
+    float x = newBones[i].first;
+    float y = newBones[i].second;
+    float tcos = std::cos(tilt);
+    float tsin = std::sin(tilt);
+    newBones[i].first = x * tcos - y * tsin;
+    newBones[i].second = x * tsin + y * tcos;
+  }
+
+  // Swap bone arrays
+  bonesOld = bones;
+  bones = newBones;
 }

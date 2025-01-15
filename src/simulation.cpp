@@ -1,50 +1,140 @@
 #include "simulation.hpp"
 #include "ninja.hpp"
 #include "sim_config.hpp"
+#include "physics/physics.hpp"
 #include "entities/grid_segment_linear.hpp"
 #include "entities/grid_segment_circular.hpp"
+#include "entities/toggle_mine.hpp"
+#include "entities/gold.hpp"
+#include "entities/exit.hpp"
+#include "entities/exit_switch.hpp"
+#include "entities/door_regular.hpp"
+#include "entities/door_locked.hpp"
+#include "entities/door_trap.hpp"
 #include <cmath>
+#include <algorithm>
+
+// Forward declarations
+class ToggleMine;
+class Gold;
+class Exit;
+class ExitSwitch;
+class DoorRegular;
+class DoorLocked;
+class DoorTrap;
 
 // Initialize static tile map constants
 const std::unordered_map<int, std::array<int, 12>> Simulation::TILE_GRID_EDGE_MAP = {
-    {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-    {1, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
-    {2, {1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0}},
+    {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}, // Empty tile
+    {1, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}}, // Full tile
+    {2, {1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0}}, // Half tiles
     {3, {0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1}},
     {4, {0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1}},
     {5, {1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0}},
-    {6, {1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0}},
+    {6, {1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0}}, // 45 degree slopes
     {7, {1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1}},
     {8, {0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1}},
     {9, {1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1}},
-    // Add remaining tile mappings...
-};
+    {10, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}}, // Quarter moons
+    {11, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {12, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {13, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {14, {1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0}}, // Quarter pipes
+    {15, {1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1}},
+    {16, {0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1}},
+    {17, {1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1}},
+    {18, {1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0}}, // Short mild slopes
+    {19, {1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0}},
+    {20, {0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1}},
+    {21, {0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1}},
+    {22, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}}, // Raised mild slopes
+    {23, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {24, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {25, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {26, {1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0}}, // Short steep slopes
+    {27, {0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1}},
+    {28, {0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1}},
+    {29, {1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0}},
+    {30, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}}, // Raised steep slopes
+    {31, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {32, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {33, {1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1}},
+    {34, {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}, // Glitched tiles
+    {35, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1}},
+    {36, {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}},
+    {37, {0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0}}};
 
 const std::unordered_map<int, std::array<int, 12>> Simulation::TILE_SEGMENT_ORTHO_MAP = {
-    {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-    {1, {-1, -1, 0, 0, 1, 1, -1, -1, 0, 0, 1, 1}},
-    {2, {-1, -1, 1, 1, 0, 0, -1, 0, 0, 0, 1, 0}},
+    {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},     // Empty tile
+    {1, {-1, -1, 0, 0, 1, 1, -1, -1, 0, 0, 1, 1}}, // Full tile
+    {2, {-1, -1, 1, 1, 0, 0, -1, 0, 0, 0, 1, 0}},  // Half tiles
     {3, {0, -1, 0, 0, 0, 1, 0, 0, -1, -1, 1, 1}},
     {4, {0, 0, -1, -1, 1, 1, 0, -1, 0, 0, 0, 1}},
     {5, {-1, 0, 0, 0, 1, 0, -1, -1, 1, 1, 0, 0}},
-    // Add remaining tile mappings...
-};
+    {6, {-1, -1, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0}}, // 45 degree slopes
+    {7, {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1}},
+    {8, {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1}},
+    {9, {0, 0, 0, 0, 1, 1, -1, -1, 0, 0, 0, 0}},
+    {10, {-1, -1, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0}}, // Quarter moons
+    {11, {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1}},
+    {12, {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1}},
+    {13, {0, 0, 0, 0, 1, 1, -1, -1, 0, 0, 0, 0}},
+    {14, {-1, -1, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0}}, // Quarter pipes
+    {15, {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1}},
+    {16, {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1}},
+    {17, {0, 0, 0, 0, 1, 1, -1, -1, 0, 0, 0, 0}},
+    {18, {-1, -1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0}}, // Short mild slopes
+    {19, {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0}},
+    {20, {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1}},
+    {21, {0, 0, 0, 0, 1, 1, 0, -1, 0, 0, 0, 0}},
+    {22, {-1, -1, 0, 0, 0, 0, -1, -1, 0, 0, 1, 0}}, // Raised mild slopes
+    {23, {-1, -1, 0, 0, 0, 0, -1, 0, 0, 0, 1, 1}},
+    {24, {0, 0, 0, 0, 1, 1, 0, -1, 0, 0, 1, 1}},
+    {25, {0, 0, 0, 0, 1, 1, -1, -1, 0, 0, 0, 1}},
+    {26, {-1, 0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0}}, // Short steep slopes
+    {27, {0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1}},
+    {28, {0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1}},
+    {29, {0, 0, 0, 0, 1, 0, -1, -1, 0, 0, 0, 0}},
+    {30, {-1, -1, 0, 0, 1, 0, -1, -1, 0, 0, 0, 0}}, // Raised steep slopes
+    {31, {-1, -1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1}},
+    {32, {0, -1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1}},
+    {33, {-1, 0, 0, 0, 1, 1, -1, -1, 0, 0, 0, 0}},
+    {34, {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}, // Glitched tiles
+    {35, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1}},
+    {36, {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}},
+    {37, {0, 0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0}}};
 
 const std::unordered_map<int, std::tuple<std::pair<int, int>, std::pair<int, int>>> Simulation::TILE_SEGMENT_DIAG_MAP = {
-    {6, {{0, 24}, {24, 0}}},
+    {6, {{0, 24}, {24, 0}}}, // 45 degree slopes
     {7, {{0, 0}, {24, 24}}},
     {8, {{24, 0}, {0, 24}}},
     {9, {{24, 24}, {0, 0}}},
-    // Add remaining diagonal mappings...
-};
+    {18, {{0, 12}, {24, 0}}}, // Short mild slopes
+    {19, {{0, 0}, {24, 12}}},
+    {20, {{24, 12}, {0, 24}}},
+    {21, {{24, 24}, {0, 12}}},
+    {22, {{0, 24}, {24, 12}}}, // Raised mild slopes
+    {23, {{0, 12}, {24, 24}}},
+    {24, {{24, 0}, {0, 12}}},
+    {25, {{24, 12}, {0, 0}}},
+    {26, {{0, 24}, {12, 0}}}, // Short steep slopes
+    {27, {{12, 0}, {24, 24}}},
+    {28, {{24, 0}, {12, 24}}},
+    {29, {{12, 24}, {0, 0}}},
+    {30, {{12, 24}, {24, 0}}}, // Raised steep slopes
+    {31, {{0, 0}, {12, 24}}},
+    {32, {{12, 0}, {0, 24}}},
+    {33, {{24, 24}, {12, 0}}}};
 
 const std::unordered_map<int, std::tuple<std::pair<int, int>, std::pair<int, int>, bool>> Simulation::TILE_SEGMENT_CIRCULAR_MAP = {
-    {10, {{0, 0}, {1, 1}, true}},
+    {10, {{0, 0}, {1, 1}, true}}, // Quarter moons
     {11, {{24, 0}, {-1, 1}, true}},
     {12, {{24, 24}, {-1, -1}, true}},
     {13, {{0, 24}, {1, -1}, true}},
-    // Add remaining circular mappings...
-};
+    {14, {{24, 24}, {-1, -1}, false}}, // Quarter pipes
+    {15, {{0, 24}, {1, -1}, false}},
+    {16, {{0, 0}, {1, 1}, false}},
+    {17, {{24, 0}, {-1, 1}, false}}};
 
 Simulation::Simulation(const SimConfig &sc)
     : frame(0), simConfig(sc), ninja(nullptr)
@@ -250,7 +340,7 @@ void Simulation::loadMapTiles()
 void Simulation::loadMapEntities()
 {
   // Create player ninja
-  ninja = std::make_unique<Ninja>();
+  ninja = std::make_unique<Ninja>(this);
 
   // Force map data[1233] to be -1 if not valid
   if (mapData[1233] != -1 && mapData[1233] != 1)
@@ -268,12 +358,13 @@ void Simulation::loadMapEntities()
 
     float xpos = static_cast<float>(mapData[index + 1] + (mapData[index + 2] << 8)) / 10.0f;
     float ypos = static_cast<float>(mapData[index + 3] + (mapData[index + 4] << 8)) / 10.0f;
+    int orientation = mapData[index + 3];
+    int mode = mapData[index + 4];
 
-    auto entity = createEntity(entityType, xpos, ypos);
+    auto entity = createEntity(entityType, xpos, ypos, orientation, mode);
     if (entity)
     {
-      entityDic[entityType].push_back(entity);
-      gridEntity[entity->getCell()].push_back(entity);
+      addEntity(entity);
       entity->logPosition();
     }
 
@@ -288,8 +379,8 @@ void Simulation::tick(float horInput, int jumpInput)
   // Update ninja inputs
   if (ninja)
   {
-    ninja->horInput = horInput;
-    ninja->jumpInput = jumpInput;
+    ninja->setHorInput(horInput);
+    ninja->setJumpInput(jumpInput);
   }
 
   // Cache active entities
@@ -301,7 +392,7 @@ void Simulation::tick(float horInput, int jumpInput)
   {
     for (const auto &entity : entityList)
     {
-      if (!entity->active)
+      if (!entity->isActive())
         continue;
 
       if (entity->isMovable())
@@ -328,7 +419,7 @@ void Simulation::tick(float horInput, int jumpInput)
   }
 
   // Update ninja physics
-  if (ninja && ninja->state != 9)
+  if (ninja && ninja->getState() != 9)
   {
     auto physicsTarget = ninja.get();
 
@@ -354,10 +445,10 @@ void Simulation::tick(float horInput, int jumpInput)
   }
 
   // Handle dead ninja animation
-  if (ninja && ninja->state == 6 && simConfig.enableAnim)
+  if (ninja && ninja->getState() == 6 && simConfig.enableAnim)
   {
-    ninja->animFrame = 105;
-    ninja->animState = 7;
+    ninja->setAnimFrame(105);
+    ninja->setAnimState(7);
     ninja->updateGraphics();
   }
 
@@ -380,4 +471,83 @@ void Simulation::tick(float horInput, int jumpInput)
   {
     Physics::clearCaches();
   }
+}
+
+std::shared_ptr<Entity> Simulation::createEntity(int entityType, float xpos, float ypos, int orientation, int mode)
+{
+  std::shared_ptr<Entity> entity;
+
+  switch (entityType)
+  {
+  case 1: // Toggle Mine
+    entity = std::static_pointer_cast<Entity>(std::make_shared<ToggleMine>(this, xpos, ypos, 0));
+    break;
+  case 2: // Gold
+    entity = std::static_pointer_cast<Entity>(std::make_shared<Gold>(this, xpos, ypos));
+    break;
+  case 3:
+  { // Exit Door
+    auto exitDoor = std::make_shared<Exit>(this, xpos, ypos);
+    auto &typeList = entityDic[entityType];
+    typeList.push_back(std::static_pointer_cast<Entity>(exitDoor));
+
+    // Get child switch coordinates from map data
+    size_t exitDoorCount = mapData[1156];
+    float switchX = static_cast<float>(mapData[1234 + 5 * exitDoorCount + 1]);
+    float switchY = static_cast<float>(mapData[1234 + 5 * exitDoorCount + 2]);
+
+    // Create and return the exit switch instead
+    entity = std::static_pointer_cast<Entity>(std::make_shared<ExitSwitch>(this, switchX, switchY, exitDoor));
+    break;
+  }
+  case 5: // Regular Door
+    entity = std::static_pointer_cast<Entity>(std::make_shared<DoorRegular>(this, xpos, ypos, orientation, xpos, ypos));
+    break;
+  case 6:
+  { // Locked Door
+    float switchX = static_cast<float>(mapData[1234 + 6]);
+    float switchY = static_cast<float>(mapData[1234 + 7]);
+    entity = std::static_pointer_cast<Entity>(std::make_shared<DoorLocked>(this, xpos, ypos, orientation, switchX, switchY));
+    break;
+  }
+  case 8:
+  { // Trap Door
+    float switchX = static_cast<float>(mapData[1234 + 6]);
+    float switchY = static_cast<float>(mapData[1234 + 7]);
+    entity = std::static_pointer_cast<Entity>(std::make_shared<DoorTrap>(this, xpos, ypos, orientation, switchX, switchY));
+    break;
+  }
+    // Add other entity types as needed...
+  }
+
+  return entity;
+}
+
+void Simulation::addEntity(std::shared_ptr<Entity> entity)
+{
+  if (!entity)
+    return;
+
+  int type = entity->getType();
+  auto cell = entity->getCell();
+
+  entityDic[type].push_back(entity);
+  gridEntity[cell].push_back(entity);
+}
+
+void Simulation::removeEntity(std::shared_ptr<Entity> entity)
+{
+  if (!entity)
+    return;
+
+  int type = entity->getType();
+  auto cell = entity->getCell();
+
+  // Remove from type dictionary
+  auto &typeList = entityDic[type];
+  typeList.erase(std::remove(typeList.begin(), typeList.end(), entity), typeList.end());
+
+  // Remove from grid
+  auto &cellList = gridEntity[cell];
+  cellList.erase(std::remove(cellList.begin(), cellList.end(), entity), cellList.end());
 }

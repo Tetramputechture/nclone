@@ -33,6 +33,13 @@ public:
   void logCollision(int state = 1);
   void logPosition();
 
+  // Virtual methods for entity state
+  virtual bool isActive() const { return active; }
+  virtual bool isMovable() const { return false; }
+  virtual bool isThinkable() const { return false; }
+  virtual int getType() const { return type; }
+  virtual std::pair<int, int> getCell() const { return cell; }
+
   // Public member variables
   int entityType;
   Simulation *sim;
@@ -50,4 +57,7 @@ protected:
   std::vector<std::tuple<int, float, float>> posLog;
   std::vector<std::tuple<int, float, float>> speedLog;
   std::vector<int> collisionLog;
+  bool active = true;
+  int type = 0;
+  std::pair<int, int> cell;
 };

@@ -7,6 +7,7 @@
 #include <tuple>
 #include <optional>
 #include <algorithm>
+#include <string>
 
 // Forward declarations
 class Simulation;
@@ -35,11 +36,7 @@ public:
         const Simulation &sim, float xposOld, float yposOld,
         float dx, float dy, float radius);
 
-    static std::tuple<int, std::optional<std::pair<float, float>>> getSingleClosestPoint(
-        const Simulation &sim, float xpos, float ypos, float radius);
-
-    static std::optional<std::tuple<std::pair<float, float>, std::pair<float, float>>>
-    penetrationSquareVsPoint(float sXpos, float sYpos, float pXpos, float pYpos, float semiSide);
+    static std::optional<std::tuple<std::pair<float, float>, std::pair<float, float>>> penetrationSquareVsPoint(float sXpos, float sYpos, float pXpos, float pYpos, float semiSide);
 
     static bool overlapCircleVsCircle(
         float xpos1, float ypos1, float radius1,
@@ -85,6 +82,9 @@ public:
     static bool overlapCircleVsSegment(
         float xpos, float ypos, float radius,
         float px1, float py1, float px2, float py2);
+
+    static std::optional<std::tuple<bool, std::pair<float, float>>>
+    getSingleClosestPoint(const Simulation &sim, float xpos, float ypos, float radius);
 
 private:
     // Cache for frequently used calculations

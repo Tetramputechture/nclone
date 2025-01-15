@@ -19,7 +19,7 @@ void EntityDoorLocked::logicalCollision()
   {
     active = false;
     changeState(false);
-    sim->getNinja()->doors_opened++;
+    sim->getNinja()->doorsOpened++;
     logCollision();
   }
 }

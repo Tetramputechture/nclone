@@ -4,6 +4,12 @@
 #include <utility>
 #include <vector>
 #include <cmath>
+#include <string>
+#include <fstream>
+#include <unordered_map>
+#include "physics/physics.hpp"
+
+class Simulation;
 
 class Ninja
 {
@@ -95,6 +101,12 @@ public:
   float horInput = 0.0f;
   int jumpInput = 0;
 
+  // Simulation reference
+  Simulation *sim = nullptr;
+
+  // Entity type for collision handling
+  int entityType = 0;
+
   // Bone structure
   static constexpr int NUM_BONES = 13;
   std::array<std::pair<float, float>, NUM_BONES> bones;
@@ -106,8 +118,27 @@ public:
   std::vector<float> xposLog;
   std::vector<float> yposLog;
 
+  // Animation data
+  static constexpr const char *ANIM_DATA_FILE = "anim_data_line_new.txt.bin";
+  static std::vector<std::array<std::pair<float, float>, 13>> cachedNinjaAnimation;
+  static void loadNinjaAnimation();
+  bool ninjaAnimMode = false;
+  std::vector<std::array<std::pair<float, float>, 13>> ninjaAnimation;
+  void calcNinjaPosition();
+
+  // Dance parameters
+  static constexpr bool DANCE_RANDOM = true;
+  static constexpr int DANCE_ID_DEFAULT = 0;
+  struct DanceRange
+  {
+    int start;
+    int end;
+  };
+  static const std::unordered_map<int, DanceRange> DANCE_DIC;
+
   // Methods
   Ninja();
+  explicit Ninja(Simulation *simulation);
   void integrate();
   void preCollision();
   void collideVsObjects();
@@ -125,4 +156,14 @@ public:
   void log(int frame);
   bool hasWon() const;
   bool hasDied() const;
+
+  // Getters and setters
+  void setHorInput(float input) { horInput = input; }
+  void setJumpInput(int input) { jumpInput = input; }
+  void setAnimFrame(int frame) { animFrame = frame; }
+  void setAnimState(int state) { animState = state; }
+  int getState() const { return state; }
+
+private:
+  void initializeBones();
 };

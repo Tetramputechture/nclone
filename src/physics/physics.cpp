@@ -93,7 +93,18 @@ std::vector<std::tuple<float, float>> Physics::gatherSegmentsFromRegion(
   }
 
   std::vector<std::tuple<float, float>> segmentList;
-  // TODO: Implement segment gathering from simulation
+  for (const auto &cell : cells)
+  {
+    const auto &segments = sim.getSegmentsAt(cell);
+    for (const auto &segment : segments)
+    {
+      if (segment->active)
+      {
+        segmentList.emplace_back(segment->getX1(), segment->getY1());
+        segmentList.emplace_back(segment->getX2(), segment->getY2());
+      }
+    }
+  }
   return segmentList;
 }
 
@@ -354,20 +365,22 @@ Physics::penetrationSquareVsPoint(float sXpos, float sYpos, float pXpos, float p
   float penx = semiSide - std::abs(dx);
   float peny = semiSide - std::abs(dy);
 
-  if (penx <= 0 || peny <= 0)
-    return std::nullopt;
-
-  std::pair<float, float> normal;
-  if (penx < peny)
+  if (penx > 0 && peny > 0)
   {
-    normal = {dx > 0 ? 1.0f : -1.0f, 0.0f};
-    return std::make_tuple(normal, std::make_pair(peny, penx));
+    if (peny <= penx)
+    {
+      std::pair<float, float> depenNormal{0.0f, dy < 0 ? -1.0f : 1.0f};
+      std::pair<float, float> depenValues{peny, penx};
+      return std::make_tuple(depenNormal, depenValues);
+    }
+    else
+    {
+      std::pair<float, float> depenNormal{dx < 0 ? -1.0f : 1.0f, 0.0f};
+      std::pair<float, float> depenValues{penx, peny};
+      return std::make_tuple(depenNormal, depenValues);
+    }
   }
-  else
-  {
-    normal = {0.0f, dy > 0 ? 1.0f : -1.0f};
-    return std::make_tuple(normal, std::make_pair(penx, peny));
-  }
+  return std::nullopt;
 }
 
 std::vector<std::tuple<float, float>> Physics::gatherEntitiesFromNeighbourhood(
@@ -424,44 +437,181 @@ float Physics::sweepCircleVsTiles(
     const Simulation &sim, float xposOld, float yposOld,
     float dx, float dy, float radius)
 {
-  float t = 1.0f;
+  float xposNew = xposOld + dx;
+  float yposNew = yposOld + dy;
+  float width = radius + 1;
+  float x1 = std::min(xposOld, xposNew) - width;
+  float y1 = std::min(yposOld, yposNew) - width;
+  float x2 = std::max(xposOld, xposNew) + width;
+  float y2 = std::max(yposOld, yposNew) + width;
 
-  // TODO: Implement tile collision detection
-  return t;
+  auto segments = gatherSegmentsFromRegion(sim, x1, y1, x2, y2);
+  float shortestTime = 1.0f;
+
+  for (size_t i = 0; i < segments.size(); i += 2)
+  {
+    const auto &[x1, y1] = segments[i];
+    const auto &[x2, y2] = segments[i + 1];
+    Segment segment(x1, y1, x2, y2);
+    float time = segment.intersectWithRay(xposOld, yposOld, dx, dy, radius);
+    shortestTime = std::min(time, shortestTime);
+  }
+
+  return shortestTime;
 }
 
-std::tuple<int, std::optional<std::pair<float, float>>> Physics::getSingleClosestPoint(
-    const Simulation &sim, float xpos, float ypos, float radius)
+std::optional<std::tuple<bool, std::pair<float, float>>>
+Physics::getSingleClosestPoint(const Simulation &sim, float xpos, float ypos, float radius)
 {
-  // TODO: Implement closest point detection
-  return {0, std::nullopt};
+  auto segments = gatherSegmentsFromRegion(sim, xpos - radius, ypos - radius, xpos + radius, ypos + radius);
+  float shortestDistance = std::numeric_limits<float>::infinity();
+  bool result = false;
+  std::pair<float, float> closestPoint;
+
+  for (size_t i = 0; i < segments.size(); i += 2)
+  {
+    const auto &[x1, y1] = segments[i];
+    const auto &[x2, y2] = segments[i + 1];
+    Segment segment(x1, y1, x2, y2);
+
+    auto [isBackFacing, a, b] = segment.getClosestPoint(xpos, ypos);
+    float distanceSq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
+
+    // This is to prioritize correct side collisions when multiple close segments
+    if (!isBackFacing)
+    {
+      distanceSq -= 0.1f;
+    }
+
+    if (distanceSq < shortestDistance)
+    {
+      shortestDistance = distanceSq;
+      closestPoint = {a, b};
+      result = isBackFacing;
+    }
+  }
+
+  if (shortestDistance == std::numeric_limits<float>::infinity())
+  {
+    return std::nullopt;
+  }
+
+  return std::make_tuple(result, closestPoint);
 }
 
 bool Physics::isEmptyRow(
     const Simulation &sim, int xcoord1, int xcoord2, int ycoord, int dir)
 {
-  // TODO: Implement row emptiness check
+  for (int xcoord = xcoord1; xcoord <= xcoord2; ++xcoord)
+  {
+    if (dir == 1)
+    {
+      auto [x, y] = clampHalfCell(xcoord, ycoord + 1);
+      if (sim.hasHorizontalEdge({x, y}))
+        return false;
+    }
+    else if (dir == -1)
+    {
+      auto [x, y] = clampHalfCell(xcoord, ycoord);
+      if (sim.hasHorizontalEdge({x, y}))
+        return false;
+    }
+  }
   return true;
 }
 
 bool Physics::isEmptyColumn(
     const Simulation &sim, int xcoord, int ycoord1, int ycoord2, int dir)
 {
-  // TODO: Implement column emptiness check
+  for (int ycoord = ycoord1; ycoord <= ycoord2; ++ycoord)
+  {
+    if (dir == 1)
+    {
+      auto [x, y] = clampHalfCell(xcoord + 1, ycoord);
+      if (sim.hasVerticalEdge({x, y}))
+        return false;
+    }
+    else if (dir == -1)
+    {
+      auto [x, y] = clampHalfCell(xcoord, ycoord);
+      if (sim.hasVerticalEdge({x, y}))
+        return false;
+    }
+  }
   return true;
 }
 
 bool Physics::checkLinesegVsNinja(
     float x1, float y1, float x2, float y2, const Ninja &ninja)
 {
-  // TODO: Implement line segment vs ninja collision check
+  float dx = x2 - x1;
+  float dy = y2 - y1;
+  float len = getCachedSqrt(dx * dx + dy * dy);
+  if (len == 0)
+    return false;
+
+  // This part returns false if the segment does not intersect the ninja's circular hitbox
+  dx /= len;
+  dy /= len;
+  float proj = (ninja.xpos - x1) * dx + (ninja.ypos - y1) * dy;
+  float x = x1;
+  float y = y1;
+  if (proj > 0)
+  {
+    x += dx * proj;
+    y += dy * proj;
+  }
+  if (ninja.RADIUS * ninja.RADIUS <= (ninja.xpos - x) * (ninja.xpos - x) + (ninja.ypos - y) * (ninja.ypos - y))
+    return false;
+
+  // Now test the segment against each of ninja's 11 segments
+  static const std::array<std::pair<int, int>, 11> NINJA_SEGS = {
+      std::make_pair(0, 12),
+      std::make_pair(1, 12),
+      std::make_pair(2, 8),
+      std::make_pair(3, 9),
+      std::make_pair(4, 10),
+      std::make_pair(5, 11),
+      std::make_pair(6, 7),
+      std::make_pair(8, 0),
+      std::make_pair(9, 0),
+      std::make_pair(10, 1),
+      std::make_pair(11, 1)};
+
+  for (const auto &seg : NINJA_SEGS)
+  {
+    const auto &bone1 = ninja.bones[seg.first];
+    const auto &bone2 = ninja.bones[seg.second];
+    float x3 = ninja.xpos + 24 * bone1.first;
+    float y3 = ninja.ypos + 24 * bone1.second;
+    float x4 = ninja.xpos + 24 * bone2.first;
+    float y4 = ninja.ypos + 24 * bone2.second;
+
+    float det1 = (x1 - x3) * (y2 - y3) - (y1 - y3) * (x2 - x3);
+    float det2 = (x1 - x4) * (y2 - y4) - (y1 - y4) * (x2 - x4);
+    float det3 = (x3 - x1) * (y4 - y1) - (y3 - y1) * (x4 - x1);
+    float det4 = (x3 - x2) * (y4 - y2) - (y3 - y2) * (x4 - x2);
+
+    if (det1 * det2 < 0 && det3 * det4 < 0)
+      return true;
+  }
   return false;
 }
 
+/**
+ * Given a cell and a ray, return the shortest time of intersection between the ray and one of
+ * the cell's tile segments. Return 1 if the ray hits nothing.
+ */
 float Physics::intersectRayVsCellContents(
     const Simulation &sim, int xcell, int ycell,
     float xpos, float ypos, float dx, float dy)
 {
-  // TODO: Implement ray vs cell contents intersection
-  return 1.0f;
+  auto segments = sim.getSegmentsAt(clampCell(xcell, ycell));
+  float shortestTime = 1.0f;
+  for (const auto &segment : segments)
+  {
+    float time = segment->intersectWithRay(xpos, ypos, dx, dy, 0);
+    shortestTime = std::min(time, shortestTime);
+  }
+  return shortestTime;
 }

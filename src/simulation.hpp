@@ -52,17 +52,28 @@ public:
   const SimConfig &getConfig() const { return simConfig; }
   int getFrame() const { return frame; }
 
+  // Entity management
+  std::shared_ptr<Entity> createEntity(int entityType, float xpos, float ypos, int orientation = 0, int mode = 0);
+  void addEntity(std::shared_ptr<Entity> entity);
+  void removeEntity(std::shared_ptr<Entity> entity);
+
   // Mutable accessors for entity management
   SegmentList &getSegmentsAt(const CellCoord &cell) { return segmentDic[cell]; }
   EntityList &getEntitiesAt(const CellCoord &cell) { return gridEntity[cell]; }
+  EntityList &getEntitiesByType(int type) { return entityDic[type]; }
 
   // Const accessors for entity management
   const SegmentList &getSegmentsAt(const CellCoord &cell) const { return segmentDic.at(cell); }
   const EntityList &getEntitiesAt(const CellCoord &cell) const { return gridEntity.at(cell); }
+  const EntityList &getEntitiesByType(int type) const { return entityDic.at(type); }
 
   // Grid edge accessors
   bool hasHorizontalEdge(const CellCoord &cell) const { return horGridEdgeDic.at(cell) != 0; }
   bool hasVerticalEdge(const CellCoord &cell) const { return verGridEdgeDic.at(cell) != 0; }
+
+  // Map data accessors
+  uint8_t getMapData(size_t index) const { return mapData[index]; }
+  const std::vector<uint8_t> &getMapData() const { return mapData; }
 
 private:
   // Internal map loading methods
@@ -70,6 +81,12 @@ private:
   void resetMapTileData();
   void loadMapTiles();
   void loadMapEntities();
+
+  // Helper methods
+  void initializeGridEdges();
+  void processGridEdges(const CellCoord &coord, int tileId);
+  void processSegments(const CellCoord &coord, int tileId);
+  void createOrthogonalSegments();
 
   // State variables
   int frame;

@@ -26,27 +26,27 @@ void EntityDoorBase::initSegment()
   }
 
   segment = std::make_shared<Segment>(x1, y1, x2, y2);
-  sim->get_segments_at(cell).push_back(segment);
+  sim->getSegmentsAt(cell).push_back(segment);
 }
 
-void EntityDoorBase::changeState(bool new_closed)
+void EntityDoorBase::changeState(bool newClosed)
 {
-  if (closed != new_closed)
+  if (closed != newClosed)
   {
-    closed = new_closed;
+    closed = newClosed;
     segment->active = closed;
   }
 }
 
-std::vector<float> EntityDoorBase::getState(bool minimal_state) const
+std::vector<float> EntityDoorBase::getState(bool minimalState) const
 {
-  auto base_state = Entity::getState(minimal_state);
-  if (!minimal_state)
+  auto baseState = Entity::getState(minimalState);
+  if (!minimalState)
   {
-    base_state.push_back(static_cast<float>(orientation));
-    base_state.push_back(swXcoord);
-    base_state.push_back(swYcoord);
-    base_state.push_back(closed ? 1.0f : 0.0f);
+    baseState.push_back(static_cast<float>(orientation));
+    baseState.push_back(swXcoord);
+    baseState.push_back(swYcoord);
+    baseState.push_back(closed ? 1.0f : 0.0f);
   }
-  return base_state;
+  return baseState;
 }

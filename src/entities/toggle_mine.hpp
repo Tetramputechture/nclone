@@ -13,12 +13,12 @@ public:
 
   void think() override;
   void logicalCollision() override;
-  bool is_thinkable() const override { return true; }
+  bool isThinkable() const override { return true; }
 
-  void set_state(int new_state);
-  std::vector<float> getState(bool minimal_state = false) const override;
+  void setState(int newState);
+  std::vector<float> getState(bool minimalState = false) const override;
 
 private:
   int state; // 0:toggled, 1:untoggled, 2:toggling
-  int toggle_timer = 0;
+  int toggleTimer = 0;
 };
