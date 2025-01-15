@@ -31,6 +31,8 @@ add_executable(main
     # Physics files
     src/physics/physics.cpp
     src/physics/segment.cpp
+    src/physics/grid_segment_linear.cpp
+    src/physics/grid_segment_circular.cpp
     
     # Entity files
     src/entities/entity.cpp
@@ -50,8 +52,6 @@ add_executable(main
     src/entities/gold.cpp
     src/entities/toggle_mine.cpp
     src/entities/bounce_block.cpp
-    src/entities/grid_segment_circular.cpp
-    src/entities/grid_segment_linear.cpp
 )
 
 # Set C++ standard
