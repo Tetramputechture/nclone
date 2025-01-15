@@ -2,9 +2,9 @@
 #include "../simulation.hpp"
 #include "../ninja.hpp"
 
-EntityDoorTrap::EntityDoorTrap(int entityType, Simulation *sim, float xcoord, float ycoord,
+EntityDoorTrap::EntityDoorTrap(Simulation *sim, float xcoord, float ycoord,
                                int orientation, float swXcoord, float swYcoord)
-    : EntityDoorBase(entityType, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
+    : EntityDoorBase(ENTITY_TYPE, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
 {
 }
 

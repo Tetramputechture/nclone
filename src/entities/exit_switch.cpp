@@ -3,8 +3,8 @@
 #include "../simulation.hpp"
 #include "../ninja.hpp"
 
-EntityExitSwitch::EntityExitSwitch(int entityType, Simulation *sim, float xcoord, float ycoord, EntityExit *parent)
-    : Entity(entityType, sim, xcoord, ycoord), parent(parent)
+EntityExitSwitch::EntityExitSwitch(Simulation *sim, float xcoord, float ycoord, EntityExit *parent)
+    : Entity(ENTITY_TYPE, sim, xcoord, ycoord), parent(parent)
 {
 }
 

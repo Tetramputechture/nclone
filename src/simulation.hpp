@@ -1,11 +1,10 @@
 #pragma once
 
-#include "physics/segment.hpp"
-#include "entity.hpp"
+#include "entities/entity.hpp"
 #include "ninja.hpp"
 #include "sim_config.hpp"
-#include "entities/grid_segment_linear.hpp"
-#include "entities/grid_segment_circular.hpp"
+#include "physics/grid_segment_linear.hpp"
+#include "physics/grid_segment_circular.hpp"
 
 #include <unordered_map>
 #include <vector>
@@ -13,6 +12,11 @@
 #include <array>
 #include <cstdint>
 #include <tuple>
+#include <utility>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <iostream>
 
 class Simulation
 {

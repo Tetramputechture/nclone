@@ -1,26 +1,24 @@
 #pragma once
 
-#include "../physics/segment.hpp"
+#include "segment.hpp"
 #include <utility>
+#include <cmath>
 
 class GridSegmentCircular : public Segment
 {
 public:
   GridSegmentCircular(std::pair<float, float> center, std::pair<int, int> quadrant, bool convex, float radius = 24.0f);
 
-  /**
-   * Find the closest point on the segment from the given position.
-   * isBackFacing is false if the position is facing the segment's outer edge.
-   */
-  std::tuple<bool, float, float> getClosestPoint(float xpos, float ypos) const;
+  std::tuple<bool, float, float> getClosestPoint(float xpos, float ypos) const override;
+  float intersectWithRay(float xpos, float ypos, float dx, float dy, float radius) const override;
 
-  /**
-   * Return the time of intersection (as a fraction of a frame) for the collision
-   * between the segment and a circle moving along a given direction. Return 0 if the circle
-   * is already intersecting or 1 if it won't intersect within the frame.
-   */
-  float intersectWithRay(float xpos, float ypos, float dx, float dy, float radius) const;
+  // Implement virtual getters
+  const char *getType() const override { return type; }
+  float getRadius() const override { return radius; }
+  float getStartAngle() const override { return std::atan2(ver, hor); }
+  float getEndAngle() const override { return std::atan2(ver, hor) + M_PI / 2; }
 
+private:
   float xpos, ypos;             // Center position
   int hor, ver;                 // Quadrant direction
   float radius;                 // Radius of the quarter-circle

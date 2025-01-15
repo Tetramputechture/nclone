@@ -1,11 +1,11 @@
 #pragma once
 
-#include "../entity.hpp"
+#include "entity.hpp"
 
 class EntityExit : public Entity
 {
 public:
-  static constexpr int entityType = 3;
+  static constexpr int ENTITY_TYPE = 3;
   static constexpr float RADIUS = 12.0f;
   static constexpr int MAX_COUNT_PER_LEVEL = 16;
 

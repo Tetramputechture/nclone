@@ -1,6 +1,6 @@
 #include "entity.hpp"
-#include "simulation.hpp"
-#include "sim_config.hpp"
+#include "../simulation.hpp"
+#include "../sim_config.hpp"
 #include <cmath>
 
 // Initialize static member

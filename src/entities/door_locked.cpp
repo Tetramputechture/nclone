@@ -2,9 +2,9 @@
 #include "../simulation.hpp"
 #include "../ninja.hpp"
 
-EntityDoorLocked::EntityDoorLocked(int entityType, Simulation *sim, float xcoord, float ycoord,
+EntityDoorLocked::EntityDoorLocked(Simulation *sim, float xcoord, float ycoord,
                                    int orientation, float swXcoord, float swYcoord)
-    : EntityDoorBase(entityType, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
+    : EntityDoorBase(ENTITY_TYPE, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
 {
 }
 

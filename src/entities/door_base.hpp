@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../entity.hpp"
+#include "entity.hpp"
 #include <memory>
 #include "../physics/segment.hpp"
 

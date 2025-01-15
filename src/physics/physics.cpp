@@ -1,10 +1,8 @@
 #include "physics.hpp"
-#include "segment.hpp"
 #include "../simulation.hpp"
-#include "../ninja.hpp"
-#include "../entity.hpp"
-#include "../entities/grid_segment_linear.hpp"
-#include "../entities/grid_segment_circular.hpp"
+#include "segment.hpp"
+#include "grid_segment_linear.hpp"
+#include "grid_segment_circular.hpp"
 #include <cmath>
 #include <limits>
 #include <sstream>

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../simulation.hpp"
+#include "../ninja.hpp"
 #include <vector>
 #include <unordered_map>
 #include <cmath>
@@ -8,10 +10,6 @@
 #include <optional>
 #include <algorithm>
 #include <string>
-
-// Forward declarations
-class Simulation;
-class Ninja;
 
 class Physics
 {
@@ -36,7 +34,8 @@ public:
         const Simulation &sim, float xposOld, float yposOld,
         float dx, float dy, float radius);
 
-    static std::optional<std::tuple<std::pair<float, float>, std::pair<float, float>>> penetrationSquareVsPoint(float sXpos, float sYpos, float pXpos, float pYpos, float semiSide);
+    static std::optional<std::tuple<std::pair<float, float>, std::pair<float, float>>>
+    penetrationSquareVsPoint(float sXpos, float sYpos, float pXpos, float pYpos, float semiSide);
 
     static bool overlapCircleVsCircle(
         float xpos1, float ypos1, float radius1,

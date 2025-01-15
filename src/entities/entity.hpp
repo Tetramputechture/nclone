@@ -4,9 +4,8 @@
 #include <vector>
 #include <tuple>
 #include <unordered_map>
-#include "physics/physics.hpp"
-
-class Simulation;
+#include "../physics/physics.hpp"
+#include "../simulation.hpp"
 
 class Entity
 {

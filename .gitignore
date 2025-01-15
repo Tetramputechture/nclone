@@ -8,3 +8,5 @@ out
 *.code-workspace
 
 anim_data_line_new.txt.bin
+
+maps/
