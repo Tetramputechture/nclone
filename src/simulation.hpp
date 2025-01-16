@@ -57,7 +57,7 @@ public:
   int getFrame() const { return frame; }
 
   // Entity management
-  std::shared_ptr<Entity> createEntity(int entityType, float xpos, float ypos, int orientation = 0, int mode = 0);
+  std::shared_ptr<Entity> createEntity(int entityType, float xpos, float ypos, int orientation, int mode, float switchX = -1, float switchY = -1);
   void addEntity(std::shared_ptr<Entity> entity);
   void removeEntity(std::shared_ptr<Entity> entity);
 

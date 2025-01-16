@@ -10,6 +10,17 @@
 #include "entities/door_regular.hpp"
 #include "entities/door_locked.hpp"
 #include "entities/door_trap.hpp"
+#include "entities/launch_pad.hpp"
+#include "entities/one_way_platform.hpp"
+#include "entities/drone_zap.hpp"
+#include "entities/drone_chaser.hpp"
+#include "entities/bounce_block.hpp"
+#include "entities/thwump.hpp"
+#include "entities/laser.hpp"
+#include "entities/boost_pad.hpp"
+#include "entities/death_ball.hpp"
+#include "entities/mini_drone.hpp"
+#include "entities/shove_thwump.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -102,28 +113,6 @@ const std::unordered_map<int, std::array<int, 12>> Simulation::TILE_SEGMENT_ORTH
     {35, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1}},
     {36, {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}},
     {37, {0, 0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0}}};
-
-const std::unordered_map<int, std::tuple<std::pair<int, int>, std::pair<int, int>>> Simulation::TILE_SEGMENT_DIAG_MAP = {
-    {6, {{0, 24}, {24, 0}}}, // 45 degree slopes
-    {7, {{0, 0}, {24, 24}}},
-    {8, {{24, 0}, {0, 24}}},
-    {9, {{24, 24}, {0, 0}}},
-    {18, {{0, 12}, {24, 0}}}, // Short mild slopes
-    {19, {{0, 0}, {24, 12}}},
-    {20, {{24, 12}, {0, 24}}},
-    {21, {{24, 24}, {0, 12}}},
-    {22, {{0, 24}, {24, 12}}}, // Raised mild slopes
-    {23, {{0, 12}, {24, 24}}},
-    {24, {{24, 0}, {0, 12}}},
-    {25, {{24, 12}, {0, 0}}},
-    {26, {{0, 24}, {12, 0}}}, // Short steep slopes
-    {27, {{12, 0}, {24, 24}}},
-    {28, {{24, 0}, {12, 24}}},
-    {29, {{12, 24}, {0, 0}}},
-    {30, {{12, 24}, {24, 0}}}, // Raised steep slopes
-    {31, {{0, 0}, {12, 24}}},
-    {32, {{12, 0}, {0, 24}}},
-    {33, {{24, 24}, {12, 0}}}};
 
 const std::unordered_map<int, std::tuple<std::pair<int, int>, std::pair<int, int>, bool>> Simulation::TILE_SEGMENT_CIRCULAR_MAP = {
     {10, {{0, 0}, {1, 1}, true}}, // Quarter moons
@@ -347,8 +336,13 @@ void Simulation::loadMapEntities()
     mapData[1233] = -1;
   }
 
+  // Reset entity counts
+  std::fill(Entity::entityCounts.begin(), Entity::entityCounts.end(), 0);
+
   // Process entity data
   size_t index = 1234;
+  size_t exitDoorCount = mapData[1156];
+
   while (index < mapData.size())
   {
     int entityType = mapData[index];
@@ -360,7 +354,23 @@ void Simulation::loadMapEntities()
     int orientation = mapData[index + 3];
     int mode = mapData[index + 4];
 
-    auto entity = createEntity(entityType, xpos, ypos, orientation, mode);
+    float switchX = -1;
+    float switchY = -1;
+
+    // Handle switch coordinates for doors
+    if (entityType == 6 || entityType == 8)
+    {
+      switchX = static_cast<float>(mapData[index + 6]);
+      switchY = static_cast<float>(mapData[index + 7]);
+    }
+    // Handle exit door switch coordinates
+    else if (entityType == 3)
+    {
+      switchX = static_cast<float>(mapData[index + 5 * exitDoorCount + 1]);
+      switchY = static_cast<float>(mapData[index + 5 * exitDoorCount + 2]);
+    }
+
+    auto entity = createEntity(entityType, xpos, ypos, orientation, mode, switchX, switchY);
     if (entity)
     {
       addEntity(entity);
@@ -371,108 +381,7 @@ void Simulation::loadMapEntities()
   }
 }
 
-void Simulation::tick(float horInput, int jumpInput)
-{
-  frame++;
-
-  // Update ninja inputs
-  if (ninja)
-  {
-    ninja->setHorInput(horInput);
-    ninja->setJumpInput(jumpInput);
-  }
-
-  // Cache active entities
-  std::vector<Entity *> activeMovableEntities;
-  std::vector<Entity *> activeThinkableEntities;
-
-  // Gather active entities
-  for (const auto &[_, entityList] : entityDic)
-  {
-    for (const auto &entity : entityList)
-    {
-      if (!entity->isActive())
-        continue;
-
-      if (entity->isMovable())
-      {
-        activeMovableEntities.push_back(entity.get());
-      }
-      if (entity->isThinkable())
-      {
-        activeThinkableEntities.push_back(entity.get());
-      }
-    }
-  }
-
-  // Update movable entities
-  for (auto entity : activeMovableEntities)
-  {
-    entity->move();
-  }
-
-  // Update thinkable entities
-  for (auto entity : activeThinkableEntities)
-  {
-    entity->think();
-  }
-
-  // Update ninja physics
-  if (ninja && ninja->getState() != 9)
-  {
-    auto physicsTarget = ninja.get();
-
-    if (physicsTarget)
-    {
-      physicsTarget->integrate();
-      physicsTarget->preCollision();
-
-      for (int i = 0; i < 4; i++)
-      {
-        physicsTarget->collideVsObjects();
-        physicsTarget->collideVsTiles();
-      }
-
-      physicsTarget->postCollision();
-      ninja->think();
-
-      if (simConfig.enableAnim)
-      {
-        ninja->updateGraphics();
-      }
-    }
-  }
-
-  // Handle dead ninja animation
-  if (ninja && ninja->getState() == 6 && simConfig.enableAnim)
-  {
-    ninja->setAnimFrame(105);
-    ninja->setAnimState(7);
-    ninja->updateGraphics();
-  }
-
-  // Log data if enabled
-  if (simConfig.logData)
-  {
-    if (ninja)
-    {
-      ninja->log(frame);
-    }
-
-    for (auto entity : activeMovableEntities)
-    {
-      entity->logPosition();
-    }
-  }
-
-  // Clear physics caches periodically
-  if (frame % 100 == 0)
-  {
-    Physics::clearCaches();
-  }
-}
-
-std::shared_ptr<Entity> Simulation::createEntity(int entityType, float xpos, float ypos, int orientation, int mode)
+std::shared_ptr<Entity> Simulation::createEntity(int entityType, float xpos, float ypos, int orientation, int mode, float switchX, float switchY)
 {
   std::shared_ptr<Entity> entity;
 
@@ -490,33 +399,70 @@ std::shared_ptr<Entity> Simulation::createEntity(int entityType, float xpos, flo
     auto &typeList = entityDic[entityType];
     typeList.push_back(std::static_pointer_cast<Entity>(exitDoor));
 
-    // Get child switch coordinates from map data
-    size_t exitDoorCount = mapData[1156];
-    float switchX = static_cast<float>(mapData[1234 + 5 * exitDoorCount + 1]);
-    float switchY = static_cast<float>(mapData[1234 + 5 * exitDoorCount + 2]);
-
-    // Create and return the exit switch instead
+    // Create and return the exit switch using provided coordinates
     entity = std::static_pointer_cast<Entity>(std::make_shared<ExitSwitch>(this, switchX, switchY, exitDoor));
     break;
   }
   case 5: // Regular Door
     entity = std::static_pointer_cast<Entity>(std::make_shared<DoorRegular>(this, xpos, ypos, orientation, xpos, ypos));
     break;
-  case 6:
-  { // Locked Door
-    float switchX = static_cast<float>(mapData[1234 + 6]);
-    float switchY = static_cast<float>(mapData[1234 + 7]);
+  case 6: // Locked Door
     entity = std::static_pointer_cast<Entity>(std::make_shared<DoorLocked>(this, xpos, ypos, orientation, switchX, switchY));
     break;
-  }
-  case 8:
-  { // Trap Door
-    float switchX = static_cast<float>(mapData[1234 + 6]);
-    float switchY = static_cast<float>(mapData[1234 + 7]);
+  case 8: // Trap Door
     entity = std::static_pointer_cast<Entity>(std::make_shared<DoorTrap>(this, xpos, ypos, orientation, switchX, switchY));
     break;
-  }
-    // Add other entity types as needed...
+  case 10: // Launch Pad
+    entity = std::static_pointer_cast<Entity>(std::make_shared<LaunchPad>(this, xpos, ypos, orientation));
+    break;
+  case 11: // One Way Platform
+    entity = std::static_pointer_cast<Entity>(std::make_shared<OneWayPlatform>(this, xpos, ypos, orientation));
+    break;
+  case 14: // Drone Zap
+    if (!simConfig.basicSim)
+    {
+      entity = std::static_pointer_cast<Entity>(std::make_shared<DroneZap>(this, xpos, ypos, orientation, mode));
+    }
+    break;
+  case 15: // Drone Chaser
+    if (!simConfig.basicSim)
+    {
+      entity = std::static_pointer_cast<Entity>(std::make_shared<DroneChaser>(this, xpos, ypos, orientation, mode));
+    }
+    break;
+  case 17: // Bounce Block
+    entity = std::static_pointer_cast<Entity>(std::make_shared<BounceBlock>(this, xpos, ypos));
+    break;
+  case 20: // Thwump
+    entity = std::static_pointer_cast<Entity>(std::make_shared<Thwump>(this, xpos, ypos, orientation));
+    break;
+  case 21: // Toggle Mine (toggled state)
+    entity = std::static_pointer_cast<Entity>(std::make_shared<ToggleMine>(this, xpos, ypos, 1));
+    break;
+  case 23: // Laser
+    if (!simConfig.basicSim)
+    {
+      entity = std::static_pointer_cast<Entity>(std::make_shared<Laser>(this, xpos, ypos, orientation, mode));
+    }
+    break;
+  case 24: // Boost Pad
+    entity = std::static_pointer_cast<Entity>(std::make_shared<BoostPad>(this, xpos, ypos));
+    break;
+  case 25: // Death Ball
+    if (!simConfig.basicSim)
+    {
+      entity = std::static_pointer_cast<Entity>(std::make_shared<DeathBall>(this, xpos, ypos));
+    }
+    break;
+  case 26: // Mini Drone
+    if (!simConfig.basicSim)
+    {
+      entity = std::static_pointer_cast<Entity>(std::make_shared<MiniDrone>(this, xpos, ypos, orientation, mode));
+    }
+    break;
+  case 28: // Shove Thwump
+    entity = std::static_pointer_cast<Entity>(std::make_shared<ShoveThwump>(this, xpos, ypos));
+    break;
   }
 
   return entity;
@@ -549,4 +495,98 @@ void Simulation::removeEntity(std::shared_ptr<Entity> entity)
   // Remove from grid
   auto &cellList = gridEntity[cell];
   cellList.erase(std::remove(cellList.begin(), cellList.end(), entity), cellList.end());
+}
+
+void Simulation::tick(float horInput, int jumpInput)
+{
+  // Increment the current frame
+  frame++;
+
+  // Store inputs as ninja variables
+  ninja->setHorInput(horInput);
+  ninja->setJumpInput(jumpInput);
+
+  // Cache active entities to avoid repeated filtering
+  std::vector<std::shared_ptr<Entity>> activeMovableEntities;
+  std::vector<std::shared_ptr<Entity>> activeThinkableEntities;
+
+  // Single pass to categorize entities
+  for (const auto &[type, entityList] : entityDic)
+  {
+    for (const auto &entity : entityList)
+    {
+      if (!entity->isActive())
+        continue;
+
+      if (entity->isMovable())
+      {
+        activeMovableEntities.push_back(entity);
+      }
+      if (entity->isThinkable())
+      {
+        activeThinkableEntities.push_back(entity);
+      }
+    }
+  }
+
+  // Move all movable entities
+  for (const auto &entity : activeMovableEntities)
+  {
+    entity->move();
+  }
+
+  // Make all thinkable entities think
+  for (const auto &entity : activeThinkableEntities)
+  {
+    entity->think();
+  }
+
+  if (ninja->getState() != 9)
+  {
+    ninja->integrate();    // Do preliminary speed and position updates
+    ninja->preCollision(); // Do pre collision calculations
+
+    // Cache collision results
+    for (int i = 0; i < 4; i++)
+    {
+      // Handle PHYSICAL collisions with entities
+      ninja->collideVsObjects();
+      // Handle physical collisions with tiles
+      ninja->collideVsTiles();
+    }
+
+    ninja->postCollision(); // Do post collision calculations
+    ninja->think();         // Make ninja think
+
+    if (simConfig.enableAnim)
+    {
+      ninja->updateGraphics(); // Update limbs of ninja
+    }
+  }
+
+  if (ninja->getState() == 6 && simConfig.enableAnim)
+  {
+    // Placeholder because no ragdoll!
+    ninja->setAnimFrame(105);
+    ninja->setAnimState(7);
+    ninja->calcNinjaPosition();
+  }
+
+  if (simConfig.logData)
+  {
+    // Update all the logs for debugging purposes and for tracing the route
+    ninja->log(frame);
+
+    // Batch entity position logging
+    for (const auto &entity : activeMovableEntities)
+    {
+      entity->logPosition();
+    }
+  }
+
+  // Clear physics caches periodically
+  if (frame % 100 == 0)
+  {
+    Physics::clearCaches();
+  }
 }
