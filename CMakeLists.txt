@@ -58,5 +58,5 @@ add_executable(main
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-target_link_libraries(main PRIVATE sfml-graphics)
+target_link_libraries(main PRIVATE SFML::Graphics)
 target_include_directories(main PRIVATE ${SFML_SOURCE_DIR}/include src)

@@ -22,12 +22,9 @@ public:
   virtual void move() {}
   virtual void physicalCollision() {}
   virtual void logicalCollision() {}
-  virtual bool isMovable() const { return false; }
-  virtual bool isThinkable() const { return false; }
 
   // State getters/setters
   virtual std::vector<float> getState(bool minimalState = false) const;
-  std::pair<int, int> getCell() const;
   void gridMove();
   void logCollision(int state = 1);
   void logPosition();
@@ -48,8 +45,6 @@ public:
   float yspeed = 0.0f;
   float xposOld;
   float yposOld;
-  bool active = true;
-  std::pair<int, int> cell;
 
 protected:
   // Protected member variables for derived classes
