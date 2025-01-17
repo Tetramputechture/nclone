@@ -1,44 +1,92 @@
 #include "door_base.hpp"
 #include "../simulation.hpp"
+#include "../utils.hpp"
+#include "../physics/grid_segment_linear.hpp"
+#include <cmath>
 
-EntityDoorBase::EntityDoorBase(int entityType, Simulation *sim, float xcoord, float ycoord,
-                               int orientation, float swXcoord, float swYcoord)
-    : Entity(entityType, sim, xcoord, ycoord), orientation(orientation), swXcoord(swXcoord), swYcoord(swYcoord)
+DoorBase::DoorBase(int entityType, Simulation *sim, float xcoord, float ycoord,
+                   int orientation, float swXcoord, float swYcoord)
+    : Entity(entityType, sim, xcoord, ycoord),
+      orientation(orientation),
+      swXcoord(swXcoord * 6), // Convert to internal coordinates
+      swYcoord(swYcoord * 6),
+      closed(true)
 {
-  initSegment();
-}
+  isVertical = (orientation == 0 || orientation == 4);
 
-void EntityDoorBase::initSegment()
-{
-  float x1 = xpos;
-  float y1 = ypos;
-  float x2 = xpos;
-  float y2 = ypos;
+  // Get vector from orientation
+  auto vec = mapOrientationToVector(orientation);
 
-  // Adjust segment endpoints based on orientation
-  if (orientation == 0 || orientation == 4)
+  // Find the cell that the door is in for the grid segment
+  int doorXcell = std::floor((xpos - 12 * vec.first) / 24);
+  int doorYcell = std::floor((ypos - 12 * vec.second) / 24);
+  auto doorCell = clampCell(doorXcell, doorYcell);
+
+  // Find the half cell of the door for the grid edges
+  int doorHalfXcell = 2 * (doorCell.first + 1);
+  int doorHalfYcell = 2 * (doorCell.second + 1);
+
+  // Create the grid segment and grid edges
+  if (isVertical)
   {
-    x2 += 24.0f;
+    segment = std::make_shared<GridSegmentLinear>(
+        std::make_pair(xpos, ypos - 12),
+        std::make_pair(xpos, ypos + 12),
+        false // not oriented
+    );
+    gridEdges.push_back(std::make_pair(doorHalfXcell, doorHalfYcell - 2));
+    gridEdges.push_back(std::make_pair(doorHalfXcell, doorHalfYcell - 1));
+    for (const auto &edge : gridEdges)
+    {
+      sim->incrementVerGridEdge(edge, 1);
+    }
   }
   else
   {
-    y2 += 24.0f;
+    segment = std::make_shared<GridSegmentLinear>(
+        std::make_pair(xpos - 12, ypos),
+        std::make_pair(xpos + 12, ypos),
+        false // not oriented
+    );
+    gridEdges.push_back(std::make_pair(doorHalfXcell - 2, doorHalfYcell));
+    gridEdges.push_back(std::make_pair(doorHalfXcell - 1, doorHalfYcell));
+    for (const auto &edge : gridEdges)
+    {
+      sim->incrementHorGridEdge(edge, 1);
+    }
   }
 
-  segment = std::make_shared<Segment>(x1, y1, x2, y2);
-  sim->getSegmentsAt(cell).push_back(segment);
+  sim->getSegmentsAt(doorCell).push_back(segment);
+
+  // Update position and cell so it corresponds to the switch and not the door
+  xpos = swXcoord;
+  ypos = swYcoord;
+  cell = clampCell(std::floor(xpos / 24), std::floor(ypos / 24));
 }
 
-void EntityDoorBase::changeState(bool newClosed)
+void DoorBase::changeState(bool newClosed)
 {
   if (closed != newClosed)
   {
     closed = newClosed;
-    segment->active = closed;
+    segment->setActive(closed);
+    logCollision(closed ? 0 : 1);
+
+    for (const auto &edge : gridEdges)
+    {
+      if (isVertical)
+      {
+        sim->incrementVerGridEdge(edge, closed ? 1 : -1);
+      }
+      else
+      {
+        sim->incrementHorGridEdge(edge, closed ? 1 : -1);
+      }
+    }
   }
 }
 
-std::vector<float> EntityDoorBase::getState(bool minimalState) const
+std::vector<float> DoorBase::getState(bool minimalState) const
 {
   auto baseState = Entity::getState(minimalState);
   if (!minimalState)

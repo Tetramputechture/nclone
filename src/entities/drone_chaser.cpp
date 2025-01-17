@@ -25,13 +25,12 @@ void DroneChaser::think()
   }
 }
 
-void DroneChaser::chooseNextDirectionAndGoal()
+bool DroneChaser::chooseNextDirectionAndGoal()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
   {
-    DroneZap::chooseNextDirectionAndGoal();
-    return;
+    return DroneZap::chooseNextDirectionAndGoal();
   }
 
   float dx = ninja->xpos - xpos;
@@ -47,4 +46,5 @@ void DroneChaser::chooseNextDirectionAndGoal()
     goalX = xpos + GRID_WIDTH * dirX;
     goalY = ypos + GRID_WIDTH * dirY;
   }
+  return true;
 }

@@ -1,24 +1,23 @@
 #include "exit_switch.hpp"
-#include "exit.hpp"
+#include "exit_door.hpp"
 #include "../simulation.hpp"
 #include "../ninja.hpp"
+#include "../physics/physics.hpp"
 
-EntityExitSwitch::EntityExitSwitch(Simulation *sim, float xcoord, float ycoord, EntityExit *parent)
+ExitSwitch::ExitSwitch(Simulation *sim, float xcoord, float ycoord, ExitDoor *parent)
     : Entity(ENTITY_TYPE, sim, xcoord, ycoord), parent(parent)
 {
 }
 
-void EntityExitSwitch::logicalCollision()
+void ExitSwitch::logicalCollision()
 {
-  if (!active)
-    return;
-
+  auto ninja = sim->getNinja();
   if (Physics::overlapCircleVsCircle(
           xpos, ypos, RADIUS,
-          sim->getNinja()->xpos, sim->getNinja()->ypos, sim->getNinja()->RADIUS))
+          ninja->xpos, ninja->ypos, ninja->RADIUS))
   {
-    active = false;
-    parent->active = true;
+    setActive(false);
+    sim->addEntity(std::shared_ptr<Entity>(parent));
     logCollision();
   }
 }

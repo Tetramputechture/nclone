@@ -5,7 +5,7 @@
 #include "physics/grid_segment_circular.hpp"
 #include "entities/toggle_mine.hpp"
 #include "entities/gold.hpp"
-#include "entities/exit.hpp"
+#include "entities/exit_door.hpp"
 #include "entities/exit_switch.hpp"
 #include "entities/door_regular.hpp"
 #include "entities/door_locked.hpp"
@@ -23,15 +23,6 @@
 #include "entities/shove_thwump.hpp"
 #include <cmath>
 #include <algorithm>
-
-// Forward declarations
-class ToggleMine;
-class Gold;
-class Exit;
-class ExitSwitch;
-class DoorRegular;
-class DoorLocked;
-class DoorTrap;
 
 // Initialize static tile map constants
 const std::unordered_map<int, std::array<int, 12>> Simulation::TILE_GRID_EDGE_MAP = {
@@ -123,6 +114,28 @@ const std::unordered_map<int, std::tuple<std::pair<int, int>, std::pair<int, int
     {15, {{0, 24}, {1, -1}, false}},
     {16, {{0, 0}, {1, 1}, false}},
     {17, {{24, 0}, {-1, 1}, false}}};
+
+const std::unordered_map<int, std::tuple<std::pair<int, int>, std::pair<int, int>>> Simulation::TILE_SEGMENT_DIAG_MAP = {
+    {6, {{0, 24}, {24, 0}}}, // 45 degree slopes
+    {7, {{0, 0}, {24, 24}}},
+    {8, {{24, 0}, {0, 24}}},
+    {9, {{24, 24}, {0, 0}}},
+    {18, {{0, 12}, {24, 0}}}, // Short mild slopes
+    {19, {{0, 0}, {24, 12}}},
+    {20, {{24, 12}, {0, 24}}},
+    {21, {{24, 24}, {0, 12}}},
+    {22, {{0, 24}, {24, 12}}}, // Raised mild slopes
+    {23, {{0, 12}, {24, 24}}},
+    {24, {{24, 0}, {0, 12}}},
+    {25, {{24, 12}, {0, 0}}},
+    {26, {{0, 24}, {12, 0}}}, // Short steep slopes
+    {27, {{12, 0}, {24, 24}}},
+    {28, {{24, 0}, {12, 24}}},
+    {29, {{12, 24}, {0, 0}}},
+    {30, {{12, 24}, {24, 0}}}, // Raised steep slopes
+    {31, {{0, 0}, {12, 24}}},
+    {32, {{12, 0}, {0, 24}}},
+    {33, {{24, 24}, {12, 0}}}};
 
 Simulation::Simulation(const SimConfig &sc)
     : frame(0), simConfig(sc), ninja(nullptr)
@@ -395,12 +408,12 @@ std::shared_ptr<Entity> Simulation::createEntity(int entityType, float xpos, flo
     break;
   case 3:
   { // Exit Door
-    auto exitDoor = std::make_shared<Exit>(this, xpos, ypos);
+    auto exitDoor = std::make_shared<ExitDoor>(this, xpos, ypos);
     auto &typeList = entityDic[entityType];
     typeList.push_back(std::static_pointer_cast<Entity>(exitDoor));
 
     // Create and return the exit switch using provided coordinates
-    entity = std::static_pointer_cast<Entity>(std::make_shared<ExitSwitch>(this, switchX, switchY, exitDoor));
+    entity = std::static_pointer_cast<Entity>(std::make_shared<ExitSwitch>(this, switchX, switchY, exitDoor.get()));
     break;
   }
   case 5: // Regular Door

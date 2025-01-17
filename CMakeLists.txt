@@ -33,12 +33,11 @@ add_executable(main
     src/physics/segment.cpp
     src/physics/grid_segment_linear.cpp
     src/physics/grid_segment_circular.cpp
-    
+
     # Entity files
-    src/entities/entity.cpp
-    src/entities/one_way_platform.cpp
-    src/entities/laser.cpp
-    src/entities/thwump.cpp
+    src/entities/boost_pad.cpp
+    src/entities/bounce_block.cpp
+    src/entities/death_ball.cpp
     src/entities/door_base.cpp
     src/entities/door_regular.cpp
     src/entities/door_locked.cpp
@@ -46,17 +45,22 @@ add_executable(main
     src/entities/drone_base.cpp
     src/entities/drone_chaser.cpp
     src/entities/drone_zap.cpp
-    src/entities/launch_pad.cpp
+    src/entities/entity.cpp
+    src/entities/exit_door.cpp
     src/entities/exit_switch.cpp
-    src/entities/exit.cpp
     src/entities/gold.cpp
+    src/entities/laser.cpp
+    src/entities/launch_pad.cpp
+    src/entities/mini_drone.cpp
+    src/entities/one_way_platform.cpp
+    src/entities/shove_thwump.cpp
+    src/entities/thwump.cpp
     src/entities/toggle_mine.cpp
-    src/entities/bounce_block.cpp
 )
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-target_link_libraries(main PRIVATE SFML::Graphics)
+target_link_libraries(main PRIVATE SFML::Graphics SFML::Window)
 target_include_directories(main PRIVATE ${SFML_SOURCE_DIR}/include src)

@@ -2,22 +2,29 @@
 #include "../simulation.hpp"
 #include "../ninja.hpp"
 
-EntityDoorRegular::EntityDoorRegular(Simulation *sim, float xcoord, float ycoord,
-                                     int orientation, float swXcoord, float swYcoord)
-    : EntityDoorBase(ENTITY_TYPE, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
+DoorRegular::DoorRegular(Simulation *sim, float xcoord, float ycoord,
+                         int orientation, float swXcoord, float swYcoord)
+    : DoorBase(ENTITY_TYPE, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
 {
 }
 
-void EntityDoorRegular::think()
+void DoorRegular::think()
 {
   if (!active)
     return;
 
-  changeState(!ninjaInRange);
+  if (!ninjaInRange)
+  {
+    openTimer++;
+    if (openTimer > 5)
+    {
+      changeState(true); // close the door
+    }
+  }
   ninjaInRange = false;
 }
 
-void EntityDoorRegular::logicalCollision()
+void DoorRegular::logicalCollision()
 {
   if (!active)
     return;
@@ -27,6 +34,7 @@ void EntityDoorRegular::logicalCollision()
           sim->getNinja()->xpos, sim->getNinja()->ypos, sim->getNinja()->RADIUS))
   {
     ninjaInRange = true;
-    logCollision;
+    openTimer = 0;
+    changeState(false); // open the door
   }
 }

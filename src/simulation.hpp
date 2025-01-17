@@ -1,7 +1,5 @@
 #pragma once
 
-#include "entities/entity.hpp"
-#include "ninja.hpp"
 #include "sim_config.hpp"
 #include "physics/grid_segment_linear.hpp"
 #include "physics/grid_segment_circular.hpp"
@@ -17,6 +15,10 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+
+// Forward declarations
+class Entity;
+class Ninja;
 
 class Simulation
 {
@@ -78,6 +80,10 @@ public:
   // Map data accessors
   uint8_t getMapData(size_t index) const { return mapData[index]; }
   const std::vector<uint8_t> &getMapData() const { return mapData; }
+
+  // Add these accessor methods
+  void incrementVerGridEdge(const std::pair<int, int> &edge, int amount) { verGridEdgeDic[edge] += amount; }
+  void incrementHorGridEdge(const std::pair<int, int> &edge, int amount) { horGridEdgeDic[edge] += amount; }
 
 private:
   // Internal map loading methods

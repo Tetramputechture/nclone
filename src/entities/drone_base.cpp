@@ -14,92 +14,120 @@ const std::unordered_map<int, std::array<float, 2>> DroneBase::DIR_TO_VEC = {
 const std::unordered_map<int, std::array<int, 4>> DroneBase::DIR_LIST = {
     {0, {1, 0, 3, 2}},
     {1, {3, 0, 1, 2}},
-    {2, {1, 0, 3, 2}},
-    {3, {3, 0, 1, 2}}};
+    {2, {0, 1, 3, 2}},
+    {3, {0, 3, 1, 2}}};
 
 DroneBase::DroneBase(int entityType, Simulation *sim, float xcoord, float ycoord, int orientation, int mode, float speed)
     : Entity(entityType, sim, xcoord, ycoord),
       orientation(orientation),
       mode(mode),
-      speed(speed)
+      speed(speed),
+      goalX(xcoord),
+      goalY(ycoord),
+      xpos2(xcoord),
+      ypos2(ycoord)
 {
-  auto [dirX, dirY] = DIR_TO_VEC.at(orientation);
-  goalX = xpos + GRID_WIDTH * dirX;
-  goalY = ypos + GRID_WIDTH * dirY;
+  turn(orientation / 2);
 }
 
-void DroneBase::turn(int dir)
+void DroneBase::turn(int newDir)
 {
-  orientation = (orientation + dir) % 4;
-  if (orientation < 0)
-    orientation += 4;
-
-  auto [dirX, dirY] = DIR_TO_VEC.at(orientation);
-  goalX = xpos + GRID_WIDTH * dirX;
-  goalY = ypos + GRID_WIDTH * dirY;
+  dirOld = dir;
+  dir = newDir;
+  if (sim->getConfig().fullExport)
+  {
+    logCollision(dir);
+  }
 }
 
 void DroneBase::move()
 {
+  auto [dirX, dirY] = DIR_TO_VEC.at(dir);
+  float xspeed = speed * dirX;
+  float yspeed = speed * dirY;
   float dx = goalX - xpos;
   float dy = goalY - ypos;
   float dist = std::sqrt(dx * dx + dy * dy);
 
-  if (dist <= speed)
+  // If the drone has reached or passed the center of the cell, choose the next cell to go to
+  if (dist < 0.000001f || (dx * (goalX - (xpos + xspeed)) + dy * (goalY - (ypos + yspeed))) < 0)
   {
     xpos = goalX;
     ypos = goalY;
-    chooseNextDirectionAndGoal();
+    bool canMove = chooseNextDirectionAndGoal();
+    if (canMove)
+    {
+      float disp = speed - dist;
+      auto [newDirX, newDirY] = DIR_TO_VEC.at(dir);
+      xpos += disp * newDirX;
+      ypos += disp * newDirY;
+    }
   }
   else
   {
-    xpos += speed * dx / dist;
-    ypos += speed * dy / dist;
+    xpos += xspeed;
+    ypos += yspeed;
   }
+  gridMove();
 }
 
 bool DroneBase::testNextDirectionAndGoal(int dir)
 {
-  int nextOrientation = (orientation + dir) % 4;
-  if (nextOrientation < 0)
-    nextOrientation += 4;
-
-  auto [dirX, dirY] = DIR_TO_VEC.at(nextOrientation);
+  auto [dirX, dirY] = DIR_TO_VEC.at(dir);
   float nextGoalX = xpos + GRID_WIDTH * dirX;
   float nextGoalY = ypos + GRID_WIDTH * dirY;
 
-  int xcoord1 = static_cast<int>(std::floor(xpos / GRID_WIDTH));
-  int ycoord1 = static_cast<int>(std::floor(ypos / GRID_WIDTH));
-  int xcoord2 = static_cast<int>(std::floor(nextGoalX / GRID_WIDTH));
-  int ycoord2 = static_cast<int>(std::floor(nextGoalY / GRID_WIDTH));
-
-  if (dirX != 0)
+  if (dirY == 0)
   {
-    return Physics::isEmptyColumn(*sim, dirX > 0 ? xcoord1 + 1 : xcoord1,
-                                  std::min(ycoord1, ycoord2),
-                                  std::max(ycoord1, ycoord2),
-                                  dirX > 0 ? 1 : -1);
+    int cellX = static_cast<int>(std::floor((xpos + dirX * RADIUS) / 12.0f));
+    int cellXTarget = static_cast<int>(std::floor((nextGoalX + dirX * RADIUS) / 12.0f));
+    int cellY1 = static_cast<int>(std::floor((ypos - RADIUS) / 12.0f));
+    int cellY2 = static_cast<int>(std::floor((ypos + RADIUS) / 12.0f));
+
+    while (cellX != cellXTarget)
+    {
+      if (!Physics::isEmptyColumn(*sim, cellX, cellY1, cellY2, dirX))
+      {
+        return false;
+      }
+      cellX += dirX;
+    }
   }
   else
   {
-    return Physics::isEmptyRow(*sim, std::min(xcoord1, xcoord2),
-                               std::max(xcoord1, xcoord2),
-                               dirY > 0 ? ycoord1 + 1 : ycoord1,
-                               dirY > 0 ? 1 : -1);
-  }
-}
+    int cellY = static_cast<int>(std::floor((ypos + dirY * RADIUS) / 12.0f));
+    int cellYTarget = static_cast<int>(std::floor((nextGoalY + dirY * RADIUS) / 12.0f));
+    int cellX1 = static_cast<int>(std::floor((xpos - RADIUS) / 12.0f));
+    int cellX2 = static_cast<int>(std::floor((xpos + RADIUS) / 12.0f));
 
-void DroneBase::chooseNextDirectionAndGoal()
-{
-  const auto &dirList = DIR_LIST.at(mode);
-  for (int dir : dirList)
-  {
-    if (testNextDirectionAndGoal(dir))
+    while (cellY != cellYTarget)
     {
-      turn(dir);
-      return;
+      if (!Physics::isEmptyRow(*sim, cellX1, cellX2, cellY, dirY))
+      {
+        return false;
+      }
+      cellY += dirY;
     }
   }
+
+  goalX = nextGoalX;
+  goalY = nextGoalY;
+  return true;
+}
+
+bool DroneBase::chooseNextDirectionAndGoal()
+{
+  const auto &dirList = DIR_LIST.at(mode);
+  for (int i = 0; i < 4; i++)
+  {
+    int newDir = (dir + dirList[i]) % 4;
+    if (testNextDirectionAndGoal(newDir))
+    {
+      turn(newDir);
+      return true;
+    }
+  }
+  return false;
 }
 
 std::vector<float> DroneBase::getState(bool minimalState) const
@@ -107,8 +135,9 @@ std::vector<float> DroneBase::getState(bool minimalState) const
   auto state = Entity::getState(minimalState);
   if (!minimalState)
   {
-    state.push_back(static_cast<float>(orientation));
     state.push_back(static_cast<float>(mode));
+    state.push_back(dir == -1 ? 0.5f : (static_cast<float>(dir) + 1.0f) / 2.0f);
+    state.push_back(static_cast<float>(orientation) / 7.0f);
   }
   return state;
 }

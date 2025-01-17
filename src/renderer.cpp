@@ -1,7 +1,7 @@
 #include "renderer.hpp"
 #include "entities/entity.hpp"
 #include "entities/gold.hpp"
-#include "entities/exit.hpp"
+#include "entities/exit_door.hpp"
 #include "entities/door_base.hpp"
 #include "entities/drone_base.hpp"
 #include "entities/laser.hpp"
@@ -376,11 +376,11 @@ void Renderer::drawEntities(bool init)
 
       // Draw regular entities
       float radius = 10.0f * adjust; // Default radius
-      if (auto gold = dynamic_cast<const EntityGold *>(entity.get()))
+      if (auto gold = dynamic_cast<const Gold *>(entity.get()))
         radius = gold->RADIUS * adjust;
-      else if (auto exit = dynamic_cast<const EntityExit *>(entity.get()))
+      else if (auto exit = dynamic_cast<const ExitDoor *>(entity.get()))
         radius = exit->RADIUS * adjust;
-      else if (auto door = dynamic_cast<const EntityDoorRegular *>(entity.get()))
+      else if (auto door = dynamic_cast<const DoorRegular *>(entity.get()))
         radius = door->RADIUS * adjust;
       else if (auto drone = dynamic_cast<const DroneBase *>(entity.get()))
         radius = drone->RADIUS * adjust;

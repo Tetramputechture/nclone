@@ -2,56 +2,73 @@
 #include "../simulation.hpp"
 #include "../ninja.hpp"
 
-EntityToggleMine::EntityToggleMine(int entityType, Simulation *sim, float xcoord, float ycoord, int state)
-    : Entity(entityType, sim, xcoord, ycoord), state(state)
+ToggleMine::ToggleMine(Simulation *sim, float xcoord, float ycoord, int state)
+    : Entity(ENTITY_TYPE, sim, xcoord, ycoord)
 {
+  setState(state);
 }
 
-void EntityToggleMine::think()
+void ToggleMine::think()
 {
-  if (state == 2)
+  auto ninja = sim->getNinja();
+  if (!ninja->isValidTarget())
+  {
+    if (state == 2)
+    {
+      setState(1);
+    }
+    return;
+  }
+
+  if (state == 1)
+  { // untoggled state
+    if (Physics::overlapCircleVsCircle(
+            xpos, ypos, RADII[state],
+            ninja->xpos, ninja->ypos, ninja->RADIUS))
+    {
+      setState(2); // set to toggling state
+    }
+  }
+  else if (state == 2)
   { // toggling state
-    toggleTimer++;
-    if (toggleTimer >= 30)
+    if (!Physics::overlapCircleVsCircle(
+            xpos, ypos, RADII[state],
+            ninja->xpos, ninja->ypos, ninja->RADIUS))
     {
       setState(0); // set to toggled state
     }
   }
 }
 
-void EntityToggleMine::logicalCollision()
+void ToggleMine::logicalCollision()
 {
-  if (!active || state == 2)
+  auto ninja = sim->getNinja();
+  if (!ninja->isValidTarget() || state == 2)
     return;
 
   if (Physics::overlapCircleVsCircle(
           xpos, ypos, RADII[state],
-          sim->getNinja()->xpos, sim->getNinja()->ypos, sim->getNinja()->RADIUS))
+          ninja->xpos, ninja->ypos, ninja->RADIUS))
   {
     if (state == 0)
     { // toggled state
-      sim->getNinja()->kill(0, xpos, ypos, 0, 0);
-    }
-    else
-    {              // untoggled state
-      setState(2); // set to toggling state
+      setState(1);
+      ninja->kill(0, 0, 0, 0, 0);
     }
   }
 }
 
-void EntityToggleMine::setState(int newState)
+void ToggleMine::setState(int newState)
 {
-  state = newState;
-  toggleTimer = 0;
+  if (newState >= 0 && newState <= 2)
+  {
+    state = newState;
+    logCollision(state);
+  }
 }
 
-std::vector<float> EntityToggleMine::getState(bool minimalState) const
+std::vector<float> ToggleMine::getState(bool minimalState) const
 {
   auto baseState = Entity::getState(minimalState);
-  if (!minimalState)
-  {
-    baseState.push_back(static_cast<float>(state));
-    baseState.push_back(static_cast<float>(toggleTimer));
-  }
   return baseState;
 }

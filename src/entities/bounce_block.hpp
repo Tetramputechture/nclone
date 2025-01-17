@@ -2,6 +2,7 @@
 
 #include "entity.hpp"
 #include "../simulation.hpp"
+#include <tuple>
 
 class BounceBlock : public Entity
 {
@@ -18,9 +19,11 @@ public:
   void move() override;
   void physicalCollision() override;
   void logicalCollision() override;
+  bool isLogicalCollidable() const override { return true; }
+  bool isPhysicalCollidable() const override { return true; }
   bool isMovable() const override { return true; }
 
 private:
-  float xspeedOld = 0.0f;
-  float yspeedOld = 0.0f;
+  float xorigin;
+  float yorigin;
 };

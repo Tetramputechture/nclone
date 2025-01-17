@@ -15,10 +15,14 @@ public:
 
   void physicalCollision() override;
   void logicalCollision() override;
+  bool isLogicalCollidable() const override { return true; }
+  bool isPhysicalCollidable() const override { return true; }
 
   std::optional<std::tuple<std::pair<float, float>, std::pair<float, float>>>
   calculateDepenetration(const Ninja *ninja) const;
 
 private:
   int orientation;
+  float normalX;
+  float normalY;
 };

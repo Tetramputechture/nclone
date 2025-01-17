@@ -2,13 +2,13 @@
 #include "../simulation.hpp"
 #include "../ninja.hpp"
 
-EntityDoorTrap::EntityDoorTrap(Simulation *sim, float xcoord, float ycoord,
-                               int orientation, float swXcoord, float swYcoord)
-    : EntityDoorBase(ENTITY_TYPE, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
+DoorTrap::DoorTrap(Simulation *sim, float xcoord, float ycoord,
+                   int orientation, float swXcoord, float swYcoord)
+    : DoorBase(ENTITY_TYPE, sim, xcoord, ycoord, orientation, swXcoord, swYcoord)
 {
 }
 
-void EntityDoorTrap::logicalCollision()
+void DoorTrap::logicalCollision()
 {
   if (!active)
     return;

@@ -1,26 +1,28 @@
 #pragma once
 
 #include "entity.hpp"
-#include <memory>
 #include "../physics/segment.hpp"
+#include <memory>
+#include <vector>
+#include <utility>
 
-class EntityDoorBase : public Entity
+class DoorBase : public Entity
 {
 public:
-  EntityDoorBase(int entityType, Simulation *sim, float xcoord, float ycoord,
-                 int orientation, float swXcoord, float swYcoord);
+  DoorBase(int type, Simulation *sim, float xcoord, float ycoord, int orientation, float swXcoord, float swYcoord);
+  virtual ~DoorBase() = default;
 
-  virtual ~EntityDoorBase() = default;
-
-  void changeState(bool closed);
+  void logicalCollision() override;
+  bool isLogicalCollidable() const override { return true; }
   std::vector<float> getState(bool minimalState = false) const override;
 
 protected:
+  void changeState(bool closed);
+  bool closed = true;
   int orientation;
   float swXcoord;
   float swYcoord;
-  bool closed = true;
+  bool isVertical;
   std::shared_ptr<Segment> segment;
-
-  void initSegment();
+  std::vector<std::pair<int, int>> gridEdges;
 };

@@ -4,8 +4,10 @@
 #include <vector>
 #include <tuple>
 #include <unordered_map>
-#include "../physics/physics.hpp"
-#include "../simulation.hpp"
+#include <array>
+
+// Forward declaration
+class Simulation;
 
 class Entity
 {
@@ -33,6 +35,8 @@ public:
   virtual bool isActive() const { return active; }
   virtual bool isMovable() const { return false; }
   virtual bool isThinkable() const { return false; }
+  virtual bool isLogicalCollidable() const { return false; }
+  virtual bool isPhysicalCollidable() const { return false; }
   virtual int getType() const { return type; }
   virtual std::pair<int, int> getCell() const { return cell; }
 
@@ -46,12 +50,22 @@ public:
   float xposOld;
   float yposOld;
 
+  void setActive(bool isActive) { active = isActive; }
+
 protected:
   // Protected member variables for derived classes
   std::vector<std::tuple<int, float, float>> posLog;
   std::vector<std::tuple<int, float, float>> speedLog;
   std::vector<int> collisionLog;
   bool active = true;
+  bool logPositions = false;
+  bool logCollisions = true;
   int type = 0;
   std::pair<int, int> cell;
+  int lastExportedState = -1;
+  int lastExportedFrame = -1;
+  std::pair<float, float> lastExportedCoords;
+  std::vector<int> exportedChunks;
+
+  std::pair<int, int> calculateCell() const;
 };

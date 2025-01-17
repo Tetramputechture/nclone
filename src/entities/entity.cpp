@@ -1,6 +1,7 @@
 #include "entity.hpp"
 #include "../simulation.hpp"
 #include "../sim_config.hpp"
+#include <algorithm>
 #include <cmath>
 
 // Initialize static member
@@ -10,7 +11,7 @@ Entity::Entity(int entityType, Simulation *sim, float xcoord, float ycoord)
     : entityType(entityType), sim(sim), xpos(xcoord), ypos(ycoord), xposOld(xcoord), yposOld(ycoord)
 {
   // Initialize cell position
-  cell = getCell();
+  cell = calculateCell();
 
   // Increment entity count for this type
   if (entityType >= 0 && entityType < 40)
@@ -30,7 +31,7 @@ std::vector<float> Entity::getState(bool minimalState) const
   return state;
 }
 
-std::pair<int, int> Entity::getCell() const
+std::pair<int, int> Entity::calculateCell() const
 {
   return {static_cast<int>(std::floor(xpos / 24)),
           static_cast<int>(std::floor(ypos / 24))};
@@ -38,7 +39,7 @@ std::pair<int, int> Entity::getCell() const
 
 void Entity::gridMove()
 {
-  auto newCell = getCell();
+  auto newCell = calculateCell();
   if (newCell != cell)
   {
     // Remove from old cell

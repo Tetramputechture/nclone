@@ -20,16 +20,19 @@ public:
 
 protected:
   void turn(int dir);
-  virtual void chooseNextDirectionAndGoal();
+  virtual bool chooseNextDirectionAndGoal();
   bool testNextDirectionAndGoal(int dir);
 
+  static const std::unordered_map<int, std::array<float, 2>> DIR_TO_VEC;
+  static const std::unordered_map<int, std::array<int, 4>> DIR_LIST;
+
+  int dir = -1;
+  int dirOld = -1;
   int orientation;
   int mode;
   float speed;
   float goalX;
   float goalY;
-
-private:
-  static const std::unordered_map<int, std::array<float, 2>> DIR_TO_VEC;
-  static const std::unordered_map<int, std::array<int, 4>> DIR_LIST;
+  float xpos2;
+  float ypos2;
 };

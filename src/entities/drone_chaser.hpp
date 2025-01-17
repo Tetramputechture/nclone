@@ -13,5 +13,5 @@ public:
   void think() override;
 
 protected:
-  void chooseNextDirectionAndGoal() override;
+  bool chooseNextDirectionAndGoal() override;
 };

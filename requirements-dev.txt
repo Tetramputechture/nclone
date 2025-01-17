@@ -1,0 +1,7 @@
+numpy>=1.19.0
+Cython>=0.29.0
+pytest>=6.0.0
+black>=22.0.0  # Code formatting
+flake8>=3.9.0  # Linting
+mypy>=0.910    # Type checking
+pytest-cov>=2.12.0  # Test coverage 

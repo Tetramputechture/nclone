@@ -2,14 +2,14 @@
 
 #include "entity.hpp"
 
-class EntityGold : public Entity
+class Gold : public Entity
 {
 public:
+  Gold(Simulation *sim, float xcoord, float ycoord);
+  void logicalCollision() override;
+  bool isLogicalCollidable() const override { return true; }
+
   static constexpr int ENTITY_TYPE = 2;
   static constexpr float RADIUS = 6.0f;
   static constexpr int MAX_COUNT_PER_LEVEL = 8192;
-
-  EntityGold(int entityType, Simulation *sim, float xcoord, float ycoord);
-
-  void logicalCollision() override;
 };

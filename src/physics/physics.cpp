@@ -1,5 +1,6 @@
 #include "physics.hpp"
 #include "../simulation.hpp"
+#include "../entities/entity.hpp"
 #include "segment.hpp"
 #include "grid_segment_linear.hpp"
 #include "grid_segment_circular.hpp"
@@ -96,7 +97,7 @@ std::vector<std::tuple<float, float>> Physics::gatherSegmentsFromRegion(
     const auto &segments = sim.getSegmentsAt(cell);
     for (const auto &segment : segments)
     {
-      if (segment->active)
+      if (segment->isActive())
       {
         segmentList.emplace_back(segment->getX1(), segment->getY1());
         segmentList.emplace_back(segment->getX2(), segment->getY2());
@@ -421,7 +422,7 @@ std::vector<std::tuple<float, float>> Physics::gatherEntitiesFromNeighbourhood(
     const auto &entities = sim.getEntitiesAt(cell);
     for (const auto &entity : entities)
     {
-      if (entity->active)
+      if (entity->isActive())
       {
         entityList.emplace_back(entity->xpos, entity->ypos);
       }
@@ -450,7 +451,7 @@ float Physics::sweepCircleVsTiles(
   {
     const auto &[x1, y1] = segments[i];
     const auto &[x2, y2] = segments[i + 1];
-    Segment segment(x1, y1, x2, y2);
+    GridSegmentLinear segment(std::make_pair(x1, y1), std::make_pair(x2, y2));
     float time = segment.intersectWithRay(xposOld, yposOld, dx, dy, radius);
     shortestTime = std::min(time, shortestTime);
   }
@@ -470,7 +471,7 @@ Physics::getSingleClosestPoint(const Simulation &sim, float xpos, float ypos, fl
   {
     const auto &[x1, y1] = segments[i];
     const auto &[x2, y2] = segments[i + 1];
-    Segment segment(x1, y1, x2, y2);
+    GridSegmentLinear segment(std::make_pair(x1, y1), std::make_pair(x2, y2));
 
     auto [isBackFacing, a, b] = segment.getClosestPoint(xpos, ypos);
     float distanceSq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);

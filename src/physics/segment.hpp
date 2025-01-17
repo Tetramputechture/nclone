@@ -13,6 +13,7 @@ public:
   float getX2() const { return x2; }
   float getY2() const { return y2; }
   bool isActive() const { return active; }
+  void setActive(bool isActive) { active = isActive; }
 
   // Virtual getters that derived classes must implement
   virtual const char *getType() const = 0;
