@@ -10,24 +10,26 @@ public:
   static constexpr float SEMI_SIDE = 12.0f;
   static constexpr float RADIUS = 8.0f; // for the projectile inside
   static constexpr int MAX_COUNT_PER_LEVEL = 128;
-  static constexpr float FORWARD_SPEED = 20.0f / 7.0f;
-  static constexpr float BACKWARD_SPEED = 8.0f / 7.0f;
 
   ShoveThwump(Simulation *sim, float xcoord, float ycoord);
 
   void think() override;
   void move() override;
-  std::optional<std::pair<float, float>> physicalCollision() override;
-  std::optional<std::pair<float, float>> logicalCollision() override;
+  std::optional<EntityCollisionResult> physicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   bool isPhysicalCollidable() const override { return true; }
   bool isMovable() const override { return true; }
   bool isThinkable() const override { return true; }
 
 private:
-  float xstart;
-  float ystart;
-  float speed = 0.0f;
-  int state = 0; // 0: idle, 1: charging, 2: returning
+  float xorigin;
+  float yorigin;
+  float xdir = 0.0f;
+  float ydir = 0.0f;
+  bool activated = false;
+  int state = 0; // 0:immobile, 1:activated, 2:launching, 3:retreating
+
   void setState(int newState);
+  bool moveIfPossible(float xdir, float ydir, float speed);
 };

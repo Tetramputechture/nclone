@@ -6,7 +6,7 @@ class MiniDrone : public DroneBase
 {
 public:
   MiniDrone(Simulation *sim, float xcoord, float ycoord, int orientation, int mode);
-  std::optional<std::pair<float, float>> logicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
 
   static constexpr int ENTITY_TYPE = 26;

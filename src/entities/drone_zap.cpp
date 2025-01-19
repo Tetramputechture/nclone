@@ -7,11 +7,11 @@ DroneZap::DroneZap(Simulation *sim, float xcoord, float ycoord, int orientation,
 {
 }
 
-std::optional<std::pair<float, float>> DroneZap::logicalCollision()
+std::optional<EntityCollisionResult> DroneZap::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja->isValidTarget())
-    return;
+    return std::nullopt;
 
   if (Physics::overlapCircleVsCircle(xpos, ypos, RADIUS, ninja->xpos, ninja->ypos, ninja->RADIUS))
   {

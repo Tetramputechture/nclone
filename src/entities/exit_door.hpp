@@ -6,7 +6,7 @@ class ExitDoor : public Entity
 {
 public:
   ExitDoor(Simulation *sim, float xcoord, float ycoord);
-  EntityCollisionResult logicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
 
   static constexpr int ENTITY_TYPE = 3;

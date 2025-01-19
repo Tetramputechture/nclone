@@ -7,19 +7,31 @@ LaunchPad::LaunchPad(Simulation *sim, float xcoord, float ycoord, int orientatio
 {
 }
 
-EntityCollisionResult LaunchPad::logicalCollision()
+std::optional<EntityCollisionResult> LaunchPad::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
-    return EntityCollisionResult::noCollision();
+    return std::nullopt;
 
   if (Physics::overlapCircleVsCircle(xpos, ypos, RADIUS, ninja->xpos, ninja->ypos, ninja->RADIUS))
   {
-    auto [boostX, boostY] = Physics::mapOrientationToVector(orientation);
-    ninja->xlpBoostNormalized = boostX;
-    ninja->ylpBoostNormalized = boostY;
-    ninja->launchPadBuffer = 0;
-    return EntityCollisionResult::physicalCollision(boostX, boostY, boostX, boostY);
+    auto [normalX, normalY] = Physics::mapOrientationToVector(orientation);
+
+    if ((xpos - (ninja->xpos - ninja->RADIUS * normalX)) * normalX +
+            (ypos - (ninja->ypos - ninja->RADIUS * normalY)) * normalY >=
+        -0.1f)
+    {
+      float yboostScale = 1.0f;
+      if (normalY < 0)
+      {
+        yboostScale = 1.0f - normalY;
+      }
+
+      float xboost = normalX * BOOST;
+      float yboost = normalY * BOOST * yboostScale;
+
+      return EntityCollisionResult{xboost, yboost};
+    }
   }
-  return EntityCollisionResult::noCollision();
+  return std::nullopt;
 }

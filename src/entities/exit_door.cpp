@@ -8,7 +8,7 @@ ExitDoor::ExitDoor(Simulation *sim, float xcoord, float ycoord)
 {
 }
 
-EntityCollisionResult ExitDoor::logicalCollision()
+std::optional<EntityCollisionResult> ExitDoor::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (Physics::overlapCircleVsCircle(
@@ -16,7 +16,6 @@ EntityCollisionResult ExitDoor::logicalCollision()
           ninja->xpos, ninja->ypos, ninja->RADIUS))
   {
     ninja->win();
-    return EntityCollisionResult::logicalCollision();
   }
-  return EntityCollisionResult::noCollision();
+  return std::nullopt;
 }

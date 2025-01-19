@@ -10,33 +10,22 @@ DoorRegular::DoorRegular(Simulation *sim, float xcoord, float ycoord,
 
 void DoorRegular::think()
 {
-  if (!active)
+  if (closed)
     return;
 
-  if (!ninjaInRange)
-  {
-    openTimer++;
-    if (openTimer > 5)
-    {
-      changeState(true); // close the door
-    }
-  }
-  ninjaInRange = false;
+  openTimer++;
+  if (openTimer > 5)
+    changeState(true);
 }
 
-EntityCollisionResult DoorRegular::logicalCollision()
+std::optional<EntityCollisionResult> DoorRegular::logicalCollision()
 {
-  if (!active)
-    return EntityCollisionResult::noCollision();
-
   if (Physics::overlapCircleVsCircle(
           swXcoord, swYcoord, RADIUS,
           sim->getNinja()->xpos, sim->getNinja()->ypos, sim->getNinja()->RADIUS))
   {
-    ninjaInRange = true;
+    changeState(false);
     openTimer = 0;
-    changeState(false); // open the door
-    return EntityCollisionResult::logicalCollision();
   }
-  return EntityCollisionResult::noCollision();
+  return std::nullopt;
 }

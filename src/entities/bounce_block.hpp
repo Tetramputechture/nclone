@@ -17,8 +17,8 @@ public:
   BounceBlock(Simulation *sim, float xcoord, float ycoord);
 
   void move() override;
-  EntityCollisionResult physicalCollision() override;
-  EntityCollisionResult logicalCollision() override;
+  std::optional<EntityCollisionResult> physicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   bool isPhysicalCollidable() const override { return true; }
   bool isMovable() const override { return true; }

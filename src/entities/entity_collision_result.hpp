@@ -21,7 +21,10 @@
 class EntityCollisionResult
 {
 public:
-  EntityCollisionResult(float r1val, std::optional<float> r2val, std::optional<float> r3val, std::optional<float> r4val)
+  EntityCollisionResult(float r1val,
+                        std::optional<float> r2val = std::nullopt,
+                        std::optional<float> r3val = std::nullopt,
+                        std::optional<float> r4val = std::nullopt)
       : r1(r1val), r2(r2val), r3(r3val), r4(r4val) {}
 
   float getR1() const { return r1; }

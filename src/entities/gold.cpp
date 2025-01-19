@@ -8,11 +8,11 @@ Gold::Gold(Simulation *sim, float xcoord, float ycoord)
 {
 }
 
-EntityCollisionResult Gold::logicalCollision()
+std::optional<EntityCollisionResult> Gold::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (ninja->getState() == 8) // Don't collect if ninja is in winning state
-    return EntityCollisionResult::noCollision();
+    return std::nullopt;
 
   if (Physics::overlapCircleVsCircle(
           xpos, ypos, RADIUS,
@@ -21,7 +21,6 @@ EntityCollisionResult Gold::logicalCollision()
     ninja->goldCollected++;
     setActive(false);
     logCollision();
-    return EntityCollisionResult::logicalCollision();
   }
-  return EntityCollisionResult::noCollision();
+  return std::nullopt;
 }

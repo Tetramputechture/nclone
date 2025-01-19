@@ -31,16 +31,16 @@ void BounceBlock::move()
   gridMove();
 }
 
-void BounceBlock::physicalCollision()
+std::optional<EntityCollisionResult> BounceBlock::physicalCollision()
 {
   auto ninja = sim->getNinja();
   auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE + ninja->RADIUS);
   if (!depen)
-    return;
+    return std::nullopt;
 
   const auto &[normal, penetrations] = *depen;
   const auto &[depenX, depenY] = normal;
-  const auto &[depenLen, _] = penetrations;
+  const auto &[depenLen, depenLen2] = penetrations;
 
   // Apply 80% of depenetration to block, 20% to ninja
   xpos -= depenX * depenLen * (1.0f - STRENGTH);
@@ -48,13 +48,14 @@ void BounceBlock::physicalCollision()
   xspeed -= depenX * depenLen * (1.0f - STRENGTH);
   yspeed -= depenY * depenLen * (1.0f - STRENGTH);
 
-  ninja->xpos += depenX * depenLen * STRENGTH;
-  ninja->ypos += depenY * depenLen * STRENGTH;
-  ninja->xspeed += depenX * depenLen * STRENGTH;
-  ninja->yspeed += depenY * depenLen * STRENGTH;
+  return EntityCollisionResult(
+      depenX,
+      depenY,
+      depenLen * STRENGTH,
+      depenLen2);
 }
 
-void BounceBlock::logicalCollision()
+std::optional<EntityCollisionResult> BounceBlock::logicalCollision()
 {
   auto ninja = sim->getNinja();
   auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE + ninja->RADIUS + 0.1f);
@@ -64,8 +65,5 @@ void BounceBlock::logicalCollision()
   const auto &[normal, _] = *depen;
   const auto &[depenX, depenY] = normal;
 
-  if (std::abs(depenX) > std::abs(depenY))
-  {
-    ninja->wallNormal = depenX > 0 ? 1 : -1;
-  }
+  return EntityCollisionResult(depenX);
 }

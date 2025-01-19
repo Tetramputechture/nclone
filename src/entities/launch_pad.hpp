@@ -13,7 +13,7 @@ public:
 
   LaunchPad(Simulation *sim, float xcoord, float ycoord, int orientation);
 
-  EntityCollisionResult logicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
 
 private:

@@ -3,170 +3,162 @@
 #include "../ninja.hpp"
 
 ShoveThwump::ShoveThwump(Simulation *sim, float xcoord, float ycoord)
-    : Entity(ENTITY_TYPE, sim, xcoord, ycoord), xstart(xcoord), ystart(ycoord)
+    : Entity(ENTITY_TYPE, sim, xcoord, ycoord), xorigin(xcoord), yorigin(ycoord)
 {
 }
 
 void ShoveThwump::setState(int newState)
 {
   state = newState;
-  if (state == 1)
-    speed = FORWARD_SPEED;
-  else if (state == 2)
-    speed = BACKWARD_SPEED;
+}
+
+bool ShoveThwump::moveIfPossible(float xdir, float ydir, float speed)
+{
+  if (ydir == 0.0f)
+  {
+    float xposNew = xpos + xdir * speed;
+    int cellX = static_cast<int>(xpos / 12.0f);
+    int cellXNew = static_cast<int>(xposNew / 12.0f);
+
+    if (cellX != cellXNew)
+    {
+      int cellY1 = static_cast<int>((ypos - 8.0f) / 12.0f);
+      int cellY2 = static_cast<int>((ypos + 8.0f) / 12.0f);
+
+      if (!Physics::isEmptyColumn(*sim, cellX, cellY1, cellY2, xdir > 0.0f ? 1 : -1))
+      {
+        setState(3);
+        return false;
+      }
+    }
+    xpos = xposNew;
+  }
   else
-    speed = 0.0f;
+  {
+    float yposNew = ypos + ydir * speed;
+    int cellY = static_cast<int>(ypos / 12.0f);
+    int cellYNew = static_cast<int>(yposNew / 12.0f);
+
+    if (cellY != cellYNew)
+    {
+      int cellX1 = static_cast<int>((xpos - 8.0f) / 12.0f);
+      int cellX2 = static_cast<int>((xpos + 8.0f) / 12.0f);
+
+      if (!Physics::isEmptyRow(*sim, cellX1, cellX2, cellY, ydir > 0.0f ? 1 : -1))
+      {
+        setState(3);
+        return false;
+      }
+    }
+    ypos = yposNew;
+  }
+
+  gridMove();
+  return true;
 }
 
 void ShoveThwump::think()
 {
-  auto ninja = sim->getNinja();
-  if (!ninja || !ninja->isValidTarget())
-    return;
-
-  if (state == 0)
+  if (state == 1)
   {
-    float dx = ninja->xpos - xpos;
-    float dy = ninja->ypos - ypos;
-    float dist = std::sqrt(dx * dx + dy * dy);
-
-    if (dist > 0)
+    if (activated)
     {
-      dx /= dist;
-      dy /= dist;
-      // Check if there's a clear line of sight to the ninja
-      if (!Physics::raycastVsPlayer(*sim, xpos, ypos, ninja->xpos, ninja->ypos, ninja->RADIUS))
-      {
-        setState(1);
-      }
+      activated = false;
+      return;
     }
+    setState(2);
   }
-  else if (state == 1)
+  else if (state == 3)
   {
-    float dx = xpos - xstart;
-    float dy = ypos - ystart;
-    float dist = std::sqrt(dx * dx + dy * dy);
-
-    if (dist > 0)
+    float originDist = std::abs(xpos - xorigin) + std::abs(ypos - yorigin);
+    if (originDist >= 1.0f)
     {
-      dx /= dist;
-      dy /= dist;
-      if (dist > 48.0f)
-      {
-        setState(2);
-      }
+      moveIfPossible(xdir, ydir, 1.0f);
+    }
+    else
+    {
+      xpos = xorigin;
+      ypos = yorigin;
+      setState(0);
     }
   }
   else if (state == 2)
   {
-    float dx = xpos - xstart;
-    float dy = ypos - ystart;
-    if (dx * dx + dy * dy < 1.0f)
-    {
-      xpos = xstart;
-      ypos = ystart;
-      setState(0);
-    }
+    moveIfPossible(-xdir, -ydir, 4.0f);
   }
 }
 
 void ShoveThwump::move()
 {
+  // Movement is handled in think() and moveIfPossible()
   xposOld = xpos;
   yposOld = ypos;
-
-  if (state != 0)
-  {
-    float dx = 0.0f;
-    float dy = 0.0f;
-
-    if (state == 1)
-    {
-      auto ninja = sim->getNinja();
-      if (ninja && ninja->isValidTarget())
-      {
-        dx = ninja->xpos - xpos;
-        dy = ninja->ypos - ypos;
-        float dist = std::sqrt(dx * dx + dy * dy);
-        if (dist > 0)
-        {
-          dx /= dist;
-          dy /= dist;
-        }
-      }
-    }
-    else if (state == 2)
-    {
-      dx = xstart - xpos;
-      dy = ystart - ypos;
-      float dist = std::sqrt(dx * dx + dy * dy);
-      if (dist > 0)
-      {
-        dx /= dist;
-        dy /= dist;
-      }
-    }
-
-    xpos += speed * dx;
-    ypos += speed * dy;
-  }
-
-  gridMove();
 }
 
-std::optional<std::pair<float, float>> ShoveThwump::physicalCollision()
-{
-  if (state > 1)
-    return std::nullopt;
-
-  auto ninja = sim->getNinja();
-  if (!ninja || !ninja->isValidTarget())
-    return std::nullopt;
-
-  auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE);
-  if (!depen)
-    return std::nullopt;
-
-  const auto &[normal, penetrations] = *depen;
-  const auto &[depenX, depenY] = normal;
-  const auto &[depenLen, _] = penetrations;
-
-  ninja->xpos += depenX * depenLen;
-  ninja->ypos += depenY * depenLen;
-  ninja->xspeed += depenX * depenLen;
-  ninja->yspeed += depenY * depenLen;
-  return std::make_pair(depenX, depenY);
-}
-
-std::optional<std::pair<float, float>> ShoveThwump::logicalCollision()
+std::optional<EntityCollisionResult> ShoveThwump::physicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
     return std::nullopt;
 
-  auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE);
-  if (!depen)
+  if (state <= 1)
+  {
+    auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE + ninja->RADIUS);
+    if (!depen)
+      return std::nullopt;
+
+    const auto &[normal, penetrations] = *depen;
+    const auto &[depenX, depenY] = normal;
+
+    if (state == 0 || xdir * depenX + ydir * depenY >= 0.01f)
+    {
+      return EntityCollisionResult(depenX, depenY, penetrations.first, penetrations.second);
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<EntityCollisionResult> ShoveThwump::logicalCollision()
+{
+  auto ninja = sim->getNinja();
+  if (!ninja || !ninja->isValidTarget())
     return std::nullopt;
 
-  const auto &[normal, penetrations] = *depen;
-  const auto &[depenX, depenY] = normal;
+  auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE + ninja->RADIUS + 0.1f);
+  if (depen && state <= 1)
+  {
+    const auto &[normal, penetrations] = *depen;
+    const auto &[depenX, depenY] = normal;
 
-  if (state == 1)
-  {
-    ninja->kill(0, xpos, ypos, 0.0f, 0.0f);
-    return;
+    if (state == 0)
+    {
+      activated = true;
+      if (penetrations.second > 0.2f)
+      {
+        xdir = depenX;
+        ydir = depenY;
+        setState(1);
+      }
+    }
+    else if (state == 1)
+    {
+      if (xdir * depenX + ydir * depenY >= 0.01f)
+      {
+        activated = true;
+      }
+      else
+      {
+        return std::nullopt;
+      }
+    }
+    return EntityCollisionResult(depenX, 0.0f, 0.0f, 0.0f);
   }
 
-  if (depenY < -0.0001f)
+  if (Physics::overlapCircleVsCircle(ninja->xpos, ninja->ypos, ninja->RADIUS, xpos, ypos, RADIUS))
   {
-    ninja->floorCount++;
-    ninja->floorNormalX += depenX;
-    ninja->floorNormalY += depenY;
+    ninja->kill(0, 0.0f, 0.0f, 0.0f, 0.0f);
   }
-  else
-  {
-    ninja->ceilingCount++;
-    ninja->ceilingNormalX += depenX;
-    ninja->ceilingNormalY += depenY;
-  }
+
+  return std::nullopt;
 }

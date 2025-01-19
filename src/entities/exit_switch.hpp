@@ -7,7 +7,7 @@ class ExitSwitch : public Entity
 {
 public:
   ExitSwitch(Simulation *sim, float xcoord, float ycoord, ExitDoor *parent);
-  EntityCollisionResult logicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
 
   static constexpr int ENTITY_TYPE = 4;

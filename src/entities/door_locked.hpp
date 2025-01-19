@@ -12,5 +12,5 @@ public:
   DoorLocked(Simulation *sim, float xcoord, float ycoord,
              int orientation, float swXcoord, float swYcoord);
 
-  EntityCollisionResult logicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
 };

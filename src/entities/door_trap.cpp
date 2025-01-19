@@ -8,19 +8,14 @@ DoorTrap::DoorTrap(Simulation *sim, float xcoord, float ycoord,
 {
 }
 
-EntityCollisionResult DoorTrap::logicalCollision()
+std::optional<EntityCollisionResult> DoorTrap::logicalCollision()
 {
-  if (!active)
-    return EntityCollisionResult::noCollision();
-
   if (Physics::overlapCircleVsCircle(
           swXcoord, swYcoord, RADIUS,
           sim->getNinja()->xpos, sim->getNinja()->ypos, sim->getNinja()->RADIUS))
   {
     active = false;
     changeState(true);
-    logCollision();
-    return EntityCollisionResult::logicalCollision();
   }
-  return EntityCollisionResult::noCollision();
+  return std::nullopt;
 }

@@ -11,36 +11,32 @@ OneWayPlatform::OneWayPlatform(Simulation *sim, float xcoord, float ycoord, int 
   normalY = vec.second;
 }
 
-EntityCollisionResult OneWayPlatform::physicalCollision()
+std::optional<EntityCollisionResult> OneWayPlatform::physicalCollision()
 {
   auto ninja = sim->getNinja();
   auto depen = calculateDepenetration(ninja);
   if (!depen)
-    return EntityCollisionResult::noCollision();
+    return std::nullopt;
 
   const auto &[normal, penetrations] = *depen;
-  const auto &[depenX, depenY] = normal;
+  const auto &[depenNormalX, depenNormalY] = normal;
   const auto &[depenLenX, depenLenY] = penetrations;
 
-  return EntityCollisionResult(depenLenX, depenLenY, depenX, depenY, true);
+  return EntityCollisionResult(depenNormalX, depenNormalY, depenLenX, depenLenY);
 }
 
-EntityCollisionResult OneWayPlatform::logicalCollision()
+std::optional<EntityCollisionResult> OneWayPlatform::logicalCollision()
 {
   auto ninja = sim->getNinja();
   auto depen = calculateDepenetration(ninja);
   if (!depen)
-    return EntityCollisionResult::noCollision();
-
-  const auto &[normal, _] = *depen;
-  const auto &[depenX, depenY] = normal;
+    return std::nullopt;
 
   if (std::abs(normalX) == 1)
   {
-    ninja->wallNormal = normalX;
-    return EntityCollisionResult(depenX, depenY, depenX, depenY, true);
+    return EntityCollisionResult(normalX);
   }
-  return EntityCollisionResult::noCollision();
+  return std::nullopt;
 }
 
 std::optional<std::tuple<std::pair<float, float>, std::pair<float, float>>>

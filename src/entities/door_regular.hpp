@@ -13,10 +13,9 @@ public:
               int orientation, float swXcoord, float swYcoord);
 
   void think() override;
-  EntityCollisionResult logicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isThinkable() const override { return true; }
 
 private:
-  bool ninjaInRange = false;
   int openTimer = 0;
 };
