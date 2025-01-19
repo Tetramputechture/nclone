@@ -16,8 +16,8 @@ public:
 
   void think() override;
   void move() override;
-  void physicalCollision() override;
-  void logicalCollision() override;
+  EntityCollisionResult physicalCollision() override;
+  EntityCollisionResult logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   bool isPhysicalCollidable() const override { return true; }
   bool isMovable() const override { return true; }

@@ -13,8 +13,8 @@ public:
 
   OneWayPlatform(Simulation *sim, float xcoord, float ycoord, int orientation);
 
-  void physicalCollision() override;
-  void logicalCollision() override;
+  EntityCollisionResult physicalCollision() override;
+  EntityCollisionResult logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   bool isPhysicalCollidable() const override { return true; }
 

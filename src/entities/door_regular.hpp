@@ -13,7 +13,7 @@ public:
               int orientation, float swXcoord, float swYcoord);
 
   void think() override;
-  void logicalCollision() override;
+  EntityCollisionResult logicalCollision() override;
   bool isThinkable() const override { return true; }
 
 private:

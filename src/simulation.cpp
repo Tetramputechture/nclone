@@ -603,3 +603,65 @@ void Simulation::tick(float horInput, int jumpInput)
     Physics::clearCaches();
   }
 }
+
+Simulation::EntityList Simulation::getEntitiesInRadius(float x, float y, float radius) const
+{
+  EntityList result;
+
+  // Calculate grid cell range to check
+  int minCellX = static_cast<int>((x - radius) / 6.0f);
+  int maxCellX = static_cast<int>((x + radius) / 6.0f);
+  int minCellY = static_cast<int>((y - radius) / 6.0f);
+  int maxCellY = static_cast<int>((y + radius) / 6.0f);
+
+  // Gather entities from each cell in range
+  for (int cellX = minCellX; cellX <= maxCellX; ++cellX)
+  {
+    for (int cellY = minCellY; cellY <= maxCellY; ++cellY)
+    {
+      CellCoord cell{cellX, cellY};
+      auto it = gridEntity.find(cell);
+      if (it != gridEntity.end())
+      {
+        for (const auto &entity : it->second)
+        {
+          float dx = entity->getXpos() - x;
+          float dy = entity->getYpos() - y;
+          if (dx * dx + dy * dy <= radius * radius)
+          {
+            result.push_back(entity);
+          }
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+Simulation::SegmentList Simulation::getSegmentsInRegion(float x1, float y1, float x2, float y2) const
+{
+  SegmentList result;
+
+  // Calculate grid cell range to check
+  int minCellX = static_cast<int>(std::min(x1, x2) / 6.0f);
+  int maxCellX = static_cast<int>(std::max(x1, x2) / 6.0f);
+  int minCellY = static_cast<int>(std::min(y1, y2) / 6.0f);
+  int maxCellY = static_cast<int>(std::max(y1, y2) / 6.0f);
+
+  // Gather segments from each cell in range
+  for (int cellX = minCellX; cellX <= maxCellX; ++cellX)
+  {
+    for (int cellY = minCellY; cellY <= maxCellY; ++cellY)
+    {
+      CellCoord cell{cellX, cellY};
+      auto it = segmentDic.find(cell);
+      if (it != segmentDic.end())
+      {
+        result.insert(result.end(), it->second.begin(), it->second.end());
+      }
+    }
+  }
+
+  return result;
+}

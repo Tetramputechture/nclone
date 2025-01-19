@@ -114,15 +114,18 @@ void ShoveThwump::move()
   gridMove();
 }
 
-void ShoveThwump::physicalCollision()
+std::optional<std::pair<float, float>> ShoveThwump::physicalCollision()
 {
+  if (state > 1)
+    return std::nullopt;
+
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
-    return;
+    return std::nullopt;
 
   auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE);
   if (!depen)
-    return;
+    return std::nullopt;
 
   const auto &[normal, penetrations] = *depen;
   const auto &[depenX, depenY] = normal;
@@ -132,17 +135,18 @@ void ShoveThwump::physicalCollision()
   ninja->ypos += depenY * depenLen;
   ninja->xspeed += depenX * depenLen;
   ninja->yspeed += depenY * depenLen;
+  return std::make_pair(depenX, depenY);
 }
 
-void ShoveThwump::logicalCollision()
+std::optional<std::pair<float, float>> ShoveThwump::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
-    return;
+    return std::nullopt;
 
   auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE);
   if (!depen)
-    return;
+    return std::nullopt;
 
   const auto &[normal, penetrations] = *depen;
   const auto &[depenX, depenY] = normal;

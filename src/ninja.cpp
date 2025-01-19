@@ -1,6 +1,7 @@
 #include "ninja.hpp"
 #include "simulation.hpp"
 #include "physics/physics.hpp"
+#include "entities/entity.hpp"
 #include <filesystem>
 #include <unordered_map>
 #include <random>
@@ -87,7 +88,6 @@ void Ninja::preCollision()
   xspeedOld = xspeed;
   yspeedOld = yspeed;
   floorCount = 0;
-  wallCount = 0;
   ceilingCount = 0;
   floorNormalX = 0.0f;
   floorNormalY = 0.0f;
@@ -693,63 +693,62 @@ void Ninja::collideVsObjects()
   // Get entities from neighborhood
   auto entities = Physics::gatherEntitiesFromNeighbourhood(*sim, xpos, ypos);
 
-  for (const auto &[entityXpos, entityYpos] : entities)
+  for (auto *entity : entities)
   {
-    auto depen = Physics::penetrationSquareVsPoint(entityXpos, entityYpos, xpos, ypos, RADIUS);
-    if (!depen)
-      continue;
-
-    const auto &[normal, penetrations] = *depen;
-    const auto &[depenX, depenY] = normal;
-    const auto &[depenLen, _] = penetrations;
-
-    float popX = depenX * depenLen;
-    float popY = depenY * depenLen;
-    xpos += popX;
-    ypos += popY;
-
-    // Update crushing parameters unless collision with bounce block
-    if (entityType != 17)
+    if (entity->isPhysicalCollidable())
     {
-      xCrush += popX;
-      yCrush += popY;
-      crushLen += depenLen;
-    }
+      auto collision = entity->physicalCollision();
+      if (collision)
+      {
+        float popX = collision.depenetrationX;
+        float popY = collision.depenetrationY;
+        xpos += popX;
+        ypos += popY;
 
-    // Ninja can only get crushed if collision with thwump
-    if (entityType == 20)
-    {
-      isCrushable = true;
-    }
+        // Update crushing parameters unless collision with bounce block
+        if (entity->getType() != 17)
+        {
+          xCrush += popX;
+          yCrush += popY;
+          crushLen += std::sqrt(popX * popX + popY * popY);
+        }
 
-    // Depenetration for bounce blocks, thwumps and shwumps
-    if (entityType == 17 || entityType == 20 || entityType == 28)
-    {
-      xspeed += popX;
-      yspeed += popY;
-    }
+        // Ninja can only get crushed if collision with thwump
+        if (entity->getType() == 20)
+        {
+          isCrushable = true;
+        }
 
-    // Depenetration for one ways
-    if (entityType == 11)
-    {
-      float xspeedNew = (xspeed * depenY - yspeed * depenX) * depenY;
-      float yspeedNew = (xspeed * depenY - yspeed * depenX) * (-depenX);
-      xspeed = xspeedNew;
-      yspeed = yspeedNew;
-    }
+        // Depenetration for bounce blocks, thwumps and shwumps
+        if (entity->getType() == 17 || entity->getType() == 20 || entity->getType() == 28)
+        {
+          xspeed += popX;
+          yspeed += popY;
+        }
 
-    // Adjust ceiling variables if ninja collides with ceiling (or wall!)
-    if (depenY >= -0.0001f)
-    {
-      ceilingCount++;
-      ceilingNormalX += depenX;
-      ceilingNormalY += depenY;
-    }
-    else // Adjust floor variables if ninja collides with floor
-    {
-      floorCount++;
-      floorNormalX += depenX;
-      floorNormalY += depenY;
+        // Depenetration for one ways
+        if (entity->getType() == 11)
+        {
+          float xspeedNew = (xspeed * collision.normalY - yspeed * collision.normalX) * collision.normalY;
+          float yspeedNew = (xspeed * collision.normalY - yspeed * collision.normalX) * (-collision.normalX);
+          xspeed = xspeedNew;
+          yspeed = yspeedNew;
+        }
+
+        // Adjust ceiling variables if ninja collides with ceiling (or wall!)
+        if (collision.normalY >= -0.0001f)
+        {
+          ceilingCount++;
+          ceilingNormalX += collision.normalX;
+          ceilingNormalY += collision.normalY;
+        }
+        else // Adjust floor variables if ninja collides with floor
+        {
+          floorCount++;
+          floorNormalX += collision.normalX;
+          floorNormalY += collision.normalY;
+        }
+      }
     }
   }
 }
@@ -876,4 +875,139 @@ void Ninja::calcNinjaPosition()
   // Swap bone arrays
   bonesOld = bones;
   bones = newBones;
+}
+
+void Ninja::postCollision()
+{
+  // Perform LOGICAL collisions between the ninja and nearby entities
+  // Also check if the ninja can interact with the walls of entities when applicable
+  float wallNormalSum = 0.0f;
+  auto entities = sim->getEntitiesInRadius(xpos, ypos, RADIUS + 0.1f);
+
+  for (const auto &entity : entities)
+  {
+    if (entity->isLogicalCollidable())
+    {
+      auto collisionResult = entity->logicalCollision();
+      if (collisionResult)
+      {
+        if (entity->getType() == 10)
+        { // If collision with launch pad, update speed and position
+          float xboost = collisionResult.depenetrationX * 2.0f / 3.0f;
+          float yboost = collisionResult.depenetrationY * 2.0f / 3.0f;
+          xpos += xboost;
+          ypos += yboost;
+          xspeed = xboost;
+          yspeed = yboost;
+          floorCount = 0;
+          floorBuffer = -1;
+          float boostScalar = std::sqrt(xboost * xboost + yboost * yboost);
+          xlpBoostNormalized = xboost / boostScalar;
+          ylpBoostNormalized = yboost / boostScalar;
+          launchPadBuffer = 0;
+          if (state == 3)
+          {
+            appliedGravity = GRAVITY_FALL;
+          }
+          state = 4;
+        }
+        else
+        { // If touched wall of bounce block, oneway, thwump or shwump, retrieve wall normal
+          wallNormalSum += collisionResult.normalX;
+        }
+      }
+    }
+  }
+
+  // Check if the ninja can interact with walls from nearby tile segments
+  float rad = RADIUS + 0.1f;
+  auto segments = sim->getSegmentsInRegion(xpos - rad, ypos - rad, xpos + rad, ypos + rad);
+  for (const auto &segment : segments)
+  {
+    bool valid;
+    float a, b;
+    std::tie(valid, a, b) = segment->getClosestPoint(xpos, ypos);
+    if (!valid)
+      continue;
+
+    float dx = xpos - a;
+    float dy = ypos - b;
+    float dist = std::sqrt(dx * dx + dy * dy);
+    if (std::abs(dy) < 0.00001f && dist > 0.0f && dist <= rad)
+    {
+      wallNormalSum += dx / dist;
+    }
+  }
+
+  // Check if airborn or walled
+  airbornOld = airborn;
+  airborn = true;
+  walled = false;
+  if (wallNormalSum != 0.0f)
+  {
+    walled = true;
+    wallNormal = wallNormalSum / std::abs(wallNormalSum);
+  }
+
+  // Calculate the combined floor normalized normal vector if the ninja has touched any floor
+  if (floorCount > 0)
+  {
+    airborn = false;
+    float floorScalar = std::sqrt(floorNormalX * floorNormalX + floorNormalY * floorNormalY);
+    if (floorScalar == 0.0f)
+    {
+      floorNormalizedX = 0.0f;
+      floorNormalizedY = -1.0f;
+    }
+    else
+    {
+      floorNormalizedX = floorNormalX / floorScalar;
+      floorNormalizedY = floorNormalY / floorScalar;
+    }
+    if (state != 8 && airbornOld)
+    { // Check if died from floor impact
+      float impactVel = -(floorNormalizedX * xspeedOld + floorNormalizedY * yspeedOld);
+      if (impactVel > MAX_SURVIVABLE_IMPACT - 4.0f / 3.0f * std::abs(floorNormalizedY))
+      {
+        xspeed = xspeedOld;
+        yspeed = yspeedOld;
+        kill(1, xpos, ypos, xspeed * 0.5f, yspeed * 0.5f);
+      }
+    }
+  }
+
+  // Calculate the combined ceiling normalized normal vector if the ninja has touched any ceiling
+  if (ceilingCount > 0)
+  {
+    float ceilingScalar = std::sqrt(ceilingNormalX * ceilingNormalX + ceilingNormalY * ceilingNormalY);
+    if (ceilingScalar == 0.0f)
+    {
+      ceilingNormalizedX = 0.0f;
+      ceilingNormalizedY = 1.0f;
+    }
+    else
+    {
+      ceilingNormalizedX = ceilingNormalX / ceilingScalar;
+      ceilingNormalizedY = ceilingNormalY / ceilingScalar;
+    }
+    if (state != 8)
+    { // Check if died from ceiling impact
+      float impactVel = -(ceilingNormalizedX * xspeedOld + ceilingNormalizedY * yspeedOld);
+      if (impactVel > MAX_SURVIVABLE_IMPACT - 4.0f / 3.0f * std::abs(ceilingNormalizedY))
+      {
+        xspeed = xspeedOld;
+        yspeed = yspeedOld;
+        kill(1, xpos, ypos, xspeed * 0.5f, yspeed * 0.5f);
+      }
+    }
+  }
+
+  // Check if ninja died from crushing
+  if (isCrushable && crushLen > 0.0f)
+  {
+    if (std::sqrt(xCrush * xCrush + yCrush * yCrush) / crushLen < MIN_SURVIVABLE_CRUSHING)
+    {
+      kill(2, xpos, ypos, 0.0f, 0.0f);
+    }
+  }
 }

@@ -5,6 +5,8 @@
 #include <tuple>
 #include <unordered_map>
 #include <array>
+#include <optional>
+#include "entity_collision_result.hpp"
 
 // Forward declaration
 class Simulation;
@@ -22,8 +24,8 @@ public:
   // Virtual methods that can be overridden by derived classes
   virtual void think() {}
   virtual void move() {}
-  virtual void physicalCollision() {}
-  virtual void logicalCollision() {}
+  virtual EntityCollisionResult physicalCollision() { return EntityCollisionResult::noCollision(); }
+  virtual EntityCollisionResult logicalCollision() { return EntityCollisionResult::noCollision(); }
 
   // State getters/setters
   virtual std::vector<float> getState(bool minimalState = false) const;

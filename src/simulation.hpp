@@ -85,6 +85,10 @@ public:
   void incrementVerGridEdge(const std::pair<int, int> &edge, int amount) { verGridEdgeDic[edge] += amount; }
   void incrementHorGridEdge(const std::pair<int, int> &edge, int amount) { horGridEdgeDic[edge] += amount; }
 
+  // Entity and segment gathering methods
+  EntityList getEntitiesInRadius(float x, float y, float radius) const;
+  SegmentList getSegmentsInRegion(float x1, float y1, float x2, float y2) const;
+
 private:
   // Internal map loading methods
   void resetMapEntityData();

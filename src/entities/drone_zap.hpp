@@ -10,6 +10,6 @@ public:
   static constexpr float SPEED = 8.0f / 7.0f;
 
   DroneZap(Simulation *sim, float xcoord, float ycoord, int orientation, int mode);
-  void logicalCollision() override;
+  std::optional<std::pair<float, float>> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
 };

@@ -60,7 +60,7 @@ void Physics::clearCaches()
   }
 }
 
-std::vector<std::tuple<float, float>> Physics::gatherSegmentsFromRegion(
+std::vector<const Segment *> Physics::gatherSegmentsFromRegion(
     const Simulation &sim, float x1, float y1, float x2, float y2)
 {
   // Create cache key
@@ -91,7 +91,7 @@ std::vector<std::tuple<float, float>> Physics::gatherSegmentsFromRegion(
     cellCache[key.str()] = cells;
   }
 
-  std::vector<std::tuple<float, float>> segmentList;
+  std::vector<const Segment *> segmentList;
   for (const auto &cell : cells)
   {
     const auto &segments = sim.getSegmentsAt(cell);
@@ -99,8 +99,7 @@ std::vector<std::tuple<float, float>> Physics::gatherSegmentsFromRegion(
     {
       if (segment->isActive())
       {
-        segmentList.emplace_back(segment->getX1(), segment->getY1());
-        segmentList.emplace_back(segment->getX2(), segment->getY2());
+        segmentList.push_back(segment.get());
       }
     }
   }
@@ -382,7 +381,7 @@ Physics::penetrationSquareVsPoint(float sXpos, float sYpos, float pXpos, float p
   return std::nullopt;
 }
 
-std::vector<std::tuple<float, float>> Physics::gatherEntitiesFromNeighbourhood(
+std::vector<Entity *> Physics::gatherEntitiesFromNeighbourhood(
     const Simulation &sim, float xpos, float ypos)
 {
   auto [cx, cy] = clampCell(std::floor(xpos / 24), std::floor(ypos / 24));
@@ -415,7 +414,7 @@ std::vector<std::tuple<float, float>> Physics::gatherEntitiesFromNeighbourhood(
     cellCache[key.str()] = cells;
   }
 
-  std::vector<std::tuple<float, float>> entityList;
+  std::vector<Entity *> entityList;
 
   for (const auto &cell : cells)
   {
@@ -424,7 +423,7 @@ std::vector<std::tuple<float, float>> Physics::gatherEntitiesFromNeighbourhood(
     {
       if (entity->isActive())
       {
-        entityList.emplace_back(entity->xpos, entity->ypos);
+        entityList.push_back(entity.get());
       }
     }
   }
@@ -447,12 +446,9 @@ float Physics::sweepCircleVsTiles(
   auto segments = gatherSegmentsFromRegion(sim, x1, y1, x2, y2);
   float shortestTime = 1.0f;
 
-  for (size_t i = 0; i < segments.size(); i += 2)
+  for (const auto &segment : segments)
   {
-    const auto &[x1, y1] = segments[i];
-    const auto &[x2, y2] = segments[i + 1];
-    GridSegmentLinear segment(std::make_pair(x1, y1), std::make_pair(x2, y2));
-    float time = segment.intersectWithRay(xposOld, yposOld, dx, dy, radius);
+    float time = segment->intersectWithRay(xposOld, yposOld, dx, dy, radius);
     shortestTime = std::min(time, shortestTime);
   }
 
@@ -467,13 +463,9 @@ Physics::getSingleClosestPoint(const Simulation &sim, float xpos, float ypos, fl
   bool result = false;
   std::pair<float, float> closestPoint;
 
-  for (size_t i = 0; i < segments.size(); i += 2)
+  for (const auto &segment : segments)
   {
-    const auto &[x1, y1] = segments[i];
-    const auto &[x2, y2] = segments[i + 1];
-    GridSegmentLinear segment(std::make_pair(x1, y1), std::make_pair(x2, y2));
-
-    auto [isBackFacing, a, b] = segment.getClosestPoint(xpos, ypos);
+    auto [isBackFacing, a, b] = segment->getClosestPoint(xpos, ypos);
     float distanceSq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
 
     // This is to prioritize correct side collisions when multiple close segments

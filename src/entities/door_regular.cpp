@@ -24,10 +24,10 @@ void DoorRegular::think()
   ninjaInRange = false;
 }
 
-void DoorRegular::logicalCollision()
+EntityCollisionResult DoorRegular::logicalCollision()
 {
   if (!active)
-    return;
+    return EntityCollisionResult::noCollision();
 
   if (Physics::overlapCircleVsCircle(
           swXcoord, swYcoord, RADIUS,
@@ -36,5 +36,7 @@ void DoorRegular::logicalCollision()
     ninjaInRange = true;
     openTimer = 0;
     changeState(false); // open the door
+    return EntityCollisionResult::logicalCollision();
   }
+  return EntityCollisionResult::noCollision();
 }

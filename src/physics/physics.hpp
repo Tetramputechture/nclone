@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <string>
 
+class Entity;
+
 class Physics
 {
 public:
@@ -24,10 +26,10 @@ public:
     static void clearCaches();
 
     // Geometry calculations
-    static std::vector<std::tuple<float, float>> gatherSegmentsFromRegion(
+    static std::vector<const Segment *> gatherSegmentsFromRegion(
         const Simulation &sim, float x1, float y1, float x2, float y2);
 
-    static std::vector<std::tuple<float, float>> gatherEntitiesFromNeighbourhood(
+    static std::vector<Entity *> gatherEntitiesFromNeighbourhood(
         const Simulation &sim, float xpos, float ypos);
 
     static float sweepCircleVsTiles(

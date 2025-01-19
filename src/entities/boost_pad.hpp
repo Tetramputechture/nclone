@@ -13,5 +13,6 @@ public:
 
   BoostPad(Simulation *sim, float xcoord, float ycoord);
 
-  void logicalCollision() override;
+  EntityCollisionResult logicalCollision() override;
+  bool isLogicalCollidable() const override { return true; }
 };

@@ -67,6 +67,5 @@ void BounceBlock::logicalCollision()
   if (std::abs(depenX) > std::abs(depenY))
   {
     ninja->wallNormal = depenX > 0 ? 1 : -1;
-    ninja->wallCount++;
   }
 }

@@ -82,7 +82,6 @@ public:
 
   // Collision state
   int floorCount = 0;
-  int wallCount = 0;
   int ceilingCount = 0;
   float floorNormalX = 0.0f;
   float floorNormalY = 0.0f;

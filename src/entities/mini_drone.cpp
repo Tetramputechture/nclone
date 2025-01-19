@@ -6,7 +6,7 @@ MiniDrone::MiniDrone(Simulation *sim, float xcoord, float ycoord, int orientatio
 {
 }
 
-void MiniDrone::logicalCollision()
+std::optional<std::pair<float, float>> MiniDrone::logicalCollision()
 {
   // Kill the ninja if it touches the mini drone
   auto ninja = sim->getNinja();
@@ -18,4 +18,5 @@ void MiniDrone::logicalCollision()
       ninja->kill(0, 0, 0, 0, 0);
     }
   }
+  return std::nullopt;
 }

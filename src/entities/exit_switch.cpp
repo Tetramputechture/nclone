@@ -9,7 +9,7 @@ ExitSwitch::ExitSwitch(Simulation *sim, float xcoord, float ycoord, ExitDoor *pa
 {
 }
 
-void ExitSwitch::logicalCollision()
+EntityCollisionResult ExitSwitch::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (Physics::overlapCircleVsCircle(
@@ -19,5 +19,7 @@ void ExitSwitch::logicalCollision()
     setActive(false);
     sim->addEntity(std::shared_ptr<Entity>(parent));
     logCollision();
+    return EntityCollisionResult::logicalCollision();
   }
+  return EntityCollisionResult::noCollision();
 }

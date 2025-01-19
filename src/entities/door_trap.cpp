@@ -8,10 +8,10 @@ DoorTrap::DoorTrap(Simulation *sim, float xcoord, float ycoord,
 {
 }
 
-void DoorTrap::logicalCollision()
+EntityCollisionResult DoorTrap::logicalCollision()
 {
   if (!active)
-    return;
+    return EntityCollisionResult::noCollision();
 
   if (Physics::overlapCircleVsCircle(
           swXcoord, swYcoord, RADIUS,
@@ -20,5 +20,7 @@ void DoorTrap::logicalCollision()
     active = false;
     changeState(true);
     logCollision();
+    return EntityCollisionResult::logicalCollision();
   }
+  return EntityCollisionResult::noCollision();
 }

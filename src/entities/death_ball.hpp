@@ -18,7 +18,7 @@ public:
   DeathBall(Simulation *sim, float xcoord, float ycoord);
 
   void think() override;
-  void logicalCollision() override;
+  EntityCollisionResult logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   bool isThinkable() const override { return true; }
 };

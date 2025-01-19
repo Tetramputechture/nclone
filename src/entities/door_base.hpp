@@ -10,9 +10,7 @@ class DoorBase : public Entity
 {
 public:
   DoorBase(int type, Simulation *sim, float xcoord, float ycoord, int orientation, float swXcoord, float swYcoord);
-  virtual ~DoorBase() = default;
 
-  void logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   std::vector<float> getState(bool minimalState = false) const override;
 

@@ -7,7 +7,7 @@ DroneZap::DroneZap(Simulation *sim, float xcoord, float ycoord, int orientation,
 {
 }
 
-void DroneZap::logicalCollision()
+std::optional<std::pair<float, float>> DroneZap::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja->isValidTarget())
@@ -17,4 +17,5 @@ void DroneZap::logicalCollision()
   {
     ninja->kill(0, 0, 0, 0, 0);
   }
+  return std::nullopt;
 }

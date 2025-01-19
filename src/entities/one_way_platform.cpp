@@ -1,13 +1,46 @@
 #include "one_way_platform.hpp"
-#include "../physics/physics.hpp"
+#include "../simulation.hpp"
 #include "../ninja.hpp"
+#include "../physics/physics.hpp"
 
 OneWayPlatform::OneWayPlatform(Simulation *sim, float xcoord, float ycoord, int orientation)
     : Entity(ENTITY_TYPE, sim, xcoord, ycoord), orientation(orientation)
 {
-  auto [dirX, dirY] = Physics::mapOrientationToVector(orientation);
-  normalX = dirX;
-  normalY = dirY;
+  auto vec = Physics::mapOrientationToVector(orientation);
+  normalX = vec.first;
+  normalY = vec.second;
+}
+
+EntityCollisionResult OneWayPlatform::physicalCollision()
+{
+  auto ninja = sim->getNinja();
+  auto depen = calculateDepenetration(ninja);
+  if (!depen)
+    return EntityCollisionResult::noCollision();
+
+  const auto &[normal, penetrations] = *depen;
+  const auto &[depenX, depenY] = normal;
+  const auto &[depenLenX, depenLenY] = penetrations;
+
+  return EntityCollisionResult(depenLenX, depenLenY, depenX, depenY, true);
+}
+
+EntityCollisionResult OneWayPlatform::logicalCollision()
+{
+  auto ninja = sim->getNinja();
+  auto depen = calculateDepenetration(ninja);
+  if (!depen)
+    return EntityCollisionResult::noCollision();
+
+  const auto &[normal, _] = *depen;
+  const auto &[depenX, depenY] = normal;
+
+  if (std::abs(normalX) == 1)
+  {
+    ninja->wallNormal = normalX;
+    return EntityCollisionResult(depenX, depenY, depenX, depenY, true);
+  }
+  return EntityCollisionResult::noCollision();
 }
 
 std::optional<std::tuple<std::pair<float, float>, std::pair<float, float>>>
@@ -15,8 +48,8 @@ OneWayPlatform::calculateDepenetration(const Ninja *ninja) const
 {
   float dx = ninja->xpos - xpos;
   float dy = ninja->ypos - ypos;
-  float lateralDist = dy * normalX - dx * normalY;
-  float direction = (ninja->yspeed * normalX - ninja->xspeed * normalY) * lateralDist;
+  float lateralDist = dx * normalY - dy * normalX;
+  int direction = lateralDist < 0 ? -1 : 1;
 
   // The platform has a bigger width if the ninja is moving towards its center
   float radiusScalar = direction < 0 ? 0.91f : 0.51f;
@@ -41,36 +74,4 @@ OneWayPlatform::calculateDepenetration(const Ninja *ninja) const
     }
   }
   return std::nullopt;
-}
-
-void OneWayPlatform::physicalCollision()
-{
-  auto ninja = sim->getNinja();
-  auto depen = calculateDepenetration(ninja);
-  if (!depen)
-    return;
-
-  const auto &[normal, penetrations] = *depen;
-  const auto &[depenX, depenY] = normal;
-  const auto &[depenLen, _] = penetrations;
-
-  ninja->xpos += depenX * depenLen;
-  ninja->ypos += depenY * depenLen;
-}
-
-void OneWayPlatform::logicalCollision()
-{
-  auto ninja = sim->getNinja();
-  auto depen = calculateDepenetration(ninja);
-  if (!depen)
-    return;
-
-  const auto &[normal, _] = *depen;
-  const auto &[depenX, depenY] = normal;
-
-  if (std::abs(normalX) == 1)
-  {
-    ninja->wallNormal = normalX;
-    ninja->wallCount++;
-  }
 }

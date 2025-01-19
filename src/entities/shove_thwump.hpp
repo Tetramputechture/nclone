@@ -17,8 +17,8 @@ public:
 
   void think() override;
   void move() override;
-  void physicalCollision() override;
-  void logicalCollision() override;
+  std::optional<std::pair<float, float>> physicalCollision() override;
+  std::optional<std::pair<float, float>> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   bool isPhysicalCollidable() const override { return true; }
   bool isMovable() const override { return true; }

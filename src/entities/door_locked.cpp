@@ -8,10 +8,10 @@ DoorLocked::DoorLocked(Simulation *sim, float xcoord, float ycoord,
 {
 }
 
-void DoorLocked::logicalCollision()
+EntityCollisionResult DoorLocked::logicalCollision()
 {
   if (!active)
-    return;
+    return EntityCollisionResult::noCollision();
 
   if (Physics::overlapCircleVsCircle(
           swXcoord, swYcoord, RADIUS,
@@ -21,5 +21,7 @@ void DoorLocked::logicalCollision()
     changeState(false);
     sim->getNinja()->doorsOpened++;
     logCollision();
+    return EntityCollisionResult::logicalCollision();
   }
+  return EntityCollisionResult::noCollision();
 }

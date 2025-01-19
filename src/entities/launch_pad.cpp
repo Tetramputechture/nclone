@@ -7,11 +7,11 @@ LaunchPad::LaunchPad(Simulation *sim, float xcoord, float ycoord, int orientatio
 {
 }
 
-void LaunchPad::logicalCollision()
+EntityCollisionResult LaunchPad::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
-    return;
+    return EntityCollisionResult::noCollision();
 
   if (Physics::overlapCircleVsCircle(xpos, ypos, RADIUS, ninja->xpos, ninja->ypos, ninja->RADIUS))
   {
@@ -19,5 +19,7 @@ void LaunchPad::logicalCollision()
     ninja->xlpBoostNormalized = boostX;
     ninja->ylpBoostNormalized = boostY;
     ninja->launchPadBuffer = 0;
+    return EntityCollisionResult::physicalCollision(boostX, boostY, boostX, boostY);
   }
+  return EntityCollisionResult::noCollision();
 }

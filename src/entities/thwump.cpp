@@ -1,53 +1,25 @@
 #include "thwump.hpp"
-#include "../physics/physics.hpp"
+#include "../simulation.hpp"
 #include "../ninja.hpp"
+#include "../physics/physics.hpp"
 
 Thwump::Thwump(Simulation *sim, float xcoord, float ycoord, int orientation)
-    : Entity(ENTITY_TYPE, sim, xcoord, ycoord),
-      orientation(orientation),
-      xstart(xcoord),
-      ystart(ycoord)
+    : Entity(ENTITY_TYPE, sim, xcoord, ycoord), orientation(orientation),
+      xstart(xcoord), ystart(ycoord)
 {
-}
-
-void Thwump::setState(int newState)
-{
-  state = newState;
-  if (state == 1)
-    speed = FORWARD_SPEED;
-  else if (state == 2)
-    speed = BACKWARD_SPEED;
-  else
-    speed = 0.0f;
-}
-
-void Thwump::move()
-{
-  xposOld = xpos;
-  yposOld = ypos;
-
-  if (state != 0)
-  {
-    auto [dirX, dirY] = Physics::mapOrientationToVector(orientation);
-    if (state == 2)
-    {
-      dirX = -dirX;
-      dirY = -dirY;
-    }
-
-    xpos += speed * dirX;
-    ypos += speed * dirY;
-  }
 }
 
 void Thwump::think()
 {
-  auto ninja = sim->getNinja();
-  if (!ninja || !ninja->isValidTarget())
+  if (!active)
     return;
 
   if (state == 0)
   {
+    auto ninja = sim->getNinja();
+    if (!ninja || !ninja->isValidTarget())
+      return;
+
     auto [dirX, dirY] = Physics::mapOrientationToVector(orientation);
     float dx = ninja->xpos - xpos;
     float dy = ninja->ypos - ypos;
@@ -97,15 +69,46 @@ void Thwump::think()
   }
 }
 
-void Thwump::physicalCollision()
+void Thwump::move()
+{
+  if (!active)
+    return;
+
+  xposOld = xpos;
+  yposOld = ypos;
+
+  if (state == 1)
+  {
+    auto [dirX, dirY] = Physics::mapOrientationToVector(orientation);
+    xpos += dirX * FORWARD_SPEED;
+    ypos += dirY * FORWARD_SPEED;
+  }
+  else if (state == 2)
+  {
+    float dx = xstart - xpos;
+    float dy = ystart - ypos;
+    float dist = std::sqrt(dx * dx + dy * dy);
+    if (dist > 0)
+    {
+      dx /= dist;
+      dy /= dist;
+      xpos += dx * BACKWARD_SPEED;
+      ypos += dy * BACKWARD_SPEED;
+    }
+  }
+
+  gridMove();
+}
+
+EntityCollisionResult Thwump::physicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
-    return;
+    return EntityCollisionResult::noCollision();
 
   auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE);
   if (!depen)
-    return;
+    return EntityCollisionResult::noCollision();
 
   const auto &[normal, penetrations] = *depen;
   const auto &[depenX, depenY] = normal;
@@ -115,17 +118,18 @@ void Thwump::physicalCollision()
   ninja->ypos += depenY * depenLen;
   ninja->xspeed += depenX * depenLen;
   ninja->yspeed += depenY * depenLen;
+  return EntityCollisionResult::physicalCollision(depenX, depenY, depenX, depenY);
 }
 
-void Thwump::logicalCollision()
+EntityCollisionResult Thwump::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
-    return;
+    return EntityCollisionResult::noCollision();
 
   auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE);
   if (!depen)
-    return;
+    return EntityCollisionResult::noCollision();
 
   const auto &[normal, penetrations] = *depen;
   const auto &[depenX, depenY] = normal;
@@ -133,7 +137,7 @@ void Thwump::logicalCollision()
   if (state == 1)
   {
     ninja->kill(0, xpos, ypos, 0.0f, 0.0f);
-    return;
+    return EntityCollisionResult::logicalCollision();
   }
 
   if (depenY < -0.0001f)
@@ -147,5 +151,15 @@ void Thwump::logicalCollision()
     ninja->ceilingCount++;
     ninja->ceilingNormalX += depenX;
     ninja->ceilingNormalY += depenY;
+  }
+  return EntityCollisionResult::physicalCollision(depenX, depenY, depenX, depenY);
+}
+
+void Thwump::setState(int newState)
+{
+  if (newState >= 0 && newState <= 2)
+  {
+    state = newState;
+    logCollision(state);
   }
 }
