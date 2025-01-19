@@ -6,21 +6,37 @@
 BoostPad::BoostPad(Simulation *sim, float xcoord, float ycoord)
     : Entity(ENTITY_TYPE, sim, xcoord, ycoord)
 {
+  isTouchingNinja = false;
 }
 
-EntityCollisionResult BoostPad::logicalCollision()
+void BoostPad::move()
 {
   auto ninja = sim->getNinja();
   if (!ninja || !ninja->isValidTarget())
-    return EntityCollisionResult::noCollision();
+  {
+    isTouchingNinja = false;
+    return;
+  }
 
   if (Physics::overlapCircleVsCircle(
           xpos, ypos, RADIUS,
           ninja->xpos, ninja->ypos, ninja->RADIUS))
   {
-    ninja->xspeed *= BOOST;
-    ninja->yspeed *= BOOST;
-    return EntityCollisionResult::logicalCollision();
+    if (!isTouchingNinja)
+    {
+      float velNorm = std::sqrt(ninja->xspeed * ninja->xspeed + ninja->yspeed * ninja->yspeed);
+      if (velNorm > 0)
+      {
+        float xBoost = 2.0f * ninja->xspeed / velNorm;
+        float yBoost = 2.0f * ninja->yspeed / velNorm;
+        ninja->xspeed += xBoost;
+        ninja->yspeed += yBoost;
+      }
+      isTouchingNinja = true;
+    }
   }
-  return EntityCollisionResult::noCollision();
+  else
+  {
+    isTouchingNinja = false;
+  }
 }

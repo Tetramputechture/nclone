@@ -24,8 +24,8 @@ public:
   // Virtual methods that can be overridden by derived classes
   virtual void think() {}
   virtual void move() {}
-  virtual EntityCollisionResult physicalCollision() { return EntityCollisionResult::noCollision(); }
-  virtual EntityCollisionResult logicalCollision() { return EntityCollisionResult::noCollision(); }
+  virtual std::optional<EntityCollisionResult> physicalCollision() { return std::nullopt; }
+  virtual std::optional<EntityCollisionResult> logicalCollision() { return std::nullopt; }
 
   // State getters/setters
   virtual std::vector<float> getState(bool minimalState = false) const;
