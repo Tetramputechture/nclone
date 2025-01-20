@@ -12,7 +12,7 @@ public:
   ToggleMine(Simulation *sim, float xcoord, float ycoord, int state);
 
   void think() override;
-  void logicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isThinkable() const override { return true; }
   bool isLogicalCollidable() const override { return true; }
 

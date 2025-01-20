@@ -16,19 +16,21 @@ public:
 
   void think() override;
   void move() override;
-  EntityCollisionResult physicalCollision() override;
-  EntityCollisionResult logicalCollision() override;
+  std::optional<EntityCollisionResult> physicalCollision() override;
+  std::optional<EntityCollisionResult> logicalCollision() override;
   bool isLogicalCollidable() const override { return true; }
   bool isPhysicalCollidable() const override { return true; }
   bool isMovable() const override { return true; }
   bool isThinkable() const override { return true; }
 
-  void setState(int state);
-
 private:
+  void setState(int newState);
+
   int orientation;
-  int state = 0; // 0: idle, 1: charging, 2: returning
+  int state = 0; // 0: idle, 1: charging forward, 2: returning
   float xstart;
   float ystart;
-  float speed = 0.0f;
+  bool isHorizontal;
+  float dirX;
+  float dirY;
 };

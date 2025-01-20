@@ -40,11 +40,11 @@ void ToggleMine::think()
   }
 }
 
-void ToggleMine::logicalCollision()
+std::optional<EntityCollisionResult> ToggleMine::logicalCollision()
 {
   auto ninja = sim->getNinja();
   if (!ninja->isValidTarget() || state == 2)
-    return;
+    return std::nullopt;
 
   if (Physics::overlapCircleVsCircle(
           xpos, ypos, RADII[state],
@@ -56,6 +56,7 @@ void ToggleMine::logicalCollision()
       ninja->kill(0, 0, 0, 0, 0);
     }
   }
+  return std::nullopt;
 }
 
 void ToggleMine::setState(int newState)
