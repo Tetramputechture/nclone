@@ -2,8 +2,8 @@
 #include "ninja.hpp"
 #include <SFML/Graphics.hpp>
 
-SimWrapper::SimWrapper(bool enableDebugOverlay)
-    : simConfig(false, false, 1.0f, true, false)
+SimWrapper::SimWrapper(bool enableDebugOverlay, bool basicSim, bool fullExport, float tolerance, bool enableAnim, bool logData)
+    : simConfig(basicSim, fullExport, tolerance, enableAnim, logData)
 {
   sim = std::make_unique<Simulation>(simConfig);
   renderer = std::make_unique<Renderer>(sim.get(), enableDebugOverlay);
@@ -64,6 +64,11 @@ int SimWrapper::getGoldCollected() const
 int SimWrapper::getDoorsOpened() const
 {
   return sim->getNinja()->doorsOpened;
+}
+
+int SimWrapper::getSimFrame() const
+{
+  return sim->getFrame();
 }
 
 void SimWrapper::renderToBuffer(std::vector<float> &buffer)

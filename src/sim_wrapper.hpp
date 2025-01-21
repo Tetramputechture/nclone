@@ -8,7 +8,7 @@
 class SimWrapper
 {
 public:
-  SimWrapper(bool enableDebugOverlay = false);
+  SimWrapper(bool enableDebugOverlay = false, bool basicSim = false, bool fullExport = false, float tolerance = 1.0, bool enableAnim = true, bool logData = false);
   ~SimWrapper() = default;
 
   // Simulation control
@@ -25,6 +25,7 @@ public:
   bool isNinjaWalled() const;
   int getGoldCollected() const;
   int getDoorsOpened() const;
+  int getSimFrame() const;
 
   // Rendering
   void renderToBuffer(std::vector<float> &buffer);
