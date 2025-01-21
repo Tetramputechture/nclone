@@ -21,7 +21,7 @@ set(SFML_BUILD_NETWORK FALSE)
 FetchContent_MakeAvailable(SFML)
 
 # Add all source files
-add_executable(main 
+add_executable(nclone-cpp 
     src/main.cpp
     src/renderer.cpp
     src/simulation.cpp
@@ -62,5 +62,5 @@ add_executable(main
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-target_link_libraries(main PRIVATE SFML::Graphics SFML::Window)
-target_include_directories(main PRIVATE ${SFML_SOURCE_DIR}/include src)
+target_link_libraries(nclone-cpp PRIVATE SFML::Graphics SFML::Window)
+target_include_directories(nclone-cpp PRIVATE ${SFML_SOURCE_DIR}/include src)

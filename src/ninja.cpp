@@ -40,7 +40,7 @@ void Ninja::loadNinjaAnimation()
   }
 }
 
-Ninja::Ninja(Simulation *simulation) : sim(simulation)
+Ninja::Ninja()
 {
   initializeBones();
   ninjaAnimMode = std::filesystem::exists(ANIM_DATA_FILE);
@@ -688,10 +688,10 @@ void Ninja::updateGraphics()
   }
 }
 
-void Ninja::collideVsObjects()
+void Ninja::collideVsObjects(Simulation &sim)
 {
   // Get entities from neighborhood
-  auto entities = Physics::gatherEntitiesFromNeighbourhood(*sim, xpos, ypos);
+  auto entities = Physics::gatherEntitiesFromNeighbourhood(sim, xpos, ypos);
 
   for (auto *entity : entities)
   {
@@ -700,8 +700,15 @@ void Ninja::collideVsObjects()
       auto collision = entity->physicalCollision();
       if (collision)
       {
-        float popX = collision.depenetrationX;
-        float popY = collision.depenetrationY;
+        // Get depenetration values from collision result
+        // r1 = normal.x, r2 = normal.y, r3 = depenetration length
+        float normalX = collision->getR1();
+        float normalY = collision->getR2().value_or(0.0f);
+        float depenLen = collision->getR3().value_or(0.0f);
+
+        // Calculate depenetration vector
+        float popX = normalX * depenLen;
+        float popY = normalY * depenLen;
         xpos += popX;
         ypos += popY;
 
@@ -710,7 +717,7 @@ void Ninja::collideVsObjects()
         {
           xCrush += popX;
           yCrush += popY;
-          crushLen += std::sqrt(popX * popX + popY * popY);
+          crushLen += depenLen;
         }
 
         // Ninja can only get crushed if collision with thwump
@@ -726,46 +733,46 @@ void Ninja::collideVsObjects()
           yspeed += popY;
         }
 
-        // Depenetration for one ways
+        // Handle one-way platform collisions
         if (entity->getType() == 11)
         {
-          float xspeedNew = (xspeed * collision.normalY - yspeed * collision.normalX) * collision.normalY;
-          float yspeedNew = (xspeed * collision.normalY - yspeed * collision.normalX) * (-collision.normalX);
+          float xspeedNew = (xspeed * normalY - yspeed * normalX) * normalY;
+          float yspeedNew = (xspeed * normalY - yspeed * normalX) * (-normalX);
           xspeed = xspeedNew;
           yspeed = yspeedNew;
         }
 
         // Adjust ceiling variables if ninja collides with ceiling (or wall!)
-        if (collision.normalY >= -0.0001f)
+        if (normalY >= -0.0001f)
         {
           ceilingCount++;
-          ceilingNormalX += collision.normalX;
-          ceilingNormalY += collision.normalY;
+          ceilingNormalX += normalX;
+          ceilingNormalY += normalY;
         }
         else // Adjust floor variables if ninja collides with floor
         {
           floorCount++;
-          floorNormalX += collision.normalX;
-          floorNormalY += collision.normalY;
+          floorNormalX += normalX;
+          floorNormalY += normalY;
         }
       }
     }
   }
 }
 
-void Ninja::collideVsTiles()
+void Ninja::collideVsTiles(Simulation &sim)
 {
   // Interpolation routine mainly to prevent from going through walls
   float dx = xpos - xposOld;
   float dy = ypos - yposOld;
-  float time = Physics::sweepCircleVsTiles(*sim, xposOld, yposOld, dx, dy, RADIUS * 0.5f);
+  float time = Physics::sweepCircleVsTiles(sim, xposOld, yposOld, dx, dy, RADIUS * 0.5f);
   xpos = xposOld + time * dx;
   ypos = yposOld + time * dy;
 
   // Find the closest point from the ninja, apply depenetration and update speed. Loop 32 times.
   for (int i = 0; i < 32; i++)
   {
-    auto result = Physics::getSingleClosestPoint(*sim, xpos, ypos, RADIUS);
+    auto result = Physics::getSingleClosestPoint(sim, xpos, ypos, RADIUS);
     if (!result)
       break;
 
@@ -877,14 +884,13 @@ void Ninja::calcNinjaPosition()
   bones = newBones;
 }
 
-void Ninja::postCollision()
+void Ninja::postCollision(Simulation &sim)
 {
-  // Perform LOGICAL collisions between the ninja and nearby entities
-  // Also check if the ninja can interact with the walls of entities when applicable
+  // Perform LOGICAL collisions between the ninja and nearby entities.
+  // Also check if the ninja can interact with the walls of entities when applicable.
   float wallNormalSum = 0.0f;
-  auto entities = sim->getEntitiesInRadius(xpos, ypos, RADIUS + 0.1f);
-
-  for (const auto &entity : entities)
+  auto entities = Physics::gatherEntitiesFromNeighbourhood(sim, xpos, ypos);
+  for (auto *entity : entities)
   {
     if (entity->isLogicalCollidable())
     {
@@ -893,8 +899,11 @@ void Ninja::postCollision()
       {
         if (entity->getType() == 10)
         { // If collision with launch pad, update speed and position
-          float xboost = collisionResult.depenetrationX * 2.0f / 3.0f;
-          float yboost = collisionResult.depenetrationY * 2.0f / 3.0f;
+          float normalX = collisionResult->getR1();
+          float normalY = collisionResult->getR2().value_or(0.0f);
+          float depenLen = collisionResult->getR3().value_or(0.0f);
+          float xboost = normalX * depenLen * 2.0f / 3.0f;
+          float yboost = normalY * depenLen * 2.0f / 3.0f;
           xpos += xboost;
           ypos += yboost;
           xspeed = xboost;
@@ -913,7 +922,7 @@ void Ninja::postCollision()
         }
         else
         { // If touched wall of bounce block, oneway, thwump or shwump, retrieve wall normal
-          wallNormalSum += collisionResult.normalX;
+          wallNormalSum += collisionResult->getR1();
         }
       }
     }
@@ -921,7 +930,7 @@ void Ninja::postCollision()
 
   // Check if the ninja can interact with walls from nearby tile segments
   float rad = RADIUS + 0.1f;
-  auto segments = sim->getSegmentsInRegion(xpos - rad, ypos - rad, xpos + rad, ypos + rad);
+  auto segments = sim.getSegmentsInRegion(xpos - rad, ypos - rad, xpos + rad, ypos + rad);
   for (const auto &segment : segments)
   {
     bool valid;

@@ -42,7 +42,29 @@ public:
   virtual int getType() const { return type; }
   virtual std::pair<int, int> getCell() const { return cell; }
 
-  // Public member variables
+  // Getters
+  int getEntityType() const { return entityType; }
+  Simulation *getSimulation() const { return sim; }
+  float getXPos() const { return xpos; }
+  float getYPos() const { return ypos; }
+  float getXSpeed() const { return xspeed; }
+  float getYSpeed() const { return yspeed; }
+  float getXPosOld() const { return xposOld; }
+  float getYPosOld() const { return yposOld; }
+
+  // Setters
+  void setEntityType(int type) { entityType = type; }
+  void setSimulation(Simulation *simulation) { sim = simulation; }
+  void setXPos(float x) { xpos = x; }
+  void setYPos(float y) { ypos = y; }
+  void setXSpeed(float xs) { xspeed = xs; }
+  void setYSpeed(float ys) { yspeed = ys; }
+  void setXPosOld(float x) { xposOld = x; }
+  void setYPosOld(float y) { yposOld = y; }
+  void setActive(bool isActive) { active = isActive; }
+
+protected:
+  // Protected member variables for derived classes
   int entityType;
   Simulation *sim;
   float xpos;
@@ -51,11 +73,6 @@ public:
   float yspeed = 0.0f;
   float xposOld;
   float yposOld;
-
-  void setActive(bool isActive) { active = isActive; }
-
-protected:
-  // Protected member variables for derived classes
   std::vector<std::tuple<int, float, float>> posLog;
   std::vector<std::tuple<int, float, float>> speedLog;
   std::vector<int> collisionLog;

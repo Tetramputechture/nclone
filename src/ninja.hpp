@@ -100,9 +100,6 @@ public:
   float horInput = 0.0f;
   int jumpInput = 0;
 
-  // Simulation reference
-  Simulation *sim = nullptr;
-
   // Entity type for collision handling
   int entityType = 0;
 
@@ -137,12 +134,11 @@ public:
 
   // Methods
   Ninja();
-  explicit Ninja(Simulation *simulation);
   void integrate();
   void preCollision();
-  void collideVsObjects();
-  void collideVsTiles();
-  void postCollision();
+  void collideVsObjects(Simulation &sim);
+  void collideVsTiles(Simulation &sim);
+  void postCollision(Simulation &sim);
   void floorJump();
   void wallJump();
   void lpJump();
@@ -162,6 +158,8 @@ public:
   void setAnimFrame(int frame) { animFrame = frame; }
   void setAnimState(int state) { animState = state; }
   int getState() const { return state; }
+  float getXPos() const { return xpos; }
+  float getYPos() const { return ypos; }
 
 private:
   void initializeBones();

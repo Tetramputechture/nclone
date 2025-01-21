@@ -1,4 +1,5 @@
 #include "sim_wrapper.hpp"
+#include "ninja.hpp"
 #include <SFML/Graphics.hpp>
 
 SimWrapper::SimWrapper(bool enableDebugOverlay)

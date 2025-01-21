@@ -67,6 +67,7 @@ public:
   SegmentList &getSegmentsAt(const CellCoord &cell) { return segmentDic[cell]; }
   EntityList &getEntitiesAt(const CellCoord &cell) { return gridEntity[cell]; }
   EntityList &getEntitiesByType(int type) { return entityDic[type]; }
+  const EntityList &getEntitiesOfType(int type) const { return entityDic.at(type); }
 
   // Const accessors for entity management
   const SegmentList &getSegmentsAt(const CellCoord &cell) const { return segmentDic.at(cell); }

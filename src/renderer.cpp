@@ -37,32 +37,36 @@ const std::unordered_map<int, sf::Color> Renderer::ENTITY_COLORS = {
     {7, sf::Color(0x00, 0x00, 0x00)},
     {8, sf::Color(0x00, 0x00, 0x00)}, // Door Trap
     {9, sf::Color(0x00, 0x00, 0x00)},
-    {10, sf::Color(0x86, 0x87, 0x93)},
-    {11, sf::Color(0x66, 0x66, 0x66)},
+    {10, sf::Color(0x86, 0x87, 0x93)}, // Launch Pad
+    {11, sf::Color(0x66, 0x66, 0x66)}, // One Way Platform
     {12, sf::Color(0x00, 0x00, 0x00)},
     {13, sf::Color(0x00, 0x00, 0x00)},
-    {14, sf::Color(0x6E, 0xC9, 0xE0)},
-    {15, sf::Color(0x6E, 0xC9, 0xE0)},
+    {14, sf::Color(0x6E, 0xC9, 0xE0)}, // Drone Zap
+    {15, sf::Color(0x6E, 0xC9, 0xE0)}, // Drone Chaser
     {16, sf::Color(0x00, 0x00, 0x00)},
-    {17, sf::Color(0xE3, 0xE3, 0xE5)},
+    {17, sf::Color(0xE3, 0xE3, 0xE5)}, // Bounce Block
     {18, sf::Color(0x00, 0x00, 0x00)},
     {19, sf::Color(0x00, 0x00, 0x00)},
-    {20, sf::Color(0x83, 0x83, 0x84)},
-    {21, sf::Color(0xCE, 0x41, 0x46)},
+    {20, sf::Color(0x83, 0x83, 0x84)}, // Thwump
+    {21, sf::Color(0xCE, 0x41, 0x46)}, // Toggle Mine (toggled state)
     {22, sf::Color(0x00, 0x00, 0x00)},
-    {23, sf::Color(0x00, 0x00, 0x00)},
-    {24, sf::Color(0x66, 0x66, 0x66)},
-    {25, sf::Color(0x15, 0xA7, 0xBD)},
-    {26, sf::Color(0x6E, 0xC9, 0xE0)},
+    {23, sf::Color(0x00, 0x00, 0x00)}, // Laser
+    {24, sf::Color(0x66, 0x66, 0x66)}, // Boost Pad
+    {25, sf::Color(0x15, 0xA7, 0xBD)}, // Death Ball
+    {26, sf::Color(0x6E, 0xC9, 0xE0)}, // Mini Drone
     {27, sf::Color(0x00, 0x00, 0x00)},
-    {28, sf::Color(0x6E, 0xC9, 0xE0)}};
+    {28, sf::Color(0x6E, 0xC9, 0xE0)}}; // Shove Thwump
 
 // Initialize limb connections
 const std::array<std::pair<int, int>, 11> Renderer::LIMBS = {{{0, 12}, {1, 12}, {2, 8}, {3, 9}, {4, 10}, {5, 11}, {6, 7}, {8, 0}, {9, 0}, {10, 1}, {11, 1}}};
 
 // Add at the top with other constants
-const int GRID_WIDTH = 32;
-const int GRID_HEIGHT = 32;
+const int GRID_WIDTH = 44;
+const int GRID_HEIGHT = 25;
+const float SEGMENT_WIDTH = 1.0f;
+const float NINJA_WIDTH = 1.25f;
+const float DOOR_WIDTH = 2.0f;
+const float PLATFORM_WIDTH = 3.0f;
 
 Renderer::Renderer(Simulation *sim, bool enableDebugOverlay)
     : sim(sim),
@@ -371,8 +375,8 @@ void Renderer::drawEntities(bool init)
       if (!entity->isActive())
         continue;
 
-      float x = entity->xpos * adjust + tileXOffset;
-      float y = entity->ypos * adjust + tileYOffset;
+      float x = entity->getXPos() * adjust + tileXOffset;
+      float y = entity->getYPos() * adjust + tileYOffset;
 
       // Draw regular entities
       float radius = 10.0f * adjust; // Default radius
@@ -404,8 +408,8 @@ void Renderer::drawNinja()
   if (!ninja)
     return;
 
-  float x = ninja->xpos * adjust + tileXOffset;
-  float y = ninja->ypos * adjust + tileYOffset;
+  float x = ninja->getXPos() * adjust + tileXOffset;
+  float y = ninja->getYPos() * adjust + tileYOffset;
 
   if (sim->getConfig().enableAnim)
   {

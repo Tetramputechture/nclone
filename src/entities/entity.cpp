@@ -18,6 +18,8 @@ Entity::Entity(int entityType, Simulation *sim, float xcoord, float ycoord)
   {
     entityCounts[entityType]++;
   }
+
+  logPositions = sim->getConfig().fullExport;
 }
 
 std::vector<float> Entity::getState(bool minimalState) const

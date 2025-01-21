@@ -1,4 +1,5 @@
 #include "simulation.hpp"
+#include "ninja.hpp"
 #include "physics/physics.hpp"
 #include "entities/entity.hpp"
 #include "physics/grid_segment_linear.hpp"
@@ -341,7 +342,7 @@ void Simulation::loadMapTiles()
 void Simulation::loadMapEntities()
 {
   // Create player ninja
-  ninja = std::make_unique<Ninja>(this);
+  ninja = std::make_unique<Ninja>();
 
   // Force map data[1233] to be -1 if not valid
   if (mapData[1233] != -1 && mapData[1233] != 1)
@@ -563,13 +564,13 @@ void Simulation::tick(float horInput, int jumpInput)
     for (int i = 0; i < 4; i++)
     {
       // Handle PHYSICAL collisions with entities
-      ninja->collideVsObjects();
+      ninja->collideVsObjects(*this);
       // Handle physical collisions with tiles
-      ninja->collideVsTiles();
+      ninja->collideVsTiles(*this);
     }
 
-    ninja->postCollision(); // Do post collision calculations
-    ninja->think();         // Make ninja think
+    ninja->postCollision(*this); // Do post collision calculations
+    ninja->think();              // Make ninja think
 
     if (simConfig.enableAnim)
     {
@@ -625,8 +626,8 @@ Simulation::EntityList Simulation::getEntitiesInRadius(float x, float y, float r
       {
         for (const auto &entity : it->second)
         {
-          float dx = entity->getXpos() - x;
-          float dy = entity->getYpos() - y;
+          float dx = entity->getXPos() - x;
+          float dy = entity->getYPos() - y;
           if (dx * dx + dy * dy <= radius * radius)
           {
             result.push_back(entity);

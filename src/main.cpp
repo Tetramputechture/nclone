@@ -1,21 +1,7 @@
-#include <SFML/Graphics.hpp>
+#include <iostream>
 
 int main()
 {
-    auto window = sf::RenderWindow(sf::VideoMode({1920u, 1080u}), "N++");
-    window.setFramerateLimit(60);
-
-    while (window.isOpen())
-    {
-        while (const std::optional event = window.pollEvent())
-        {
-            if (event->is<sf::Event::Closed>())
-            {
-                window.close();
-            }
-        }
-
-        window.clear();
-        window.display();
-    }
+  std::cout << "Please install me as a Python module and run me with Cython!" << std::endl;
+  return 0;
 }

@@ -60,7 +60,7 @@ std::optional<EntityCollisionResult> BounceBlock::logicalCollision()
   auto ninja = sim->getNinja();
   auto depen = Physics::penetrationSquareVsPoint(xpos, ypos, ninja->xpos, ninja->ypos, SEMI_SIDE + ninja->RADIUS + 0.1f);
   if (!depen)
-    return;
+    return std::nullopt;
 
   const auto &[normal, _] = *depen;
   const auto &[depenX, depenY] = normal;
