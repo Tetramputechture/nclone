@@ -71,7 +71,7 @@ void SimWrapper::renderToBuffer(std::vector<float> &buffer)
   // Create render texture for off-screen rendering
   sf::RenderTexture renderTexture;
   auto size = renderer->getWindow().getSize();
-  if (!renderTexture.create(size.x, size.y))
+  if (!renderTexture.resize({size.x, size.y}))
   {
     throw std::runtime_error("Failed to create render texture");
   }
@@ -85,7 +85,10 @@ void SimWrapper::renderToBuffer(std::vector<float> &buffer)
 
   // Capture window contents
   sf::Texture windowTexture;
-  windowTexture.create(window.getSize().x, window.getSize().y);
+  if (!windowTexture.resize({window.getSize().x, window.getSize().y}))
+  {
+    throw std::runtime_error("Failed to create window texture");
+  }
   windowTexture.update(window);
 
   // Copy window contents to render texture
