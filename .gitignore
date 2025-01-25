@@ -10,3 +10,14 @@ out
 anim_data_line_new.txt.bin
 
 maps/
+
+*.egg-info
+*.pyc
+*.pyd
+*.pyo
+*.pyx
+*.so
+*.pyx
+
+# Build file from Cython
+nplay_headless_cpp.cpp

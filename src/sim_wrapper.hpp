@@ -4,6 +4,7 @@
 #include <vector>
 #include "simulation.hpp"
 #include "renderer.hpp"
+#include "ninja.hpp"
 
 class SimWrapper
 {
@@ -26,6 +27,15 @@ public:
   int getGoldCollected() const;
   int getDoorsOpened() const;
   int getSimFrame() const;
+  int getTotalGoldAvailable() const;
+  bool exitSwitchActivated() const;
+  std::pair<float, float> getExitSwitchPosition() const;
+  std::pair<float, float> getExitDoorPosition() const;
+
+  // New state getters
+  std::vector<float> getNinjaState() const;
+  std::vector<float> getEntityStates(bool onlyExitAndSwitch = false) const;
+  std::vector<float> getStateVector(bool onlyExitAndSwitch = false) const;
 
   // Rendering
   void renderToBuffer(std::vector<float> &buffer);

@@ -10,6 +10,7 @@
 #include "entities/door_regular.hpp"
 #include <cmath>
 #include <filesystem>
+#include <cstring>
 
 // Initialize static color constants
 const sf::Color Renderer::BG_COLOR(0xcb, 0xca, 0xd0);
@@ -324,7 +325,7 @@ void Renderer::drawEntities(bool init)
         float x2 = segment->getX2() * adjust + tileXOffset;
         float y2 = segment->getY2() * adjust + tileYOffset;
 
-        if (segment->getType() == "linear")
+        if (std::strcmp(segment->getType(), "linear") == 0)
         {
           float length = std::sqrt(std::pow(x2 - x1, 2) + std::pow(y2 - y1, 2));
           float angle = std::atan2(y2 - y1, x2 - x1) * 180 / M_PI;
@@ -335,7 +336,7 @@ void Renderer::drawEntities(bool init)
           segmentShape.setRotation(sf::degrees(angle));
           window.draw(segmentShape);
         }
-        else if (segment->getType() == "circular")
+        else if (std::strcmp(segment->getType(), "circular") == 0)
         {
           // Draw circular segments using arc approximation
           sf::VertexArray arc(sf::PrimitiveType::TriangleStrip);
