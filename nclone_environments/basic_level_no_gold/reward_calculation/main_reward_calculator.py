@@ -1,7 +1,7 @@
 """Main reward calculator that orchestrates all reward components."""
 from typing import Dict, Any
-from nclone_environments.basic_level_no_gold.reward_calculation.navigation_reward_calculator import NavigationRewardCalculator
-from nclone_environments.basic_level_no_gold.reward_calculation.exploration_reward_calculator import ExplorationRewardCalculator
+from .navigation_reward_calculator import NavigationRewardCalculator
+from .exploration_reward_calculator import ExplorationRewardCalculator
 
 
 class RewardCalculator:

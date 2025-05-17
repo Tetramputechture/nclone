@@ -7,7 +7,6 @@ The augmentations are applied randomly to input frames to increase training dive
 import numpy as np
 import albumentations as A
 from typing import Optional, List, Dict, Any, Tuple
-from nclone_environments.basic_level_no_gold.constants import PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT
 
 
 def get_augmentation_pipeline(p: float = 0.5) -> A.ReplayCompose:

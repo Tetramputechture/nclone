@@ -1,8 +1,8 @@
 """Maze generation module for N++ levels."""
 
-from map_generation.map import Map
+from .map import Map
 from typing import List, Tuple, Optional, Set
-from map_generation.constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
+from .constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, SWITCH_OFFSET_PX
 
 
 class MazeGenerator(Map):

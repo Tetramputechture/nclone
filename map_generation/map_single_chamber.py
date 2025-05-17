@@ -1,8 +1,8 @@
 """Single chamber generation module for N++ levels."""
 
-from map_generation.map import Map
-from typing import List, Tuple, Optional
-from map_generation.constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX
+from .map import Map
+from typing import Optional
+from .constants import VALID_TILE_TYPES
 
 
 class SingleChamberGenerator(Map):

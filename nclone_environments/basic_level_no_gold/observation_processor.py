@@ -37,18 +37,18 @@ This class should handle returning:
     - Vector between ninja and switch
     - Vector between ninja and exit door
 """
-from ninja import Ninja
+from ...ninja import Ninja
 import numpy as np
 from collections import deque
 import cv2
 from typing import Dict, Any, Tuple
-from nclone_environments.basic_level_no_gold.constants import (
+from .constants import (
     PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT,
     LEVEL_WIDTH, LEVEL_HEIGHT,
     TEMPORAL_FRAMES,
-    RENDERED_VIEW_WIDTH, RENDERED_VIEW_HEIGHT
+    RENDERED_VIEW_WIDTH, RENDERED_VIEW_HEIGHT,
 )
-from nclone_environments.basic_level_no_gold.frame_augmentation import apply_consistent_augmentation
+from .frame_augmentation import apply_consistent_augmentation
 
 
 def frame_to_grayscale(frame: np.ndarray) -> np.ndarray:

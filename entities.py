@@ -1,7 +1,8 @@
 import math
 import array
 import struct
-from physics import *
+
+from .physics import *
 
 
 class GridSegmentLinear:

@@ -3,11 +3,11 @@
 import os
 import random
 from typing import Literal, Optional
-from map_generation.map import Map
-from map_generation.map_maze import MazeGenerator
-from map_generation.map_single_chamber import SingleChamberGenerator
-from map_generation.map_multi_chamber import MultiChamberGenerator
-from map_generation.map_jump_required import MapJumpRequired
+from .map import Map
+from .map_maze import MazeGenerator
+from .map_single_chamber import SingleChamberGenerator
+from .map_multi_chamber import MultiChamberGenerator
+from .map_jump_required import MapJumpRequired
 
 
 def generate_map(level_type: Literal["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK", "MULTI_CHAMBER", "JUMP_REQUIRED"] = "MAZE",
@@ -36,8 +36,6 @@ def generate_map(level_type: Literal["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK", "
     elif level_type == "JUMP_REQUIRED":
         generator = MapJumpRequired(seed=seed)
         return generator.generate()
-    else:
-        raise ValueError(f"Unknown level type: {level_type}")
 
 
 def random_official_map(rng: random.Random):
