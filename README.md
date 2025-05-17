@@ -60,12 +60,28 @@ python nclone/test_environment.py --log-frametimes
 
 The environment can be initialized in `rgb_array` mode for headless operation, which is crucial for DRL training. This is configured in the environment's constructor. See `nclone_environments/basic_level_no_gold/basic_level_no_gold.py` for an example of how the `render_mode` is set.
 
+## Running Multiple Headless Simulations
+
+To leverage multi-core processors for large-scale experiments or data collection, you can run multiple headless simulations concurrently using the `run_multiple_headless.py` script.
+
+```bash
+PYTHONPATH=.. python -m nclone.run_multiple_headless --num-simulations 4 --num-steps 50000
+```
+
+This command will launch 4 independent headless simulations, each running for 50,000 steps. You can adjust these parameters as needed:
+
+*   `--num-simulations`: Specifies the number of concurrent simulation instances.
+*   `--num-steps`: Specifies the number of simulation steps each instance will run.
+
+Each simulation runs in its own process, allowing for parallel execution.
+
 ## Project Structure (Key Files & Directories)
 
 *   `nclone/`: Main package directory.
     *   `nplay_headless.py`: Core headless simulation runner.
     *   `nsim.py`: The underlying N++ physics and game logic simulator.
     *   `nsim_renderer.py`: Handles rendering of the simulation state.
+    *   `run_multiple_headless.py`: Script to run multiple headless simulations concurrently.
     *   `nclone_environments/`: Contains Gym-compatible environments.
         *   `basic_level_no_gold/`: A specific environment configuration.
             *   `basic_level_no_gold.py`: The main environment class.
