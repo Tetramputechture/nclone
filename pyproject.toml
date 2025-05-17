@@ -20,6 +20,7 @@ dependencies = [
     "pygame",
     "pycairo",
     "numpy",
+    "imageio[ffmpeg]",
 ]
 
 [project.urls]

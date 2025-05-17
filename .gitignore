@@ -12,6 +12,7 @@ map_data_2
 map_data_3
 map_data_4
 ntrace_manual.py
+profiling_stats.txt
 
 __pycache__/
 
