@@ -1,6 +1,5 @@
 import pygame
-import numpy as np
-from nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
+from .nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 import argparse
 import time
 
@@ -63,7 +62,6 @@ while running:
 
     # print(f'Gold collected: {env.get_gold_collected()}')
 
-    # Maintain 60 FPS
     current_time = time.perf_counter()
     if args.log_frametimes:
         frame_time_ms = (current_time - last_time) * 1000

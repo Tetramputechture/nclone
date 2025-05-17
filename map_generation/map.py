@@ -1,6 +1,6 @@
 from typing import Tuple, Optional, List
 import random
-from map_generation.constants import GRID_SIZE_FACTOR, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
+from .constants import GRID_SIZE_FACTOR, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
 
 # Valid entity types that can be randomly placed
 VALID_RANDOM_ENTITIES = [
@@ -47,14 +47,10 @@ class Map:
 
     def _to_screen_coordinates(self, grid_x: int, grid_y: int, offset: int = 0) -> Tuple[int, int]:
         """Convert grid coordinates to screen coordinates."""
-        if grid_x is None or grid_y is None:
-            return None, None
         return grid_x * GRID_SIZE_FACTOR + offset, grid_y * GRID_SIZE_FACTOR + offset
 
     def _from_screen_coordinates(self, screen_x: int, screen_y: int, offset: int = 0) -> Tuple[int, int]:
         """Convert screen coordinates to grid coordinates."""
-        if screen_x is None or screen_y is None:
-            return None, None
         return (screen_x - offset) // GRID_SIZE_FACTOR, (screen_y - offset) // GRID_SIZE_FACTOR
 
     def set_tile(self, x, y, tile_type):
@@ -84,8 +80,14 @@ class Map:
 
         # Convert grid coords to screen
         screen_x, screen_y = self._to_screen_coordinates(grid_x, grid_y)
-        switch_screen_x, switch_screen_y = self._to_screen_coordinates(
-            switch_x, switch_y)
+
+        # Convert switch grid coords to screen coords, if provided
+        switch_screen_x, switch_screen_y = None, None
+        if switch_x is not None and switch_y is not None:
+            switch_screen_x, switch_screen_y = self._to_screen_coordinates(
+                switch_x, switch_y)
+        elif switch_x is not None or switch_y is not None: # If one is provided but not the other
+            raise ValueError("If switch coordinates are partially provided, both switch_x and switch_y must be set.")
 
         # Handle entity offsets
         if entity_type == 3:

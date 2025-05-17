@@ -1,9 +1,10 @@
 import struct
 import math
 import random
-import copy
 import os
-from physics import (
+
+# Local imports
+from .physics import (
     gather_entities_from_neighbourhood,
     gather_segments_from_region,
     sweep_circle_vs_tiles,

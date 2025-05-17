@@ -1,5 +1,6 @@
-from map_generation.map import Map
-from map_generation.constants import NINJA_SPAWN_OFFSET_PX, SWITCH_OFFSET_PX, EXIT_DOOR_OFFSET_PX, GOLD_OFFSET_PX, GRID_SIZE_FACTOR
+from ..map_generation.map import Map
+from ..map_generation.constants import NINJA_SPAWN_OFFSET_PX, SWITCH_OFFSET_PX, EXIT_DOOR_OFFSET_PX, GOLD_OFFSET_PX, GRID_SIZE_FACTOR
+from typing import List, Dict, Tuple, Any, Optional
 
 
 def mirror_map_horizontally(original_map: Map) -> Map:

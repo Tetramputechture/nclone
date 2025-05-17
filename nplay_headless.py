@@ -2,17 +2,17 @@ import pygame
 import os
 import random
 from typing import Optional
-from nsim import Simulator
-from nsim_renderer import NSimRenderer
-from map_generation.map_generator import generate_map
-from sim_config import SimConfig
+from .nsim import Simulator
+from .nsim_renderer import NSimRenderer
+from .map_generation.map_generator import generate_map
+from .sim_config import SimConfig
 import numpy as np
 from typing import List
-import math
-from entities import (EntityToggleMine, EntityGold, EntityExit, EntityExitSwitch,
-                      EntityDoorRegular, EntityDoorLocked, EntityDoorTrap, EntityLaunchPad,
-                      EntityOneWayPlatform, EntityDroneZap, EntityBounceBlock, EntityThwump,
-                      EntityBoostPad, EntityDeathBall, EntityMiniDrone, EntityShoveThwump)
+from .entities import (EntityToggleMine, EntityGold, EntityExit, EntityExitSwitch,
+                     EntityDoorRegular, EntityDoorLocked, EntityDoorTrap, EntityLaunchPad,
+                     EntityOneWayPlatform, EntityDroneZap, EntityBounceBlock,
+                     EntityThwump, EntityBoostPad, EntityDeathBall, EntityMiniDrone,
+                     EntityShoveThwump)
 
 SRCWIDTH = 1056
 SRCHEIGHT = 600

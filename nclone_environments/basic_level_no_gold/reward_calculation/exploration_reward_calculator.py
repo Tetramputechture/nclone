@@ -9,9 +9,8 @@ We use a history of the ninja position to reward exploration at multiple scales:
 - 8x8 cell areas (192x192)
 - 16x16 cell areas (384x384)
 """
-import numpy as np
-from nclone_environments.basic_level_no_gold.constants import LEVEL_WIDTH, LEVEL_HEIGHT
 
+import numpy as np
 
 class ExplorationRewardCalculator:
     """Handles calculation of exploration-based rewards."""

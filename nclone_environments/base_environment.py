@@ -4,8 +4,8 @@ import gymnasium
 from gymnasium.spaces import discrete
 import random
 from typing import Tuple, Optional
-from nplay_headless import NPlayHeadless
 
+from ..nplay_headless import NPlayHeadless
 
 class BaseEnvironment(gymnasium.Env):
     """Base environment class that handles logic for loading maps, resetting the game, and rendering."""

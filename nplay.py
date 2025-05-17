@@ -1,20 +1,13 @@
-from PIL import Image
-import cairo
 import pygame
-import math
 import os.path
 import zlib
-import numpy as np
 from nsim import *
 from nsim_renderer import NSimRenderer
 from map_generation.map_generator import generate_map, random_official_map
 from sim_config import SimConfig
-from nplay_headless import NPlayHeadless
-import cv2
 import random
-# Create a new map
 
-# Get the map
+# Create a new map
 map_data = generate_map()
 
 SRCWIDTH = 1056

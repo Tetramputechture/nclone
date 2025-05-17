@@ -1,11 +1,9 @@
-import gymnasium
-from gymnasium.spaces import discrete, box, Dict
+from gymnasium.spaces import box, Dict as SpacesDict
 import numpy as np
 from typing import Tuple, Optional
 import os
 import uuid
-import random
-from nclone_environments.basic_level_no_gold.constants import (
+from .constants import (
     GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
     GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
     TEMPORAL_FRAMES,
@@ -15,13 +13,10 @@ from nclone_environments.basic_level_no_gold.constants import (
     RENDERED_VIEW_WIDTH,
     RENDERED_VIEW_HEIGHT
 )
-from nclone_environments.basic_level_no_gold.reward_calculation.main_reward_calculator import RewardCalculator
-from nclone_environments.basic_level_no_gold.observation_processor import ObservationProcessor
-from nclone_environments.basic_level_no_gold.truncation_checker import TruncationChecker
-from nclone_environments.base_environment import BaseEnvironment
-from map_generation.map import Map
-from map_generation.map_generator import random_official_map
-from map_augmentation.mirror_map import mirror_map_horizontally
+from .reward_calculation.main_reward_calculator import RewardCalculator
+from .observation_processor import ObservationProcessor
+from .truncation_checker import TruncationChecker
+from ..base_environment import BaseEnvironment
 
 
 class BasicLevelNoGold(BaseEnvironment):
@@ -70,7 +65,7 @@ class BasicLevelNoGold(BaseEnvironment):
         # Initialize observation space as a Dict space with player_frame, base_frame, and game_state
         player_frame_channels = TEMPORAL_FRAMES if enable_frame_stack else 1
         game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH if self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH else GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
-        self.observation_space = Dict({
+        self.observation_space = SpacesDict({
             # Player-centered frame
             'player_frame': box.Box(
                 low=0,

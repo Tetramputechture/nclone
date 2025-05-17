@@ -1,8 +1,8 @@
 """Navigation reward calculator for evaluating objective-based movement and progress."""
 from typing import Dict, Any, Tuple, List, Optional
 import numpy as np
-from nclone_environments.basic_level_no_gold.constants import LEVEL_WIDTH, LEVEL_HEIGHT
-from nclone_environments.util.util import calculate_distance
+from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
+from ...util.util import calculate_distance
 
 
 class NavigationRewardCalculator:

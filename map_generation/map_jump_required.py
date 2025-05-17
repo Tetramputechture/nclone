@@ -18,9 +18,9 @@ Additionally, the platforms should have mines randomly placed on the ground leve
 The mines should not be directly below the ninja's starting position, or the exit door.
 """
 
-from map_generation.map import Map
+from .map import Map
 from typing import Optional, Tuple
-from map_generation.constants import VALID_TILE_TYPES
+from .constants import VALID_TILE_TYPES
 
 
 class MapJumpRequired(Map):
