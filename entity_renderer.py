@@ -82,46 +82,20 @@ class EntityRenderer:
                  context.set_source_rgb(0,0,0) # Default black
 
             for entity in entities:
-                # Occlusion check:
-                TILE_SIZE_UNITS = 24 
-                tile_grid_x = math.floor(entity.xpos / TILE_SIZE_UNITS)
-                tile_grid_y = math.floor(entity.ypos / TILE_SIZE_UNITS)
-                tile_at_entity_pos = self.sim.tile_dic.get((tile_grid_x, tile_grid_y), 0)
-
-                is_occluded_by_tile = (tile_at_entity_pos == 1) 
-                # Add other solid tile types here if needed, e.g.
-                # SOLID_TILE_TYPES = {1, ...other solid types...}
-                # is_occluded_by_tile = tile_at_entity_pos in SOLID_TILE_TYPES
-
-                if is_occluded_by_tile:
-                    continue 
-
-                x_draw = entity.xpos * self.adjust
-                y_draw = entity.ypos * self.adjust
-
+                x = entity.xpos * self.adjust
+                y = entity.ypos * self.adjust
                 if hasattr(entity, "normal_x") and hasattr(entity, "normal_y"):
-                    self._draw_oriented_entity(context, entity, x_draw, y_draw)
+                    self._draw_oriented_entity(context, entity, x, y)
                 elif entity.type != 23:
-                    self._draw_physical_entity(context, entity, x_draw, y_draw)
+                    self._draw_physical_entity(context, entity, x, y)
                 
                 if entity.type == 23:
-                    self._draw_type_23_entity(context, entity, x_draw, y_draw)
+                    self._draw_type_23_entity(context, entity, x, y)
 
-        # Draw ninja (with occlusion check)
-        TILE_SIZE_UNITS = 24 # Assuming this is the base tile dimension in sim units
-        ninja_tile_x = math.floor(self.sim.ninja.xpos / TILE_SIZE_UNITS)
-        ninja_tile_y = math.floor(self.sim.ninja.ypos / TILE_SIZE_UNITS)
-        tile_at_ninja_pos = self.sim.tile_dic.get((ninja_tile_x, ninja_tile_y), 0)
-        
-        is_ninja_occluded = (tile_at_ninja_pos == 1)
-        # Consider SOLID_TILE_TYPES for consistency if defined elsewhere
-        # is_ninja_occluded = tile_at_ninja_pos in SOLID_TILE_TYPES
-
-        if not is_ninja_occluded:
-            context.set_source_rgb(*render_utils.NINJACOLOR_RGB)
-            context.set_line_width(render_utils.NINJAWIDTH * self.adjust)
-            context.set_line_cap(cairo.LineCap.ROUND)
-            self._draw_ninja(context)
+        context.set_source_rgb(*render_utils.NINJACOLOR_RGB)
+        context.set_line_width(render_utils.NINJAWIDTH * self.adjust)
+        context.set_line_cap(cairo.LineCap.ROUND)
+        self._draw_ninja(context)
 
         buffer = self.entitydraw_surface.get_data()
         return pygame.image.frombuffer(buffer, 
