@@ -98,13 +98,13 @@ class NSimRenderer:
         pygame_bgcolor = tuple(int(c * 255) for c in render_utils.BGCOLOR_RGB)
         self.screen.fill(pygame_bgcolor)
 
-        # Draw tiles first
-        tiles_surface = self.tile_renderer.draw_tiles(init)
-        self.screen.blit(tiles_surface, (self.tile_x_offset, self.tile_y_offset))
-
-        # Draw entities on top of tiles
+        # Draw entities first
         entities_surface = self.entity_renderer.draw_entities(init)
         self.screen.blit(entities_surface, (self.tile_x_offset, self.tile_y_offset))
+
+        # Draw tiles on top of entities
+        tiles_surface = self.tile_renderer.draw_tiles(init)
+        self.screen.blit(tiles_surface, (self.tile_x_offset, self.tile_y_offset))
 
         if self.enable_debug_overlay:
             overlay_surface = self.debug_overlay_renderer.draw_debug_overlay(debug_info)
