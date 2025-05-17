@@ -1,95 +1,103 @@
-# nclone
+# nclone (Pyglet Refactor)
 
-`nclone` is a Pygame-based simulation of the game N++. This repository is a fork specifically tailored for Deep Reinforcement Learning (DRL) research. It features a custom reward system designed for DRL agents and supports headless mode for faster training and experimentation.
+`nclone` is a **Pyglet-based** simulation of the game N++. This repository is a fork specifically tailored for Deep Reinforcement Learning (DRL) research. It features a custom reward system designed for DRL agents and supports headless mode for faster training and experimentation. This version has been refactored from Pygame to Pyglet to leverage OpenGL for improved rendering performance, crucial for high-throughput DRL applications.
 
 ## Features
 
 *   **N++ Simulation:** Replicates core gameplay mechanics of N++.
-*   **Pygame-based:** Built using the Pygame library for rendering and interaction.
+*   **Pyglet-based:** Built using the Pyglet library, leveraging OpenGL for high-performance rendering.
 *   **Deep RL Focus:** Includes a reward system to guide DRL agent learning.
-*   **Headless Mode:** Allows the simulation to run without a graphical interface, significantly speeding up training processes.
-*   **Customizable Environments:** The environment (`nclone_environments/basic_level_no_gold/basic_level_no_gold.py`) can be configured for different experimental setups.
+*   **Headless Mode (`rgb_array`):** Allows the simulation to run without a graphical interface, significantly speeding up training processes by rendering directly to NumPy arrays.
+*   **Customizable Environments:** The environment (`src/nclone/nclone_environments/basic_level_no_gold/basic_level_no_gold.py`) can be configured for experimental setups.
 
 ## Installation
 
+This project uses [Poetry](https.python-poetry.org/) for dependency management and packaging.
+
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/SimonV42/nclone.git
+    git clone https://github.com/Tetramputechture/nclone.git # Or your fork's URL
     cd nclone
     ```
 
-2.  **Create and activate a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    # On Windows
-    venv\Scripts\activate
-    # On macOS/Linux
-    source venv/bin/activate
-    ```
+2.  **Install Poetry (if you haven't already):**
+    Follow the instructions on the [official Poetry website](https://python-poetry.org/docs/#installation).
 
-3.  **Install dependencies:**
-    The project uses `setuptools` for packaging. You can install it directly using pip:
+3.  **Install dependencies using Poetry:**
+    This command will create a virtual environment (if one isn't active) and install all dependencies listed in `pyproject.toml`.
     ```bash
-    pip install .
+    poetry install
     ```
-    For development, you might prefer an editable install:
-    ```bash
-    pip install -e .
-    ```
-    This will install all dependencies listed in `pyproject.toml`, including Pygame, NumPy, and PyCairo.
 
 ## Running the Simulation
 
-To test the environment and see the simulation in action, you can run the `test_environment.py` script:
+All commands should be run from the project root directory using `poetry run`.
 
+### Interactive Mode (Human Rendering)
+
+To run the simulation with visual output and keyboard control:
 ```bash
-PYTHONPATH=.. python -m nclone.test_environment
+poetry run xvfb-run -a python -m nclone.nplay 
 ```
+*   `xvfb-run -a` is used to provide a virtual display, necessary for Pyglet in headless server environments. If running on a desktop with a display server, you might not need `xvfb-run`.
+*   **Controls (default in `nplay.py`):**
+    *   **Left/Right Arrow Keys:** Move
+    *   **Up Arrow Key:** Jump
+    *   **R Key:** Reset simulation
+    *   **Escape Key:** Quit
 
-This script initializes the `BasicLevelNoGold` environment in human-render mode, allowing you to control the ninja using keyboard inputs:
-*   **Left/Right Arrow Keys (or A/D):** Move left/right.
-*   **Space/Up Arrow Key:** Jump.
-*   **R Key:** Reset the environment.
+### Test Environment Script
 
-You can also run with frametime logging:
+The `test_environment.py` script allows testing the `BasicLevelNoGold` environment:
 ```bash
-python nclone/test_environment.py --log-frametimes
+# Human mode
+poetry run xvfb-run -a python test_environment.py
+
+# Headless mode (runs for a set number of frames, e.g., for profiling)
+poetry run python test_environment.py --headless --profile-frames 1000
 ```
+*   **Controls (in human mode for `test_environment.py`):**
+    *   **A/D or Left/Right Arrow Keys:** Move
+    *   **Space/Up Arrow Key:** Jump
+    *   **R Key:** Reset environment
+    *   **Escape Key:** Quit
 
-## Headless Mode
+### Headless Mode for DRL
 
-The environment can be initialized in `rgb_array` mode for headless operation, which is crucial for DRL training. This is configured in the environment's constructor. See `nclone_environments/basic_level_no_gold/basic_level_no_gold.py` for an example of how the `render_mode` is set.
+The `NPlayHeadless` class (`src/nclone/nplay_headless.py`) is designed for DRL. It's used by environments like `BasicLevelNoGold` when `render_mode='rgb_array'.
 
-## Running Multiple Headless Simulations
+### Running Multiple Headless Simulations
 
-To leverage multi-core processors for large-scale experiments or data collection, you can run multiple headless simulations concurrently using the `run_multiple_headless.py` script.
-
+For large-scale experiments, use `run_multiple_headless.py`:
 ```bash
-PYTHONPATH=.. python -m nclone.run_multiple_headless --num-simulations 4 --num-steps 50000
+poetry run python run_multiple_headless.py --num-simulations 4 --num-steps 50000 --record-dir ./videos
 ```
-
-This command will launch 4 independent headless simulations, each running for 50,000 steps. You can adjust these parameters as needed:
-
-*   `--num-simulations`: Specifies the number of concurrent simulation instances.
-*   `--num-steps`: Specifies the number of simulation steps each instance will run.
-
-Each simulation runs in its own process, allowing for parallel execution.
+*   `--num-simulations`: Number of concurrent simulation instances.
+*   `--num-steps`: Simulation steps per instance.
+*   `--record-dir`: (Optional) Directory to save MP4 recordings of simulations.
 
 ## Project Structure (Key Files & Directories)
 
-*   `nclone/`: Main package directory.
-    *   `nplay_headless.py`: Core headless simulation runner.
+*   `src/nclone/`: Main Python package directory.
+    *   `nplay.py`: Main interactive (human-render) game/simulation runner.
+    *   `nplay_headless.py`: Core class for headless simulation control, providing `rgb_array` rendering.
     *   `nsim.py`: The underlying N++ physics and game logic simulator.
-    *   `nsim_renderer.py`: Handles rendering of the simulation state.
-    *   `run_multiple_headless.py`: Script to run multiple headless simulations concurrently.
+    *   `nsim_renderer.py`: Handles rendering of the simulation state using Pyglet.
+        *   `tile_renderer.py`, `entity_renderer.py`, `debug_overlay_renderer.py`: Component renderers.
     *   `nclone_environments/`: Contains Gym-compatible environments.
         *   `basic_level_no_gold/`: A specific environment configuration.
-            *   `basic_level_no_gold.py`: The main environment class.
-            *   `reward_calculation/`: Logic for calculating rewards.
-    *   `maps/`: Contains map files.
-    *   `map_generation/`: Scripts for procedural map generation.
-*   `test_environment.py`: Example script to run and test the environment.
-*   `pyproject.toml`: Project metadata and dependencies.
+    *   `maps/`: (Located at project root) Contains map files.
+    *   `map_generation/`: (Sub-package in `src/nclone/`) Scripts for procedural map generation.
+*   `test_environment.py`: Script to test the `BasicLevelNoGold` environment.
+*   `run_multiple_headless.py`: Script to run multiple headless simulations concurrently.
+*   `pyproject.toml`: Project metadata, dependencies, and build configuration (Poetry).
 *   `README.md`: This file.
 
-This provides a foundation for training reinforcement learning agents to play N++.
+## Refactoring Notes (Pygame to Pyglet)
+
+*   **Rendering:** Pygame's `Surface.blit` and `pygame.draw` were replaced with Pyglet Sprites, Batches, and direct OpenGL drawing (via Pyglet primitives or cairo for complex shapes subsequently converted to textures).
+*   **Windowing & Events:** `pygame.display` and `pygame.event` were replaced by `pyglet.window.Window` and Pyglet's event loop (`pyglet.app.run()`, event handlers like `on_draw`, `on_key_press`).
+*   **Image Loading:** `pygame.image.load` replaced by `pyglet.image.load`.
+*   **Performance:** The primary motivation was to improve rendering speed for DRL by leveraging Pyglet's OpenGL backend. Offscreen rendering to NumPy arrays (`rgb_array` mode) is implemented using Pyglet Framebuffer Objects (FBOs).
+*   **Headless Operation:** For `rgb_array` mode, Pyglet requires an active GL context. This is managed by creating an invisible window or using a provided window. For server environments, `xvfb-run` is typically needed.
+*   **Packaging:** Switched from `setuptools` (implied by `pip install .`) to `Poetry` for more robust dependency management and packaging. Project structure was changed to `src/` layout.

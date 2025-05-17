@@ -139,5 +139,5 @@ class Simulator:
 
         # Clear physics caches periodically to prevent memory bloat or stale data
         if self.frame % 100 == 0:  # Clear caches every 100 frames
-            from physics import clear_caches # Local import to avoid circular dependencies if physics imports Simulator
+            from .physics import clear_caches # Local import to avoid circular dependencies if physics imports Simulator
             clear_caches()

@@ -1,27 +1,19 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "nclone"
 version = "0.1.0"
-authors = [
-    { name="SimonV42" },
-]
 description = "An N++ simulator with headless mode support"
+authors = ["SimonV42 <simonv42@example.com>"] # Placeholder email
 readme = "README.md"
-requires-python = ">=3.9"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-]
-dependencies = [
-    "pygame",
-    "pycairo",
-    "numpy",
-    "imageio[ffmpeg]",
-]
+packages = [{include = "nclone", from = "src"}]
+homepage = "https://github.com/SimonV42/nclone"
 
-[project.urls]
-"Homepage" = "https://github.com/SimonV42/nclone" 
+[tool.poetry.dependencies]
+python = ">=3.9"
+pycairo = "*"
+numpy = "*"
+imageio = {version = "*", extras = ["ffmpeg"]}
+pyglet = "*"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

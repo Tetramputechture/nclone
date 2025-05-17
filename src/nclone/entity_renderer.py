@@ -1,17 +1,20 @@
 import cairo
-import pygame
+import pyglet # Added
+from pyglet.image import ImageData # Added
 import math
 from . import render_utils
+from typing import Optional # Added for type hinting
 
 class EntityRenderer:
-    def __init__(self, sim, screen, adjust, width, height):
+    def __init__(self, sim, window, adjust, width, height): # screen -> window
         self.sim = sim
-        self.screen = screen
+        self.window = window # Store pyglet window
         self.adjust = adjust
         self.width = width
         self.height = height
-        self.entitydraw_surface = None
-        self.entitydraw_context = None
+        self.entitydraw_surface: Optional[cairo.ImageSurface] = None
+        self.entitydraw_context: Optional[cairo.Context] = None
+        self.entity_sprite: Optional[pyglet.sprite.Sprite] = None # For Pyglet
         self.cached_entity_adjust = None
 
     def update_dimensions(self, adjust, width, height):
@@ -19,39 +22,44 @@ class EntityRenderer:
         self.width = width
         self.height = height
 
-    def draw_entities(self, init: bool) -> pygame.Surface:
-        """Draws all entities onto a surface, ensuring it's cleared each frame.
+    def draw_entities(self, init: bool): # Return type None
+        """Draws all entities onto a Cairo surface, then to a Pyglet sprite.
+        The Cairo surface is cleared and redrawn each frame.
 
         Args:
             init: Boolean indicating if a full re-initialization of resources is needed.
-
-        Returns:
-            A pygame.Surface with the rendered entities.
         """
-        current_screen_width, current_screen_height = self.screen.get_size()
+        # Use window dimensions for the Cairo surface.
+        target_cairo_width = int(self.window.width)
+        target_cairo_height = int(self.window.height)
 
-        recreate_surface = (
+        recreate_cairo_surface = (
             self.entitydraw_surface is None or
-            self.entitydraw_surface.get_width() != current_screen_width or
-            self.entitydraw_surface.get_height() != current_screen_height or
-            init or
-            self.cached_entity_adjust != self.adjust
+            self.entitydraw_surface.get_width() != target_cairo_width or
+            self.entitydraw_surface.get_height() != target_cairo_height or
+            init or # If init is true, force recreate
+            self.cached_entity_adjust != self.adjust # If zoom changed
         )
 
-        if recreate_surface:
+        if recreate_cairo_surface:
             self.entitydraw_surface = cairo.ImageSurface(
-                cairo.Format.ARGB32, current_screen_width, current_screen_height
+                cairo.Format.ARGB32, target_cairo_width, target_cairo_height
             )
             self.entitydraw_context = cairo.Context(self.entitydraw_surface)
-            self.cached_entity_adjust = self.adjust
+            self.cached_entity_adjust = self.adjust # Cache adjust factor used for this surface
+        
+        assert self.entitydraw_context is not None, "Cairo context not initialized for entities"
 
+        # Clear the Cairo surface (transparent)
         self.entitydraw_context.set_operator(cairo.Operator.CLEAR)
         self.entitydraw_context.paint()
-        self.entitydraw_context.set_operator(cairo.Operator.SOURCE)
+        # Set operator for drawing new content
+        self.entitydraw_context.set_operator(cairo.Operator.OVER) # Use OVER for alpha blending
         
-        context = self.entitydraw_context
+        context = self.entitydraw_context # Use the instance variable directly
 
-        context.set_source_rgb(*render_utils.TILECOLOR_RGB)
+        # --- Start of existing Cairo drawing logic (mostly unchanged) ---
+        context.set_source_rgb(*render_utils.TILECOLOR_RGB) # This seems to be for doors/segments
         context.set_line_width(render_utils.DOORWIDTH * self.adjust)
 
         active_segments = []
@@ -79,28 +87,47 @@ class EntityRenderer:
             if entity_type in render_utils.ENTITYCOLORS_RGB:
                  context.set_source_rgb(*render_utils.ENTITYCOLORS_RGB[entity_type])
             else:
-                 context.set_source_rgb(0,0,0) # Default black
+                 # Fallback color if not defined (e.g. black)
+                 context.set_source_rgb(0.0, 0.0, 0.0) 
 
             for entity in entities:
                 x = entity.xpos * self.adjust
                 y = entity.ypos * self.adjust
                 if hasattr(entity, "normal_x") and hasattr(entity, "normal_y"):
                     self._draw_oriented_entity(context, entity, x, y)
-                elif entity.type != 23:
+                elif entity.type != 23: # Type 23 has its own drawing logic
                     self._draw_physical_entity(context, entity, x, y)
                 
-                if entity.type == 23:
+                if entity.type == 23: # Specific drawing for type 23 (e.g. lasers)
                     self._draw_type_23_entity(context, entity, x, y)
 
+        # Draw Ninja
         context.set_source_rgb(*render_utils.NINJACOLOR_RGB)
         context.set_line_width(render_utils.NINJAWIDTH * self.adjust)
-        context.set_line_cap(cairo.LineCap.ROUND)
+        context.set_line_cap(cairo.LineCap.ROUND) # Keep ROUND for smoother limbs
         self._draw_ninja(context)
+        # --- End of existing Cairo drawing logic ---
 
+        # Convert Cairo surface to Pyglet sprite
+        self.entitydraw_surface.flush() # Ensure all drawing is done
         buffer = self.entitydraw_surface.get_data()
-        return pygame.image.frombuffer(buffer, 
-                                       (self.entitydraw_surface.get_width(), self.entitydraw_surface.get_height()), 
-                                       "BGRA")
+        width = self.entitydraw_surface.get_width()
+        height = self.entitydraw_surface.get_height()
+        pitch = self.entitydraw_surface.get_stride()
+
+        image_data = pyglet.image.ImageData(width, height, 'BGRA', bytes(buffer), -pitch)
+        
+        if self.entity_sprite is None:
+            self.entity_sprite = pyglet.sprite.Sprite(img=image_data)
+        else:
+            self.entity_sprite.image = image_data
+        
+        # Draw the sprite
+        if self.entity_sprite:
+            self.entity_sprite.x = 0 # Positioned by NSimRenderer's glTranslate
+            self.entity_sprite.y = 0
+            self.entity_sprite.draw()
+        # No return value
 
     def _draw_oriented_entity(self, context, entity, x, y):
         """Helper method to draw oriented entities"""

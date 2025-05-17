@@ -1,112 +1,127 @@
-import pygame
-from .nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
+import pyglet
+from pyglet.window import key
 import argparse
 import time
 import cProfile
 import pstats
 import io
 
-# Initialize pygame
-pygame.init()
-pygame.display.set_caption("N++ Environment Test")
+# Attempt to import BasicLevelNoGold from its new location
+try:
+    from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
+except ModuleNotFoundError:
+    from nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 
-# Argument parser
 parser = argparse.ArgumentParser(description="Test N++ environment with frametime logging.")
 parser.add_argument('--log-frametimes', action='store_true', help='Enable frametime logging to stdout.')
 parser.add_argument('--headless', action='store_true', help='Run in headless mode (no GUI).')
 parser.add_argument('--profile-frames', type=int, default=None, help='Run for a specific number of frames and then exit (for profiling).')
 args = parser.parse_args()
 
-# Create environment
 render_mode = 'rgb_array' if args.headless else 'human'
-debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
+debug_overlay_enabled = not args.headless
 env = BasicLevelNoGold(render_mode=render_mode,
                        enable_frame_stack=False, enable_debug_overlay=debug_overlay_enabled, eval_mode=False, seed=42)
 
-# Initialize clock for 60 FPS
-clock = None
-if not args.headless:
-    clock = pygame.time.Clock()
 running = True
 last_time = time.perf_counter()
-
-# Create a profiler object
 profiler = cProfile.Profile()
+frame_counter = 0
 
-# Main game loop
-# Wrap the game loop with profiler.enable() and profiler.disable()
-profiler.enable()
-frame_counter = 0  # Initialize frame counter
-while running:
-    # Handle pygame events
-    if not args.headless:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r:
-                    # Reset environment
-                    observation, info = env.reset()
-    else: # Minimal event handling for headless
-        for event in pygame.event.get(pygame.QUIT): # only process QUIT events
-            if event.type == pygame.QUIT:
-                running = False
+window = None
+keys = key.KeyStateHandler()
+observation, info = None, None
 
-    # Map keyboard inputs to environment actions
-    action = 0  # Default to NOOP
-    if not args.headless: # Only process keyboard inputs if not in headless mode
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_SPACE] or keys[pygame.K_UP]:
-            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                action = 4  # Jump + Left
-            elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                action = 5  # Jump + Right
-            else:
-                action = 3  # Jump only
+def get_action_from_keys(current_keys):
+    action = 0
+    if current_keys[key.SPACE] or current_keys[key.UP]:
+        if current_keys[key.A] or current_keys[key.LEFT]:
+            action = 4
+        elif current_keys[key.D] or current_keys[key.RIGHT]:
+            action = 5
         else:
-            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                action = 1  # Left
-            elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                action = 2  # Right
+            action = 3
     else:
-        # In headless mode, we can choose to send a default action or no action
-        # For now, let's send NOOP. This part could be modified if automated
-        # actions are desired in headless testing.
-        action = 0
+        if current_keys[key.A] or current_keys[key.LEFT]:
+            action = 1
+        elif current_keys[key.D] or current_keys[key.RIGHT]:
+            action = 2
+    return action
 
-    # Step the environment
-    observation, reward, terminated, truncated, info = env.step(action)
+def update_human_mode(dt):
+    global running, observation, info, frame_counter, last_time, window
+    if not running:
+        if window and hasattr(window, 'has_exit') and not window.has_exit:
+            window.close()
+        pyglet.app.exit()
+        return
 
-    # Reset if episode is done
+    action = get_action_from_keys(keys)
+    new_observation, reward, terminated, truncated, new_info = env.step(action)
+    observation, info = new_observation, new_info
+
     if terminated or truncated:
         observation, info = env.reset()
-
-    # Print observation shape
-    # print(observation['game_state'].shape)
-
-    # print(f'Gold collected: {env.get_gold_collected()}')
 
     current_time = time.perf_counter()
     if args.log_frametimes:
         frame_time_ms = (current_time - last_time) * 1000
         print(f"Frametime: {frame_time_ms:.2f} ms")
     last_time = current_time
-
-    # In headless mode, we don't call clock.tick() as it relies on pygame.display
-    if not args.headless and clock:
-        clock.tick(60)
-
+    
     frame_counter += 1
     if args.profile_frames is not None and frame_counter >= args.profile_frames:
         running = False
 
-profiler.disable()
+profiler.enable()
 
-# Cleanup
-pygame.quit()
+if args.headless:
+    observation, info = env.reset()
+    while running:
+        action = 0
+        new_observation, reward, terminated, truncated, new_info = env.step(action)
+        observation, info = new_observation, new_info
+
+        if terminated or truncated:
+            observation, info = env.reset()
+
+        current_time = time.perf_counter()
+        if args.log_frametimes:
+            frame_time_ms = (current_time - last_time) * 1000
+            print(f"Frametime: {frame_time_ms:.2f} ms")
+        last_time = current_time
+
+        frame_counter += 1
+        if args.profile_frames is not None and frame_counter >= args.profile_frames:
+            running = False
+else:
+    observation, info = env.reset()
+    if hasattr(env, 'sim_renderer') and hasattr(env.sim_renderer, 'window') and env.sim_renderer.window is not None:
+        window = env.sim_renderer.window
+        window.push_handlers(keys)
+
+        @window.event
+        def on_key_press(symbol, modifiers):
+            global observation, info, running
+            if symbol == key.R:
+                observation, info = env.reset()
+            if symbol == key.ESCAPE:
+                running = False
+        
+        @window.event
+        def on_close():
+            global running
+            running = False
+
+        pyglet.clock.schedule_interval(update_human_mode, 1/60.0)
+        pyglet.app.run()
+    else:
+        print("Error: Could not get Pyglet window from environment. Human mode needs NSimRenderer to expose its window.")
+        running = False
+
+profiler.disable()
 env.close()
 
-# Process and print profiling stats
 with open('profiling_stats.txt', 'w') as f:
     ps = pstats.Stats(profiler, stream=f).sort_stats('cumulative')
     ps.print_stats()
