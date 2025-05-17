@@ -29,15 +29,15 @@ class EntityRenderer:
         """
         if init or self.entitydraw_surface is None:
             self.entitydraw_surface = cairo.ImageSurface(
-                cairo.Format.RGB24, *self.screen.get_size())
+                cairo.Format.ARGB32, *self.screen.get_size())
             self.entitydraw_context = cairo.Context(self.entitydraw_surface)
+            self.entitydraw_context.set_operator(cairo.Operator.CLEAR)
+            self.entitydraw_context.paint()
+            self.entitydraw_context.set_operator(cairo.Operator.SOURCE) # Reset operator
         
         context = self.entitydraw_context
 
-        # Use pre-calculated RGB values
-        context.set_source_rgb(*render_utils.BGCOLOR_RGB)
-        context.rectangle(0, 0, self.width, self.height)
-        context.fill()
+        # Background is now handled by the main renderer
 
         # Batch render segments
         context.set_source_rgb(*render_utils.TILECOLOR_RGB)
