@@ -1,10 +1,17 @@
 import pygame
 import numpy as np
 from nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
+import argparse
+import time
 
 # Initialize pygame
 pygame.init()
 pygame.display.set_caption("N++ Environment Test")
+
+# Argument parser
+parser = argparse.ArgumentParser(description="Test N++ environment with frametime logging.")
+parser.add_argument('--log-frametimes', action='store_true', help='Enable frametime logging to stdout.')
+args = parser.parse_args()
 
 # Create environment
 env = BasicLevelNoGold(render_mode='human',
@@ -13,6 +20,7 @@ env = BasicLevelNoGold(render_mode='human',
 # Initialize clock for 60 FPS
 clock = pygame.time.Clock()
 running = True
+last_time = time.perf_counter()
 
 # Main game loop
 while running:
@@ -56,7 +64,11 @@ while running:
     # print(f'Gold collected: {env.get_gold_collected()}')
 
     # Maintain 60 FPS
-    # clock.tick(120)
+    current_time = time.perf_counter()
+    if args.log_frametimes:
+        frame_time_ms = (current_time - last_time) * 1000
+        print(f"Frametime: {frame_time_ms:.2f} ms")
+    last_time = current_time
 
 # Cleanup
 pygame.quit()
