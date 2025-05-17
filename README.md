@@ -43,7 +43,7 @@
 To test the environment and see the simulation in action, you can run the `test_environment.py` script:
 
 ```bash
-python nclone/test_environment.py
+PYTHONPATH=.. python -m nclone.test_environment
 ```
 
 This script initializes the `BasicLevelNoGold` environment in human-render mode, allowing you to control the ninja using keyboard inputs:
