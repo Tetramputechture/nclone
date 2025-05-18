@@ -3,6 +3,7 @@
 #include "sim_config.hpp"
 #include "physics/grid_segment_linear.hpp"
 #include "physics/grid_segment_circular.hpp"
+#include "utils.hpp"
 
 #include <unordered_map>
 #include <vector>
@@ -20,21 +21,14 @@
 class Entity;
 class Ninja;
 
+using CellCoord = std::pair<int, int>;
+
 class Simulation
 {
 public:
   // Grid data structures
-  using CellCoord = std::pair<int, int>;
   using SegmentList = std::vector<std::shared_ptr<Segment>>;
   using EntityList = std::vector<std::shared_ptr<Entity>>;
-
-  struct CellCoordHash
-  {
-    std::size_t operator()(const CellCoord &coord) const
-    {
-      return std::hash<int>()(coord.first) ^ (std::hash<int>()(coord.second) << 1);
-    }
-  };
 
   // Tile map constants
   static const std::unordered_map<int, std::array<int, 12>> TILE_GRID_EDGE_MAP;
@@ -50,7 +44,7 @@ public:
   void reset();
 
   // Main simulation update
-  void tick(float horInput, int jumpInput);
+  void tick(int horInput, int jumpInput);
 
   // Public accessors
   const Ninja *getNinja() const { return ninja.get(); }
@@ -79,8 +73,7 @@ public:
   bool hasVerticalEdge(const CellCoord &cell) const { return verGridEdgeDic.at(cell) != 0; }
 
   // Map data accessors
-  uint8_t getMapData(size_t index) const { return mapData[index]; }
-  const std::vector<uint8_t> &getMapData() const { return mapData; }
+  uint8_t getTileAt(int x, int y) const { return tileDic.at({x, y}); }
 
   // Add these accessor methods
   void incrementVerGridEdge(const std::pair<int, int> &edge, int amount) { verGridEdgeDic[edge] += amount; }
@@ -90,18 +83,15 @@ public:
   EntityList getEntitiesInRadius(float x, float y, float radius) const;
   SegmentList getSegmentsInRegion(float x1, float y1, float x2, float y2) const;
 
+  // Add tile dictionary accessor
+  const TileDictionary &getTileDic() const { return tileDic; }
+
 private:
   // Internal map loading methods
   void resetMapEntityData();
   void resetMapTileData();
   void loadMapTiles();
   void loadMapEntities();
-
-  // Helper methods
-  void initializeGridEdges();
-  void processGridEdges(const CellCoord &coord, int tileId);
-  void processSegments(const CellCoord &coord, int tileId);
-  void createOrthogonalSegments();
 
   // State variables
   int frame;

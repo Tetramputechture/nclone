@@ -3,16 +3,17 @@
 #include "entities/entity.hpp"
 #include <SFML/Graphics.hpp>
 
-SimWrapper::SimWrapper(bool enableDebugOverlay, bool basicSim, bool fullExport, float tolerance, bool enableAnim, bool logData)
-    : simConfig(basicSim, fullExport, tolerance, enableAnim, logData)
+SimWrapper::SimWrapper(bool enableDebugOverlay, bool basicSim, bool fullExport, float tolerance, bool enableAnim, bool logData, const std::string &renderMode)
+    : simConfig(basicSim, fullExport, tolerance, enableAnim, logData), renderMode(renderMode)
 {
   sim = std::make_unique<Simulation>(simConfig);
-  renderer = std::make_unique<Renderer>(sim.get(), enableDebugOverlay);
+  renderer = std::make_unique<Renderer>(sim.get(), enableDebugOverlay, renderMode);
 }
 
 void SimWrapper::loadMap(const std::vector<uint8_t> &mapData)
 {
   sim->load(mapData);
+  renderer->loadTileMap(sim->getTileDic());
 }
 
 void SimWrapper::reset()
@@ -20,7 +21,7 @@ void SimWrapper::reset()
   sim->reset();
 }
 
-void SimWrapper::tick(float horInput, int jumpInput)
+void SimWrapper::tick(int horInput, int jumpInput)
 {
   sim->tick(horInput, jumpInput);
 }
@@ -70,53 +71,6 @@ int SimWrapper::getDoorsOpened() const
 int SimWrapper::getSimFrame() const
 {
   return sim->getFrame();
-}
-
-void SimWrapper::renderToBuffer(std::vector<float> &buffer)
-{
-  // Create render texture for off-screen rendering
-  sf::RenderTexture renderTexture;
-  auto size = renderer->getWindow().getSize();
-  if (!renderTexture.resize({size.x, size.y}))
-  {
-    throw std::runtime_error("Failed to create render texture");
-  }
-
-  // Clear with background color
-  renderTexture.clear(sf::Color(0xcb, 0xca, 0xd0)); // BG_COLOR from renderer
-
-  // Draw the current frame to the texture
-  auto &window = renderer->getWindow();
-  renderer->draw(sim->getFrame() <= 1);
-
-  // Capture window contents
-  sf::Texture windowTexture;
-  if (!windowTexture.resize({window.getSize().x, window.getSize().y}))
-  {
-    throw std::runtime_error("Failed to create window texture");
-  }
-  windowTexture.update(window);
-
-  // Copy window contents to render texture
-  sf::Sprite windowSprite(windowTexture);
-  renderTexture.draw(windowSprite);
-  renderTexture.display();
-
-  // Get image from texture
-  sf::Image image = renderTexture.getTexture().copyToImage();
-
-  // Convert to float array [0,1]
-  auto imageSize = image.getSize();
-  buffer.resize(imageSize.x * imageSize.y * 3);
-
-  const uint8_t *pixels = image.getPixelsPtr();
-  for (size_t i = 0; i < imageSize.x * imageSize.y * 4; i += 4)
-  {
-    size_t j = (i / 4) * 3;
-    buffer[j] = pixels[i] / 255.0f;         // R
-    buffer[j + 1] = pixels[i + 1] / 255.0f; // G
-    buffer[j + 2] = pixels[i + 2] / 255.0f; // B
-  }
 }
 
 std::vector<float> SimWrapper::getNinjaState() const
@@ -269,4 +223,114 @@ std::pair<float, float> SimWrapper::getExitDoorPosition() const
     return {exitDoor->getXPos(), exitDoor->getYPos()};
   }
   return {0.0f, 0.0f}; // Return origin if no exit door exists
+}
+
+bool SimWrapper::isWindowOpen() const
+{
+  if (renderMode == "human" && renderer)
+  {
+    return renderer->getWindow().isOpen();
+  }
+  // If not in human-render mode, or renderer isn't initialized,
+  // consider the "window" (conceptually) always open to not break the loop.
+  return true;
+}
+
+void SimWrapper::render(std::vector<float> &fullBuffer, std::vector<float> &playerViewBuffer,
+                        int fullViewWidth, int fullViewHeight,
+                        int playerViewWidth, int playerViewHeight)
+{
+  // Create render texture for off-screen rendering
+  sf::RenderTexture renderTexture;
+  auto size = renderer->getWindow().getSize();
+  if (!renderTexture.resize({size.x, size.y}))
+  {
+    throw std::runtime_error("Failed to create render texture");
+  }
+
+  // Clear with background color
+  renderTexture.clear(sf::Color(0xcb, 0xca, 0xd0)); // BG_COLOR
+
+  // Draw the current frame to the texture
+  auto &window = renderer->getWindow();
+  renderer->draw(sim->getFrame() <= 1);
+
+  // Capture window contents
+  sf::Texture windowTexture;
+  if (!windowTexture.resize({window.getSize().x, window.getSize().y}))
+  {
+    throw std::runtime_error("Failed to create window texture");
+  }
+  windowTexture.update(window);
+
+  // First, render the full view with downsampling
+  {
+    // Create a render texture for the downsampled view
+    sf::RenderTexture downsampleTexture;
+    if (!downsampleTexture.resize({static_cast<unsigned int>(fullViewWidth),
+                                   static_cast<unsigned int>(fullViewHeight)}))
+    {
+      throw std::runtime_error("Failed to create downsample texture");
+    }
+
+    // Calculate scale factors
+    float scaleX = static_cast<float>(fullViewWidth) / size.x;
+    float scaleY = static_cast<float>(fullViewHeight) / size.y;
+
+    // Create sprite with original texture and set scale for Lanczos downsampling
+    sf::Sprite windowSprite(windowTexture);
+    windowSprite.setScale(sf::Vector2f(scaleX, scaleY));
+
+    // Draw to downsample texture
+    downsampleTexture.clear(sf::Color(0xcb, 0xca, 0xd0));
+    downsampleTexture.draw(windowSprite);
+    downsampleTexture.display();
+
+    // Get the downsampled image
+    sf::Image downsampledImage = downsampleTexture.getTexture().copyToImage();
+
+    // Convert to float array [0,1]
+    fullBuffer.resize(fullViewWidth * fullViewHeight * 3);
+    const uint8_t *pixels = downsampledImage.getPixelsPtr();
+    for (size_t i = 0; i < fullViewWidth * fullViewHeight * 4; i += 4)
+    {
+      size_t j = (i / 4) * 3;
+      fullBuffer[j] = pixels[i] / 255.0f;         // R
+      fullBuffer[j + 1] = pixels[i + 1] / 255.0f; // G
+      fullBuffer[j + 2] = pixels[i + 2] / 255.0f; // B
+    }
+  }
+
+  // Then, render the player view
+  {
+    // Get ninja position
+    auto ninja = sim->getNinja();
+    float ninjaX = ninja->getXPos();
+    float ninjaY = ninja->getYPos();
+
+    // Create a view for the cropped region
+    sf::View croppedView;
+    croppedView.setCenter({ninjaX, ninjaY});
+    croppedView.setSize({static_cast<float>(playerViewWidth), static_cast<float>(playerViewHeight)});
+
+    // Set the view and draw
+    renderTexture.setView(croppedView);
+    sf::Sprite windowSprite(windowTexture);
+    renderTexture.draw(windowSprite);
+    renderTexture.display();
+
+    // Get the final image
+    sf::Image finalImage = renderTexture.getTexture().copyToImage();
+
+    // Convert to float array [0,1]
+    playerViewBuffer.resize(playerViewWidth * playerViewHeight * 3);
+    const uint8_t *pixels = finalImage.getPixelsPtr();
+    for (size_t i = 0; i < playerViewWidth * playerViewHeight * 4; i += 4)
+    {
+      size_t j = (i / 4) * 3;
+      playerViewBuffer[j] = pixels[i] / 255.0f;         // R
+      playerViewBuffer[j + 1] = pixels[i + 1] / 255.0f; // G
+      playerViewBuffer[j + 2] = pixels[i + 2] / 255.0f; // B
+    }
+  }
 }

@@ -40,8 +40,12 @@ void Ninja::loadNinjaAnimation()
   }
 }
 
-Ninja::Ninja()
+Ninja::Ninja(float xPos, float yPos)
 {
+  xpos = xPos;
+  ypos = yPos;
+  xposOld = xPos;
+  yposOld = yPos;
   initializeBones();
   ninjaAnimMode = std::filesystem::exists(ANIM_DATA_FILE);
   if (ninjaAnimMode)
@@ -544,9 +548,9 @@ void Ninja::updateGraphics()
     {
       animState = 1;
       animRate = std::abs(yspeed * floorNormalizedX - xspeed * floorNormalizedY);
-      if (horInput != 0.0f)
+      if (horInput != 0)
       {
-        facing = horInput > 0.0f ? 1 : -1;
+        facing = horInput > 0 ? 1 : -1;
       }
     }
     if (state == 2)

@@ -237,13 +237,15 @@ void Simulation::loadMapTiles()
     tileDic[{43, y}] = 1;
   }
 
-  // Process each tile
+  // This loop makes the inventory of grid edges and orthogonal linear segments,
+  // and initiates non-orthogonal linear segments and circular segments.
   for (const auto &[coord, tileId] : tileDic)
   {
     auto [xcoord, ycoord] = coord;
     int xtl = xcoord * 24;
     int ytl = ycoord * 24;
 
+    // Assign every grid edge and orthogonal linear segment to the dictionaries
     auto gridEdgeIter = TILE_GRID_EDGE_MAP.find(tileId);
     auto segmentOrthoIter = TILE_SEGMENT_ORTHO_MAP.find(tileId);
 
@@ -275,7 +277,7 @@ void Simulation::loadMapTiles()
       }
     }
 
-    // Process diagonal segments
+    // Initiate non-orthogonal linear and circular segments
     auto diagIter = TILE_SEGMENT_DIAG_MAP.find(tileId);
     if (diagIter != TILE_SEGMENT_DIAG_MAP.end())
     {
@@ -285,7 +287,6 @@ void Simulation::loadMapTiles()
           std::make_pair(xtl + p2.first, ytl + p2.second)));
     }
 
-    // Process circular segments
     auto circIter = TILE_SEGMENT_CIRCULAR_MAP.find(tileId);
     if (circIter != TILE_SEGMENT_CIRCULAR_MAP.end())
     {
@@ -296,7 +297,9 @@ void Simulation::loadMapTiles()
     }
   }
 
-  // Create segments from horizontal segment dictionary
+  // Initiate segments from the dictionaries of orthogonal linear segments.
+  // Note that two segments of the same position but opposite orientation cancel each other,
+  // and no segment is initiated.
   for (const auto &[coord, state] : horSegmentDic)
   {
     if (state)
@@ -317,7 +320,6 @@ void Simulation::loadMapTiles()
     }
   }
 
-  // Create segments from vertical segment dictionary
   for (const auto &[coord, state] : verSegmentDic)
   {
     if (state)
@@ -342,29 +344,28 @@ void Simulation::loadMapTiles()
 void Simulation::loadMapEntities()
 {
   // Create player ninja
-  ninja = std::make_unique<Ninja>();
-
-  // Force map data[1233] to be -1 if not valid
-  if (mapData[1233] != -1 && mapData[1233] != 1)
-  {
-    mapData[1233] = -1;
-  }
+  float xPos = mapData[1231] * 6;
+  float yPos = mapData[1232] * 6;
+  ninja = std::make_unique<Ninja>(xPos, yPos);
 
   // Reset entity counts
   std::fill(Entity::entityCounts.begin(), Entity::entityCounts.end(), 0);
 
   // Process entity data
-  size_t index = 1234;
+  size_t index = 1235;
   size_t exitDoorCount = mapData[1156];
 
   while (index < mapData.size())
   {
     int entityType = mapData[index];
     if (entityType == 0)
-      break;
+    {
+      index += 5;
+      continue;
+    }
 
-    float xpos = static_cast<float>(mapData[index + 1] + (mapData[index + 2] << 8)) / 10.0f;
-    float ypos = static_cast<float>(mapData[index + 3] + (mapData[index + 4] << 8)) / 10.0f;
+    float xpos = static_cast<float>(mapData[index + 1]);
+    float ypos = static_cast<float>(mapData[index + 2]);
     int orientation = mapData[index + 3];
     int mode = mapData[index + 4];
 
@@ -438,11 +439,8 @@ std::shared_ptr<Entity> Simulation::createEntity(int entityType, float xpos, flo
       entity = std::static_pointer_cast<Entity>(std::make_shared<DroneZap>(this, xpos, ypos, orientation, mode));
     }
     break;
-  case 15: // Drone Chaser
-    if (!simConfig.basicSim)
-    {
-      entity = std::static_pointer_cast<Entity>(std::make_shared<DroneChaser>(this, xpos, ypos, orientation, mode));
-    }
+  case 15: // Drone Chaser - Commented out in Python
+    // Intentionally not implemented to match Python
     break;
   case 17: // Bounce Block
     entity = std::static_pointer_cast<Entity>(std::make_shared<BounceBlock>(this, xpos, ypos));
@@ -453,11 +451,8 @@ std::shared_ptr<Entity> Simulation::createEntity(int entityType, float xpos, flo
   case 21: // Toggle Mine (toggled state)
     entity = std::static_pointer_cast<Entity>(std::make_shared<ToggleMine>(this, xpos, ypos, 1));
     break;
-  case 23: // Laser
-    if (!simConfig.basicSim)
-    {
-      entity = std::static_pointer_cast<Entity>(std::make_shared<Laser>(this, xpos, ypos, orientation, mode));
-    }
+  case 23: // Laser - Commented out in Python
+    // Intentionally not implemented to match Python
     break;
   case 24: // Boost Pad
     entity = std::static_pointer_cast<Entity>(std::make_shared<BoostPad>(this, xpos, ypos));
@@ -511,7 +506,7 @@ void Simulation::removeEntity(std::shared_ptr<Entity> entity)
   cellList.erase(std::remove(cellList.begin(), cellList.end(), entity), cellList.end());
 }
 
-void Simulation::tick(float horInput, int jumpInput)
+void Simulation::tick(int horInput, int jumpInput)
 {
   // Increment the current frame
   frame++;

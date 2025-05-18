@@ -97,7 +97,7 @@ public:
   int doorsOpened = 0;
 
   // Input state
-  float horInput = 0.0f;
+  int horInput = 0;
   int jumpInput = 0;
 
   // Entity type for collision handling
@@ -115,7 +115,7 @@ public:
   std::vector<float> yposLog;
 
   // Animation data
-  static constexpr const char *ANIM_DATA_FILE = "anim_data_line_new.txt.bin";
+  static constexpr const char *ANIM_DATA_FILE = "../anim_data_line_new.txt.bin";
   static std::vector<std::array<std::pair<float, float>, 13>> cachedNinjaAnimation;
   static void loadNinjaAnimation();
   bool ninjaAnimMode = false;
@@ -133,7 +133,7 @@ public:
   static const std::unordered_map<int, DanceRange> DANCE_DIC;
 
   // Methods
-  Ninja();
+  Ninja(float xPos = 0.0f, float yPos = 0.0f);
   void integrate();
   void preCollision();
   void collideVsObjects(Simulation &sim);
@@ -153,7 +153,7 @@ public:
   bool hasDied() const;
 
   // Getters and setters
-  void setHorInput(float input) { horInput = input; }
+  void setHorInput(int input) { horInput = input; }
   void setJumpInput(int input) { jumpInput = input; }
   void setAnimFrame(int frame) { animFrame = frame; }
   void setAnimState(int state) { animState = state; }

@@ -15,9 +15,7 @@ maps/
 *.pyc
 *.pyd
 *.pyo
-*.pyx
 *.so
-*.pyx
 
 # Build file from Cython
 nplay_headless_cpp.cpp

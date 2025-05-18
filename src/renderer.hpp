@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstdint>
 #include "simulation.hpp"
+#include "tilemap.hpp"
+#include "entity_renderer.hpp"
+#include "ninja_renderer.hpp"
 
 class Renderer
 {
@@ -20,7 +23,10 @@ public:
   static constexpr float PLATFORM_WIDTH = 3.0f;
 
   // Constructor
-  explicit Renderer(Simulation *sim, bool enableDebugOverlay = false);
+  explicit Renderer(Simulation *sim, bool enableDebugOverlay = false, std::string renderMode = "rgb_array");
+
+  // Load map tiles
+  void loadTileMap(const TileDictionary &tileDic);
 
   // Main drawing methods
   void draw(bool init = false, const std::unordered_map<std::string, float> *debugInfo = nullptr);
@@ -33,13 +39,9 @@ private:
   // Helper methods
   void updateScreenSize();
   void updateTileOffsets();
-  void drawTiles(bool init = false, const sf::Color &tileColor = sf::Color(0x79, 0x79, 0x88));
-  void drawEntities(bool init = false);
   void drawDebugOverlay(const std::unordered_map<std::string, float> *debugInfo);
   void drawExplorationGrid(const std::unordered_map<std::string, float> *debugInfo);
   sf::Color getAreaColor(const sf::Color &baseColor, int index, int maxIndex, uint8_t opacity = 192) const;
-  void drawComplexTile(int tileType, float x, float y, float tileSize);
-  void drawNinja();
 
   // Member variables
   Simulation *sim;
@@ -50,26 +52,32 @@ private:
   float tileXOffset = 0.0f;
   float tileYOffset = 0.0f;
   bool enableDebugOverlay;
+  std::string renderMode;
+
+  // Font for debug overlay
+  sf::Font debugFont;
+  sf::Text debugText; // For optimized debug text drawing
+
+  // For optimized exploration grid drawing
+  sf::RenderTexture explorationGridTexture;
+  sf::Sprite explorationGridSprite;
+
+  // TileMap, EntityRenderer and NinjaRenderer members
+  TileMap tileMap;
+  EntityRenderer entityRenderer;
+  NinjaRenderer ninjaRenderer;
 
   // Static color constants
   static const sf::Color BG_COLOR;
   static const sf::Color TILE_COLOR;
   static const sf::Color NINJA_COLOR;
-  static const std::unordered_map<int, sf::Color> ENTITY_COLORS;
-
-  // Exploration grid colors
   static const sf::Color CELL_COLOR;
   static const sf::Color CELL_VISITED_COLOR;
   static const sf::Color GRID_CELL_COLOR;
-
-  // Area base colors
   static const sf::Color AREA_4X4_COLOR;
   static const sf::Color AREA_8X8_COLOR;
   static const sf::Color AREA_16X16_COLOR;
 
   // Ninja limb connections for drawing
   static const std::array<std::pair<int, int>, 11> LIMBS;
-
-  // Font for debug overlay
-  sf::Font debugFont;
 };

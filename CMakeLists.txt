@@ -28,6 +28,9 @@ add_executable(nclone-cpp
     src/ninja.cpp
     src/sim_config.cpp
     src/sim_wrapper.cpp
+    src/tilemap.cpp
+    src/entity_renderer.cpp
+    src/ninja_renderer.cpp
 
     # Physics files
     src/physics/physics.cpp

@@ -6,6 +6,7 @@ from libcpp.vector cimport vector
 from libcpp.utility cimport pair
 from libcpp cimport bool
 from libcpp.memory cimport unique_ptr
+from libcpp.string cimport string
 import numpy as np
 cimport numpy as np
 
@@ -15,7 +16,7 @@ ctypedef unsigned char uchar
 # Declare the C++ class
 cdef extern from "sim_wrapper.hpp":
     cdef cppclass SimWrapper:
-        SimWrapper(bool, bool, bool, float, bool, bool) except +
+        SimWrapper(bool, bool, bool, float, bool, bool, string) except +
         void loadMap(vector[uchar]&)
         void reset()
         void tick(float, int)
@@ -35,14 +36,15 @@ cdef extern from "sim_wrapper.hpp":
         vector[float] getNinjaState()
         vector[float] getEntityStates(bool)
         vector[float] getStateVector(bool)
-        void renderToBuffer(vector[float]&)
+        void render(vector[float]&, vector[float]&, int, int, int, int)
+        bool isWindowOpen()
 
 # Python wrapper class
 cdef class NPlayHeadlessCpp:
     cdef unique_ptr[SimWrapper] _sim
 
-    def __cinit__(self, bool enable_debug_overlay=False, bool basic_sim=False, bool full_export=False, float tolerance=1.0, bool enable_anim=True, bool log_data=False):
-        self._sim.reset(new SimWrapper(enable_debug_overlay, basic_sim, full_export, tolerance, enable_anim, log_data))
+    def __cinit__(self, bool enable_debug_overlay=False, bool basic_sim=False, bool full_export=False, float tolerance=1.0, bool enable_anim=True, bool log_data=False, str render_mode="rgb_array"):
+        self._sim.reset(new SimWrapper(enable_debug_overlay, basic_sim, full_export, tolerance, enable_anim, log_data, render_mode.encode('utf-8')))
 
     def load_map(self, bytes map_data):
         cdef vector[uchar] cpp_map_data
@@ -108,13 +110,29 @@ cdef class NPlayHeadlessCpp:
         return np.array(state, dtype=np.float32)
 
     def render(self):
-        cdef vector[float] buffer
-        self._sim.get().renderToBuffer(buffer)
+        """Render both the global view and player-centered view of the game.
         
-        # Convert to numpy array with shape (height, width, 3)
-        cdef int width = 1056  # These should match your SFML window size
-        cdef int height = 600
-        return np.array(buffer, dtype=np.float32).reshape(height, width, 3)
+        Returns:
+            tuple: (global_view, player_view) where:
+                - global_view: numpy array of shape (RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 3)
+                - player_view: numpy array of shape (84, 84, 3)
+        """
+        cdef vector[float] global_buffer
+        cdef vector[float] player_buffer
+        cdef int full_width = 176  # RENDERED_VIEW_WIDTH
+        cdef int full_height = 100  # RENDERED_VIEW_HEIGHT
+        cdef int player_width = 84
+        cdef int player_height = 84
+
+        self._sim.get().render(global_buffer, player_buffer, 
+                              full_width, full_height,
+                              player_width, player_height)
+        
+        # Convert to numpy arrays with appropriate shapes
+        global_view = np.array(global_buffer, dtype=np.float32).reshape(full_height, full_width, 3)
+        player_view = np.array(player_buffer, dtype=np.float32).reshape(player_height, player_width, 3)
+        
+        return global_view, player_view
 
     def exit_switch_activated(self):
         """Return whether the exit switch is activated."""
@@ -128,4 +146,8 @@ cdef class NPlayHeadlessCpp:
     def exit_door_position(self):
         """Return the position of the exit door."""
         cdef pair[float, float] pos = self._sim.get().getExitDoorPosition()
-        return (pos.first, pos.second) 
+        return (pos.first, pos.second)
+
+    def is_window_open(self):
+        """Check if the SFML window is still open (if in human render mode)."""
+        return self._sim.get().isWindowOpen() 

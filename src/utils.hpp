@@ -2,6 +2,19 @@
 
 #include <utility>
 #include <cmath>
+#include <unordered_map>
+
+// Hash function for coordinate pairs
+struct CellCoordHash
+{
+  std::size_t operator()(const std::pair<int, int> &coord) const
+  {
+    return std::hash<int>()(coord.first) ^ (std::hash<int>()(coord.second) << 1);
+  }
+};
+
+// Type alias for tile dictionary
+using TileDictionary = std::unordered_map<std::pair<int, int>, int, CellCoordHash>;
 
 // Convert orientation (0-7) to a normalized vector
 inline std::pair<float, float> mapOrientationToVector(int orientation)
