@@ -89,7 +89,7 @@ while running:
     current_time = time.perf_counter()
     if args.log_frametimes:
         frame_time_ms = (current_time - last_time) * 1000
-        print(f"Frametime: {frame_time_ms:.2f} ms")
+        print("Frametime: {0:.2f} ms".format(frame_time_ms))
     last_time = current_time
 
     # In headless mode, we don't call clock.tick() as it relies on pygame.display
