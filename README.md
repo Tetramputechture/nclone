@@ -85,6 +85,54 @@ This command will launch 4 independent headless simulations, each running for 50
 Each simulation runs in its own process, allowing for parallel execution.
 
 
+
+## Reward Calculator
+This section provides verbose details about the reward calculation mechanism used in the `basic_level_no_gold` environment. The reward system is designed to encourage the agent to explore the level, complete objectives, and ultimately win the game. It is composed of three main components:
+
+1.  **Main Reward Calculator (`nclone_environments/basic_level_no_gold/reward_calculation/main_reward_calculator.py`)**
+    *   Orchestrates the overall reward calculation.
+    *   **Key Rewards/Penalties:**
+        *   `BASE_TERMINAL_REWARD` (1.0): Awarded when the player wins.
+        *   `DEATH_PENALTY` (-0.5): Applied if the player dies.
+        *   `GOLD_REWARD` (0.0): Currently set to 0, meaning no reward for collecting gold. (Focus is on level completion).
+        *   `DOOR_OPEN_REWARD` (0.01): Awarded for each door opened.
+    *   Integrates rewards from the Navigation and Exploration calculators.
+    *   Resets the Exploration calculator if a switch is activated or a door is opened, encouraging re-exploration of previously visited areas for the exit.
+
+2.  **Navigation Reward Calculator (`nclone_environments/basic_level_no_gold/reward_calculation/navigation_reward_calculator.py`)**
+    *   Focuses on rewarding progress towards game objectives.
+    *   **Key Features:**
+        *   **Distance Improvement:** Rewards the agent for getting closer to the current objective (switch or exit door). The reward is scaled by `DISTANCE_IMPROVEMENT_SCALE` (0.0001). A new closest distance must be achieved to get this reward.
+        *   `MIN_DISTANCE_THRESHOLD` (20.0 pixels): A threshold for being "very close" to an objective, used in potential calculation.
+        *   `SWITCH_ACTIVATION_REWARD` (0.5): A significant reward for activating the level switch.
+        *   **Potential-Based Reward Shaping:** Uses a potential function to provide denser rewards.
+            *   The potential is calculated based on the normalized distance to the current objective (switch before activation, exit after).
+            *   Scaled by `POTENTIAL_SCALE` (0.0005).
+            *   A small bonus is added to the potential if the agent is within `MIN_DISTANCE_THRESHOLD` of the objective.
+            *   The shaping reward is the difference between the current potential and the previous potential.
+        *   **Progress Estimation:** Includes a `get_progress_estimate` method that estimates how far the agent is through the level (0.0 to 1.0), splitting progress into pre-switch (0.0-0.5) and post-switch (0.5-1.0) phases.
+    *   Resets its internal state (closest distances, potential) at the start of each episode.
+
+3.  **Exploration Reward Calculator (`nclone_environments/basic_level_no_gold/reward_calculation/exploration_reward_calculator.py`)**
+    *   Encourages the agent to visit new areas of the level.
+    *   The level is treated as a grid of 44x25 cells, where each cell is 24x24 pixels.
+    *   **Multi-Scale Exploration:** Rewards are given for visiting new areas at four different scales:
+        *   Individual cells (24x24 pixels): `CELL_REWARD` (0.001)
+        *   4x4 cell areas (96x96 pixels): `AREA_4x4_REWARD` (0.001)
+        *   8x8 cell areas (192x192 pixels): `AREA_8x8_REWARD` (0.001)
+        *   16x16 cell areas (384x384 pixels): `AREA_16x16_REWARD` (0.001)
+    *   Maintains boolean matrices to track visited cells/areas for each scale.
+    *   Resets visited areas at the start of each new episode or when explicitly reset by the Main Reward Calculator (e.g., after switch activation).
+
+### How Rewards are Combined
+The `MainRewardCalculator` sums the rewards from:
+*   Game events (death, win, door open).
+*   Navigation progress and objective completion.
+*   Exploration of new areas.
+
+This multi-faceted approach aims to guide the agent towards successfully completing the level by balancing exploration with directed movement towards objectives.
+
+
 ## Troubleshooting
 
 ### `ModuleNotFoundError: No module named 'nclone'` or `No module named 'nclone.maps'`
