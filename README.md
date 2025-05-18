@@ -38,6 +38,14 @@
     ```
     This will install all dependencies listed in `pyproject.toml`, including Pygame, NumPy, and PyCairo.
 
+
+4.  **Verify the installation:**
+    After installation, you can verify that the package is correctly installed and the test environment can be found by running:
+    ```bash
+    python -m nclone.test_environment --help
+    ```
+    This command should print the help message for `test_environment.py`. If you see a `ModuleNotFoundError`, please refer to the Troubleshooting section below.
+
 ## Running the Simulation
 
 After installing the package as described above, you can run the simulation.
@@ -75,6 +83,25 @@ This command will launch 4 independent headless simulations, each running for 50
 *   `--num-steps`: Specifies the number of simulation steps each instance will run.
 
 Each simulation runs in its own process, allowing for parallel execution.
+
+
+## Troubleshooting
+
+### `ModuleNotFoundError: No module named 'nclone'` or `No module named 'nclone.maps'`
+
+If you encounter these errors when trying to run the simulation (e.g., `python -m nclone.test_environment`):
+
+1.  **Ensure you are in the correct directory:** Your terminal should be in the root of the `nclone` project directory (where `pyproject.toml` is located) when you run the installation command.
+2.  **Ensure your virtual environment is activated:** If you created one, make sure it's active.
+3.  **Perform a clean reinstallation:** Sometimes, previous build artifacts or installations can cause issues. Try the following:
+    *   Deactivate and remove your virtual environment (if applicable): `deactivate` (if active), then `rm -rf venv`.
+    *   Clean build artifacts: Remove `build/`, `dist/`, and `nclone.egg-info/` directories from the project root if they exist.
+    *   Uninstall any existing nclone package: `pip uninstall nclone` (you might need to run this multiple times if it reports 'not installed' but issues persist).
+    *   Re-create the virtual environment (see step 2 in Installation).
+    *   Re-install the package (see step 3 in Installation), preferably with `pip install -e .`.
+4.  **Check Python version:** Ensure you are using Python 3.9 or newer as specified in `pyproject.toml`.
+
+If problems persist, please open an issue in the repository.
 
 ## Project Structure (Key Files & Directories)
 
