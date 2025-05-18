@@ -3,6 +3,7 @@ import numpy as np
 from typing import Tuple, Optional
 import os
 import uuid
+from importlib import resources
 from .constants import (
     GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
     GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
@@ -30,8 +31,11 @@ class BasicLevelNoGold(BaseEnvironment):
     """
     metadata = {'render.modes': ['human', 'rgb_array']}
 
-    OFFICIAL_MAP_DATA_PATH = "../nclone/maps/official/"
-    EVAL_MODE_MAP_DATA_PATH = "../nclone/maps/eval/"
+    _official_maps_path_obj = resources.files('nclone.maps').joinpath('official')
+    OFFICIAL_MAP_DATA_PATH = str(_official_maps_path_obj) + os.sep if _official_maps_path_obj.is_dir() else str(_official_maps_path_obj)
+
+    _eval_maps_path_obj = resources.files('nclone.maps').joinpath('eval')
+    EVAL_MODE_MAP_DATA_PATH = str(_eval_maps_path_obj) + os.sep if _eval_maps_path_obj.is_dir() else str(_eval_maps_path_obj)
     RANDOM_MAP_CHANCE = 0.5
     LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH = True
 

@@ -21,7 +21,11 @@ dependencies = [
     "pycairo",
     "numpy",
     "imageio[ffmpeg]",
+    "opencv-python",
+    "albumentations",
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/SimonV42/nclone" 
+[tool.setuptools]
+package-dir = {"" = "."}
