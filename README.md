@@ -40,10 +40,11 @@
 
 ## Running the Simulation
 
+After installing the package as described above, you can run the simulation.
 To test the environment and see the simulation in action, you can run the `test_environment.py` script:
 
 ```bash
-PYTHONPATH=.. python -m nclone.test_environment
+python -m nclone.test_environment
 ```
 
 This script initializes the `BasicLevelNoGold` environment in human-render mode, allowing you to control the ninja using keyboard inputs:
@@ -53,7 +54,7 @@ This script initializes the `BasicLevelNoGold` environment in human-render mode,
 
 You can also run with frametime logging:
 ```bash
-python nclone/test_environment.py --log-frametimes
+python -m nclone.test_environment --log-frametimes
 ```
 
 ## Headless Mode
@@ -65,7 +66,7 @@ The environment can be initialized in `rgb_array` mode for headless operation, w
 To leverage multi-core processors for large-scale experiments or data collection, you can run multiple headless simulations concurrently using the `run_multiple_headless.py` script.
 
 ```bash
-PYTHONPATH=.. python -m nclone.run_multiple_headless --num-simulations 4 --num-steps 50000
+python -m nclone.run_multiple_headless --num-simulations 4 --num-steps 50000
 ```
 
 This command will launch 4 independent headless simulations, each running for 50,000 steps. You can adjust these parameters as needed:
