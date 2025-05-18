@@ -22,8 +22,14 @@ dist/
 
 *.egg-info/
 
+# Virtual environment
+venv/
+
 # maps
 maps/
 
 # benchmark
 benchmark/
+
+# Output files
+global_frame.png
