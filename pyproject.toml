@@ -23,6 +23,7 @@ dependencies = [
     "imageio[ffmpeg]",
     "opencv-python",
     "albumentations",
+    "gymnasium",
 ]
 
 [project.urls]
