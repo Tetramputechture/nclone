@@ -27,5 +27,6 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://github.com/SimonV42/nclone" 
-[tool.setuptools]
-package-dir = {"" = "."}
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nclone*"]
