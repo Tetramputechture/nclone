@@ -19,26 +19,47 @@ class GridSegmentLinear:
         self.oriented = oriented
         self.active = True
         self.type = "linear"
+        # Pre-calculate segment properties
+        self.px = self.x2 - self.x1
+        self.py = self.y2 - self.y1
+        # Avoid division by zero if p1 and p2 are the same
+        self.seg_lensq = self.px**2 + self.py**2
+        if self.seg_lensq == 0:
+            # Handle degenerate segment (p1 and p2 are the same)
+            # Default to a very small length to avoid division by zero,
+            # or handle as a special case in get_closest_point.
+            # For now, using a small epsilon.
+            self.seg_lensq = 1e-9
+            
+        # Cache the bounding box for faster quadtree operations
+        self._bounds_cache = (
+            min(self.x1, self.x2),
+            min(self.y1, self.y2),
+            max(self.x1, self.x2),
+            max(self.y1, self.y2)
+        )
 
     def get_closest_point(self, xpos, ypos):
         """Find the closest point on the segment from the given position.
         is_back_facing is false if the position is facing the segment's outter edge.
         """
-        px = self.x2 - self.x1
-        py = self.y2 - self.y1
         dx = xpos - self.x1
         dy = ypos - self.y1
-        seg_lensq = px**2 + py**2
-        u = (dx*px + dy*py)/seg_lensq
+        # seg_lensq is now pre-calculated and accessed via self.seg_lensq
+        u = (dx*self.px + dy*self.py)/self.seg_lensq
         u = max(u, 0)
         u = min(u, 1)
         # If u is between 0 and 1, position is closest to the line segment.
         # If u is exactly 0 or 1, position is closest to one of the two edges.
-        a = self.x1 + u*px
-        b = self.y1 + u*py
+        a = self.x1 + u*self.px
+        b = self.y1 + u*self.py
         # Note: can't be backfacing if segment belongs to a door.
-        is_back_facing = dy*px - dx*py < 0 and self.oriented
+        is_back_facing = dy*self.px - dx*self.py < 0 and self.oriented
         return is_back_facing, a, b
+
+    def get_bounds(self):
+        """Return the bounding box of the linear segment as (min_x, min_y, max_x, max_y)."""
+        return self._bounds_cache
 
     def intersect_with_ray(self, xpos, ypos, dx, dy, radius):
         """Return the time of intersection (as a fraction of a frame) for the collision
@@ -73,6 +94,14 @@ class GridSegmentCircular:
         self.active = True
         self.type = "circular"
         self.convex = convex
+        
+        # Cache the bounding box for faster quadtree operations
+        # The relevant points for the bounding box are the center and the two arc ends
+        min_x = min(self.xpos, self.p_hor[0])
+        max_x = max(self.xpos, self.p_hor[0])
+        min_y = min(self.ypos, self.p_ver[1])
+        max_y = max(self.ypos, self.p_ver[1])
+        self._bounds_cache = (min_x, min_y, max_x, max_y)
 
     def get_closest_point(self, xpos, ypos):
         """Find the closest point on the segment from the given position.
@@ -83,7 +112,19 @@ class GridSegmentCircular:
         is_back_facing = False
         # This is true if position is closer from arc than its edges.
         if dx * self.hor > 0 and dy * self.ver > 0:
-            dist = math.sqrt(dx**2 + dy**2)
+            dist_sq = dx**2 + dy**2
+            # Use cached sqrt if available, otherwise fall back to math.sqrt or ensure physics.get_cached_sqrt is used
+            dist = get_cached_sqrt(dist_sq) # Assuming get_cached_sqrt is available from physics import
+            if dist == 0: # Avoid division by zero if dist is zero
+                # Handle this case: maybe point is exactly at the center.
+                # For now, let's assume this means we use the edge points or a default.
+                # This behavior might need more refinement based on game logic.
+                if dx * self.hor > dy * self.ver:
+                    a, b = self.p_hor
+                else:
+                    a, b = self.p_ver
+                return is_back_facing, a, b
+
             a = self.xpos + self.radius*dx/dist
             b = self.ypos + self.radius*dy/dist
             is_back_facing = dist < self.radius if self.convex else dist > self.radius
@@ -93,6 +134,10 @@ class GridSegmentCircular:
             else:
                 a, b = self.p_ver
         return is_back_facing, a, b
+
+    def get_bounds(self):
+        """Return the bounding box of the circular segment as (min_x, min_y, max_x, max_y)."""
+        return self._bounds_cache
 
     def intersect_with_ray(self, xpos, ypos, dx, dy, radius):
         """Return the time of intersection (as a fraction of a frame) for the collision
@@ -275,6 +320,7 @@ class EntityExit(Entity):
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
         self.is_logical_collidable = True
+        self.switch_hit = False
 
     def logical_collision(self):
         """The ninja wins if it touches the exit door. The door is not interactable from the entity
@@ -305,6 +351,7 @@ class EntityExitSwitch(Entity):
             self.active = False
             # Add door to the entity grid so the ninja can touch it
             self.sim.grid_entity[self.parent.cell].append(self.parent)
+            self.parent.switch_hit = True  # Mark the switch as hit on the parent Exit door
             self.log_collision()
 
 
@@ -345,6 +392,8 @@ class EntityDoorBase(Entity):
                 sim.hor_grid_edge_dic[grid_edge] += 1
         sim.segment_dic[door_cell].append(self.segment)
         # Update position and cell so it corresponds to the switch and not the door.
+        if hasattr(sim, 'collision_quadtree') and sim.collision_quadtree is not None:
+            sim.collision_quadtree.insert(self.segment)
         self.xpos = self.sw_xpos
         self.ypos = self.sw_ypos
         self.cell = clamp_cell(math.floor(self.xpos / 24),

@@ -6,7 +6,7 @@ from nsim_renderer import NSimRenderer
 from map_generation.map_generator import generate_map, random_official_map
 from sim_config import SimConfig
 import random
-
+import argparse
 # Create a new map
 map_data = generate_map()
 

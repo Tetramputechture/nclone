@@ -1,5 +1,6 @@
 import math
 from itertools import product
+from .quadtree import Quadtree, Rectangle
 
 
 def clamp(n, a, b):
@@ -39,23 +40,20 @@ def gather_segments_from_region(sim, x1, y1, x2, y2):
     """Return a list containing all collidable segments from the cells in a
     rectangular region bounded by 2 points.
     """
-    # Cache key based on input coordinates
-    cache_key = (math.floor(x1/24), math.floor(y1/24),
-                 math.floor(x2/24), math.floor(y2/24))
+    # Ensure sim has a quadtree initialized
+    if not hasattr(sim, 'collision_quadtree') or sim.collision_quadtree is None:
+        # Fallback or error, ideally quadtree should always be present
+        print("Warning: sim.collision_quadtree not found in gather_segments_from_region")
+        return []
 
-    if cache_key in _cell_cache:
-        cells = _cell_cache[cache_key]
-    else:
-        cx1, cy1 = clamp_cell(math.floor(x1/24), math.floor(y1/24))
-        cx2, cy2 = clamp_cell(math.floor(x2/24), math.floor(y2/24))
-        cells = list(product(range(cx1, cx2 + 1), range(cy1, cy2 + 1)))
-        _cell_cache[cache_key] = cells
-
-    segment_list = []
-    for cell in cells:
-        segment_list.extend([segment for segment in sim.segment_dic[cell]
-                             if segment.active])
-    return segment_list
+    query_bounds_tuple = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    
+    # Get segments directly from quadtree - filter by active state in a single pass
+    # Avoid multiple iterations by combining the query and filter operations
+    candidate_segments = sim.collision_quadtree.query(query_bounds_tuple)
+    
+    # Using list comprehension is faster than filter() for this case
+    return [segment for segment in candidate_segments if segment.active]
 
 
 def gather_entities_from_neighbourhood(sim, xpos, ypos):
@@ -378,10 +376,25 @@ def overlap_circle_vs_segment(xpos, ypos, radius, px1, py1, px2, py2):
 
 # Clear cache periodically to prevent memory growth
 def clear_caches():
-    """Clear the caches periodically to prevent memory growth"""
-    _cell_cache.clear()
-    # Keep frequently used sqrt values
-    common_values = {0, 1, 2, 4, 9, 16, 25, 36, 49, 64, 81, 100}
-    _sqrt_cache.clear()
-    for v in common_values:
-        _sqrt_cache[v] = math.sqrt(v)
+    """Clear the quadtree and other caches to prevent memory growth.
+    Preserves commonly used values while removing infrequently used ones."""
+    
+    # Selectively clear the cell cache - keep frequently used values
+    # instead of clearing entirely
+    if len(_cell_cache) > 500:  # Only clear if cache has grown large
+        frequent_keys = set()
+        for i in range(15, 35):
+            for j in range(10, 20):
+                # Keep most common central cells (near player's likely position)
+                frequent_keys.add((i, j))
+                
+        _cell_cache_copy = {k: v for k, v in _cell_cache.items() if k in frequent_keys}
+        _cell_cache.clear()
+        _cell_cache.update(_cell_cache_copy)
+    
+    # Keep frequently used sqrt values but clear others if cache has grown too large
+    if len(_sqrt_cache) > 100:
+        common_values = {0, 1, 2, 4, 9, 16, 25, 36, 49, 64, 81, 100, 121, 144, 169, 196, 225, 256, 324, 400}
+        _sqrt_cache_copy = {k: v for k, v in _sqrt_cache.items() if k in common_values}
+        _sqrt_cache.clear()
+        _sqrt_cache.update(_sqrt_cache_copy)

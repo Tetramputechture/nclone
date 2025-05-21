@@ -114,7 +114,6 @@ class BasicLevelNoGold(BaseEnvironment):
 
         # Initialize map cycle index. We want our cycle to be deterministic, so we use a counter.
         self.map_cycle_length = len(os.listdir(self.OFFICIAL_MAP_DATA_PATH))
-        # self.map_cycle_length = 1
         self.map_cycle_index = 1
         self.mirror_map = False
         self.random_map_type = None
@@ -165,7 +164,7 @@ class BasicLevelNoGold(BaseEnvironment):
 
         # First, choose if we want to generate a random map, or load the next map in the cycle
         # We always want a random map for now, since we are testing the renderer
-        if self.rng.random() < 1:
+        if self.rng.random() < 0:
             self.current_map_name = f"random_map_{uuid.uuid4()}"
             self.random_map_type = self.rng.choice([
                 "SIMPLE_HORIZONTAL_NO_BACKTRACK",

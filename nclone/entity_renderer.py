@@ -51,45 +51,76 @@ class EntityRenderer:
         
         context = self.entitydraw_context
 
+        # --- Collect all active entities first ---
+        active_entities_list = []
+        for entity_list_for_type in self.sim.entity_dic.values():
+            for entity in entity_list_for_type:
+                if entity.active:
+                    active_entities_list.append(entity)
+
+        # --- Draw door segments from active door entities ---
+        # Door entities are types 5 (Regular), 6 (Locked), 7 (Trap)
+        # Their segments are drawn with TILECOLOR_RGB and DOORWIDTH
         context.set_source_rgb(*render_utils.TILECOLOR_RGB)
         context.set_line_width(render_utils.DOORWIDTH * self.adjust)
-
-        active_segments = []
-        for cell in self.sim.segment_dic.values():
-            for segment in cell:
+        
+        door_segments_coords_to_draw = []
+        for entity in active_entities_list:
+            if entity.type in [5, 6, 7] and hasattr(entity, 'segment'):
+                segment = entity.segment
+                # Draw if the entity's segment is active (door is closed)
+                # and it's a linear, non-oriented segment (original criteria for doors)
                 if segment.active and segment.type == "linear" and not segment.oriented:
-                    active_segments.append((segment.x1 * self.adjust, segment.y1 * self.adjust,
-                                            segment.x2 * self.adjust, segment.y2 * self.adjust))
-        if active_segments:
-            for x1, y1, x2, y2 in active_segments:
+                    door_segments_coords_to_draw.append(
+                        (segment.x1 * self.adjust, segment.y1 * self.adjust,
+                         segment.x2 * self.adjust, segment.y2 * self.adjust)
+                    )
+        
+        if door_segments_coords_to_draw:
+            for x1, y1, x2, y2 in door_segments_coords_to_draw:
                 context.move_to(x1, y1)
                 context.line_to(x2, y2)
             context.stroke()
 
+        # --- Group other active entities for drawing ---
         entity_groups = {}
-        for entity_list in self.sim.entity_dic.values():
-            for entity in entity_list:
-                if entity.active:
-                    if entity.type not in entity_groups:
-                        entity_groups[entity.type] = []
-                    entity_groups[entity.type].append(entity)
+        for entity in active_entities_list:
+            # Skip door types as their visual representation (segments) is already drawn
+            if entity.type in [5, 6, 7]:
+                continue
+
+            if entity.type not in entity_groups:
+                entity_groups[entity.type] = []
+            entity_groups[entity.type].append(entity)
         
-        context.set_line_width(render_utils.PLATFORMWIDTH * self.adjust)
-        for entity_type, entities in entity_groups.items():
+        # --- Draw grouped entities (excluding doors) ---
+        context.set_line_width(render_utils.PLATFORMWIDTH * self.adjust) # Default line width for other entities
+        for entity_type, entities_in_group in entity_groups.items():
+            # Set color based on entity_type
             if entity_type in render_utils.ENTITYCOLORS_RGB:
                  context.set_source_rgb(*render_utils.ENTITYCOLORS_RGB[entity_type])
             else:
-                 context.set_source_rgb(0,0,0) # Default black
+                 context.set_source_rgb(0,0,0) # Default to black if color not specified
 
-            for entity in entities:
+            for entity in entities_in_group:
                 x = entity.xpos * self.adjust
                 y = entity.ypos * self.adjust
+
+                # Special coloring for EntityExit (type 3) when its switch is hit
+                if entity.type == 3 and hasattr(entity, 'switch_hit') and entity.switch_hit:
+                    context.set_source_rgb(0, 0, 0.5)  # Dark Blue
+                elif entity_type in render_utils.ENTITYCOLORS_RGB: # Reset to default color
+                    context.set_source_rgb(*render_utils.ENTITYCOLORS_RGB[entity_type])
+                else: # Reset to default black for types not in ENTITYCOLORS_RGB
+                    context.set_source_rgb(0,0,0)
+
+                # Draw entity based on its properties/type
                 if hasattr(entity, "normal_x") and hasattr(entity, "normal_y"):
                     self._draw_oriented_entity(context, entity, x, y)
-                elif entity.type != 23:
+                elif entity.type != 23: # Type 23 has a special drawing method
                     self._draw_physical_entity(context, entity, x, y)
                 
-                if entity.type == 23:
+                if entity.type == 23: # Draw type 23 entities
                     self._draw_type_23_entity(context, entity, x, y)
 
         context.set_source_rgb(*render_utils.NINJACOLOR_RGB)

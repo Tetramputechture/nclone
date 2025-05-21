@@ -3,12 +3,18 @@ import numpy as np
 from . import render_utils
 
 class DebugOverlayRenderer:
-    def __init__(self, screen, adjust, tile_x_offset, tile_y_offset):
+    def __init__(self, sim, screen, adjust, tile_x_offset, tile_y_offset):
+        self.sim = sim
         self.screen = screen
         self.adjust = adjust
         self.tile_x_offset = tile_x_offset
         self.tile_y_offset = tile_y_offset
         pygame.font.init() # Ensure font module is initialized
+        # Color for Quadtree visualization
+        self.QUADTREE_COLOR = (0, 0, 255, 128)  # Blue, semi-transparent
+        # Colors for Entity Grid visualization
+        self.ENTITY_GRID_CELL_COLOR = (255, 165, 0, 100)  # Orange, semi-transparent
+        self.ENTITY_GRID_TEXT_COLOR = (255, 255, 255, 200) # White, semi-transparent
 
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         self.adjust = adjust
@@ -111,6 +117,42 @@ class DebugOverlayRenderer:
 
         return surface
 
+    def _draw_entity_grid(self) -> pygame.Surface:
+        """Draw the entity grid overlay, showing cells with entities and their counts."""
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        cell_size_pixels = 24  # Standard N cell size
+        adjusted_cell_size = cell_size_pixels * self.adjust
+
+        try:
+            font = pygame.font.Font(None, int(16 * self.adjust)) # Adjust font size
+        except pygame.error:
+            font = pygame.font.SysFont("arial", int(14 * self.adjust))
+
+        for cell_coord, entities_in_cell in self.sim.grid_entity.items():
+            if not entities_in_cell:
+                continue
+
+            cell_x, cell_y = cell_coord
+            num_entities = len(entities_in_cell)
+
+            # Calculate screen coordinates for the cell rectangle
+            rect_x = cell_x * adjusted_cell_size + self.tile_x_offset
+            rect_y = cell_y * adjusted_cell_size + self.tile_y_offset
+
+            # Draw the cell rectangle
+            cell_rect = pygame.Rect(rect_x, rect_y, adjusted_cell_size, adjusted_cell_size)
+            pygame.draw.rect(surface, self.ENTITY_GRID_CELL_COLOR, cell_rect)
+            pygame.draw.rect(surface, (255,255,255,150), cell_rect, 1) # Border for clarity
+
+            # Render the entity count text
+            if num_entities > 0:
+                text_surf = font.render(str(num_entities), True, self.ENTITY_GRID_TEXT_COLOR)
+                text_rect = text_surf.get_rect(center=(rect_x + adjusted_cell_size / 2,
+                                                       rect_y + adjusted_cell_size / 2))
+                surface.blit(text_surf, text_rect)
+        
+        return surface
+
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -128,6 +170,25 @@ class DebugOverlayRenderer:
         exploration_surface = self._draw_exploration_grid(debug_info)
         if exploration_surface:
             surface.blit(exploration_surface, (0, 0))
+
+        # Draw entity grid if sim.grid_entity exists
+        if hasattr(self.sim, 'grid_entity'):
+            entity_grid_surface = self._draw_entity_grid()
+            surface.blit(entity_grid_surface, (0,0))
+
+        # Draw Quadtree if present and enabled
+        if hasattr(self.sim, 'collision_quadtree') and self.sim.collision_quadtree:
+            quadtree_rects = self.sim.collision_quadtree.get_all_boundary_rects()
+            for rect_obj in quadtree_rects:
+                # rect_obj is an instance of quadtree.Rectangle
+                # Pygame rect: (left, top, width, height)
+                pygame_rect = pygame.Rect(
+                    rect_obj.x * self.adjust + self.tile_x_offset,
+                    rect_obj.y * self.adjust + self.tile_y_offset,
+                    rect_obj.width * self.adjust,
+                    rect_obj.height * self.adjust
+                )
+                pygame.draw.rect(surface, self.QUADTREE_COLOR, pygame_rect, 1) # Draw with line thickness 1
 
         # Base font and settings
         try:

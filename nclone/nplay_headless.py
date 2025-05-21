@@ -65,6 +65,43 @@ class NPlayHeadless:
         self.seed = seed
         self.rng = random.Random(seed)
 
+        self.current_tick = -1
+        self.last_rendered_tick = -1
+        self.cached_render_surface = None
+        self.cached_render_buffer = None
+
+    def _perform_grayscale_conversion(self, surface: pygame.Surface) -> np.ndarray:
+        """
+        Converts a Pygame surface to a grayscaled NumPy array (H, W, 1).
+        Tries pixels3d for efficiency, falls back to pixelcopy.
+        """
+        try:
+            # Attempt to get a referenced array (W, H, C)
+            referenced_array_whc = pygame.surfarray.pixels3d(surface)
+            # Transpose W, H, C to H, W, C
+            transposed_array_hwc = np.transpose(referenced_array_whc, (1, 0, 2))
+            # Grayscale it (H, W, 1)
+            # Inline frame_to_grayscale logic
+            processed_frame = transposed_array_hwc[..., :3]
+            grayscale = (0.2989 * processed_frame[..., 0] +
+                         0.5870 * processed_frame[..., 1] +
+                         0.1140 * processed_frame[..., 2])
+            final_gray_output_hw1 = grayscale[..., np.newaxis].astype(np.uint8)
+            del referenced_array_whc  # Unlock surface
+        except pygame.error:  # If pixels3d fails
+            # Fallback to original method using pre-allocated self._render_buffer (W,H,3)
+            pygame.pixelcopy.surface_to_array(self._render_buffer, surface)
+            # Transpose W, H, C to H, W, C
+            transposed_render_buffer_hwc = np.transpose(self._render_buffer, (1, 0, 2))
+            # Grayscale it (H, W, 1)
+            # Inline frame_to_grayscale logic
+            processed_frame = transposed_render_buffer_hwc[..., :3]
+            grayscale = (0.2989 * processed_frame[..., 0] +
+                         0.5870 * processed_frame[..., 1] +
+                         0.1140 * processed_frame[..., 2])
+            final_gray_output_hw1 = grayscale[..., np.newaxis].astype(np.uint8)
+        return final_gray_output_hw1
+
     def load_map_from_map_data(self, map_data: List[int]):
         """
         Load a map from a list of integers.
@@ -112,36 +149,58 @@ class NPlayHeadless:
 
     def reset(self):
         """ 
-        Reset the simulation to the initial state.
+        Reset the simulation to the initial state, including rendering caches and ticks.
         """
         self.sim.reset()
+        # Reset rendering state for consistency
+        self.current_tick = -1
+        self.last_rendered_tick = -1
+        self.cached_render_surface = None
+        self.cached_render_buffer = None
 
     def tick(self, horizontal_input: int, jump_input: int):
         """
         Tick the simulation with the given horizontal and jump inputs.
         """
+        self.current_tick += 1
+        # Invalidate both caches since a tick advanced
+        self.cached_render_surface = None
+        self.cached_render_buffer = None
         self.sim.tick(horizontal_input, jump_input)
         if self.render_mode == 'human':
             self.clock.tick(120)
 
     def render(self, debug_info: Optional[dict] = None):
         """
-        Render the current frame to a NumPy array.
-        Uses a pre-allocated buffer and direct pixel access for better performance.
+        Render the current frame.
+        If render_mode is 'rgb_array', returns a grayscaled HxWx1 NumPy array.
+        If render_mode is 'human', returns the Pygame surface.
+        Uses caching for performance.
 
         Args:
             debug_info: A dictionary containing debug information to be displayed on the screen.
         """
-        init = self.sim.frame <= 1
-        surface = self.sim_renderer.draw(init, debug_info)
+        # --- Cache Check ---
+        if self.current_tick == self.last_rendered_tick:
+            if self.cached_render_buffer is not None:  # This is H, W, 1 grayscale
+                return self.cached_render_buffer
+            elif self.cached_render_surface is not None:  # Switched from human to rgb_array
+                # Generate grayscaled buffer from self.cached_render_surface
+                gray_array_hw1 = self._perform_grayscale_conversion(self.cached_render_surface)
+                self.cached_render_buffer = gray_array_hw1.copy()  # Cache the new grayscale buffer
+                return self.cached_render_buffer
 
-        # if self.render_mode == 'rgb_array':
-        # Use our pre-allocated buffer
-        pygame.pixelcopy.surface_to_array(
-            self._render_buffer, surface)
-        return self._render_buffer  # Already in correct shape (H, W, 3)
-        # else:
-        #     return surface
+
+        # --- New Frame Rendering ---
+        init = self.sim.frame <= 1
+        surface = self.sim_renderer.draw(init, debug_info)  # This is a Pygame Surface
+
+        self.cached_render_surface = surface  # Always cache the raw surface for potential mode switch or human display
+        self.last_rendered_tick = self.current_tick
+
+        final_gray_output_hw1 = self._perform_grayscale_conversion(surface)
+        self.cached_render_buffer = final_gray_output_hw1.copy()  # Cache the (H,W,1) grayscale buffer
+        return final_gray_output_hw1
 
     def render_collision_map(self):
         """Render the collision map to a NumPy array."""
