@@ -17,6 +17,7 @@ parser.add_argument('--headless', action='store_true', help='Run in headless mod
 parser.add_argument('--profile-frames', type=int, default=None, help='Run for a specific number of frames and then exit (for profiling).')
 args = parser.parse_args()
 
+print(f'Headless: {args.headless}')
 # Create environment
 render_mode = 'rgb_array' if args.headless else 'human'
 debug_overlay_enabled = not args.headless  # Disable overlay in headless mode

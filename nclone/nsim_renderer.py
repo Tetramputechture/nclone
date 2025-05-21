@@ -88,7 +88,7 @@ class NSimRenderer:
 
         self.tile_renderer = TileRenderer(self.sim, self.screen, self.adjust)
         self.entity_renderer = EntityRenderer(self.sim, self.screen, self.adjust, self.width, self.height)
-        self.debug_overlay_renderer = DebugOverlayRenderer(self.screen, self.adjust, self.tile_x_offset, self.tile_y_offset)
+        self.debug_overlay_renderer = DebugOverlayRenderer(self.sim, self.screen, self.adjust, self.tile_x_offset, self.tile_y_offset)
 
     def draw(self, init: bool, debug_info: Optional[dict] = None) -> pygame.Surface:
         self._update_screen_size_and_offsets()

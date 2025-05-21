@@ -7,8 +7,10 @@ The augmentations are applied randomly to input frames to increase training dive
 import numpy as np
 import albumentations as A
 from typing import Optional, List, Dict, Any, Tuple
+import functools
 
 
+@functools.lru_cache(maxsize=None)
 def get_augmentation_pipeline(p: float = 0.5) -> A.ReplayCompose:
     """Creates an augmentation pipeline with all supported transformations.
 
@@ -77,19 +79,35 @@ def apply_consistent_augmentation(
     Returns:
         List of augmented frames with same shapes as inputs
     """
-    if seed is not None:
-        np.random.seed(seed)
-
     if not frames:
         return []
 
-    # Apply augmentation to first frame and get parameters
-    first_frame_aug, saved_params = apply_augmentation(frames[0])
-    augmented_frames = [first_frame_aug]
+    if seed is not None:
+        np.random.seed(seed)
+
+    # Ensure frames are in uint8 format for albumentations
+    # (assuming all frames have the same dtype, apply to first for check,
+    # but albumentations will handle individual frame types if needed,
+    # though it's better if they are consistent)
+    first_frame_uint8 = frames[0].astype(np.uint8)
+
+    # Get augmentation pipeline (it will be cached after the first call with a given 'p')
+    # Assuming the 'p' value used in apply_augmentation is consistent,
+    # or that get_augmentation_pipeline is called with a default 'p'
+    # that matches the implicit 'p' in the original apply_augmentation.
+    # For simplicity, we'll assume the default p=0.5 is used.
+    # If 'p' needs to be configurable here, it should be passed to this function.
+    transform = get_augmentation_pipeline() # Default p will be used
+
+    # Apply augmentation to the first frame and get parameters
+    data = transform(image=first_frame_uint8)
+    augmented_frames = [data['image']]
+    saved_params = data['replay']
 
     # Apply exact same augmentation to remaining frames
     for frame in frames[1:]:
-        aug_frame, _ = apply_augmentation(frame, saved_params=saved_params)
+        frame_uint8 = frame.astype(np.uint8)
+        aug_frame = transform.replay(saved_params, image=frame_uint8)['image']
         augmented_frames.append(aug_frame)
 
     return augmented_frames
