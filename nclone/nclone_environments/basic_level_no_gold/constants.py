@@ -15,7 +15,9 @@ RENDERED_VIEW_CHANNELS = 1  # Grayscale
 
 
 # Temporal frames
-TEMPORAL_FRAMES = 4
+# Increased to 12 based on research suggesting benefits of larger frame stacks for temporal modeling
+# in procedural environments (e.g., findings from ProcGen benchmark research).
+TEMPORAL_FRAMES = 12
 
 # Total game state features including all entities
 GAME_STATE_FEATURES = 159019
