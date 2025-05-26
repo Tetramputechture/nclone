@@ -108,20 +108,36 @@ class PathOptimizer:
         return positions
 
 class MovementController:
-    """Converts high-level paths (list of waypoints) to frame-by-frame N++ input commands."""
+    """Converts high-level paths to frame-by-frame N++ input commands using accurate physics."""
+    
+    # Exact physics constants from the actual N++ simulation
+    GRAVITY_FALL = 0.06666666666666665
+    GRAVITY_JUMP = 0.01111111111111111
+    GROUND_ACCEL = 0.06666666666666665
+    AIR_ACCEL = 0.04444444444444444
+    DRAG_REGULAR = 0.9933221725495059
+    FRICTION_GROUND = 0.9459290248857720
+    FRICTION_WALL = 0.9113380468927672
+    MAX_HOR_SPEED = 3.333333333333333
+    MAX_JUMP_DURATION = 45
+    NINJA_RADIUS = 10
+    
+    # Jump velocities from actual ninja mechanics
+    FLOOR_JUMP_VELOCITY_Y = -2.0
+    WALL_JUMP_VELOCITY_Y = -1.4
+    WALL_JUMP_VELOCITY_X_NORMAL = 1.0
+    WALL_JUMP_VELOCITY_X_SLIDE = 2.0/3.0
     
     def __init__(self, physics_params: Optional[dict] = None):
-        # physics_params might include things like jump hold frames, speeds, etc.
-        # For N++, these are quite specific.
         self.physics = physics_params if physics_params else {}
-        self.command_buffer: List[dict] = [] # Stores generated commands
+        self.command_buffer: List[dict] = []
         
-        # Default N++ like parameters (can be overridden by physics_params)
-        self.MAX_JUMP_HOLD_FRAMES = self.physics.get('max_jump_hold_frames', 28) # N++ specific value
-        self.NINJA_SPEED = self.physics.get('ninja_speed', 3.333) # Max run speed
-        self.JUMP_VEL_Y = self.physics.get('jump_vel_y', -2.0) # Initial Y jump velocity
-        self.WALL_JUMP_VEL_Y = self.physics.get('wall_jump_vel_y', -1.4)
-        self.WALL_JUMP_VEL_X = self.physics.get('wall_jump_vel_x', 1.8) # Away from wall
+        # Allow override of physics constants if needed
+        self.max_jump_hold_frames = self.physics.get('max_jump_hold_frames', self.MAX_JUMP_DURATION)
+        self.ninja_max_speed = self.physics.get('ninja_speed', self.MAX_HOR_SPEED)
+        self.jump_vel_y = self.physics.get('jump_vel_y', self.FLOOR_JUMP_VELOCITY_Y)
+        self.wall_jump_vel_y = self.physics.get('wall_jump_vel_y', self.WALL_JUMP_VELOCITY_Y)
+        self.wall_jump_vel_x = self.physics.get('wall_jump_vel_x', self.WALL_JUMP_VELOCITY_X_NORMAL)
 
     def generate_commands(self, current_pos: Tuple[float, float],
                          current_vel: Tuple[float, float],
@@ -191,7 +207,7 @@ class MovementController:
         # Determine direction and number of frames based on distance and speed.
         dx = end_wp[0] - start_wp[0]
         # dy should be small for walk/run on a surface
-        num_frames = int(abs(dx) / self.NINJA_SPEED) if self.NINJA_SPEED > 0 else 10
+        num_frames = int(abs(dx) / self.ninja_max_speed) if self.ninja_max_speed > 0 else 10
         num_frames = max(1, num_frames) # At least one frame
         cmds = []
         for i in range(num_frames):

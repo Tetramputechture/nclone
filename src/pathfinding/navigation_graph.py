@@ -33,23 +33,21 @@ class NavigationNode:
 class NavigationGraphBuilder:
     """Builds a navigation graph from parsed surfaces"""
     
-    def __init__(self, surfaces: List[Surface]):
+    def __init__(self, surfaces: List[Surface], collision_checker: CollisionChecker, tile_map_shape: Tuple[int, int]):
         self.surfaces = surfaces
+        self.collision_checker = collision_checker # Store if needed later
+        self.tile_map_shape = tile_map_shape   # Store if needed later
         self.graph = nx.DiGraph()  # Directed graph for one-way paths
         self.node_counter = 0
         self.nodes_by_position: Dict[Tuple[int,int], List[NavigationNode]] = {}  # Spatial index for fast lookup
         
     def build_graph(self) -> nx.DiGraph:
+        print("DEBUG: NavigationGraphBuilder.build_graph CALLED (new version)") # Verify this version runs
         """Construct the navigation graph"""
-        # Step 1: Create nodes at key positions
         self._create_surface_nodes()
-        
-        # Step 2: Connect nodes on same surface
         self._connect_surface_nodes()
-        
-        # Step 3: Add jump/fall connections between surfaces (Placeholder)
-        self._create_inter_surface_edges()
-        
+        self._create_gap_crossing_edges() # New call
+        self._create_inter_surface_edges() # This is a stub, actual jumps by N2PlusPathfindingSystem
         return self.graph
     
     def _create_surface_nodes(self):
@@ -142,7 +140,60 @@ class NavigationGraphBuilder:
         # Edges are typically bidirectional for walking, unless one-way platforms
         self.graph.add_edge(node_id_a, node_id_b, weight=weight, move_type='walk')
         self.graph.add_edge(node_id_b, node_id_a, weight=weight, move_type='walk') # Add reverse path
-        # print(f"Added walk edge between {node_id_a} and {node_id_b} with weight {weight}")
+
+    def _create_gap_crossing_edges(self):
+        """Bridge small horizontal gaps between co-linear floor or ceiling surfaces."""
+        surface_types_to_bridge = [SurfaceType.FLOOR, SurfaceType.CEILING]
+        MAX_GAP_SIZE = 8.1  # Max horizontal gap to bridge (e.g., one missing 8px segment)
+
+    def _create_gap_crossing_edges(self):
+        """Bridge small horizontal gaps between co-linear floor or ceiling surfaces."""
+        print("DEBUG: _create_gap_crossing_edges CALLED")
+
+        surface_types_to_bridge = [SurfaceType.FLOOR, SurfaceType.CEILING]
+        MAX_GAP_SIZE = 8.1 
+
+        for surface_type in surface_types_to_bridge:
+            surfaces_of_type = [s for s in self.surfaces if s.type == surface_type]
+            surfaces_of_type.sort(key=lambda s: (s.start_pos[1], s.start_pos[0]))
+
+            for i in range(len(surfaces_of_type) - 1):
+                s1 = surfaces_of_type[i]
+                s2 = surfaces_of_type[i+1]
+
+                if abs(s1.start_pos[1] - s2.start_pos[1]) < 1.0: 
+                    gap = s2.start_pos[0] - s1.end_pos[0]
+                    
+                    if 0 < gap <= MAX_GAP_SIZE:
+                        print(f"DEBUG: Potential gap: s1_end={s1.end_pos}, s2_start={s2.start_pos}, gap={gap:.2f}") 
+                        s1_end_node_id = None
+                        s2_start_node_id = None
+
+                        for node_id, data in self.graph.nodes(data=True):
+                            if data.get('surface_id') == id(s1) and \
+                               abs(data['position'][0] - s1.end_pos[0]) < 1e-5 and \
+                               abs(data['position'][1] - s1.end_pos[1]) < 1e-5:
+                                s1_end_node_id = node_id
+                                print(f"DEBUG: Found s1_end_node_id: {s1_end_node_id} for s1_end_pos {s1.end_pos}") 
+                            
+                            if data.get('surface_id') == id(s2) and \
+                               abs(data['position'][0] - s2.start_pos[0]) < 1e-5 and \
+                               abs(data['position'][1] - s2.start_pos[1]) < 1e-5:
+                                s2_start_node_id = node_id
+                                print(f"DEBUG: Found s2_start_node_id: {s2_start_node_id} for s2_start_pos {s2.start_pos}") 
+                            
+                            if s1_end_node_id and s2_start_node_id: 
+                                break
+                        
+                        if s1_end_node_id is not None and s2_start_node_id is not None and s1_end_node_id != s2_start_node_id:
+                            cost = gap 
+                            self.graph.add_edge(s1_end_node_id, s2_start_node_id, weight=cost, move_type='walk_gap')
+                            self.graph.add_edge(s2_start_node_id, s1_end_node_id, weight=cost, move_type='walk_gap')
+                            print(f"DEBUG: Added gap edge between node {s1_end_node_id} and node {s2_start_node_id} for gap {gap:.2f}") 
+                        else:
+                            print(f"DEBUG: Failed to find nodes or nodes are same for gap. s1_end_node={s1_end_node_id}, s2_start_node={s2_start_node_id}")
+
+
 
     def _create_inter_surface_edges(self):
         """Add jump/fall connections between surfaces. Placeholder."""
@@ -179,19 +230,27 @@ class JumpTrajectory:
         self.requires_held_jump = False
         
 class JumpCalculator:
-    """Calculates physically accurate jump trajectories"""
+    """Calculates physically accurate jump trajectories using actual N++ physics"""
     
-    # Physics constants from N++ simulation
-    GRAVITY_JUMP = 0.0111
-    GRAVITY_FALL = 0.0667
-    MAX_JUMP_FRAMES_HOLD = 45 # Max frames jump button can be held for effect
-    FLOOR_JUMP_VELOCITY_Y = -2.0 # Initial Y velocity for floor jump
-    WALL_JUMP_VELOCITY_Y = -1.4  # Initial Y velocity for wall jump
-    # Wall jump also has an X component away from the wall
-    WALL_JUMP_VELOCITY_X = 1.5 # Example, depends on wall direction
-    AIR_ACCELERATION = 0.0444
-    MAX_HORIZONTAL_SPEED = 3.333
-    REGULAR_DRAG = 0.9933
+    # Exact physics constants from the actual N++ simulation (ninja.py)
+    GRAVITY_JUMP = 0.01111111111111111  # Exact value from ninja.py
+    GRAVITY_FALL = 0.06666666666666665  # Exact value from ninja.py
+    GROUND_ACCEL = 0.06666666666666665  # Ground acceleration
+    AIR_ACCEL = 0.04444444444444444     # Air acceleration
+    DRAG_REGULAR = 0.9933221725495059   # Regular drag (0.99^(2/3))
+    DRAG_SLOW = 0.8617738760127536      # Slow drag (0.80^(2/3))
+    FRICTION_GROUND = 0.9459290248857720  # Ground friction (0.92^(2/3))
+    FRICTION_WALL = 0.9113380468927672    # Wall friction (0.87^(2/3))
+    MAX_HOR_SPEED = 3.333333333333333     # Maximum horizontal speed
+    MAX_JUMP_DURATION = 45                # Maximum jump duration in frames
+    MAX_SURVIVABLE_IMPACT = 6             # Maximum survivable impact velocity
+    NINJA_RADIUS = 10                     # Ninja collision radius
+    
+    # Jump velocities from actual ninja mechanics
+    FLOOR_JUMP_VELOCITY_Y = -2.0          # Floor jump initial Y velocity
+    WALL_JUMP_VELOCITY_Y = -1.4           # Wall jump initial Y velocity  
+    WALL_JUMP_VELOCITY_X_NORMAL = 1.0     # Normal wall jump X velocity
+    WALL_JUMP_VELOCITY_X_SLIDE = 2.0/3.0  # Slide wall jump X velocity
     
     def __init__(self, collision_checker: CollisionChecker):
         self.collision_checker = collision_checker
@@ -209,7 +268,7 @@ class JumpCalculator:
         if traj: trajectories.append(traj)
         
         # Strategy 2: Maximum height jump (long hold)
-        traj = self._try_jump_strategy(start_pos, end_pos, start_surface_type, hold_frames=self.MAX_JUMP_FRAMES_HOLD, jump_type_prefix="max_h")
+        traj = self._try_jump_strategy(start_pos, end_pos, start_surface_type, hold_frames=JumpCalculator.MAX_JUMP_DURATION, jump_type_prefix="max_h")
         if traj: trajectories.append(traj)
         
         # Strategy 3: Variable height jumps (medium holds)
@@ -271,7 +330,7 @@ class JumpCalculator:
                       target_pos: Tuple[float, float],
                       hold_frames: int,
                       jump_type_str: str) -> Optional[JumpTrajectory]:
-        """Simulate a jump with given parameters"""
+        """Simulate a jump with given parameters using accurate N++ physics"""
         
         # Node IDs are not known here, set to placeholder
         trajectory = JumpTrajectory(-1, -1, initial_velocity, jump_type_str)
@@ -279,56 +338,73 @@ class JumpCalculator:
         vel = list(initial_velocity)
         max_y_achieved = start_pos[1]
         
-        for frame_num in range(1, 201):  # Max simulation frames (e.g., ~3-4 seconds at 60fps)
-            # Apply drag (applied to current velocity before other forces)
-            vel[0] *= self.REGULAR_DRAG
-            vel[1] *= self.REGULAR_DRAG # N++ drag is more complex, this is simplified
+        # Track ninja state for accurate physics simulation
+        airborn = True
+        jump_duration = 0
+        
+        for frame_num in range(1, 201):  # Max simulation frames (~3.3 seconds at 60fps)
+            # Store old position for collision checking
+            old_pos = pos.copy()
             
-            # Apply gravity
-            # Gravity is different if jump button is held AND ninja is moving up
-            if frame_num <= hold_frames and vel[1] < 0:
+            # Apply drag first (like in ninja.integrate())
+            vel[0] *= self.DRAG_REGULAR
+            vel[1] *= self.DRAG_REGULAR
+            
+            # Apply gravity based on jump state (like in ninja.integrate())
+            if frame_num <= hold_frames and vel[1] < 0 and jump_duration < self.MAX_JUMP_DURATION:
                 vel[1] += self.GRAVITY_JUMP
+                jump_duration += 1
             else:
                 vel[1] += self.GRAVITY_FALL
             
-            # Apply horizontal air control (simplified)
-            # Ninja tries to move towards the target_pos horizontally
+            # Apply horizontal air control (more accurate to N++ air control)
             target_dx_component = target_pos[0] - pos[0]
-            # Only apply air control if there's a significant horizontal distance to cover
-            # or if current horizontal speed is not already maxed out in the desired direction.
-            if abs(target_dx_component) > 1.0: # Threshold to apply control
-                control_accel = self.AIR_ACCELERATION * np.sign(target_dx_component)
-                vel[0] += control_accel
-                # Clamp horizontal velocity to max speed
-                vel[0] = np.clip(vel[0], -self.MAX_HORIZONTAL_SPEED, self.MAX_HORIZONTAL_SPEED)
+            if abs(target_dx_component) > 1.0:  # Only apply control if significant distance
+                if target_dx_component > 0:
+                    # Moving right
+                    if vel[0] < self.MAX_HOR_SPEED:
+                        vel[0] += self.AIR_ACCEL
+                        vel[0] = min(vel[0], self.MAX_HOR_SPEED)
+                else:
+                    # Moving left
+                    if vel[0] > -self.MAX_HOR_SPEED:
+                        vel[0] -= self.AIR_ACCEL
+                        vel[0] = max(vel[0], -self.MAX_HOR_SPEED)
             
-            # Update position: new_pos = old_pos + velocity_after_forces * time_step (time_step=1 frame)
-            new_pos = [pos[0] + vel[0], pos[1] + vel[1]]
+            # Update position (like in ninja.integrate())
+            pos[0] += vel[0]
+            pos[1] += vel[1]
             
-            # Collision check for the segment from pos to new_pos
-            if self.collision_checker.check_collision(tuple(pos), tuple(new_pos)):
-                # print(f"Collision during jump simulation from {pos} to {new_pos}")
-                return None # Collision detected
-            
-            pos = new_pos
-            trajectory.frames.append((tuple(pos), tuple(vel)))
-            if pos[1] < max_y_achieved: # Y is typically negative for up in game coords
+            # Track maximum height achieved
+            if pos[1] < max_y_achieved:
                 max_y_achieved = pos[1]
             
-            # Check if we reached target (within a certain radius)
-            # Target radius should be related to ninja size, e.g., half-width
-            dist_to_target = np.sqrt((pos[0] - target_pos[0])**2 + (pos[1] - target_pos[1])**2)
-            if dist_to_target < 12:  # Ninja half-width is ~12 pixels (tile is 24x24)
+            # Collision check using swept circle collision
+            if self.collision_checker.check_collision(tuple(old_pos), tuple(pos), self.NINJA_RADIUS):
+                return None  # Collision detected
+            
+            # Store frame data
+            trajectory.frames.append(((pos[0], pos[1]), (vel[0], vel[1])))
+            
+            # Check if we've reached the target area
+            dist_to_target = math.sqrt((pos[0] - target_pos[0])**2 + (pos[1] - target_pos[1])**2)
+            if dist_to_target < self.NINJA_RADIUS * 2:  # Within reasonable range of target
                 trajectory.total_frames = frame_num
-                trajectory.max_height = start_pos[1] - max_y_achieved # Max height relative to start
-                trajectory.requires_held_jump = hold_frames > 5 # Arbitrary threshold for 'held'
+                trajectory.max_height = start_pos[1] - max_y_achieved
+                trajectory.requires_held_jump = (hold_frames > 5)
                 return trajectory
             
-            # Check if we've gone too far, too low, or too high without hitting target
-            if pos[1] > start_pos[1] + 200: # Fallen too far below start
+            # Check if ninja has fallen too far below target (failed jump)
+            if pos[1] > target_pos[1] + 100:  # 100 pixels below target
                 return None
-            if abs(pos[0] - start_pos[0]) > 700: # Traveled too far horizontally
-                 return None
+            
+            # Check for lethal impact velocity if we hit ground
+            if vel[1] > self.MAX_SURVIVABLE_IMPACT:
+                return None  # Would die from impact
+            
+            # Check if we've gone too far horizontally or fallen too far
+            if abs(pos[0] - start_pos[0]) > 700:  # Traveled too far horizontally
+                return None
         
-        # print(f"Jump simulation timed out for target {target_pos}")
-        return None # Simulation ended without reaching target
+        # Simulation ended without reaching target
+        return None

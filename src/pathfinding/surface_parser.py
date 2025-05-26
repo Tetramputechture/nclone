@@ -1,6 +1,25 @@
 import numpy as np
+import math
 from enum import Enum
 from typing import List, Tuple, Dict, Optional
+
+# Import actual tile definitions
+try:
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), '../../nclone'))
+    from tile_definitions import (
+        TILE_GRID_EDGE_MAP, 
+        TILE_SEGMENT_ORTHO_MAP, 
+        TILE_SEGMENT_DIAG_MAP, 
+        TILE_SEGMENT_CIRCULAR_MAP
+    )
+except ImportError:
+    # Fallback definitions if import fails
+    TILE_GRID_EDGE_MAP = {}
+    TILE_SEGMENT_ORTHO_MAP = {}
+    TILE_SEGMENT_DIAG_MAP = {}
+    TILE_SEGMENT_CIRCULAR_MAP = {}
 
 class SurfaceType(Enum):
     FLOOR = 1
@@ -8,6 +27,8 @@ class SurfaceType(Enum):
     WALL_RIGHT = 3
     CEILING = 4
     SLOPE = 5
+    CURVE_CONCAVE = 6  # Quarter moons
+    CURVE_CONVEX = 7   # Quarter pipes
 
 class Surface:
     """Represents a continuous traversable surface in the level"""
@@ -19,7 +40,7 @@ class Surface:
         self.normal = None  # Surface normal vector
         self.length = 0
         self.angle = 0 # For slopes
-        self._calculate_properties()
+        # self._calculate_properties() # Call explicitly after properties are set or after merge
     
     def _calculate_properties(self):
         """Calculate surface properties from tile positions"""
@@ -49,19 +70,24 @@ class Surface:
         self.length = np.sqrt(dx*dx + dy*dy)
 
 class SurfaceParser:
-    """Parses level geometry into navigable surfaces"""
+    """Parses level geometry into navigable surfaces using actual N++ tile definitions"""
     
-    # Tile type definitions from the simulation
+    # Actual tile type definitions from the simulation
     TILE_EMPTY = 0
     TILE_SOLID = 1
     TILE_HALF_TOP = 2
     TILE_HALF_RIGHT = 3
     TILE_HALF_BOTTOM = 4
     TILE_HALF_LEFT = 5
-    TILE_SLOPE_45_TYPES = [6, 7, 8, 9]
-    TILE_CURVES = list(range(10, 18))
-    TILE_MILD_SLOPES = list(range(18, 26))
-    TILE_STEEP_SLOPES = list(range(26, 34))
+    TILE_SLOPE_45_TYPES = [6, 7, 8, 9]  # 45-degree slopes
+    TILE_QUARTER_MOONS = [10, 11, 12, 13]  # Concave curves
+    TILE_QUARTER_PIPES = [14, 15, 16, 17]  # Convex curves
+    TILE_MILD_SLOPES = list(range(18, 26))  # Mild slopes (various angles)
+    TILE_STEEP_SLOPES = list(range(26, 34))  # Steep slopes (various angles)
+    TILE_GLITCHED = [34, 35, 36, 37]  # Special glitched tiles
+    
+    # Tile size constant
+    TILE_SIZE = 24
     
     def __init__(self, tile_map: np.ndarray):
         self.tile_map = tile_map
@@ -70,55 +96,249 @@ class SurfaceParser:
         self.grid_height = tile_map.shape[1]
         
     def parse_surfaces(self) -> List[Surface]:
-        """Extract all continuous surfaces from the tile map"""
-        # Mark visited tiles to avoid duplicates
+        """Extract all continuous surfaces from the tile map using actual tile definitions"""
+        self.surfaces = []
         visited = np.zeros_like(self.tile_map, dtype=bool)
         
-        # Scan for floor surfaces
+        # Parse surfaces based on actual tile geometry
         for y in range(self.grid_height):
             for x in range(self.grid_width):
-                if not visited[x, y] and self._is_floor_tile(x, y):
-                    surface = self._trace_floor_surface(x, y, visited)
+                if visited[x, y]:
+                    continue
+                    
+                tile_type = self.tile_map[x, y]
+                if tile_type == self.TILE_EMPTY:
+                    continue
+                
+                # Parse different surface types based on tile geometry
+                surfaces_from_tile = self._parse_tile_surfaces(x, y, tile_type)
+                for surface in surfaces_from_tile:
                     if surface:
                         self.surfaces.append(surface)
+                
+                visited[x, y] = True
         
-        # Scan for wall surfaces
-        for y in range(self.grid_height):
-            for x in range(self.grid_width):
-                if not visited[x, y] and self._is_wall_tile(x, y): # Checks for both left and right walls
-                    # Trace left wall
-                    surface_left = self._trace_wall_surface(x, y, visited, SurfaceType.WALL_LEFT)
-                    if surface_left:
-                        self.surfaces.append(surface_left)
-                    
-                    # Reset visited for this tile if it was part of a left wall, so right wall can also be traced if applicable
-                    # This logic might need refinement based on how _is_wall_tile and _trace_wall_surface work
-                    # For now, assume _trace_wall_surface marks tiles appropriately for its type
-                    
-                    # Trace right wall (if not already covered by left wall tracing from adjacent tile)
-                    # This might require a more sophisticated check or a different tracing strategy
-                    # to avoid double-counting or missing walls.
-                    # A simple approach: if a tile is a wall, it could be a left or right wall depending on context.
-                    # The current _is_wall_tile doesn't differentiate.
-                    # Let's assume _trace_wall_surface handles the direction.
-                    surface_right = self._trace_wall_surface(x, y, visited, SurfaceType.WALL_RIGHT)
-                    if surface_right:
-                         self.surfaces.append(surface_right)
-
-
-        # Scan for slope surfaces (can be integrated with floor or separate)
-        for y in range(self.grid_height):
-            for x in range(self.grid_width):
-                if not visited[x,y] and self.tile_map[x,y] in self.TILE_SLOPE_45_TYPES + self.TILE_MILD_SLOPES + self.TILE_STEEP_SLOPES:
-                    tile_type = self.tile_map[x,y]
-                    # Slopes are typically single tiles or short segments in N++
-                    # For simplicity, let's treat each slope tile as a small surface.
-                    # A more advanced parser might group connected slope tiles.
-                    surface = self._parse_slope_surface(x,y, tile_type)
-                    self.surfaces.append(surface)
-                    visited[x,y] = True # Mark as visited since it's handled as a slope
-
+        # Group adjacent surfaces of the same type
+        self._merge_adjacent_surfaces()
+        
         return self.surfaces
+    
+    def _parse_tile_surfaces(self, x: int, y: int, tile_type: int) -> List[Surface]:
+        """Parse all surfaces from a single tile using actual tile definitions."""
+        surfaces = []
+        tile_x = x * self.TILE_SIZE
+        tile_y = y * self.TILE_SIZE
+        
+        # Parse orthogonal surfaces (floors, walls, ceilings)
+        if tile_type in TILE_SEGMENT_ORTHO_MAP:
+            ortho_surfaces = self._parse_orthogonal_surfaces(x, y, tile_type)
+            surfaces.extend(ortho_surfaces)
+        
+        # Parse diagonal surfaces (slopes)
+        if tile_type in TILE_SEGMENT_DIAG_MAP:
+            slope_surface = self._parse_diagonal_surface(x, y, tile_type)
+            if slope_surface:
+                surfaces.append(slope_surface)
+        
+        # Parse circular surfaces (curves)
+        if tile_type in TILE_SEGMENT_CIRCULAR_MAP:
+            curve_surface = self._parse_circular_surface(x, y, tile_type)
+            if curve_surface:
+                surfaces.append(curve_surface)
+        
+        return surfaces
+    
+    def _parse_orthogonal_surfaces(self, x: int, y: int, tile_type: int) -> List[Surface]:
+        """Parse orthogonal surfaces (floors, walls, ceilings) from tile."""
+        surfaces = []
+        # Ensure TILE_SEGMENT_ORTHO_MAP is accessed safely
+        if tile_type not in TILE_SEGMENT_ORTHO_MAP:
+            # print(f"Warning: tile_type {tile_type} not in TILE_SEGMENT_ORTHO_MAP. Skipping orthogonal parse for tile ({x},{y}).")
+            return surfaces
+        ortho_data = TILE_SEGMENT_ORTHO_MAP[tile_type]
+        
+        # Check for floor surfaces (top edges with downward normal)
+        for i in range(3):  # Top edge segments
+            if ortho_data[i] == -1:  # Downward normal (floor)
+                surface = Surface(SurfaceType.FLOOR, [(x, y)])
+                surface.start_pos = (x * self.TILE_SIZE + i * 8, y * self.TILE_SIZE)
+                surface.end_pos = (x * self.TILE_SIZE + (i + 1) * 8, y * self.TILE_SIZE)
+                surface.normal = (0, -1)
+                dx = surface.end_pos[0] - surface.start_pos[0]
+                dy = surface.end_pos[1] - surface.start_pos[1]
+                surface.length = np.sqrt(dx*dx + dy*dy)
+                surfaces.append(surface)
+        
+        # Check for ceiling surfaces (bottom edges with upward normal)
+        for i in range(3, 6):  # Bottom edge segments
+            if ortho_data[i] == 1:  # Upward normal (ceiling)
+                surface = Surface(SurfaceType.CEILING, [(x, y)])
+                surface.start_pos = (x * self.TILE_SIZE + (i - 3) * 8, y * self.TILE_SIZE + self.TILE_SIZE)
+                surface.end_pos = (x * self.TILE_SIZE + (i - 2) * 8, y * self.TILE_SIZE + self.TILE_SIZE)
+                surface.normal = (0, 1)
+                dx = surface.end_pos[0] - surface.start_pos[0]
+                dy = surface.end_pos[1] - surface.start_pos[1]
+                surface.length = np.sqrt(dx*dx + dy*dy)
+                surfaces.append(surface)
+        
+        # Check for wall surfaces
+        for i in range(6, 9):  # Left edge segments
+            if ortho_data[i] == 1:  # Rightward normal (left wall)
+                surface = Surface(SurfaceType.WALL_LEFT, [(x, y)])
+                surface.start_pos = (x * self.TILE_SIZE, y * self.TILE_SIZE + (i - 6) * 8)
+                surface.end_pos = (x * self.TILE_SIZE, y * self.TILE_SIZE + (i - 5) * 8)
+                surface.normal = (1, 0)
+                dx = surface.end_pos[0] - surface.start_pos[0]
+                dy = surface.end_pos[1] - surface.start_pos[1]
+                surface.length = np.sqrt(dx*dx + dy*dy)
+                surfaces.append(surface)
+        
+        for i in range(9, 12):  # Right edge segments
+            if ortho_data[i] == -1:  # Leftward normal (right wall)
+                surface = Surface(SurfaceType.WALL_RIGHT, [(x, y)])
+                surface.start_pos = (x * self.TILE_SIZE + self.TILE_SIZE, y * self.TILE_SIZE + (i - 9) * 8)
+                surface.end_pos = (x * self.TILE_SIZE + self.TILE_SIZE, y * self.TILE_SIZE + (i - 8) * 8)
+                surface.normal = (-1, 0)
+                dx = surface.end_pos[0] - surface.start_pos[0]
+                dy = surface.end_pos[1] - surface.start_pos[1]
+                surface.length = np.sqrt(dx*dx + dy*dy)
+                surfaces.append(surface)
+        
+        return surfaces
+    
+    def _parse_diagonal_surface(self, x: int, y: int, tile_type: int) -> Optional[Surface]:
+        """Parse diagonal surface (slope) from tile."""
+        if tile_type not in TILE_SEGMENT_DIAG_MAP:
+            return None
+        diag_data = TILE_SEGMENT_DIAG_MAP[tile_type]
+        start_offset, end_offset = diag_data
+        
+        surface = Surface(SurfaceType.SLOPE, [(x, y)])
+        surface.start_pos = (x * self.TILE_SIZE + start_offset[0], y * self.TILE_SIZE + start_offset[1])
+        surface.end_pos = (x * self.TILE_SIZE + end_offset[0], y * self.TILE_SIZE + end_offset[1])
+        
+        dx = surface.end_pos[0] - surface.start_pos[0]
+        dy = surface.end_pos[1] - surface.start_pos[1]
+        surface.length = math.sqrt(dx*dx + dy*dy) # Set length directly
+        
+        if surface.length > 0:
+            surface.normal = (-dy/surface.length, dx/surface.length)
+        else:
+            surface.normal = (0, -1) # Default for zero-length slope
+        
+        if dx != 0:
+            surface.angle = math.degrees(math.atan(dy / dx))
+        else:
+            surface.angle = 90.0 if dy > 0 else -90.0
+            
+        return surface
+    
+    def _parse_circular_surface(self, x: int, y: int, tile_type: int) -> Optional[Surface]:
+        """Parse circular surface (curve) from tile."""
+        if tile_type not in TILE_SEGMENT_CIRCULAR_MAP:
+            return None
+        circ_data = TILE_SEGMENT_CIRCULAR_MAP[tile_type]
+        center_offset, quadrant, is_concave = circ_data # Assuming this structure
+        
+        surface_type = SurfaceType.CURVE_CONCAVE if is_concave else SurfaceType.CURVE_CONVEX
+        
+        surface = Surface(surface_type, [(x, y)])
+        # For now, start/end are center, so length is 0. This might need refinement.
+        surface.start_pos = (x * self.TILE_SIZE + center_offset[0], y * self.TILE_SIZE + center_offset[1])
+        surface.end_pos = surface.start_pos 
+        
+        surface.normal = (quadrant[0], quadrant[1])  # Placeholder normal
+        surface.radius = self.TILE_SIZE / 2 # Example, actual radius depends on curve type
+        surface.quadrant = quadrant
+        surface.concave = is_concave
+        
+        # Length of a point surface is 0
+        surface.length = 0.0
+            
+        return surface
+    
+    def _merge_adjacent_surfaces(self):
+        """Merge adjacent surfaces of the same type to create longer continuous surfaces."""
+        if not self.surfaces:
+            return
+
+        new_surfaces = []
+        # Group surfaces by type
+        surface_groups: Dict[SurfaceType, List[Surface]] = {}
+        for s in self.surfaces:
+            surface_groups.setdefault(s.type, []).append(s)
+
+        for surface_type, surfaces_of_type in surface_groups.items():
+            if not surfaces_of_type:
+                continue
+
+            # Sort surfaces to make merging easier
+            # For floors: sort by y, then x of start_pos
+            # For walls: sort by x, then y of start_pos
+            if surface_type == SurfaceType.FLOOR or surface_type == SurfaceType.CEILING:
+                surfaces_of_type.sort(key=lambda s: (s.start_pos[1], s.start_pos[0]))
+            elif surface_type == SurfaceType.WALL_LEFT or surface_type == SurfaceType.WALL_RIGHT:
+                surfaces_of_type.sort(key=lambda s: (s.start_pos[0], s.start_pos[1]))
+            else: # For slopes and curves, merging is more complex, skip for now
+                new_surfaces.extend(surfaces_of_type)
+                continue
+
+            current_merged_surface: Optional[Surface] = None
+            for s in surfaces_of_type:
+                if current_merged_surface is None:
+                    # Start a new merged surface, make a copy
+                    current_merged_surface = Surface(s.type, list(s.tiles)) # Copy tiles list
+                    current_merged_surface.start_pos = s.start_pos
+                    current_merged_surface.end_pos = s.end_pos
+                    current_merged_surface.normal = s.normal
+                    current_merged_surface.length = s.length
+                    # angle for slopes would need to be handled if they are merged
+                else:
+                    # Check for adjacency and co-linearity/compatibility
+                    can_merge = False
+                    if current_merged_surface.type == s.type and \
+                       current_merged_surface.normal == s.normal: # Must have same normal
+                        
+                        # Adjacency check: end of current meets start of next
+                        # Use a small tolerance for floating point comparisons
+                        epsilon = 1e-5 
+                        if surface_type == SurfaceType.FLOOR or surface_type == SurfaceType.CEILING:
+                            # Horizontal merge: y must be same, x must be continuous
+                            if abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon and \
+                               abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon:
+                                can_merge = True
+                        elif surface_type == SurfaceType.WALL_LEFT or surface_type == SurfaceType.WALL_RIGHT:
+                            # Vertical merge: x must be same, y must be continuous
+                            if abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon and \
+                               abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon:
+                                can_merge = True
+                    
+                    if can_merge:
+                        # Extend current_merged_surface
+                        current_merged_surface.end_pos = s.end_pos
+                        # Update tiles: add unique parent tiles from s
+                        for tile_coord in s.tiles:
+                            if tile_coord not in current_merged_surface.tiles:
+                                current_merged_surface.tiles.append(tile_coord)
+                        # Recalculate length
+                        dx = current_merged_surface.end_pos[0] - current_merged_surface.start_pos[0]
+                        dy = current_merged_surface.end_pos[1] - current_merged_surface.start_pos[1]
+                        current_merged_surface.length = np.sqrt(dx*dx + dy*dy)
+                    else:
+                        # Finalize current_merged_surface and add to new_surfaces
+                        new_surfaces.append(current_merged_surface)
+                        # Start a new one with s
+                        current_merged_surface = Surface(s.type, list(s.tiles))
+                        current_merged_surface.start_pos = s.start_pos
+                        current_merged_surface.end_pos = s.end_pos
+                        current_merged_surface.normal = s.normal
+                        current_merged_surface.length = s.length
+            
+            # Add the last merged surface being built
+            if current_merged_surface is not None:
+                new_surfaces.append(current_merged_surface)
+
+        self.surfaces = new_surfaces
     
     def _is_floor_tile(self, x: int, y: int) -> bool:
         """Check if a tile position represents a floor surface"""
