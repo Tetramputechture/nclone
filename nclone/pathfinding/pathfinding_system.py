@@ -47,54 +47,89 @@ class N2PlusPathfindingSystem:
         print("N2PlusPathfindingSystem initialized.")
 
     def _add_jump_edges_to_graph(self):
-        """Iterate through graph nodes and use JumpCalculator to add jump/fall edges."""
-        print("Attempting to add jump edges to the navigation graph...")
-        if not self.nav_graph or not self.jump_calculator:
-            print("Nav graph or jump calculator not initialized. Skipping jump edge creation.")
+        """Iterate through graph nodes and use JumpCalculator to add jump/fall edges, spatially optimized."""
+        print("Attempting to add jump edges to the navigation graph (spatially optimized)...")
+        if not self.nav_graph or not self.jump_calculator or not self.graph_builder:
+            print("Nav graph, jump calculator, or graph_builder not initialized. Skipping jump edge creation.")
             return
 
-        nodes_to_consider = list(self.nav_graph.nodes(data=True))
+        if not self.graph_builder.nodes_by_position:
+            print("Graph builder's spatial index (nodes_by_position) is empty. Skipping jump edge creation.")
+            return
+
+        nodes_data = list(self.nav_graph.nodes(data=True))
         num_potential_jumps_added = 0
+        grid_cell_size = 24 # Must match the grid cell size used in NavigationGraphBuilder
+        # Max jump distance in pixels, e.g., 15 tiles * 24 pixels/tile = 360 pixels
+        max_jump_dist_px = 360 
+        search_radius_cells = (max_jump_dist_px // grid_cell_size) + 1 # +1 for safety margin
 
-        # This can be computationally expensive (N^2 node pairs)
-        # Optimization: only consider jumps between nodes that are reasonably close
-        # and where a jump is plausible (e.g., from a floor/wall to another floor/wall).
-        for i in range(len(nodes_to_consider)):
-            node1_id, data1 = nodes_to_consider[i]
+        for node1_id, data1 in nodes_data:
             nav_node1 = data1.get('nav_node_object')
-            if not nav_node1 or not nav_node1.surface: continue
+            if not nav_node1 or not nav_node1.surface:
+                continue
 
-            for j in range(len(nodes_to_consider)):
-                if i == j: continue
-                node2_id, data2 = nodes_to_consider[j]
-                nav_node2 = data2.get('nav_node_object')
-                if not nav_node2 or not nav_node2.surface: continue
-                
-                # Heuristic: Don't try to jump if too far (e.g. > 15 tiles = 360 pixels)
-                dist_sq = (nav_node1.position[0] - nav_node2.position[0])**2 + \
-                          (nav_node1.position[1] - nav_node2.position[1])**2
-                if dist_sq > (360*360): 
-                    continue
+            node1_pos = nav_node1.position
+            node1_grid_x = int(node1_pos[0] / grid_cell_size)
+            node1_grid_y = int(node1_pos[1] / grid_cell_size)
 
-                # Try to calculate a jump from node1 to node2
-                # Surface type of the START node is important for jump initiation
-                trajectory: Optional[JumpTrajectory] = self.jump_calculator.calculate_jump(
-                    nav_node1.position, 
-                    nav_node2.position, 
-                    nav_node1.surface.type
-                )
-                
-                if trajectory:
-                    # Add edge to graph with trajectory data
-                    self.nav_graph.add_edge(
-                        node1_id, node2_id, 
-                        weight=trajectory.total_frames, # Cost could be time or energy
-                        move_type=trajectory.jump_type, 
-                        trajectory_data=trajectory,
-                        frames=trajectory.total_frames # For dynamic pathfinder
-                    )
-                    num_potential_jumps_added +=1
-        print(f"Added {num_potential_jumps_added} potential jump/fall edges to the graph.")
+            candidate_nodes_checked = set() # To avoid redundant checks if a node appears in multiple cells due to radius
+
+            for dx in range(-search_radius_cells, search_radius_cells + 1):
+                for dy in range(-search_radius_cells, search_radius_cells + 1):
+                    target_grid_cell = (node1_grid_x + dx, node1_grid_y + dy)
+                    
+                    if target_grid_cell in self.graph_builder.nodes_by_position:
+                        for nav_node2_candidate in self.graph_builder.nodes_by_position[target_grid_cell]:
+                            node2_id = nav_node2_candidate.id
+
+                            if node1_id == node2_id or node2_id in candidate_nodes_checked:
+                                continue
+                            candidate_nodes_checked.add(node2_id)
+
+                            # Ensure nav_node2_candidate is actually in the main graph if builder's list is a bit different
+                            # (Should be the case, but good to be safe or fetch from self.nav_graph if needed)
+                            # For now, assume nav_node2_candidate.surface and .position are valid.
+                            if not nav_node2_candidate.surface:
+                                continue
+                            
+                            node2_pos = nav_node2_candidate.position
+
+                            # Fine-grained distance check (already somewhat covered by cell radius)
+                            dist_sq = (node1_pos[0] - node2_pos[0])**2 + \
+                                      (node1_pos[1] - node2_pos[1])**2
+                            if dist_sq > (max_jump_dist_px * max_jump_dist_px): 
+                                continue
+                            
+                            surface_normal_for_jump = nav_node1.surface.normal if nav_node1.surface else None
+
+                            # Determine initial run velocities for floor jumps
+                            # This could be more sophisticated, e.g. based on node1 properties
+                            initial_vx_options = None # Use JumpCalculator defaults
+                            if nav_node1.surface.type == SurfaceType.FLOOR or nav_node1.surface.type == SurfaceType.SLOPE:
+                                # Example: if node allows run-up, provide speeds.
+                                # For precomputation, testing a set of speeds is done by JumpCalculator's defaults if None.
+                                pass 
+
+                            trajectory: Optional[JumpTrajectory] = self.jump_calculator.calculate_jump(
+                                node1_pos, 
+                                node2_pos, 
+                                nav_node1.surface.type,
+                                start_surface_normal=surface_normal_for_jump,
+                                initial_run_velocities_x=initial_vx_options 
+                            )
+                            
+                            if trajectory:
+                                self.nav_graph.add_edge(
+                                    node1_id, node2_id, 
+                                    weight=trajectory.total_frames,
+                                    move_type=trajectory.jump_type, 
+                                    trajectory_data=trajectory,
+                                    frames=trajectory.total_frames
+                                )
+                                num_potential_jumps_added += 1
+        
+        print(f"Added {num_potential_jumps_added} potential jump/fall edges to the graph using spatial optimization.")
 
     def _find_nearest_node(self, world_pos: Tuple[float, float]) -> Optional[int]:
         """Find the nearest navigation graph node ID to a given world position."""
