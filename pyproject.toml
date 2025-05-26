@@ -28,6 +28,7 @@ dependencies = [
     "opencv-python",
     "albumentations",
     "gymnasium",
+    "networkx",
 ]
 
 [project.urls]

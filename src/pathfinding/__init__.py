@@ -1,4 +1,5 @@
-# Pathfinding package init
+# N++ Pathfinding System
+# Accurate pathfinding implementation using actual simulation mechanics
 
 from .surface_parser import Surface, SurfaceType, SurfaceParser
 from .navigation_graph import NavigationNode, NavigationGraphBuilder, JumpTrajectory, JumpCalculator

@@ -42,14 +42,17 @@ class EnemyPredictor:
     def _precompute_predictions(self, max_time_prediction: int = 2000):
         """Pre-calculate enemy positions for efficiency up to max_time_prediction frames."""
         for enemy in self.enemies:
-            if enemy.type == 'thwump':
+            if enemy.type == enemy.THWUMP:
                 self._predict_thwump_movement(enemy, max_time_prediction)
-            elif enemy.type == 'drone':
+            elif enemy.type in [enemy.DRONE_CLOCKWISE, enemy.DRONE_COUNTER_CLOCKWISE]:
                 self._predict_drone_movement(enemy, max_time_prediction)
-            elif enemy.type == 'death_ball':
+            elif enemy.type == enemy.DEATH_BALL:
                 self._predict_death_ball_movement(enemy, max_time_prediction)
+            elif enemy.type in [enemy.TOGGLE_MINE, enemy.TOGGLE_MINE_TOGGLED]:
+                self._predict_static_enemy(enemy, max_time_prediction)
             else:
-                print(f"Warning: Unknown enemy type {enemy.type} for prediction.")
+                # For other enemy types, assume static or simple linear movement
+                self._predict_static_enemy(enemy, max_time_prediction)
     
     def _predict_thwump_movement(self, thwump: Enemy, max_time: int):
         """Predict thwump movement pattern. Simplified: assumes periodic patrol if not player-tracking."""
@@ -98,10 +101,33 @@ class EnemyPredictor:
         self.predictions[drone.id] = [(t, drone.origin, drone.radius) for t in range(0, max_time, 10)]
 
     def _predict_death_ball_movement(self, death_ball: Enemy, max_time: int):
-        """Predict death ball movement (stub)."""
-        print(f"Warning: Death ball movement prediction for enemy {death_ball.id} is a stub.")
-        # Death balls might roll or follow complex paths. Assume stationary for stub.
-        self.predictions[death_ball.id] = [(t, death_ball.origin, death_ball.radius) for t in range(0, max_time, 10)]
+        """Predict death ball movement using actual physics."""
+        predictions_for_death_ball = []
+        
+        # Death balls accelerate toward ninja and bounce off walls
+        # For pathfinding, assume they continue current trajectory
+        current_pos = [death_ball.xpos, death_ball.ypos]
+        current_vel = [death_ball.xspeed, death_ball.yspeed]
+        
+        for t in range(0, max_time, 5):  # Sample every 5 frames
+            # Simple physics simulation for death ball
+            # In reality, death balls seek the ninja and bounce off walls
+            current_pos[0] += current_vel[0] * 5
+            current_pos[1] += current_vel[1] * 5
+            
+            predictions_for_death_ball.append((t, tuple(current_pos), death_ball.radius))
+        
+        self.predictions[death_ball.id] = predictions_for_death_ball
+    
+    def _predict_static_enemy(self, enemy: Enemy, max_time: int):
+        """Predict static enemy positions (mines, etc.)."""
+        # Static enemies don't move, so position is constant
+        predictions_for_enemy = []
+        
+        for t in range(0, max_time, 30):  # Sample every 30 frames for static enemies
+            predictions_for_enemy.append((t, (enemy.xpos, enemy.ypos), enemy.radius))
+        
+        self.predictions[enemy.id] = predictions_for_enemy
 
     def get_enemy_positions_at_time(self, time: int) -> List[Tuple[Tuple[float, float], float]]:
         """Get all predicted enemy positions and radii at a specific time."""

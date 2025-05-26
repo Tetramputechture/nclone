@@ -23,7 +23,7 @@ class N2PlusPathfindingSystem:
         self.surface_parser = SurfaceParser(tile_map)
         self.surfaces: List[Surface] = self.surface_parser.parse_surfaces()
         
-        self.graph_builder = NavigationGraphBuilder(self.surfaces)
+        self.graph_builder = NavigationGraphBuilder(self.surfaces, self.collision_checker, tile_map.shape)
         # Build the graph without jump edges first
         self.nav_graph = self.graph_builder.build_graph() 
         
