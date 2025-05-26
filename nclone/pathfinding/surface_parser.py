@@ -279,7 +279,11 @@ class SurfaceParser:
                 surfaces_of_type.sort(key=lambda s: (s.start_pos[1], s.start_pos[0]))
             elif surface_type == SurfaceType.WALL_LEFT or surface_type == SurfaceType.WALL_RIGHT:
                 surfaces_of_type.sort(key=lambda s: (s.start_pos[0], s.start_pos[1]))
-            else: # For slopes and curves, merging is more complex, skip for now
+            elif surface_type == SurfaceType.SLOPE:
+                # Sort slopes, e.g., primarily by y then x of start_pos, or by dominant axis of slope
+                # For simplicity, using y, x as a general sort. Angle similarity will be key for merging.
+                surfaces_of_type.sort(key=lambda s: (s.start_pos[1], s.start_pos[0]))
+            else: # For curves, merging is more complex, skip for now
                 new_surfaces.extend(surfaces_of_type)
                 continue
 
@@ -296,21 +300,39 @@ class SurfaceParser:
                 else:
                     # Check for adjacency and co-linearity/compatibility
                     can_merge = False
-                    if current_merged_surface.type == s.type and \
-                       current_merged_surface.normal == s.normal: # Must have same normal
-                        
-                        # Adjacency check: end of current meets start of next
-                        # Use a small tolerance for floating point comparisons
+                    if surface_type == SurfaceType.FLOOR or surface_type == SurfaceType.CEILING:
+                        # Horizontal merge: y must be same, x must be continuous
                         epsilon = 1e-5 
-                        if surface_type == SurfaceType.FLOOR or surface_type == SurfaceType.CEILING:
-                            # Horizontal merge: y must be same, x must be continuous
-                            if abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon and \
-                               abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon:
-                                can_merge = True
-                        elif surface_type == SurfaceType.WALL_LEFT or surface_type == SurfaceType.WALL_RIGHT:
-                            # Vertical merge: x must be same, y must be continuous
-                            if abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon and \
-                               abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon:
+                        if abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon and \
+                           abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon:
+                            can_merge = True
+                    elif surface_type == SurfaceType.WALL_LEFT or surface_type == SurfaceType.WALL_RIGHT:
+                        # Vertical merge: x must be same, y must be continuous
+                        if abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon and \
+                           abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon:
+                            can_merge = True
+                    elif surface_type == SurfaceType.SLOPE:
+                        angle_tolerance = 1.0 # degrees
+                        if abs(current_merged_surface.angle - s.angle) < angle_tolerance and \
+                           abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon and \
+                           abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon:
+                            # Check for co-linearity more robustly for slopes
+                            # Vector of current merged surface
+                            vec1_dx = current_merged_surface.end_pos[0] - current_merged_surface.start_pos[0]
+                            vec1_dy = current_merged_surface.end_pos[1] - current_merged_surface.start_pos[1]
+                            # Vector of new segment s
+                            vec2_dx = s.end_pos[0] - s.start_pos[0]
+                            vec2_dy = s.end_pos[1] - s.start_pos[1]
+                            
+                            # Normalize and check if parallel (dot product close to 1 or -1 if comparing unit vectors)
+                            # Or, simpler: check if the point s.end_pos lies on the line defined by
+                            # current_merged_surface.start_pos and s.start_pos (which is current_merged_surface.end_pos)
+                            # A more direct co-linearity: (y1-y0)*(x2-x1) == (y2-y1)*(x1-x0)
+                            x0, y0 = current_merged_surface.start_pos
+                            x1, y1 = s.start_pos # current_merged_surface.end_pos
+                            x2, y2 = s.end_pos
+                            val = (y1 - y0) * (x2 - x1) - (y2 - y1) * (x1 - x0)
+                            if abs(val) < epsilon * max(abs(x0),abs(y0),abs(x1),abs(y1),abs(x2),abs(y2),1.0): # Scaled epsilon
                                 can_merge = True
                     
                     if can_merge:
