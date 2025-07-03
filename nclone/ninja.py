@@ -10,8 +10,48 @@ from .physics import (
     sweep_circle_vs_tiles,
     get_single_closest_point
 )
-
-ANIM_DATA = "anim_data_line_new.txt.bin"
+from .constants import (
+    # Animation constants
+    ANIM_DATA,
+    DANCE_RANDOM,
+    DANCE_ID_DEFAULT,
+    DANCE_DIC,
+    
+    # Physics constants
+    GRAVITY_FALL,
+    GRAVITY_JUMP,
+    GROUND_ACCEL,
+    AIR_ACCEL,
+    DRAG_REGULAR,
+    DRAG_SLOW,
+    FRICTION_GROUND,
+    FRICTION_GROUND_SLOW,
+    FRICTION_WALL,
+    MAX_HOR_SPEED,
+    MAX_JUMP_DURATION,
+    MAX_SURVIVABLE_IMPACT,
+    MIN_SURVIVABLE_CRUSHING,
+    NINJA_RADIUS,
+    
+    # Jump constants
+    JUMP_FLAT_GROUND_Y,
+    JUMP_SLOPE_DOWNHILL_X,
+    JUMP_SLOPE_DOWNHILL_Y,
+    JUMP_SLOPE_DOWNHILL_OPPOSITE_Y,
+    JUMP_SLOPE_UPHILL_FORWARD_Y,
+    JUMP_SLOPE_UPHILL_PERP_X,
+    JUMP_SLOPE_UPHILL_PERP_Y,
+    JUMP_WALL_SLIDE_X,
+    JUMP_WALL_SLIDE_Y,
+    JUMP_WALL_REGULAR_X,
+    JUMP_WALL_REGULAR_Y,
+    JUMP_LAUNCH_PAD_BOOST_SCALAR,
+    JUMP_LAUNCH_PAD_BOOST_FACTOR,
+    
+    # Ragdoll constants
+    RAGDOLL_GRAVITY,
+    RAGDOLL_DRAG
+)
 
 
 cached_ninja_animation = []
@@ -36,37 +76,6 @@ class Ninja:
     self.xposlog and self.yposlog contain all the coordinates used to generate the traces of the replays.
     """
 
-    # Physics constants for the ninja.
-    GRAVITY_FALL = 0.06666666666666665
-    GRAVITY_JUMP = 0.01111111111111111
-    GROUND_ACCEL = 0.06666666666666665
-    AIR_ACCEL = 0.04444444444444444
-    DRAG_REGULAR = 0.9933221725495059  # 0.99^(2/3)
-    DRAG_SLOW = 0.8617738760127536  # 0.80^(2/3)
-    FRICTION_GROUND = 0.9459290248857720  # 0.92^(2/3)
-    FRICTION_GROUND_SLOW = 0.8617738760127536  # 0.80^(2/3)
-    FRICTION_WALL = 0.9113380468927672  # 0.87^(2/3)
-    MAX_HOR_SPEED = 3.333333333333333
-    MAX_JUMP_DURATION = 45
-    MAX_SURVIVABLE_IMPACT = 6
-    MIN_SURVIVABLE_CRUSHING = 0.05
-    RADIUS = 10
-
-    # Parameters for victory dances.
-    # DANCE IDS (names of dances courtesy of Eddy, 0-12 are new, 13-20 are classics):
-    # 0:Default pose, 1:Tired and sweaty, 2:Hands in the air, 3:Crab walk, 4:Shuffle, 5:Turk dance,
-    # 6:Russian squat dance, 7:Arm wave, 8:The carlton, 9:Hanging, 10:The worm, 11:Thriller,
-    # 12:Side to side, 13:Clutch to the sky, 14:Frontflip, 15:Waving, 16:On one leg, 17:Backflip,
-    # 18:Kneeling, 19:Fall to the floor, 20:Russian squat dance (classic version), 21:Kick
-    DANCE_RANDOM = True  # Choose whether the victory dance is picked randomly.
-    # Choose the id of the dance that will always play if DANCE_RANDOM is false.
-    DANCE_ID_DEFAULT = 0
-    DANCE_DIC = {0: (104, 104), 1: (106, 225), 2: (226, 345), 3: (346, 465), 4: (466, 585), 5: (586, 705),
-                 6: (706, 825), 7: (826, 945), 8: (946, 1065), 9: (1066, 1185), 10: (1186, 1305),
-                 11: (1306, 1485), 12: (1486, 1605), 13: (1606, 1664), 14: (1665, 1731), 15: (1732, 1810),
-                 16: (1811, 1852), 17: (1853, 1946), 18: (1947, 2004), 19: (2005, 2156), 20: (2157, 2241),
-                 21: (2242, 2295)}
-
     def __init__(self, sim, ninja_anim_mode: bool):
         """Initiate ninja position at spawn point, and initiate other values to their initial state"""
         self.ninja_anim_mode = ninja_anim_mode and os.path.isfile(ANIM_DATA)
@@ -79,9 +88,9 @@ class Ninja:
         self.ypos = sim.map_data[1232]*6
         self.xspeed = 0
         self.yspeed = 0
-        self.applied_gravity = self.GRAVITY_FALL
-        self.applied_drag = self.DRAG_REGULAR
-        self.applied_friction = self.FRICTION_GROUND
+        self.applied_gravity = GRAVITY_FALL
+        self.applied_drag = DRAG_REGULAR
+        self.applied_friction = FRICTION_GROUND
         self.state = 0  # 0:Immobile, 1:Running, 2:Ground sliding, 3:Jumping, 4:Falling, 5:Wall sliding
         self.airborn = False
         self.airborn_old = False
@@ -216,14 +225,14 @@ class Ninja:
         dx = self.xpos - self.xpos_old
         dy = self.ypos - self.ypos_old
         time = sweep_circle_vs_tiles(
-            self.sim, self.xpos_old, self.ypos_old, dx, dy, self.RADIUS * 0.5)
+            self.sim, self.xpos_old, self.ypos_old, dx, dy, NINJA_RADIUS * 0.5)
         self.xpos = self.xpos_old + time * dx
         self.ypos = self.ypos_old + time * dy
 
         # Find the closest point from the ninja, apply depenetration and update speed. Loop 32 times.
         for _ in range(32):
             result, closest_point = get_single_closest_point(
-                self.sim, self.xpos, self.ypos, self.RADIUS)
+                self.sim, self.xpos, self.ypos, NINJA_RADIUS)
             if result == 0:
                 break
             a, b = closest_point
@@ -237,7 +246,7 @@ class Ninja:
                 if self.xpos == 49.153536108584795:
                     dx = 2**-47
             dist = math.sqrt(dx**2 + dy**2)
-            depen_len = self.RADIUS - dist*result
+            depen_len = NINJA_RADIUS - dist*result
             if dist == 0 or depen_len < 0.0000001:
                 return
             depen_x = dx / dist * depen_len
@@ -291,13 +300,13 @@ class Ninja:
                         self.ylp_boost_normalized = yboost/boost_scalar
                         self.launch_pad_buffer = 0
                         if self.state == 3:
-                            self.applied_gravity = self.GRAVITY_FALL
+                            self.applied_gravity = GRAVITY_FALL
                         self.state = 4
                     else:  # If touched wall of bounce block, oneway, thwump or shwump, retrieve wall normal.
                         wall_normal += collision_result
 
         # Check if the ninja can interact with walls from nearby tile segments.
-        rad = self.RADIUS + 0.1
+        rad = NINJA_RADIUS + 0.1
         segments = gather_segments_from_region(self.sim, self.xpos-rad, self.ypos-rad,
                                                self.xpos+rad, self.ypos+rad)
         for segment in segments:
@@ -331,7 +340,7 @@ class Ninja:
             if self.state != 8 and self.airborn_old:  # Check if died from floor impact
                 impact_vel = -(self.floor_normalized_x*self.xspeed_old +
                                self.floor_normalized_y*self.yspeed_old)
-                if impact_vel > self.MAX_SURVIVABLE_IMPACT - 4/3 * abs(self.floor_normalized_y):
+                if impact_vel > MAX_SURVIVABLE_IMPACT - 4/3 * abs(self.floor_normalized_y):
                     self.xspeed = self.xspeed_old
                     self.yspeed = self.yspeed_old
                     self.kill(1, self.xpos, self.ypos,
@@ -350,7 +359,7 @@ class Ninja:
             if self.state != 8:  # Check if died from floor impact
                 impact_vel = -(self.ceiling_normalized_x*self.xspeed_old +
                                self.ceiling_normalized_y*self.yspeed_old)
-                if impact_vel > self.MAX_SURVIVABLE_IMPACT - 4/3 * abs(self.ceiling_normalized_y):
+                if impact_vel > MAX_SURVIVABLE_IMPACT - 4/3 * abs(self.ceiling_normalized_y):
                     self.xspeed = self.xspeed_old
                     self.yspeed = self.yspeed_old
                     self.kill(1, self.xpos, self.ypos,
@@ -358,8 +367,9 @@ class Ninja:
 
         # Check if ninja died from crushing.
         if self.is_crushable and self.crush_len > 0:
-            if math.sqrt(self.x_crush**2 + self.y_crush**2) / self.crush_len < self.MIN_SURVIVABLE_CRUSHING:
+            if math.sqrt(self.x_crush**2 + self.y_crush**2) / self.crush_len < MIN_SURVIVABLE_CRUSHING:
                 self.kill(2, self.xpos, self.ypos, 0, 0)
+
 
     def floor_jump(self):
         """Perform floor jump depending on slope angle and direction."""
@@ -367,28 +377,28 @@ class Ninja:
         self.floor_buffer = -1
         self.launch_pad_buffer = -1
         self.state = 3
-        self.applied_gravity = self.GRAVITY_JUMP
+        self.applied_gravity = GRAVITY_JUMP
         if self.floor_normalized_x == 0:  # Jump from flat ground
             jx = 0
-            jy = -2
+            jy = JUMP_FLAT_GROUND_Y
         else:  # Slope jump
             dx = self.floor_normalized_x
             dy = self.floor_normalized_y
             if self.xspeed * dx >= 0:  # Moving downhill
                 if self.xspeed * self.hor_input >= 0:
-                    jx = 2/3 * dx
-                    jy = 2 * dy
+                    jx = JUMP_SLOPE_DOWNHILL_X * dx
+                    jy = JUMP_SLOPE_DOWNHILL_Y * dy
                 else:
                     jx = 0
-                    jy = -1.4
+                    jy = JUMP_SLOPE_DOWNHILL_OPPOSITE_Y
             else:  # Moving uphill
                 if self.xspeed * self.hor_input > 0:  # Forward jump
                     jx = 0
-                    jy = -1.4
+                    jy = JUMP_SLOPE_UPHILL_FORWARD_Y
                 else:
                     self.xspeed = 0  # Perp jump
-                    jx = 2/3 * dx
-                    jy = 2 * dy
+                    jx = JUMP_SLOPE_UPHILL_PERP_X * dx
+                    jy = JUMP_SLOPE_UPHILL_PERP_Y * dy
         if self.yspeed > 0:
             self.yspeed = 0
         self.xspeed += jx
@@ -400,13 +410,13 @@ class Ninja:
     def wall_jump(self):
         """Perform wall jump depending on wall normal and if sliding or not."""
         if self.hor_input * self.wall_normal < 0 and self.state == 5:  # Slide wall jump
-            jx = 2/3
-            jy = -1
+            jx = JUMP_WALL_SLIDE_X
+            jy = JUMP_WALL_SLIDE_Y
         else:  # Regular wall jump
-            jx = 1
-            jy = -1.4
+            jx = JUMP_WALL_REGULAR_X
+            jy = JUMP_WALL_REGULAR_Y
         self.state = 3
-        self.applied_gravity = self.GRAVITY_JUMP
+        self.applied_gravity = GRAVITY_JUMP
         if self.xspeed * self.wall_normal < 0:
             self.xspeed = 0
         if self.yspeed > 0:
@@ -428,9 +438,9 @@ class Ninja:
         self.launch_pad_buffer = -1
         boost_scalar = 2 * abs(self.xlp_boost_normalized) + 2
         if boost_scalar == 2:
-            boost_scalar = 1.7  # This was really needed. Thanks Metanet
-        self.xspeed += self.xlp_boost_normalized * boost_scalar * 2/3
-        self.yspeed += self.ylp_boost_normalized * boost_scalar * 2/3
+            boost_scalar = JUMP_LAUNCH_PAD_BOOST_SCALAR  # This was really needed. Thanks Metanet
+        self.xspeed += self.xlp_boost_normalized * boost_scalar * JUMP_LAUNCH_PAD_BOOST_FACTOR
+        self.yspeed += self.ylp_boost_normalized * boost_scalar * JUMP_LAUNCH_PAD_BOOST_FACTOR
 
     def think(self):
         """This function handles all the ninja's actions depending of the inputs and its environment."""
@@ -480,22 +490,22 @@ class Ninja:
             self.think_awaiting_death()
             return
         if self.state == 8:
-            self.applied_drag = self.DRAG_REGULAR if self.airborn else self.DRAG_SLOW
+            self.applied_drag = DRAG_REGULAR if self.airborn else DRAG_SLOW
             return
 
         # This block deals with the case where the ninja is touching a floor.
         if not self.airborn:
-            xspeed_new = self.xspeed + self.GROUND_ACCEL * self.hor_input
-            if abs(xspeed_new) < self.MAX_HOR_SPEED:
+            xspeed_new = self.xspeed + GROUND_ACCEL * self.hor_input
+            if abs(xspeed_new) < MAX_HOR_SPEED:
                 self.xspeed = xspeed_new
             if self.state > 2:
                 if self.xspeed * self.hor_input <= 0:
                     if self.state == 3:
-                        self.applied_gravity = self.GRAVITY_FALL
+                        self.applied_gravity = GRAVITY_FALL
                     self.state = 2
                 else:
                     if self.state == 3:
-                        self.applied_gravity = self.GRAVITY_FALL
+                        self.applied_gravity = GRAVITY_FALL
                     self.state = 1
             if not in_jump_buffer and not new_jump_check:  # if not jumping
                 if self.state == 2:
@@ -512,12 +522,12 @@ class Ninja:
                         speed_scalar = math.sqrt(
                             self.xspeed**2 + self.yspeed**2)
                         fric_force = abs(
-                            self.xspeed * (1-self.FRICTION_GROUND) * self.floor_normalized_y)
+                            self.xspeed * (1-FRICTION_GROUND) * self.floor_normalized_y)
                         fric_force2 = speed_scalar - fric_force * self.floor_normalized_y**2
                         self.xspeed = self.xspeed / speed_scalar * fric_force2
                         self.yspeed = self.yspeed / speed_scalar * fric_force2
                         return
-                    self.xspeed *= self.FRICTION_GROUND
+                    self.xspeed *= FRICTION_GROUND
                     return
                 if self.state == 1:
                     projection = abs(self.yspeed * self.floor_normalized_x
@@ -526,8 +536,8 @@ class Ninja:
                         # if holding inputs in downhill direction or flat ground
                         if self.hor_input * self.floor_normalized_x >= 0:
                             return
-                        if abs(xspeed_new) < self.MAX_HOR_SPEED:
-                            boost = self.GROUND_ACCEL/2 * self.hor_input
+                        if abs(xspeed_new) < MAX_HOR_SPEED:
+                            boost = GROUND_ACCEL/2 * self.hor_input
                             xboost = boost * self.floor_normalized_y * self.floor_normalized_y
                             yboost = boost * self.floor_normalized_y * -self.floor_normalized_x
                             self.xspeed += xboost
@@ -541,7 +551,7 @@ class Ninja:
                     projection = abs(self.yspeed * self.floor_normalized_x
                                      - self.xspeed * self.floor_normalized_y)
                     if projection < 0.1:
-                        self.xspeed *= self.FRICTION_GROUND_SLOW
+                        self.xspeed *= FRICTION_GROUND_SLOW
                         return
                     self.state = 2
                 return
@@ -550,16 +560,16 @@ class Ninja:
 
         # This block deals with the case where the ninja didn't touch a floor
         else:
-            xspeed_new = self.xspeed + self.AIR_ACCEL * self.hor_input
-            if abs(xspeed_new) < self.MAX_HOR_SPEED:
+            xspeed_new = self.xspeed + AIR_ACCEL * self.hor_input
+            if abs(xspeed_new) < MAX_HOR_SPEED:
                 self.xspeed = xspeed_new
             if self.state < 3:
                 self.state = 4
                 return
             if self.state == 3:
                 self.jump_duration += 1
-                if not self.jump_input or self.jump_duration > self.MAX_JUMP_DURATION:
-                    self.applied_gravity = self.GRAVITY_FALL
+                if not self.jump_input or self.jump_duration > MAX_JUMP_DURATION:
+                    self.applied_gravity = GRAVITY_FALL
                     self.state = 4
                     return
             if in_jump_buffer or new_jump_check:  # if able to perfrom jump
@@ -578,13 +588,13 @@ class Ninja:
             else:
                 if self.state == 5:
                     if self.hor_input * self.wall_normal <= 0:
-                        self.yspeed *= self.FRICTION_WALL
+                        self.yspeed *= FRICTION_WALL
                     else:
                         self.state = 4
                 else:
                     if self.yspeed > 0 and self.hor_input * self.wall_normal < 0:
                         if self.state == 3:
-                            self.applied_gravity = self.GRAVITY_FALL
+                            self.applied_gravity = GRAVITY_FALL
                         self.state = 5
 
     def think_awaiting_death(self):
@@ -658,8 +668,8 @@ class Ninja:
                 self.anim_frame = 103
             if self.anim_state == 6:
                 self.dance_id = random.choice(
-                    list(self.DANCE_DIC)) if self.DANCE_RANDOM else self.DANCE_ID_DEFAULT
-                self.anim_frame = self.DANCE_DIC[self.dance_id][0]
+                    list(DANCE_DIC)) if DANCE_RANDOM else DANCE_ID_DEFAULT
+                self.anim_frame = DANCE_DIC[self.dance_id][0]
 
         if self.anim_state == 0:
             if self.anim_frame < 11:
@@ -676,7 +686,7 @@ class Ninja:
                 rate = max(self.anim_rate*1.5, -1)
             self.anim_frame = 93 + math.floor(9*rate)
         if self.anim_state == 6:
-            if self.anim_frame < self.DANCE_DIC[self.dance_id][1]:
+            if self.anim_frame < DANCE_DIC[self.dance_id][1]:
                 self.anim_frame += 1
 
         self.bones_old = self.bones
@@ -722,7 +732,7 @@ class Ninja:
         """Set ninja's state to celebrating."""
         if self.state < 6:
             if self.state == 3:
-                self.applied_gravity = self.GRAVITY_FALL
+                self.applied_gravity = GRAVITY_FALL
             self.state = 8
 
     def kill(self, type, xpos, ypos, xspeed, yspeed):
@@ -733,7 +743,7 @@ class Ninja:
             self.death_xspeed = xspeed
             self.death_yspeed = yspeed
             if self.state == 3:
-                self.applied_gravity = self.GRAVITY_FALL
+                self.applied_gravity = GRAVITY_FALL
             self.state = 7
 
     def is_valid_target(self):
@@ -758,8 +768,8 @@ class Ninja:
 
 class Ragdoll:
     """None of this is working yet. Might never will."""
-    GRAVITY = 0.06666666666666665
-    DRAG = 0.99999
+    GRAVITY = RAGDOLL_GRAVITY
+    DRAG = RAGDOLL_DRAG
 
     def __init__(self):
         self.state = 0

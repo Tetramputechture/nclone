@@ -3,6 +3,23 @@ import networkx as nx
 from typing import List, Tuple, Dict, Optional
 
 from .utils import CollisionChecker # Assuming CollisionChecker is in utils.py
+# Import constants from ninja.py
+from ..ninja import (
+    GRAVITY_FALL,
+    GRAVITY_JUMP,
+    GROUND_ACCEL,
+    AIR_ACCEL,
+    DRAG_REGULAR,
+    FRICTION_GROUND,
+    FRICTION_WALL,
+    MAX_HOR_SPEED,
+    MAX_JUMP_DURATION,
+    NINJA_RADIUS,
+    JUMP_FLAT_GROUND_Y,
+    JUMP_WALL_REGULAR_Y,
+    JUMP_WALL_REGULAR_X,
+    JUMP_WALL_SLIDE_X
+)
 
 class PathOptimizer:
     """Optimizes and smooths paths for better execution"""
@@ -279,37 +296,16 @@ class PathOptimizer:
 class MovementController:
     """Converts high-level paths to frame-by-frame N++ input commands using accurate physics."""
     
-    # Exact physics constants from the actual N++ simulation
-    GRAVITY_FALL = 0.06666666666666665
-    GRAVITY_JUMP = 0.01111111111111111
-    GROUND_ACCEL = 0.06666666666666665
-    AIR_ACCEL = 0.04444444444444444
-    DRAG_REGULAR = 0.9933221725495059
-    FRICTION_GROUND = 0.9459290248857720 # Applied when no L/R input on ground
-    # FRICTION_GROUND_INPUT_RELEASE = 0.9459290248857720 # Same as FRICTION_GROUND effectively
-    # N++ also has a "skid" friction if changing direction, usually stronger.
-    # For simplicity, we'll use GROUND_ACCEL for acceleration and FRICTION_GROUND for passive deceleration.
-    FRICTION_WALL = 0.9113380468927672
-    MAX_HOR_SPEED = 3.333333333333333
-    MAX_JUMP_DURATION = 45
-    NINJA_RADIUS = 10
-    
-    # Jump velocities from actual ninja mechanics
-    FLOOR_JUMP_VELOCITY_Y = -2.0
-    WALL_JUMP_VELOCITY_Y = -1.4
-    WALL_JUMP_VELOCITY_X_NORMAL = 1.0
-    WALL_JUMP_VELOCITY_X_SLIDE = 2.0/3.0
-    
     def __init__(self, physics_params: Optional[dict] = None):
         self.physics = physics_params if physics_params else {}
         self.command_buffer: List[dict] = []
         
         # Allow override of physics constants if needed
-        self.max_jump_hold_frames = self.physics.get('max_jump_hold_frames', self.MAX_JUMP_DURATION)
-        self.ninja_max_speed = self.physics.get('ninja_speed', self.MAX_HOR_SPEED)
-        self.jump_vel_y = self.physics.get('jump_vel_y', self.FLOOR_JUMP_VELOCITY_Y)
-        self.wall_jump_vel_y = self.physics.get('wall_jump_vel_y', self.WALL_JUMP_VELOCITY_Y)
-        self.wall_jump_vel_x = self.physics.get('wall_jump_vel_x', self.WALL_JUMP_VELOCITY_X_NORMAL)
+        self.max_jump_hold_frames = self.physics.get('max_jump_hold_frames', MAX_JUMP_DURATION)
+        self.ninja_max_speed = self.physics.get('ninja_speed', MAX_HOR_SPEED)
+        self.jump_vel_y = self.physics.get('jump_vel_y', JUMP_FLAT_GROUND_Y)
+        self.wall_jump_vel_y = self.physics.get('wall_jump_vel_y', JUMP_WALL_REGULAR_Y)
+        self.wall_jump_vel_x = self.physics.get('wall_jump_vel_x', JUMP_WALL_REGULAR_X)
 
     def generate_commands(self, initial_pos: Tuple[float, float],
                          initial_vel: Tuple[float, float],
@@ -440,16 +436,16 @@ class MovementController:
             # Apply ground friction (passive deceleration when no input or aligned input)
             # N++ physics: friction always applies, then acceleration.
             original_vx = vel[0]
-            vel[0] *= self.FRICTION_GROUND
+            vel[0] *= FRICTION_GROUND
             
             # Apply acceleration from input
-            if cmd['right'] and vel[0] < self.MAX_HOR_SPEED:
-                vel[0] += self.GROUND_ACCEL
-            elif cmd['left'] and vel[0] > -self.MAX_HOR_SPEED:
-                vel[0] -= self.GROUND_ACCEL
+            if cmd['right'] and vel[0] < MAX_HOR_SPEED:
+                vel[0] += GROUND_ACCEL
+            elif cmd['left'] and vel[0] > -MAX_HOR_SPEED:
+                vel[0] -= GROUND_ACCEL
             
             # Clamp to max speed
-            vel[0] = max(-self.MAX_HOR_SPEED, min(self.MAX_HOR_SPEED, vel[0]))
+            vel[0] = max(-MAX_HOR_SPEED, min(MAX_HOR_SPEED, vel[0]))
 
             # If braking and input was applied, ensure velocity reduces towards zero if overshooting
             # This part is tricky. If trying to stop precisely, may need to oscillate or reduce input.
@@ -460,8 +456,8 @@ class MovementController:
             
             # Vertical component (simplified for walk/run on flat surface, or simple fall for generic_reach)
             if is_generic_reach: # If trying to reach a y-coordinate too (e.g. falling to a waypoint)
-                vel[1] += self.GRAVITY_FALL # Assume always falling if generic_reach controls Y
-                vel[1] *= self.DRAG_REGULAR # Basic air drag
+                vel[1] += GRAVITY_FALL # Assume always falling if generic_reach controls Y
+                vel[1] *= DRAG_REGULAR # Basic air drag
                 pos[1] += vel[1]
             else: # Assume on a surface, y velocity is 0 unless path implies slope (not handled here)
                 vel[1] = 0.0 
@@ -479,7 +475,7 @@ class MovementController:
                     if abs(vel[0]) > 0.1: # If still moving significantly, add a frame of no input
                          final_cmd = {'frame': current_frame_abs + 1, 'jump': False, 'left': False, 'right': False, 'action': 'stop'}
                          commands.append(final_cmd)
-                         vel[0] *= self.FRICTION_GROUND # One last friction application
+                         vel[0] *= FRICTION_GROUND # One last friction application
                     # pos might be slightly off, but vel should be low.
                     break 
             
@@ -525,9 +521,9 @@ class MovementController:
         sim_vel = list(current_vel) # This should be reset by the jump impulse
         
         # Apply a mock jump impulse (very simplified)
-        sim_vel[1] = self.FLOOR_JUMP_VELOCITY_Y 
-        if cmd_init['right']: sim_vel[0] = min(self.MAX_HOR_SPEED/2, sim_vel[0] + 1.0)
-        if cmd_init['left']: sim_vel[0] = max(-self.MAX_HOR_SPEED/2, sim_vel[0] - 1.0)
+        sim_vel[1] = JUMP_FLAT_GROUND_Y 
+        if cmd_init['right']: sim_vel[0] = min(MAX_HOR_SPEED/2, sim_vel[0] + 1.0)
+        if cmd_init['left']: sim_vel[0] = max(-MAX_HOR_SPEED/2, sim_vel[0] - 1.0)
 
 
         for i in range(1, hold_frames + air_frames):
@@ -535,20 +531,20 @@ class MovementController:
             is_holding_jump = i < hold_frames
             
             # Simplified physics update
-            sim_vel[1] += self.GRAVITY_JUMP if is_holding_jump and sim_vel[1] < 0 else self.GRAVITY_FALL
-            sim_vel[0] *= self.DRAG_REGULAR # Simplified air drag on x
-            sim_vel[1] *= self.DRAG_REGULAR # Simplified air drag on y
+            sim_vel[1] += GRAVITY_JUMP if is_holding_jump and sim_vel[1] < 0 else GRAVITY_FALL
+            sim_vel[0] *= DRAG_REGULAR # Simplified air drag on x
+            sim_vel[1] *= DRAG_REGULAR # Simplified air drag on y
 
             # Air control
             current_dx_to_target = end_wp[0] - sim_pos[0]
             input_left = False
             input_right = False
-            if current_dx_to_target < -self.NINJA_RADIUS: # Target to left
+            if current_dx_to_target < -NINJA_RADIUS: # Target to left
                 input_left = True
-                if sim_vel[0] > -self.MAX_HOR_SPEED: sim_vel[0] -= self.AIR_ACCEL
-            elif current_dx_to_target > self.NINJA_RADIUS: # Target to right
+                if sim_vel[0] > -MAX_HOR_SPEED: sim_vel[0] -= AIR_ACCEL
+            elif current_dx_to_target > NINJA_RADIUS: # Target to right
                 input_right = True
-                if sim_vel[0] < self.MAX_HOR_SPEED: sim_vel[0] += self.AIR_ACCEL
+                if sim_vel[0] < MAX_HOR_SPEED: sim_vel[0] += AIR_ACCEL
             
             sim_pos[0] += sim_vel[0]
             sim_pos[1] += sim_vel[1]
@@ -560,8 +556,8 @@ class MovementController:
             })
 
             # Basic arrival check (very crude)
-            if abs(sim_pos[0] - end_wp[0]) < self.NINJA_RADIUS and \
-               abs(sim_pos[1] - end_wp[1]) < self.NINJA_RADIUS:
+            if abs(sim_pos[0] - end_wp[0]) < NINJA_RADIUS and \
+               abs(sim_pos[1] - end_wp[1]) < NINJA_RADIUS:
                 break
         
         return {'commands': commands, 'final_pos': tuple(sim_pos), 'final_vel': tuple(sim_vel)}
@@ -590,8 +586,8 @@ class MovementController:
         sim_vel = list(current_vel)
 
         # Mock wall jump impulse
-        sim_vel[1] = self.WALL_JUMP_VELOCITY_Y
-        sim_vel[0] = self.WALL_JUMP_VELOCITY_X_NORMAL if is_left_wall_jump else -self.WALL_JUMP_VELOCITY_X_NORMAL
+        sim_vel[1] = JUMP_WALL_REGULAR_Y
+        sim_vel[0] = JUMP_WALL_REGULAR_X if is_left_wall_jump else -JUMP_WALL_REGULAR_X
         
         hold_frames = 5  # Wall jump holds are often short
         air_frames = 25
@@ -600,19 +596,19 @@ class MovementController:
             frame_abs = base_frame + i
             is_holding_jump = i < hold_frames
 
-            sim_vel[1] += self.GRAVITY_JUMP if is_holding_jump and sim_vel[1] < 0 else self.GRAVITY_FALL
-            sim_vel[0] *= self.DRAG_REGULAR
-            sim_vel[1] *= self.DRAG_REGULAR
+            sim_vel[1] += GRAVITY_JUMP if is_holding_jump and sim_vel[1] < 0 else GRAVITY_FALL
+            sim_vel[0] *= DRAG_REGULAR
+            sim_vel[1] *= DRAG_REGULAR
 
             current_dx_to_target = end_wp[0] - sim_pos[0]
             input_left = False
             input_right = False
-            if current_dx_to_target < -self.NINJA_RADIUS:
+            if current_dx_to_target < -NINJA_RADIUS:
                 input_left = True
-                if sim_vel[0] > -self.MAX_HOR_SPEED: sim_vel[0] -= self.AIR_ACCEL
-            elif current_dx_to_target > self.NINJA_RADIUS:
+                if sim_vel[0] > -MAX_HOR_SPEED: sim_vel[0] -= AIR_ACCEL
+            elif current_dx_to_target > NINJA_RADIUS:
                 input_right = True
-                if sim_vel[0] < self.MAX_HOR_SPEED: sim_vel[0] += self.AIR_ACCEL
+                if sim_vel[0] < MAX_HOR_SPEED: sim_vel[0] += AIR_ACCEL
             
             sim_pos[0] += sim_vel[0]
             sim_pos[1] += sim_vel[1]
@@ -622,8 +618,8 @@ class MovementController:
                 'left': input_left, 'right': input_right,
                 'action': 'wall_jump_air_control_abstract'
             })
-            if abs(sim_pos[0] - end_wp[0]) < self.NINJA_RADIUS and \
-               abs(sim_pos[1] - end_wp[1]) < self.NINJA_RADIUS: # Basic arrival
+            if abs(sim_pos[0] - end_wp[0]) < NINJA_RADIUS and \
+               abs(sim_pos[1] - end_wp[1]) < NINJA_RADIUS: # Basic arrival
                 break
 
         return {'commands': commands, 'final_pos': tuple(sim_pos), 'final_vel': tuple(sim_vel)}
@@ -642,19 +638,19 @@ class MovementController:
         for i in range(max_fall_frames):
             frame_abs = base_frame + i
             
-            sim_vel[1] += self.GRAVITY_FALL
-            sim_vel[0] *= self.DRAG_REGULAR 
-            sim_vel[1] *= self.DRAG_REGULAR
+            sim_vel[1] += GRAVITY_FALL
+            sim_vel[0] *= DRAG_REGULAR 
+            sim_vel[1] *= DRAG_REGULAR
 
             current_dx_to_target = end_wp[0] - sim_pos[0]
             input_left = False
             input_right = False
             if current_dx_to_target < -1.0: # Target to left
                 input_left = True
-                if sim_vel[0] > -self.MAX_HOR_SPEED: sim_vel[0] -= self.AIR_ACCEL
+                if sim_vel[0] > -MAX_HOR_SPEED: sim_vel[0] -= AIR_ACCEL
             elif current_dx_to_target > 1.0: # Target to right
                 input_right = True
-                if sim_vel[0] < self.MAX_HOR_SPEED: sim_vel[0] += self.AIR_ACCEL
+                if sim_vel[0] < MAX_HOR_SPEED: sim_vel[0] += AIR_ACCEL
             
             sim_pos[0] += sim_vel[0]
             sim_pos[1] += sim_vel[1]
@@ -666,11 +662,11 @@ class MovementController:
             })
 
             # Arrival condition: pass below the y-target OR get close on x & y
-            if sim_pos[1] > end_wp[1] - self.NINJA_RADIUS: # If fallen to target height
-                 if abs(sim_pos[0] - end_wp[0]) < self.NINJA_RADIUS * 2: # And horizontally close
+            if sim_pos[1] > end_wp[1] - NINJA_RADIUS: # If fallen to target height
+                 if abs(sim_pos[0] - end_wp[0]) < NINJA_RADIUS * 2: # And horizontally close
                     break
-            if abs(sim_pos[0] - end_wp[0]) < self.NINJA_RADIUS and \
-               abs(sim_pos[1] - end_wp[1]) < self.NINJA_RADIUS : # General proximity
+            if abs(sim_pos[0] - end_wp[0]) < NINJA_RADIUS and \
+               abs(sim_pos[1] - end_wp[1]) < NINJA_RADIUS : # General proximity
                 break
             if sim_pos[1] > start_wp[1] + 480: # Fallen too far (e.g. 20 tiles)
                 break

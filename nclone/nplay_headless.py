@@ -13,6 +13,7 @@ from .entities import (EntityToggleMine, EntityGold, EntityExit, EntityExitSwitc
                      EntityOneWayPlatform, EntityDroneZap, EntityBounceBlock,
                      EntityThwump, EntityBoostPad, EntityDeathBall, EntityMiniDrone,
                      EntityShoveThwump)
+from .pathfinding.pathfinding_visualizer import PathfindingVisualizer, PYGAME_AVAILABLE
 
 SRCWIDTH = 1056
 SRCHEIGHT = 600
@@ -43,8 +44,14 @@ class NPlayHeadless:
 
         self.sim = Simulator(
             SimConfig(enable_anim=enable_animation, log_data=enable_logging))
+        
+        # Initialize PathfindingVisualizer if Pygame is available and debug overlay is enabled
+        self.pathfinding_visualizer = None
+        if PYGAME_AVAILABLE and self.render_mode == 'human' and enable_debug_overlay:
+            self.pathfinding_visualizer = PathfindingVisualizer()
+
         self.sim_renderer = NSimRenderer(
-            self.sim, render_mode, enable_debug_overlay)
+            self.sim, render_mode, enable_debug_overlay, self.pathfinding_visualizer)
         self.current_map_data = None
         self.clock = pygame.time.Clock()
 
@@ -182,9 +189,24 @@ class NPlayHeadless:
         """
         # --- Cache Check ---
         if self.current_tick == self.last_rendered_tick:
+            if self.render_mode == 'human' and self.cached_render_surface is not None: # If human mode, return surface directly
+                if self.pathfinding_visualizer and self.sim_renderer.debug_overlay_renderer:
+                     self.pathfinding_visualizer.update_params(
+                         self.sim_renderer.debug_overlay_renderer.adjust,
+                         self.sim_renderer.debug_overlay_renderer.tile_x_offset,
+                         self.sim_renderer.debug_overlay_renderer.tile_y_offset
+                     )
+                if debug_info is not None:
+                    # This will redraw the game and the overlay if new debug_info is provided
+                    surface = self.sim_renderer.draw(self.sim.frame <=1, debug_info)
+                    self.cached_render_surface = surface
+                    return self.cached_render_surface 
+                return self.cached_render_surface 
+
+            # If not human mode, or surface cache miss, check buffer cache
             if self.cached_render_buffer is not None:  # This is H, W, 1 grayscale
                 return self.cached_render_buffer
-            elif self.cached_render_surface is not None:  # Switched from human to rgb_array
+            elif self.cached_render_surface is not None:  # Mode might have switched from human to rgb_array, or first rgb_array render
                 # Generate grayscaled buffer from self.cached_render_surface
                 gray_array_hw1 = self._perform_grayscale_conversion(self.cached_render_surface)
                 self.cached_render_buffer = gray_array_hw1.copy()  # Cache the new grayscale buffer
@@ -193,10 +215,20 @@ class NPlayHeadless:
 
         # --- New Frame Rendering ---
         init = self.sim.frame <= 1
+        if self.pathfinding_visualizer and self.sim_renderer.debug_overlay_renderer: # Update params before drawing
+            self.pathfinding_visualizer.update_params(
+                self.sim_renderer.debug_overlay_renderer.adjust,
+                self.sim_renderer.debug_overlay_renderer.tile_x_offset,
+                self.sim_renderer.debug_overlay_renderer.tile_y_offset
+            )
         surface = self.sim_renderer.draw(init, debug_info)  # This is a Pygame Surface
 
         self.cached_render_surface = surface  # Always cache the raw surface for potential mode switch or human display
         self.last_rendered_tick = self.current_tick
+
+        if self.render_mode == 'human':
+            # For human mode, the surface is already updated and displayed by NSimRenderer.draw
+            return self.cached_render_surface
 
         final_gray_output_hw1 = self._perform_grayscale_conversion(surface)
         self.cached_render_buffer = final_gray_output_hw1.copy()  # Cache the (H,W,1) grayscale buffer

@@ -2,7 +2,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 
 # Assuming the main system and stubs are importable
-from .pathfinding_system import N2PlusPathfindingSystem
+from .pathfinding_system import PathfindingSystem
 from .utils import Enemy # For creating test enemies
 
 # Conditional import of pygame for potential test visualization or setup
@@ -14,7 +14,7 @@ except ImportError:
     pass # Tests might run without visualization
 
 class PathfindingTester:
-    """Test suite for the N2PlusPathfindingSystem."""
+    """Test suite for the PathfindingSystem."""
 
     def __init__(self):
         self.test_results: List[str] = []
@@ -83,16 +83,16 @@ class PathfindingTester:
         print("\n--- Running Pathfinding Tests ---")
 
         print("\nTesting on Simple Flat Map...")
-        pf_system_flat = N2PlusPathfindingSystem(self.simple_flat_map)
+        pf_system_flat = PathfindingSystem(self.simple_flat_map)
         self.test_basic_pathfinding(pf_system_flat, self.simple_flat_map)
         self.test_jump_trajectories(pf_system_flat) # Jump calc is somewhat independent of map complexity for unit tests
 
         print("\nTesting on Map With Gap (requires jumping)...")
-        pf_system_gap = N2PlusPathfindingSystem(self.map_with_gap)
+        pf_system_gap = PathfindingSystem(self.map_with_gap)
         self.test_jump_pathfinding(pf_system_gap, self.map_with_gap)
 
         print("\nTesting on Maze Map...")
-        pf_system_maze = N2PlusPathfindingSystem(self.maze_map)
+        pf_system_maze = PathfindingSystem(self.maze_map)
         self.test_maze_navigation(pf_system_maze, self.maze_map)
         
         print("\nTesting Dynamic Obstacle Avoidance (conceptual)...")
@@ -112,7 +112,7 @@ class PathfindingTester:
             print(f"{num_fails} test(s) failed.")
         print("----------------------")
         
-    def test_basic_pathfinding(self, pf_system: N2PlusPathfindingSystem, map_data: np.ndarray):
+    def test_basic_pathfinding(self, pf_system: PathfindingSystem, map_data: np.ndarray):
         """Test simple A to B pathfinding on a given map system."""
         print("  Sub-test: Basic Pathfinding (e.g. flat surface walk)")
         # Test on flat surface (assuming simple_flat_map setup)
@@ -140,7 +140,7 @@ class PathfindingTester:
         else:
             print(f"  Skipping unreachable test to {unreachable_pos} as it's not guaranteed to be in a wall for this map.")
 
-    def test_jump_pathfinding(self, pf_system: N2PlusPathfindingSystem, map_data: np.ndarray):
+    def test_jump_pathfinding(self, pf_system: PathfindingSystem, map_data: np.ndarray):
         """Test pathfinding that requires jumps."""
         print("  Sub-test: Jump Pathfinding (e.g. across a gap)")
         # Using map_with_gap: floor at y=20 (world y=480), gap from x=18 to 23 (world 432 to 552)
@@ -163,7 +163,7 @@ class PathfindingTester:
         if commands_over_gap:
             self.simulate_path_execution(commands_over_gap, start_pos_gap, end_pos_gap_other_side, map_data)
 
-    def test_jump_trajectories(self, pf_system: N2PlusPathfindingSystem):
+    def test_jump_trajectories(self, pf_system: PathfindingSystem):
         """Test the JumpCalculator component more directly (if possible via system)."""
         print("  Sub-test: Jump Trajectory Calculations (conceptual via system)")
         # This is harder to test in isolation without direct access to JumpCalculator
@@ -176,7 +176,7 @@ class PathfindingTester:
         # assert traj is not None and traj.total_frames > 0
         self._assert(True, "Jump trajectory calculation test is conceptual / relies on jump pathfinding success.")
 
-    def test_maze_navigation(self, pf_system: N2PlusPathfindingSystem, map_data: np.ndarray):
+    def test_maze_navigation(self, pf_system: PathfindingSystem, map_data: np.ndarray):
         """Test navigation through a more complex maze-like structure."""
         print("  Sub-test: Maze Navigation")
         # Using maze_map. Start/end chosen to require navigating some turns.
@@ -191,7 +191,7 @@ class PathfindingTester:
         if commands:
             self.simulate_path_execution(commands, start_maze, end_maze, map_data)
 
-    def test_dynamic_obstacles(self, pf_system: N2PlusPathfindingSystem):
+    def test_dynamic_obstacles(self, pf_system: PathfindingSystem):
         """Test pathfinding with dynamic obstacles (moving enemies)."""
         print("  Sub-test: Dynamic Obstacle Avoidance")
         # This requires enemy setup and the DynamicPathfinder.
@@ -224,7 +224,7 @@ class PathfindingTester:
             # Simulation of dynamic path is even more complex.
             print(f"  Dynamic path found with {len(commands_with_enemy)} commands. (Simulation not robustly verified)")
 
-    def test_multi_objective(self, pf_system: N2PlusPathfindingSystem):
+    def test_multi_objective(self, pf_system: PathfindingSystem):
         """Test pathfinding with multiple objectives (e.g., switch then exit)."""
         print("  Sub-test: Multi-Objective Pathfinding (Switch -> Exit)")
         # Using maze_map. Define start, switch, and exit points.
@@ -255,7 +255,7 @@ class PathfindingTester:
 # Example of how to run the tester (e.g., in a main script or test runner)
 if __name__ == '__main__':
     print("Running PathfindingTester standalone example...")
-    # This basic tile map will be used by the N2PlusPathfindingSystem constructor
+    # This basic tile map will be used by the PathfindingSystem constructor
     # For more specific tests, the tester itself creates maps and systems.
     
     # To run, you would typically do:

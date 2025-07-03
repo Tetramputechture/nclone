@@ -3,7 +3,7 @@ import array
 import struct
 
 from .physics import *
-
+from .ninja import NINJA_RADIUS
 
 class GridSegmentLinear:
     """Contains all the linear segments of tiles and doors that the ninja can interract with"""
@@ -113,8 +113,8 @@ class GridSegmentCircular:
         # This is true if position is closer from arc than its edges.
         if dx * self.hor > 0 and dy * self.ver > 0:
             dist_sq = dx**2 + dy**2
-            # Use cached sqrt if available, otherwise fall back to math.sqrt or ensure physics.get_cached_sqrt is used
-            dist = get_cached_sqrt(dist_sq) # Assuming get_cached_sqrt is available from physics import
+            # Use math.sqrt directly to avoid circular import issues
+            dist = math.sqrt(dist_sq)
             if dist == 0: # Avoid division by zero if dist is zero
                 # Handle this case: maybe point is exactly at the center.
                 # For now, let's assume this means we use the edge points or a default.
@@ -259,11 +259,11 @@ class EntityToggleMine(Entity):
         if ninja.is_valid_target():
             if self.state == 1:  # Set state to toggling if ninja touches untoggled mine
                 if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                            ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                            ninja.xpos, ninja.ypos, NINJA_RADIUS):
                     self.set_state(2)
             elif self.state == 2:  # Set state to toggled if ninja stops touching toggling mine
                 if not overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                                ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                                ninja.xpos, ninja.ypos, NINJA_RADIUS):
                     self.set_state(0)
         else:  # Set state to untoggled if ninja dies while toggling a mine
             if self.state == 2 and ninja.state == 6:
@@ -274,7 +274,7 @@ class EntityToggleMine(Entity):
         ninja = self.sim.ninja
         if ninja.is_valid_target() and self.state == 0:
             if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
                 self.set_state(1)
                 ninja.kill(0, 0, 0, 0, 0)
 
@@ -306,7 +306,7 @@ class EntityGold(Entity):
         ninja = self.sim.ninja
         if ninja.state != 8:
             if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
                 ninja.gold_collected += 1
                 self.active = False
                 self.log_collision()
@@ -328,7 +328,7 @@ class EntityExit(Entity):
         """
         ninja = self.sim.ninja
         if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
             ninja.win()
 
 
@@ -347,7 +347,7 @@ class EntityExitSwitch(Entity):
         """
         ninja = self.sim.ninja
         if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
             self.active = False
             # Add door to the entity grid so the ninja can touch it
             self.sim.grid_entity[self.parent.cell].append(self.parent)
@@ -441,7 +441,7 @@ class EntityDoorRegular(EntityDoorBase):
         door's center), open it."""
         ninja = self.sim.ninja
         if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
             self.change_state(closed=False)
             self.open_timer = 0
 
@@ -458,7 +458,7 @@ class EntityDoorLocked(EntityDoorBase):
         """If the ninja collects the associated open switch, open the door."""
         ninja = self.sim.ninja
         if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
             ninja.doors_opened += 1
             self.change_state(closed=False)
             self.active = False
@@ -477,7 +477,7 @@ class EntityDoorTrap(EntityDoorBase):
         """If the ninja collects the associated close switch, close the door."""
         ninja = self.sim.ninja
         if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
             self.change_state(closed=True)
             self.active = False
 
@@ -499,9 +499,9 @@ class EntityLaunchPad(Entity):
         ninja = self.sim.ninja
         if ninja.is_valid_target():
             if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, ninja.RADIUS):
-                if ((self.xpos - (ninja.xpos - ninja.RADIUS*self.normal_x))*self.normal_x
-                        + (self.ypos - (ninja.ypos - ninja.RADIUS*self.normal_y))*self.normal_y) >= -0.1:
+                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
+                if ((self.xpos - (ninja.xpos - NINJA_RADIUS*self.normal_x))*self.normal_x
+                        + (self.ypos - (ninja.ypos - NINJA_RADIUS*self.normal_y))*self.normal_y) >= -0.1:
                     yboost_scale = 1
                     if self.normal_y < 0:
                         yboost_scale = 1 - self.normal_y
@@ -533,16 +533,16 @@ class EntityOneWayPlatform(Entity):
                      ninja.xspeed * self.normal_y) * lateral_dist
         # The platform has a bigger width if the ninja is moving towards its center.
         radius_scalar = 0.91 if direction < 0 else 0.51
-        if abs(lateral_dist) < radius_scalar * ninja.RADIUS + self.SEMI_SIDE:
+        if abs(lateral_dist) < radius_scalar * NINJA_RADIUS + self.SEMI_SIDE:
             normal_dist = dx * self.normal_x + dy * self.normal_y
-            if 0 < normal_dist <= ninja.RADIUS:
+            if 0 < normal_dist <= NINJA_RADIUS:
                 normal_proj = ninja.xspeed * self.normal_x + ninja.yspeed * self.normal_y
                 if normal_proj <= 0:
                     dx_old = ninja.xpos_old - self.xpos
                     dy_old = ninja.ypos_old - self.ypos
                     normal_dist_old = dx_old * self.normal_x + dy_old * self.normal_y
-                    if ninja.RADIUS - normal_dist_old <= 1.1:
-                        return (self.normal_x, self.normal_y), (ninja.RADIUS - normal_dist, 0)
+                    if NINJA_RADIUS - normal_dist_old <= 1.1:
+                        return (self.normal_x, self.normal_y), (NINJA_RADIUS - normal_dist, 0)
 
     def physical_collision(self):
         """Return depenetration between ninja and one way (None if no penetration)."""
@@ -676,7 +676,7 @@ class EntityDroneZap(EntityDroneBase):
         ninja = self.sim.ninja
         if ninja.is_valid_target():
             if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
                 ninja.kill(0, 0, 0, 0, 0)
 
 
@@ -742,7 +742,7 @@ class EntityBounceBlock(Entity):
         """Apply 80% of the depenetration to the bounce block and 20% to the ninja."""
         ninja = self.sim.ninja
         depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                            self.SEMI_SIDE + ninja.RADIUS)
+                                            self.SEMI_SIDE + NINJA_RADIUS)
         if depen:
             depen_x, depen_y = depen[0]
             depen_len = depen[1][0]
@@ -756,7 +756,7 @@ class EntityBounceBlock(Entity):
         """Check if the ninja can interact with the wall of the bounce block"""
         ninja = self.sim.ninja
         depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                            self.SEMI_SIDE + ninja.RADIUS + 0.1)
+                                            self.SEMI_SIDE + NINJA_RADIUS + 0.1)
         if depen:
             return depen[0][0]
 
@@ -832,7 +832,7 @@ class EntityThwump(Entity):
         """Make the thwump charge if it has sight of the ninja."""
         ninja = self.sim.ninja
         if not self.state and ninja.is_valid_target():
-            activation_range = 2 * (self.SEMI_SIDE + ninja.RADIUS)
+            activation_range = 2 * (self.SEMI_SIDE + NINJA_RADIUS)
             if not self.is_horizontal:
                 # If the ninja is in the activation range
                 if abs(self.xpos - ninja.xpos) < activation_range:
@@ -872,7 +872,7 @@ class EntityThwump(Entity):
         """Return the depenetration vector for the ninja if it collides with the thwump."""
         ninja = self.sim.ninja
         return penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                           self.SEMI_SIDE + ninja.RADIUS)
+                                           self.SEMI_SIDE + NINJA_RADIUS)
 
     def logical_collision(self):
         """Return the wall normal if the ninja can interact with a thwump's side.
@@ -881,7 +881,7 @@ class EntityThwump(Entity):
         ninja = self.sim.ninja
         if ninja.is_valid_target():
             depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                                self.SEMI_SIDE + ninja.RADIUS + 0.1)
+                                                self.SEMI_SIDE + NINJA_RADIUS + 0.1)
             if depen:
                 if self.is_horizontal:
                     dx = (self.SEMI_SIDE + 2) * self.direction
@@ -893,7 +893,7 @@ class EntityThwump(Entity):
                     dy = (self.SEMI_SIDE + 2) * self.direction
                     px1, py1 = self.xpos - dx, self.ypos + dy
                     px2, py2 = self.xpos + dx, self.ypos + dy
-                if overlap_circle_vs_segment(ninja.xpos, ninja.ypos, ninja.RADIUS + 2, px1, py1, px2, py2):
+                if overlap_circle_vs_segment(ninja.xpos, ninja.ypos, NINJA_RADIUS + 2, px1, py1, px2, py2):
                     ninja.kill(0, 0, 0, 0, 0)
                 return depen[0][0]
 
@@ -949,7 +949,7 @@ class EntityLaser(Entity):
             self.yend = self.ypos
         ninja = self.sim.ninja
         if ninja.is_valid_target():
-            if raycast_vs_player(self.sim, self.xpos, self.ypos, ninja.xpos, ninja.ypos, ninja.RADIUS):
+            if raycast_vs_player(self.sim, self.xpos, self.ypos, ninja.xpos, ninja.ypos, NINJA_RADIUS):
                 ninja_angle = math.atan2(
                     ninja.ypos-self.ypos, ninja.xpos-self.xpos)
                 angle_diff = abs(self.angle - ninja_angle) % (2*math.pi)
@@ -1020,7 +1020,7 @@ class EntityBoostPad(Entity):
             self.is_touching_ninja = False
             return
         if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
             if not self.is_touching_ninja:
                 vel_norm = math.sqrt(ninja.xspeed**2 + ninja.yspeed**2)
                 if vel_norm > 0:
@@ -1142,7 +1142,7 @@ class EntityDeathBall(Entity):
         ninja = self.sim.ninja
         if ninja.is_valid_target():
             if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
                 dx = self.xpos - ninja.xpos
                 dy = self.ypos - ninja.ypos
                 dist = math.sqrt(dx**2 + dy**2)
@@ -1166,7 +1166,7 @@ class EntityMiniDrone(EntityDroneBase):
         ninja = self.sim.ninja
         if ninja.is_valid_target():
             if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, ninja.RADIUS):
+                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
                 ninja.kill(0, 0, 0, 0, 0)
 
 
@@ -1249,7 +1249,7 @@ class EntityShoveThwump(Entity):
         ninja = self.sim.ninja
         if self.state <= 1:
             depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                                self.SEMI_SIDE + ninja.RADIUS)
+                                                self.SEMI_SIDE + NINJA_RADIUS)
             if depen:
                 depen_x, depen_y = depen[0]
                 if self.state == 0 or self.xdir * depen_x + self.ydir * depen_y >= 0.01:
@@ -1261,7 +1261,7 @@ class EntityShoveThwump(Entity):
         """
         ninja = self.sim.ninja
         depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                            self.SEMI_SIDE + ninja.RADIUS + 0.1)
+                                            self.SEMI_SIDE + NINJA_RADIUS + 0.1)
         if depen and self.state <= 1:
             depen_x, depen_y = depen[0]
             if self.state == 0:
@@ -1276,6 +1276,6 @@ class EntityShoveThwump(Entity):
                 else:
                     return
             return depen_x
-        if overlap_circle_vs_circle(ninja.xpos, ninja.ypos, ninja.RADIUS,
+        if overlap_circle_vs_circle(ninja.xpos, ninja.ypos, NINJA_RADIUS,
                                     self.xpos, self.ypos, self.RADIUS):
             ninja.kill(0, 0, 0, 0, 0)

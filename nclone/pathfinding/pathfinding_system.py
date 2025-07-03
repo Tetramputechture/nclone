@@ -1,7 +1,8 @@
 import numpy as np
+import pygame
 from typing import List, Tuple, Dict, Optional
 
-from .surface_parser import SurfaceParser, Surface
+from .surface_parser import SurfaceParser, Surface, SurfaceType
 from .navigation_graph import NavigationGraphBuilder, JumpCalculator, JumpTrajectory
 from .astar_pathfinder import PlatformerAStar, MultiObjectivePathfinder
 from .dynamic_pathfinding import DynamicPathfinder, EnemyPredictor
@@ -9,7 +10,8 @@ from .path_executor import PathOptimizer, MovementController
 from .pathfinding_visualizer import PathfindingVisualizer
 from .utils import CollisionChecker, Enemy # For stubs and type hinting
 
-class N2PlusPathfindingSystem:
+
+class PathfindingSystem:
     """Complete pathfinding system for N++ simulation"""
     
     def __init__(self, tile_map: np.ndarray, physics_params: Optional[dict] = None):
@@ -23,7 +25,7 @@ class N2PlusPathfindingSystem:
         self.surface_parser = SurfaceParser(tile_map)
         self.surfaces: List[Surface] = self.surface_parser.parse_surfaces()
         
-        self.graph_builder = NavigationGraphBuilder(self.surfaces, self.collision_checker, tile_map.shape)
+        self.graph_builder = NavigationGraphBuilder(self.surfaces, self.collision_checker)
         # Build the graph without jump edges first
         self.nav_graph = self.graph_builder.build_graph() 
         
@@ -44,7 +46,7 @@ class N2PlusPathfindingSystem:
         
         # Visualization (optional)
         self.visualizer = PathfindingVisualizer()
-        print("N2PlusPathfindingSystem initialized.")
+        print("PathfindingSystem initialized.")
 
     def _add_jump_edges_to_graph(self):
         """Iterate through graph nodes and use JumpCalculator to add jump/fall edges, spatially optimized."""

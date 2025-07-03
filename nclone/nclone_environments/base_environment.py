@@ -3,7 +3,7 @@
 import gymnasium
 from gymnasium.spaces import discrete
 import random
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 
 from ..nplay_headless import NPlayHeadless
 
@@ -25,6 +25,7 @@ class BaseEnvironment(gymnasium.Env):
         self.render_mode = render_mode
         self.enable_animation = enable_animation
         self.enable_logging = enable_logging
+        self._enable_debug_overlay = enable_debug_overlay
         self.nplay_headless = NPlayHeadless(
             render_mode=render_mode,
             enable_animation=enable_animation,
@@ -40,6 +41,9 @@ class BaseEnvironment(gymnasium.Env):
 
         # Track reward for the current episode
         self.current_ep_reward = 0
+        
+        # Placeholder for pathfinding data
+        self.pathfinding_data: Optional[Dict[str, Any]] = None
 
     def _actions_to_execute(self, action: int) -> Tuple[int, int]:
         """Execute the specified action using the game controller.
@@ -125,9 +129,24 @@ class BaseEnvironment(gymnasium.Env):
         """Render the environment."""
         return self.nplay_headless.render(self._debug_info())
 
-    def _debug_info(self):
+    def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
-        return None
+        if not self._enable_debug_overlay:
+            return None
+        
+        info = {}
+        if self.pathfinding_data:
+            info['pathfinding'] = self.pathfinding_data
+        
+        # Allow subclasses to add more debug info
+        # For example, agent-specific state or exploration data
+        # Example: info['agent_state'] = {'foo': 'bar'}
+        
+        return info if info else None # Return None if no debug info is to be shown
+
+    def set_pathfinding_data(self, data: Optional[Dict[str, Any]]):
+        """Allows setting pathfinding data to be used by the visualizer via _debug_info."""
+        self.pathfinding_data = data
 
     def _load_map(self):
         """Loads the map."""
