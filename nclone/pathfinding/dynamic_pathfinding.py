@@ -3,7 +3,8 @@ import networkx as nx
 from typing import List, Tuple, Dict, Optional
 import heapq
 
-from .utils import Enemy # Assuming Enemy class is in utils.py
+from .utils import Enemy
+from ..ninja import NINJA_RADIUS
 
 class TemporalNode:
     """Node with time component for dynamic obstacle avoidance"""
@@ -407,13 +408,12 @@ class DynamicPathfinder:
             return False # Node doesn't exist
             
         node_pos = node_data['position']
-        agent_radius = 10 # Ninja radius (from MovementController.NINJA_RADIUS)
         
         enemy_positions_and_radii = self.enemy_predictor.get_enemy_positions_at_time(time)
         
         for enemy_pos, enemy_radius in enemy_positions_and_radii:
             dist_sq = (node_pos[0] - enemy_pos[0])**2 + (node_pos[1] - enemy_pos[1])**2
-            min_safe_dist_sq = (enemy_radius + agent_radius + 2)**2 # 2 pixel buffer
+            min_safe_dist_sq = (enemy_radius + NINJA_RADIUS + 2)**2 # 2 pixel buffer
             if dist_sq < min_safe_dist_sq:
                 # print(f"Node {node_id} at pos {node_pos} is NOT safe at time {time} due to enemy at {enemy_pos} (r={enemy_radius})")
                 return False

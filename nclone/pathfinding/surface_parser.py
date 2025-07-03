@@ -87,7 +87,11 @@ class SurfaceParser:
     TILE_GLITCHED = [34, 35, 36, 37]  # Special glitched tiles
     
     # Tile size constant
-    TILE_SIZE = 24
+    # Import TILE_SIZE from nsim.py
+try:
+    from ..nsim import TILE_PIXEL_SIZE as TILE_SIZE
+except ImportError:
+    TILE_SIZE = 24  # Fallback value
     
     def __init__(self, tile_map: np.ndarray):
         self.tile_map = tile_map

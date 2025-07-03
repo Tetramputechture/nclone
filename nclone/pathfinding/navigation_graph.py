@@ -1,10 +1,23 @@
-import numpy as np
 import networkx as nx
 from typing import List, Tuple, Dict, Optional
-import math # Added math import
+import math 
 
 from .surface_parser import Surface, SurfaceType
-from .utils import CollisionChecker # Assuming CollisionChecker is in utils.py
+from .utils import CollisionChecker
+from ..ninja import (
+    NINJA_RADIUS,
+    GRAVITY_FALL,
+    GRAVITY_JUMP,
+    AIR_ACCEL,
+    DRAG_REGULAR,
+    MAX_HOR_SPEED,
+    MAX_JUMP_DURATION,
+    MAX_SURVIVABLE_IMPACT,
+    JUMP_FLAT_GROUND_Y,
+    JUMP_WALL_REGULAR_Y,
+    JUMP_WALL_REGULAR_X,
+    JUMP_WALL_SLIDE_X
+)
 
 class NavigationNode:
     """Represents a position on a surface where movement decisions can be made"""
@@ -34,21 +47,20 @@ class NavigationNode:
 class NavigationGraphBuilder:
     """Builds a navigation graph from parsed surfaces"""
     
-    def __init__(self, surfaces: List[Surface], collision_checker: CollisionChecker, tile_map_shape: Tuple[int, int]):
+    def __init__(self, surfaces: List[Surface], collision_checker: CollisionChecker):
         self.surfaces = surfaces
         self.collision_checker = collision_checker # Store if needed later
-        self.tile_map_shape = tile_map_shape   # Store if needed later
         self.graph = nx.DiGraph()  # Directed graph for one-way paths
         self.node_counter = 0
         self.nodes_by_position: Dict[Tuple[int,int], List[NavigationNode]] = {}  # Spatial index for fast lookup
         
     def build_graph(self) -> nx.DiGraph:
-        print("DEBUG: NavigationGraphBuilder.build_graph CALLED (new version)") # Verify this version runs
         """Construct the navigation graph"""
         self._create_surface_nodes()
         self._connect_surface_nodes()
-        self._create_gap_crossing_edges() # New call
-        self._create_inter_surface_edges() # This is a stub, actual jumps by N2PlusPathfindingSystem
+        self._create_gap_crossing_edges()
+        # Note: Jump/fall edges between surfaces are added later by PathfindingSystem
+        # after the JumpCalculator is available and the initial graph structure is complete
         return self.graph
     
     def _create_surface_nodes(self):
@@ -140,7 +152,7 @@ class NavigationGraphBuilder:
         """Adds a walkable edge between two nodes on the same surface."""
         # Edges are typically bidirectional for walking, unless one-way platforms
         # Estimate time cost for walk edges
-        avg_walk_speed = JumpCalculator.MAX_HOR_SPEED * 0.6 # Slower than max for planning
+        avg_walk_speed = MAX_HOR_SPEED * 0.6 # Slower than max for planning
         time_cost_frames = int(weight / avg_walk_speed) if avg_walk_speed > 0 else int(weight) # Avoid div by zero, ensure int
         time_cost_frames = max(1, time_cost_frames) # Minimum 1 frame
 
@@ -149,13 +161,6 @@ class NavigationGraphBuilder:
 
     def _create_gap_crossing_edges(self):
         """Bridge small horizontal gaps between co-linear floor or ceiling surfaces."""
-        surface_types_to_bridge = [SurfaceType.FLOOR, SurfaceType.CEILING]
-        MAX_GAP_SIZE = 8.1  # Max horizontal gap to bridge (e.g., one missing 8px segment)
-
-    def _create_gap_crossing_edges(self):
-        """Bridge small horizontal gaps between co-linear floor or ceiling surfaces."""
-        print("DEBUG: _create_gap_crossing_edges CALLED")
-
         surface_types_to_bridge = [SurfaceType.FLOOR, SurfaceType.CEILING]
         MAX_GAP_SIZE = 8.1 
 
@@ -194,7 +199,7 @@ class NavigationGraphBuilder:
                         if s1_end_node_id is not None and s2_start_node_id is not None and s1_end_node_id != s2_start_node_id:
                             cost = gap 
                             # Estimate time for gap crossing (similar to walk)
-                            avg_walk_speed = JumpCalculator.MAX_HOR_SPEED * 0.6
+                            avg_walk_speed = MAX_HOR_SPEED * 0.6
                             time_cost_frames_gap = int(cost / avg_walk_speed) if avg_walk_speed > 0 else int(cost)
                             time_cost_frames_gap = max(1, time_cost_frames_gap)
 
@@ -205,34 +210,14 @@ class NavigationGraphBuilder:
                             print(f"DEBUG: Failed to find nodes or nodes are same for gap. s1_end_node={s1_end_node_id}, s2_start_node={s2_start_node_id}")
 
 
-
-    def _create_inter_surface_edges(self):
-        """Add jump/fall connections between surfaces. Placeholder."""
-        # This is where JumpCalculator would be used to find valid jump/fall paths
-        # between nodes on different surfaces.
-        print("Warning: _create_inter_surface_edges is a stub and does not create jump/fall edges.")
-        # Example (conceptual):
-        # for node1_id in self.graph.nodes():
-        #     for node2_id in self.graph.nodes():
-        #         if node1_id == node2_id: continue
-        #         node1 = self.graph.nodes[node1_id]['nav_node_object']
-        #         node2 = self.graph.nodes[node2_id]['nav_node_object']
-        #         if node1.surface == node2.surface: continue # Already handled by _connect_surface_nodes
-        #         
-        #         # Check for potential jump/fall
-        #         # trajectory = jump_calculator.calculate_jump(node1.position, node2.position, node1.surface.type)
-        #         # if trajectory:
-        #         #     self.graph.add_edge(node1.id, node2.id, weight=trajectory.total_frames, move_type='jump', trajectory=trajectory)
-        pass
-
 class JumpTrajectory:
     """Represents a calculated jump path between two nodes"""
     
     def __init__(self, start_node_id: int, end_node_id: int, 
                  initial_velocity: Tuple[float, float],
                  jump_type: str):
-        self.start_node_id = start_node_id # Changed from start_node to id
-        self.end_node_id = end_node_id   # Changed from end_node to id
+        self.start_node_id = start_node_id
+        self.end_node_id = end_node_id
         self.initial_velocity = initial_velocity
         self.jump_type = jump_type  # "floor_jump", "wall_jump", etc.
         self.frames: List[Tuple[Tuple[float,float], Tuple[float,float]]] = []  # List of (position, velocity) tuples
@@ -242,26 +227,6 @@ class JumpTrajectory:
         
 class JumpCalculator:
     """Calculates physically accurate jump trajectories using actual N++ physics"""
-    
-    # Exact physics constants from the actual N++ simulation (ninja.py)
-    GRAVITY_JUMP = 0.01111111111111111  # Exact value from ninja.py
-    GRAVITY_FALL = 0.06666666666666665  # Exact value from ninja.py
-    GROUND_ACCEL = 0.06666666666666665  # Ground acceleration
-    AIR_ACCEL = 0.04444444444444444     # Air acceleration
-    DRAG_REGULAR = 0.9933221725495059   # Regular drag (0.99^(2/3))
-    DRAG_SLOW = 0.8617738760127536      # Slow drag (0.80^(2/3))
-    FRICTION_GROUND = 0.9459290248857720  # Ground friction (0.92^(2/3))
-    FRICTION_WALL = 0.9113380468927672    # Wall friction (0.87^(2/3))
-    MAX_HOR_SPEED = 3.333333333333333     # Maximum horizontal speed
-    MAX_JUMP_DURATION = 45                # Maximum jump duration in frames
-    MAX_SURVIVABLE_IMPACT = 6             # Maximum survivable impact velocity
-    NINJA_RADIUS = 10                     # Ninja collision radius
-    
-    # Jump velocities from actual ninja mechanics
-    FLOOR_JUMP_VELOCITY_Y = -2.0          # Floor jump initial Y velocity
-    WALL_JUMP_VELOCITY_Y = -1.4           # Wall jump initial Y velocity  
-    WALL_JUMP_VELOCITY_X_NORMAL = 1.0     # Normal wall jump X velocity
-    WALL_JUMP_VELOCITY_X_SLIDE = 2.0/3.0  # Slide wall jump X velocity
     
     def __init__(self, collision_checker: CollisionChecker):
         self.collision_checker = collision_checker
@@ -275,17 +240,18 @@ class JumpCalculator:
         """Calculate optimal jump trajectory between two positions"""
         
         trajectories: List[JumpTrajectory] = []
+        attempts_made = 0
         
         if initial_run_velocities_x is None:
             # Default run velocities to test for floor jumps if not provided
             base_run_velocities = [0.0]
             if start_surface_type == SurfaceType.FLOOR or start_surface_type == SurfaceType.SLOPE:
-                base_run_velocities.extend([self.MAX_HOR_SPEED, -self.MAX_HOR_SPEED, self.MAX_HOR_SPEED / 2, -self.MAX_HOR_SPEED / 2])
+                base_run_velocities.extend([MAX_HOR_SPEED, -MAX_HOR_SPEED, MAX_HOR_SPEED / 2, -MAX_HOR_SPEED / 2])
         else:
             base_run_velocities = initial_run_velocities_x
 
         # Try different hold durations
-        hold_durations = [1, 5, 15, 30, JumpCalculator.MAX_JUMP_DURATION]
+        hold_durations = [1, 5, 15, 30, MAX_JUMP_DURATION]
 
         for run_vx in base_run_velocities:
             # Skip non-zero run_vx for wall jumps as horizontal speed is dictated by the wall jump type
@@ -293,26 +259,45 @@ class JumpCalculator:
                 continue
 
             for hold in hold_durations:
+                # Check if we've reached the maximum number of attempts
+                if attempts_made >= max_attempts:
+                    break
+                    
                 if start_surface_type == SurfaceType.FLOOR or start_surface_type == SurfaceType.SLOPE:
                     traj = self._try_jump_strategy(start_pos, end_pos, start_surface_type, 
                                                    hold_frames=hold, initial_vx_run=run_vx, 
                                                    surface_normal=start_surface_normal,
                                                    jump_type_prefix=f"run{run_vx:.1f}_hold{hold}")
-                    if traj: trajectories.append(traj)
+                    attempts_made += 1
+                    if traj: 
+                        trajectories.append(traj)
+                        # Early exit if we found a valid trajectory and want to limit attempts
+                        if len(trajectories) >= 3:  # Stop after finding a few good options
+                            break
                 elif start_surface_type == SurfaceType.WALL_LEFT or start_surface_type == SurfaceType.WALL_RIGHT:
                     # Normal Wall Jump
-                    traj_normal = self._try_jump_strategy(start_pos, end_pos, start_surface_type, 
-                                                          hold_frames=hold, wall_jump_x_type="normal",
-                                                          surface_normal=start_surface_normal,
-                                                          jump_type_prefix=f"wall_norm_hold{hold}")
-                    if traj_normal: trajectories.append(traj_normal)
+                    if attempts_made < max_attempts:
+                        traj_normal = self._try_jump_strategy(start_pos, end_pos, start_surface_type, 
+                                                              hold_frames=hold, wall_jump_x_type="normal",
+                                                              surface_normal=start_surface_normal,
+                                                              jump_type_prefix=f"wall_norm_hold{hold}")
+                        attempts_made += 1
+                        if traj_normal: 
+                            trajectories.append(traj_normal)
                     
                     # Slide Wall Jump
-                    traj_slide = self._try_jump_strategy(start_pos, end_pos, start_surface_type, 
-                                                         hold_frames=hold, wall_jump_x_type="slide",
-                                                         surface_normal=start_surface_normal,
-                                                         jump_type_prefix=f"wall_slide_hold{hold}")
-                    if traj_slide: trajectories.append(traj_slide)
+                    if attempts_made < max_attempts:
+                        traj_slide = self._try_jump_strategy(start_pos, end_pos, start_surface_type, 
+                                                             hold_frames=hold, wall_jump_x_type="slide",
+                                                             surface_normal=start_surface_normal,
+                                                             jump_type_prefix=f"wall_slide_hold{hold}")
+                        attempts_made += 1
+                        if traj_slide: 
+                            trajectories.append(traj_slide)
+            
+            # Break outer loop if we've reached max attempts
+            if attempts_made >= max_attempts:
+                break
         
         if trajectories:
             return min(trajectories, key=lambda t: t.total_frames) # Prioritize faster jumps
@@ -336,36 +321,36 @@ class JumpCalculator:
         jump_type = ""
 
         if surface_type == SurfaceType.FLOOR:
-            jump_specific_vy_component = self.FLOOR_JUMP_VELOCITY_Y
+            jump_specific_vy_component = JUMP_FLAT_GROUND_Y
             jump_type = f"{jump_type_prefix}_floor_jump"
         elif surface_type == SurfaceType.SLOPE:
             if surface_normal and (abs(surface_normal[0]) > 1e-6 or abs(surface_normal[1]) > 1e-6):
                 # Jump perpendicular to slope normal
-                jump_impulse_x = self.FLOOR_JUMP_VELOCITY_Y * surface_normal[0]
-                jump_impulse_y = self.FLOOR_JUMP_VELOCITY_Y * surface_normal[1]
+                jump_impulse_x = JUMP_FLAT_GROUND_Y * surface_normal[0]
+                jump_impulse_y = JUMP_FLAT_GROUND_Y * surface_normal[1]
                 jump_specific_vx_component = jump_impulse_x
                 jump_specific_vy_component = jump_impulse_y
                 jump_type = f"{jump_type_prefix}_slope_jump"
             else: # Fallback if normal is zero or not provided (treat as floor)
-                jump_specific_vy_component = self.FLOOR_JUMP_VELOCITY_Y
+                jump_specific_vy_component = JUMP_FLAT_GROUND_Y
                 jump_type = f"{jump_type_prefix}_slope_as_floor_jump"
         elif surface_type == SurfaceType.WALL_LEFT: 
-            jump_specific_vy_component = self.WALL_JUMP_VELOCITY_Y
+            jump_specific_vy_component = JUMP_WALL_REGULAR_Y
             if wall_jump_x_type == "normal":
-                jump_specific_vx_component = self.WALL_JUMP_VELOCITY_X_NORMAL
+                jump_specific_vx_component = JUMP_WALL_REGULAR_X
                 jump_type = f"{jump_type_prefix}_wall_jump_right_normal"
             elif wall_jump_x_type == "slide":
-                jump_specific_vx_component = self.WALL_JUMP_VELOCITY_X_SLIDE
+                jump_specific_vx_component = JUMP_WALL_SLIDE_X
                 jump_type = f"{jump_type_prefix}_wall_jump_right_slide"
             else:
                 return None 
         elif surface_type == SurfaceType.WALL_RIGHT: 
-            jump_specific_vy_component = self.WALL_JUMP_VELOCITY_Y
+            jump_specific_vy_component = JUMP_WALL_REGULAR_Y
             if wall_jump_x_type == "normal":
-                jump_specific_vx_component = -self.WALL_JUMP_VELOCITY_X_NORMAL 
+                jump_specific_vx_component = -JUMP_WALL_REGULAR_X 
                 jump_type = f"{jump_type_prefix}_wall_jump_left_normal"
             elif wall_jump_x_type == "slide":
-                jump_specific_vx_component = -self.WALL_JUMP_VELOCITY_X_SLIDE  
+                jump_specific_vx_component = -JUMP_WALL_SLIDE_X  
                 jump_type = f"{jump_type_prefix}_wall_jump_left_slide"
             else:
                 return None 
@@ -387,9 +372,6 @@ class JumpCalculator:
             simulated_traj.end_node_id = -1   # Placeholder
         return simulated_traj
 
-    # The _try_minimum_jump, _try_maximum_jump, _try_variable_jump methods from the prompt
-    # are consolidated into _try_jump_strategy and _simulate_jump.
-
     def _simulate_jump(self, start_pos: Tuple[float, float],
                       initial_velocity: Tuple[float, float],
                       target_pos: Tuple[float, float],
@@ -404,7 +386,6 @@ class JumpCalculator:
         max_y_achieved = start_pos[1]
         
         # Track ninja state for accurate physics simulation
-        airborn = True
         jump_duration = 0
         
         for frame_num in range(1, 201):  # Max simulation frames (~3.3 seconds at 60fps)
@@ -412,29 +393,29 @@ class JumpCalculator:
             old_pos = pos.copy()
             
             # Apply drag first (like in ninja.integrate())
-            vel[0] *= self.DRAG_REGULAR
-            vel[1] *= self.DRAG_REGULAR
+            vel[0] *= DRAG_REGULAR
+            vel[1] *= DRAG_REGULAR
             
             # Apply gravity based on jump state (like in ninja.integrate())
-            if frame_num <= hold_frames and vel[1] < 0 and jump_duration < self.MAX_JUMP_DURATION:
-                vel[1] += self.GRAVITY_JUMP
+            if frame_num <= hold_frames and vel[1] < 0 and jump_duration < MAX_JUMP_DURATION:
+                vel[1] += GRAVITY_JUMP
                 jump_duration += 1
             else:
-                vel[1] += self.GRAVITY_FALL
+                vel[1] += GRAVITY_FALL
             
             # Apply horizontal air control (more accurate to N++ air control)
             target_dx_component = target_pos[0] - pos[0]
             if abs(target_dx_component) > 1.0:  # Only apply control if significant distance
                 if target_dx_component > 0:
                     # Moving right
-                    if vel[0] < self.MAX_HOR_SPEED:
-                        vel[0] += self.AIR_ACCEL
-                        vel[0] = min(vel[0], self.MAX_HOR_SPEED)
+                    if vel[0] < MAX_HOR_SPEED:
+                        vel[0] += AIR_ACCEL
+                        vel[0] = min(vel[0], MAX_HOR_SPEED)
                 else:
                     # Moving left
-                    if vel[0] > -self.MAX_HOR_SPEED:
-                        vel[0] -= self.AIR_ACCEL
-                        vel[0] = max(vel[0], -self.MAX_HOR_SPEED)
+                    if vel[0] > -MAX_HOR_SPEED:
+                        vel[0] -= AIR_ACCEL
+                        vel[0] = max(vel[0], -MAX_HOR_SPEED)
             
             # Update position (like in ninja.integrate())
             pos[0] += vel[0]
@@ -445,7 +426,7 @@ class JumpCalculator:
                 max_y_achieved = pos[1]
             
             # Collision check using swept circle collision
-            if self.collision_checker.check_collision(tuple(old_pos), tuple(pos), self.NINJA_RADIUS):
+            if self.collision_checker.check_collision(tuple(old_pos), tuple(pos), NINJA_RADIUS):
                 return None  # Collision detected
             
             # Store frame data
@@ -453,7 +434,7 @@ class JumpCalculator:
             
             # Check if we've reached the target area
             dist_to_target = math.sqrt((pos[0] - target_pos[0])**2 + (pos[1] - target_pos[1])**2)
-            if dist_to_target < self.NINJA_RADIUS * 2:  # Within reasonable range of target
+            if dist_to_target < NINJA_RADIUS * 2:  # Within reasonable range of target
                 trajectory.total_frames = frame_num
                 trajectory.max_height = start_pos[1] - max_y_achieved
                 trajectory.requires_held_jump = (hold_frames > 5)
@@ -464,7 +445,7 @@ class JumpCalculator:
                 return None
             
             # Check for lethal impact velocity if we hit ground
-            if vel[1] > self.MAX_SURVIVABLE_IMPACT:
+            if vel[1] > MAX_SURVIVABLE_IMPACT:
                 return None  # Would die from impact
             
             # Check if we've gone too far horizontally or fallen too far

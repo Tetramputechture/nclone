@@ -15,7 +15,7 @@ The pathfinding system comprises several key components operating sequentially:
     *   **Edge Creation**:
         *   **Walk/Run Edges**: Connect nodes on the same surface traversable by walking or running. These edges now include an estimated `frames` attribute representing time cost.
         *   **Gap-Crossing Edges**: Connect nodes across small horizontal gaps (e.g., <= 8px) between co-linear floor or ceiling surfaces. These edges also now include an estimated `frames` attribute.
-        *   **Jump/Fall Edges**: Added by `N2PlusPathfindingSystem` via the `JumpCalculator`. The process of adding these edges is now spatially optimized to reduce N^2 complexity.
+        *   **Jump/Fall Edges**: Added by `PathfindingSystem` via the `JumpCalculator`. The process of adding these edges is now spatially optimized to reduce N^2 complexity.
 4.  **Jump Calculator (`navigation_graph.py`)**:
     *   Simulates N++ jump physics to determine if a valid jump trajectory exists between two graph nodes.
     *   Utilizes N++ physics constants (gravity, acceleration, drag, jump impulses).
@@ -69,7 +69,7 @@ The system incorporates N++ physics constants into relevant components for accur
 *   **Nodes**: `NavigationGraphBuilder` places nodes at the start and end of each merged surface, with intermediate nodes for surfaces exceeding a length threshold.
 *   **Walk/Run Edges**: Bidirectional edges connect consecutive nodes on the same surface. These edges now store an estimated time cost in `frames`.
 *   **Gap-Crossing Edges**: `NavigationGraphBuilder._create_gap_crossing_edges` adds bidirectional "walk_gap" edges between co-linear floor/ceiling surfaces separated by small horizontal gaps. These edges also store an estimated `frames` cost.
-*   **Jump/Fall Edges**: `N2PlusPathfindingSystem._add_jump_edges_to_graph` uses `JumpCalculator.calculate_jump` to find valid jump trajectories. This process is now spatially optimized using a grid-based approach to reduce the number of pairwise checks. The `JumpCalculator` itself considers a wider variety of N++ jump mechanics, including initial run velocities and slope-adjusted jumps.
+*   **Jump/Fall Edges**: `PathfindingSystem._add_jump_edges_to_graph` uses `JumpCalculator.calculate_jump` to find valid jump trajectories. This process is now spatially optimized using a grid-based approach to reduce the number of pairwise checks. The `JumpCalculator` itself considers a wider variety of N++ jump mechanics, including initial run velocities and slope-adjusted jumps.
 
 ### 3.3. Pathfinding and Execution
 
@@ -82,7 +82,7 @@ The system incorporates N++ physics constants into relevant components for accur
 *   **`tile_definitions.py` Dependency**: The system's surface generation is sensitive to definitions in `tile_definitions.py`. Incomplete definitions can lead to fragmented surfaces, partially mitigated by gap-crossing edges and merging of co-linear slopes. Robust parsing for all tile types (especially curved surfaces) and more advanced merging/repair logic remain areas for improvement.
 *   **`JumpCalculator` Robustness**:
     *   The `JumpCalculator` has been enhanced to identify a wider variety of N++ jumps (running starts, slide wall jumps, varied hold times, slope-adjusted jumps), but continuous tuning and testing may be needed for edge cases or highly complex jump scenarios.
-    *   The N^2 complexity for finding jump edges has been significantly optimized using spatial indexing in `N2PlusPathfindingSystem`.
+    *   The N^2 complexity for finding jump edges has been significantly optimized using spatial indexing in `PathfindingSystem`.
 *   **`MovementController` Implementation**:
     *   Walk/run command generation now uses more detailed N++ physics for acceleration, friction, and speed limits. Kinematic state (position, velocity) is propagated between segments.
     *   Command generation methods for jump and fall segments are still largely abstract. Future work should focus on implementing controllers that can accurately follow the `JumpTrajectory` data (frame-by-frame positions/velocities) provided by `JumpCalculator` for these aerial maneuvers.
