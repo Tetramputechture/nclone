@@ -3,7 +3,7 @@ import networkx as nx
 from typing import List, Tuple, Dict, Optional
 import heapq
 
-from .utils import Enemy
+from .utils import EntityWrapper, PathfindingUtils
 from ..ninja import NINJA_RADIUS
 
 class TemporalNode:
@@ -29,41 +29,41 @@ class TemporalNode:
     def __repr__(self):
         return f"TNode({self.spatial_node_id}, t={self.time})"
 
-class EnemyPredictor:
-    """Predicts future positions of enemies"""
+class EntityPredictor:
+    """Predicts future positions of entities using the existing entity system"""
     
-    def __init__(self, enemies: List[Enemy]):
-        self.enemies = enemies
-        # Predictions: Dict[enemy_id, List[Tuple[time, position_tuple, radius_float]]]
+    def __init__(self, entities: List[EntityWrapper]):
+        self.entities = entities
+        # Predictions: Dict[entity_id, List[Tuple[time, position_tuple, radius_float]]]
         self.predictions: Dict[int, List[Tuple[int, Tuple[float,float], float]]] = {}
-        self.prediction_sample_rate = 5 # frames, for sampling moving enemies
-        self.static_prediction_sample_rate = 30 # frames, for static enemies
+        self.prediction_sample_rate = 5 # frames, for sampling moving entities
+        self.static_prediction_sample_rate = 30 # frames, for static entities
 
-        if enemies:
+        if entities:
             self._precompute_predictions()
         else:
-            print("Warning: EnemyPredictor initialized with no enemies.")
+            print("Warning: EntityPredictor initialized with no entities.")
     
     def _precompute_predictions(self, max_time_prediction: int = 2000):
-        """Pre-calculate enemy positions for efficiency up to max_time_prediction frames."""
-        for enemy in self.enemies:
-            if enemy.type == enemy.THWUMP:
-                self._predict_thwump_movement(enemy, max_time_prediction)
-            elif enemy.type in [enemy.DRONE_CLOCKWISE, enemy.DRONE_COUNTER_CLOCKWISE]:
-                self._predict_drone_movement(enemy, max_time_prediction)
-            elif enemy.type == enemy.DEATH_BALL:
-                self._predict_death_ball_movement(enemy, max_time_prediction)
-            elif enemy.type in [enemy.TOGGLE_MINE, enemy.TOGGLE_MINE_TOGGLED]:
-                self._predict_static_enemy(enemy, max_time_prediction)
+        """Pre-calculate entity positions for efficiency up to max_time_prediction frames."""
+        for entity in self.entities:
+            if entity.behavior_type == 'thwump':
+                self._predict_thwump_movement(entity, max_time_prediction)
+            elif entity.behavior_type == 'drone':
+                self._predict_drone_movement(entity, max_time_prediction)
+            elif entity.behavior_type == 'death_ball':
+                self._predict_death_ball_movement(entity, max_time_prediction)
+            elif entity.behavior_type == 'static':
+                self._predict_static_entity(entity, max_time_prediction)
             else:
-                # For other enemy types, assume static or simple linear movement
-                self._predict_static_enemy(enemy, max_time_prediction)
+                # For other entity types, assume static or simple linear movement
+                self._predict_static_entity(entity, max_time_prediction)
     
-    def _predict_thwump_movement(self, thwump: Enemy, max_time: int):
+    def _predict_thwump_movement(self, thwump: EntityWrapper, max_time: int):
         """Predict thwump movement: rest, smash, wait, return cycle."""
         predictions_for_thwump: List[Tuple[int, Tuple[float,float], float]] = []
         
-        # Thwump cycle parameters (example values, can be tuned or derive from Enemy object if available)
+        # Thwump cycle parameters from entity properties
         rest_at_origin_frames = thwump.properties.get('rest_frames', 120) # 2 seconds
         smash_duration_frames = thwump.properties.get('smash_duration', 15) # 0.25 seconds
         wait_extended_frames = thwump.properties.get('wait_extended', 60)  # 1 second
@@ -71,20 +71,21 @@ class EnemyPredictor:
         
         cycle_duration_frames = rest_at_origin_frames + smash_duration_frames + wait_extended_frames + return_duration_frames
         
-        smash_vector = thwump.direction if thwump.direction != (0,0) else (0, 1) # Default smash down
-        # Infer smash_distance from direction vector if it encodes magnitude, or use a default
+        smash_direction = thwump.properties.get('direction', 1)
         smash_distance = thwump.properties.get('smash_distance', 96) # e.g., 4 tiles
-        if np.linalg.norm(smash_vector) > 1e-3: # Normalize direction if it's not zero vector
-            smash_unit_vector = np.array(smash_vector) / np.linalg.norm(smash_vector)
-        else: # Should not happen if direction is meaningful
-            smash_unit_vector = np.array([0,1]) # Default down
-
-        origin_pos = np.array(thwump.origin)
-        extended_pos = origin_pos + smash_unit_vector * smash_distance
+        
+        # Get current position as origin
+        origin_pos = np.array([thwump.xpos, thwump.ypos])
+        
+        # Calculate extended position based on direction
+        if abs(smash_direction) == 1:  # Horizontal thwump
+            extended_pos = origin_pos + np.array([smash_direction * smash_distance, 0])
+        else:  # Assume vertical if not horizontal
+            extended_pos = origin_pos + np.array([0, smash_distance])
 
         if cycle_duration_frames == 0: # Should not happen with positive durations
             for t in range(0, max_time, self.prediction_sample_rate):
-                 predictions_for_thwump.append((t, thwump.origin, thwump.radius))
+                 predictions_for_thwump.append((t, tuple(origin_pos), thwump.radius))
             self.predictions[thwump.id] = predictions_for_thwump
             return
 
@@ -111,62 +112,29 @@ class EnemyPredictor:
         
         self.predictions[thwump.id] = predictions_for_thwump
 
-    def _predict_drone_movement(self, drone: Enemy, max_time: int):
-        """Predict drone movement pattern (stub). Assumes stationary if no patrol path."""
-        # TODO: Implement path following if drone.patrol_path exists and is populated
-        # For now, if drone.properties contains 'patrol_nodes' and 'patrol_speed' use that.
+    def _predict_drone_movement(self, drone: EntityWrapper, max_time: int):
+        """Predict drone movement pattern using patrol path from entity properties."""
         patrol_nodes = drone.properties.get('patrol_nodes', [])
         patrol_speed = drone.properties.get('patrol_speed', 2.0) # pixels/frame
 
         if not patrol_nodes:
-            print(f"Warning: Drone {drone.id} has no patrol_nodes. Predicting as static at origin {drone.origin}.")
-            self.predictions[drone.id] = [(t, drone.origin, drone.radius) for t in range(0, max_time, self.prediction_sample_rate)]
+            print(f"Warning: Drone {drone.id} has no patrol_nodes. Predicting as static at current position.")
+            self.predictions[drone.id] = [(t, (drone.xpos, drone.ypos), drone.radius) 
+                                        for t in range(0, max_time, self.prediction_sample_rate)]
             return
         
-        # Ensure origin is part of patrol if not explicitly, or start from first patrol node
-        all_patrol_points = [np.array(drone.origin)] + [np.array(pn) for pn in patrol_nodes]
+        # Start from current position and include patrol nodes
+        all_patrol_points = [np.array([drone.xpos, drone.ypos])] + [np.array(pn) for pn in patrol_nodes]
         if drone.properties.get('patrol_is_loop', True):
             all_patrol_points.append(np.array(all_patrol_points[0])) # Close the loop
 
         predictions_for_drone: List[Tuple[int, Tuple[float,float], float]] = []
-        current_patrol_idx = 0
-        pos_on_patrol = np.array(all_patrol_points[0])
-        time_elapsed_on_segment = 0
 
         for t in range(0, max_time, self.prediction_sample_rate):
-            if current_patrol_idx >= len(all_patrol_points) -1: # Reached end of non-loop or finished one loop cycle
-                if drone.properties.get('patrol_is_loop', True):
-                    current_patrol_idx = 0 # Reset for loop
-                    pos_on_patrol = np.array(all_patrol_points[0])
-                    time_elapsed_on_segment = 0
-                else: # End of non-looping patrol, stay at last point
-                    predictions_for_drone.append((t, tuple(pos_on_patrol), drone.radius))
-                    continue
-            
-            segment_start = np.array(all_patrol_points[current_patrol_idx])
-            segment_end = np.array(all_patrol_points[current_patrol_idx+1])
-            segment_vector = segment_end - segment_start
-            segment_length = np.linalg.norm(segment_vector)
-
-            if segment_length < 1e-3: # Segment is a point, move to next
-                time_to_traverse_segment = 0
-            else:
-                time_to_traverse_segment = segment_length / patrol_speed
-            
-            # Advance drone simulation by self.prediction_sample_rate
-            # This is a simplified lookahead for sampling, actual position is calculated per 't'
-            # To get position at time 't': simulate from t=0 up to 't' along patrol path.
-            # This can be slow if done per 't'. Instead, track progress along patrol.
-
-            # This loop advances the drone state to be *at or after* time 't'
-            # This is not quite right. We need to calculate pos for *each* 't' in the outer loop.
-            # Let's recalculate drone's position along its full patrol for each time t.
-            # This is less efficient but more accurate for sampling.
-
+            # Calculate position along patrol path at time t
             sim_t = 0
             current_sim_pos = np.array(all_patrol_points[0])
             current_segment_idx_for_sim_t = 0
-            dist_along_segment_for_sim_t = 0.0
 
             while sim_t < t and current_segment_idx_for_sim_t < len(all_patrol_points) - 1:
                 _start = np.array(all_patrol_points[current_segment_idx_for_sim_t])
@@ -192,20 +160,26 @@ class EnemyPredictor:
 
         self.predictions[drone.id] = predictions_for_drone
 
-    def _predict_death_ball_movement(self, death_ball: Enemy, max_time: int):
-        """Predict death ball movement using linear motion (stub, no wall bounce/seeking)."""
-        # TODO: Implement wall bouncing using CollisionChecker.
-        # TODO: Basic seeking if player path is known or target point given.
+    def _predict_death_ball_movement(self, death_ball: EntityWrapper, max_time: int):
+        """Predict death ball movement using current velocity and simple physics."""
         predictions_for_death_ball = []
         
-        # Death balls accelerate toward ninja and bounce off walls
-        # For pathfinding, assume they continue current trajectory
+        # Death balls move with current velocity and basic physics
         current_pos = [death_ball.xpos, death_ball.ypos]
         current_vel = [death_ball.xspeed, death_ball.yspeed]
+        acceleration = death_ball.properties.get('acceleration', 0.1)
+        max_speed = death_ball.properties.get('max_speed', 3.0)
         
         for t in range(0, max_time, 5):  # Sample every 5 frames
             # Simple physics simulation for death ball
-            # In reality, death balls seek the ninja and bounce off walls
+            # Apply acceleration towards some target (simplified - in reality they seek ninja)
+            # For pathfinding prediction, assume they continue current trajectory with some randomness
+            
+            # Apply drag
+            current_vel[0] *= 0.99
+            current_vel[1] *= 0.99
+            
+            # Update position
             current_pos[0] += current_vel[0] * 5
             current_pos[1] += current_vel[1] * 5
             
@@ -213,28 +187,28 @@ class EnemyPredictor:
         
         self.predictions[death_ball.id] = predictions_for_death_ball
     
-    def _predict_static_enemy(self, enemy: Enemy, max_time: int):
-        """Predict static enemy positions (mines, etc.)."""
-        # Static enemies don't move, so position is constant
-        predictions_for_enemy = []
+    def _predict_static_entity(self, entity: EntityWrapper, max_time: int):
+        """Predict static entity positions (mines, etc.)."""
+        # Static entities don't move, so position is constant
+        predictions_for_entity = []
         
         for t in range(0, max_time, self.static_prediction_sample_rate):  # Use specific sample rate
-            predictions_for_enemy.append((t, (enemy.xpos, enemy.ypos), enemy.radius))
+            predictions_for_entity.append((t, (entity.xpos, entity.ypos), entity.radius))
         
-        self.predictions[enemy.id] = predictions_for_enemy
+        self.predictions[entity.id] = predictions_for_entity
 
-    def get_enemy_positions_at_time(self, time: int) -> List[Tuple[Tuple[float, float], float]]:
-        """Get all predicted enemy positions and radii at a specific time, with interpolation."""
-        active_enemies_at_time: List[Tuple[Tuple[float, float], float]] = []
-        for enemy_id in self.predictions:
-            enemy_pred_list = self.predictions[enemy_id]
-            if not enemy_pred_list: continue
+    def get_entity_positions_at_time(self, time: int) -> List[Tuple[Tuple[float, float], float]]:
+        """Get all predicted entity positions and radii at a specific time, with interpolation."""
+        active_entities_at_time: List[Tuple[Tuple[float, float], float]] = []
+        for entity_id in self.predictions:
+            entity_pred_list = self.predictions[entity_id]
+            if not entity_pred_list: continue
 
             # Find prediction samples around 'time' for interpolation
             p_before: Optional[Tuple[int, Tuple[float,float], float]] = None
             p_after: Optional[Tuple[int, Tuple[float,float], float]] = None
 
-            for pred_sample in enemy_pred_list:
+            for pred_sample in entity_pred_list:
                 if pred_sample[0] <= time:
                     p_before = pred_sample
                 if pred_sample[0] >= time and p_after is None: # First sample at or after time
@@ -272,25 +246,25 @@ class EnemyPredictor:
             elif p_after: # time is before the first prediction sample
                 current_pos = p_after[1]
                 current_radius = p_after[2]
-            # else: no predictions for this enemy (should not happen if list not empty)
+            # else: no predictions for this entity (should not happen if list not empty)
             
             if current_pos and current_radius is not None:
-                active_enemies_at_time.append((current_pos, current_radius))
-        return active_enemies_at_time
+                active_entities_at_time.append((current_pos, current_radius))
+        return active_entities_at_time
 
 class DynamicPathfinder:
     """Pathfinding that considers time and moving obstacles using a time-expanded graph approach."""
     
     def __init__(self, static_graph: nx.DiGraph, 
-                 enemy_predictor: EnemyPredictor):
+                 entity_predictor: EntityPredictor):
         self.static_graph = static_graph
-        self.enemy_predictor = enemy_predictor
+        self.entity_predictor = entity_predictor
         self.time_resolution = 10  # frames (e.g., ~0.16 seconds at 60fps)
         self.max_temporal_depth = 1500 # Max frames into future to search (e.g. 25 seconds)
         
     def find_safe_path(self, start_node_id: int, goal_node_id: int,
                       start_time: int = 0) -> Optional[List[Tuple[int, int]]]: # Returns list of (node_id, time) tuples
-        """Find path that avoids moving enemies using A* on a conceptual temporal graph."""
+        """Find path that avoids moving entities using A* on a conceptual temporal graph."""
 
         # Temporal A* components
         # Priority queue stores: (f_score, spatial_node_id, time)
@@ -402,20 +376,20 @@ class DynamicPathfinder:
         return path[::-1]
 
     def _is_safe_at_time(self, node_id: int, time: int) -> bool:
-        """Check if a spatial node_id is safe from enemies at a given time."""
+        """Check if a spatial node_id is safe from entities at a given time."""
         node_data = self.static_graph.nodes.get(node_id)
         if not node_data:
             return False # Node doesn't exist
             
         node_pos = node_data['position']
         
-        enemy_positions_and_radii = self.enemy_predictor.get_enemy_positions_at_time(time)
+        entity_positions_and_radii = self.entity_predictor.get_entity_positions_at_time(time)
         
-        for enemy_pos, enemy_radius in enemy_positions_and_radii:
-            dist_sq = (node_pos[0] - enemy_pos[0])**2 + (node_pos[1] - enemy_pos[1])**2
-            min_safe_dist_sq = (enemy_radius + NINJA_RADIUS + 2)**2 # 2 pixel buffer
+        for entity_pos, entity_radius in entity_positions_and_radii:
+            dist_sq = (node_pos[0] - entity_pos[0])**2 + (node_pos[1] - entity_pos[1])**2
+            min_safe_dist_sq = (entity_radius + NINJA_RADIUS + 2)**2 # 2 pixel buffer
             if dist_sq < min_safe_dist_sq:
-                # print(f"Node {node_id} at pos {node_pos} is NOT safe at time {time} due to enemy at {enemy_pos} (r={enemy_radius})")
+                # print(f"Node {node_id} at pos {node_pos} is NOT safe at time {time} due to entity at {entity_pos} (r={entity_radius})")
                 return False
         
         return True

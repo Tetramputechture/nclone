@@ -200,7 +200,7 @@ Each tile can contain:
 ### Death Conditions
 1. **Impact Death**: Hitting surface at velocity > 6 pixels/frame
 2. **Crushing Death**: Being compressed below 0.05 threshold
-3. **Enemy Contact**: Touching mines, drones, or other hazards
+3. **Entity Contact**: Touching mines, drones, or other hazards
 
 ### Level Progression
 - Levels are procedurally generated or loaded from map files

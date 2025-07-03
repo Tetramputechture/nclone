@@ -38,12 +38,12 @@ The pathfinding system comprises several key components operating sequentially:
     *   Command generation for walk/run segments now incorporates more detailed N++ ground physics (acceleration, friction, max speed) and propagates the agent's kinematic state (position, velocity) between segments.
     *   Command generation for jump and fall segments is still largely abstract and requires further development to precisely follow `JumpTrajectory` data.
 8.  **Dynamic Pathfinding Components (`dynamic_pathfinding.py`)**:
-    *   **Enemy Predictor**:
-        *   Predicts future enemy positions.
+    *   **Entity Predictor**:
+        *   Predicts future entity positions.
         *   Includes more detailed predictive models for Thwumps (cyclic rest-smash-wait-return pattern) and Drones (patrol path following if data is available).
-        *   Uses linear interpolation between sampled prediction points for smoother and more accurate enemy tracking.
+        *   Uses linear interpolation between sampled prediction points for smoother and more accurate entity tracking.
     *   **Dynamic Pathfinder**:
-        *   Modifies pathfinding based on predicted enemy movements for safer paths using temporal A\* search (A\* on a time-expanded graph).
+        *   Modifies pathfinding based on predicted entity movements for safer paths using temporal A\* search (A\* on a time-expanded graph).
         *   Utilizes time costs (`frames` attribute) from graph edges and tuned parameters for `time_resolution` and heuristics.
 
 ## 2. N++ Physics Integration
@@ -88,7 +88,7 @@ The system incorporates N++ physics constants into relevant components for accur
     *   Command generation methods for jump and fall segments are still largely abstract. Future work should focus on implementing controllers that can accurately follow the `JumpTrajectory` data (frame-by-frame positions/velocities) provided by `JumpCalculator` for these aerial maneuvers.
     *   True reactive control during path execution (re-planning based on real-time deviations) remains a future architectural enhancement.
 *   **`PathOptimizer`**: Bezier curve smoothing has been implemented. Catmull-Rom splines could be explored as an alternative if Bezier curves prove unsuitable for certain N++ path characteristics.
-*   **Dynamic Pathfinding**: `EnemyPredictor` now includes more detailed predictive models for Thwumps (cyclic) and Drones (patrol-based if data is available), and uses interpolation for position queries. `DynamicPathfinder` (temporal A\*) parameters have been tuned, and it utilizes time costs from graph edges. Further refinement of enemy prediction models (e.g., player-aware Death Balls, more drone behaviors) is possible.
+*   **Dynamic Pathfinding**: `EntityPredictor` now includes more detailed predictive models for Thwumps (cyclic) and Drones (patrol-based if data is available), and uses interpolation for position queries. `DynamicPathfinder` (temporal A\*) parameters have been tuned, and it utilizes time costs from graph edges. Further refinement of entity prediction models (e.g., player-aware Death Balls, more drone behaviors) is possible.
 *   **Complex Geometries**:
     *   Handling of slopes has been improved: `SurfaceParser` now attempts to merge co-linear slopes of similar angles, and `JumpCalculator` uses slope normals for more accurate jump-off physics.
     *   Parsing and handling of curved surfaces (e.g., quarter-pipes from `TILE_SEGMENT_CIRCULAR_MAP`) in `SurfaceParser` is still basic and requires full implementation.
