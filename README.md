@@ -27,13 +27,7 @@ Key aspects of the RL agent include:
 
 ## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/SimonV42/nclone.git # Or your fork's URL
-    cd nclone
-    ```
-
-2.  **Create and activate a virtual environment (recommended):**
+1.  **Create and activate a virtual environment (recommended):**
     ```bash
     python -m venv venv
     # On Windows
@@ -42,7 +36,7 @@ Key aspects of the RL agent include:
     source venv/bin/activate
     ```
 
-3.  **Install dependencies:**
+2.  **Install dependencies:**
     The project uses `setuptools` for packaging. You can install it directly using pip:
     ```bash
     pip install .
@@ -53,7 +47,7 @@ Key aspects of the RL agent include:
     ```
     This will install all dependencies listed in `pyproject.toml`, including Pygame, NumPy, PyCairo, and Stable Baselines3 (required for the RL agent in the `npp-rl` subdirectory).
 
-4.  **Verify the installation:**
+3.  **Verify the installation:**
     After installation, you can verify that the package is correctly installed and the test environment can be found by running:
     ```bash
     python -m nclone.test_environment --help
@@ -144,4 +138,6 @@ If problems persist, please open an issue in the repository.
 *   `pyproject.toml`: Project metadata and dependencies.
 *   `README.md`: This file (overview of the `nclone` simulator).
 
-This provides a foundation for training reinforcement learning agents to play N++.
+## Sim Mechanics Doc
+
+[Navigate to sim_mechanics_doc.md](./sim_mechanics_doc.md) to read about detailed mechanics of the simulation.
