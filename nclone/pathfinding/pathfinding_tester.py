@@ -3,7 +3,8 @@ from typing import List, Tuple, Optional
 
 # Assuming the main system and stubs are importable
 from .pathfinding_system import PathfindingSystem
-from .utils import Enemy # For creating test enemies
+# Import Entity class from the main entities module
+from ..entities import Entity
 
 # Conditional import of pygame for potential test visualization or setup
 PYGAME_AVAILABLE = False
@@ -96,7 +97,7 @@ class PathfindingTester:
         self.test_maze_navigation(pf_system_maze, self.maze_map)
         
         print("\nTesting Dynamic Obstacle Avoidance (conceptual)...")
-        # Dynamic tests need enemy setup
+        # Dynamic tests need entity setup
         self.test_dynamic_obstacles(pf_system_maze) # Reuse maze map system
         
         print("\nTesting Multi-Objective Paths (conceptual)...")
@@ -192,37 +193,37 @@ class PathfindingTester:
             self.simulate_path_execution(commands, start_maze, end_maze, map_data)
 
     def test_dynamic_obstacles(self, pf_system: PathfindingSystem):
-        """Test pathfinding with dynamic obstacles (moving enemies)."""
+        """Test pathfinding with dynamic obstacles (moving entities)."""
         print("  Sub-test: Dynamic Obstacle Avoidance")
-        # This requires enemy setup and the DynamicPathfinder.
-        # Define a simple enemy that moves back and forth across a known path.
-        # Enemy(id, type, origin, direction, radius)
+        # This requires entity setup and the DynamicPathfinder.
+        # Define a simple entity that moves back and forth across a known path.
+        # Entity(id, type, origin, direction, radius)
         # Thwump moves along its direction vector from origin.
-        # Let's place an enemy on the flat map path from test_basic_pathfinding.
+        # Let's place an entity on the flat map path from test_basic_pathfinding.
         # Path was (120, 470) to (720, 470). Floor at y=480.
-        # Enemy at (400, 470), radius 20, moving horizontally.
-        enemy = Enemy(enemy_id=1, enemy_type='thwump', origin=(400, 470-10), direction=(1,0), radius=20)
-        enemies = [enemy]
+        # Entity at (400, 470), radius 20, moving horizontally.
+        entity = Entity(entity_id=1, entity_type='thwump', origin=(400, 470-10), direction=(1,0), radius=20)
+        entities = [entity]
         
         start_pos = (120, 470-10)
         end_pos = (720, 470-10)
 
-        # Path without enemy (should succeed)
-        # commands_no_enemy = pf_system.find_path_to_exit(start_pos, None, end_pos, enemies_list=None)
-        # self._assert(commands_no_enemy is not None, "Dynamic test: Path should exist without enemy.")
+        # Path without entity (should succeed)
+        # commands_no_entity = pf_system.find_path_to_exit(start_pos, None, end_pos, entities_list=None)
+        # self._assert(commands_no_entity is not None, "Dynamic test: Path should exist without entity.")
 
-        # Path with enemy (should ideally find a path that waits or goes around if possible)
+        # Path with entity (should ideally find a path that waits or goes around if possible)
         # The current DynamicPathfinder uses time-based avoidance.
-        commands_with_enemy = pf_system.find_path_to_exit(start_pos, None, end_pos, current_time=0, enemies_list=enemies)
+        commands_with_entity = pf_system.find_path_to_exit(start_pos, None, end_pos, current_time=0, entities_list=entities)
         
-        # The assertion depends on whether a safe path is possible given enemy prediction.
-        # If enemy blocks the only path indefinitely, this might be None.
+        # The assertion depends on whether a safe path is possible given entity prediction.
+        # If entity blocks the only path indefinitely, this might be None.
         # For a simple patrol, a path should be found by waiting.
-        self._assert(commands_with_enemy is not None and len(commands_with_enemy) > 0, 
-                     f"Dynamic obstacle: Path from {start_pos} to {end_pos} with enemy should be found (may involve waiting)." )
-        if commands_with_enemy:
+        self._assert(commands_with_entity is not None and len(commands_with_entity) > 0, 
+                     f"Dynamic obstacle: Path from {start_pos} to {end_pos} with entity should be found (may involve waiting)." )
+        if commands_with_entity:
             # Simulation of dynamic path is even more complex.
-            print(f"  Dynamic path found with {len(commands_with_enemy)} commands. (Simulation not robustly verified)")
+            print(f"  Dynamic path found with {len(commands_with_entity)} commands. (Simulation not robustly verified)")
 
     def test_multi_objective(self, pf_system: PathfindingSystem):
         """Test pathfinding with multiple objectives (e.g., switch then exit)."""

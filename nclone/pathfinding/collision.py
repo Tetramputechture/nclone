@@ -1,26 +1,33 @@
 """
-Unified collision detection system for both simulation and pathfinding.
-This module consolidates collision checking functionality to eliminate duplication.
+Unified collision detection system for pathfinding that leverages existing physics.py.
+This module provides a simplified interface to the existing collision system.
 """
 
 import math
 from typing import Tuple, List, Optional, Dict, Any
 
+# Import existing physics functions instead of reimplementing them
 from ..physics import (
     sweep_circle_vs_tiles,
     get_single_closest_point,
+    gather_entities_from_neighbourhood,
+    penetration_square_vs_point,
+    overlap_circle_vs_circle,
+    overlap_circle_vs_segment,
+    is_empty_row,
+    is_empty_column,
+    raycast_vs_player,
+    get_raycast_distance
 )
 from ..ninja import NINJA_RADIUS
-from ..nsim import TILE_PIXEL_SIZE
 
 
 class CollisionChecker:
-    """Unified collision checker that works with the existing simulation infrastructure."""
+    """Unified collision checker that uses the existing simulation infrastructure."""
     
     def __init__(self, sim):
         """Initialize with a reference to the simulator."""
         self.sim = sim
-        self.tile_size = TILE_PIXEL_SIZE
         
     def check_collision(self, pos1: Tuple[float, float], pos2: Tuple[float, float], 
                        radius: float = None) -> bool:
@@ -31,27 +38,15 @@ class CollisionChecker:
         dx = pos2[0] - pos1[0]
         dy = pos2[1] - pos1[1]
         
-        # Use the existing sweep_circle_vs_tiles function
+        # Use the existing sweep_circle_vs_tiles function from physics.py
         time = sweep_circle_vs_tiles(self.sim, pos1[0], pos1[1], dx, dy, radius)
         return time < 1.0  # Collision if we can't move the full distance
     
     def point_in_wall(self, point: Tuple[float, float]) -> bool:
         """Check if a point is inside solid geometry using existing collision system."""
-        x, y = point
-        grid_x = int(x // self.tile_size)
-        grid_y = int(y // self.tile_size)
-        
-        # Check bounds
-        if (grid_x < 0 or grid_x >= self.sim.current_map_width_tiles or 
-            grid_y < 0 or grid_y >= self.sim.current_map_height_tiles):
-            return True  # Outside map bounds
-        
-        # Use existing tile data
-        if hasattr(self.sim, 'tile_dic'):
-            tile_type = self.sim.tile_dic.get((grid_x, grid_y), 0)
-            return tile_type != 0  # Non-empty tiles are walls
-        
-        return False
+        # Use the existing closest point detection to check if point is inside geometry
+        result, closest_point = get_single_closest_point(self.sim, point[0], point[1], 0.1)
+        return result != 0  # Non-zero result means point is inside or very close to geometry
     
     def get_surface_normal_at_point(self, point: Tuple[float, float]) -> Optional[Tuple[float, float]]:
         """Get the surface normal at a given point using existing collision system."""
@@ -68,9 +63,47 @@ class CollisionChecker:
         
         return None
     
+    def check_line_of_sight(self, pos1: Tuple[float, float], pos2: Tuple[float, float]) -> bool:
+        """Check if there's a clear line of sight between two points using existing raycast."""
+        dx = pos2[0] - pos1[0]
+        dy = pos2[1] - pos1[1]
+        distance = math.sqrt(dx*dx + dy*dy)
+        
+        if distance == 0:
+            return True
+        
+        # Normalize direction
+        dx /= distance
+        dy /= distance
+        
+        # Use existing raycast function
+        raycast_distance = get_raycast_distance(self.sim, pos1[0], pos1[1], dx, dy)
+        return raycast_distance is None or raycast_distance >= distance
+    
+    def check_grid_path_clear(self, start_pos: Tuple[float, float], 
+                             end_pos: Tuple[float, float], direction: Tuple[int, int]) -> bool:
+        """Check if a grid-aligned path is clear using existing grid functions."""
+        start_cell_x = int(start_pos[0] // 12)
+        start_cell_y = int(start_pos[1] // 12)
+        end_cell_x = int(end_pos[0] // 12)
+        end_cell_y = int(end_pos[1] // 12)
+        
+        if direction[0] != 0:  # Horizontal movement
+            return is_empty_column(self.sim, start_cell_x, 
+                                 min(start_cell_y, end_cell_y), 
+                                 max(start_cell_y, end_cell_y), 
+                                 direction[0])
+        elif direction[1] != 0:  # Vertical movement
+            return is_empty_row(self.sim, 
+                              min(start_cell_x, end_cell_x),
+                              max(start_cell_x, end_cell_x), 
+                              start_cell_y, direction[1])
+        
+        return True
+    
     def entity_blocks_path(self, entity: Any, pos1: Tuple[float, float], 
                           pos2: Tuple[float, float], radius: float = None) -> bool:
-        """Check if an entity blocks a movement path."""
+        """Check if an entity blocks a movement path using existing collision functions."""
         if not entity.active:
             return False
             
@@ -78,47 +111,55 @@ class CollisionChecker:
             radius = NINJA_RADIUS
             
         # Check if entity has collision radius
-        entity_radius = getattr(entity, 'RADIUS', 0)
+        entity_radius = getattr(entity, 'RADIUS', getattr(entity, 'SEMI_SIDE', 0))
         if entity_radius == 0:
             return False
             
-        # Simple line-circle intersection test
-        return self._line_intersects_circle(
-            pos1, pos2, (entity.xpos, entity.ypos), entity_radius + radius)
+        # Use existing circle-segment overlap function
+        return overlap_circle_vs_segment(
+            entity.xpos, entity.ypos, entity_radius + radius,
+            pos1[0], pos1[1], pos2[0], pos2[1])
     
-    def _line_intersects_circle(self, line_start: Tuple[float, float], 
-                               line_end: Tuple[float, float],
-                               circle_center: Tuple[float, float], 
-                               radius: float) -> bool:
-        """Check if a line segment intersects with a circle."""
-        x1, y1 = line_start
-        x2, y2 = line_end
-        cx, cy = circle_center
+    def get_nearby_entities(self, pos: Tuple[float, float]) -> List[Any]:
+        """Get nearby entities using the existing physics system."""
+        return gather_entities_from_neighbourhood(self.sim, pos[0], pos[1])
+    
+    def check_entity_collision(self, pos: Tuple[float, float], 
+                              radius: float = None) -> bool:
+        """Check if a position collides with any nearby entities."""
+        if radius is None:
+            radius = NINJA_RADIUS
+            
+        nearby_entities = self.get_nearby_entities(pos)
         
-        # Vector from line start to end
-        dx = x2 - x1
-        dy = y2 - y1
+        for entity in nearby_entities:
+            if not entity.active or not entity.is_physical_collidable:
+                continue
+                
+            entity_radius = getattr(entity, 'RADIUS', getattr(entity, 'SEMI_SIDE', 0))
+            if entity_radius == 0:
+                continue
+                
+            # Use existing circle overlap function
+            if overlap_circle_vs_circle(pos[0], pos[1], radius,
+                                      entity.xpos, entity.ypos, entity_radius):
+                return True
+                
+        return False
+    
+    def get_depenetration_from_entity(self, entity: Any, pos: Tuple[float, float], 
+                                    radius: float = None) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        """Get depenetration vector from an entity using existing physics functions."""
+        if not entity.active or not entity.is_physical_collidable:
+            return None
+            
+        if radius is None:
+            radius = NINJA_RADIUS
+            
+        # Use existing depenetration function for square entities
+        if hasattr(entity, 'SEMI_SIDE'):
+            return penetration_square_vs_point(
+                entity.xpos, entity.ypos, pos[0], pos[1], 
+                entity.SEMI_SIDE + radius)
         
-        # Vector from line start to circle center
-        fx = cx - x1
-        fy = cy - y1
-        
-        # Project circle center onto line
-        line_length_sq = dx*dx + dy*dy
-        if line_length_sq == 0:
-            # Degenerate line, check point-circle distance
-            dist_sq = fx*fx + fy*fy
-            return dist_sq <= radius*radius
-        
-        t = max(0, min(1, (fx*dx + fy*dy) / line_length_sq))
-        
-        # Closest point on line segment
-        closest_x = x1 + t*dx
-        closest_y = y1 + t*dy
-        
-        # Distance from circle center to closest point
-        dist_x = cx - closest_x
-        dist_y = cy - closest_y
-        dist_sq = dist_x*dist_x + dist_y*dist_y
-        
-        return dist_sq <= radius*radius 
+        return None 

@@ -3,7 +3,7 @@ from typing import List, Tuple, Dict, Optional
 import math 
 
 from .surface_parser import Surface, SurfaceType
-from .utils import CollisionChecker
+from .utils import CollisionChecker, PathfindingUtils
 from ..ninja import (
     NINJA_RADIUS,
     GRAVITY_FALL,
@@ -18,6 +18,8 @@ from ..ninja import (
     JUMP_WALL_REGULAR_X,
     JUMP_WALL_SLIDE_X
 )
+# Import existing physics functions
+from ..physics import sweep_circle_vs_tiles
 
 class NavigationNode:
     """Represents a position on a surface where movement decisions can be made"""
@@ -226,10 +228,12 @@ class JumpTrajectory:
         self.requires_held_jump = False
         
 class JumpCalculator:
-    """Calculates physically accurate jump trajectories using actual N++ physics"""
+    """Calculates physically accurate jump trajectories using existing N++ physics"""
     
-    def __init__(self, collision_checker: CollisionChecker):
-        self.collision_checker = collision_checker
+    def __init__(self, sim):
+        """Initialize with simulator reference to use existing physics."""
+        self.sim = sim
+        self.pathfinding_utils = PathfindingUtils(sim)
         
     def calculate_jump(self, start_pos: Tuple[float, float], 
                       end_pos: Tuple[float, float],
@@ -365,19 +369,19 @@ class JumpCalculator:
 
         initial_vel = (actual_initial_vx, initial_vy) 
         
-        simulated_traj = self._simulate_jump(start_pos, initial_vel, target_pos, hold_frames, jump_type)
+        simulated_traj = self._simulate_jump_with_physics(start_pos, initial_vel, target_pos, hold_frames, jump_type)
         if simulated_traj:
             # Assign IDs later when integrating with graph nodes
             simulated_traj.start_node_id = -1 # Placeholder
             simulated_traj.end_node_id = -1   # Placeholder
         return simulated_traj
 
-    def _simulate_jump(self, start_pos: Tuple[float, float],
-                      initial_velocity: Tuple[float, float],
-                      target_pos: Tuple[float, float],
-                      hold_frames: int,
-                      jump_type_str: str) -> Optional[JumpTrajectory]:
-        """Simulate a jump with given parameters using accurate N++ physics"""
+    def _simulate_jump_with_physics(self, start_pos: Tuple[float, float],
+                                   initial_velocity: Tuple[float, float],
+                                   target_pos: Tuple[float, float],
+                                   hold_frames: int,
+                                   jump_type_str: str) -> Optional[JumpTrajectory]:
+        """Simulate a jump using the existing physics system for collision detection."""
         
         # Node IDs are not known here, set to placeholder
         trajectory = JumpTrajectory(-1, -1, initial_velocity, jump_type_str)
@@ -425,8 +429,12 @@ class JumpCalculator:
             if pos[1] < max_y_achieved:
                 max_y_achieved = pos[1]
             
-            # Collision check using swept circle collision
-            if self.collision_checker.check_collision(tuple(old_pos), tuple(pos), NINJA_RADIUS):
+            # Use existing physics system for collision detection
+            dx = pos[0] - old_pos[0]
+            dy = pos[1] - old_pos[1]
+            collision_time = sweep_circle_vs_tiles(self.sim, old_pos[0], old_pos[1], dx, dy, NINJA_RADIUS)
+            
+            if collision_time < 1.0:
                 return None  # Collision detected
             
             # Store frame data

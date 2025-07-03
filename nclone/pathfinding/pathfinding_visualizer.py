@@ -32,7 +32,7 @@ class PathfindingVisualizer:
             'path': pygame.Color('yellow'),
             'jump_trajectory': pygame.Color('orange'),
             'los_line': pygame.Color('magenta'),
-            'enemy': pygame.Color('purple')
+            'entity': pygame.Color('purple')
         }
     
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
@@ -198,18 +198,18 @@ class PathfindingVisualizer:
             )
             pygame.draw.line(screen, self.colors['los_line'], point1_adj, point2_adj, int(2 * self.adjust))
 
-    def draw_enemies(self, screen, enemy_positions: List[Tuple[Tuple[float,float], float]]):
-        """Draw enemies at their current positions with their radii."""
-        if not PYGAME_AVAILABLE or not screen or not enemy_positions:
+    def draw_entities(self, screen, entity_positions: List[Tuple[Tuple[float,float], float]]):
+        """Draw entities at their current positions with their radii."""
+        if not PYGAME_AVAILABLE or not screen or not entity_positions:
             return
-        for pos_orig, radius_orig in enemy_positions:
+        for pos_orig, radius_orig in entity_positions:
             pos_adj = (
                 pos_orig[0] * self.adjust + self.tile_x_offset,
                 pos_orig[1] * self.adjust + self.tile_y_offset
             )
             radius_adj = radius_orig * self.adjust
-            pygame.draw.circle(screen, self.colors['enemy'], (int(pos_adj[0]), int(pos_adj[1])), int(radius_adj), int(2 * self.adjust if self.adjust >=1 else 1)) # Outline
-            pygame.draw.circle(screen, self.colors['enemy'], (int(pos_adj[0]), int(pos_adj[1])), int(radius_adj/2)) # Filled smaller circle
+            pygame.draw.circle(screen, self.colors['entity'], (int(pos_adj[0]), int(pos_adj[1])), int(radius_adj), int(2 * self.adjust if self.adjust >=1 else 1)) # Outline
+            pygame.draw.circle(screen, self.colors['entity'], (int(pos_adj[0]), int(pos_adj[1])), int(radius_adj/2)) # Filled smaller circle
 
     def update_display(self):
         """Call pygame.display.flip() or pygame.display.update()."""

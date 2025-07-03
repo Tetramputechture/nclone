@@ -5,22 +5,28 @@ from typing import List, Tuple, Dict, Optional
 from .surface_parser import SurfaceParser, Surface, SurfaceType
 from .navigation_graph import NavigationGraphBuilder, JumpCalculator, JumpTrajectory
 from .astar_pathfinder import PlatformerAStar, MultiObjectivePathfinder
-from .dynamic_pathfinding import DynamicPathfinder, EnemyPredictor
+from .dynamic_pathfinding import DynamicPathfinder, EntityPredictor
 from .path_executor import PathOptimizer, MovementController
 from .pathfinding_visualizer import PathfindingVisualizer
-from .utils import CollisionChecker, Enemy # For stubs and type hinting
+from .utils import CollisionChecker, PathfindingUtils, EntityWrapper # Updated imports
 
 
 class PathfindingSystem:
     """Complete pathfinding system for N++ simulation"""
     
-    def __init__(self, tile_map: np.ndarray, physics_params: Optional[dict] = None):
+    def __init__(self, sim, physics_params: Optional[dict] = None):
         if physics_params is None:
             physics_params = {} # Default empty dict
 
-        # Initialize components
-        self.tile_map = tile_map
-        self.collision_checker = CollisionChecker(tile_map)
+        # Store simulator reference for physics integration
+        self.sim = sim
+        
+        # Initialize components using the simulator
+        self.pathfinding_utils = PathfindingUtils(sim)
+        self.collision_checker = CollisionChecker(sim)
+        
+        # Extract tile map from simulator for surface parsing
+        tile_map = self._extract_tile_map_from_sim()
         
         self.surface_parser = SurfaceParser(tile_map)
         self.surfaces: List[Surface] = self.surface_parser.parse_surfaces()
@@ -29,16 +35,17 @@ class PathfindingSystem:
         # Build the graph without jump edges first
         self.nav_graph = self.graph_builder.build_graph() 
         
-        self.jump_calculator = JumpCalculator(self.collision_checker)
+        # Initialize jump calculator with simulator reference
+        self.jump_calculator = JumpCalculator(sim)
         # After initial graph is built, add jump edges
         self._add_jump_edges_to_graph() 
         
         self.pathfinder = PlatformerAStar(self.nav_graph, self.jump_calculator)
         self.multi_objective_pathfinder = MultiObjectivePathfinder(self.pathfinder)
         
-        # Dynamic components (initialized when enemies are known)
-        self.enemies: List[Enemy] = []
-        self.enemy_predictor: Optional[EnemyPredictor] = None
+        # Dynamic components (initialized when entities are known)
+        self.entity_wrappers: List[EntityWrapper] = []
+        self.entity_predictor: Optional[EntityPredictor] = None
         self.dynamic_pathfinder: Optional[DynamicPathfinder] = None
         
         self.path_optimizer = PathOptimizer(self.collision_checker)
@@ -46,7 +53,27 @@ class PathfindingSystem:
         
         # Visualization (optional)
         self.visualizer = PathfindingVisualizer()
-        print("PathfindingSystem initialized.")
+        print("PathfindingSystem initialized with physics integration.")
+
+    def _extract_tile_map_from_sim(self) -> np.ndarray:
+        """Extract tile map from simulator for surface parsing."""
+        # Convert the simulator's tile data to the format expected by surface parser
+        if hasattr(self.sim, 'tile_dic'):
+            # Create a 2D array from the tile dictionary
+            max_x = max((coord[0] for coord in self.sim.tile_dic.keys()), default=0)
+            max_y = max((coord[1] for coord in self.sim.tile_dic.keys()), default=0)
+            
+            tile_map = np.zeros((max_x + 1, max_y + 1), dtype=int)
+            
+            for (x, y), tile_type in self.sim.tile_dic.items():
+                if 0 <= x <= max_x and 0 <= y <= max_y:
+                    tile_map[x, y] = tile_type
+            
+            return tile_map
+        else:
+            # Fallback: create empty tile map
+            print("Warning: No tile_dic found in simulator, creating empty tile map")
+            return np.zeros((44, 25), dtype=int)
 
     def _add_jump_edges_to_graph(self):
         """Iterate through graph nodes and use JumpCalculator to add jump/fall edges, spatially optimized."""
@@ -180,7 +207,7 @@ class PathfindingSystem:
                          switch_pos: Optional[Tuple[float, float]], # Switch can be optional
                          exit_pos: Tuple[float, float],
                          current_time: int = 0, # For dynamic pathfinding
-                         enemies_list: Optional[List[Enemy]] = None, # For dynamic pathfinding
+                         enemies_list: Optional[List[EntityWrapper]] = None, # Updated to use EntityWrapper
                          collect_gold_positions: Optional[List[Tuple[float, float]]] = None
                          ) -> Optional[List[dict]]: # Returns list of movement commands
         """Find complete path from start to exit, potentially via switch, avoiding dynamic obstacles."""
@@ -208,8 +235,8 @@ class PathfindingSystem:
         temporal_path: Optional[List[Tuple[int, int]]] = None
 
         if enemies_list and len(enemies_list) > 0:
-            print("Dynamic pathfinding mode with enemies.")
-            self.update_with_enemies(enemies_list)
+            print("Dynamic pathfinding mode with entities.")
+            self.update_with_entities(enemies_list)
             if self.dynamic_pathfinder:
                 # Dynamic pathfinder needs to handle multi-objective (switch, exit) itself, or be called sequentially.
                 # For simplicity, let's assume dynamic pathfinder for now only does start -> goal.
@@ -238,7 +265,7 @@ class PathfindingSystem:
                 temporal_path = full_temporal_path_segments
                 node_path_ids = [step[0] for step in temporal_path] # Extract spatial nodes for smoothing/commands
             else:
-                print("Error: Enemies present but dynamic pathfinder not initialized.")
+                print("Error: Entities present but dynamic pathfinder not initialized.")
                 return None
         else:
             print("Static pathfinding mode.")
@@ -281,7 +308,7 @@ class PathfindingSystem:
         return commands
 
     def find_simple_path(self, start_pos: Tuple[float, float], end_pos: Tuple[float, float]) -> Optional[List[dict]]:
-        """Simplified pathfinding from start_pos to end_pos, no objectives, no enemies."""
+        """Simplified pathfinding from start_pos to end_pos, no objectives, no entities."""
         start_node = self._find_nearest_node(start_pos)
         end_node = self._find_nearest_node(end_pos)
 
@@ -303,27 +330,32 @@ class PathfindingSystem:
         commands = self.movement_controller.generate_commands(start_pos, (0,0), world_path, edge_types)
         return commands
 
-    def update_with_enemies(self, enemies_list: List[Enemy]):
-        """Update pathfinding system with current enemy information for dynamic avoidance."""
-        self.enemies = enemies_list
-        if not enemies_list:
-            self.enemy_predictor = None
+    def update_with_entities(self, entities_list: List[EntityWrapper]):
+        """Update pathfinding system with current entity information for dynamic avoidance."""
+        self.entity_wrappers = entities_list
+        if not entities_list:
+            self.entity_predictor = None
             self.dynamic_pathfinder = None
-            print("Enemies list cleared, reverting to static pathfinding if applicable.")
+            print("Entities list cleared, reverting to static pathfinding if applicable.")
             return
 
-        self.enemy_predictor = EnemyPredictor(self.enemies)
-        if self.nav_graph and self.enemy_predictor:
-            self.dynamic_pathfinder = DynamicPathfinder(self.nav_graph, self.enemy_predictor)
-            print(f"DynamicPathfinder updated with {len(enemies_list)} enemies.")
+        self.entity_predictor = EntityPredictor(self.entity_wrappers)
+        if self.nav_graph and self.entity_predictor:
+            self.dynamic_pathfinder = DynamicPathfinder(self.nav_graph, self.entity_predictor)
+            print(f"DynamicPathfinder updated with {len(entities_list)} entities.")
         else:
-            print("Warning: Could not initialize DynamicPathfinder (nav_graph or enemy_predictor missing).")
+            print("Warning: Could not initialize DynamicPathfinder (nav_graph or entity_predictor missing).")
+
+    def update_entities_from_sim(self):
+        """Update entities from the current simulation state."""
+        entity_wrappers = self.pathfinding_utils.get_entities_for_prediction()
+        self.update_with_entities(entity_wrappers)
     
     def visualize_current_state(self, screen, 
                                 current_path_nodes: Optional[List[int]] = None,
                                 current_path_world: Optional[List[Tuple[float,float]]] = None,
-                                current_enemies_info: Optional[List[Tuple[Tuple[float,float], float]]] = None):
-        """Render the navigation mesh, current path, enemies, etc., for debugging."""
+                                current_entities_info: Optional[List[Tuple[Tuple[float,float], float]]] = None):
+        """Render the navigation mesh, current path, entities, etc., for debugging."""
         if not self.visualizer or not hasattr(self.visualizer, 'PYGAME_AVAILABLE') or not self.visualizer.PYGAME_AVAILABLE:
             return
         if screen is None: return
@@ -342,10 +374,10 @@ class PathfindingSystem:
                     pygame.draw.line(screen, pygame.Color('deeppink'), 
                                    current_path_world[i], current_path_world[i+1], 2)
         
-        if current_enemies_info:
-            self.visualizer.draw_enemies(screen, current_enemies_info)
-        elif self.enemy_predictor: # Draw predicted enemies at t=0 if no specific info given
-            initial_enemy_pos = self.enemy_predictor.get_enemy_positions_at_time(0)
-            self.visualizer.draw_enemies(screen, initial_enemy_pos)
+        if current_entities_info:
+            self.visualizer.draw_entities(screen, current_entities_info)
+        elif self.entity_predictor: # Draw predicted entities at t=0 if no specific info given
+            initial_entity_pos = self.entity_predictor.get_entity_positions_at_time(0)
+            self.visualizer.draw_entities(screen, initial_entity_pos)
 
         self.visualizer.update_display()
