@@ -52,8 +52,28 @@ from .frame_augmentation import apply_consistent_augmentation
 
 
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Resize frame to desired dimensions."""
-    return cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+    """Resize frame to desired dimensions with stable interpolation."""
+    return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+
+
+def stabilize_frame(frame: np.ndarray) -> np.ndarray:
+    """Ensure frame has consistent properties for stable processing."""
+    # Ensure uint8 dtype
+    if frame.dtype != np.uint8:
+        frame = np.clip(frame, 0, 255).astype(np.uint8)
+    
+    # Ensure proper shape (H, W, 1) for grayscale
+    if len(frame.shape) == 2:
+        frame = frame[..., np.newaxis]
+    elif len(frame.shape) == 3 and frame.shape[-1] != 1:
+        # Convert to grayscale if needed
+        if frame.shape[-1] == 3:
+            gray = (0.2989 * frame[..., 0] + 0.5870 * frame[..., 1] + 0.1140 * frame[..., 2])
+            frame = gray[..., np.newaxis].astype(np.uint8)
+        else:
+            raise ValueError(f"Unexpected frame shape: {frame.shape}")
+    
+    return frame
 
 
 def normalize_position(x: float, y: float) -> Tuple[float, float]:
@@ -96,8 +116,8 @@ class ObservationProcessor:
 
     def frame_around_player(self, frame: np.ndarray, player_x: float, player_y: float) -> np.ndarray:
         """Crop the frame to a rectangle centered on the player."""
-        # Frame is already grayscale at this point
-        player_frame = frame
+        # Ensure frame stability
+        player_frame = stabilize_frame(frame)
 
         # Calculate the starting and ending coordinates for the crop
         start_x = int(player_x - PLAYER_FRAME_WIDTH // 2)
@@ -186,21 +206,8 @@ class ObservationProcessor:
             np.ndarray: Downsampled grayscale view with shape (RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1)
             in the range 0-255
         """
-        # screen input from NPlayHeadless.render() should already be grayscaled (H, W, 1)
-        # if render_mode was 'rgb_array'.
-        # If it somehow isn't (e.g. direct call with non-grayscaled), this would be an issue.
-        # For now, we assume it's correctly grayscaled H,W,1.
-        # Original check:
-        # if len(screen.shape) == 3 and screen.shape[-1] != 1:
-        #     screen = frame_to_grayscale(screen)
-
-        # Ensure it has the channel dimension if it's H,W (it should be H,W,1)
-        if len(screen.shape) == 2:
-            screen = screen[..., np.newaxis]
-        
-        # Ensure it is uint8
-        if screen.dtype != np.uint8:
-            screen = screen.astype(np.uint8)
+        # Ensure frame stability and consistent format
+        screen = stabilize_frame(screen)
 
         # Downsample using area interpolation for better quality
         downsampled = cv2.resize(
@@ -217,31 +224,8 @@ class ObservationProcessor:
 
     def process_observation(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
         """Process observation into frame stack, base map, and feature vectors."""
-        # screen input from NPlayHeadless.render() should already be grayscaled (H, W, 1)
-        # if render_mode was 'rgb_array'.
-        screen = obs['screen']
-
-        # Original grayscale conversion (now assumed to be done in NPlayHeadless.render):
-        # if len(screen.shape) == 3 and screen.shape[-1] != 1:
-        #     screen = frame_to_grayscale(screen)
-
-        # Ensure screen is H, W, 1 and uint8 as expected by subsequent processing
-        if len(screen.shape) == 2: # Should be H,W,1 from render, but good to be safe
-            screen = screen[..., np.newaxis]
-        if screen.shape[-1] != 1: # Should be 1 channel (grayscale)
-            # This case should ideally not happen if NPlayHeadless.render() is correct.
-            # If it has 3 channels, it means it wasn't grayscaled.
-            # For robustness, one might re-apply grayscale here, but it indicates an issue upstream.
-            # For now, let's assume it is 1 channel or raise an error.
-            if screen.shape[-1] == 3: # It's RGB, needs grayscaling
-                # Fallback grayscaling, though this indicates an issue with the render pipeline promise
-                temp_gray = (0.2989 * screen[..., 0] + 0.5870 * screen[..., 1] + 0.1140 * screen[..., 2])
-                screen = temp_gray[..., np.newaxis].astype(np.uint8)
-            else:
-                raise ValueError(f"Screen input to process_observation has unexpected channel count: {screen.shape[-1]}")
-        
-        if screen.dtype != np.uint8:
-            screen = screen.astype(np.uint8)
+        # Ensure screen stability and consistent format
+        screen = stabilize_frame(obs['screen'])
 
         # Process current frame using already grayscale screen
         player_frame = self.frame_around_player(
