@@ -202,11 +202,14 @@ Each tile can contain:
 
 #### Thwumps (Type 20)
 - **Size**: 9×9 pixel square
+- **Facing**: Each thwump faces one of four sides (up, down, left, right)
+- **Deadly Side**: Only the side the thwump is facing is deadly during a charge; other sides behave as solid walls or floors and can be safely touched or stood on
 - **Movement**: Forward speed 20/7, backward speed 8/7 pixels/frame
 - **Behavior**: Charges toward ninja when in line of sight, returns to origin
 - **States**: Immobile (0), Forward (1), Backward (-1)
 - **Activation Range**: 2 × (9 + 10) = 38 pixels
-- **AI Strategy**: Use timing and positioning to avoid charging face
+- **Special Interaction**: Horizontally-moving thwumps can be 'ridden' on top of, enabling advanced movement and routing strategies
+- **AI Strategy**: Use timing and positioning to avoid the deadly face; consider using non-deadly sides for traversal or as moving platforms
 
 #### Drones (Types 14, 26)
 - **Radius**: 7.5 pixels (regular), 4 pixels (mini)
@@ -250,8 +253,6 @@ Each tile can contain:
 
 ### Level Progression
 - Levels are procedurally generated or loaded from map files
-- Three main generation types: Simple Horizontal, Jump Required, Maze
-- Evaluation mode uses only Jump Required and Maze types
 
 ## AI Decision Framework
 
