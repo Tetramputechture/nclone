@@ -98,8 +98,12 @@ class RewardCalculator:
 
         # Add PBRS shaping reward if enabled
         pbrs_reward = 0.0
+        pbrs_components = {}
         if self.enable_pbrs and self.pbrs_calculator is not None:
             current_potential = self.pbrs_calculator.calculate_combined_potential(obs)
+            
+            # Get individual potential components for logging
+            pbrs_components = self.pbrs_calculator.get_potential_components(obs)
             
             if self.prev_potential is not None:
                 # r_shaped = r_env + γ * Φ(s') - Φ(s)
@@ -107,6 +111,15 @@ class RewardCalculator:
                 reward += pbrs_reward
             
             self.prev_potential = current_potential
+
+        # Store component rewards for episode info
+        self.last_pbrs_components = {
+            'navigation_reward': navigation_reward,
+            'exploration_reward': exploration_reward,
+            'pbrs_reward': pbrs_reward,
+            'pbrs_components': pbrs_components,
+            'total_reward': reward
+        }
 
         return reward
 
