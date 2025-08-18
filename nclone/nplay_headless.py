@@ -326,10 +326,14 @@ class NPlayHeadless:
     def exit(self):
         pygame.quit()
 
-    def get_state_vector(self, only_exit_and_switch: bool = False):
+    def get_state_vector(self, only_exit_and_switch: bool = False, use_rich_features: bool = True):
         """
         Get a complete state representation of the game environment as a vector of float values.
         This includes ninja state, entity states, and environment geometry.
+
+        Args:
+            only_exit_and_switch: If True, only include exit and switch entities
+            use_rich_features: If True, use enriched ninja state (20-D), else minimal (10-D)
 
         Returns:
             numpy.ndarray: A 1D array containing all state information, with fixed length.
@@ -337,12 +341,12 @@ class NPlayHeadless:
         """
         state = []
 
-        # Add ninja state (10 values)
-        ninja_state = self.get_ninja_state()
+        # Add ninja state (10 or 20 values depending on use_rich_features)
+        ninja_state = self.get_ninja_state(use_rich_features=use_rich_features)
         state.extend(ninja_state)
 
         # Add entity states with fixed size per entity type
-        entity_states = self.get_entity_states(only_exit_and_switch)
+        entity_states = self.get_entity_states(only_exit_and_switch, use_rich_features=use_rich_features)
         state.extend(entity_states)
 
         # Add environment geometry (fixed size)
@@ -364,24 +368,20 @@ class NPlayHeadless:
         """Returns count of all gold (entity type 2) in the map."""
         return sum(1 for entity in self.sim.entity_dic[2])
 
-    def get_ninja_state(self):
-        """Get ninja state information as a 10-element list of floats, all normalized between 0 and 1.
+    def get_ninja_state(self, use_rich_features=True):
+        """Get ninja state as a list of floats with fixed length, all normalized between 0 and 1.
+
+        Args:
+            use_rich_features: If True, return enriched feature set. If False, return minimal 10-D vector.
 
         Returns:
-            numpy.ndarray: A 1D array containing:
-            - X Position normalized
-            - Y position normalized
-            - X speed normalized
-            - Y speed normalized
-            - Airborn boolean
-            - Walled boolean
-            - Jump duration normalized
-            - Applied gravity normalized
-            - Applied drag normalized
-            - Applied friction normalized
+            List of floats representing ninja state:
+            - Minimal (10-D): position, velocity, airborn, walled, jump_duration, physics params
+            - Rich (20-D): minimal + buffers, contact counts, normals, impact risk, state flags
         """
         ninja = self.sim.ninja
 
+        # Core 10-D state (backward compatibility)
         state = [
             ninja.xpos / SRCWIDTH,  # Position normalized
             ninja.ypos / SRCHEIGHT,
@@ -399,15 +399,59 @@ class NPlayHeadless:
             (ninja.applied_friction - ninja.FRICTION_WALL) / \
             (ninja.FRICTION_GROUND - ninja.FRICTION_WALL)
         ]
+
+        if not use_rich_features:
+            return state
+
+        # Extended features for rich observation space
+        # Buffer counters (normalized by typical window size of 5 frames)
+        buffer_window_size = 5.0
+        state.extend([
+            max(ninja.jump_buffer, 0) / buffer_window_size,  # 0-1 range
+            max(ninja.floor_buffer, 0) / buffer_window_size,
+            max(ninja.wall_buffer, 0) / buffer_window_size,
+            max(ninja.launch_pad_buffer, 0) / buffer_window_size,
+        ])
+
+        # Contact flags/counters (clipped to {0,1})
+        state.extend([
+            min(ninja.floor_count, 1),  # Already 0 or 1
+            min(ninja.wall_count, 1),
+            min(ninja.ceiling_count, 1),
+        ])
+
+        # Floor/ceiling normals (already normalized to [-1,1], convert to [0,1])
+        state.extend([
+            (ninja.floor_normalized_x + 1) / 2,
+            (ninja.floor_normalized_y + 1) / 2,
+            (ninja.ceiling_normalized_x + 1) / 2,
+            (ninja.ceiling_normalized_y + 1) / 2,
+        ])
+
+        # Impact risk estimator (velocity magnitude and downward component)
+        velocity_magnitude = (ninja.xspeed**2 + ninja.yspeed**2)**0.5
+        max_velocity = ninja.MAX_HOR_SPEED * 2  # Approximate max velocity including vertical
+        impact_vel = min(velocity_magnitude / max_velocity, 1.0)
+        downward_velocity = max(ninja.yspeed, 0) / max_velocity  # Only positive (downward) velocity
+        
+        state.extend([
+            impact_vel,
+            downward_velocity,
+        ])
+
+        # State flags (ninja.state: 0-9, normalize to [0,1])
+        state.append(ninja.state / 9.0)
+
         return state
 
-    def get_entity_states(self, only_one_exit_and_switch: bool = False):
+    def get_entity_states(self, only_one_exit_and_switch: bool = False, use_rich_features: bool = True):
         """Get all entity states as a list of floats with fixed length, all normalized between 0 and 1.
 
         Args:
             only_exit_and_switch: If True, only include exit and switch entities. This useful for
             training a model on simple levels without entities. Exit is entity type 3, and switch is
             entity type 4.
+            use_rich_features: If True, include additional features like distance to ninja, velocity, etc.
         """
         state = []
 
@@ -418,7 +462,7 @@ class NPlayHeadless:
             return [float(self._sim_exit_switch().active), float(self._sim_exit_door().active)]
 
         # Maximum number of attributes per entity (padding with zeros if entity has fewer attributes)
-        MAX_ATTRIBUTES = 4
+        MAX_ATTRIBUTES = 6 if use_rich_features else 4
 
         # Entity type to max count mapping based on our own constraints
         MAX_COUNTS = {
@@ -461,10 +505,32 @@ class NPlayHeadless:
                     entity = entities[entity_idx]
                     entity_state = entity.get_state()
 
+                    # Add rich features if requested
+                    if use_rich_features:
+                        ninja = self.sim.ninja
+                        # Distance to ninja (normalized by screen diagonal)
+                        dx = entity.xpos - ninja.xpos
+                        dy = entity.ypos - ninja.ypos
+                        distance = (dx**2 + dy**2)**0.5
+                        screen_diagonal = (SRCWIDTH**2 + SRCHEIGHT**2)**0.5
+                        normalized_distance = min(distance / screen_diagonal, 1.0)
+                        entity_state.append(normalized_distance)
+
+                        # Relative velocity (if entity has velocity attributes)
+                        if hasattr(entity, 'xspeed') and hasattr(entity, 'yspeed'):
+                            # Relative velocity magnitude normalized by ninja's max speed
+                            rel_vx = entity.xspeed - ninja.xspeed
+                            rel_vy = entity.yspeed - ninja.yspeed
+                            rel_speed = (rel_vx**2 + rel_vy**2)**0.5
+                            normalized_rel_speed = min(rel_speed / ninja.MAX_HOR_SPEED, 1.0)
+                            entity_state.append(normalized_rel_speed)
+                        else:
+                            entity_state.append(0.0)  # No velocity information
+
                     # Assert that all entity states are between 0 and 1. If not
                     # print an informative error message containing the entity type,
                     # index, and state.
-                    if not all(0 <= state <= 1 for state in entity_state):
+                    if not all(0 <= state_val <= 1 for state_val in entity_state):
                         print(
                             f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds")
                         raise ValueError(
