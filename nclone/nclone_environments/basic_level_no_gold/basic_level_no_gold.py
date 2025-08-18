@@ -6,6 +6,7 @@ import uuid
 from .constants import (
     GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
     GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
+    GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -47,7 +48,8 @@ class BasicLevelNoGold(BaseEnvironment):
                  enable_debug_overlay: bool = False,
                  enable_short_episode_truncation: bool = False,
                  seed: Optional[int] = None,
-                 eval_mode: bool = False):
+                 eval_mode: bool = False,
+                 observation_profile: str = 'rich'):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation,
@@ -66,9 +68,23 @@ class BasicLevelNoGold(BaseEnvironment):
         self.truncation_checker = TruncationChecker(self,
                                                     enable_short_episode_truncation=enable_short_episode_truncation)
 
+        # Store observation profile configuration
+        if observation_profile not in ['minimal', 'rich']:
+            raise ValueError(f"observation_profile must be 'minimal' or 'rich', got {observation_profile}")
+        self.observation_profile = observation_profile
+        self.use_rich_features = observation_profile == 'rich'
+
         # Initialize observation space as a Dict space with player_frame, base_frame, and game_state
         player_frame_channels = TEMPORAL_FRAMES if enable_frame_stack else 1
-        game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH if self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH else GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
+        
+        # Select game state feature count based on profile
+        if self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH:
+            if self.use_rich_features:
+                game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH
+            else:
+                game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH
+        else:
+            game_state_channels = GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
         self.observation_space = SpacesDict({
             # Player-centered frame
             'player_frame': box.Box(
@@ -125,9 +141,10 @@ class BasicLevelNoGold(BaseEnvironment):
         time_remaining = (MAX_TIME_IN_FRAMES -
                           self.nplay_headless.sim.frame) / MAX_TIME_IN_FRAMES
 
-        ninja_state = self.nplay_headless.get_ninja_state()
+        ninja_state = self.nplay_headless.get_ninja_state(use_rich_features=self.use_rich_features)
         entity_states = self.nplay_headless.get_entity_states(
-            only_one_exit_and_switch=self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH)
+            only_one_exit_and_switch=self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH,
+            use_rich_features=self.use_rich_features)
         game_state = np.concatenate([ninja_state, entity_states])
 
         return {
