@@ -1,0 +1,45 @@
+# File Index
+
+Brief purpose notes for key files in `nclone/` to aid navigation during Phase 1.
+
+- `nclone/constants.py`: Shared numeric constants and enums used across modules.
+- `nclone/sim_config.py`: Simulation configuration flags and defaults.
+- `nclone/physics.py`: Physics helpers and formulations used by the simulator.
+- `nclone/nsim.py`: Core simulation loop, step function, and world state containers.
+- `nclone/nsim_renderer.py`: Frame composition from simulation state for display.
+- `nclone/render_utils.py`: Utility routines for drawing primitives and text.
+- `nclone/tile_definitions.py`: Collision segments and geometry per tile type.
+- `nclone/quadtree.py`: Spatial acceleration structure for collision queries.
+- `nclone/map_loader.py`: Load and parse map files into simulation structures.
+- `nclone/maps/`: Static maps content; large but data-only.
+- `nclone/map_generation/`: Procedural map generation modules.
+- `nclone/map_augmentation/`: Map transforms (e.g., mirroring) for augmentation.
+- `nclone/ninja.py`: Player character state machine, input handling, and physics.
+- `nclone/entities.py`: Entity classes and interactions (hazards, doors, etc.).
+- `nclone/entity_renderer.py`: Sprite- and primitive-based rendering for entities.
+- `nclone/tile_renderer.py`: Rendering for tiles and terrain.
+- `nclone/nplay.py`: Interactive runner with windowed rendering.
+- `nclone/nplay_headless.py`: Headless simulation entrypoint that returns RGB arrays.
+- `nclone/run_multiple_headless.py`: Multi-process launcher for headless simulations.
+- `nclone/debug_overlay_renderer.py`: On-screen diagnostics overlay controls.
+- `nclone/ntrace.py`: Lightweight tracing/profiling helpers.
+- `nclone/test_environment.py`: Manual environment smoke test and demo.
+
+Environments:
+
+- `nclone/nclone_environments/base_environment.py`: Base Gymnasium-compatible wrapper.
+- `nclone/nclone_environments/basic_level_no_gold/basic_level_no_gold.py`: Main env impl.
+- `nclone/nclone_environments/basic_level_no_gold/observation_processor.py`: Build observation dict (images + state vector).
+- `nclone/nclone_environments/basic_level_no_gold/constants.py`: Env-specific constants.
+- `nclone/nclone_environments/basic_level_no_gold/reward_calculation/*`: Reward shaping modules.
+
+Pathfinding (optional tooling, not required for Phase 1):
+
+- `nclone/pathfinding/surface_parser.py`: Extract surfaces from tiles.
+- `nclone/pathfinding/navigation_graph.py`: Build navigation graph from surfaces.
+- `nclone/pathfinding/astar_pathfinder.py`: A* search over navigation graph.
+- `nclone/pathfinding/pathfinding_system.py`: Orchestrates graph build and search.
+- `nclone/pathfinding/path_executor.py`: Converts paths to inputs. Experimental.
+- `nclone/pathfinding/dynamic_pathfinding.py`: Time-aware pathfinding. Experimental.
+- `nclone/pathfinding/utils.py`, `collision.py`, `visualizer.py`, `tester.py`: Helpers.
+
