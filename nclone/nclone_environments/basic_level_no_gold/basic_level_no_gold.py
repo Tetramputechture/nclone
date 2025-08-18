@@ -1,6 +1,6 @@
 from gymnasium.spaces import box, Dict as SpacesDict
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 import os
 import uuid
 from .constants import (
@@ -49,7 +49,10 @@ class BasicLevelNoGold(BaseEnvironment):
                  enable_short_episode_truncation: bool = False,
                  seed: Optional[int] = None,
                  eval_mode: bool = False,
-                 observation_profile: str = 'rich'):
+                 observation_profile: str = 'rich',
+                 enable_pbrs: bool = True,
+                 pbrs_weights: Optional[dict] = None,
+                 pbrs_gamma: float = 0.99):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation,
@@ -61,8 +64,12 @@ class BasicLevelNoGold(BaseEnvironment):
         self.observation_processor = ObservationProcessor(
             enable_frame_stack=enable_frame_stack)
 
-        # Initialize reward calculator
-        self.reward_calculator = RewardCalculator()
+        # Initialize reward calculator with PBRS configuration
+        self.reward_calculator = RewardCalculator(
+            enable_pbrs=enable_pbrs,
+            pbrs_weights=pbrs_weights,
+            pbrs_gamma=pbrs_gamma
+        )
 
         # Initialize truncation checker
         self.truncation_checker = TruncationChecker(self,
@@ -147,6 +154,11 @@ class BasicLevelNoGold(BaseEnvironment):
             use_rich_features=self.use_rich_features)
         game_state = np.concatenate([ninja_state, entity_states])
 
+        # Get entity states for PBRS hazard detection
+        entity_states_raw = self.nplay_headless.get_entity_states(
+            only_one_exit_and_switch=False,  # Get all entities for hazard detection
+            use_rich_features=self.use_rich_features)
+        
         return {
             'screen': self.render(),
             'game_state': game_state,
@@ -164,6 +176,7 @@ class BasicLevelNoGold(BaseEnvironment):
             'gold_collected': self.nplay_headless.get_gold_collected(),
             'doors_opened': self.nplay_headless.get_doors_opened(),
             'total_gold_available': self.nplay_headless.get_total_gold_available(),
+            'entity_states': entity_states_raw,  # For PBRS hazard detection
         }
 
     def _load_map(self):
