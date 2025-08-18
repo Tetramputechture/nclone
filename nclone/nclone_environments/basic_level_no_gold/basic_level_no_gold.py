@@ -1,11 +1,12 @@
 from gymnasium.spaces import box, Dict as SpacesDict
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 import os
 import uuid
 from .constants import (
     GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
     GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
+    GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -47,7 +48,12 @@ class BasicLevelNoGold(BaseEnvironment):
                  enable_debug_overlay: bool = False,
                  enable_short_episode_truncation: bool = False,
                  seed: Optional[int] = None,
-                 eval_mode: bool = False):
+                 eval_mode: bool = False,
+                 observation_profile: str = 'rich',
+                 use_rich_game_state: Optional[bool] = None,  # Deprecated: use observation_profile
+                 enable_pbrs: bool = True,
+                 pbrs_weights: Optional[dict] = None,
+                 pbrs_gamma: float = 0.99):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation,
@@ -59,16 +65,59 @@ class BasicLevelNoGold(BaseEnvironment):
         self.observation_processor = ObservationProcessor(
             enable_frame_stack=enable_frame_stack)
 
-        # Initialize reward calculator
-        self.reward_calculator = RewardCalculator()
+        # Initialize reward calculator with PBRS configuration
+        self.reward_calculator = RewardCalculator(
+            enable_pbrs=enable_pbrs,
+            pbrs_weights=pbrs_weights,
+            pbrs_gamma=pbrs_gamma
+        )
 
         # Initialize truncation checker
         self.truncation_checker = TruncationChecker(self,
                                                     enable_short_episode_truncation=enable_short_episode_truncation)
 
+        # Handle deprecated use_rich_game_state flag
+        if use_rich_game_state is not None:
+            import warnings
+            warnings.warn("use_rich_game_state is deprecated, use observation_profile instead", 
+                         DeprecationWarning, stacklevel=2)
+            if use_rich_game_state:
+                observation_profile = 'rich'
+            else:
+                observation_profile = 'minimal'
+        
+        # Store observation profile configuration
+        if observation_profile not in ['minimal', 'rich']:
+            raise ValueError(f"observation_profile must be 'minimal' or 'rich', got {observation_profile}")
+        self.observation_profile = observation_profile
+        
+        # Store all configuration flags for logging and debugging
+        self.config_flags = {
+            'render_mode': render_mode,
+            'enable_frame_stack': enable_frame_stack,
+            'enable_animation': enable_animation,
+            'enable_logging': enable_logging,
+            'enable_debug_overlay': enable_debug_overlay,
+            'enable_short_episode_truncation': enable_short_episode_truncation,
+            'eval_mode': eval_mode,
+            'observation_profile': observation_profile,
+            'enable_pbrs': enable_pbrs,
+            'pbrs_weights': pbrs_weights,
+            'pbrs_gamma': pbrs_gamma
+        }
+        self.use_rich_features = observation_profile == 'rich'
+
         # Initialize observation space as a Dict space with player_frame, base_frame, and game_state
         player_frame_channels = TEMPORAL_FRAMES if enable_frame_stack else 1
-        game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH if self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH else GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
+        
+        # Select game state feature count based on profile
+        if self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH:
+            if self.use_rich_features:
+                game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH
+            else:
+                game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH
+        else:
+            game_state_channels = GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
         self.observation_space = SpacesDict({
             # Player-centered frame
             'player_frame': box.Box(
@@ -125,11 +174,17 @@ class BasicLevelNoGold(BaseEnvironment):
         time_remaining = (MAX_TIME_IN_FRAMES -
                           self.nplay_headless.sim.frame) / MAX_TIME_IN_FRAMES
 
-        ninja_state = self.nplay_headless.get_ninja_state()
+        ninja_state = self.nplay_headless.get_ninja_state(use_rich_features=self.use_rich_features)
         entity_states = self.nplay_headless.get_entity_states(
-            only_one_exit_and_switch=self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH)
+            only_one_exit_and_switch=self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH,
+            use_rich_features=self.use_rich_features)
         game_state = np.concatenate([ninja_state, entity_states])
 
+        # Get entity states for PBRS hazard detection
+        entity_states_raw = self.nplay_headless.get_entity_states(
+            only_one_exit_and_switch=False,  # Get all entities for hazard detection
+            use_rich_features=self.use_rich_features)
+        
         return {
             'screen': self.render(),
             'game_state': game_state,
@@ -147,6 +202,7 @@ class BasicLevelNoGold(BaseEnvironment):
             'gold_collected': self.nplay_headless.get_gold_collected(),
             'doors_opened': self.nplay_headless.get_doors_opened(),
             'total_gold_available': self.nplay_headless.get_total_gold_available(),
+            'entity_states': entity_states_raw,  # For PBRS hazard detection
         }
 
     def _load_map(self):
@@ -164,7 +220,7 @@ class BasicLevelNoGold(BaseEnvironment):
 
         # First, choose if we want to generate a random map, or load the next map in the cycle
         # We always want a random map for now, since we are testing the renderer
-        if self.rng.random() < 0:
+        if self.rng.random() < 1.0:
             self.current_map_name = f"random_map_{uuid.uuid4()}"
             self.random_map_type = self.rng.choice([
                 "SIMPLE_HORIZONTAL_NO_BACKTRACK",
@@ -208,6 +264,24 @@ class BasicLevelNoGold(BaseEnvironment):
         # We also terminate if the truncation state is reached, that way we can
         # learn from the episode, since our time remaining is in our observation
         return terminated or should_truncate, False, player_won
+
+    def step(self, action: int):
+        """Execute one environment step with enhanced episode info."""
+        # Call parent step method
+        obs, reward, terminated, truncated, info = super().step(action)
+        
+        # Add configuration flags to episode info
+        info.update({
+            'config_flags': self.config_flags.copy(),
+            'observation_profile': self.observation_profile,
+            'pbrs_enabled': self.config_flags['enable_pbrs']
+        })
+        
+        # Add PBRS component rewards if available
+        if hasattr(self.reward_calculator, 'last_pbrs_components'):
+            info['pbrs_components'] = self.reward_calculator.last_pbrs_components.copy()
+        
+        return obs, reward, terminated, truncated, info
 
     def _calculate_reward(self, curr_obs, prev_obs):
         """Calculate the reward for the environment."""
@@ -257,7 +331,57 @@ class BasicLevelNoGold(BaseEnvironment):
 
     def reset(self, seed=None, options=None):
         """Reset the environment."""
+        # Handle reinitialization after unpickling
+        if hasattr(self, '_needs_reinit') and self._needs_reinit:
+            # Reinitialize components that may have been affected by pickling
+            if hasattr(self, 'observation_processor'):
+                self.observation_processor.reset()
+            if hasattr(self, 'reward_calculator'):
+                self.reward_calculator.reset()
+            self._needs_reinit = False
+        
         # Reset truncation checker
         self.truncation_checker.reset()
 
         return super().reset(seed=seed, options=options)
+    
+    def __getstate__(self):
+        """Custom pickle method to handle non-picklable pygame objects."""
+        state = self.__dict__.copy()
+        
+        # Remove the entire nplay_headless object as it contains pygame objects
+        # It will be recreated when needed after unpickling
+        if 'nplay_headless' in state:
+            # Store initialization parameters instead
+            state['_nplay_headless_params'] = {
+                'render_mode': getattr(self.nplay_headless, 'render_mode', 'rgb_array'),
+                'enable_animation': getattr(self.nplay_headless, 'enable_animation', False),
+                'enable_logging': getattr(self.nplay_headless, 'enable_logging', False),
+                'enable_debug_overlay': getattr(self.nplay_headless, 'enable_debug_overlay', False),
+                'seed': getattr(self.nplay_headless, 'seed', None)
+            }
+            del state['nplay_headless']
+        
+        return state
+    
+    def __setstate__(self, state):
+        """Custom unpickle method to restore the environment."""
+        self.__dict__.update(state)
+        
+        # Recreate nplay_headless if it was removed during pickling
+        if not hasattr(self, 'nplay_headless') and hasattr(self, '_nplay_headless_params'):
+            from ...nplay_headless import NPlayHeadless
+            # Recreate nplay_headless with stored parameters
+            params = self._nplay_headless_params
+            self.nplay_headless = NPlayHeadless(
+                render_mode=params['render_mode'],
+                enable_animation=params['enable_animation'],
+                enable_logging=params['enable_logging'],
+                enable_debug_overlay=params['enable_debug_overlay'],
+                seed=params['seed']
+            )
+            # Clean up temporary params
+            delattr(self, '_nplay_headless_params')
+            
+            # Mark that we need to reinitialize on next reset
+            self._needs_reinit = True

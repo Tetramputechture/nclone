@@ -2,6 +2,7 @@ from .sim_config import SimConfig
 from .map_loader import MapLoader
 from .quadtree import Quadtree, Rectangle
 from .map_generation.map import Map as MapGenerator # To get MAP_WIDTH, MAP_HEIGHT
+from .constants import NINJA_RADIUS
 
 # Define world dimensions (consider making these configurable or constants elsewhere)
 WORLD_WIDTH = 1056
@@ -17,6 +18,9 @@ TILE_PIXEL_SIZE = 24 # Standard N tile size in pixels
 
 class Simulator:
     """Main class that handles ninjas, entities and tile geometry for simulation."""
+    
+    # Class constants
+    NINJA_RADIUS = NINJA_RADIUS
 
     def __init__(self, sc: SimConfig):
         """Initializes the simulator with a given SimConfig."""
