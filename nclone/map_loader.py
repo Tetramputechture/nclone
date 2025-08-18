@@ -1,12 +1,25 @@
 import math
 
 from .ninja import Ninja
-from .entities import (
-    GridSegmentLinear, GridSegmentCircular, EntityToggleMine, EntityGold, EntityExit,
-    EntityExitSwitch, EntityDoorRegular, EntityDoorLocked, EntityDoorTrap, EntityLaunchPad,
-    EntityOneWayPlatform, EntityDroneZap, EntityBounceBlock, EntityThwump,
-    EntityBoostPad, EntityDeathBall, EntityMiniDrone, EntityShoveThwump, Entity
-)
+# Import base classes from entities.py module
+from .entities import GridSegmentLinear, GridSegmentCircular, Entity
+# Import entity classes from entity_classes package
+from .entity_classes.entity_toggle_mine import EntityToggleMine
+from .entity_classes.entity_gold import EntityGold
+from .entity_classes.entity_exit import EntityExit
+from .entity_classes.entity_exit_switch import EntityExitSwitch
+from .entity_classes.entity_door_regular import EntityDoorRegular
+from .entity_classes.entity_door_locked import EntityDoorLocked
+from .entity_classes.entity_door_trap import EntityDoorTrap
+from .entity_classes.entity_launch_pad import EntityLaunchPad
+from .entity_classes.entity_one_way_platform import EntityOneWayPlatform
+from .entity_classes.entity_drone_zap import EntityDroneZap
+from .entity_classes.entity_bounce_block import EntityBounceBlock
+from .entity_classes.entity_thwump import EntityThwump
+from .entity_classes.entity_boost_pad import EntityBoostPad
+from .entity_classes.entity_death_ball import EntityDeathBall
+from .entity_classes.entity_mini_drone import EntityMiniDrone
+from .entity_classes.entity_shove_thwump import EntityShoveThwump
 from .tile_definitions import (
     TILE_GRID_EDGE_MAP, TILE_SEGMENT_ORTHO_MAP, TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_CIRCULAR_MAP
 )
