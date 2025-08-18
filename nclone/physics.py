@@ -1,6 +1,6 @@
 import math
 from itertools import product
-from .quadtree import Quadtree, Rectangle
+from .constants import NINJA_RADIUS
 
 
 def clamp(n, a, b):
@@ -307,18 +307,18 @@ def intersect_ray_vs_cell_contents(sim, xcell, ycell, xpos, ypos, dx, dy):
     return shortest_time
 
 
-def raycast_vs_player(sim, xstart, ystart, ninja_xpos, ninja_ypos, ninja_radius):
+def raycast_vs_player(sim, xstart, ystart, ninja_xpos, ninja_ypos):
     """Draw a segment that starts at a given position and goes towards the center of the ninja.
     Return true if the segment touches the ninja, meaning there were no tile segments in its path.
     """
     dx = ninja_xpos - xstart
     dy = ninja_ypos - ystart
     dist = math.sqrt(dx**2 + dy**2)
-    if ninja_radius <= dist and dist > 0:
+    if NINJA_RADIUS <= dist and dist > 0:
         dx /= dist
         dy /= dist
         length = get_raycast_distance(sim, xstart, ystart, dx, dy)
-        return length > dist - ninja_radius
+        return length > dist - NINJA_RADIUS
     return True
 
 
@@ -338,7 +338,7 @@ def check_lineseg_vs_ninja(x1, y1, x2, y2, ninja):
     if proj > 0:
         x += dx*proj
         y += dy*proj
-    if ninja.RADIUS**2 <= (ninja.xpos - x)**2 + (ninja.ypos - y)**2:
+    if NINJA_RADIUS**2 <= (ninja.xpos - x)**2 + (ninja.ypos - y)**2:
         return False
     # Now test the segment against each of ninja's 11 segments. Return true if it intersects any.
     NINJA_SEGS = ((0, 12), (1, 12), (2, 8), (3, 9), (4, 10),
