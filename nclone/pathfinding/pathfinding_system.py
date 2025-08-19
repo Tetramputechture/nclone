@@ -63,11 +63,12 @@ class PathfindingSystem:
             max_x = max((coord[0] for coord in self.sim.tile_dic.keys()), default=0)
             max_y = max((coord[1] for coord in self.sim.tile_dic.keys()), default=0)
             
-            tile_map = np.zeros((max_x + 1, max_y + 1), dtype=int)
+            # Row-major array: shape (rows=y, cols=x)
+            tile_map = np.zeros((max_y + 1, max_x + 1), dtype=int)
             
             for (x, y), tile_type in self.sim.tile_dic.items():
                 if 0 <= x <= max_x and 0 <= y <= max_y:
-                    tile_map[x, y] = tile_type
+                    tile_map[y, x] = tile_type
             
             return tile_map
         else:

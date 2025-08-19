@@ -88,3 +88,12 @@ TILE_SEGMENT_CIRCULAR_MAP = {10: ((0, 0), (1, 1), True), 11: ((24, 0), (-1, 1), 
                              12: ((24, 24), (-1, -1), True), 13: ((0, 24), (1, -1), True),
                              14: ((24, 24), (-1, -1), False), 15: ((0, 24), (1, -1), False),
                              16: ((0, 0), (1, 1), False), 17: ((24, 0), (-1, 1), False)} 
+
+def get_tile_definitions():
+    """Return a mapping of tile definition tables used by pathfinding/surface parsing."""
+    return {
+        'TILE_GRID_EDGE_MAP': TILE_GRID_EDGE_MAP,
+        'TILE_SEGMENT_ORTHO_MAP': TILE_SEGMENT_ORTHO_MAP,
+        'TILE_SEGMENT_DIAG_MAP': TILE_SEGMENT_DIAG_MAP,
+        'TILE_SEGMENT_CIRCULAR_MAP': TILE_SEGMENT_CIRCULAR_MAP,
+    }
