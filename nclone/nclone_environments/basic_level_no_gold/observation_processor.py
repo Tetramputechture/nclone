@@ -58,6 +58,22 @@ def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
 
 def stabilize_frame(frame: np.ndarray) -> np.ndarray:
     """Ensure frame has consistent properties for stable processing."""
+    # Convert pygame.Surface to numpy array if needed
+    if not isinstance(frame, np.ndarray):
+        try:
+            import pygame  # type: ignore
+            if isinstance(frame, pygame.Surface):
+                # pygame.surfarray.array3d returns shape (W, H, 3)
+                frame = np.transpose(pygame.surfarray.array3d(frame), (1, 0, 2))
+            else:
+                frame = np.asarray(frame)
+        except Exception:
+            frame = np.asarray(frame)
+
+    # If channel-first (C, H, W), move channels last
+    if isinstance(frame, np.ndarray) and frame.ndim == 3 and frame.shape[0] in (1, 3, 4) and frame.shape[0] < min(frame.shape[1], frame.shape[2]):
+        frame = np.moveaxis(frame, 0, -1)
+
     # Ensure uint8 dtype
     if frame.dtype != np.uint8:
         frame = np.clip(frame, 0, 255).astype(np.uint8)
@@ -65,12 +81,16 @@ def stabilize_frame(frame: np.ndarray) -> np.ndarray:
     # Ensure proper shape (H, W, 1) for grayscale
     if len(frame.shape) == 2:
         frame = frame[..., np.newaxis]
-    elif len(frame.shape) == 3 and frame.shape[-1] != 1:
-        # Convert to grayscale if needed
+    elif len(frame.shape) == 3:
+        # Normalize channel count
+        if frame.shape[-1] == 4:
+            # Drop alpha if present
+            frame = frame[..., :3]
         if frame.shape[-1] == 3:
+            # Convert RGB to grayscale
             gray = (0.2989 * frame[..., 0] + 0.5870 * frame[..., 1] + 0.1140 * frame[..., 2])
             frame = gray[..., np.newaxis].astype(np.uint8)
-        else:
+        elif frame.shape[-1] != 1:
             raise ValueError(f"Unexpected frame shape: {frame.shape}")
     
     return frame

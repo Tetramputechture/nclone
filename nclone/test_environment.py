@@ -10,9 +10,8 @@ import numpy as np # Added for tile_map conversion
 # Pathfinding imports
 from .pathfinding.surface_parser import SurfaceParser
 from .pathfinding.navigation_graph import NavigationGraphBuilder, JumpCalculator
-from .pathfinding.astar_pathfinder import AStarPathfinder
+from .pathfinding.astar_pathfinder import PlatformerAStar
 from .pathfinding.utils import CollisionChecker # Added CollisionChecker import
-from .tile_definitions import get_tile_definitions # For SurfaceParser
 
 # Initialize pygame
 pygame.init()
@@ -79,9 +78,8 @@ if args.pathfind and not args.headless:
         else:
             print(f"Warning: Tile coordinate ({x},{y}) out of bounds for game_map shape {game_map.shape}")
 
-    tile_definitions = get_tile_definitions()
     collision_checker = CollisionChecker(game_map) # Instantiate CollisionChecker
-    surface_parser = SurfaceParser(game_map, tile_definitions)
+    surface_parser = SurfaceParser(game_map)
     surfaces = surface_parser.parse_surfaces()
     
     nav_graph_builder = NavigationGraphBuilder(surfaces, collision_checker)
@@ -147,13 +145,7 @@ if args.pathfind and not args.headless:
     path = []
     if start_node_id is not None and goal_node_id is not None and start_node_id != goal_node_id:
         print(f"Attempting pathfinding from node {start_node_id} to {goal_node_id}")
-        # Heuristic: Euclidean distance for A*
-        def heuristic(node1_id, node2_id):
-            pos1 = nav_graph.nodes[node1_id]['position']
-            pos2 = nav_graph.nodes[node2_id]['position']
-            return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
-
-        astar = AStarPathfinder(nav_graph, heuristic_func=heuristic, weight_key='frames')
+        astar = PlatformerAStar(nav_graph, jump_calculator)
         path = astar.find_path(start_node_id, goal_node_id)
         if path:
             print(f"Path found: {path}")
@@ -249,9 +241,8 @@ while running:
             else:
                 print(f"Warning: Tile coordinate ({x},{y}) out of bounds for game_map shape {game_map.shape} on reset")
 
-        tile_definitions = get_tile_definitions()
         collision_checker = CollisionChecker(game_map) # Instantiate CollisionChecker
-        surface_parser = SurfaceParser(game_map, tile_definitions)
+        surface_parser = SurfaceParser(game_map)
         surfaces = surface_parser.parse_surfaces()
         
         nav_graph_builder = NavigationGraphBuilder(surfaces, collision_checker)
@@ -306,11 +297,7 @@ while running:
         path = []
         if start_node_id is not None and goal_node_id is not None and start_node_id != goal_node_id:
             print(f"Attempting pathfinding from node {start_node_id} to {goal_node_id} (on reset)")
-            def heuristic(node1_id, node2_id):
-                pos1 = nav_graph.nodes[node1_id]['position']
-                pos2 = nav_graph.nodes[node2_id]['position']
-                return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
-            astar = AStarPathfinder(nav_graph, heuristic_func=heuristic, weight_key='frames')
+            astar = PlatformerAStar(nav_graph, jump_calculator)
             path = astar.find_path(start_node_id, goal_node_id)
             if path:
                 print(f"Path found (on reset): {path}")

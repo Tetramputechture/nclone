@@ -5,16 +5,13 @@ from typing import List, Tuple, Dict, Optional
 
 # Import actual tile definitions
 try:
-    import sys
-    import os
-    sys.path.append(os.path.join(os.path.dirname(__file__), '../../nclone'))
-    from tile_definitions import (
-        TILE_GRID_EDGE_MAP, 
-        TILE_SEGMENT_ORTHO_MAP, 
-        TILE_SEGMENT_DIAG_MAP, 
-        TILE_SEGMENT_CIRCULAR_MAP
+    from ..tile_definitions import (
+        TILE_GRID_EDGE_MAP,
+        TILE_SEGMENT_ORTHO_MAP,
+        TILE_SEGMENT_DIAG_MAP,
+        TILE_SEGMENT_CIRCULAR_MAP,
     )
-except ImportError:
+except Exception:
     # Fallback definitions if import fails
     TILE_GRID_EDGE_MAP = {}
     TILE_SEGMENT_ORTHO_MAP = {}
@@ -86,18 +83,20 @@ class SurfaceParser:
     TILE_STEEP_SLOPES = list(range(26, 34))  # Steep slopes (various angles)
     TILE_GLITCHED = [34, 35, 36, 37]  # Special glitched tiles
     
-    # Tile size constant
-    # Import TILE_SIZE from nsim.py
-try:
-    from ..nsim import TILE_PIXEL_SIZE as TILE_SIZE
-except ImportError:
-    TILE_SIZE = 24  # Fallback value
-    
     def __init__(self, tile_map: np.ndarray):
+        # Determine tile size
+        try:
+            from ..nsim import TILE_PIXEL_SIZE as _TILE_SIZE
+            self.TILE_SIZE = _TILE_SIZE
+        except Exception:
+            self.TILE_SIZE = 24
+
+        # Store map and dimensions (row-major: [y, x])
         self.tile_map = tile_map
+        self.grid_height = tile_map.shape[0]
+        self.grid_width = tile_map.shape[1]
+
         self.surfaces: List[Surface] = []
-        self.grid_width = tile_map.shape[0] # Assuming tile_map is (width, height)
-        self.grid_height = tile_map.shape[1]
         
     def parse_surfaces(self) -> List[Surface]:
         """Extract all continuous surfaces from the tile map using actual tile definitions"""
@@ -107,10 +106,10 @@ except ImportError:
         # Parse surfaces based on actual tile geometry
         for y in range(self.grid_height):
             for x in range(self.grid_width):
-                if visited[x, y]:
+                if visited[y, x]:
                     continue
-                    
-                tile_type = self.tile_map[x, y]
+                
+                tile_type = int(self.tile_map[y, x])
                 if tile_type == self.TILE_EMPTY:
                     continue
                 
@@ -120,7 +119,7 @@ except ImportError:
                     if surface:
                         self.surfaces.append(surface)
                 
-                visited[x, y] = True
+                visited[y, x] = True
         
         # Group adjacent surfaces of the same type
         self._merge_adjacent_surfaces()
@@ -130,8 +129,6 @@ except ImportError:
     def _parse_tile_surfaces(self, x: int, y: int, tile_type: int) -> List[Surface]:
         """Parse all surfaces from a single tile using actual tile definitions."""
         surfaces = []
-        tile_x = x * self.TILE_SIZE
-        tile_y = y * self.TILE_SIZE
         
         # Parse orthogonal surfaces (floors, walls, ceilings)
         if tile_type in TILE_SEGMENT_ORTHO_MAP:
@@ -304,9 +301,9 @@ except ImportError:
                 else:
                     # Check for adjacency and co-linearity/compatibility
                     can_merge = False
+                    epsilon = 1e-5
                     if surface_type == SurfaceType.FLOOR or surface_type == SurfaceType.CEILING:
                         # Horizontal merge: y must be same, x must be continuous
-                        epsilon = 1e-5 
                         if abs(current_merged_surface.end_pos[1] - s.start_pos[1]) < epsilon and \
                            abs(current_merged_surface.end_pos[0] - s.start_pos[0]) < epsilon:
                             can_merge = True
@@ -371,19 +368,19 @@ except ImportError:
         if x < 0 or x >= self.grid_width or y < 0 or y >= self.grid_height:
             return False
             
-        tile = self.tile_map[x, y]
+        tile = int(self.tile_map[y, x])
         
         # Check if tile has a walkable top surface
         if tile in [self.TILE_SOLID, self.TILE_HALF_TOP]:
             # Also check if the tile above is empty
-            if y > 0 and self.tile_map[x, y-1] == self.TILE_EMPTY:
+            if y > 0 and self.tile_map[y-1, x] == self.TILE_EMPTY:
                  return True
             elif y == 0: # Top edge of map
                  return True
 
         # Check slopes and curves (simplified: treat as floor if walkable from above)
         if tile in self.TILE_SLOPE_45_TYPES + self.TILE_MILD_SLOPES + self.TILE_STEEP_SLOPES:
-            if y > 0 and self.tile_map[x, y-1] == self.TILE_EMPTY:
+            if y > 0 and self.tile_map[y-1, x] == self.TILE_EMPTY:
                 return True
             elif y == 0:
                 return True
@@ -398,9 +395,9 @@ except ImportError:
         
         # Trace horizontally connected floor tiles
         while x < self.grid_width and self._is_floor_tile(x, y):
-            if not visited[x, y]:
+            if not visited[y, x]:
                 tiles.append((x, y))
-                visited[x, y] = True
+                visited[y, x] = True
                 x += 1
             else: # Already visited (e.g. by another surface type or trace)
                 break 
@@ -414,22 +411,22 @@ except ImportError:
         if x < 0 or x >= self.grid_width or y < 0 or y >= self.grid_height:
             return False
         
-        tile = self.tile_map[x, y]
+        tile = int(self.tile_map[y, x])
         
         # Solid tiles are walls
         if tile == self.TILE_SOLID:
             # Check for adjacent empty space to confirm it's an actual wall edge
             # Check left
-            if x > 0 and self.tile_map[x-1, y] == self.TILE_EMPTY:
+            if x > 0 and self.tile_map[y, x-1] == self.TILE_EMPTY:
                 return True
             # Check right
-            if x < self.grid_width - 1 and self.tile_map[x+1, y] == self.TILE_EMPTY:
+            if x < self.grid_width - 1 and self.tile_map[y, x+1] == self.TILE_EMPTY:
                 return True
         
         # Half tiles can also form walls
-        if tile == self.TILE_HALF_LEFT and x < self.grid_width - 1 and self.tile_map[x+1, y] == self.TILE_EMPTY: # Exposed right face
+        if tile == self.TILE_HALF_LEFT and x < self.grid_width - 1 and self.tile_map[y, x+1] == self.TILE_EMPTY: # Exposed right face
             return True
-        if tile == self.TILE_HALF_RIGHT and x > 0 and self.tile_map[x-1, y] == self.TILE_EMPTY: # Exposed left face
+        if tile == self.TILE_HALF_RIGHT and x > 0 and self.tile_map[y, x-1] == self.TILE_EMPTY: # Exposed left face
             return True
 
         print(f"Warning: _is_wall_tile({x},{y}) is a basic stub. Tile type: {tile}")
@@ -449,17 +446,17 @@ except ImportError:
             is_valid_wall_segment = False
             if wall_type == SurfaceType.WALL_LEFT:
                 # Tile (x,y) is solid, tile (x-1,y) is empty
-                if self.tile_map[x,y] != self.TILE_EMPTY and x > 0 and self.tile_map[x-1,y] == self.TILE_EMPTY:
+                if self.tile_map[y, x] != self.TILE_EMPTY and x > 0 and self.tile_map[y, x-1] == self.TILE_EMPTY:
                     is_valid_wall_segment = True
             elif wall_type == SurfaceType.WALL_RIGHT:
                 # Tile (x,y) is solid, tile (x+1,y) is empty
-                if self.tile_map[x,y] != self.TILE_EMPTY and x < self.grid_width -1 and self.tile_map[x+1,y] == self.TILE_EMPTY:
+                if self.tile_map[y, x] != self.TILE_EMPTY and x < self.grid_width -1 and self.tile_map[y, x+1] == self.TILE_EMPTY:
                     is_valid_wall_segment = True
             
             if is_valid_wall_segment:
-                if not visited[x, y]:
+                if not visited[y, x]:
                     tiles.append((x, y))
-                    visited[x, y] = True
+                    visited[y, x] = True
                     y += 1
                 else:
                     break # Already visited
