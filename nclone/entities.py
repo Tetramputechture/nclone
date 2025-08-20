@@ -31,7 +31,7 @@ class GridSegmentLinear:
             # For now, using a small epsilon.
             self.seg_lensq = 1e-9
             
-        # Cache the bounding box for faster quadtree operations
+        # Cache the bounding box for faster spatial checks
         self._bounds_cache = (
             min(self.x1, self.x2),
             min(self.y1, self.y2),
@@ -95,7 +95,7 @@ class GridSegmentCircular:
         self.type = "circular"
         self.convex = convex
         
-        # Cache the bounding box for faster quadtree operations
+        # Cache the bounding box for faster spatial checks
         # The relevant points for the bounding box are the center and the two arc ends
         min_x = min(self.xpos, self.p_hor[0])
         max_x = max(self.xpos, self.p_hor[0])

@@ -3,6 +3,7 @@
 from .map import Map
 from typing import Optional
 from .constants import VALID_TILE_TYPES
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 class SingleChamberGenerator(Map):
@@ -41,14 +42,14 @@ class SingleChamberGenerator(Map):
         height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
 
         # Calculate maximum possible starting positions
-        max_start_x = self.MAP_WIDTH - width - 1
-        max_start_y = self.MAP_HEIGHT - height - 1
+        max_start_x = MAP_TILE_WIDTH - width - 1
+        max_start_y = MAP_TILE_HEIGHT - height - 1
 
         # Randomize the starting position
         play_x1 = self.rng.randint(2, max(3, max_start_x))
         play_y1 = self.rng.randint(2, max(3, max_start_y))
-        play_x2 = min(play_x1 + width, self.MAP_WIDTH - 2)
-        play_y2 = min(play_y1 + height, self.MAP_HEIGHT - 2)
+        play_x2 = min(play_x1 + width, MAP_TILE_WIDTH - 2)
+        play_y2 = min(play_y1 + height, MAP_TILE_HEIGHT - 2)
 
         actual_width = play_x2 - play_x1
         actual_height = play_y2 - play_y1
@@ -58,13 +59,13 @@ class SingleChamberGenerator(Map):
         choice = self.rng.randint(0, 2)
         if choice == 0:
             tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
-                self.MAP_WIDTH * self.MAP_HEIGHT)]
+                MAP_TILE_WIDTH * MAP_TILE_HEIGHT)]
         elif choice == 1:
-            tile_types = [1] * (self.MAP_WIDTH *
-                                self.MAP_HEIGHT)  # Solid walls
+            tile_types = [1] * (MAP_TILE_WIDTH *
+                                MAP_TILE_HEIGHT)  # Solid walls
         else:
-            tile_types = [0] * (self.MAP_WIDTH *
-                                self.MAP_HEIGHT)  # Empty tiles
+            tile_types = [0] * (MAP_TILE_WIDTH *
+                                MAP_TILE_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
         # Create the empty play space
         self.set_empty_rectangle(play_x1, play_y1, play_x2, play_y2)

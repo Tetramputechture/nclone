@@ -37,23 +37,36 @@ def get_cached_sqrt(n):
 
 
 def gather_segments_from_region(sim, x1, y1, x2, y2):
-    """Return a list containing all collidable segments from the cells in a
-    rectangular region bounded by 2 points.
-    """
-    # Ensure sim has a quadtree initialized
-    if not hasattr(sim, 'collision_quadtree') or sim.collision_quadtree is None:
-        # Fallback or error, ideally quadtree should always be present
-        print("Warning: sim.collision_quadtree not found in gather_segments_from_region")
-        return []
+    """Return active collidable segments from tiles overlapped by a rectangle.
 
-    query_bounds_tuple = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-    
-    # Get segments directly from quadtree - filter by active state in a single pass
-    # Avoid multiple iterations by combining the query and filter operations
-    candidate_segments = sim.collision_quadtree.query(query_bounds_tuple)
-    
-    # Using list comprehension is faster than filter() for this case
-    return [segment for segment in candidate_segments if segment.active]
+    This is a grid cell-based query (24x24 px cells). It iterates over the cells
+    overlapped by the axis-aligned rectangle defined by (x1, y1) and (x2, y2),
+    and concatenates the segments listed in ``sim.segment_dic[(xcell, ycell)]``.
+
+    Notes:
+    - Accurate and fast for our fixed 44x25 map size and small query regions.
+    - Avoids the overhead/complexity of a quadtree; tiles are static per map.
+    """
+    min_x = min(x1, x2)
+    min_y = min(y1, y2)
+    max_x = max(x1, x2)
+    max_y = max(y1, y2)
+
+    # Convert bounds to inclusive cell index ranges and clamp to map grid
+    min_cell_x = clamp(math.floor(min_x / 24), 0, 43)
+    max_cell_x = clamp(math.floor(max_x / 24), 0, 43)
+    min_cell_y = clamp(math.floor(min_y / 24), 0, 24)
+    max_cell_y = clamp(math.floor(max_y / 24), 0, 24)
+
+    segments = []
+    for xcell in range(min_cell_x, max_cell_x + 1):
+        for ycell in range(min_cell_y, max_cell_y + 1):
+            cell_key = (xcell, ycell)
+            if cell_key in sim.segment_dic:
+                for segment in sim.segment_dic[cell_key]:
+                    if segment.active:
+                        segments.append(segment)
+    return segments
 
 
 def gather_entities_from_neighbourhood(sim, xpos, ypos):
@@ -376,7 +389,7 @@ def overlap_circle_vs_segment(xpos, ypos, radius, px1, py1, px2, py2):
 
 # Clear cache periodically to prevent memory growth
 def clear_caches():
-    """Clear the quadtree and other caches to prevent memory growth.
+    """Clear physics helper caches to prevent memory growth.
     Preserves commonly used values while removing infrequently used ones."""
     
     # Selectively clear the cell cache - keep frequently used values

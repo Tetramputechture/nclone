@@ -1,6 +1,6 @@
 from ..map_generation.map import Map
 from ..map_generation.constants import NINJA_SPAWN_OFFSET_PX, SWITCH_OFFSET_PX, EXIT_DOOR_OFFSET_PX, GOLD_OFFSET_PX, GRID_SIZE_FACTOR
-from typing import List, Dict, Tuple, Any, Optional
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 def mirror_map_horizontally(original_map: Map) -> Map:
@@ -16,15 +16,15 @@ def mirror_map_horizontally(original_map: Map) -> Map:
     mirrored = Map()
 
     # Mirror tiles
-    for y in range(original_map.MAP_HEIGHT):
-        for x in range(original_map.MAP_WIDTH):
+    for y in range(MAP_TILE_HEIGHT):
+        for x in range(MAP_TILE_WIDTH):
             original_tile = original_map.tile_data[x +
-                                                   y * original_map.MAP_WIDTH]
+                                                   y * MAP_TILE_WIDTH]
             if original_tile == 0:
                 continue
 
             # Calculate mirrored x position
-            mirrored_x = original_map.MAP_WIDTH - 1 - x
+            mirrored_x = MAP_TILE_WIDTH - 1 - x
 
             # Mirror tile type based on orientation
             mirrored_tile = original_tile
@@ -51,7 +51,7 @@ def mirror_map_horizontally(original_map: Map) -> Map:
 
     # Mirror ninja spawn
     mirrored.set_ninja_spawn(
-        original_map.MAP_WIDTH - 1 -
+        MAP_TILE_WIDTH - 1 -
         (original_map.ninja_spawn_x - NINJA_SPAWN_OFFSET_PX) // GRID_SIZE_FACTOR,
         (original_map.ninja_spawn_y - NINJA_SPAWN_OFFSET_PX) // GRID_SIZE_FACTOR,
         -original_map.ninja_orientation  # Flip orientation
@@ -66,7 +66,7 @@ def mirror_map_horizontally(original_map: Map) -> Map:
         mode = original_map.entity_data[i + 4]
 
         # Calculate mirrored x position (in screen coordinates)
-        mirrored_x = original_map.MAP_WIDTH * GRID_SIZE_FACTOR - x
+        mirrored_x = MAP_TILE_WIDTH * GRID_SIZE_FACTOR - x
 
         # Mirror orientation for relevant entities
         mirrored_orientation = orientation
@@ -102,7 +102,7 @@ def mirror_map_horizontally(original_map: Map) -> Map:
         if entity_type in (3, 6, 8):
             switch_x = original_map.entity_data[i + 6]
             switch_y = original_map.entity_data[i + 7]
-            mirrored_switch_x = original_map.MAP_WIDTH * GRID_SIZE_FACTOR - switch_x
+            mirrored_switch_x = MAP_TILE_WIDTH * GRID_SIZE_FACTOR - switch_x
 
             mirrored.add_entity(entity_type, (mirrored_x - entity_offset) / GRID_SIZE_FACTOR + 2, (y - entity_offset) / GRID_SIZE_FACTOR,
                                 mirrored_orientation, mode,

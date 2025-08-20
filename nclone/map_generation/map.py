@@ -1,6 +1,7 @@
 from typing import Tuple, Optional, List
 import random
 from .constants import GRID_SIZE_FACTOR, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 # Valid entity types that can be randomly placed
 VALID_RANDOM_ENTITIES = [
@@ -20,13 +21,9 @@ VALID_RANDOM_ENTITIES = [
 
 class Map:
     """Class for manually constructing simulator maps."""
-
-    MAP_WIDTH = 42
-    MAP_HEIGHT = 23
-
     def __init__(self, seed: Optional[int] = None):
         # Initialize empty tile data (all tiles are empty, type 0)
-        self.tile_data = [0] * (self.MAP_WIDTH * self.MAP_HEIGHT)
+        self.tile_data = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
 
         # Initialize empty entity data
         self.entity_data = []
@@ -55,8 +52,8 @@ class Map:
 
     def set_tile(self, x, y, tile_type):
         """Set a tile at the given coordinates to the specified type."""
-        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
-            self.tile_data[x + y * self.MAP_WIDTH] = tile_type
+        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
+            self.tile_data[x + y * MAP_TILE_WIDTH] = tile_type
 
     def set_tiles_bulk(self, tile_types):
         """Set all tiles at once using a pre-generated array."""
@@ -144,7 +141,7 @@ class Map:
         return map_data
 
     def reset(self):
-        self.tile_data = [0] * (self.MAP_WIDTH * self.MAP_HEIGHT)
+        self.tile_data = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
         self.ninja_spawn_x = 1
         self.ninja_spawn_y = 1
         self.ninja_orientation = -1
@@ -157,17 +154,17 @@ class Map:
 
     def set_empty_rectangle(self, x1, y1, x2, y2):
         """Set a rectangular area to empty tiles efficiently."""
-        x1 = max(0, min(x1, self.MAP_WIDTH - 1))
-        x2 = max(0, min(x2, self.MAP_WIDTH - 1))
-        y1 = max(0, min(y1, self.MAP_HEIGHT - 1))
-        y2 = max(0, min(y2, self.MAP_HEIGHT - 1))
+        x1 = max(0, min(x1, MAP_TILE_WIDTH - 1))
+        x2 = max(0, min(x2, MAP_TILE_WIDTH - 1))
+        y1 = max(0, min(y1, MAP_TILE_HEIGHT - 1))
+        y2 = max(0, min(y2, MAP_TILE_HEIGHT - 1))
 
         x1, x2 = min(x1, x2), max(x1, x2)
         y1, y2 = min(y1, y2), max(y1, y2)
 
         for y in range(y1, y2 + 1):
-            start_idx = x1 + y * self.MAP_WIDTH
-            end_idx = x2 + 1 + y * self.MAP_WIDTH
+            start_idx = x1 + y * MAP_TILE_WIDTH
+            end_idx = x2 + 1 + y * MAP_TILE_WIDTH
             self.tile_data[start_idx:end_idx] = [0] * (x2 - x1 + 1)
 
     @staticmethod
@@ -235,23 +232,23 @@ class Map:
 
         # Add positions from all regions outside the playspace
         # Top region
-        for y in range(2, min(playspace_y1, self.MAP_HEIGHT)):
-            for x in range(2, self.MAP_WIDTH - 2):
+        for y in range(2, min(playspace_y1, MAP_TILE_HEIGHT)):
+            for x in range(2, MAP_TILE_WIDTH - 2):
                 valid_positions.append((x, y))
 
         # Bottom region
-        for y in range(playspace_y2 + 1, self.MAP_HEIGHT - 2):
-            for x in range(2, self.MAP_WIDTH - 2):
+        for y in range(playspace_y2 + 1, MAP_TILE_HEIGHT - 2):
+            for x in range(2, MAP_TILE_WIDTH - 2):
                 valid_positions.append((x, y))
 
         # Left region (excluding parts already covered by top/bottom)
-        for y in range(playspace_y1, min(playspace_y2 + 1, self.MAP_HEIGHT)):
+        for y in range(playspace_y1, min(playspace_y2 + 1, MAP_TILE_HEIGHT)):
             for x in range(2, playspace_x1):
                 valid_positions.append((x, y))
 
         # Right region (excluding parts already covered by top/bottom)
-        for y in range(playspace_y1, min(playspace_y2 + 1, self.MAP_HEIGHT)):
-            for x in range(playspace_x2 + 1, self.MAP_WIDTH - 2):
+        for y in range(playspace_y1, min(playspace_y2 + 1, MAP_TILE_HEIGHT)):
+            for x in range(playspace_x2 + 1, MAP_TILE_WIDTH - 2):
                 valid_positions.append((x, y))
 
         # Ensure x is not above 43 and y is not above 24

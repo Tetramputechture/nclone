@@ -9,7 +9,6 @@ Brief purpose notes for key files in `nclone/` to aid navigation during Phase 1.
 - `nclone/nsim_renderer.py`: Frame composition from simulation state for display.
 - `nclone/render_utils.py`: Utility routines for drawing primitives and text.
 - `nclone/tile_definitions.py`: Collision segments and geometry per tile type.
-- `nclone/quadtree.py`: Spatial acceleration structure for collision queries.
 - `nclone/map_loader.py`: Load and parse map files into simulation structures.
 - `nclone/maps/`: Static maps content; large but data-only.
 - `nclone/map_generation/`: Procedural map generation modules.
