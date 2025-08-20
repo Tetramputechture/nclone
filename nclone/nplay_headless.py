@@ -25,10 +25,7 @@ from .entity_classes.entity_death_ball import EntityDeathBall
 from .entity_classes.entity_mini_drone import EntityMiniDrone
 from .entity_classes.entity_shove_thwump import EntityShoveThwump
 from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
-
-SRCWIDTH = 1056
-SRCHEIGHT = 600
-
+from . import render_utils
 
 class NPlayHeadless:
     """
@@ -73,11 +70,11 @@ class NPlayHeadless:
             os.environ["SDL_VIDEODRIVER"] = "dummy"
         else:
             print('Setting up pygame display')
-            pygame.display.set_mode((SRCWIDTH, SRCHEIGHT))
+            pygame.display.set_mode((render_utils.SRCWIDTH, render_utils.SRCHEIGHT))
 
         # Pre-allocate buffer for surface to array conversion
         self._render_buffer = np.empty(
-            (SRCWIDTH, SRCHEIGHT, 3), dtype=np.uint8)
+            (render_utils.SRCWIDTH, render_utils.SRCHEIGHT, 3), dtype=np.uint8)
 
         self.enable_debug_overlay = enable_debug_overlay
         self.seed = seed

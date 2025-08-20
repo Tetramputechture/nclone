@@ -758,7 +758,7 @@ class Ninja:
 
     def is_valid_target(self):
         """Return whether the ninja is a valid target for various interactions."""
-        return not self.state in (6, 8, 9)
+        return self.state not in (6, 8, 9)
 
     def log(self):
         """Log position and velocity vectors of the ninja for the current frame"""

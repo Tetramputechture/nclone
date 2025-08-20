@@ -1,10 +1,7 @@
 import math
-import array
-import struct
 
-from ..entities import Entity, GridSegmentLinear, GridSegmentCircular
+from ..entities import Entity, GridSegmentLinear
 from ..physics import *
-from ..ninja import NINJA_RADIUS
 
 class EntityDoorBase(Entity):
     """Parent class that all door type entities inherit from : regular doors, locked doors, trap doors."""

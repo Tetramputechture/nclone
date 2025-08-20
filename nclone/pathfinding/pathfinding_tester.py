@@ -52,7 +52,7 @@ class PathfindingTester:
                                 target_pos: Tuple[float, float],
                                 tile_map: np.ndarray) -> bool:
         """Simulate executing commands and check if target is reached (highly simplified stub)."""
-        print(f"Warning: simulate_path_execution is a very basic stub.")
+        print("Warning: simulate_path_execution is a very basic stub.")
         if not commands:
             return False
         

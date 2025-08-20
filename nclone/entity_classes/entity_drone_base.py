@@ -1,10 +1,7 @@
 import math
-import array
-import struct
 
-from ..entities import Entity, GridSegmentLinear, GridSegmentCircular
+from ..entities import Entity
 from ..physics import *
-from ..ninja import NINJA_RADIUS
 
 class EntityDroneBase(Entity):
     """Parent class that all drone type entities inherit from."""

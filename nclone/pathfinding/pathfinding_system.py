@@ -1,6 +1,6 @@
 import numpy as np
 import pygame
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Optional
 
 from .surface_parser import SurfaceParser, Surface, SurfaceType
 from .navigation_graph import NavigationGraphBuilder, JumpCalculator, JumpTrajectory

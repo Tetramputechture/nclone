@@ -11,14 +11,12 @@ from ..ninja import (
     AIR_ACCEL,
     DRAG_REGULAR,
     FRICTION_GROUND,
-    FRICTION_WALL,
     MAX_HOR_SPEED,
     MAX_JUMP_DURATION,
     NINJA_RADIUS,
     JUMP_FLAT_GROUND_Y,
     JUMP_WALL_REGULAR_Y,
-    JUMP_WALL_REGULAR_X,
-    JUMP_WALL_SLIDE_X
+    JUMP_WALL_REGULAR_X
 )
 
 class PathOptimizer:
@@ -564,7 +562,7 @@ class MovementController:
 
     def _generate_abstract_wall_jump_commands(self, start_wp: List[float], end_wp: Tuple[float, float],
                                      current_vel: List[float], base_frame: int) -> Dict[str, any]:
-        print(f"Warning: _generate_abstract_wall_jump_commands is largely a stub.")
+        print("Warning: _generate_abstract_wall_jump_commands is largely a stub.")
         # Similar to jump, this needs trajectory data.
         # For now, very basic wall jump and air control.
         commands = []
@@ -627,7 +625,7 @@ class MovementController:
 
     def _generate_fall_commands(self, start_wp: List[float], end_wp: Tuple[float, float],
                                 current_vel: List[float], base_frame: int) -> Dict[str, any]:
-        print(f"Warning: _generate_fall_commands is a stub.")
+        print("Warning: _generate_fall_commands is a stub.")
         # Control horizontal movement during fall to reach end_wp[0].
         # Vertical movement is primarily due to gravity.
         commands = []

@@ -43,6 +43,19 @@ The DRL training stack lives in a separate sibling repository `npp-rl` (not vend
     ```
     This command should print the help message for `test_environment.py`. If you see a `ModuleNotFoundError`, please refer to the Troubleshooting section below.
 
+## Development: Linting and code cleanup
+
+Use the Makefile targets to lint the codebase recursively and remove unused imports:
+
+```bash
+make dev-setup    # installs/updates Ruff in your active environment
+make lint         # lint without modifying files
+make fix          # auto-fix issues (includes removing unused imports)
+make imports      # remove only unused imports
+```
+
+Ensure you are working inside an activated virtual environment.
+
 ## Running the Simulation (Base Environment)
 
 After installing the package as described above, you can run the base simulation (without the RL agent directly controlling it).

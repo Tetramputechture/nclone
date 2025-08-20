@@ -4,7 +4,7 @@ This module provides a simplified interface to the existing collision system.
 """
 
 import math
-from typing import Tuple, List, Optional, Dict, Any
+from typing import Tuple, List, Optional, Any
 
 # Import existing physics functions instead of reimplementing them
 from ..physics import (
@@ -16,7 +16,6 @@ from ..physics import (
     overlap_circle_vs_segment,
     is_empty_row,
     is_empty_column,
-    raycast_vs_player,
     get_raycast_distance
 )
 from ..ninja import NINJA_RADIUS

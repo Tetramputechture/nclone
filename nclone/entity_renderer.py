@@ -2,7 +2,6 @@ import cairo
 import pygame
 import math
 from . import render_utils
-from .ninja import NINJA_RADIUS
 
 class EntityRenderer:
     def __init__(self, sim, screen, adjust, width, height):

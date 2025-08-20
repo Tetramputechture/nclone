@@ -2,8 +2,8 @@ import math
 import array
 import struct
 
+from . import render_utils
 from .physics import *
-from .ninja import NINJA_RADIUS
 
 class GridSegmentLinear:
     """Contains all the linear segments of tiles and doors that the ninja can interract with"""
@@ -191,9 +191,9 @@ class Entity:
 
         if not minimal_state:
             # SRCWIDTH, clamped to [0,1]
-            state.append(max(0.0, min(1.0, self.xpos / 1056)))
+            state.append(max(0.0, min(1.0, self.xpos / render_utils.SRCWIDTH)))
             # SRCHEIGHT, clamped to [0,1]
-            state.append(max(0.0, min(1.0, self.ypos / 600)))
+            state.append(max(0.0, min(1.0, self.ypos / render_utils.SRCHEIGHT)))
             # Add entity type
             # Normalize type by max type (28)
             state.append(max(0.0, min(1.0, float(self.type) / 28.0)))

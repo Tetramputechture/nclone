@@ -69,7 +69,7 @@ class NavigationGraphBuilder:
         """Create nodes at important positions on each surface"""
         for surface in self.surfaces:
             if not surface.start_pos or not surface.end_pos:
-                print(f"Warning: Surface has no start/end pos, skipping node creation for it.")
+                print("Warning: Surface has no start/end pos, skipping node creation for it.")
                 continue
 
             # Always create nodes at surface edges

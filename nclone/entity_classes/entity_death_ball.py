@@ -1,8 +1,6 @@
 import math
-import array
-import struct
 
-from ..entities import Entity, GridSegmentLinear, GridSegmentCircular
+from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 

@@ -4,7 +4,6 @@ import argparse
 import time
 import cProfile
 import pstats
-import io
 import numpy as np # Added for tile_map conversion
 
 # Pathfinding imports

@@ -1,6 +1,6 @@
 from gymnasium.spaces import box, Dict as SpacesDict
 import numpy as np
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional
 import os
 import uuid
 from .constants import (
