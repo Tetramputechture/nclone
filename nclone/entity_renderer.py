@@ -59,22 +59,26 @@ class EntityRenderer:
                     active_entities_list.append(entity)
 
         # --- Draw door segments from active door entities ---
-        # Door entities are types 5 (Regular), 6 (Locked), 7 (Trap)
+        # Door entities are types 5 (Regular), 6 (Locked), 8 (Trap)
         # Their segments are drawn with TILECOLOR_RGB and DOORWIDTH
         context.set_source_rgb(*render_utils.TILECOLOR_RGB)
         context.set_line_width(render_utils.DOORWIDTH * self.adjust)
         
         door_segments_coords_to_draw = []
-        for entity in active_entities_list:
-            if entity.type in [5, 6, 7] and hasattr(entity, 'segment'):
-                segment = entity.segment
-                # Draw if the entity's segment is active (door is closed)
-                # and it's a linear, non-oriented segment (original criteria for doors)
-                if segment.active and segment.type == "linear" and not segment.oriented:
-                    door_segments_coords_to_draw.append(
-                        (segment.x1 * self.adjust, segment.y1 * self.adjust,
-                         segment.x2 * self.adjust, segment.y2 * self.adjust)
-                    )
+        # Draw door segments regardless of the entity's active flag. Some doors
+        # (e.g., trap doors) deactivate their switch entity when toggled but the
+        # blocking door segment should still be rendered when closed.
+        for entity_list_for_type in self.sim.entity_dic.values():
+            for entity in entity_list_for_type:
+                if entity.type in [5, 6, 8] and hasattr(entity, 'segment'):
+                    segment = entity.segment
+                    # Draw if the segment is active (door is closed) and it's a
+                    # linear, non-oriented segment (criteria for door visuals)
+                    if segment.active and segment.type == "linear" and not segment.oriented:
+                        door_segments_coords_to_draw.append(
+                            (segment.x1 * self.adjust, segment.y1 * self.adjust,
+                             segment.x2 * self.adjust, segment.y2 * self.adjust)
+                        )
         
         if door_segments_coords_to_draw:
             for x1, y1, x2, y2 in door_segments_coords_to_draw:
@@ -85,8 +89,9 @@ class EntityRenderer:
         # --- Group other active entities for drawing ---
         entity_groups = {}
         for entity in active_entities_list:
-            # Skip door types as their visual representation (segments) is already drawn
-            if entity.type in [5, 6, 7]:
+            # Skip regular doors (type 5) since their visual representation is only the segment.
+            # For locked (6) and trap (8) doors we still draw the switch entity as a circle.
+            if entity.type in [5]:
                 continue
 
             if entity.type not in entity_groups:
@@ -104,6 +109,7 @@ class EntityRenderer:
 
             for entity in entities_in_group:
                 x = entity.xpos * self.adjust
+
                 y = entity.ypos * self.adjust
 
                 # Special coloring for EntityExit (type 3) when its switch is hit

@@ -4,6 +4,10 @@ import gymnasium
 from gymnasium.spaces import discrete
 import random
 from typing import Tuple, Optional, Dict, Any
+import numpy as np
+
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
+from ..graph.graph_builder import GraphBuilder, GraphData
 
 from ..nplay_headless import NPlayHeadless
 
@@ -44,6 +48,13 @@ class BaseEnvironment(gymnasium.Env):
         
         # Placeholder for pathfinding data
         self.pathfinding_data: Optional[Dict[str, Any]] = None
+
+        # Graph debug visualization state
+        self._graph_debug_enabled: bool = False
+        self._graph_builder: Optional[GraphBuilder] = None
+        self._graph_debug_cache: Optional[GraphData] = None
+        self._exploration_debug_enabled: bool = False
+        self._grid_debug_enabled: bool = False
 
     def _actions_to_execute(self, action: int) -> Tuple[int, int]:
         """Execute the specified action using the game controller.
@@ -134,15 +145,295 @@ class BaseEnvironment(gymnasium.Env):
         if not self._enable_debug_overlay:
             return None
         
-        info = {}
+        info: Dict[str, Any] = {}
         if self.pathfinding_data:
             info['pathfinding'] = self.pathfinding_data
+
+        # Add graph visualization payload if enabled
+        if self._graph_debug_enabled:
+            if self._graph_builder is None:
+                self._graph_builder = GraphBuilder()
+            graph_data = self._maybe_build_graph_debug()
+            if graph_data is not None:
+                info['graph'] = {
+                    'data': graph_data,
+                    'cell_size': TILE_PIXEL_SIZE,
+                    'grid_width': MAP_TILE_WIDTH,
+                    'grid_height': MAP_TILE_HEIGHT,
+                }
+
+        # Add grid outline debug info if enabled
+        if self._grid_debug_enabled:
+            info['grid_outline'] = {
+                'enabled': True,
+                'width': MAP_TILE_WIDTH,
+                'height': MAP_TILE_HEIGHT,
+                'cell_size': TILE_PIXEL_SIZE,
+            }
         
         # Allow subclasses to add more debug info
         # For example, agent-specific state or exploration data
         # Example: info['agent_state'] = {'foo': 'bar'}
         
         return info if info else None # Return None if no debug info is to be shown
+
+    def set_graph_debug_enabled(self, enabled: bool):
+        """Enable/disable graph debug overlay visualization."""
+        self._graph_debug_enabled = bool(enabled)
+        # Invalidate cache so next render rebuilds with current state
+        self._graph_debug_cache = None
+
+    def set_exploration_debug_enabled(self, enabled: bool):
+        """Enable/disable exploration debug overlay visualization."""
+        self._exploration_debug_enabled = bool(enabled)
+
+    def set_grid_debug_enabled(self, enabled: bool):
+        """Enable/disable grid outline debug overlay visualization."""
+        self._grid_debug_enabled = bool(enabled)
+
+    def _extract_graph_entities(self) -> list:
+        """
+        Extract entities for graph construction.
+        
+        This is the centralized entity extraction logic used by both
+        graph observations and debug visualization to ensure consistency.
+        
+        Entity Structure:
+        - Switch entities (locked/trap doors): positioned at switch locations
+        - Door segment entities: positioned at door geometry centers
+        - Regular doors: positioned at door centers (proximity activated)
+        - Exit doors/switches: positioned at their respective locations
+        - One-way platforms: positioned at platform centers
+        
+        This ensures functional edges connect switches to door segments correctly.
+        
+        Returns:
+            List of entity dictionaries with type, position, and state
+        """
+        entities = []
+        
+        # Exit switch
+        try:
+            sw_x, sw_y = self.nplay_headless.exit_switch_position()
+            entities.append({
+                'type': 'exit_switch',
+                'x': sw_x,
+                'y': sw_y,
+                'active': self.nplay_headless.exit_switch_activated(),
+                'state': 1.0 if self.nplay_headless.exit_switch_activated() else 0.0,
+            })
+            
+            # Exit door
+            door_x, door_y = self.nplay_headless.exit_door_position()
+            entities.append({
+                'type': 'exit_door',
+                'x': door_x,
+                'y': door_y,
+                'active': True,
+                'state': 0.0,
+            })
+            
+            # Regular doors (proximity activated)
+            for d in self.nplay_headless.regular_doors():
+                segment = getattr(d, 'segment', None)
+                if segment:
+                    door_x = (segment.x1 + segment.x2) * 0.5
+                    door_y = (segment.y1 + segment.y2) * 0.5
+                else:
+                    door_x, door_y = d.xpos, d.ypos
+                    
+                entities.append({
+                    'type': 5,
+                    'x': door_x,  # Regular doors use door center as entity position
+                    'y': door_y,
+                    'active': getattr(d, 'active', True),
+                    'closed': getattr(d, 'closed', True),
+                    'state': 0.0
+                })
+
+            # Locked doors (have switch positions)
+            for d in self.nplay_headless.locked_doors():
+                segment = getattr(d, 'segment', None)
+                if segment:
+                    door_x = (segment.x1 + segment.x2) * 0.5
+                    door_y = (segment.y1 + segment.y2) * 0.5
+                else:
+                    door_x, door_y = 0.0, 0.0
+                
+                # Add switch entity at switch location
+                entities.append({
+                    'type': 6,
+                    'x': d.xpos,  # Switch position
+                    'y': d.ypos,  # Switch position
+                    'active': getattr(d, 'active', True),
+                    'sw_xpos': getattr(d, 'sw_xpos', None),
+                    'sw_ypos': getattr(d, 'sw_ypos', None),
+                    'door_x': door_x,
+                    'door_y': door_y,
+                    'radius': getattr(d, 'RADIUS', 5.0),
+                    'closed': getattr(d, 'closed', True),
+                    'state': 0.0
+                })
+                
+                # Add separate door segment entity at door location
+                entities.append({
+                    'type': 'door_segment_locked',
+                    'x': door_x,
+                    'y': door_y,
+                    'active': getattr(d, 'active', True),
+                    'closed': getattr(d, 'closed', True),
+                    'parent_switch_x': d.xpos,
+                    'parent_switch_y': d.ypos,
+                    'state': 0.0
+                })
+
+            # Trap doors (close when switch is hit)
+            for d in self.nplay_headless.trap_doors():
+                segment = getattr(d, 'segment', None)
+                if segment:
+                    door_x = (segment.x1 + segment.x2) * 0.5
+                    door_y = (segment.y1 + segment.y2) * 0.5
+                else:
+                    door_x, door_y = 0.0, 0.0
+                
+                # Add switch entity at switch location
+                entities.append({
+                    'type': 8,
+                    'x': d.xpos,  # Switch position
+                    'y': d.ypos,  # Switch position
+                    'active': getattr(d, 'active', True),
+                    'sw_xpos': getattr(d, 'sw_xpos', None),
+                    'sw_ypos': getattr(d, 'sw_ypos', None),
+                    'door_x': door_x,
+                    'door_y': door_y,
+                    'radius': getattr(d, 'RADIUS', 5.0),
+                    'closed': getattr(d, 'closed', False),
+                    'state': 0.0
+                })
+                
+                # Add separate door segment entity at door location
+                entities.append({
+                    'type': 'door_segment_trap',
+                    'x': door_x,
+                    'y': door_y,
+                    'active': getattr(d, 'active', True),
+                    'closed': getattr(d, 'closed', False),
+                    'parent_switch_x': d.xpos,
+                    'parent_switch_y': d.ypos,
+                    'state': 0.0
+                })
+
+            # One-way platforms
+            if hasattr(self.nplay_headless.sim, 'entity_dic'):
+                one_ways = self.nplay_headless.sim.entity_dic.get(11, [])
+                for ow in one_ways:
+                    entities.append({
+                        'type': 11,
+                        'x': getattr(ow, 'xpos', 0.0),
+                        'y': getattr(ow, 'ypos', 0.0),
+                        'orientation': getattr(ow, 'orientation', 0),
+                        'active': getattr(ow, 'active', True),
+                        'state': 0.0
+                    })
+        except Exception as e:
+            print('Error extracting graph entities: ', e)
+            
+        return entities
+
+    def _extract_level_data(self) -> Dict[str, Any]:
+        """
+        Extract level structure data for graph construction.
+        
+        Returns:
+            Dictionary containing level tile and structure information
+        """
+        # Build level tiles as a compact 2D array of inner playable area [23 x 42]
+        tile_dic = self.nplay_headless.get_tile_data()
+        tiles = np.zeros((MAP_TILE_HEIGHT, MAP_TILE_WIDTH), dtype=np.int32)
+        # Simulator tiles include a 1-tile border; map inner (1..42, 1..23) -> (0..41, 0..22)
+        for (x, y), tile_id in tile_dic.items():
+            inner_x = x - 1
+            inner_y = y - 1
+            if 0 <= inner_x < MAP_TILE_WIDTH and 0 <= inner_y < MAP_TILE_HEIGHT:
+                tiles[inner_y, inner_x] = int(tile_id)
+
+        return {
+            'tiles': tiles,
+        }
+
+    def _maybe_build_graph_debug(self) -> Optional[GraphData]:
+        """Build GraphData for the current state, with dynamic caching that considers door states."""
+        # Enhanced cache that considers door states and ninja position
+        sim_frame = getattr(self.nplay_headless.sim, 'frame', None)
+        cached_frame = getattr(self, '_graph_debug_cached_frame', None)
+        
+        # Get current door states for cache invalidation
+        current_door_states = self._get_door_states_signature()
+        cached_door_states = getattr(self, '_graph_debug_cached_door_states', None)
+        
+        # Get ninja position for cache invalidation (sub-cell level precision)
+        ninja_pos = self.nplay_headless.ninja_position()
+        ninja_sub_cell = (int(ninja_pos[1] // 12), int(ninja_pos[0] // 12))  # (sub_row, sub_col)
+        cached_ninja_sub_cell = getattr(self, '_graph_debug_cached_ninja_sub_cell', None)
+        
+        # Check if cache is still valid
+        cache_valid = (
+            self._graph_debug_cache is not None and
+            sim_frame == cached_frame and
+            current_door_states == cached_door_states and
+            ninja_sub_cell == cached_ninja_sub_cell
+        )
+        
+        if cache_valid:
+            return self._graph_debug_cache
+
+        # Use centralized extraction logic
+        level_data = self._extract_level_data()
+        entities = self._extract_graph_entities()
+        
+        graph = self._graph_builder.build_graph(level_data, ninja_pos, entities)
+        
+        # Update cache with all relevant state
+        self._graph_debug_cache = graph
+        setattr(self, '_graph_debug_cached_frame', sim_frame)
+        setattr(self, '_graph_debug_cached_door_states', current_door_states)
+        setattr(self, '_graph_debug_cached_ninja_sub_cell', ninja_sub_cell)
+        
+        return graph
+    
+    def _get_door_states_signature(self) -> Tuple:
+        """
+        Get a signature of current door states for cache invalidation.
+        
+        Returns:
+            Tuple representing current door states
+        """
+        try:
+            # Extract door-related entities and their states
+            entities = self._extract_graph_entities()
+            door_states = []
+            
+            for entity in entities:
+                entity_type = entity.get('type', '')
+                
+                # Check for door entities
+                if (isinstance(entity_type, int) and entity_type in {3, 5, 6, 8}) or \
+                   any(door_type in str(entity_type).lower() for door_type in ['door', 'switch']):
+                    # Include position and state for doors/switches
+                    state_tuple = (
+                        entity.get('type', ''),
+                        entity.get('x', 0),
+                        entity.get('y', 0),
+                        entity.get('active', True),
+                        entity.get('closed', False)
+                    )
+                    door_states.append(state_tuple)
+            
+            return tuple(sorted(door_states))
+            
+        except Exception:
+            # If door state extraction fails, use frame number as fallback
+            return (getattr(self.nplay_headless.sim, 'frame', 0),)
 
     def set_pathfinding_data(self, data: Optional[Dict[str, Any]]):
         """Allows setting pathfinding data to be used by the visualizer via _debug_info."""

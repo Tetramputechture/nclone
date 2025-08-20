@@ -298,6 +298,19 @@ class NPlayHeadless:
         # of type 1.
         return [entity for entity in self.sim.entity_dic[1] if entity.active and entity.state == 0]
 
+    # ---- Door helpers for graph construction ----
+    def regular_doors(self):
+        """Return regular door entities (type 5)."""
+        return list(self.sim.entity_dic.get(5, []))
+
+    def locked_doors(self):
+        """Return locked door entities (type 6). Includes their switch coordinates."""
+        return list(self.sim.entity_dic.get(6, []))
+
+    def trap_doors(self):
+        """Return trap door entities (type 8). Includes their switch coordinates."""
+        return list(self.sim.entity_dic.get(8, []))
+
     def get_tile_data(self):
         """Get tile data from simulator."""
         return self.sim.tile_dic
