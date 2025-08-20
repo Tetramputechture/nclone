@@ -380,8 +380,8 @@ class NPlayHeadless:
 
         # Core 10-D state (backward compatibility)
         state = [
-            ninja.xpos / SRCWIDTH,  # Position normalized
-            ninja.ypos / SRCHEIGHT,
+            ninja.xpos / render_utils.SRCWIDTH,  # Position normalized
+            ninja.ypos / render_utils.SRCHEIGHT,
             (ninja.xspeed / ninja.MAX_HOR_SPEED + 1) / \
             2,  # Speed normalized to [0,1]
             (ninja.yspeed / ninja.MAX_HOR_SPEED + 1) / 2,
@@ -509,7 +509,7 @@ class NPlayHeadless:
                         dx = entity.xpos - ninja.xpos
                         dy = entity.ypos - ninja.ypos
                         distance = (dx**2 + dy**2)**0.5
-                        screen_diagonal = (SRCWIDTH**2 + SRCHEIGHT**2)**0.5
+                        screen_diagonal = (render_utils.SRCWIDTH**2 + render_utils.SRCHEIGHT**2)**0.5
                         normalized_distance = min(distance / screen_diagonal, 1.0)
                         entity_state.append(normalized_distance)
 
