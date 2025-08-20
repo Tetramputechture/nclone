@@ -116,21 +116,13 @@ class GraphObservationMixin:
         Returns:
             Tuple representing the current state for caching purposes
         """
-        # Include ninja position and entity states that affect graph structure
+        # Include ninja position and simulator frame for caching
         ninja_pos = self.nplay_headless.ninja_position() if hasattr(self, 'nplay_headless') else (0, 0)
+        sim_frame = getattr(self.nplay_headless.sim, 'frame', None) if hasattr(self, 'nplay_headless') else None
         
-        # Get entity states (simplified - would include all relevant entity info)
-        entity_signature = []
-        if hasattr(self, 'nplay_headless'):
-            # This would extract entity positions and states
-            # For now, use a simple signature
-            entity_signature = [
-                self.nplay_headless.exit_switch_activated(),
-                self.nplay_headless.exit_switch_position(),
-                self.nplay_headless.exit_door_position()
-            ]
-        
-        return (ninja_pos, tuple(entity_signature))
+        # Simple signature based on frame and ninja position
+        # The base environment's entity extraction logic handles the complexity
+        return (ninja_pos, sim_frame)
     
     def _build_current_graph(self) -> GraphData:
         """
@@ -158,12 +150,13 @@ class GraphObservationMixin:
         Returns:
             Dictionary containing level tile and structure information
         """
-        # Mock implementation - would extract actual tile data from the level
-        # This would interface with the nplay_headless system to get tile information
+        # Delegate to base environment's centralized extraction logic
+        if hasattr(super(), '_extract_level_data'):
+            return super()._extract_level_data()
+        
+        # Fallback implementation for environments that don't inherit from BaseEnvironment
         return {
             'tiles': np.zeros((23, 42), dtype=np.int32),  # Mock tile grid
-            'width': 42,
-            'height': 23
         }
     
     def _extract_entity_data(self) -> list:
@@ -173,31 +166,38 @@ class GraphObservationMixin:
         Returns:
             List of entity dictionaries with type, position, and state
         """
+        # Delegate to base environment's centralized extraction logic
+        if hasattr(super(), '_extract_graph_entities'):
+            return super()._extract_graph_entities()
+        
+        # Fallback implementation for environments that don't inherit from BaseEnvironment
         entities = []
         
         if hasattr(self, 'nplay_headless'):
-            # Extract exit switch
-            switch_pos = self.nplay_headless.exit_switch_position()
-            entities.append({
-                'type': 'exit_switch',
-                'x': switch_pos[0],
-                'y': switch_pos[1],
-                'active': self.nplay_headless.exit_switch_activated(),
-                'state': 1.0 if self.nplay_headless.exit_switch_activated() else 0.0
-            })
-            
-            # Extract exit door
-            door_pos = self.nplay_headless.exit_door_position()
-            entities.append({
-                'type': 'exit_door',
-                'x': door_pos[0],
-                'y': door_pos[1],
-                'active': True,
-                'state': 0.0
-            })
-            
-            # Would extract other entities (drones, mines, etc.) here
-            # This is a simplified version for the basic environment
+            # Basic entity extraction (minimal fallback)
+            try:
+                switch_pos = self.nplay_headless.exit_switch_position()
+                entities.append({
+                    'type': 'exit_switch',
+                    'x': switch_pos[0],
+                    'y': switch_pos[1],
+                    'active': self.nplay_headless.exit_switch_activated(),
+                    'state': 1.0 if self.nplay_headless.exit_switch_activated() else 0.0
+                })
+            except Exception:
+                pass
+                
+            try:
+                door_pos = self.nplay_headless.exit_door_position()
+                entities.append({
+                    'type': 'exit_door',
+                    'x': door_pos[0],
+                    'y': door_pos[1],
+                    'active': True,
+                    'state': 0.0
+                })
+            except Exception:
+                pass
         
         return entities
     

@@ -220,17 +220,20 @@ class BasicLevelNoGold(BaseEnvironment):
 
         # First, choose if we want to generate a random map, or load the next map in the cycle
         # We always want a random map for now, since we are testing the renderer
-        if self.rng.random() < 1.0:
-            self.current_map_name = f"random_map_{uuid.uuid4()}"
-            self.random_map_type = self.rng.choice([
-                "SIMPLE_HORIZONTAL_NO_BACKTRACK",
-                "JUMP_REQUIRED",
-                "MAZE",
-            ])
-            self.nplay_headless.load_random_map(self.random_map_type)
-        else:
-            self.random_map_type = None
-            self.current_map_name = self.nplay_headless.load_random_official_map()
+        # if self.rng.random() < 0.0:
+        #     self.current_map_name = f"random_map_{uuid.uuid4()}"
+        #     self.random_map_type = self.rng.choice([
+        #         "SIMPLE_HORIZONTAL_NO_BACKTRACK",
+        #         "JUMP_REQUIRED",
+        #         "MAZE",
+        #     ])
+        #     self.nplay_headless.load_random_map(self.random_map_type)
+        # else:
+        #     self.random_map_type = None
+        #     self.current_map_name = self.nplay_headless.load_random_official_map()
+        # Load the map 'maps/doortest'
+        self.current_map_name = 'doortest'
+        self.nplay_headless.load_map('nclone/maps/doortest')
 
     def _check_termination(self) -> Tuple[bool]:
         """Check if the episode should be terminated.
@@ -300,24 +303,31 @@ class BasicLevelNoGold(BaseEnvironment):
         self.reward_calculator.reset()
 
     def _debug_info(self):
+        # Start with any base debug info (pathfinding, graph, etc.)
+        base_info = super()._debug_info()
+
         # Get current cell coordinates
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
-        cell_x, cell_y = self.reward_calculator.exploration_calculator._get_cell_coords(
-            ninja_x, ninja_y)
-        area_4x4_x = cell_x // 4
-        area_4x4_y = cell_y // 4
-        area_8x8_x = cell_x // 8
-        area_8x8_y = cell_y // 8
-        area_16x16_x = cell_x // 16
-        area_16x16_y = cell_y // 16
 
-        return {
+        info = {
             'frame': self.nplay_headless.sim.frame,
             'current_ep_reward': self.current_ep_reward,
             'current_map_name': self.current_map_name,
             'ninja_position': self.nplay_headless.ninja_position(),
             'ninja_velocity': self.nplay_headless.ninja_velocity(),
-            'exploration': {
+        }
+        
+        if self._exploration_debug_enabled:
+            cell_x, cell_y = self.reward_calculator.exploration_calculator._get_cell_coords(
+                ninja_x, ninja_y)
+            area_4x4_x = cell_x // 4
+            area_4x4_y = cell_y // 4
+            area_8x8_x = cell_x // 8
+            area_8x8_y = cell_y // 8
+            area_16x16_x = cell_x // 16
+            area_16x16_y = cell_y // 16
+        
+            exploration_info = {
                 'current_cell': (cell_x, cell_y),
                 'current_4x4_area': (area_4x4_x, area_4x4_y),
                 'current_8x8_area': (area_8x8_x, area_8x8_y),
@@ -331,7 +341,13 @@ class BasicLevelNoGold(BaseEnvironment):
                 'visited_8x8_count': np.sum(self.reward_calculator.exploration_calculator.visited_8x8),
                 'visited_16x16_count': np.sum(self.reward_calculator.exploration_calculator.visited_16x16),
             }
-        }
+            info['exploration'] = exploration_info
+
+        # Merge with base info if present
+        if base_info:
+            # Ensure we don't overwrite exploration key; place base keys at top level
+            info.update(base_info)
+        return info
 
     def reset(self, seed=None, options=None):
         """Reset the environment."""

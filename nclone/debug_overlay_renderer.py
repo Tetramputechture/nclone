@@ -3,6 +3,8 @@ import numpy as np
 from . import render_utils
 from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
 from typing import Optional
+from .constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
+from .graph.graph_builder import EdgeType, GraphData, GraphBuilder
 
 class DebugOverlayRenderer:
     def __init__(self, sim, screen, adjust, tile_x_offset, tile_y_offset, pathfinding_visualizer: Optional[PathfindingVisualizer] = None):
@@ -17,6 +19,21 @@ class DebugOverlayRenderer:
         # Colors for Entity Grid visualization
         self.ENTITY_GRID_CELL_COLOR = (255, 165, 0, 100)  # Orange, semi-transparent
         self.ENTITY_GRID_TEXT_COLOR = (255, 255, 255, 200) # White, semi-transparent
+
+        # Graph visualization colors (reduced alpha for less noise)
+        self.GRAPH_EDGE_COLORS = {
+            EdgeType.WALK: (80, 200, 120, 100),       # green-ish (reduced alpha)
+            EdgeType.JUMP: (255, 160, 40, 120),       # orange (reduced alpha)
+            EdgeType.FALL: (100, 180, 255, 80),       # light blue (reduced alpha)
+            EdgeType.WALL_SLIDE: (180, 100, 255, 120),# purple (reduced alpha)
+            EdgeType.ONE_WAY: (200, 200, 200, 90),    # grey (reduced alpha)
+            EdgeType.FUNCTIONAL: (255, 230, 60, 150), # yellow (reduced alpha)
+        }
+        self.GRAPH_NODE_COLOR_GRID = (240, 240, 240, 220)
+        self.GRAPH_NODE_COLOR_ENTITY = (255, 90, 90, 240)
+        self.GRAPH_NODE_COLOR_NINJA = (60, 220, 255, 255)
+        self.GRAPH_BG_DIM = (0, 0, 0, 140)
+        self._graph_builder_for_dims = GraphBuilder()
 
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         self.adjust = adjust
@@ -54,8 +71,6 @@ class DebugOverlayRenderer:
         if not all(arr is not None for arr in [visited_cells, visited_4x4, visited_8x8, visited_16x16]):
             return surface
         
-        print(f"Exploration grid: {visited_cells.shape}, {visited_4x4.shape}, {visited_8x8.shape}, {visited_16x16.shape}")
-
         # Calculate cell size based on grid dimensions
         cell_size = 24 * self.adjust  # 24 pixels per cell
         quarter_size = cell_size / 2  # Size of each quarter of the cell
@@ -157,6 +172,40 @@ class DebugOverlayRenderer:
         
         return surface
 
+    def _draw_grid_outline(self, grid_info: dict) -> pygame.Surface:
+        """Draw the grid outline overlay showing 42x23 map boundaries."""
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        
+        if not grid_info or not grid_info.get('enabled'):
+            return surface
+        
+        # Get grid parameters
+        grid_width = grid_info.get('width', MAP_TILE_WIDTH)
+        grid_height = grid_info.get('height', MAP_TILE_HEIGHT)
+        tile_size = grid_info.get('cell_size', TILE_PIXEL_SIZE)
+        
+        # Calculate the actual size on screen
+        cell_size = tile_size * self.adjust
+        
+        # Grid line color - light grey with transparency
+        grid_color = (150, 150, 150, 150)
+        
+        # Draw vertical lines
+        for x in range(grid_width + 1):
+            line_x = self.tile_x_offset + x * cell_size
+            start_y = self.tile_y_offset
+            end_y = self.tile_y_offset + grid_height * cell_size
+            pygame.draw.line(surface, grid_color, (line_x, start_y), (line_x, end_y), 1)
+        
+        # Draw horizontal lines
+        for y in range(grid_height + 1):
+            line_y = self.tile_y_offset + y * cell_size
+            start_x = self.tile_x_offset
+            end_x = self.tile_x_offset + grid_width * cell_size
+            pygame.draw.line(surface, grid_color, (start_x, line_y), (end_x, line_y), 1)
+        
+        return surface
+
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -193,6 +242,20 @@ class DebugOverlayRenderer:
         if exploration_surface:
             surface.blit(exploration_surface, (0, 0))
 
+        # Draw graph visualization if provided
+        if debug_info and 'graph' in debug_info:
+            graph_payload = debug_info['graph']
+            # Dim the background behind graph for readability
+            dim = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            dim.fill(self.GRAPH_BG_DIM)
+            surface.blit(dim, (0, 0))
+            self._draw_graph(surface, graph_payload)
+
+        # Draw grid outline if provided
+        if debug_info and 'grid_outline' in debug_info:
+            grid_surface = self._draw_grid_outline(debug_info['grid_outline'])
+            surface.blit(grid_surface, (0, 0))
+
         # # Draw entity grid if sim.grid_entity exists
         # if hasattr(self.sim, 'grid_entity'):
         #     entity_grid_surface = self._draw_entity_grid()
@@ -215,6 +278,8 @@ class DebugOverlayRenderer:
                 if key == 'exploration': # Don't count exploration dict for text height
                     continue
                 if key == 'pathfinding': # Don't count pathfinding dict for text height, it's visual
+                    continue
+                if key == 'grid_outline': # Don't count grid outline dict for text height, it's visual
                     continue
                 height += line_height
                 if isinstance(value, dict):
@@ -248,6 +313,10 @@ class DebugOverlayRenderer:
                     continue
                 if key == 'pathfinding': # Skip rendering pathfinding data as text
                     continue
+                if key == 'graph': # Skip rendering graph data as text
+                    continue
+                if key == 'grid_outline': # Skip rendering grid outline data as text
+                    continue
                 if isinstance(value, dict):
                     # Render dictionary key as a header
                     text_surface = font.render(f"{indent}{key}:", True, base_color)
@@ -268,3 +337,164 @@ class DebugOverlayRenderer:
             render_dict(debug_info)
 
         return surface 
+
+    def _draw_graph(self, surface: pygame.Surface, graph_payload: dict):
+        """Draw graph nodes and edges with helpful cues."""
+        data: GraphData = graph_payload.get('data')
+        if data is None:
+            return
+
+        # Import sub-grid constants from graph builder
+        from .graph.graph_builder import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
+        
+        # Geometry
+        cell_size = TILE_PIXEL_SIZE * self.adjust
+        x_off = self.tile_x_offset
+        y_off = self.tile_y_offset
+        sub_grid_nodes_count = SUB_GRID_WIDTH * SUB_GRID_HEIGHT
+
+        # Helpers to compute node world position (center) from index
+        def node_center_xy(node_idx: int) -> Optional[tuple[float, float]]:
+            if node_idx < sub_grid_nodes_count:
+                # Sub-grid node: convert sub-grid coordinates to world position
+                sub_row = node_idx // SUB_GRID_WIDTH
+                sub_col = node_idx % SUB_GRID_WIDTH
+                # Simulator renders a 1-tile solid border around the 42x23 inner playfield.
+                # Our sub-grid is built only for the inner playfield, so shift by one tile.
+                wx = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
+                wy = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
+                return wx, wy
+            # Entity node: decode normalized position from features
+            feat = data.node_features[node_idx]
+            # Offsets based on GraphBuilder layout
+            tile_type_dim = self._graph_builder_for_dims.tile_type_dim
+            entity_type_dim = self._graph_builder_for_dims.entity_type_dim
+            state_offset = tile_type_dim + 4 + entity_type_dim
+            norm_x = float(feat[state_offset + 1])
+            norm_y = float(feat[state_offset + 2])
+            wx = norm_x * (MAP_TILE_WIDTH * TILE_PIXEL_SIZE)
+            wy = norm_y * (MAP_TILE_HEIGHT * TILE_PIXEL_SIZE)
+            return wx, wy
+
+        # Draw edges first (under nodes) with performance optimizations
+        num_edges = int(data.num_edges)
+        num_nodes = int(data.num_nodes)
+        
+        # Performance optimization: skip edges that are too small to see
+        min_visible_distance = 8.0 / self.adjust  # Minimum visible distance in world coordinates (increased)
+        
+        # Batch edge drawing by type for better performance
+        edges_by_type = {}
+        
+        # Smart edge sampling for readability - zoom-dependent detail
+        # Show more detail when zoomed in (higher adjust values)
+        target_edges = int(5000 + 10000 * min(self.adjust / 2.0, 1.0))  # 5K-15K edges based on zoom
+        edge_skip_factor = max(1, int(num_edges / target_edges))
+        
+        for e_idx in range(0, num_edges, edge_skip_factor):
+            if data.edge_mask[e_idx] <= 0:
+                continue
+            src = int(data.edge_index[0, e_idx])
+            tgt = int(data.edge_index[1, e_idx])
+            ex = data.edge_features[e_idx]
+            
+            # Edge type is the argmax over first len(EdgeType) slots
+            edge_type_idx = int(np.argmax(ex[:len(EdgeType)]))
+            try:
+                etype = EdgeType(edge_type_idx)
+            except Exception:
+                etype = EdgeType.WALK
+            
+            # Prioritize important edges - always show functional edges
+            is_important = etype == EdgeType.FUNCTIONAL
+            if not is_important and e_idx % (edge_skip_factor * 2) != 0:
+                continue  # Skip more regular edges
+            
+            src_xy = node_center_xy(src)
+            tgt_xy = node_center_xy(tgt)
+            if src_xy is None or tgt_xy is None:
+                continue
+            
+            # Skip very short edges for performance (except important ones)
+            edge_distance = np.sqrt((tgt_xy[0] - src_xy[0])**2 + (tgt_xy[1] - src_xy[1])**2)
+            if not is_important and edge_distance < min_visible_distance:
+                continue
+            
+            # Group edges by type for batch drawing
+            if etype not in edges_by_type:
+                edges_by_type[etype] = []
+            
+            # Cost scales the brightness/alpha and width (made thinner)
+            cost = float(ex[len(EdgeType) + 2]) if len(ex) > len(EdgeType) + 2 else 1.0
+            width = 1  # Fixed thin width for cleaner visualization
+            
+            # Transform to screen space
+            sx = x_off + src_xy[0] * self.adjust
+            sy = y_off + src_xy[1] * self.adjust
+            tx = x_off + tgt_xy[0] * self.adjust
+            ty = y_off + tgt_xy[1] * self.adjust
+            
+            edges_by_type[etype].append((sx, sy, tx, ty, width, cost))
+        
+        # Draw edges grouped by type for better visual organization
+        for etype, edge_list in edges_by_type.items():
+            color = self.GRAPH_EDGE_COLORS.get(etype, (220, 220, 220, 180))
+            
+            for sx, sy, tx, ty, width, cost in edge_list:
+                # Adjust alpha based on cost for visual feedback
+                alpha = min(255, int(color[3] * (0.7 + 0.3 * (2.0 - min(cost, 2.0)))))
+                col = (color[0], color[1], color[2], alpha)
+                pygame.draw.line(surface, col, (sx, sy), (tx, ty), width)
+
+        # Draw nodes (with sampling to reduce clutter)
+        num_nodes = int(data.num_nodes)
+        tile_type_dim = self._graph_builder_for_dims.tile_type_dim
+        entity_type_dim = self._graph_builder_for_dims.entity_type_dim
+        ninja_flag_offset = tile_type_dim + 4 + entity_type_dim + 4
+
+        # Sample nodes for display - zoom-dependent detail
+        target_nodes = int(1000 + 3000 * min(self.adjust / 2.0, 1.0))  # 1K-4K nodes based on zoom
+        node_skip_factor = max(1, int(sub_grid_nodes_count / target_nodes))
+        
+        for n_idx in range(num_nodes):
+            if data.node_mask[n_idx] <= 0:
+                continue
+                
+            # Skip some grid nodes for cleaner visualization
+            if n_idx < sub_grid_nodes_count and n_idx % node_skip_factor != 0:
+                # Always show ninja position and important nodes
+                if data.node_features[n_idx][ninja_flag_offset] <= 0.5:
+                    continue
+            
+            wx, wy = node_center_xy(n_idx)
+            if wx is None or wy is None:
+                continue
+            sx = x_off + wx * self.adjust
+            sy = y_off + wy * self.adjust
+            
+            # Determine style (much smaller nodes)
+            if n_idx < sub_grid_nodes_count:
+                is_ninja_here = data.node_features[n_idx][ninja_flag_offset] > 0.5
+                radius = max(1, int(cell_size * 0.015)) if not is_ninja_here else max(2, int(cell_size * 0.025))  # Much smaller
+                color = self.GRAPH_NODE_COLOR_NINJA if is_ninja_here else self.GRAPH_NODE_COLOR_GRID
+            else:
+                radius = max(2, int(cell_size * 0.04))  # Smaller entity nodes
+                color = self.GRAPH_NODE_COLOR_ENTITY
+            pygame.draw.circle(surface, color, (int(sx), int(sy)), radius)
+
+        # Legend and stats
+        try:
+            font = pygame.font.Font(None, 18)
+        except pygame.error:
+            font = pygame.font.SysFont("arial", 16)
+        legend_lines = [
+            f"Graph: {target_nodes}/{num_nodes} nodes, {target_edges}/{num_edges} edges (sampled)",
+            "Edges: WALK(green), JUMP(orange), FALL(blue), FUNCTIONAL(yellow)",
+            "Nodes: tiny=grid, small=entity, highlighted=ninja",
+            f"Detail level: {self.adjust:.1f}x (zoom to see more)",
+        ]
+        x0 = int(self.tile_x_offset + 8)
+        y0 = int(self.tile_y_offset + 8)
+        for i, line in enumerate(legend_lines):
+            ts = font.render(line, True, (255, 255, 255, 220))
+            surface.blit(ts, (x0, y0 + i * 16))
