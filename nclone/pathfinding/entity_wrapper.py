@@ -4,10 +4,7 @@ This eliminates duplication by wrapping existing entities rather than recreating
 """
 
 import math
-from typing import Tuple, Dict, Any, Optional
-
-from ..ninja import NINJA_RADIUS
-
+from typing import Tuple, Dict
 
 class EntityWrapper:
     """Wrapper around existing entities to provide pathfinding-specific functionality."""

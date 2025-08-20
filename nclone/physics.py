@@ -116,7 +116,6 @@ def get_single_closest_point(sim, xpos, ypos, radius):
 
     for segment in segments:
         is_back_facing, a, b = segment.get_closest_point(xpos, ypos)
-        # Use cached sqrt for distance calculation
         distance_sq = (xpos - a)**2 + (ypos - b)**2
 
         # This is to prioritize correct side collisions when multiple close segments

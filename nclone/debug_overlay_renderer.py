@@ -1,7 +1,7 @@
 import pygame
 import numpy as np
 from . import render_utils
-from .pathfinding.pathfinding_visualizer import PathfindingVisualizer, PYGAME_AVAILABLE
+from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
 from typing import Optional
 
 class DebugOverlayRenderer:
@@ -53,6 +53,8 @@ class DebugOverlayRenderer:
         
         if not all(arr is not None for arr in [visited_cells, visited_4x4, visited_8x8, visited_16x16]):
             return surface
+        
+        print(f"Exploration grid: {visited_cells.shape}, {visited_4x4.shape}, {visited_8x8.shape}, {visited_16x16.shape}")
 
         # Calculate cell size based on grid dimensions
         cell_size = 24 * self.adjust  # 24 pixels per cell
@@ -169,7 +171,7 @@ class DebugOverlayRenderer:
             return surface # Return empty surface if no debug info
 
         # Draw pathfinding visualization if visualizer and data are available
-        if PYGAME_AVAILABLE and self.pathfinding_visualizer and debug_info.get('pathfinding'):
+        if self.pathfinding_visualizer and debug_info.get('pathfinding'):
             pf_data = debug_info['pathfinding']
             # Ensure pathfinding visualizer has the latest screen parameters
             self.pathfinding_visualizer.update_params(self.adjust, self.tile_x_offset, self.tile_y_offset)
@@ -191,12 +193,10 @@ class DebugOverlayRenderer:
         if exploration_surface:
             surface.blit(exploration_surface, (0, 0))
 
-        # Draw entity grid if sim.grid_entity exists
-        if hasattr(self.sim, 'grid_entity'):
-            entity_grid_surface = self._draw_entity_grid()
-            surface.blit(entity_grid_surface, (0,0))
-
-        # Quadtree visualization removed; we rely on grid entity overlay instead
+        # # Draw entity grid if sim.grid_entity exists
+        # if hasattr(self.sim, 'grid_entity'):
+        #     entity_grid_surface = self._draw_entity_grid()
+        #     surface.blit(entity_grid_surface, (0,0))
 
         # Base font and settings
         try:

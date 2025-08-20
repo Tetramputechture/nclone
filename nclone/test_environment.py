@@ -78,7 +78,8 @@ if args.pathfind and not args.headless:
         else:
             print(f"Warning: Tile coordinate ({x},{y}) out of bounds for game_map shape {game_map.shape}")
 
-    collision_checker = CollisionChecker(game_map) # Instantiate CollisionChecker
+    # Use the live simulator for physics-backed collision checks
+    collision_checker = CollisionChecker(env.nplay_headless.sim)
     surface_parser = SurfaceParser(game_map)
     surfaces = surface_parser.parse_surfaces()
     
@@ -86,7 +87,8 @@ if args.pathfind and not args.headless:
     nav_graph = nav_graph_builder.build_graph()
 
     # Add jump edges
-    jump_calculator = JumpCalculator(collision_checker) # Pass CollisionChecker
+    # JumpCalculator requires the simulator to access tile segments
+    jump_calculator = JumpCalculator(env.nplay_headless.sim)
     for u_node_id, u_data in nav_graph.nodes(data=True):
         for v_node_id, v_data in nav_graph.nodes(data=True):
             if u_node_id == v_node_id: continue
@@ -241,14 +243,16 @@ while running:
             else:
                 print(f"Warning: Tile coordinate ({x},{y}) out of bounds for game_map shape {game_map.shape} on reset")
 
-        collision_checker = CollisionChecker(game_map) # Instantiate CollisionChecker
+        # Use the live simulator for physics-backed collision checks
+        collision_checker = CollisionChecker(env.nplay_headless.sim)
         surface_parser = SurfaceParser(game_map)
         surfaces = surface_parser.parse_surfaces()
         
         nav_graph_builder = NavigationGraphBuilder(surfaces, collision_checker)
         nav_graph = nav_graph_builder.build_graph()
 
-        jump_calculator = JumpCalculator(collision_checker) # Pass CollisionChecker
+        # JumpCalculator requires the simulator to access tile segments
+        jump_calculator = JumpCalculator(env.nplay_headless.sim)
         for u_node_id, u_data in nav_graph.nodes(data=True):
             for v_node_id, v_data in nav_graph.nodes(data=True):
                 if u_node_id == v_node_id: continue
