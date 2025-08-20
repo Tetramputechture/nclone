@@ -1,23 +1,13 @@
 import networkx as nx
-from typing import List, Tuple, Dict, Optional
-
-# Conditional import of pygame for visualization
-PYGAME_AVAILABLE = False
-try:
-    import pygame
-    PYGAME_AVAILABLE = True
-except ImportError:
-    print("Warning: Pygame module not found. PathfindingVisualizer will not be functional.")
-
-from .surface_parser import Surface # For drawing surfaces
+from typing import List, Tuple
+import pygame
+from .surface_parser import Surface
+from ..constants import TILE_PIXEL_SIZE
 
 class PathfindingVisualizer:
     """Visualization tools for debugging pathfinding components."""
     
     def __init__(self, adjust=1.0, tile_x_offset=0, tile_y_offset=0):
-        if not PYGAME_AVAILABLE:
-            self.colors = {} # No colors needed if pygame is not there
-            return
 
         self.adjust = adjust
         self.tile_x_offset = tile_x_offset
@@ -37,16 +27,13 @@ class PathfindingVisualizer:
     
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         """Update adjustment and offset parameters."""
-        if not PYGAME_AVAILABLE:
-            return
         self.adjust = adjust
         self.tile_x_offset = tile_x_offset
         self.tile_y_offset = tile_y_offset
     
     def draw_surfaces(self, screen, surfaces: List[Surface]):
         """Render parsed surfaces onto the pygame screen."""
-        if not PYGAME_AVAILABLE or not screen:
-            # print("Pygame not available or screen not provided to draw_surfaces")
+        if not screen:
             return
         
         for surface in surfaces:
@@ -54,19 +41,13 @@ class PathfindingVisualizer:
             
             color = self.colors.get(f'surface_{surface.type.name.lower()}', pygame.Color('gray'))
             
-            # Draw each tile of the surface
-            # Import tile size from nsim.py
-            try:
-                from ..nsim import TILE_PIXEL_SIZE as tile_size
-            except ImportError:
-                tile_size = 24  # Fallback value 
             for tile_x, tile_y in surface.tiles:
                 # Convert grid coords to world/screen coords
                 rect = pygame.Rect(
-                    tile_x * tile_size * self.adjust + self.tile_x_offset, 
-                    tile_y * tile_size * self.adjust + self.tile_y_offset, 
-                    tile_size * self.adjust, 
-                    tile_size * self.adjust
+                    tile_x * TILE_PIXEL_SIZE * self.adjust + self.tile_x_offset, 
+                    tile_y * TILE_PIXEL_SIZE * self.adjust + self.tile_y_offset, 
+                    TILE_PIXEL_SIZE * self.adjust, 
+                    TILE_PIXEL_SIZE * self.adjust
                 )
                 pygame.draw.rect(screen, color, rect, 1) # Draw outline of tile
             
@@ -86,7 +67,7 @@ class PathfindingVisualizer:
 
     def draw_nav_graph(self, screen, graph: nx.DiGraph, draw_nodes=True, draw_edges=True):
         """Render the navigation graph (nodes and edges) onto the pygame screen."""
-        if not PYGAME_AVAILABLE or not screen or not graph:
+        if not screen or not graph:
             return
 
         if draw_edges:
@@ -132,7 +113,7 @@ class PathfindingVisualizer:
 
     def draw_path(self, screen, path_node_ids: List[int], graph: nx.DiGraph, color=None):
         """Draw a specific path (list of node IDs) on the screen."""
-        if not PYGAME_AVAILABLE or not screen or not path_node_ids or not graph:
+        if not screen or not path_node_ids or not graph:
             return
         
         path_color = color if color else self.colors['path']
@@ -160,7 +141,7 @@ class PathfindingVisualizer:
 
     def draw_jump_trajectory(self, screen, trajectory_frames: List[Tuple[Tuple[float,float], Tuple[float,float]]]):
         """Draw a calculated jump trajectory (list of positions)."""
-        if not PYGAME_AVAILABLE or not screen or not trajectory_frames or len(trajectory_frames) < 2:
+        if not screen or not trajectory_frames or len(trajectory_frames) < 2:
             return
         
         for i in range(len(trajectory_frames) - 1):
@@ -182,7 +163,7 @@ class PathfindingVisualizer:
 
     def draw_los_lines(self, screen, los_path: List[Tuple[float,float]]):
         """Draw lines for a line-of-sight smoothed path."""
-        if not PYGAME_AVAILABLE or not screen or not los_path or len(los_path) < 2:
+        if not screen or not los_path or len(los_path) < 2:
             return
         for i in range(len(los_path) - 1):
             point1_orig = los_path[i]
@@ -200,7 +181,7 @@ class PathfindingVisualizer:
 
     def draw_entities(self, screen, entity_positions: List[Tuple[Tuple[float,float], float]]):
         """Draw entities at their current positions with their radii."""
-        if not PYGAME_AVAILABLE or not screen or not entity_positions:
+        if not screen or not entity_positions:
             return
         for pos_orig, radius_orig in entity_positions:
             pos_adj = (
@@ -213,10 +194,9 @@ class PathfindingVisualizer:
 
     def update_display(self):
         """Call pygame.display.flip() or pygame.display.update()."""
-        if PYGAME_AVAILABLE:
-            pygame.display.flip()
+        pygame.display.flip()
 
     def clear_screen(self, screen, color=(0,0,0)):
         """Fill the screen with a color (typically black)."""
-        if PYGAME_AVAILABLE and screen:
+        if screen:
             screen.fill(pygame.Color(color) if isinstance(color, tuple) else color)

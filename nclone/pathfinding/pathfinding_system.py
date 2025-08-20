@@ -357,7 +357,7 @@ class PathfindingSystem:
                                 current_path_world: Optional[List[Tuple[float,float]]] = None,
                                 current_entities_info: Optional[List[Tuple[Tuple[float,float], float]]] = None):
         """Render the navigation mesh, current path, entities, etc., for debugging."""
-        if not self.visualizer or not hasattr(self.visualizer, 'PYGAME_AVAILABLE') or not self.visualizer.PYGAME_AVAILABLE:
+        if not self.visualizer:
             return
         if screen is None: return
 

@@ -3,20 +3,12 @@ import math
 from enum import Enum
 from typing import List, Tuple, Dict, Optional
 
-# Import actual tile definitions
-try:
-    from ..tile_definitions import (
-        TILE_GRID_EDGE_MAP,
-        TILE_SEGMENT_ORTHO_MAP,
-        TILE_SEGMENT_DIAG_MAP,
-        TILE_SEGMENT_CIRCULAR_MAP,
-    )
-except Exception:
-    # Fallback definitions if import fails
-    TILE_GRID_EDGE_MAP = {}
-    TILE_SEGMENT_ORTHO_MAP = {}
-    TILE_SEGMENT_DIAG_MAP = {}
-    TILE_SEGMENT_CIRCULAR_MAP = {}
+from ..tile_definitions import (
+    TILE_SEGMENT_ORTHO_MAP,
+    TILE_SEGMENT_DIAG_MAP,
+    TILE_SEGMENT_CIRCULAR_MAP,
+)
+from ..constants import TILE_PIXEL_SIZE
 
 class SurfaceType(Enum):
     FLOOR = 1
@@ -84,13 +76,6 @@ class SurfaceParser:
     TILE_GLITCHED = [34, 35, 36, 37]  # Special glitched tiles
     
     def __init__(self, tile_map: np.ndarray):
-        # Determine tile size
-        try:
-            from ..nsim import TILE_PIXEL_SIZE as _TILE_SIZE
-            self.TILE_SIZE = _TILE_SIZE
-        except Exception:
-            self.TILE_SIZE = 24
-
         # Store map and dimensions (row-major: [y, x])
         self.tile_map = tile_map
         self.grid_height = tile_map.shape[0]
@@ -162,8 +147,8 @@ class SurfaceParser:
         for i in range(3):  # Top edge segments
             if ortho_data[i] == -1:  # Downward normal (floor)
                 surface = Surface(SurfaceType.FLOOR, [(x, y)])
-                surface.start_pos = (x * self.TILE_SIZE + i * 8, y * self.TILE_SIZE)
-                surface.end_pos = (x * self.TILE_SIZE + (i + 1) * 8, y * self.TILE_SIZE)
+                surface.start_pos = (x * TILE_PIXEL_SIZE + i * 8, y * TILE_PIXEL_SIZE)
+                surface.end_pos = (x * TILE_PIXEL_SIZE + (i + 1) * 8, y * TILE_PIXEL_SIZE)
                 surface.normal = (0, -1)
                 dx = surface.end_pos[0] - surface.start_pos[0]
                 dy = surface.end_pos[1] - surface.start_pos[1]
@@ -174,8 +159,8 @@ class SurfaceParser:
         for i in range(3, 6):  # Bottom edge segments
             if ortho_data[i] == 1:  # Upward normal (ceiling)
                 surface = Surface(SurfaceType.CEILING, [(x, y)])
-                surface.start_pos = (x * self.TILE_SIZE + (i - 3) * 8, y * self.TILE_SIZE + self.TILE_SIZE)
-                surface.end_pos = (x * self.TILE_SIZE + (i - 2) * 8, y * self.TILE_SIZE + self.TILE_SIZE)
+                surface.start_pos = (x * TILE_PIXEL_SIZE + (i - 3) * 8, y * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE)
+                surface.end_pos = (x * TILE_PIXEL_SIZE + (i - 2) * 8, y * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE)
                 surface.normal = (0, 1)
                 dx = surface.end_pos[0] - surface.start_pos[0]
                 dy = surface.end_pos[1] - surface.start_pos[1]
@@ -186,8 +171,8 @@ class SurfaceParser:
         for i in range(6, 9):  # Left edge segments
             if ortho_data[i] == 1:  # Rightward normal (left wall)
                 surface = Surface(SurfaceType.WALL_LEFT, [(x, y)])
-                surface.start_pos = (x * self.TILE_SIZE, y * self.TILE_SIZE + (i - 6) * 8)
-                surface.end_pos = (x * self.TILE_SIZE, y * self.TILE_SIZE + (i - 5) * 8)
+                surface.start_pos = (x * TILE_PIXEL_SIZE, y * TILE_PIXEL_SIZE + (i - 6) * 8)
+                surface.end_pos = (x * TILE_PIXEL_SIZE, y * TILE_PIXEL_SIZE + (i - 5) * 8)
                 surface.normal = (1, 0)
                 dx = surface.end_pos[0] - surface.start_pos[0]
                 dy = surface.end_pos[1] - surface.start_pos[1]
@@ -197,8 +182,8 @@ class SurfaceParser:
         for i in range(9, 12):  # Right edge segments
             if ortho_data[i] == -1:  # Leftward normal (right wall)
                 surface = Surface(SurfaceType.WALL_RIGHT, [(x, y)])
-                surface.start_pos = (x * self.TILE_SIZE + self.TILE_SIZE, y * self.TILE_SIZE + (i - 9) * 8)
-                surface.end_pos = (x * self.TILE_SIZE + self.TILE_SIZE, y * self.TILE_SIZE + (i - 8) * 8)
+                surface.start_pos = (x * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE, y * TILE_PIXEL_SIZE + (i - 9) * 8)
+                surface.end_pos = (x * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE, y * TILE_PIXEL_SIZE + (i - 8) * 8)
                 surface.normal = (-1, 0)
                 dx = surface.end_pos[0] - surface.start_pos[0]
                 dy = surface.end_pos[1] - surface.start_pos[1]
@@ -215,8 +200,8 @@ class SurfaceParser:
         start_offset, end_offset = diag_data
         
         surface = Surface(SurfaceType.SLOPE, [(x, y)])
-        surface.start_pos = (x * self.TILE_SIZE + start_offset[0], y * self.TILE_SIZE + start_offset[1])
-        surface.end_pos = (x * self.TILE_SIZE + end_offset[0], y * self.TILE_SIZE + end_offset[1])
+        surface.start_pos = (x * TILE_PIXEL_SIZE + start_offset[0], y * TILE_PIXEL_SIZE + start_offset[1])
+        surface.end_pos = (x * TILE_PIXEL_SIZE + end_offset[0], y * TILE_PIXEL_SIZE + end_offset[1])
         
         dx = surface.end_pos[0] - surface.start_pos[0]
         dy = surface.end_pos[1] - surface.start_pos[1]
@@ -245,11 +230,11 @@ class SurfaceParser:
         
         surface = Surface(surface_type, [(x, y)])
         # For now, start/end are center, so length is 0. This might need refinement.
-        surface.start_pos = (x * self.TILE_SIZE + center_offset[0], y * self.TILE_SIZE + center_offset[1])
+        surface.start_pos = (x * TILE_PIXEL_SIZE + center_offset[0], y * TILE_PIXEL_SIZE + center_offset[1])
         surface.end_pos = surface.start_pos 
         
         surface.normal = (quadrant[0], quadrant[1])  # Placeholder normal
-        surface.radius = self.TILE_SIZE / 2 # Example, actual radius depends on curve type
+        surface.radius = TILE_PIXEL_SIZE / 2 # Example, actual radius depends on curve type
         surface.quadrant = quadrant
         surface.concave = is_concave
         

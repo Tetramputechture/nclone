@@ -24,7 +24,7 @@ from .entity_classes.entity_boost_pad import EntityBoostPad
 from .entity_classes.entity_death_ball import EntityDeathBall
 from .entity_classes.entity_mini_drone import EntityMiniDrone
 from .entity_classes.entity_shove_thwump import EntityShoveThwump
-from .pathfinding.pathfinding_visualizer import PathfindingVisualizer, PYGAME_AVAILABLE
+from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
 
 SRCWIDTH = 1056
 SRCHEIGHT = 600
@@ -58,7 +58,7 @@ class NPlayHeadless:
         
         # Initialize PathfindingVisualizer if Pygame is available and debug overlay is enabled
         self.pathfinding_visualizer = None
-        if PYGAME_AVAILABLE and self.render_mode == 'human' and enable_debug_overlay:
+        if self.render_mode == 'human' and enable_debug_overlay:
             self.pathfinding_visualizer = PathfindingVisualizer()
 
         self.sim_renderer = NSimRenderer(

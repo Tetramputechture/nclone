@@ -1,19 +1,10 @@
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 # Assuming the main system and stubs are importable
 from .pathfinding_system import PathfindingSystem
 # Import Entity class from the main entities module
 from ..entities import Entity
-
-# Conditional import of pygame for potential test visualization or setup
-PYGAME_AVAILABLE = False
-try:
-    import pygame
-    PYGAME_AVAILABLE = True
-except ImportError:
-    pass # Tests might run without visualization
-
 class PathfindingTester:
     """Test suite for the PathfindingSystem."""
 
