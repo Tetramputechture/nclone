@@ -1,5 +1,5 @@
 """Navigation reward calculator for evaluating objective-based movement and progress."""
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Any, Tuple
 import numpy as np
 from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
 from ...util.util import calculate_distance

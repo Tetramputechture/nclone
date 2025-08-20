@@ -1,10 +1,5 @@
-import math
-import array
-import struct
 
-from ..entities import Entity, GridSegmentLinear, GridSegmentCircular
 from ..physics import *
-from ..ninja import NINJA_RADIUS
 from .entity_drone_zap import EntityDroneZap
 
 class EntityDroneChaser(EntityDroneZap):

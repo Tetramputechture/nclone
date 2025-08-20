@@ -7,11 +7,10 @@ from map_generation.map_generator import generate_map, random_official_map
 from sim_config import SimConfig
 import random
 import argparse
+from . import render_utils
+
 # Create a new map
 map_data = generate_map()
-
-SRCWIDTH = 1056
-SRCHEIGHT = 600
 
 # Create argument parser so that we can pass parameters when executing the tool
 # Run the tool with the -h option to see the complete help
@@ -28,7 +27,7 @@ sim = Simulator(SimConfig())
 
 pygame.init()
 pygame.display.set_caption("N++")
-screen = pygame.display.set_mode((SRCWIDTH, SRCHEIGHT), pygame.RESIZABLE)
+screen = pygame.display.set_mode((render_utils.SRCWIDTH, render_utils.SRCHEIGHT), pygame.RESIZABLE)
 clock = pygame.time.Clock()
 running = True
 running_mode = "playing"

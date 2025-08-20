@@ -1,15 +1,15 @@
 import numpy as np
 import networkx as nx
-from typing import List, Tuple, Dict, Optional, Set, Union
+from typing import List, Tuple, Dict, Optional, Set
 import heapq
 from dataclasses import dataclass
 from enum import Enum
 
-from .navigation_graph import JumpCalculator, NavigationNode
+from .navigation_graph import JumpCalculator
 from .surface_parser import SurfaceType
 from ..constants import (
     NINJA_RADIUS, GRAVITY_FALL, GRAVITY_JUMP, MAX_HOR_SPEED,
-    MAX_JUMP_DURATION, MAX_SURVIVABLE_IMPACT
+    MAX_SURVIVABLE_IMPACT
 )
 
 class MovementType(Enum):
