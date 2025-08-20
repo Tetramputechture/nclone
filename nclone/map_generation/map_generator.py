@@ -11,8 +11,6 @@ from .map_jump_required import MapJumpRequired
 
 
 def generate_map(level_type: Literal["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK", "MULTI_CHAMBER", "JUMP_REQUIRED"] = "MAZE",
-                 width: int = 10,
-                 height: int = 10,
                  seed: Optional[int] = None) -> Map:
     """Generate a level of the specified type.
 

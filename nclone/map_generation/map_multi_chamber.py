@@ -4,6 +4,7 @@ from .map import Map
 import random
 from typing import List, Tuple, Optional, Set
 from .constants import VALID_TILE_TYPES
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 class Chamber:
@@ -76,8 +77,8 @@ class MultiChamberGenerator(Map):
 
         # Try 50 random positions
         for _ in range(50):
-            x = self.rng.randint(1, self.MAP_WIDTH - width - 1)
-            y = self.rng.randint(1, self.MAP_HEIGHT - height - 1)
+            x = self.rng.randint(1, MAP_TILE_WIDTH - width - 1)
+            y = self.rng.randint(1, MAP_TILE_HEIGHT - height - 1)
 
             new_chamber = Chamber(x, y, width, height)
 
@@ -134,25 +135,25 @@ class MultiChamberGenerator(Map):
             if side1 == 'left':
                 for x in range(start_x - extension1, start_x + 2):
                     for y in range(start_y - corridor_width, start_y + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 start_x -= extension1
             elif side1 == 'right':
                 for x in range(start_x - 1, start_x + extension1 + 1):
                     for y in range(start_y - corridor_width, start_y + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 start_x += extension1
             elif side1 == 'top':
                 for y in range(start_y - extension1, start_y + 2):
                     for x in range(start_x - corridor_width, start_x + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 start_y -= extension1
             else:  # bottom
                 for y in range(start_y - 1, start_y + extension1 + 1):
                     for x in range(start_x - corridor_width, start_x + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 start_y += extension1
 
@@ -161,25 +162,25 @@ class MultiChamberGenerator(Map):
             if side2 == 'left':
                 for x in range(end_x - extension2, end_x + 2):
                     for y in range(end_y - corridor_width, end_y + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 end_x -= extension2
             elif side2 == 'right':
                 for x in range(end_x - 1, end_x + extension2 + 1):
                     for y in range(end_y - corridor_width, end_y + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 end_x += extension2
             elif side2 == 'top':
                 for y in range(end_y - extension2, end_y + 2):
                     for x in range(end_x - corridor_width, end_x + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 end_y -= extension2
             else:  # bottom
                 for y in range(end_y - 1, end_y + extension2 + 1):
                     for x in range(end_x - corridor_width, end_x + corridor_width + 1):
-                        if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                             self.set_tile(x, y, 0)
                 end_y += extension2
 
@@ -192,7 +193,7 @@ class MultiChamberGenerator(Map):
             max_x = max(start_x, mid_x)
             for x in range(min_x, max_x + 1):
                 for y in range(start_y - corridor_width, start_y + corridor_width + 1):
-                    if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                    if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                         self.set_tile(x, y, 0)
 
             # Create vertical connection
@@ -200,7 +201,7 @@ class MultiChamberGenerator(Map):
             max_y = max(start_y, end_y)
             for y in range(min_y, max_y + 1):
                 for x in range(mid_x - corridor_width, mid_x + corridor_width + 1):
-                    if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                    if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                         self.set_tile(x, y, 0)
 
             # Create horizontal connection to end point
@@ -208,7 +209,7 @@ class MultiChamberGenerator(Map):
             max_x = max(mid_x, end_x)
             for x in range(min_x, max_x + 1):
                 for y in range(end_y - corridor_width, end_y + corridor_width + 1):
-                    if 0 <= x < self.MAP_WIDTH and 0 <= y < self.MAP_HEIGHT:
+                    if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                         self.set_tile(x, y, 0)
 
             # If we got here, we successfully created a corridor
@@ -227,14 +228,14 @@ class MultiChamberGenerator(Map):
         """Add walls around all empty spaces while preserving corridors."""
         # First pass: Mark all empty spaces that are part of corridors or chambers
         walkable = set()
-        for y in range(self.MAP_HEIGHT):
-            for x in range(self.MAP_WIDTH):
-                if self.tile_data[x + y * self.MAP_WIDTH] == 0:
+        for y in range(MAP_TILE_HEIGHT):
+            for x in range(MAP_TILE_WIDTH):
+                if self.tile_data[x + y * MAP_TILE_WIDTH] == 0:
                     walkable.add((x, y))
 
         # Second pass: Add walls only where they won't block paths
-        for y in range(self.MAP_HEIGHT):
-            for x in range(self.MAP_WIDTH):
+        for y in range(MAP_TILE_HEIGHT):
+            for x in range(MAP_TILE_WIDTH):
                 if (x, y) not in walkable:  # Only consider non-walkable tiles for walls
                     # Check if this position is adjacent to a walkable tile
                     adjacent_to_walkable = False
@@ -349,7 +350,7 @@ class MultiChamberGenerator(Map):
 
         # Fill the map with random tiles
         tile_types = [self.rng.randint(0, VALID_TILE_TYPES)
-                      for _ in range(self.MAP_WIDTH * self.MAP_HEIGHT)]
+                      for _ in range(MAP_TILE_WIDTH * MAP_TILE_HEIGHT)]
         self.set_tiles_bulk(tile_types)
 
         # Generate chambers

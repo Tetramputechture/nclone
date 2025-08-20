@@ -122,7 +122,6 @@ Package `nclone/`:
   - `maps/`: Map data.
   - `map_loader.py`: Map loading utilities.
   - `tile_definitions.py`: Tile collision geometry definitions.
-  - `quadtree.py`: Spatial partitioning.
   - `render_utils.py`, `tile_renderer.py`, `entity_renderer.py`, `nsim_renderer.py`: Rendering.
   - `nplay.py`, `nplay_headless.py`: Interactive and headless runners.
   - `run_multiple_headless.py`: Multi-process headless runner.

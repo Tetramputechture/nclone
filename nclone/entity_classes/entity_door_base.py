@@ -43,8 +43,6 @@ class EntityDoorBase(Entity):
                 sim.hor_grid_edge_dic[grid_edge] += 1
         sim.segment_dic[door_cell].append(self.segment)
         # Update position and cell so it corresponds to the switch and not the door.
-        if hasattr(sim, 'collision_quadtree') and sim.collision_quadtree is not None:
-            sim.collision_quadtree.insert(self.segment)
         self.xpos = self.sw_xpos
         self.ypos = self.sw_ypos
         self.cell = clamp_cell(math.floor(self.xpos / 24),

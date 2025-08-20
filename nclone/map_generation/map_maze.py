@@ -3,6 +3,7 @@
 from .map import Map
 from typing import List, Tuple, Optional, Set
 from .constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, SWITCH_OFFSET_PX
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 class MazeGenerator(Map):
@@ -223,13 +224,13 @@ class MazeGenerator(Map):
         choice = self.rng.randint(0, 2)
         if choice == 0:
             tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
-                self.MAP_WIDTH * self.MAP_HEIGHT)]
+                MAP_TILE_WIDTH * MAP_TILE_HEIGHT)]
         elif choice == 1:
-            tile_types = [1] * (self.MAP_WIDTH *
-                                self.MAP_HEIGHT)  # Solid walls
+            tile_types = [1] * (MAP_TILE_WIDTH *
+                                MAP_TILE_HEIGHT)  # Solid walls
         else:
-            tile_types = [0] * (self.MAP_WIDTH *
-                                self.MAP_HEIGHT)  # Empty tiles
+            tile_types = [0] * (MAP_TILE_WIDTH *
+                                MAP_TILE_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
         self._init_solid_map()
 

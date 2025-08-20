@@ -154,7 +154,10 @@ The ninja has 9 distinct movement states with specific transition conditions:
 Each tile can contain:
 - **Linear Segments**: Straight collision edges with orientation
 - **Circular Segments**: Curved collision surfaces (radius 24 pixels)
-- **Quadtree Optimization**: Spatial partitioning for efficient collision queries
+  
+Collision queries use the 24×24 grid directly: segments are stored per cell in `segment_dic[(x,y)]`,
+and physics gathers segments by iterating overlapped cells. This is accurate and efficient for the
+fixed 44×25 map size and small query regions used by the player physics.
 
 ## Entities and Interactive Elements
 
@@ -279,13 +282,13 @@ Each tile can contain:
 ## Technical Implementation
 
 ### Optimization Features
-- **Spatial Partitioning**: 24×24 pixel grid cells with quadtree structure
+- **Spatial Partitioning**: 24×24 pixel grid cells (no quadtree)
 - **Entity Management**: Active entity filtering and collision caching
 - **Cache Systems**: sqrt calculations and cell neighborhood lookups
 - **Deterministic**: Fixed timestep ensures consistent physics across runs
 
 ### Performance Considerations
-- **Collision Detection**: O(log n) spatial queries via quadtree
+- **Collision Detection**: O(1) cell-range queries (small constant neighborhood)
 - **Entity Updates**: Only active entities processed each frame
 - **Memory Management**: Periodic cache clearing prevents growth
 - **Headless Mode**: Supports training without rendering overhead

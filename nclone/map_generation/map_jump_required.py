@@ -21,6 +21,7 @@ The mines should not be directly below the ninja's starting position, or the exi
 from .map import Map
 from typing import Optional, Tuple
 from .constants import VALID_TILE_TYPES
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 class MapJumpRequired(Map):
@@ -148,27 +149,27 @@ class MapJumpRequired(Map):
         height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
 
         # Calculate maximum possible starting positions
-        max_start_x = self.MAP_WIDTH - width - 1
-        max_start_y = self.MAP_HEIGHT - height - 1
+        max_start_x = MAP_TILE_WIDTH - width - 1
+        max_start_y = MAP_TILE_HEIGHT - height - 1
 
         # Randomize the starting position of the chamber
         chamber_x1 = self.rng.randint(2, max(3, max_start_x))
         chamber_y1 = self.rng.randint(2, max(3, max_start_y))
-        chamber_x2 = min(chamber_x1 + width, self.MAP_WIDTH - 2)
-        chamber_y2 = min(chamber_y1 + height, self.MAP_HEIGHT - 2)
+        chamber_x2 = min(chamber_x1 + width, MAP_TILE_WIDTH - 2)
+        chamber_y2 = min(chamber_y1 + height, MAP_TILE_HEIGHT - 2)
 
         # Pre-generate all random tiles at once
         # Choose if tiles will be random, solid, or empty for the border
         choice = self.rng.randint(0, 2)
         if choice == 0:
             tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
-                self.MAP_WIDTH * self.MAP_HEIGHT)]
+                MAP_TILE_WIDTH * MAP_TILE_HEIGHT)]
         elif choice == 1:
-            tile_types = [1] * (self.MAP_WIDTH *
-                                self.MAP_HEIGHT)  # Solid walls
+            tile_types = [1] * (MAP_TILE_WIDTH *
+                                MAP_TILE_HEIGHT)  # Solid walls
         else:
-            tile_types = [0] * (self.MAP_WIDTH *
-                                self.MAP_HEIGHT)  # Empty tiles
+            tile_types = [0] * (MAP_TILE_WIDTH *
+                                MAP_TILE_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
 
         # Create the empty chamber

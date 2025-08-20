@@ -13,8 +13,7 @@ class DebugOverlayRenderer:
         self.tile_y_offset = tile_y_offset
         self.pathfinding_visualizer = pathfinding_visualizer
         pygame.font.init() # Ensure font module is initialized
-        # Color for Quadtree visualization
-        self.QUADTREE_COLOR = (0, 0, 255, 128)  # Blue, semi-transparent
+        # Quadtree visualization removed
         # Colors for Entity Grid visualization
         self.ENTITY_GRID_CELL_COLOR = (255, 165, 0, 100)  # Orange, semi-transparent
         self.ENTITY_GRID_TEXT_COLOR = (255, 255, 255, 200) # White, semi-transparent
@@ -197,19 +196,7 @@ class DebugOverlayRenderer:
             entity_grid_surface = self._draw_entity_grid()
             surface.blit(entity_grid_surface, (0,0))
 
-        # Draw Quadtree if present and enabled
-        if hasattr(self.sim, 'collision_quadtree') and self.sim.collision_quadtree:
-            quadtree_rects = self.sim.collision_quadtree.get_all_boundary_rects()
-            for rect_obj in quadtree_rects:
-                # rect_obj is an instance of quadtree.Rectangle
-                # Pygame rect: (left, top, width, height)
-                pygame_rect = pygame.Rect(
-                    rect_obj.x * self.adjust + self.tile_x_offset,
-                    rect_obj.y * self.adjust + self.tile_y_offset,
-                    rect_obj.width * self.adjust,
-                    rect_obj.height * self.adjust
-                )
-                pygame.draw.rect(surface, self.QUADTREE_COLOR, pygame_rect, 1) # Draw with line thickness 1
+        # Quadtree visualization removed; we rely on grid entity overlay instead
 
         # Base font and settings
         try:
