@@ -9,6 +9,7 @@ This module constructs graph representations of N++ levels where:
 
 import numpy as np
 import logging
+import math
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from enum import IntEnum
@@ -90,16 +91,25 @@ class GraphBuilder:
         
         # Edge feature dimensions  
         self.edge_feature_dim = (
-            len(EdgeType) +  # One-hot edge type
-            2 +  # Direction (dx, dy normalized)
-            1    # Traversability cost
+            len(EdgeType) +  # One-hot edge type (6)
+            2 +  # Direction (dx, dy normalized) 
+            1 +  # Traversability cost
+            3 +  # NEW: Trajectory parameters (time_of_flight, energy_cost, success_probability)
+            2 +  # NEW: Physics constraints (min_velocity, max_velocity)
+            2    # NEW: Movement requirements (requires_jump, requires_wall_contact)
         )
+        
+        # Initialize trajectory calculator (lazy loading to avoid import issues)
+        self.trajectory_calc = None
+        self.movement_classifier = None
     
     def build_graph(
         self,
         level_data: Dict[str, Any],
         ninja_position: Tuple[float, float],
-        entities: List[Dict[str, Any]]
+        entities: List[Dict[str, Any]],
+        ninja_velocity: Optional[Tuple[float, float]] = None,
+        ninja_state: Optional[int] = None
     ) -> GraphData:
         """
         Build graph representation of a level.
@@ -108,6 +118,8 @@ class GraphBuilder:
             level_data: Level tile data and structure
             ninja_position: Current ninja position (x, y)
             entities: List of entity dictionaries with type, position, state
+            ninja_velocity: Current ninja velocity (vx, vy) for physics calculations
+            ninja_state: Current ninja movement state (0-8)
             
         Returns:
             GraphData with padded arrays for Gym compatibility
@@ -118,6 +130,9 @@ class GraphBuilder:
         edge_features = np.zeros((E_MAX_EDGES, self.edge_feature_dim), dtype=np.float32)
         node_mask = np.zeros(N_MAX_NODES, dtype=np.float32)
         edge_mask = np.zeros(E_MAX_EDGES, dtype=np.float32)
+        
+        # Initialize trajectory calculator if needed
+        self._ensure_trajectory_calculator()
         
         node_count = 0
         edge_count = 0
@@ -181,15 +196,15 @@ class GraphBuilder:
                 if (new_sub_row, new_sub_col) in sub_grid_node_map:
                     tgt_idx = sub_grid_node_map[(new_sub_row, new_sub_col)]
                     # Determine edge type based on sub-cell traversability
-                    edge_type, cost = self._determine_sub_cell_traversability(
+                    edge_type, cost, trajectory_info = self._determine_sub_cell_traversability(
                         level_data, sub_row, sub_col, new_sub_row, new_sub_col, 
-                        one_way_index, door_blockers_index, dr, dc
+                        one_way_index, door_blockers_index, dr, dc, ninja_velocity, ninja_state
                     )
                     if edge_type is not None:
                         # Normalize direction vector
                         norm = np.sqrt(dr*dr + dc*dc)
                         dx, dy = dc / norm, dr / norm
-                        edges_to_add.append((src_idx, tgt_idx, edge_type, cost, dx, dy))
+                        edges_to_add.append((src_idx, tgt_idx, edge_type, cost, dx, dy, trajectory_info))
         
         # Functional relationship edges (switch->door, etc.)
         functional_edges = self._build_functional_edges(entity_nodes, sub_grid_node_map)
@@ -198,7 +213,7 @@ class GraphBuilder:
         # Sort edges canonically and add to arrays
         edges_to_add.sort(key=lambda e: (e[0], e[1], e[2]))  # Sort by src, tgt, type
         
-        for src, tgt, edge_type, cost, dx, dy in edges_to_add:
+        for src, tgt, edge_type, cost, dx, dy, trajectory_info in edges_to_add:
             if edge_count >= E_MAX_EDGES:
                 break
                 
@@ -211,6 +226,17 @@ class GraphBuilder:
             edge_feat[len(EdgeType)] = dx  # Direction x
             edge_feat[len(EdgeType) + 1] = dy  # Direction y  
             edge_feat[len(EdgeType) + 2] = cost  # Traversability cost
+            
+            # Add trajectory features if available
+            if trajectory_info is not None:
+                base_idx = len(EdgeType) + 3  # After edge type, direction, and cost
+                edge_feat[base_idx] = trajectory_info.get('time_of_flight', 0.0)
+                edge_feat[base_idx + 1] = trajectory_info.get('energy_cost', 0.0)
+                edge_feat[base_idx + 2] = trajectory_info.get('success_probability', 1.0)
+                edge_feat[base_idx + 3] = trajectory_info.get('min_velocity', 0.0)
+                edge_feat[base_idx + 4] = trajectory_info.get('max_velocity', 0.0)
+                edge_feat[base_idx + 5] = 1.0 if trajectory_info.get('requires_jump', False) else 0.0
+                edge_feat[base_idx + 6] = 1.0 if trajectory_info.get('requires_wall_contact', False) else 0.0
             
             edge_features[edge_count] = edge_feat
             edge_mask[edge_count] = 1.0
@@ -225,6 +251,29 @@ class GraphBuilder:
             num_nodes=node_count,
             num_edges=edge_count
         )
+    
+    def _ensure_trajectory_calculator(self):
+        """Initialize trajectory calculator and movement classifier if needed."""
+        if self.trajectory_calc is None:
+            try:
+                # Import here to avoid circular imports
+                import sys
+                import os
+                
+                # Add npp_rl to path if not already there
+                npp_rl_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'npp-rl')
+                if os.path.exists(npp_rl_path) and npp_rl_path not in sys.path:
+                    sys.path.insert(0, npp_rl_path)
+                
+                from npp_rl.models.trajectory_calculator import TrajectoryCalculator
+                from npp_rl.models.movement_classifier import MovementClassifier
+                
+                self.trajectory_calc = TrajectoryCalculator()
+                self.movement_classifier = MovementClassifier()
+            except ImportError as e:
+                logging.warning(f"Could not import trajectory calculator: {e}")
+                self.trajectory_calc = None
+                self.movement_classifier = None
     
     def _extract_sub_cell_features(
         self,
@@ -820,13 +869,16 @@ class GraphBuilder:
         one_way_index: List[Dict[str, Any]],
         door_blockers: List[Dict[str, Any]],
         dr: int,
-        dc: int
-    ) -> Tuple[Optional[EdgeType], float]:
+        dc: int,
+        ninja_velocity: Optional[Tuple[float, float]] = None,
+        ninja_state: Optional[int] = None
+    ) -> Tuple[Optional[EdgeType], float, Optional[dict]]:
         """
         Determine if two sub-grid cells are connected and how.
         
         This improved method uses sub-grid resolution and proper collision detection
-        to determine traversability between adjacent sub-cells.
+        to determine traversability between adjacent sub-cells, with physics-based
+        trajectory validation.
         
         Args:
             level_data: Level data containing tile information
@@ -835,19 +887,21 @@ class GraphBuilder:
             one_way_index: List of one-way platform data
             door_blockers: List of door blocker data
             dr, dc: Direction vector (sub-cell delta)
+            ninja_velocity: Current ninja velocity for physics calculations
+            ninja_state: Current ninja movement state
             
         Returns:
-            (EdgeType, cost) if traversable, (None, 0.0) if blocked
+            (EdgeType, cost, trajectory_info) if traversable, (None, 0.0, None) if blocked
         """
         from ..constants import NINJA_RADIUS
         
         # First check if target sub-cell is traversable
         if not self._is_sub_cell_traversable(level_data, tgt_sub_row, tgt_sub_col):
-            return None, 0.0
+            return None, 0.0, None
         
         # Check if source sub-cell is traversable (should be, but be safe)
         if not self._is_sub_cell_traversable(level_data, src_sub_row, src_sub_col):
-            return None, 0.0
+            return None, 0.0, None
             
         # Convert sub-cell coordinates to world positions
         src_world_x = src_sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
@@ -859,45 +913,103 @@ class GraphBuilder:
         if not self._check_path_clear(
             level_data, src_world_x, src_world_y, tgt_world_x, tgt_world_y, NINJA_RADIUS
         ):
-            return None, 0.0
+            return None, 0.0, None
         
         # One-way platform directional blocking
         if self._is_sub_cell_blocked_by_one_way(
             one_way_index, src_sub_row, src_sub_col, tgt_sub_row, tgt_sub_col
         ):
-            return None, 0.0
+            return None, 0.0, None
 
         # Door blockers crossing the path
         if self._is_sub_cell_blocked_by_door(
             door_blockers, src_sub_row, src_sub_col, tgt_sub_row, tgt_sub_col
         ):
-            return None, 0.0
+            return None, 0.0, None
 
         # Determine movement type and cost based on direction
         is_diagonal = (abs(dr) + abs(dc)) > 1
+        
+        # Calculate trajectory information if trajectory calculator is available
+        trajectory_info = None
+        if self.trajectory_calc is not None and ninja_velocity is not None:
+            try:
+                # Calculate trajectory parameters
+                dx_world = tgt_world_x - src_world_x
+                dy_world = tgt_world_y - src_world_y
+                
+                # Classify movement type using movement classifier
+                movement_type = None
+                if self.movement_classifier is not None:
+                    movement_type = self.movement_classifier.classify_movement(
+                        ninja_velocity, ninja_state, dx_world, dy_world
+                    )
+                
+                # Calculate trajectory for jump/fall movements
+                if movement_type in ['JUMP', 'FALL', 'WALL_JUMP']:
+                    trajectory = self.trajectory_calc.calculate_jump_trajectory(
+                        src_world_x, src_world_y, ninja_velocity[0], ninja_velocity[1]
+                    )
+                    
+                    # Validate trajectory clearance
+                    success_prob = 1.0
+                    if trajectory:
+                        success_prob = self.trajectory_calc.validate_trajectory_clearance(
+                            trajectory, level_data, tgt_world_x, tgt_world_y
+                        )
+                    
+                    # Calculate physics parameters
+                    distance = math.sqrt(dx_world**2 + dy_world**2)
+                    time_of_flight = distance / max(abs(ninja_velocity[0]), 1.0) if ninja_velocity[0] != 0 else 1.0
+                    energy_cost = abs(dy_world) * 0.1 + distance * 0.05  # Simplified energy model
+                    
+                    trajectory_info = {
+                        'time_of_flight': time_of_flight,
+                        'energy_cost': energy_cost,
+                        'success_probability': success_prob,
+                        'min_velocity': max(abs(dx_world) / time_of_flight, 1.0),
+                        'max_velocity': max(abs(dx_world) / time_of_flight * 2, 10.0),
+                        'requires_jump': movement_type in ['JUMP', 'WALL_JUMP'],
+                        'requires_wall_contact': movement_type in ['WALL_SLIDE', 'WALL_JUMP']
+                    }
+                else:
+                    # Simple movement (walk, etc.)
+                    distance = math.sqrt(dx_world**2 + dy_world**2)
+                    trajectory_info = {
+                        'time_of_flight': distance / 100.0,  # Assume 100 pixels/time unit for walking
+                        'energy_cost': distance * 0.01,
+                        'success_probability': 0.95,  # High success for simple movements
+                        'min_velocity': 50.0,
+                        'max_velocity': 150.0,
+                        'requires_jump': False,
+                        'requires_wall_contact': False
+                    }
+            except Exception as e:
+                logging.debug(f"Trajectory calculation failed: {e}")
+                trajectory_info = None
         
         if is_diagonal:
             # Diagonal movement - check if it's a valid corner cut
             if not self._is_diagonal_traversable(
                 level_data, src_sub_row, src_sub_col, tgt_sub_row, tgt_sub_col
             ):
-                return None, 0.0
+                return None, 0.0, None
             
             # Diagonal movement cost is higher
             if dr > 0:  # Moving down diagonally
-                return EdgeType.FALL, 1.2
+                return EdgeType.FALL, 1.2, trajectory_info
             elif dr < 0:  # Moving up diagonally  
-                return EdgeType.JUMP, 2.5
+                return EdgeType.JUMP, 2.5, trajectory_info
             else:  # Horizontal diagonal (shouldn't happen with our directions)
-                return EdgeType.WALK, 1.4
+                return EdgeType.WALK, 1.4, trajectory_info
         else:
             # Cardinal movement
             if dr == 0:  # Horizontal
-                return EdgeType.WALK, 1.0
+                return EdgeType.WALK, 1.0, trajectory_info
             elif dr > 0:  # Moving down
-                return EdgeType.FALL, 0.8
+                return EdgeType.FALL, 0.8, trajectory_info
             else:  # Moving up
-                return EdgeType.JUMP, 2.0
+                return EdgeType.JUMP, 2.0, trajectory_info
     
     def _check_path_clear(
         self,
@@ -1387,7 +1499,7 @@ class GraphBuilder:
         self,
         entity_nodes: List[Tuple[int, Dict[str, Any]]],
         sub_grid_node_map: Dict[Tuple[int, int], int]
-    ) -> List[Tuple[int, int, EdgeType, float, float, float]]:
+    ) -> List[Tuple[int, int, EdgeType, float, float, float, Optional[dict]]]:
         """
         Build functional relationship edges between entities.
         
@@ -1450,7 +1562,7 @@ class GraphBuilder:
             if dist > 0:
                 dx /= dist
                 dy /= dist
-            edges.append((sw_idx, door_idx, EdgeType.FUNCTIONAL, 1.0, dx, dy))
+            edges.append((sw_idx, door_idx, EdgeType.FUNCTIONAL, 1.0, dx, dy, None))
 
         # 2) Locked/Trap doors: link from switch entities -> door segment entities
         for switch_idx, switch_entity in locked_doors + trap_doors:
@@ -1467,7 +1579,7 @@ class GraphBuilder:
                     if dist > 0:
                         dx /= dist
                         dy /= dist
-                    edges.append((switch_idx, segment_idx, EdgeType.FUNCTIONAL, 1.0, dx, dy))
+                    edges.append((switch_idx, segment_idx, EdgeType.FUNCTIONAL, 1.0, dx, dy, None))
                     break
 
         # 3) Regular doors: add proximity activation edges from nearby sub-grid cells
@@ -1493,7 +1605,7 @@ class GraphBuilder:
                     dy = cy - py
                     dist = np.sqrt(dx * dx + dy * dy)
                     if dist <= activation_radius and dist > 0:
-                        edges.append((node, door_idx, EdgeType.FUNCTIONAL, 1.0, dx / dist, dy / dist))
+                        edges.append((node, door_idx, EdgeType.FUNCTIONAL, 1.0, dx / dist, dy / dist, None))
 
         return edges
 
