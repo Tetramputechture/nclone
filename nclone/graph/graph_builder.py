@@ -82,11 +82,21 @@ class GraphBuilder:
         self.tile_type_dim = 38  # Number of tile types in N++
         self.entity_type_dim = 20  # Approximate number of entity types
         self.node_feature_dim = (
-            self.tile_type_dim +  # One-hot tile type
+            self.tile_type_dim +  # One-hot tile type (38)
             4 +  # Solidity flags (solid, half, slope, hazard)
-            self.entity_type_dim +  # One-hot entity type
+            self.entity_type_dim +  # One-hot entity type (20)
             4 +  # Entity state (active, position_x, position_y, custom_state)
-            1    # Ninja position flag
+            1 +  # Ninja position flag
+            # Physics state features (18 additional)
+            2 +  # Ninja velocity (vx, vy) normalized by MAX_HOR_SPEED
+            1 +  # Velocity magnitude
+            1 +  # Movement state (0-9 from sim_mechanics_doc.md)
+            3 +  # Contact flags (ground_contact, wall_contact, airborne)
+            2 +  # Momentum direction (normalized)
+            1 +  # Kinetic energy (0.5 * m * v²)
+            1 +  # Potential energy (relative to level bottom)
+            5 +  # Input buffers (jump_buffer, floor_buffer, wall_buffer, launch_pad_buffer, input_state)
+            2    # Physics capabilities (can_jump, can_wall_jump)
         )
         
         # Edge feature dimensions  
@@ -102,6 +112,7 @@ class GraphBuilder:
         # Initialize trajectory calculator (lazy loading to avoid import issues)
         self.trajectory_calc = None
         self.movement_classifier = None
+        self.physics_extractor = None
     
     def build_graph(
         self,
@@ -150,7 +161,7 @@ class GraphBuilder:
                 
                 # Extract sub-cell features
                 sub_cell_features = self._extract_sub_cell_features(
-                    level_data, sub_row, sub_col, ninja_position
+                    level_data, sub_row, sub_col, ninja_position, ninja_velocity, ninja_state
                 )
                 
                 node_features[node_idx] = sub_cell_features
@@ -253,8 +264,8 @@ class GraphBuilder:
         )
     
     def _ensure_trajectory_calculator(self):
-        """Initialize trajectory calculator and movement classifier if needed."""
-        if self.trajectory_calc is None:
+        """Initialize trajectory calculator, movement classifier, and physics extractor if needed."""
+        if self.trajectory_calc is None or self.physics_extractor is None:
             try:
                 # Import here to avoid circular imports
                 import sys
@@ -267,29 +278,42 @@ class GraphBuilder:
                 
                 from npp_rl.models.trajectory_calculator import TrajectoryCalculator
                 from npp_rl.models.movement_classifier import MovementClassifier
+                from npp_rl.models.physics_state_extractor import PhysicsStateExtractor
                 
-                self.trajectory_calc = TrajectoryCalculator()
-                self.movement_classifier = MovementClassifier()
+                if self.trajectory_calc is None:
+                    self.trajectory_calc = TrajectoryCalculator()
+                if self.movement_classifier is None:
+                    self.movement_classifier = MovementClassifier()
+                if self.physics_extractor is None:
+                    self.physics_extractor = PhysicsStateExtractor()
             except ImportError as e:
-                logging.warning(f"Could not import trajectory calculator: {e}")
-                self.trajectory_calc = None
-                self.movement_classifier = None
+                logging.warning(f"Could not import physics modules: {e}")
+                if self.trajectory_calc is None:
+                    self.trajectory_calc = None
+                if self.movement_classifier is None:
+                    self.movement_classifier = None
+                if self.physics_extractor is None:
+                    self.physics_extractor = None
     
     def _extract_sub_cell_features(
         self,
         level_data: Dict[str, Any],
         sub_row: int,
         sub_col: int,
-        ninja_position: Tuple[float, float]
+        ninja_position: Tuple[float, float],
+        ninja_velocity: Optional[Tuple[float, float]] = None,
+        ninja_state: Optional[Dict[str, Any]] = None
     ) -> np.ndarray:
         """
-        Extract features for a sub-grid cell node.
+        Extract features for a sub-grid cell node with physics state.
         
         Args:
             level_data: Level data containing tile information
             sub_row: Sub-grid row (0 to SUB_GRID_HEIGHT-1)
             sub_col: Sub-grid column (0 to SUB_GRID_WIDTH-1)
             ninja_position: Current ninja position
+            ninja_velocity: Current ninja velocity (vx, vy) for physics calculations
+            ninja_state: Current ninja state dictionary with movement_state and buffers
             
         Returns:
             Feature vector for the sub-cell
@@ -327,9 +351,22 @@ class GraphBuilder:
         sub_cell_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         
         # Check if ninja is in this sub-cell (within sub-cell bounds)
-        if (abs(ninja_position[0] - sub_cell_x) < SUB_CELL_SIZE // 2 and
-            abs(ninja_position[1] - sub_cell_y) < SUB_CELL_SIZE // 2):
-            features[ninja_offset] = 1.0
+        ninja_in_cell = (abs(ninja_position[0] - sub_cell_x) < SUB_CELL_SIZE // 2 and
+                        abs(ninja_position[1] - sub_cell_y) < SUB_CELL_SIZE // 2)
+        features[ninja_offset] = 1.0 if ninja_in_cell else 0.0
+        
+        # Physics state features (only for ninja's current cell)
+        physics_offset = ninja_offset + 1
+        if ninja_in_cell and ninja_velocity is not None and ninja_state is not None and self.physics_extractor is not None:
+            try:
+                physics_features = self.physics_extractor.extract_ninja_physics_state(
+                    ninja_position, ninja_velocity, ninja_state, level_data
+                )
+                features[physics_offset:physics_offset + len(physics_features)] = physics_features
+            except Exception as e:
+                logging.warning(f"Failed to extract physics features: {e}")
+                # Fill with zeros if extraction fails
+                features[physics_offset:physics_offset + 18] = 0.0
         
         return features
     
