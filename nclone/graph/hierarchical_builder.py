@@ -127,11 +127,26 @@ class HierarchicalGraphBuilder:
             
         Returns:
             HierarchicalGraphData with multi-resolution graphs and connectivity
+            
+        Raises:
+            ValueError: If input parameters are invalid
+            RuntimeError: If graph building fails
         """
-        # Build base sub-cell graph using existing builder
-        sub_cell_graph = self.base_builder.build_graph(
-            level_data, ninja_position, entities, ninja_velocity, ninja_state
-        )
+        # Input validation
+        if not isinstance(level_data, dict):
+            raise ValueError("level_data must be a dictionary")
+        if not isinstance(ninja_position, (tuple, list)) or len(ninja_position) != 2:
+            raise ValueError("ninja_position must be a tuple/list of length 2")
+        if not isinstance(entities, list):
+            raise ValueError("entities must be a list")
+        
+        try:
+            # Build base sub-cell graph using existing builder
+            sub_cell_graph = self.base_builder.build_graph(
+                level_data, ninja_position, entities, ninja_velocity, ninja_state
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to build sub-cell graph: {e}") from e
         
         # Build tile-level graph through coarsening
         tile_graph, sub_to_tile_mapping = self._build_coarsened_graph(
@@ -467,15 +482,15 @@ class HierarchicalGraphBuilder:
         Finds all fine-level edges that cross between the two coarse regions
         and aggregates their features.
         """
-        # Get fine node indices for source and target regions
-        src_fine_nodes = self._get_region_fine_nodes(
+        # Get fine node indices for source and target regions (as sets for O(1) lookup)
+        src_fine_nodes = set(self._get_region_fine_nodes(
             src_coarse_row, src_coarse_col, coarsening_factor, source_width, source_height
-        )
-        tgt_fine_nodes = self._get_region_fine_nodes(
+        ))
+        tgt_fine_nodes = set(self._get_region_fine_nodes(
             tgt_coarse_row, tgt_coarse_col, coarsening_factor, source_width, source_height
-        )
+        ))
         
-        # Find edges between these regions
+        # Find edges between these regions (optimized with set lookup)
         cross_region_edges = []
         
         for edge_idx in range(fine_graph.num_edges):
