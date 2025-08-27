@@ -4,7 +4,53 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityDeathBall(Entity):
+    """Death Ball Entity (Type 25)
+
+    A dynamic hazard that actively seeks and pursues the ninja. Death balls feature complex physics
+    interactions with the environment and other death balls, making them challenging and unpredictable
+    obstacles.
+
+    Physical Properties:
+        - Dual Collision Radii:
+            * Ninja Collision: 5 pixels (deadly contact)
+            * Environment Collision: 8 pixels (walls and other death balls)
+        - Movement Constants:
+            * Acceleration: 0.04 pixels/frame²
+            * Max Speed: 0.85 pixels/frame
+            * Drag (Above Max Speed): 0.9 multiplier
+            * Drag (No Target): 0.95 multiplier
+        - Max Per Level: 64 instances
+
+    Behavior:
+        - Target Seeking:
+            * Continuously accelerates toward nearest valid ninja
+            * Maintains velocity with drag when exceeding max speed
+            * Decelerates when no valid target exists
+        - Collision Response:
+            * Bounces off walls with variable strength based on impact speed
+            * Repels other death balls within 16-pixel range
+            * Bounces away from ninja on contact (while killing ninja)
+        - Wall Interaction:
+            * Uses swept circle collision detection for high speeds
+            * 16 iterations of depenetration for precise wall contact
+            * Projects velocity onto surface normal for realistic bounces
+            * Bounce strength varies (1x or 2x) based on impact speed
+
+    AI Strategy Notes:
+        - Use walls and obstacles to redirect or slow death balls
+        - Consider death ball momentum when planning routes
+        - Multiple death balls can create chain reactions
+        - Death balls can be temporarily avoided by breaking line of sight
+
+    Technical Implementation:
+        - Implements both physical and logical collision systems
+        - Uses interpolation for high-speed wall collisions
+        - Handles complex interactions with other death balls
+        - Supports position logging for debugging/replay
+        - Maintains separate collision radii for different interaction types
+    """
     ENTITY_TYPE = 25
     RADIUS = 5  # radius for collisions against ninjas
     RADIUS2 = 8  # radius for collisions against other balls and tiles

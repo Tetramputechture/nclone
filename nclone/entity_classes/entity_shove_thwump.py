@@ -4,7 +4,74 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityShoveThwump(Entity):
+    """Shove Thwump Entity (Type 28)
+
+    A variant of the thwump that activates on contact rather than line of sight, and
+    launches in the direction of initial contact. Features a deadly core and complex
+    state-based collision behavior, creating unique positioning challenges.
+
+    Physical Properties:
+        - Outer Size: 12*12 pixel square (24*24 total)
+        - Inner Core: 8-pixel radius (deadly)
+        - Max Per Level: 128 instances
+        - Movement Speeds:
+            * Launch: 4 pixels/frame
+            * Retreat: 1 pixel/frame
+
+    Behavior:
+        - Movement States:
+            * 0: Immobile (at rest)
+            * 1: Activated (contact triggered)
+            * 2: Launching (moving away)
+            * 3: Retreating (returning)
+        - Activation Mechanics:
+            * Triggers on significant contact (>0.2 penetration)
+            * Launches away from contact point
+            * Direction set by initial contact
+            * One-frame activation window
+        - Collision Types:
+            * Deadly inner core
+            * State-dependent outer collision
+            * Directional collision in activated state
+            * Wall detection for movement
+        - Movement Pattern:
+            * Launches after activation
+            * Continues until wall hit
+            * Retreats to origin
+            * Resets for next activation
+
+    AI Strategy Notes:
+        - Contact-based hazard
+        - Consider:
+            * Safe contact angles
+            * Launch direction control
+            * Movement timing
+            * Retreat patterns
+        - Can be used for:
+            * Forced positioning
+            * Direction control
+            * Area denial
+            * Timing challenges
+
+    Technical Implementation:
+        - Complex State System:
+            * Multi-state management
+            * Direction tracking
+            * Origin position memory
+            * Activation logic
+        - Collision Handling:
+            * Dual collision radii
+            * State-based collision response
+            * Direction-dependent interaction
+            * Grid-aligned movement
+        - Movement Control:
+            * Independent axis movement
+            * Wall collision detection
+            * Position restoration
+            * Grid cell transitions
+    """
     ENTITY_TYPE = 28
     SEMI_SIDE = 12
     RADIUS = 8  # for the projectile inside

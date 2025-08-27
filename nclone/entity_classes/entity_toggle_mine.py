@@ -3,8 +3,74 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityToggleMine(Entity):
-    """This class handles both toggle mines (untoggled state) and regular mines (toggled state)."""
+    """Toggle Mine Entity (Types 1, 21)
+
+    A dynamic hazard that changes state based on ninja interaction. Toggle mines can be
+    used to create temporary safe passages, block routes, or force specific movement
+    patterns. Their three-state system and state-dependent collision radii create
+    complex tactical decisions.
+
+    Physical Properties:
+        - Variable Radius:
+            * Untoggled (Safe): 3.5 pixels
+            * Toggling: 4.5 pixels
+            * Toggled (Deadly): 4.0 pixels
+        - Max Per Level: 8192 instances
+        - Entity Types:
+            * Type 1: Initial untoggled state
+            * Type 21: Initial toggled state
+
+    Behavior:
+        - State System:
+            * 0: Toggled (deadly)
+            * 1: Untoggled (safe)
+            * 2: Toggling (transitioning)
+        - State Transitions:
+            * Untoggled → Toggling: Ninja contact
+            * Toggling → Toggled: Ninja breaks contact
+            * Toggled → Untoggled: Ninja contact (dies)
+            * Toggling → Untoggled: Ninja dies
+        - Collision Response:
+            * Untoggled: Safe to touch
+            * Toggling: Safe but preparing
+            * Toggled: Lethal on contact
+
+    AI Strategy Notes:
+        - Tactical Elements:
+            * Can create temporary paths
+            * Force specific routes
+            * Block retreat options
+            * Create timing challenges
+        - Consider:
+            * State of surrounding mines
+            * Toggle sequence planning
+            * Safe approach angles
+            * Alternative routes
+        - Used for:
+            * Path manipulation
+            * Area denial
+            * Forced commitments
+            * Timing puzzles
+
+    Technical Implementation:
+        - State Management:
+            * Tracks current state
+            * Updates collision radius
+            * Handles state transitions
+            * Supports logging
+        - Collision Detection:
+            * Uses circular collision
+            * State-dependent radius
+            * Ninja state awareness
+            * Death handling
+        - Interaction Logic:
+            * Contact monitoring
+            * State validation
+            * Death state checks
+            * Transition timing
+    """
     ENTITY_TYPE = 1  # Also handles type 21 for toggled state
     RADII = {0: 4, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
     MAX_COUNT_PER_LEVEL = 8192

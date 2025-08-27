@@ -3,7 +3,38 @@ from ..physics import *
 from ..ninja import NINJA_RADIUS
 from .entity_door_base import EntityDoorBase
 
+
 class EntityDoorRegular(EntityDoorBase):
+    """Regular Door Entity (Type 5)
+
+    A proximity-activated door that temporarily opens when the ninja is nearby and automatically
+    closes after a short delay. Closed doors block entities from passing through.
+
+    Physical Properties:
+        - Activation Radius: 10 pixels
+        - Door Length: 24 pixels (inherited)
+        - Max Per Level: 256 instances
+        - Orientation: Supports vertical and horizontal (inherited)
+
+    Behavior:
+        - Proximity Detection:
+            * Opens when ninja enters 10-pixel activation radius
+            * Centered on door's switch position
+            * Uses circular collision detection
+        - Auto-Close Timer:
+            * Closes automatically after 5 frames without ninja contact
+            * Timer resets on each ninja contact
+            * Prevents door from staying open indefinitely
+
+    AI Strategy Notes:
+        - Can be used for temporary protection from hazards
+
+    Technical Implementation:
+        - Inherits core door functionality from EntityDoorBase
+        - Maintains open timer for auto-close behavior
+        - Updates state through collision and think cycles
+        - Supports both physical and logical collision detection
+    """
     ENTITY_TYPE = 5
     RADIUS = 10
     MAX_COUNT_PER_LEVEL = 256
