@@ -3,8 +3,64 @@ import math
 from ..entities import Entity
 from ..physics import *
 
+
 class EntityDroneBase(Entity):
-    """Parent class that all drone type entities inherit from."""
+    """Drone Base Entity - Parent Class for All Drone Types
+
+    Abstract base class that provides core drone functionality for regular drones, chasers,
+    and mini drones. Drones are grid-based patrolling enemies that follow deterministic
+    movement patterns and are lethal to touch.
+
+    Physical Properties:
+        - Default Radius: 7.5 pixels (overridable by subclasses)
+        - Grid Movement: 24-pixel cell size (standard)
+        - Movement Modes: 4 distinct patrol patterns
+            * 0: Follow wall clockwise
+            * 1: Follow wall counter-clockwise
+            * 2: Wander clockwise
+            * 3: Wander counter-clockwise
+        - Direction System:
+            * 0: Right (1,0)
+            * 1: Down (0,1)
+            * 2: Left (-1,0)
+            * 3: Up (0,-1)
+
+    Core Behavior:
+        - Grid-Based Movement:
+            * Moves between cell centers
+            * Checks for wall collisions
+            * Maintains target position
+        - Patrolling Logic:
+            * Tests available directions in mode-specific order
+            * Follows walls or wanders based on mode
+            * Handles orientation and direction changes
+        - Movement Precision:
+            * Interpolates between cell centers
+            * Handles partial movements
+            * Maintains consistent speed
+
+    Technical Implementation:
+        - State Management:
+            * Tracks current and target positions
+            * Maintains direction and orientation
+            * Handles mode-specific behavior
+        - Movement System:
+            * Grid-aligned movement
+            * Collision checking
+            * Direction selection
+        - Position Logging:
+            * Optional position tracking
+            * Direction change logging
+            * State normalization for AI
+
+    Derived Classes:
+        - Zap Drone (Type 14): Standard patrol drone
+        - Mini Drone (Type 26): Smaller, faster variant
+        - Chaser Drone: Advanced drone with pursuit behavior
+
+    Note: This is an abstract base class and should not be instantiated directly.
+    Use one of the derived drone types instead.
+    """
     RADIUS = 7.5
     GRID_WIDTH = 24
     DIR_TO_VEC = {0: [1, 0], 1: [0, 1], 2: [-1, 0], 3: [0, -1]}

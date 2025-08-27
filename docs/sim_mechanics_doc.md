@@ -5,8 +5,8 @@ This is a simulation of the game N++. N++ is a 2D physics-based platformer where
 ## Level Structure
 
 ### Dimensions
-- **Level Size**: 42×23 grid cells (1056×600 pixels)
-- **Cell Size**: 24×24 pixels per grid cell
+- **Level Size**: 42*23 grid cells (1056*600 pixels)
+- **Cell Size**: 24*24 pixels per grid cell
 - **Coordinate System**: Origin at top-left, X increases rightward, Y increases downward
 - **Visibility**: The entire level is always visible to the player
 
@@ -155,9 +155,9 @@ Each tile can contain:
 - **Linear Segments**: Straight collision edges with orientation
 - **Circular Segments**: Curved collision surfaces (radius 24 pixels)
   
-Collision queries use the 24×24 grid directly: segments are stored per cell in `segment_dic[(x,y)]`,
+Collision queries use the 24*24 grid directly: segments are stored per cell in `segment_dic[(x,y)]`,
 and physics gathers segments by iterating overlapped cells. This is accurate and efficient for the
-fixed 44×25 map size and small query regions used by the player physics.
+fixed 44*25 map size and small query regions used by the player physics.
 
 ## Entities and Interactive Elements
 
@@ -198,19 +198,19 @@ fixed 44×25 map size and small query regions used by the player physics.
 - **AI Note**: Powerful movement tool, plan trajectory carefully
 
 #### Bounce Blocks (Type 17)
-- **Size**: 9×9 pixel square
+- **Size**: 9*9 pixel square
 - **Physics**: Spring-based with stiffness 0.0222, dampening 0.98
 - **Interaction**: 80% force applied to block, 20% to ninja
 - **AI Strategy**: Use for momentum preservation and creative routing
 
 #### Thwumps (Type 20)
-- **Size**: 9×9 pixel square
+- **Size**: 9*9 pixel square
 - **Facing**: Each thwump faces one of four sides (up, down, left, right)
 - **Deadly Side**: Only the side the thwump is facing is deadly during a charge; other sides behave as solid walls or floors and can be safely touched or stood on
 - **Movement**: Forward speed 20/7, backward speed 8/7 pixels/frame
 - **Behavior**: Charges toward ninja when in line of sight, returns to origin
 - **States**: Immobile (0), Forward (1), Backward (-1)
-- **Activation Range**: 2 × (9 + 10) = 38 pixels
+- **Activation Range**: 2 * (9 + 10) = 38 pixels
 - **Special Interaction**: Horizontally-moving thwumps can be 'ridden' on top of, enabling advanced movement and routing strategies
 - **AI Strategy**: Use timing and positioning to avoid the deadly face; consider using non-deadly sides for traversal or as moving platforms
 
@@ -231,7 +231,7 @@ fixed 44×25 map size and small query regions used by the player physics.
 ### Movement Aids
 
 #### One-Way Platforms (Type 11)
-- **Size**: 12×12 pixel square
+- **Size**: 12*12 pixel square
 - **Function**: Allows passage from one direction only
 - **Collision**: Depends on approach angle and velocity
 - **AI Note**: Critical for routing, understand approach requirements
@@ -282,7 +282,7 @@ fixed 44×25 map size and small query regions used by the player physics.
 ## Technical Implementation
 
 ### Optimization Features
-- **Spatial Partitioning**: 24×24 pixel grid cells (no quadtree)
+- **Spatial Partitioning**: 24*24 pixel grid cells (no quadtree)
 - **Entity Management**: Active entity filtering and collision caching
 - **Cache Systems**: sqrt calculations and cell neighborhood lookups
 - **Deterministic**: Fixed timestep ensures consistent physics across runs

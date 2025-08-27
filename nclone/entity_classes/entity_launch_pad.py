@@ -3,7 +3,72 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityLaunchPad(Entity):
+    """Launch Pad Entity (Type 10)
+
+    A movement aid that propels the ninja in a specific direction with high velocity.
+    Launch pads are crucial for reaching distant areas and creating complex movement
+    sequences, with special handling for upward launches.
+
+    Physical Properties:
+        - Radius: 6 pixels
+        - Boost Strength: 36/7 pixels/frame (~5.14)
+        - Max Per Level: 256 instances
+        - Orientation: 8 possible directions (0-7)
+        - Collision: Semi-circular hitbox in boost direction
+
+    Behavior:
+        - Boost Mechanics:
+            * Direction based on orientation
+            * Applies velocity (boost_x * 2/3, boost_y * 2/3)
+            * Enhanced upward boost (1 - normal_y scaling)
+            * Requires directional contact (-0.1 threshold)
+        - Activation:
+            * Instant velocity change
+            * No cooldown period
+            * Can chain with other movement
+            * 4-frame input buffer window
+        - Special Cases:
+            * Upward launches get extra boost
+            * Considers ninja's radius for contact
+            * Requires valid approach angle
+            * Only affects living ninja
+
+    AI Strategy Notes:
+        - Critical for:
+            * Long-distance traversal
+            * Height gain
+            * Speed optimization
+            * Complex routes
+        - Consider:
+            * Approach angle
+            * Landing trajectory
+            * Chain potential
+            * Buffer timing
+        - Can be used for:
+            * Skip sections
+            * Speed boosts
+            * Alternative paths
+            * Height access
+
+    Technical Implementation:
+        - Direction System:
+            * Uses orientation vectors
+            * Handles all 8 directions
+            * Special Y-axis scaling
+            * Precise contact checks
+        - Collision Detection:
+            * Circular base collision
+            * Directional validation
+            * Radius consideration
+            * State checking
+        - Boost Calculation:
+            * Vector-based velocity
+            * Directional scaling
+            * Upward enhancement
+            * Precise thresholds
+    """
     ENTITY_TYPE = 10
     RADIUS = 6
     BOOST = 36/7

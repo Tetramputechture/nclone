@@ -3,7 +3,68 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityOneWayPlatform(Entity):
+    """One-Way Platform Entity (Type 11)
+
+    A specialized platform that only allows collision from one direction, creating
+    directional movement constraints and enabling complex level traversal mechanics.
+    The platform's behavior changes based on the ninja's approach angle and velocity.
+
+    Physical Properties:
+        - Size: 12*12 pixel square (24*24 total)
+        - Max Per Level: 512 instances
+        - Orientation: 8 possible directions (0-7)
+        - Collision Zones:
+            * Wide Zone: 0.91 * NINJA_RADIUS when moving toward center
+            * Narrow Zone: 0.51 * NINJA_RADIUS when moving away
+
+    Behavior:
+        - Directional Collision:
+            * Only solid from one direction
+            * Allows passage from other directions
+            * Normal based on orientation
+            * Supports both physical and logical collisions
+        - Collision Detection:
+            * Checks approach angle
+            * Considers velocity direction
+            * Uses adaptive collision width
+            * Requires specific entry conditions
+        - Special Conditions:
+            * Must be moving toward platform
+            * Must be within valid distance
+            * Previous position matters
+            * Velocity projection checked
+
+    AI Strategy Notes:
+        - Critical for:
+            * One-way passages
+            * Forced movement paths
+            * Drop-through platforms
+            * Vertical progression
+        - Consider:
+            * Approach direction
+            * Entry velocity
+            * Platform orientation
+            * Alternative routes
+        - Can be used for:
+            * Shortcuts
+            * Safe landing zones
+            * Route restrictions
+            * Vertical mobility
+
+    Technical Implementation:
+        - Complex Physics:
+            * Precise depenetration calculation
+            * Velocity-based collision width
+            * Historical position checking
+            * Normal projection tests
+        - Dual Collision Types:
+            * Physical: Basic collision response
+            * Logical: Wall state detection
+            * Separate collision zones
+            * Direction-specific behavior
+    """
     ENTITY_TYPE = 11
     SEMI_SIDE = 12
     MAX_COUNT_PER_LEVEL = 512

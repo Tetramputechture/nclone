@@ -4,7 +4,73 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityThwump(Entity):
+    """Thwump Entity (Type 20)
+
+    A deadly hazard that charges at high speed when the ninja enters its line of sight.
+    Thwumps feature directional lethality and can be used as moving platforms, creating
+    complex timing and positioning challenges.
+
+    Physical Properties:
+        - Size: 9*9 pixel square (18*18 total)
+        - Movement Speeds:
+            * Forward (Charge): 20/7 pixels/frame (~2.86)
+            * Backward (Retreat): 8/7 pixels/frame (~1.14)
+        - Max Per Level: 128 instances
+        - Orientation: 4 directions (0: right, 2: down, 4: left, 6: up)
+
+    Behavior:
+        - Movement States:
+            * 0: Immobile (at rest)
+            * 1: Forward (charging)
+            * -1: Backward (retreating)
+        - Detection:
+            * Line of sight based
+            * 38-pixel activation range (2 * (9 + 10))
+            * Checks for clear path to ninja
+            * Only triggers when ninja is ahead
+        - Collision Types:
+            * Deadly face in charge direction
+            * Safe sides and opposite face
+            * Can be stood on (horizontal movement)
+            * Supports wall interactions
+        - Movement Pattern:
+            * Charges when triggered
+            * Continues until wall hit
+            * Retreats to origin
+            * Resets for next charge
+
+    AI Strategy Notes:
+        - Critical timing hazard
+        - Consider:
+            * Safe approach angles
+            * Platform usage opportunities
+            * Charge timing and patterns
+            * Retreat windows
+        - Can be used for:
+            * Forced movement timing
+            * Dynamic platforms
+            * Area denial
+            * Speed boosts (riding)
+
+    Technical Implementation:
+        - Complex State Management:
+            * Tracks origin position
+            * Handles state transitions
+            * Manages movement speeds
+            * Supports logging
+        - Collision Systems:
+            * Physical collision for basic contact
+            * Logical collision for special interactions
+            * Directional lethality checks
+            * Wall detection for movement
+        - Movement Logic:
+            * Grid-aligned movement
+            * Wall collision detection
+            * Origin position tracking
+            * Direction-based behavior
+    """
     ENTITY_TYPE = 20
     SEMI_SIDE = 9
     FORWARD_SPEED = 20/7

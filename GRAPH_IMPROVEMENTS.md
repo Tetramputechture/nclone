@@ -62,11 +62,11 @@ Accurate collision detection for half-tiles and slopes:
 ### Graph Structure Changes
 
 **Before**: 
-- ~966 nodes (42×23 grid)
+- ~966 nodes (42*23 grid)
 - ~3,864 edges (4-connected)
 
 **After**:
-- ~3,864 nodes (84×46 sub-grid) 
+- ~3,864 nodes (84*46 sub-grid) 
 - ~30,912 edges (8-connected with validation)
 
 ## Performance Characteristics

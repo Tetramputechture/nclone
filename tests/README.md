@@ -60,7 +60,7 @@ These tests focus on:
 3. **Behavior Validation**: Verifying expected behaviors
 4. **Edge Case Coverage**: Testing boundary conditions
 
-The tests use realistic N++ level dimensions (23×42) and standard game parameters to ensure they reflect real usage patterns.
+The tests use realistic N++ level dimensions (23*42) and standard game parameters to ensure they reflect real usage patterns.
 
 ## Adding New Tests
 
