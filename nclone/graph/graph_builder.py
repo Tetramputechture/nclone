@@ -161,7 +161,7 @@ class GraphBuilder:
                 
                 # Extract sub-cell features
                 sub_cell_features = self._extract_sub_cell_features(
-                    level_data, sub_row, sub_col, ninja_position, ninja_velocity, ninja_state
+                    level_data, sub_row, sub_col, ninja_position, ninja_velocity, ninja_state, entities
                 )
                 
                 node_features[node_idx] = sub_cell_features
@@ -209,7 +209,7 @@ class GraphBuilder:
                     # Determine edge type based on sub-cell traversability
                     edge_type, cost, trajectory_info = self._determine_sub_cell_traversability(
                         level_data, sub_row, sub_col, new_sub_row, new_sub_col, 
-                        one_way_index, door_blockers_index, dr, dc, ninja_velocity, ninja_state
+                        one_way_index, door_blockers_index, dr, dc, ninja_velocity, ninja_state, entities
                     )
                     if edge_type is not None:
                         # Normalize direction vector
@@ -302,7 +302,8 @@ class GraphBuilder:
         sub_col: int,
         ninja_position: Tuple[float, float],
         ninja_velocity: Optional[Tuple[float, float]] = None,
-        ninja_state: Optional[Dict[str, Any]] = None
+        ninja_state: Optional[Dict[str, Any]] = None,
+        entities: Optional[List[Dict[str, Any]]] = None
     ) -> np.ndarray:
         """
         Extract features for a sub-grid cell node with physics state.
@@ -333,7 +334,7 @@ class GraphBuilder:
         solidity_offset = self.tile_type_dim
         
         # Check if this specific sub-cell is traversable
-        is_traversable = self._is_sub_cell_traversable(level_data, sub_row, sub_col)
+        is_traversable = self._is_sub_cell_traversable(level_data, sub_row, sub_col, entities)
         features[solidity_offset] = 0.0 if is_traversable else 1.0  # Inverse of traversability
         features[solidity_offset + 1] = 1.0 if self._is_half_tile(tile_type) else 0.0
         features[solidity_offset + 2] = 1.0 if self._is_slope(tile_type) else 0.0
@@ -423,18 +424,23 @@ class GraphBuilder:
         self,
         level_data: Dict[str, Any],
         sub_row: int,
-        sub_col: int
+        sub_col: int,
+        entities: Optional[List[Dict[str, Any]]] = None,
+        approach_direction: Optional[Tuple[float, float]] = None
     ) -> bool:
         """
         Determine if a sub-cell is traversable by the ninja.
         
         Uses a more permissive approach that focuses on the sub-cell center
         and basic collision checks rather than full ninja clearance.
+        Now includes entity-aware traversability for complex entities.
         
         Args:
             level_data: Level data containing tile information
             sub_row: Sub-grid row
             sub_col: Sub-grid column
+            entities: Optional list of entities to check for traversability
+            approach_direction: Optional approach direction for directional entities
             
         Returns:
             True if the sub-cell is traversable, False otherwise
@@ -454,18 +460,101 @@ class GraphBuilder:
         
         # For empty tiles, be much more permissive - just check center point
         if tile_type == 0:
-            return not self._point_collides_with_geometry(level_data, world_x, world_y)
+            if self._point_collides_with_geometry(level_data, world_x, world_y):
+                return False
         
         # For half-tiles and slopes, check if center point is in open space
-        if self._is_half_tile(tile_type):
-            return not self._point_in_solid_half(world_x, world_y, tile_row, tile_col, tile_type)
+        elif self._is_half_tile(tile_type):
+            if self._point_in_solid_half(world_x, world_y, tile_row, tile_col, tile_type):
+                return False
         
         # For slopes, check point collision with slope geometry
-        if self._is_slope(tile_type):
-            return not self._point_collides_with_slope(world_x, world_y, tile_row, tile_col, tile_type)
+        elif self._is_slope(tile_type):
+            if self._point_collides_with_slope(world_x, world_y, tile_row, tile_col, tile_type):
+                return False
+        
+        # Check entity traversability if entities are provided
+        if entities is not None:
+            return self._is_sub_cell_entity_traversable(
+                world_x, world_y, entities, approach_direction
+            )
         
         # Default to traversable for other tile types
         return True
+
+    def _is_sub_cell_entity_traversable(
+        self,
+        world_x: float,
+        world_y: float,
+        entities: List[Dict[str, Any]],
+        approach_direction: Optional[Tuple[float, float]] = None
+    ) -> bool:
+        """
+        Check if a world position is traversable considering entity interactions.
+        
+        Args:
+            world_x, world_y: World coordinates to check
+            entities: List of entities to check against
+            approach_direction: Direction of approach for directional entities
+            
+        Returns:
+            True if position is traversable considering entities
+        """
+        from ..constants import NINJA_RADIUS
+        
+        # Check each entity for collision/traversability
+        for entity in entities:
+            entity_x = entity.get('x', entity.get('xpos', 0))
+            entity_y = entity.get('y', entity.get('ypos', 0))
+            
+            # Calculate distance to entity
+            distance = math.sqrt((world_x - entity_x)**2 + (world_y - entity_y)**2)
+            
+            # Get entity collision radius (approximate)
+            entity_radius = self._get_entity_collision_radius(entity)
+            
+            # Check if ninja would collide with entity
+            if distance < (NINJA_RADIUS + entity_radius):
+                # Check if entity is traversable from this approach direction
+                if approach_direction is not None:
+                    if not self._is_entity_traversable(entity, approach_direction):
+                        return False
+                else:
+                    # No approach direction specified, check if entity is generally hazardous
+                    if self._is_hazard_entity(entity):
+                        return False
+        
+        return True
+
+    def _get_entity_collision_radius(self, entity: Dict[str, Any]) -> float:
+        """
+        Get the collision radius for an entity.
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            Collision radius in pixels
+        """
+        et = entity.get('type', 'unknown')
+        
+        # Handle numeric entity types
+        if isinstance(et, int):
+            if et in {17, 20, 28}:  # Bounce blocks, thwumps
+                return 9.0  # SEMI_SIDE from entity definitions
+            elif et in {12, 14, 21, 25, 26}:  # Death balls, drones, mines
+                return 6.0  # Smaller collision radius
+            else:
+                return 8.0  # Default radius
+        
+        # Handle string entity types
+        et_l = str(et).lower()
+        if any(large in et_l for large in ['bounce', 'thwump']):
+            return 9.0
+        elif any(small in et_l for small in ['drone', 'mine', 'death']):
+            return 6.0
+        else:
+            return 8.0
     
     def _has_ninja_clearance(
         self,
@@ -908,7 +997,8 @@ class GraphBuilder:
         dr: int,
         dc: int,
         ninja_velocity: Optional[Tuple[float, float]] = None,
-        ninja_state: Optional[int] = None
+        ninja_state: Optional[int] = None,
+        entities: Optional[List[Dict[str, Any]]] = None
     ) -> Tuple[Optional[EdgeType], float, Optional[dict]]:
         """
         Determine if two sub-grid cells are connected and how.
@@ -932,12 +1022,18 @@ class GraphBuilder:
         """
         from ..constants import NINJA_RADIUS
         
+        # Calculate approach direction for entity traversability checks
+        approach_direction = None
+        if dc != 0 or dr != 0:
+            norm = math.sqrt(dc*dc + dr*dr)
+            approach_direction = (dc / norm, dr / norm)
+        
         # First check if target sub-cell is traversable
-        if not self._is_sub_cell_traversable(level_data, tgt_sub_row, tgt_sub_col):
+        if not self._is_sub_cell_traversable(level_data, tgt_sub_row, tgt_sub_col, entities, approach_direction):
             return None, 0.0, None
         
         # Check if source sub-cell is traversable (should be, but be safe)
-        if not self._is_sub_cell_traversable(level_data, src_sub_row, src_sub_col):
+        if not self._is_sub_cell_traversable(level_data, src_sub_row, src_sub_col, entities):
             return None, 0.0, None
             
         # Convert sub-cell coordinates to world positions
@@ -1028,7 +1124,7 @@ class GraphBuilder:
         if is_diagonal:
             # Diagonal movement - check if it's a valid corner cut
             if not self._is_diagonal_traversable(
-                level_data, src_sub_row, src_sub_col, tgt_sub_row, tgt_sub_col
+                level_data, src_sub_row, src_sub_col, tgt_sub_row, tgt_sub_col, entities
             ):
                 return None, 0.0, None
             
@@ -1106,7 +1202,8 @@ class GraphBuilder:
         src_sub_row: int,
         src_sub_col: int,
         tgt_sub_row: int,
-        tgt_sub_col: int
+        tgt_sub_col: int,
+        entities: Optional[List[Dict[str, Any]]] = None
     ) -> bool:
         """
         Check if diagonal movement between sub-cells is valid.
@@ -1129,8 +1226,8 @@ class GraphBuilder:
         mid2_col = src_sub_col
         
         # At least one intermediate position must be traversable (more permissive)
-        return (self._is_sub_cell_traversable(level_data, mid1_row, mid1_col) or
-                self._is_sub_cell_traversable(level_data, mid2_row, mid2_col))
+        return (self._is_sub_cell_traversable(level_data, mid1_row, mid1_col, entities) or
+                self._is_sub_cell_traversable(level_data, mid2_row, mid2_col, entities))
     
     def _is_sub_cell_blocked_by_one_way(
         self,
@@ -1692,7 +1789,9 @@ class GraphBuilder:
         - A mine / toggle mine that has been toggled
         - Any drone (including mini drone)
         - Death ball
-        - Thwump or shove thwump (dangerous face)
+        - Thwump or shove thwump (dangerous face only)
+        
+        Note: This method now considers directional hazards for thwumps.
         """
         et = entity.get('type', 'unknown')
         state = entity.get('state', None)
@@ -1700,7 +1799,14 @@ class GraphBuilder:
         # Support both numeric ids and semantic strings coming from different callers
         if isinstance(et, int):
             # Known hazardous numeric ids from simulator
-            return et in {12, 14, 20, 21, 25, 26, 28}  # death ball(12/25), drones(14/26), thwumps(20/28), toggled mine(21)
+            # Note: Thwumps (20/28) are conditionally hazardous based on direction
+            if et in {12, 14, 25, 26}:  # death ball(12/25), drones(14/26)
+                return True
+            elif et in {20, 28}:  # thwumps - directionally hazardous
+                return self._is_thwump_face_hazardous(entity)
+            elif et == 21:  # toggle mine
+                return state in (0, 'toggled', True)
+            return False
 
         et_l = str(et).lower()
         if 'drone' in et_l:
@@ -1708,11 +1814,159 @@ class GraphBuilder:
         if 'death' in et_l and 'ball' in et_l:
             return True
         if 'thwump' in et_l:
-            return True
+            return self._is_thwump_face_hazardous(entity)
         if 'mine' in et_l:
             # default to hazardous only if explicitly toggled
             return state in (0, 'toggled', True)
         return False
+
+    def _is_thwump_face_hazardous(self, entity: Dict[str, Any]) -> bool:
+        """
+        Determine if a thwump's charging face is hazardous at a given position.
+        
+        Thwumps are only hazardous on their charging face when moving forward.
+        The sides and back are safe and can be traversed.
+        
+        Args:
+            entity: Thwump entity with position, orientation, and state
+            
+        Returns:
+            True if the thwump's charging face is currently hazardous
+        """
+        # For now, assume thwumps are always potentially hazardous
+        # In a more sophisticated implementation, we would check:
+        # - Current movement state (charging vs. retreating vs. idle)
+        # - Orientation to determine which face is dangerous
+        # - Distance from ninja to determine activation
+        return True
+
+    def _is_entity_traversable(self, entity: Dict[str, Any], approach_direction: Tuple[float, float]) -> bool:
+        """
+        Determine if an entity can be traversed from a given approach direction.
+        
+        Args:
+            entity: Entity dictionary with type, position, orientation, state
+            approach_direction: Normalized direction vector (dx, dy) of approach
+            
+        Returns:
+            True if entity can be safely traversed from this direction
+        """
+        et = entity.get('type', 'unknown')
+        
+        # Handle numeric entity types
+        if isinstance(et, int):
+            if et == 17:  # Bounce block
+                return True  # Bounce blocks are always traversable platforms
+            elif et in {20, 28}:  # Thwumps
+                return self._is_thwump_side_safe(entity, approach_direction)
+            elif et in {12, 14, 21, 25, 26}:  # Death balls, drones, toggle mines
+                return False  # Always hazardous
+            else:
+                return True  # Other entities are generally traversable
+        
+        # Handle string entity types
+        et_l = str(et).lower()
+        if 'bounce' in et_l and 'block' in et_l:
+            return True  # Bounce blocks are traversable platforms
+        elif 'thwump' in et_l:
+            return self._is_thwump_side_safe(entity, approach_direction)
+        elif any(hazard in et_l for hazard in ['drone', 'death', 'mine']):
+            return False  # Hazardous entities
+        else:
+            return True  # Default to traversable
+
+    def _is_thwump_side_safe(self, entity: Dict[str, Any], approach_direction: Tuple[float, float]) -> bool:
+        """
+        Determine if approaching a thwump from a given direction is safe.
+        
+        Thwumps are only dangerous on their charging face. The sides and back are safe.
+        
+        Args:
+            entity: Thwump entity with orientation information
+            approach_direction: Normalized approach direction (dx, dy)
+            
+        Returns:
+            True if this approach direction avoids the dangerous charging face
+        """
+        orientation = entity.get('orientation', 0)
+        
+        # Thwump orientations: 0=right, 2=down, 4=left, 6=up
+        # Determine the dangerous direction (where thwump charges)
+        if orientation == 0:  # Charges right
+            dangerous_dir = (1.0, 0.0)
+        elif orientation == 2:  # Charges down
+            dangerous_dir = (0.0, 1.0)
+        elif orientation == 4:  # Charges left
+            dangerous_dir = (-1.0, 0.0)
+        elif orientation == 6:  # Charges up
+            dangerous_dir = (0.0, -1.0)
+        else:
+            # Unknown orientation, assume safe
+            return True
+        
+        # Calculate dot product to determine if approach is from dangerous side
+        # If approaching from the charging direction, it's dangerous
+        dot_product = approach_direction[0] * dangerous_dir[0] + approach_direction[1] * dangerous_dir[1]
+        
+        # If dot product is positive, we're approaching from the charging direction (dangerous)
+        # If negative or zero, we're approaching from sides/back (safe)
+        return dot_product <= 0.1  # Small tolerance for floating point
+
+    def _get_entity_platform_properties(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Get platform properties for entities that can be stood on or traversed.
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            Dictionary with platform properties like stability, bounce, movement
+        """
+        et = entity.get('type', 'unknown')
+        
+        # Handle numeric types
+        if isinstance(et, int):
+            if et == 17:  # Bounce block
+                return {
+                    'is_platform': True,
+                    'stability': 0.8,  # Somewhat unstable due to spring physics
+                    'bounce_factor': 1.2,  # Provides momentum boost
+                    'can_stand_on': True,
+                    'movement_type': 'spring'
+                }
+            elif et in {20, 28}:  # Thwumps
+                return {
+                    'is_platform': True,
+                    'stability': 0.9,  # Stable when not charging
+                    'bounce_factor': 1.0,  # No bounce
+                    'can_stand_on': True,
+                    'movement_type': 'moving_platform',
+                    'conditional_safe': True  # Safe from sides/back only
+                }
+            else:
+                return {'is_platform': False}
+        
+        # Handle string types
+        et_l = str(et).lower()
+        if 'bounce' in et_l and 'block' in et_l:
+            return {
+                'is_platform': True,
+                'stability': 0.8,
+                'bounce_factor': 1.2,
+                'can_stand_on': True,
+                'movement_type': 'spring'
+            }
+        elif 'thwump' in et_l:
+            return {
+                'is_platform': True,
+                'stability': 0.9,
+                'bounce_factor': 1.0,
+                'can_stand_on': True,
+                'movement_type': 'moving_platform',
+                'conditional_safe': True
+            }
+        else:
+            return {'is_platform': False}
 
     def _get_entity_type_id(self, entity_type: Any) -> int:
         """Map entity type (string or numeric id) to a compact type id space for nodes."""
