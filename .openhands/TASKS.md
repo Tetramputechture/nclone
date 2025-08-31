@@ -12,6 +12,8 @@
 
 6. ✅ Create mermaid-diagram-instructions.md in docs directory
 
-7. 🔄 Commit changes to project-architecture-simplification branch and create PRs
+7. ✅ Commit changes to project-architecture-simplification branch and create PRs
+
+8. 🔄 Integrate Heterogeneous Graph Transformer as primary architecture
 
 
