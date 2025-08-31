@@ -17,7 +17,7 @@ graph TB
     %% NPP-RL Repository Components
     subgraph NPP_RL ["🧠 NPP-RL Repository"]
         subgraph AGENTS ["🎯 Agents"]
-            ENHANCED["enhanced_training.py<br/>Primary Training Script"]
+            ENHANCED["training.py<br/>Primary Training Script"]
             EXPLORATION["adaptive_exploration.py<br/>ICM + Novelty Detection"]
             HYPERPARAMS["hyperparameters/<br/>ppo_hyperparameters.py"]
         end
