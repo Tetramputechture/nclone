@@ -9,7 +9,8 @@ import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from gymnasium.spaces import Box, Dict as SpacesDict
 
-from nclone.graph.graph_builder import GraphBuilder, GraphData, N_MAX_NODES, E_MAX_EDGES
+from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
+from nclone.graph.common import GraphData, N_MAX_NODES, E_MAX_EDGES
 
 
 class GraphObservationMixin:
@@ -31,7 +32,7 @@ class GraphObservationMixin:
         super().__init__(*args, **kwargs)
         
         self.use_graph_obs = use_graph_obs
-        self.graph_builder = GraphBuilder() if use_graph_obs else None
+        self.graph_builder = HierarchicalGraphBuilder() if use_graph_obs else None
         
         # Cache for graph data to avoid recomputation
         self._graph_cache = None

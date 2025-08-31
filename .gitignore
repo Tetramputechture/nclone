@@ -19,6 +19,7 @@ __pycache__/
 # python builds
 build/
 dist/
+nclone/_version.py
 
 *.egg-info/
 
@@ -33,3 +34,6 @@ benchmark/
 
 # Output files
 global_frame.png
+
+# Openhands tasks
+.openhands/TASKS.md

@@ -7,7 +7,8 @@ from typing import Tuple, Optional, Dict, Any
 import numpy as np
 
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
-from ..graph.graph_builder import GraphBuilder, GraphData
+from ..graph.hierarchical_builder import HierarchicalGraphBuilder
+from ..graph.common import GraphData
 
 from ..nplay_headless import NPlayHeadless
 
@@ -51,7 +52,7 @@ class BaseEnvironment(gymnasium.Env):
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
-        self._graph_builder: Optional[GraphBuilder] = None
+        self._graph_builder: Optional[HierarchicalGraphBuilder] = None
         self._graph_debug_cache: Optional[GraphData] = None
         self._exploration_debug_enabled: bool = False
         self._grid_debug_enabled: bool = False
@@ -152,7 +153,7 @@ class BaseEnvironment(gymnasium.Env):
         # Add graph visualization payload if enabled
         if self._graph_debug_enabled:
             if self._graph_builder is None:
-                self._graph_builder = GraphBuilder()
+                self._graph_builder = HierarchicalGraphBuilder()
             graph_data = self._maybe_build_graph_debug()
             if graph_data is not None:
                 info['graph'] = {
