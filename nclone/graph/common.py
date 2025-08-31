@@ -10,26 +10,26 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from enum import IntEnum
 
-# Use shared constants from the simulator
-from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
+# Use shared constants from the simulator - FIXED DIMENSIONS
+from ..constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
 
 # Graph configuration constants
 # Sub-grid resolution for better spatial accuracy
 SUB_GRID_RESOLUTION = 4  # Divide each tile into 4x4 sub-cells (6x6 pixels each)
 SUB_CELL_SIZE = TILE_PIXEL_SIZE // SUB_GRID_RESOLUTION  # 6 pixels per sub-cell
 
-# Calculate sub-grid dimensions
-SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 168 sub-cells wide
-SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 92 sub-cells tall
+# Calculate sub-grid dimensions using FIXED map size (44x25 tiles)
+SUB_GRID_WIDTH = FULL_MAP_WIDTH * SUB_GRID_RESOLUTION  # 176 sub-cells wide (44*4)
+SUB_GRID_HEIGHT = FULL_MAP_HEIGHT * SUB_GRID_RESOLUTION  # 100 sub-cells tall (25*4)
 
 # Keep generous upper bounds to allow entity padding in observations
-N_MAX_NODES = SUB_GRID_WIDTH * SUB_GRID_HEIGHT + 400  # Sub-grid + entities buffer (~15856)
+N_MAX_NODES = SUB_GRID_WIDTH * SUB_GRID_HEIGHT + 400  # Sub-grid + entities buffer (~18000)
 E_MAX_EDGES = N_MAX_NODES * 8  # Up to 8 directions per node (4 cardinal + 4 diagonal)
 
-# Mirror simulator map constants to avoid divergence
-GRID_WIDTH = MAP_TILE_WIDTH
-GRID_HEIGHT = MAP_TILE_HEIGHT
-CELL_SIZE = TILE_PIXEL_SIZE
+# FIXED map constants - all levels are exactly 44x25 tiles (1056x600 pixels)
+GRID_WIDTH = FULL_MAP_WIDTH  # 44 tiles
+GRID_HEIGHT = FULL_MAP_HEIGHT  # 25 tiles
+CELL_SIZE = TILE_PIXEL_SIZE  # 24 pixels
 
 
 class NodeType(IntEnum):
