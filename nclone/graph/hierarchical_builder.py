@@ -19,7 +19,7 @@ from enum import IntEnum
 
 # Use shared constants from the simulator
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
-from .graph_builder import GraphBuilder, GraphData, NodeType, EdgeType, SUB_CELL_SIZE
+from .common import GraphData, NodeType, EdgeType, SUB_CELL_SIZE
 
 
 class ResolutionLevel(IntEnum):
