@@ -4,7 +4,69 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityLaser(Entity):
+    """Laser Entity
+
+    A deadly hazard that emits a beam that can kill the ninja on contact. Lasers can operate
+    in two distinct modes: spinner (rotating beam) and surface (beam follows surfaces), creating
+    complex movement patterns and timing challenges.
+
+    Physical Properties:
+        - Emitter Radius: 5.9 pixels
+        - Movement Constants:
+            * Spin Speed: ~0.0105 radians/frame (2π/600)
+            * Surface Speed (Flat): 0.1 pixels/frame
+            * Surface Speed (Corner): ~0.0055 radians/frame (0.1/(5.9π))
+        - Beam Properties:
+            * Instant hit
+            * Extends until collision
+            * Perfect reflection
+            * Zero width (line segment)
+
+    Behavior:
+        - Mode Selection:
+            * Determined by proximity to surfaces
+            * Spinner: No nearby surface (<7 pixels)
+            * Surface: Near surface (≤7 pixels)
+        - Spinner Mode:
+            * Rotates around fixed point
+            * Direction based on mode parameter
+            * Uses raycasting for beam length
+            * Checks both beam and angle for kills
+        - Surface Mode (TODO):
+            * Follows surface contours
+            * Maintains constant speed
+            * Handles corners and transitions
+            * Uses segment-based movement
+
+    AI Strategy Notes:
+        - Timing is critical:
+            * Learn rotation patterns
+            * Watch for beam sweep zones
+            * Consider safe spots
+            * Plan movements between beams
+        - Pattern Recognition:
+            * Predict beam positions
+            * Identify safe corridors
+            * Time movements with rotations
+            * Use terrain for protection
+
+    Technical Implementation:
+        - Complex Physics:
+            * Raycasting for beam length
+            * Surface following mechanics
+            * Angle-based movement
+            * Precise collision detection
+        - State Management:
+            * Tracks beam endpoints
+            * Maintains angle and direction
+            * Handles mode transitions
+            * Supports state normalization
+
+    Note: Surface mode implementation is marked as TODO in the code.
+    Some functionality may not be fully implemented yet.
+    """
     RADIUS = 5.9
     SPIN_SPEED = 0.010471975  # roughly 2pi/600
     SURFACE_FLAT_SPEED = 0.1

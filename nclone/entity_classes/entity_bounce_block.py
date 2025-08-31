@@ -3,7 +3,47 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
+
 class EntityBounceBlock(Entity):
+    """Bounce Block Entity (Type 17)
+
+    A dynamic physics-based block that acts as a spring-mass system, providing momentum-preserving
+    interactions with the ninja. Bounce blocks are crucial for advanced movement techniques and
+    can be used for creative routing strategies.
+
+    Physical Properties:
+        - Size: 9*9 pixel square (18*18 total)
+        - Collision Type: Square with spring physics
+        - Max Per Level: 512 instances
+        - Spring Constants:
+            * Stiffness: 0.0222 (determines spring force)
+            * Dampening: 0.98 (velocity decay per frame)
+            * Strength: 0.2 (force distribution ratio to ninja)
+
+    Behavior:
+        - Spring Physics:
+            * Maintains an origin point and current position
+            * Applies spring force based on displacement from origin
+            * Force proportional to distance (Hooke's Law)
+            * Velocity decays through dampening
+        - Collision Response:
+            * 80% of collision force applied to block
+            * 20% of collision force applied to ninja
+            * Supports both physical and logical (wall) collisions
+            * Additional 0.1 pixel buffer for wall interactions
+
+    AI Strategy Notes:
+        - Use for momentum preservation in complex jumps
+        - Can create dynamic platforms for height gain
+        - Chain interactions for extended movement sequences
+        - Consider block's current state (compressed/extended) for timing
+
+    Technical Implementation:
+        - Updates position and velocity each frame
+        - Applies spring forces relative to origin point
+        - Handles both physical and logical collision types
+        - Supports position logging for debugging/replay
+    """
     ENTITY_TYPE = 17
     SEMI_SIDE = 9
     STIFFNESS = 0.02222222222222222

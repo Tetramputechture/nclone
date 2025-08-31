@@ -3,8 +3,53 @@ import math
 from ..entities import Entity, GridSegmentLinear
 from ..physics import *
 
+
 class EntityDoorBase(Entity):
-    """Parent class that all door type entities inherit from : regular doors, locked doors, trap doors."""
+    """Door Base Entity - Parent Class for All Door Types
+
+    Abstract base class that provides core door functionality for regular doors, locked doors,
+    and trap doors. Doors are dynamic barriers that can be opened or closed based on specific
+    conditions, creating complex navigation and timing challenges.
+
+    Physical Properties:
+        - Size: 24 pixels long (vertical or horizontal)
+        - Collision Type: Linear segment with grid-based edges
+        - Orientation: 8 possible directions (0-7)
+            * 0,4: Vertical doors
+            * Other values: Horizontal doors
+
+    Core Behavior:
+        - State Management:
+            * Maintains open/closed state
+            * Updates collision geometry based on state
+            * Handles grid edge updates for proper pathfinding
+        - Positioning:
+            * Door segment position: Physical barrier location
+            * Entity position: Switch/trigger location
+            * Supports both vertical and horizontal orientations
+        - Collision System:
+            * Integrates with grid-based collision detection
+            * Updates grid edges for proper wall detection
+            * Maintains separate collision segments per cell
+
+    Technical Implementation:
+        - Grid Integration:
+            * Creates and manages grid segments for collision
+            * Updates grid edge dictionaries for pathfinding
+            * Handles cell-based positioning and updates
+        - State Tracking:
+            * Supports state queries for AI decision making
+            * Maintains orientation and switch position data
+            * Handles state change propagation to physics system
+
+    Derived Classes:
+        - Regular Door (Type 5): Temporary open on ninja proximity
+        - Locked Door (Type 6): Permanent open on switch collection
+        - Trap Door (Type 8): Starts open, closes on switch collection
+
+    Note: This is an abstract base class and should not be instantiated directly.
+    Use one of the derived door types instead.
+    """
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord):
         super().__init__(type, sim, xcoord, ycoord)
