@@ -57,5 +57,7 @@ class GraphData:
     edge_features: np.ndarray  # [E_MAX_EDGES, F_edge]
     node_mask: np.ndarray      # [N_MAX_NODES] - 1 for valid nodes, 0 for padding
     edge_mask: np.ndarray      # [E_MAX_EDGES] - 1 for valid edges, 0 for padding
+    node_types: np.ndarray     # [N_MAX_NODES] - NodeType enum values
+    edge_types: np.ndarray     # [E_MAX_EDGES] - EdgeType enum values
     num_nodes: int
     num_edges: int
