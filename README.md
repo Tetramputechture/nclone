@@ -148,14 +148,21 @@ Package `nclone/`:
   - `map_generation/`: Procedural map generators and constants.
   - `map_augmentation/`: Map transforms (e.g., mirroring).
 
-- Pathfinding (experimental tools/designs)
-  - `pathfinding/`: Surface parsing, navigation graph, A* search, and visualization helpers.
+- **Hierarchical Graph Processing** (Primary Architecture)
+  - `graph/hierarchical_builder.py`: Multi-resolution graph builder with 6px, 24px, 96px resolution levels
+  - `graph/common.py`: Shared graph components, data structures, and constants
+  - `graph/__init__.py`: Unified interface for hierarchical graph processing
 
 - Utilities
   - `constants.py`, `sim_config.py`, `debug_overlay_renderer.py`, `ntrace.py`, `test_environment.py`.
 
+- `archive/`: **Deprecated strategies** moved for reference:
+  - `graph_builder.py`: Legacy standard graph builder
+  - `pathfinding/`: Legacy pathfinding algorithms (A*, navigation graphs, surface parsing)
+
 ## Documentation
 
 - Simulation mechanics: `docs/sim_mechanics_doc.md`
-- Pathfinding design: `docs/pathfinding_strategy.md`
+- **Hierarchical graph architecture**: `docs/mermaid-diagram-instructions.md` (see below)
+- Legacy pathfinding design: `docs/pathfinding_strategy.md` (archived approach)
 - File index: `docs/FILE_INDEX.md`

@@ -1,13 +1,15 @@
 import pygame
 import numpy as np
 from . import render_utils
-from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
+# Legacy pathfinding visualizer moved to archive
+# from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
 from typing import Optional
 from .constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
-from .graph.graph_builder import EdgeType, GraphData, GraphBuilder
+from .graph.hierarchical_builder import HierarchicalGraphBuilder
+from .graph.common import EdgeType, GraphData
 
 class DebugOverlayRenderer:
-    def __init__(self, sim, screen, adjust, tile_x_offset, tile_y_offset, pathfinding_visualizer: Optional[PathfindingVisualizer] = None):
+    def __init__(self, sim, screen, adjust, tile_x_offset, tile_y_offset, pathfinding_visualizer: Optional[object] = None):
         self.sim = sim
         self.screen = screen
         self.adjust = adjust
@@ -33,7 +35,7 @@ class DebugOverlayRenderer:
         self.GRAPH_NODE_COLOR_ENTITY = (255, 90, 90, 240)
         self.GRAPH_NODE_COLOR_NINJA = (60, 220, 255, 255)
         self.GRAPH_BG_DIM = (0, 0, 0, 140)
-        self._graph_builder_for_dims = GraphBuilder()
+        self._graph_builder_for_dims = HierarchicalGraphBuilder()
 
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         self.adjust = adjust
@@ -345,7 +347,7 @@ class DebugOverlayRenderer:
             return
 
         # Import sub-grid constants from graph builder
-        from .graph.graph_builder import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
+        from .graph.common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
         
         # Geometry
         cell_size = TILE_PIXEL_SIZE * self.adjust
