@@ -97,17 +97,20 @@ RAGDOLL_GRAVITY = 0.06666666666666665
 RAGDOLL_DRAG = 0.99999 
 
 # ============================================================================
-# MAP CONSTANTS
+# MAP CONSTANTS - FIXED DIMENSIONS
 # ============================================================================
 
-MAP_TILE_WIDTH = 42
-MAP_TILE_HEIGHT = 23
+# All N++ levels are exactly the same size: 44x25 tiles (1056x600 pixels)
+# This includes 1 tile of padding on all sides around the 42x23 playable area
+MAP_TILE_WIDTH = 42  # Playable area width
+MAP_TILE_HEIGHT = 23  # Playable area height
 TILE_PIXEL_SIZE = 24
 
-# There is a one layer of padding on all sides of the map containing solid tiles.
+# Padding around playable area
 MAP_PADDING = 1
 
-FULL_MAP_WIDTH = MAP_TILE_WIDTH + 2 * MAP_PADDING
-FULL_MAP_HEIGHT = MAP_TILE_HEIGHT + 2 * MAP_PADDING
-FULL_MAP_WIDTH_PX = FULL_MAP_WIDTH * TILE_PIXEL_SIZE
-FULL_MAP_HEIGHT_PX = FULL_MAP_HEIGHT * TILE_PIXEL_SIZE
+# FIXED TOTAL MAP DIMENSIONS (use these constants throughout codebase)
+FULL_MAP_WIDTH = 44  # MAP_TILE_WIDTH + 2 * MAP_PADDING
+FULL_MAP_HEIGHT = 25  # MAP_TILE_HEIGHT + 2 * MAP_PADDING
+FULL_MAP_WIDTH_PX = 1056  # FULL_MAP_WIDTH * TILE_PIXEL_SIZE
+FULL_MAP_HEIGHT_PX = 600  # FULL_MAP_HEIGHT * TILE_PIXEL_SIZE
