@@ -19,6 +19,9 @@ from .hierarchical_builder import (
     HierarchicalGraphData,
     ResolutionLevel
 )
+from .feature_extraction import FeatureExtractor
+from .edge_building import EdgeBuilder
+from .graph_construction import GraphConstructor
 from .common import (
     GraphData,
     NodeType,
@@ -34,6 +37,9 @@ __all__ = [
     'HierarchicalGraphBuilder',
     'HierarchicalGraphData', 
     'ResolutionLevel',
+    'FeatureExtractor',
+    'EdgeBuilder',
+    'GraphConstructor',
     'GraphData',
     'NodeType',
     'EdgeType',
