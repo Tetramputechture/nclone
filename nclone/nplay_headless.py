@@ -24,7 +24,6 @@ from .entity_classes.entity_boost_pad import EntityBoostPad
 from .entity_classes.entity_death_ball import EntityDeathBall
 from .entity_classes.entity_mini_drone import EntityMiniDrone
 from .entity_classes.entity_shove_thwump import EntityShoveThwump
-from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
 from . import render_utils
 
 class NPlayHeadless:
@@ -53,13 +52,8 @@ class NPlayHeadless:
         self.sim = Simulator(
             SimConfig(enable_anim=enable_animation, log_data=enable_logging))
         
-        # Initialize PathfindingVisualizer if Pygame is available and debug overlay is enabled
-        self.pathfinding_visualizer = None
-        if self.render_mode == 'human' and enable_debug_overlay:
-            self.pathfinding_visualizer = PathfindingVisualizer()
-
         self.sim_renderer = NSimRenderer(
-            self.sim, render_mode, enable_debug_overlay, self.pathfinding_visualizer)
+            self.sim, render_mode, enable_debug_overlay)
         self.current_map_data = None
         self.clock = pygame.time.Clock()
 
@@ -198,12 +192,6 @@ class NPlayHeadless:
         # --- Cache Check ---
         if self.current_tick == self.last_rendered_tick:
             if self.render_mode == 'human' and self.cached_render_surface is not None: # If human mode, return surface directly
-                if self.pathfinding_visualizer and self.sim_renderer.debug_overlay_renderer:
-                     self.pathfinding_visualizer.update_params(
-                         self.sim_renderer.debug_overlay_renderer.adjust,
-                         self.sim_renderer.debug_overlay_renderer.tile_x_offset,
-                         self.sim_renderer.debug_overlay_renderer.tile_y_offset
-                     )
                 if debug_info is not None:
                     # This will redraw the game and the overlay if new debug_info is provided
                     surface = self.sim_renderer.draw(self.sim.frame <=1, debug_info)
@@ -223,12 +211,6 @@ class NPlayHeadless:
 
         # --- New Frame Rendering ---
         init = self.sim.frame <= 1
-        if self.pathfinding_visualizer and self.sim_renderer.debug_overlay_renderer: # Update params before drawing
-            self.pathfinding_visualizer.update_params(
-                self.sim_renderer.debug_overlay_renderer.adjust,
-                self.sim_renderer.debug_overlay_renderer.tile_x_offset,
-                self.sim_renderer.debug_overlay_renderer.tile_y_offset
-            )
         surface = self.sim_renderer.draw(init, debug_info)  # This is a Pygame Surface
 
         self.cached_render_surface = surface  # Always cache the raw surface for potential mode switch or human display

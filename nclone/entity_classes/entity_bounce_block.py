@@ -10,7 +10,6 @@ from ..utils.physics_utils import (
     calculate_clearance_directions
 )
 from ..utils.collision_utils import (
-    check_ninja_bounce_block_contact,
     find_entities_in_radius
 )
 from ..constants.physics_constants import *
@@ -146,20 +145,45 @@ class EntityBounceBlock(Entity):
     
     def _update_nearby_blocks_cache(self):
         """Update cache of nearby bounce blocks."""
-        self.nearby_bounce_blocks = find_entities_in_radius(
+        # Get all entities from entity_dic and convert to dictionary format
+        all_entities = []
+        for entity_list in self.sim.entity_dic.values():
+            for entity in entity_list:
+                if hasattr(entity, 'ENTITY_TYPE'):
+                    entity_dict = {
+                        'type': entity.ENTITY_TYPE,
+                        'x': entity.xpos,
+                        'y': entity.ypos,
+                        'entity_ref': entity  # Keep reference to original entity
+                    }
+                    all_entities.append(entity_dict)
+        
+        found_entity_dicts = find_entities_in_radius(
             (self.xpos, self.ypos),
             BOUNCE_BLOCK_CHAIN_DISTANCE,
-            [entity for entity in self.sim.entities if hasattr(entity, 'ENTITY_TYPE')],
+            all_entities,
             ENTITY_TYPE_BOUNCE_BLOCK
         )
+        
+        # Extract original entity references
+        self.nearby_bounce_blocks = [entity_dict['entity_ref'] for entity_dict in found_entity_dicts]
         # Remove self from the list
         self.nearby_bounce_blocks = [block for block in self.nearby_bounce_blocks 
                                    if block != self]
     
     def _update_clearance_cache(self):
         """Update clearance directions cache."""
-        level_entities = [entity for entity in self.sim.entities 
-                         if hasattr(entity, 'ENTITY_TYPE') and entity.active]
+        # Get all active entities from entity_dic and convert to dictionary format
+        level_entities = []
+        for entity_list in self.sim.entity_dic.values():
+            for entity in entity_list:
+                if hasattr(entity, 'ENTITY_TYPE') and entity.active:
+                    entity_dict = {
+                        'type': entity.ENTITY_TYPE,
+                        'x': entity.xpos,
+                        'y': entity.ypos
+                    }
+                    level_entities.append(entity_dict)
         self.clearance_directions = calculate_clearance_directions(
             (self.xpos, self.ypos), 
             level_entities

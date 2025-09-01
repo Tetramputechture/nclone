@@ -23,7 +23,8 @@ class BaseEnvironment(gymnasium.Env):
                  enable_animation: bool = False,
                  enable_logging: bool = False,
                  enable_debug_overlay: bool = False,
-                 seed: Optional[int] = None):
+                 seed: Optional[int] = None,
+                 custom_map_path: Optional[str] = None):
         """Initialize the environment."""
         super().__init__()
 
@@ -44,11 +45,11 @@ class BaseEnvironment(gymnasium.Env):
         # Initialize RNG
         self.rng = random.Random(seed)
 
+        # Store custom map path if provided
+        self.custom_map_path = custom_map_path
+
         # Track reward for the current episode
         self.current_ep_reward = 0
-        
-        # Placeholder for pathfinding data
-        self.pathfinding_data: Optional[Dict[str, Any]] = None
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
@@ -147,8 +148,6 @@ class BaseEnvironment(gymnasium.Env):
             return None
         
         info: Dict[str, Any] = {}
-        if self.pathfinding_data:
-            info['pathfinding'] = self.pathfinding_data
 
         # Add graph visualization payload if enabled
         if self._graph_debug_enabled:
@@ -435,10 +434,6 @@ class BaseEnvironment(gymnasium.Env):
         except Exception:
             # If door state extraction fails, use frame number as fallback
             return (getattr(self.nplay_headless.sim, 'frame', 0),)
-
-    def set_pathfinding_data(self, data: Optional[Dict[str, Any]]):
-        """Allows setting pathfinding data to be used by the visualizer via _debug_info."""
-        self.pathfinding_data = data
 
     def _load_map(self):
         """Loads the map."""

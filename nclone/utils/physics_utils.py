@@ -4,7 +4,7 @@ Contains reusable physics calculations to avoid code duplication.
 """
 
 import math
-from typing import Tuple, List, Optional, Dict, Any
+from typing import Tuple, List, Dict, Any
 from enum import Enum
 
 from ..constants.physics_constants import *

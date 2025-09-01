@@ -11,19 +11,13 @@ and strategic global pathfinding through multi-scale graph processing.
 """
 
 import numpy as np
-import logging
-import math
-from typing import Dict, List, Tuple, Optional, Any, NamedTuple
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from enum import IntEnum
 
 # Use shared constants from the simulator
 from ..constants.physics_constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
-from ..constants.physics_constants import (
-    BOUNCE_BLOCK_INTERACTION_RADIUS, BOUNCE_BLOCK_CHAIN_DISTANCE,
-    BOUNCE_BLOCK_SIZE, ENTITY_TYPE_BOUNCE_BLOCK
-)
-from .common import GraphData, NodeType, EdgeType, SUB_CELL_SIZE, SUB_GRID_WIDTH, SUB_GRID_HEIGHT, N_MAX_NODES, E_MAX_EDGES
+from .common import GraphData, EdgeType
 from .feature_extraction import FeatureExtractor
 from .edge_building import EdgeBuilder
 from .graph_construction import GraphConstructor

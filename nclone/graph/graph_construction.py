@@ -6,10 +6,10 @@ sub-cell graphs and managing entity sorting.
 """
 
 import numpy as np
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Tuple
 
 from .common import (
-    GraphData, NodeType, EdgeType, SUB_GRID_WIDTH, SUB_GRID_HEIGHT, 
+    GraphData, NodeType, SUB_GRID_WIDTH, SUB_GRID_HEIGHT, 
     N_MAX_NODES, E_MAX_EDGES
 )
 from .feature_extraction import FeatureExtractor
