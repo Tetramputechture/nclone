@@ -52,7 +52,6 @@ class EntityExitSwitch(Entity):
         - Updates parent door state
         - Manages collection logging
     """
-    ENTITY_TYPE = 4
     RADIUS = 6
 
     def __init__(self, type, sim, xcoord, ycoord, parent):

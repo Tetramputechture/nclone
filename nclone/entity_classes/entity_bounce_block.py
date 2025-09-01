@@ -74,7 +74,6 @@ class EntityBounceBlock(Entity):
         - Handles both physical and logical collision types
         - Supports position logging for debugging/replay
     """
-    ENTITY_TYPE = 17
     SEMI_SIDE = 9
     STIFFNESS = 0.02222222222222222
     DAMPENING = 0.98
@@ -189,20 +188,19 @@ class EntityBounceBlock(Entity):
         all_entities = []
         for entity_list in self.sim.entity_dic.values():
             for entity in entity_list:
-                if hasattr(entity, 'ENTITY_TYPE'):
-                    entity_dict = {
-                        'type': entity.ENTITY_TYPE,
-                        'x': entity.xpos,
-                        'y': entity.ypos,
-                        'entity_ref': entity  # Keep reference to original entity
-                    }
-                    all_entities.append(entity_dict)
+                entity_dict = {
+                    'type': entity.type,
+                    'x': entity.xpos,
+                    'y': entity.ypos,
+                    'entity_ref': entity  # Keep reference to original entity
+                }
+                all_entities.append(entity_dict)
         
         found_entity_dicts = find_entities_in_radius(
             (self.xpos, self.ypos),
             BOUNCE_BLOCK_CHAIN_DISTANCE,
             all_entities,
-            ENTITY_TYPE_BOUNCE_BLOCK
+            self.type
         )
         
         # Extract original entity references
@@ -217,9 +215,9 @@ class EntityBounceBlock(Entity):
         level_entities = []
         for entity_list in self.sim.entity_dic.values():
             for entity in entity_list:
-                if hasattr(entity, 'ENTITY_TYPE') and entity.active:
+                if entity.active:
                     entity_dict = {
-                        'type': entity.ENTITY_TYPE,
+                        'type': entity.type,
                         'x': entity.xpos,
                         'y': entity.ypos
                     }

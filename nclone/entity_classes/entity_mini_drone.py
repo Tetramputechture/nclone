@@ -48,7 +48,6 @@ class EntityMiniDrone(EntityDroneBase):
         - Maintains faster movement speed
         - Uses standard collision detection with reduced radius
     """
-    ENTITY_TYPE = 26
     MAX_COUNT_PER_LEVEL = 512
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):

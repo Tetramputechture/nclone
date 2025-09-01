@@ -8,22 +8,7 @@ from .map_generation.map_generator import generate_map
 from .sim_config import SimConfig
 import numpy as np
 from typing import List
-from .entity_classes.entity_toggle_mine import EntityToggleMine
-from .entity_classes.entity_gold import EntityGold
-from .entity_classes.entity_exit import EntityExit
-from .entity_classes.entity_exit_switch import EntityExitSwitch
-from .entity_classes.entity_door_regular import EntityDoorRegular
-from .entity_classes.entity_door_locked import EntityDoorLocked
-from .entity_classes.entity_door_trap import EntityDoorTrap
-from .entity_classes.entity_launch_pad import EntityLaunchPad
-from .entity_classes.entity_one_way_platform import EntityOneWayPlatform
-from .entity_classes.entity_drone_zap import EntityDroneZap
-from .entity_classes.entity_bounce_block import EntityBounceBlock
-from .entity_classes.entity_thwump import EntityThwump
-from .entity_classes.entity_boost_pad import EntityBoostPad
-from .entity_classes.entity_death_ball import EntityDeathBall
-from .entity_classes.entity_mini_drone import EntityMiniDrone
-from .entity_classes.entity_shove_thwump import EntityShoveThwump
+from .constants.entity_types import EntityType
 from . import render_utils
 
 class NPlayHeadless:
@@ -459,25 +444,25 @@ class NPlayHeadless:
         # Entity type to max count mapping based on our own constraints
         MAX_COUNTS = {
             # Support max amount of mines and gold; otherwise, constrain to 32
-            EntityToggleMine.ENTITY_TYPE: 128,
-            EntityGold.ENTITY_TYPE: 128,
-            EntityExit.ENTITY_TYPE: 1,
-            EntityDoorRegular.ENTITY_TYPE: 32,
-            EntityDoorLocked.ENTITY_TYPE: 32,
-            EntityDoorTrap.ENTITY_TYPE: 32,
-            EntityLaunchPad.ENTITY_TYPE: 32,
-            EntityOneWayPlatform.ENTITY_TYPE: 32,
-            EntityDroneZap.ENTITY_TYPE: 32,
-            EntityBounceBlock.ENTITY_TYPE: 32,
-            EntityThwump.ENTITY_TYPE: 32,
-            EntityBoostPad.ENTITY_TYPE: 32,
-            EntityDeathBall.ENTITY_TYPE: 32,
-            EntityMiniDrone.ENTITY_TYPE: 32,
-            EntityShoveThwump.ENTITY_TYPE: 32
+            EntityType.TOGGLE_MINE: 128,
+            EntityType.GOLD: 128,
+            EntityType.EXIT_DOOR: 1,
+            EntityType.REGULAR_DOOR: 32,
+            EntityType.LOCKED_DOOR: 32,
+            EntityType.TRAP_DOOR: 32,
+            EntityType.LAUNCH_PAD: 32,
+            EntityType.ONE_WAY: 32,
+            EntityType.DRONE_CLOCKWISE: 32,
+            EntityType.BOUNCE_BLOCK: 32,
+            EntityType.THWUMP: 32,
+            EntityType.BOOST_PAD: 32,
+            EntityType.DEATH_BALL: 32,
+            EntityType.DRONE_COUNTER_CLOCKWISE: 32,
+            EntityType.SHWUMP: 32
         }
 
-        exit_entity_type = EntityExit.ENTITY_TYPE
-        switch_entity_type = EntityExitSwitch.ENTITY_TYPE
+        exit_entity_type = EntityType.EXIT_DOOR
+        switch_entity_type = EntityType.EXIT_SWITCH
 
         entity_types = [
             exit_entity_type, switch_entity_type] if only_one_exit_and_switch else list(MAX_COUNTS.keys())

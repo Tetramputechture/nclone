@@ -8,8 +8,8 @@ All physics-related constants should be defined here to avoid duplication.
 NINJA_RADIUS = 10  # Ninja collision radius in pixels
 
 # Movement speeds
-MAX_HOR_SPEED = 9.0  # Maximum horizontal speed
-MAX_VER_SPEED = 12.0  # Maximum vertical speed (upward)
+MAX_HOR_SPEED = 9.0  # Maximum horizontal speed of the ninja (player)
+MAX_VER_SPEED = 12.0  # Maximum vertical speed (upward) of the ninja (player)
 MIN_HORIZONTAL_VELOCITY = 0.1  # Minimum horizontal velocity for calculations
 
 # Gravity and physics (using original N++ values)
@@ -46,22 +46,118 @@ BOUNCE_BLOCK_MIN_COMPRESSION = 0.1  # Minimum compression to register
 BOUNCE_BLOCK_MAX_COMPRESSION = 1.0  # Maximum compression amount
 BOUNCE_BLOCK_COMPRESSION_THRESHOLD = 0.5  # Threshold for state transitions
 
+# === MOVEMENT CLASSIFICATION CONSTANTS ===
+# Thresholds for movement detection
+MOVEMENT_THRESHOLD = 1e-6  # General movement detection threshold
+VERTICAL_MOVEMENT_THRESHOLD = 1e-6  # Vertical movement threshold
+WALK_SPEED_THRESHOLD = 0.5  # Speed threshold for walk classification
+JUMP_VELOCITY_THRESHOLD = 0.3  # Velocity threshold for jump detection
+WALL_CONTACT_DISTANCE = 15.0  # Distance for wall contact detection
+
+# Movement direction thresholds
+HORIZONTAL_MOVEMENT_THRESHOLD = 2.0  # Threshold for horizontal movement
+UPWARD_MOVEMENT_THRESHOLD = -5.0  # Threshold for upward movement
+DOWNWARD_MOVEMENT_THRESHOLD = 5.0  # Threshold for downward movement
+
+# Jump and trajectory thresholds
+JUMP_THRESHOLD_Y = -1.0  # Y threshold for jump requirement
+JUMP_THRESHOLD_VELOCITY = 0.5  # Velocity threshold for jump requirement
+VELOCITY_MARGIN_MULTIPLIER = 2  # Multiplier for velocity margin calculations
+
+# === ENERGY AND COST CONSTANTS ===
+# Base energy costs
+ENERGY_COST_BASE = 10.0  # Base energy cost for movements
+ENERGY_COST_JUMP_MULTIPLIER = 2.0  # Multiplier for jump energy costs
+JUMP_ENERGY_BASE = 1.5  # Base energy for jump movements
+FALL_ENERGY_BASE = 0.5  # Base energy for fall movements
+WALL_SLIDE_ENERGY_COST = 1.2  # Energy cost for wall sliding
+WALL_JUMP_ENERGY_BASE = 2.0  # Base energy for wall jumps
+LAUNCH_PAD_ENERGY_COST = 0.3  # Energy cost for launch pad usage
+
+# Energy calculation factors
+HEIGHT_FACTOR_DIVISOR = 50.0  # Divisor for height factor calculations
+HEIGHT_FACTOR_MAX = 2.0  # Maximum height factor
+DISTANCE_FACTOR_DIVISOR = 100.0  # Divisor for distance factor calculations
+DISTANCE_FACTOR_MAX = 1.5  # Maximum distance factor
+FALL_ENERGY_DISTANCE_DIVISOR = 100.0  # Divisor for fall energy distance
+FALL_ENERGY_DISTANCE_MAX = 0.5  # Maximum fall energy distance factor
+
 # === TRAJECTORY CALCULATION CONSTANTS ===
 # Time and distance
 DEFAULT_MINIMUM_TIME = 0.1  # Minimum time for trajectory calculations
+DEFAULT_TIME_ESTIMATE = 1.0  # Default time estimate for movements
 MAX_TRAJECTORY_TIME = 10.0  # Maximum time for trajectory calculations
 TRAJECTORY_POINT_INTERVAL = 0.1  # Time interval between trajectory points
+DEFAULT_TRAJECTORY_POINTS = 10  # Default number of trajectory points
+JUMP_TIME_FALLBACK = 5.0  # Fallback time for jump calculations
 
 # Success probability
 SUCCESS_PROBABILITY_MIN = 0.1  # Minimum success probability
 SUCCESS_PROBABILITY_MAX = 1.0  # Maximum success probability
 BASE_SUCCESS_PROBABILITY = 0.8  # Base success probability for normal movement
+SUCCESS_PROBABILITY_BASE = 0.8  # Base success probability (alias)
+SUCCESS_PROBABILITY_HIGH_BASE = 0.95  # High base success probability
+SUCCESS_PROBABILITY_DISTANCE_FACTOR = 0.001  # Distance factor for success probability
 
-# Distance penalties
+# Penalty calculations
 DISTANCE_PENALTY_FACTOR = 0.001  # Penalty per pixel of distance
+DISTANCE_PENALTY_DIVISOR = 100.0  # Divisor for distance penalties
+DISTANCE_PENALTY_MAX = 0.3  # Maximum distance penalty
 HEIGHT_PENALTY_FACTOR = 0.002  # Penalty per pixel of height difference
+HEIGHT_PENALTY_DIVISOR = 50.0  # Divisor for height penalties
+HEIGHT_PENALTY_MAX = 0.2  # Maximum height penalty
 VELOCITY_PENALTY_FACTOR = 0.05  # Penalty per unit of velocity
+VELOCITY_PENALTY_MAX = 0.2  # Maximum velocity penalty
 TIME_PENALTY_FACTOR = 0.02  # Penalty per unit of time
+TIME_PENALTY_DIVISOR = 30.0  # Divisor for time penalties
+TIME_PENALTY_MAX = 0.1  # Maximum time penalty
+
+# === MOVEMENT DIFFICULTY CONSTANTS ===
+# Difficulty calculations
+DEFAULT_DIFFICULTY = 1.0  # Default movement difficulty
+JUMP_DIFFICULTY_DIVISOR = 3.0  # Divisor for jump difficulty
+WALL_SLIDE_DIFFICULTY = 0.7  # Difficulty for wall sliding
+WALL_JUMP_DIFFICULTY = 0.8  # Difficulty for wall jumping
+LAUNCH_PAD_DIFFICULTY = 0.4  # Difficulty for launch pad usage
+
+# === WALL MOVEMENT CONSTANTS ===
+# Wall sliding
+WALL_SLIDE_SPEED_DIVISOR = 20.0  # Divisor for wall slide speed
+WALL_SLIDE_MIN_TIME = 0.5  # Minimum time for wall sliding
+
+# === LAUNCH PAD CONSTANTS ===
+# Launch pad mechanics
+LAUNCH_PAD_VELOCITY_MULTIPLIER = 1.5  # Velocity multiplier for launch pads
+LAUNCH_PAD_BOOST_FACTOR = 1.7  # Boost factor for launch pads
+LAUNCH_PAD_GRAVITY_DIVISOR = 0.1  # Gravity divisor for launch pad calculations
+LAUNCH_PAD_MIN_TIME = 1.0  # Minimum time for launch pad movement
+LAUNCH_PAD_DISTANCE_THRESHOLD = 100.0  # Distance threshold for launch pad detection
+
+# === WIN CONDITION CONSTANTS ===
+# Switch and door mechanics
+SWITCH_DOOR_MAX_DISTANCE = 500.0  # Maximum distance for switch-door pairing
+WIN_CONDITION_SWITCH_BONUS = 0.3  # Bonus for approaching switches
+WIN_CONDITION_EXIT_BONUS = 0.5  # Bonus for approaching exits
+WIN_CONDITION_DOOR_BONUS = 0.4  # Bonus for utilizing opened doors
+WIN_CONDITION_DOOR_PROXIMITY = 100.0  # Distance for door utilization bonus
+
+# === NINJA STATE CONSTANTS ===
+# Movement states from sim_mechanics_doc.md
+GROUND_STATES = {0, 1, 2}  # Immobile, Running, Ground Sliding
+AIR_STATES = {3, 4}  # Jumping, Falling
+WALL_STATES = {5}  # Wall Sliding
+INACTIVE_STATES = {6, 7, 8, 9}  # Inactive movement states
+
+# === PROXIMITY AND DETECTION CONSTANTS ===
+# Entity proximity
+PROXIMITY_THRESHOLD = 100.0  # General proximity threshold for entities
+HAZARD_PROXIMITY_THRESHOLD = 50.0  # Proximity threshold for hazard detection
+
+# === LEVEL GEOMETRY CONSTANTS ===
+# Level dimensions (duplicated from map constants for convenience)
+LEVEL_WIDTH_PX = 1056.0  # Level width in pixels
+LEVEL_HEIGHT_PX = 600.0  # Level height in pixels
+NORMALIZED_HEIGHT_DIVISOR = 600.0  # Height divisor for normalization
 
 # === GRAPH BUILDING CONSTANTS ===
 # Edge weights
@@ -73,9 +169,6 @@ PLATFORM_EDGE_WEIGHT = 0.9  # Weight for platform edges
 MIN_TRAVERSABLE_GAP = 18.0  # Minimum gap size for traversability
 MAX_JUMP_DISTANCE = 150.0  # Maximum jump distance for edge creation
 MAX_FALL_DISTANCE = 300.0  # Maximum fall distance for edge creation
-
-# === ENTITY TYPE CONSTANTS ===
-ENTITY_TYPE_BOUNCE_BLOCK = 17  # Entity type ID for bounce blocks
 
 # === ANIMATION CONSTANTS ===
 # Animation data file
@@ -157,7 +250,6 @@ FULL_MAP_WIDTH = 44  # MAP_TILE_WIDTH + 2 * MAP_PADDING
 FULL_MAP_HEIGHT = 25  # MAP_TILE_HEIGHT + 2 * MAP_PADDING
 FULL_MAP_WIDTH_PX = 1056  # FULL_MAP_WIDTH * TILE_PIXEL_SIZE
 FULL_MAP_HEIGHT_PX = 600  # FULL_MAP_HEIGHT * TILE_PIXEL_SIZE
-ENTITY_TYPE_NINJA = 0  # Entity type ID for ninja
 
 # === COLLISION DETECTION CONSTANTS ===
 COLLISION_EPSILON = 0.1  # Small value for collision detection precision

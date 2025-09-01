@@ -65,7 +65,6 @@ class EntityOneWayPlatform(Entity):
             * Separate collision zones
             * Direction-specific behavior
     """
-    ENTITY_TYPE = 11
     SEMI_SIDE = 12
     MAX_COUNT_PER_LEVEL = 512
 

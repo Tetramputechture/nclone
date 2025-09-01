@@ -44,7 +44,6 @@ class EntityDoorTrap(EntityDoorBase):
         - One-time state change on activation
         - Permanent state after closure
     """
-    ENTITY_TYPE = 8
     RADIUS = 5
     MAX_COUNT_PER_LEVEL = 256
 

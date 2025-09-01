@@ -8,6 +8,7 @@ from typing import Tuple, List, Dict, Any
 from enum import Enum
 
 from ..constants.physics_constants import *
+from ..constants.entity_types import EntityType
 
 
 class BounceBlockState(Enum):
@@ -202,7 +203,7 @@ def calculate_clearance_directions(
     
     # Check for obstacles in each direction
     for entity in level_entities:
-        if entity.get('type') == ENTITY_TYPE_BOUNCE_BLOCK:
+        if entity.type == EntityType.BOUNCE_BLOCK:
             continue  # Skip other bounce blocks for clearance calculation
         
         entity_x = entity.get('x', 0.0)

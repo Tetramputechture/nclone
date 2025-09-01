@@ -7,6 +7,7 @@ import math
 from typing import Tuple, List, Dict, Any, Optional
 
 from ..constants.physics_constants import *
+from ..constants.entity_types import EntityType
 
 
 def point_in_rectangle(
@@ -164,7 +165,7 @@ def find_bounce_blocks_near_trajectory(
     bounce_blocks = []
     
     for entity in entities:
-        if entity.get('type') != ENTITY_TYPE_BOUNCE_BLOCK:
+        if entity.get('type') != EntityType.BOUNCE_BLOCK:
             continue
         
         block_pos = (entity.get('x', 0.0), entity.get('y', 0.0))
@@ -308,14 +309,13 @@ def find_platform_bounce_blocks(
         List of bounce blocks that can serve as platforms
     """
     bounce_blocks = find_entities_in_radius(
-        ninja_pos, search_radius, entities, ENTITY_TYPE_BOUNCE_BLOCK
+        ninja_pos, search_radius, entities, EntityType.BOUNCE_BLOCK
     )
     
     platforms = []
-    ninja_x, ninja_y = ninja_pos
+    _, ninja_y = ninja_pos
     
     for block in bounce_blocks:
-        block_x = block.get('x', 0.0)
         block_y = block.get('y', 0.0)
         
         # Check if block is below ninja (can serve as platform)
