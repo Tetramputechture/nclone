@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 # Use shared constants from the simulator
-from ..constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
+from ..constants.physics_constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
 from .common import GraphData, NodeType, EdgeType, SUB_CELL_SIZE, SUB_GRID_WIDTH, SUB_GRID_HEIGHT, N_MAX_NODES, E_MAX_EDGES
 
 

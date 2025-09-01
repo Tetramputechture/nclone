@@ -18,9 +18,12 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 # Use shared constants from the simulator
-from ..constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
+from ..constants.physics_constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
+from ..constants.physics_constants import (
+    BOUNCE_BLOCK_INTERACTION_RADIUS, BOUNCE_BLOCK_CHAIN_DISTANCE,
+    BOUNCE_BLOCK_SIZE, ENTITY_TYPE_BOUNCE_BLOCK
+)
 from .common import GraphData, NodeType, EdgeType, SUB_CELL_SIZE
-from .base_builder import GraphBuilder
 
 
 class ResolutionLevel(IntEnum):
@@ -59,8 +62,33 @@ class HierarchicalGraphBuilder:
     
     def __init__(self):
         """Initialize hierarchical graph builder."""
-        # Base graph builder for sub-cell level
-        self.base_builder = GraphBuilder()
+        # Node feature dimensions (with bounce block support)
+        self.tile_type_dim = 38  # Number of tile types in N++
+        self.entity_type_dim = 30  # Extended for bounce block states
+        self.base_node_feature_dim = (
+            self.tile_type_dim +  # One-hot tile type (38)
+            4 +  # Solidity flags (solid, half, slope, hazard)
+            self.entity_type_dim +  # One-hot entity type (30)
+            8 +  # Entity state (active, position_x, position_y, custom_state, bounce_state, compression, velocity_x, velocity_y)
+            1 +  # Ninja position flag
+            # Physics state features (18 additional)
+            2 +  # Ninja velocity (vx, vy) normalized by MAX_HOR_SPEED
+            1 +  # Velocity magnitude
+            1 +  # Movement state (0-9 from sim_mechanics_doc.md)
+            3 +  # Contact flags (ground_contact, wall_contact, airborne)
+            2 +  # Momentum direction (normalized)
+            1 +  # Kinetic energy (0.5 * m * v²)
+            1 +  # Potential energy (relative to level bottom)
+            5 +  # Input buffers (jump_buffer, floor_buffer, wall_buffer, launch_pad_buffer, input_state)
+            2    # Physics capabilities (can_jump, can_wall_jump)
+        )  # Total: 38 + 4 + 30 + 8 + 1 + 18 = 99 features
+        
+        # Edge feature dimensions (with bounce block support)
+        self.base_edge_feature_dim = (
+            len(EdgeType) +  # One-hot edge type (8)
+            8 +  # Movement parameters (distance, angle, velocity_change, energy_cost, time_estimate, success_probability, difficulty, risk)
+            4    # Movement requirements (requires_jump, requires_wall_contact, bounce_boost_available, compression_state)
+        )  # Total: 8 + 8 + 4 = 20 features
         
         # Resolution parameters
         self.resolutions = {
@@ -82,17 +110,16 @@ class HierarchicalGraphBuilder:
                                    self.grid_dimensions[ResolutionLevel.REGION][1] + 50
         }
         
-        # Feature dimensions (inherit from base builder, adjust for higher levels)
+        # Feature dimensions for each level
         self.node_feature_dims = {
-            ResolutionLevel.SUB_CELL: self.base_builder.node_feature_dim,
-            ResolutionLevel.TILE: self.base_builder.node_feature_dim + 8,  # Add aggregation stats
-            ResolutionLevel.REGION: self.base_builder.node_feature_dim + 16  # Add more aggregation stats
+            ResolutionLevel.SUB_CELL: self.base_node_feature_dim,
+            ResolutionLevel.TILE: self.base_node_feature_dim + 8,  # Add aggregation stats
+            ResolutionLevel.REGION: self.base_node_feature_dim + 16  # Add more aggregation stats
         }
-        
         self.edge_feature_dims = {
-            ResolutionLevel.SUB_CELL: self.base_builder.edge_feature_dim,
-            ResolutionLevel.TILE: self.base_builder.edge_feature_dim + 4,  # Add multi-path info
-            ResolutionLevel.REGION: self.base_builder.edge_feature_dim + 8  # Add strategic info
+            ResolutionLevel.SUB_CELL: self.base_edge_feature_dim,
+            ResolutionLevel.TILE: self.base_edge_feature_dim + 4,  # Add multi-path info
+            ResolutionLevel.REGION: self.base_edge_feature_dim + 8  # Add strategic info
         }
     
     def _calculate_grid_dimensions(self) -> Dict[ResolutionLevel, Tuple[int, int]]:
@@ -142,8 +169,8 @@ class HierarchicalGraphBuilder:
             raise ValueError("entities must be a list")
         
         try:
-            # Build base sub-cell graph using existing builder
-            sub_cell_graph = self.base_builder.build_graph(
+            # Build base sub-cell graph with bounce block awareness
+            sub_cell_graph = self._build_sub_cell_graph(
                 level_data, ninja_position, entities, ninja_velocity, ninja_state
             )
         except Exception as e:
@@ -660,3 +687,28 @@ class HierarchicalGraphBuilder:
         cross_scale_edges['region_to_tile'] = cross_scale_edges['tile_to_region'][[1, 0]] if cross_scale_edges['tile_to_region'].size > 0 else np.zeros((2, 0))
         
         return cross_scale_edges
+    
+    def _build_sub_cell_graph(
+        self,
+        level_data: np.ndarray,
+        ninja_position: Tuple[float, float],
+        entities: List[Dict[str, Any]],
+        ninja_velocity: Tuple[float, float],
+        ninja_state: int
+    ) -> GraphData:
+        """
+        Build sub-cell graph with bounce block awareness.
+        
+        This is a temporary implementation that uses the base builder functionality
+        until we fully integrate bounce block features directly.
+        """
+        # Import here to avoid circular dependency during transition
+        from .base_builder import GraphBuilder
+        
+        # Create temporary builder instance
+        temp_builder = GraphBuilder()
+        
+        # Build graph using existing bounce block-aware functionality
+        return temp_builder.build_graph(
+            level_data, ninja_position, entities, ninja_velocity, ninja_state
+        )
