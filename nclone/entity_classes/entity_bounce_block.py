@@ -16,21 +16,63 @@ from ..constants.physics_constants import *
 
 
 class EntityBounceBlock(Entity):
-    """Bounce Block Entity (Type 17) with Enhanced Data Tracking
-    
-    This class extends the base bounce block entity to provide comprehensive
-    data tracking for RL integration without modifying the original physics behavior.
-    
-    Data Tracking Features:
-        - State tracking (NEUTRAL, COMPRESSING, COMPRESSED, EXTENDING)
-        - Compression amount and direction monitoring
-        - Energy storage calculations
-        - Clearance detection in all directions
-        - Multi-block interaction tracking
-        - Boost potential calculations
-    
-    Note: This implementation only adds data collection capabilities.
-    The original physics behavior remains unchanged.
+    """Bounce Block Entity (Type 17)
+
+    A dynamic physics-based block that acts as a spring-mass system, providing momentum-preserving
+    interactions with the ninja. Bounce blocks are crucial for advanced movement techniques and
+    can be used for creative routing strategies.
+
+    Physical Properties:
+        - Size: 9*9 pixel square (18*18 total)
+        - Collision Type: Square with spring physics
+        - Max Per Level: 512 instances
+        - Spring Constants:
+            * Stiffness: 0.0222 (determines spring force)
+            * Dampening: 0.98 (velocity decay per frame)
+            * Strength: 0.2 (force distribution ratio to ninja)
+
+    Behavior:
+        - Spring Physics:
+            * Maintains an origin point and current position
+            * Applies spring force based on displacement from origin
+            * Force proportional to distance (Hooke's Law)
+            * Velocity decays through dampening
+        - Collision Response:
+            * 80% of collision force applied to block
+            * 20% of collision force applied to ninja
+            * Supports both physical and logical (wall) collisions
+            * Additional 0.1 pixel buffer for wall interactions
+        - Block Boosting (Advanced Technique):
+            * Rapid successive jump key presses while block compresses back to origin
+            * Creates large velocity boosts in movement direction
+            * Can be performed on top (upward) or side (wall-jump style)
+            * Timing: Press/release jump frame-by-frame during compression phase
+            * Natural physics interaction - no special mechanics required
+        - Multiple Block Interactions:
+            * Each bounce block applies independent opposing force to ninja
+            * Forces accumulate additively when multiple blocks contact ninja
+            * Creates compound dampening effects and complex momentum transfer
+            * Natural result of physics system with overlapping collision zones
+
+    AI Strategy Notes:
+        - Use for momentum preservation in complex jumps
+        - Can create dynamic platforms for height gain
+        - Chain interactions for extended movement sequences
+        - Consider block's current state (compressed/extended) for timing
+        - Block Boosting Applications:
+            * Time rapid jump inputs during compression phase for speed boosts
+            * Use wall-side boosting for complex routing and height gain
+            * Combine with directional inputs for precise trajectory control
+        - Multiple Block Strategy:
+            * Account for additive dampening when navigating block clusters
+            * Use overlapping blocks for fine-tuned momentum control
+            * Consider compound forces when planning multi-block sequences
+
+    Technical Implementation:
+        - Updates position and velocity each frame
+        - Applies spring forces relative to origin point
+        - Handles both physical and logical collision types
+        - Supports position logging for debugging/replay
     """
     ENTITY_TYPE = 17
     SEMI_SIDE = 9
@@ -48,7 +90,7 @@ class EntityBounceBlock(Entity):
         self.xspeed, self.yspeed = 0, 0
         self.xorigin, self.yorigin = self.xpos, self.ypos
         
-        # Data tracking attributes (do not affect physics behavior)
+        # Data tracking attributes
         self.bounce_state = BounceBlockState.NEUTRAL
         self.compression_amount = 0.0  # 0.0 to 1.0 normalized compression
         self.previous_compression = 0.0  # Previous frame compression for state detection
@@ -62,8 +104,7 @@ class EntityBounceBlock(Entity):
         self._nearby_blocks_update_counter = 0
 
     def move(self):
-        """Original move method with added data tracking (no behavior changes)."""
-        # Original physics behavior
+        """Move the bounce block."""
         self.xspeed *= self.DAMPENING
         self.yspeed *= self.DAMPENING
         self.xpos += self.xspeed
@@ -79,11 +120,11 @@ class EntityBounceBlock(Entity):
         
         self.grid_move()
         
-        # Data tracking only (does not affect physics)
+        # Data tracking
         self._update_data_tracking()
 
     def physical_collision(self):
-        """Original physical collision with data tracking (no behavior changes)."""
+        """Physical collision with data tracking."""
         ninja = self.sim.ninja
         depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
                                             self.SEMI_SIDE + NINJA_RADIUS)
@@ -91,19 +132,18 @@ class EntityBounceBlock(Entity):
             depen_x, depen_y = depen[0]
             depen_len = depen[1][0]
             
-            # Original physics behavior
             self.xpos -= depen_x * depen_len * (1 - self.STRENGTH)
             self.ypos -= depen_y * depen_len * (1 - self.STRENGTH)
             self.xspeed -= depen_x * depen_len * (1 - self.STRENGTH)
             self.yspeed -= depen_y * depen_len * (1 - self.STRENGTH)
             
-            # Data tracking only (does not affect physics)
+            # Data tracking
             self.ninja_contact = True
             
             return (depen_x, depen_y), (depen_len * self.STRENGTH, depen[1][1])
 
     def logical_collision(self):
-        """Original logical collision (no changes)."""
+        """Logical collision."""
         ninja = self.sim.ninja
         depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
                                             self.SEMI_SIDE + NINJA_RADIUS + 0.1)
@@ -111,17 +151,17 @@ class EntityBounceBlock(Entity):
             return depen[0][0]
     
     def _update_data_tracking(self):
-        """Update all data tracking attributes (does not affect physics behavior)."""
+        """Update all data tracking attributes."""
         # Update compression amount based on displacement from origin
         current_pos = (self.xpos, self.ypos)
         original_pos = (self.xorigin, self.yorigin)
         self.previous_compression = self.compression_amount
         self.compression_amount = calculate_compression_amount(current_pos, original_pos)
         
-        # Update stored energy calculation
+        # Update stored energy
         self.stored_energy = calculate_stored_energy(self.compression_amount)
         
-        # Update bounce state based on compression changes and ninja contact
+        # Update bounce state
         self.bounce_state = determine_bounce_block_state(
             self.compression_amount, 
             self.previous_compression, 
@@ -190,7 +230,7 @@ class EntityBounceBlock(Entity):
         )
     
     def get_bounce_block_data(self) -> dict:
-        """Get comprehensive bounce block data for RL system."""
+        """Get bounce block data for RL system."""
         return {
             'position': (self.xpos, self.ypos),
             'original_position': (self.xorigin, self.yorigin),
