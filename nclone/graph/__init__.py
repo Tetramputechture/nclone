@@ -19,6 +19,7 @@ from .hierarchical_builder import (
     HierarchicalGraphData,
     ResolutionLevel
 )
+from .base_builder import GraphBuilder
 from .common import (
     GraphData,
     NodeType,
@@ -34,6 +35,7 @@ __all__ = [
     'HierarchicalGraphBuilder',
     'HierarchicalGraphData', 
     'ResolutionLevel',
+    'GraphBuilder',
     'GraphData',
     'NodeType',
     'EdgeType',

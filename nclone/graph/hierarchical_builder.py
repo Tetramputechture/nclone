@@ -18,8 +18,9 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 # Use shared constants from the simulator
-from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
+from ..constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
 from .common import GraphData, NodeType, EdgeType, SUB_CELL_SIZE
+from .base_builder import GraphBuilder
 
 
 class ResolutionLevel(IntEnum):
@@ -96,8 +97,8 @@ class HierarchicalGraphBuilder:
     
     def _calculate_grid_dimensions(self) -> Dict[ResolutionLevel, Tuple[int, int]]:
         """Calculate grid dimensions for each resolution level."""
-        level_pixel_width = MAP_TILE_WIDTH * TILE_PIXEL_SIZE  # 1008px
-        level_pixel_height = MAP_TILE_HEIGHT * TILE_PIXEL_SIZE  # 552px
+        level_pixel_width = FULL_MAP_WIDTH * TILE_PIXEL_SIZE  # 1056px
+        level_pixel_height = FULL_MAP_HEIGHT * TILE_PIXEL_SIZE  # 600px
         
         dimensions = {}
         for level, resolution in self.resolutions.items():
