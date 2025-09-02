@@ -35,7 +35,6 @@ class EntityDoorRegular(EntityDoorBase):
         - Updates state through collision and think cycles
         - Supports both physical and logical collision detection
     """
-    ENTITY_TYPE = 5
     RADIUS = 10
     MAX_COUNT_PER_LEVEL = 256
 

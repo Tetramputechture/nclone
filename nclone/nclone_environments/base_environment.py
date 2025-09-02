@@ -7,6 +7,7 @@ from typing import Tuple, Optional, Dict, Any
 import numpy as np
 
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
+from ..constants.entity_types import EntityType
 from ..graph.hierarchical_builder import HierarchicalGraphBuilder
 from ..graph.common import GraphData
 
@@ -23,7 +24,8 @@ class BaseEnvironment(gymnasium.Env):
                  enable_animation: bool = False,
                  enable_logging: bool = False,
                  enable_debug_overlay: bool = False,
-                 seed: Optional[int] = None):
+                 seed: Optional[int] = None,
+                 custom_map_path: Optional[str] = None):
         """Initialize the environment."""
         super().__init__()
 
@@ -44,11 +46,11 @@ class BaseEnvironment(gymnasium.Env):
         # Initialize RNG
         self.rng = random.Random(seed)
 
+        # Store custom map path if provided
+        self.custom_map_path = custom_map_path
+
         # Track reward for the current episode
         self.current_ep_reward = 0
-        
-        # Placeholder for pathfinding data
-        self.pathfinding_data: Optional[Dict[str, Any]] = None
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
@@ -147,8 +149,6 @@ class BaseEnvironment(gymnasium.Env):
             return None
         
         info: Dict[str, Any] = {}
-        if self.pathfinding_data:
-            info['pathfinding'] = self.pathfinding_data
 
         # Add graph visualization payload if enabled
         if self._graph_debug_enabled:
@@ -213,26 +213,37 @@ class BaseEnvironment(gymnasium.Env):
         """
         entities = []
         
-        # Exit switch
+        # Exit doors and switches using direct entity relationships
         try:
-            sw_x, sw_y = self.nplay_headless.exit_switch_position()
-            entities.append({
-                'type': 'exit_switch',
-                'x': sw_x,
-                'y': sw_y,
-                'active': self.nplay_headless.exit_switch_activated(),
-                'state': 1.0 if self.nplay_headless.exit_switch_activated() else 0.0,
-            })
-            
-            # Exit door
-            door_x, door_y = self.nplay_headless.exit_door_position()
-            entities.append({
-                'type': 'exit_door',
-                'x': door_x,
-                'y': door_y,
-                'active': True,
-                'state': 0.0,
-            })
+            # Get exit switches directly from entity_dic to preserve parent relationships
+            if hasattr(self.nplay_headless.sim, 'entity_dic'):
+                exit_switches = self.nplay_headless.sim.entity_dic.get(EntityType.EXIT_SWITCH, [])
+                
+                for i, exit_switch in enumerate(exit_switches):
+                    # Add exit switch entity
+                    entities.append({
+                        'type': 'exit_switch',
+                        'x': exit_switch.xpos,
+                        'y': exit_switch.ypos,
+                        'active': exit_switch.active,
+                        'state': 1.0 if exit_switch.active else 0.0,
+                        'entity_id': i,
+                        'entity_ref': exit_switch
+                    })
+                    
+                    # Add corresponding exit door using parent relationship
+                    if hasattr(exit_switch, 'parent') and exit_switch.parent:
+                        exit_door = exit_switch.parent
+                        entities.append({
+                            'type': 'exit_door',
+                            'x': exit_door.xpos,
+                            'y': exit_door.ypos,
+                            'active': getattr(exit_door, 'switch_hit', False),
+                            'state': 1.0 if getattr(exit_door, 'switch_hit', False) else 0.0,
+                            'entity_id': i,  # Same ID to indicate pairing
+                            'switch_entity_id': i,  # Reference to associated switch
+                            'entity_ref': exit_door
+                        })
             
             # Regular doors (proximity activated)
             for d in self.nplay_headless.regular_doors():
@@ -252,76 +263,52 @@ class BaseEnvironment(gymnasium.Env):
                     'state': 0.0
                 })
 
-            # Locked doors (have switch positions)
-            for d in self.nplay_headless.locked_doors():
-                segment = getattr(d, 'segment', None)
+            # Locked doors using direct entity access
+            for i, locked_door in enumerate(self.nplay_headless.locked_doors()):
+                segment = getattr(locked_door, 'segment', None)
                 if segment:
                     door_x = (segment.x1 + segment.x2) * 0.5
                     door_y = (segment.y1 + segment.y2) * 0.5
                 else:
                     door_x, door_y = 0.0, 0.0
                 
-                # Add switch entity at switch location
+                # Add unified locked door entity with both switch and door info
                 entities.append({
-                    'type': 6,
-                    'x': d.xpos,  # Switch position
-                    'y': d.ypos,  # Switch position
-                    'active': getattr(d, 'active', True),
-                    'sw_xpos': getattr(d, 'sw_xpos', None),
-                    'sw_ypos': getattr(d, 'sw_ypos', None),
-                    'door_x': door_x,
-                    'door_y': door_y,
-                    'radius': getattr(d, 'RADIUS', 5.0),
-                    'closed': getattr(d, 'closed', True),
-                    'state': 0.0
-                })
-                
-                # Add separate door segment entity at door location
-                entities.append({
-                    'type': 'door_segment_locked',
-                    'x': door_x,
-                    'y': door_y,
-                    'active': getattr(d, 'active', True),
-                    'closed': getattr(d, 'closed', True),
-                    'parent_switch_x': d.xpos,
-                    'parent_switch_y': d.ypos,
-                    'state': 0.0
+                    'type': EntityType.LOCKED_DOOR,
+                    'x': locked_door.xpos,  # Switch position (where entity is positioned)
+                    'y': locked_door.ypos,  # Switch position
+                    'door_x': door_x,       # Door segment position
+                    'door_y': door_y,       # Door segment position
+                    'active': getattr(locked_door, 'active', True),
+                    'closed': getattr(locked_door, 'closed', True),
+                    'radius': getattr(locked_door, 'RADIUS', 5.0),
+                    'state': 0.0 if getattr(locked_door, 'active', True) else 1.0,
+                    'entity_id': f"locked_{i}",
+                    'entity_ref': locked_door
                 })
 
-            # Trap doors (close when switch is hit)
-            for d in self.nplay_headless.trap_doors():
-                segment = getattr(d, 'segment', None)
+            # Trap doors using direct entity access
+            for i, trap_door in enumerate(self.nplay_headless.trap_doors()):
+                segment = getattr(trap_door, 'segment', None)
                 if segment:
                     door_x = (segment.x1 + segment.x2) * 0.5
                     door_y = (segment.y1 + segment.y2) * 0.5
                 else:
                     door_x, door_y = 0.0, 0.0
                 
-                # Add switch entity at switch location
+                # Add unified trap door entity with both switch and door info
                 entities.append({
-                    'type': 8,
-                    'x': d.xpos,  # Switch position
-                    'y': d.ypos,  # Switch position
-                    'active': getattr(d, 'active', True),
-                    'sw_xpos': getattr(d, 'sw_xpos', None),
-                    'sw_ypos': getattr(d, 'sw_ypos', None),
-                    'door_x': door_x,
-                    'door_y': door_y,
-                    'radius': getattr(d, 'RADIUS', 5.0),
-                    'closed': getattr(d, 'closed', False),
-                    'state': 0.0
-                })
-                
-                # Add separate door segment entity at door location
-                entities.append({
-                    'type': 'door_segment_trap',
-                    'x': door_x,
-                    'y': door_y,
-                    'active': getattr(d, 'active', True),
-                    'closed': getattr(d, 'closed', False),
-                    'parent_switch_x': d.xpos,
-                    'parent_switch_y': d.ypos,
-                    'state': 0.0
+                    'type': EntityType.TRAP_DOOR,
+                    'x': trap_door.xpos,  # Switch position (where entity is positioned)
+                    'y': trap_door.ypos,  # Switch position
+                    'door_x': door_x,     # Door segment position
+                    'door_y': door_y,     # Door segment position
+                    'active': getattr(trap_door, 'active', True),
+                    'closed': getattr(trap_door, 'closed', False),  # Trap doors start open
+                    'radius': getattr(trap_door, 'RADIUS', 5.0),
+                    'state': 0.0 if getattr(trap_door, 'active', True) else 1.0,
+                    'entity_id': f"trap_{i}",
+                    'entity_ref': trap_door
                 })
 
             # One-way platforms
@@ -435,10 +422,6 @@ class BaseEnvironment(gymnasium.Env):
         except Exception:
             # If door state extraction fails, use frame number as fallback
             return (getattr(self.nplay_headless.sim, 'frame', 0),)
-
-    def set_pathfinding_data(self, data: Optional[Dict[str, Any]]):
-        """Allows setting pathfinding data to be used by the visualizer via _debug_info."""
-        self.pathfinding_data = data
 
     def _load_map(self):
         """Loads the map."""

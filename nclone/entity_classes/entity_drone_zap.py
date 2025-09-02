@@ -48,7 +48,6 @@ class EntityDroneZap(EntityDroneBase):
         - Simple and efficient movement calculations
         - Maintains grid-based positioning system
     """
-    ENTITY_TYPE = 14
     MAX_COUNT_PER_LEVEL = 256
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):

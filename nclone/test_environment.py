@@ -1,16 +1,11 @@
 import pygame
-from .nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
+from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 import argparse
 import time
 import cProfile
 import pstats
-import numpy as np # Added for tile_map conversion
 
 # Pathfinding imports
-from .pathfinding.surface_parser import SurfaceParser
-from .pathfinding.navigation_graph import NavigationGraphBuilder, JumpCalculator
-from .pathfinding.astar_pathfinder import PlatformerAStar
-from .pathfinding.utils import CollisionChecker # Added CollisionChecker import
 
 # Initialize pygame
 pygame.init()
@@ -22,6 +17,7 @@ parser.add_argument('--log-frametimes', action='store_true', help='Enable framet
 parser.add_argument('--headless', action='store_true', help='Run in headless mode (no GUI).')
 parser.add_argument('--profile-frames', type=int, default=None, help='Run for a specific number of frames and then exit (for profiling).')
 parser.add_argument('--pathfind', action='store_true', help='Enable pathfinding test and visualization.') # Added pathfind argument
+parser.add_argument('--map', type=str, default=None, help='Custom map file path to load (overrides default map behavior).')
 args = parser.parse_args()
 
 print(f'Headless: {args.headless}')
@@ -29,7 +25,8 @@ print(f'Headless: {args.headless}')
 render_mode = 'rgb_array' if args.headless else 'human'
 debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
 env = BasicLevelNoGold(render_mode=render_mode,
-                       enable_frame_stack=False, enable_debug_overlay=debug_overlay_enabled, eval_mode=False, seed=42)
+                       enable_frame_stack=False, enable_debug_overlay=debug_overlay_enabled, eval_mode=False, seed=42,
+                       custom_map_path=args.map)
 env.reset()
 
 graph_debug_enabled = False

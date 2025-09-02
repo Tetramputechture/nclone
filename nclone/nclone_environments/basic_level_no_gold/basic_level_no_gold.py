@@ -36,7 +36,7 @@ class BasicLevelNoGold(BaseEnvironment):
     _package_root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     
     OFFICIAL_MAP_DATA_PATH = os.path.join(_package_root_dir, "maps", "official") + os.sep
-    EVAL_MODE_MAP_DATA_PATH = os.path.join(_package_root_dir, "maps", "eval") + os.sep
+    EVAL_MODE_MAP_DATA_PATH = os.path.join(_package_root_dir,  "maps", "eval") + os.sep
     RANDOM_MAP_CHANCE = 0.5
     LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH = True
 
@@ -53,13 +53,15 @@ class BasicLevelNoGold(BaseEnvironment):
                  use_rich_game_state: Optional[bool] = None,  # Deprecated: use observation_profile
                  enable_pbrs: bool = True,
                  pbrs_weights: Optional[dict] = None,
-                 pbrs_gamma: float = 0.99):
+                 pbrs_gamma: float = 0.99,
+                 custom_map_path: Optional[str] = None):
         """Initialize the environment."""
         super().__init__(render_mode=render_mode,
                          enable_animation=enable_animation,
                          enable_logging=enable_logging,
                          enable_debug_overlay=enable_debug_overlay,
-                         seed=seed)
+                         seed=seed,
+                         custom_map_path=custom_map_path)
 
         # Initialize observation processor
         self.observation_processor = ObservationProcessor(
@@ -206,7 +208,18 @@ class BasicLevelNoGold(BaseEnvironment):
         }
 
     def _load_map(self):
-        """Loads the official map corresponding to the current map cycle index."""
+        """Loads the map specified by custom_map_path or follows original logic."""
+        # If a custom map path is provided, use that instead of default behavior
+        if self.custom_map_path:
+            # Extract map name from path for display purposes
+            map_name = os.path.basename(self.custom_map_path)
+            if not map_name:  # Handle trailing slash case
+                map_name = os.path.basename(os.path.dirname(self.custom_map_path))
+            self.current_map_name = map_name
+            self.random_map_type = None
+            self.nplay_headless.load_map(self.custom_map_path)
+            return
+
         # If we are in eval mode, we want to load the next map in the cycle
         if self.eval_mode:
             # Eval mode will load a random JUMP_REQUIRED or MAZE map
