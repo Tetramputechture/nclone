@@ -2,6 +2,7 @@
 from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
+from ..constants.physics_constants import ONE_WAY_PLATFORM_SEMI_SIDE
 
 
 class EntityOneWayPlatform(Entity):
@@ -65,7 +66,7 @@ class EntityOneWayPlatform(Entity):
             * Separate collision zones
             * Direction-specific behavior
     """
-    SEMI_SIDE = 12
+    SEMI_SIDE = ONE_WAY_PLATFORM_SEMI_SIDE
     MAX_COUNT_PER_LEVEL = 512
 
     def __init__(self, type, sim, xcoord, ycoord, orientation):

@@ -2,6 +2,7 @@ import math
 
 from ..entities import Entity
 from ..physics import *
+from ..constants.physics_constants import DRONE_RADIUS, DRONE_GRID_SIZE
 
 
 class EntityDroneBase(Entity):
@@ -61,8 +62,8 @@ class EntityDroneBase(Entity):
     Note: This is an abstract base class and should not be instantiated directly.
     Use one of the derived drone types instead.
     """
-    RADIUS = 7.5
-    GRID_WIDTH = 24
+    RADIUS = DRONE_RADIUS
+    GRID_WIDTH = DRONE_GRID_SIZE
     DIR_TO_VEC = {0: [1, 0], 1: [0, 1], 2: [-1, 0], 3: [0, -1]}
     # Dictionary to choose the next direction from the patrolling mode of the drone.
     # Patrolling modes : {0:follow wall CW, 1:follow wall CCW, 2:wander CW, 3:wander CCW}

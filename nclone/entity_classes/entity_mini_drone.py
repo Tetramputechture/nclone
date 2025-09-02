@@ -2,6 +2,7 @@
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 from .entity_drone_base import EntityDroneBase
+from ..constants.physics_constants import MINI_DRONE_RADIUS, MINI_DRONE_GRID_SIZE
 
 
 class EntityMiniDrone(EntityDroneBase):
@@ -48,13 +49,13 @@ class EntityMiniDrone(EntityDroneBase):
         - Maintains faster movement speed
         - Uses standard collision detection with reduced radius
     """
+    RADIUS = MINI_DRONE_RADIUS
+    GRID_WIDTH = MINI_DRONE_GRID_SIZE
     MAX_COUNT_PER_LEVEL = 512
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):
         super().__init__(type, sim, xcoord, ycoord, orientation, mode, 1.3)
         self.is_logical_collidable = True
-        self.RADIUS = 4
-        self.GRID_WIDTH = 12
 
     def logical_collision(self):
         """Kill the ninja if it touches the mini drone."""

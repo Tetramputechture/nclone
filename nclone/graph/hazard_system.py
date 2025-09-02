@@ -13,7 +13,18 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from ..constants.entity_types import EntityType
-from ..constants.physics_constants import NINJA_RADIUS, TILE_PIXEL_SIZE
+from ..constants.physics_constants import (
+    NINJA_RADIUS, TILE_PIXEL_SIZE, DRONE_RADIUS, MINI_DRONE_RADIUS, 
+    DRONE_GRID_SIZE, MINI_DRONE_GRID_SIZE, DRONE_LAUNCH_SPEED,
+    HAZARD_UPDATE_RADIUS, THWUMP_ACTIVATION_RANGE, SHOVE_THWUMP_CORE_RADIUS,
+    ONE_WAY_PLATFORM_THICKNESS, DRONE_PREDICTION_TIME,
+    TOGGLE_MINE_RADIUS_TOGGLED, TOGGLE_MINE_RADIUS_UNTOGGLED, TOGGLE_MINE_RADIUS_TOGGLING,
+    THWUMP_DANGER_RADIUS, SHOVE_THWUMP_DANGER_RADIUS, ONE_WAY_PLATFORM_SIZE,
+    # Entity constants
+    THWUMP_SEMI_SIDE, THWUMP_FORWARD_SPEED, THWUMP_BACKWARD_SPEED,
+    SHOVE_THWUMP_SEMI_SIDE, SHOVE_THWUMP_PROJECTILE_RADIUS,
+    ONE_WAY_PLATFORM_SEMI_SIDE, TOGGLE_MINE_RADII, BOUNCE_BLOCK_SEMI_SIDE
+)
 from ..utils.physics_utils import calculate_clearance_directions
 
 
@@ -76,15 +87,16 @@ class HazardClassificationSystem:
     within a radius of the ninja for efficient real-time path updates.
     """
     
-    # Constants for hazard detection
-    HAZARD_UPDATE_RADIUS = 150.0  # Pixels from ninja position
-    THWUMP_ACTIVATION_RANGE = 38.0  # Line-of-sight activation range
-    SHOVE_THWUMP_CORE_RADIUS = 8.0  # Deadly core radius
-    ONE_WAY_PLATFORM_THICKNESS = 12.0  # Platform collision thickness
-    DRONE_PREDICTION_TIME = 60.0  # Frames to predict drone movement
+    # Constants for hazard detection (imported from physics_constants)
+    # HAZARD_UPDATE_RADIUS, THWUMP_ACTIVATION_RANGE, SHOVE_THWUMP_CORE_RADIUS,
+    # ONE_WAY_PLATFORM_THICKNESS, DRONE_PREDICTION_TIME are imported
     
-    # Toggle mine radii by state (from entity_toggle_mine.py)
-    TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
+    # Toggle mine radii by state (using imported constants)
+    TOGGLE_MINE_RADII = {
+        0: TOGGLE_MINE_RADIUS_TOGGLED,    # toggled
+        1: TOGGLE_MINE_RADIUS_UNTOGGLED,  # untoggled  
+        2: TOGGLE_MINE_RADIUS_TOGGLING    # toggling
+    }
     
     def __init__(self, precise_collision: Optional['PreciseTileCollision'] = None):
         """Initialize hazard classification system."""
@@ -255,7 +267,7 @@ class HazardClassificationSystem:
         
         # Determine if toggle mine is deadly and get correct radius
         is_deadly = False
-        danger_radius = 4.0  # Default to toggled state radius
+        danger_radius = TOGGLE_MINE_RADIUS_TOGGLED  # Default to toggled state radius
         
         if entity_state is not None:
             # New state-based logic:
@@ -263,11 +275,11 @@ class HazardClassificationSystem:
             # 1: Untoggled (safe) - can be touched to toggle
             # 2: Toggling (safe) - in process of being toggled
             is_deadly = (entity_state == 0)
-            danger_radius = self.TOGGLE_MINE_RADII.get(entity_state, 4.0)
+            danger_radius = self.TOGGLE_MINE_RADII.get(entity_state, TOGGLE_MINE_RADIUS_TOGGLED)
         elif entity_active is not None:
             # Old active-based logic for backward compatibility
             is_deadly = entity_active
-            danger_radius = 4.0 if entity_active else 3.5  # Assume toggled if active, untoggled if not
+            danger_radius = TOGGLE_MINE_RADIUS_TOGGLED if entity_active else TOGGLE_MINE_RADIUS_UNTOGGLED
         
         if is_deadly:
             return self._create_static_blocking_hazard(
@@ -292,7 +304,7 @@ class HazardClassificationSystem:
             entity_id=entity_id,
             entity_type=EntityType.TOGGLE_MINE_TOGGLED,
             position=(entity_x, entity_y),
-            danger_radius=self.TOGGLE_MINE_RADII[0],  # Toggled state radius (4.0)
+            danger_radius=TOGGLE_MINE_RADIUS_TOGGLED,  # Toggled state radius
             block_area_size=3  # 3x3 blocking area
         )
     
@@ -328,7 +340,7 @@ class HazardClassificationSystem:
                 state=HazardState.INACTIVE,
                 blocked_directions=set(),
                 danger_radius=0.0,
-                activation_range=38.0,  # 2 * (9 + 10) from entity class
+                activation_range=THWUMP_ACTIVATION_RANGE,  # 2 * (9 + 10) from entity class
                 blocked_cells=blocked_cells,
                 velocity=(0.0, 0.0),
                 predicted_positions=[],
@@ -343,7 +355,7 @@ class HazardClassificationSystem:
                 entity_id=entity_id,
                 entity_type=EntityType.THWUMP,
                 position=(entity_x, entity_y),
-                danger_radius=18.0,  # 1.5 tiles
+                danger_radius=THWUMP_DANGER_RADIUS,  # 1.5 tiles
                 block_area_size=3,  # 3x3 blocking area
                 state=HazardState.RETREATING
             )
@@ -402,7 +414,7 @@ class HazardClassificationSystem:
                 entity_id=entity_id,
                 entity_type=EntityType.SHWUMP,
                 position=(entity_x, entity_y),
-                danger_radius=24.0,  # Outer size from entity class
+                danger_radius=SHOVE_THWUMP_DANGER_RADIUS,  # Outer size from entity class
                 block_area_size=3,  # 3x3 blocking area
                 state=HazardState.RETREATING
             )
@@ -427,7 +439,7 @@ class HazardClassificationSystem:
                 entity_id=entity_id,
                 entity_type=EntityType.SHWUMP,
                 position=(entity_x, entity_y),
-                danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
+                danger_radius=SHOVE_THWUMP_CORE_RADIUS,
                 block_area_size=1,  # Core only
                 state=HazardState.ACTIVE
             )
@@ -441,8 +453,8 @@ class HazardClassificationSystem:
                 entity_id=entity_id,
                 entity_type=EntityType.SHWUMP,
                 position=(entity_x, entity_y),
-                velocity=(xdir * 4.0, ydir * 4.0),  # Launch speed from entity class
-                danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
+                velocity=(xdir * DRONE_LAUNCH_SPEED, ydir * DRONE_LAUNCH_SPEED),  # Launch speed from entity class
+                danger_radius=SHOVE_THWUMP_CORE_RADIUS,
                 predicted_positions=predicted_positions,
                 state=HazardState.LAUNCHING,
                 charge_direction=(xdir, ydir)
@@ -457,7 +469,7 @@ class HazardClassificationSystem:
         One-way platforms:
         - Can have continuous coordinates (not grid-aligned)
         - Block movement from specific direction based on orientation
-        - Size: 12*12 pixel square (24*24 total)
+        - Size: 12*12 pixel square (ONE_WAY_PLATFORM_SIZE total)
         - Complex collision detection based on approach angle and velocity
         """
         entity_id = entity.get('id', -1)
@@ -472,10 +484,10 @@ class HazardClassificationSystem:
         blocked_direction = orientation
         blocked_directions = {blocked_direction}
         
-        # Platform is 24x24 pixels (SEMI_SIDE = 12)
-        platform_semi_side = 12.0
+        # Platform is 24x24 pixels (SEMI_SIDE = ONE_WAY_PLATFORM_SEMI_SIDE)
+        platform_semi_side = ONE_WAY_PLATFORM_SEMI_SIDE
         blocked_cells = self._create_blocked_cells_area(
-            entity_x, entity_y, int(platform_semi_side * 2)  # 24 pixels
+            entity_x, entity_y, int(platform_semi_side * 2)  # ONE_WAY_PLATFORM_SIZE pixels
         )
         
         return HazardInfo(
@@ -485,7 +497,7 @@ class HazardClassificationSystem:
             position=(entity_x, entity_y),
             state=HazardState.ACTIVE,
             blocked_directions=blocked_directions,
-            danger_radius=platform_semi_side * 2,  # 24 pixels
+            danger_radius=ONE_WAY_PLATFORM_SEMI_SIDE * 2,  # ONE_WAY_PLATFORM_SIZE pixels
             activation_range=0.0,
             blocked_cells=blocked_cells,
             velocity=(0.0, 0.0),
@@ -511,12 +523,12 @@ class HazardClassificationSystem:
         
         # Determine drone properties based on type
         if entity_type == EntityType.MINI_DRONE:
-            danger_radius = 4.0  # Mini drone radius
-            grid_width = 12  # Mini drone grid
+            danger_radius = MINI_DRONE_RADIUS  # Mini drone radius
+            grid_width = MINI_DRONE_GRID_SIZE  # Mini drone grid
             speed = entity.get('speed', 1.3)  # Mini drone speed
         else:
-            danger_radius = 12.0  # Regular drone radius (updated to match test expectation)
-            grid_width = 24  # Regular drone grid
+            danger_radius = DRONE_RADIUS  # Regular drone radius
+            grid_width = DRONE_GRID_SIZE  # Regular drone grid
             speed = entity.get('speed', 8/7)  # Regular drone speed
         
         # Predict drone movement using comprehensive patrol logic
@@ -591,7 +603,7 @@ class HazardClassificationSystem:
         block_y = bounce_block.get('y', 0.0)
         
         # Bounce block size: 9*9 pixel square
-        bounce_block_semi_side = 9.0 / 2  # 4.5 pixels (half the side length)
+        bounce_block_semi_side = BOUNCE_BLOCK_SEMI_SIDE  # 4.5 pixels (half the side length)
         bounce_block_radius = bounce_block_semi_side * math.sqrt(2)  # Diagonal radius
         
         # Check if bounce block intersects with the path
@@ -826,7 +838,7 @@ class HazardClassificationSystem:
             direction: Current direction (0=right, 1=down, 2=left, 3=up)
             mode: Patrol mode (0-3)
             speed: Movement speed
-            grid_width: Grid cell size (24 for regular, 12 for mini)
+            grid_width: Grid cell size (DRONE_GRID_SIZE for regular, MINI_DRONE_GRID_SIZE for mini)
             prediction_time: Time to predict (frames)
             entity: Full entity data for collision checking
             
@@ -870,7 +882,7 @@ class HazardClassificationSystem:
                     test_dir = (current_dir + dir_lists[mode][i]) % 4
                     if self._can_drone_move_direction(
                         current_x, current_y, test_dir, grid_width, 
-                        entity.get('RADIUS', 7.5 if grid_width == 24 else 4.0)
+                        entity.get('RADIUS', DRONE_RADIUS if grid_width == DRONE_GRID_SIZE else MINI_DRONE_RADIUS)
                     ):
                         new_dir = test_dir
                         break
@@ -962,7 +974,7 @@ class HazardClassificationSystem:
         current_x, current_y = start_x, start_y
         
         if state == 2:  # Launching
-            launch_speed = 4.0  # From entity class
+            launch_speed = DRONE_LAUNCH_SPEED  # From entity class
             
             # Predict movement until wall collision (simplified)
             for frame in range(60):  # Predict up to 60 frames
