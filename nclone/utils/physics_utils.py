@@ -212,17 +212,21 @@ def calculate_clearance_directions(
         entity_y = entity.get('y', 0.0) if isinstance(entity, dict) else getattr(entity, 'y', 0.0)
         
         # Calculate distances in each direction
-        if abs(entity_y - block_y) < BOUNCE_BLOCK_SIZE:  # Same horizontal level
-            if entity_x > block_x:  # Right
-                clearances['right'] = min(clearances['right'], entity_x - block_x - BOUNCE_BLOCK_SIZE)
-            elif entity_x < block_x:  # Left
-                clearances['left'] = min(clearances['left'], block_x - entity_x - BOUNCE_BLOCK_SIZE)
-        
-        if abs(entity_x - block_x) < BOUNCE_BLOCK_SIZE:  # Same vertical level
-            if entity_y > block_y:  # Down
-                clearances['down'] = min(clearances['down'], entity_y - block_y - BOUNCE_BLOCK_SIZE)
-            elif entity_y < block_y:  # Up
-                clearances['up'] = min(clearances['up'], block_y - entity_y - BOUNCE_BLOCK_SIZE)
+        # Check horizontal clearance (left/right)
+        if entity_x > block_x:  # Right
+            distance = entity_x - block_x - BOUNCE_BLOCK_SIZE / 2
+            clearances['right'] = min(clearances['right'], distance)
+        elif entity_x < block_x:  # Left
+            distance = block_x - entity_x - BOUNCE_BLOCK_SIZE / 2
+            clearances['left'] = min(clearances['left'], distance)
+
+        # Check vertical clearance (up/down)
+        if entity_y > block_y:  # Down
+            distance = entity_y - block_y - BOUNCE_BLOCK_SIZE / 2
+            clearances['down'] = min(clearances['down'], distance)
+        elif entity_y < block_y:  # Up
+            distance = block_y - entity_y - BOUNCE_BLOCK_SIZE / 2
+            clearances['up'] = min(clearances['up'], distance)
     
     # Ensure non-negative clearances
     for direction in clearances:

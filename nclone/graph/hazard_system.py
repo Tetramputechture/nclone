@@ -620,20 +620,20 @@ class HazardClassificationSystem:
         
         # Check displacement options perpendicular to path direction
         if abs(path_dx) > abs(path_dy):  # Horizontal path
-            # For horizontal path, check horizontal displacement options
-            left_clearance = clearance_dirs.get('left', 0.0)
-            right_clearance = clearance_dirs.get('right', 0.0)
-            
-            # If bounce block can't be displaced horizontally enough, it blocks
-            if left_clearance < required_clearance and right_clearance < required_clearance:
-                return True
-        else:  # Vertical path
-            # For vertical path, check vertical displacement options
+            # For horizontal path, ninja needs vertical clearance to go around
             up_clearance = clearance_dirs.get('up', 0.0)
             down_clearance = clearance_dirs.get('down', 0.0)
             
             # If bounce block can't be displaced vertically enough, it blocks
             if up_clearance < required_clearance and down_clearance < required_clearance:
+                return True
+        else:  # Vertical path
+            # For vertical path, ninja needs horizontal clearance to go around
+            left_clearance = clearance_dirs.get('left', 0.0)
+            right_clearance = clearance_dirs.get('right', 0.0)
+            
+            # If bounce block can't be displaced horizontally enough, it blocks
+            if left_clearance < required_clearance and right_clearance < required_clearance:
                 return True
         
         return False  # Bounce block can be displaced, doesn't block traversal
