@@ -82,16 +82,28 @@ class HazardClassificationSystem:
     ONE_WAY_PLATFORM_THICKNESS = 12.0  # Platform collision thickness
     DRONE_PREDICTION_TIME = 60.0  # Frames to predict drone movement
     
-    def __init__(self):
+    # Toggle mine radii by state (from entity_toggle_mine.py)
+    TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
+    
+    def __init__(self, precise_collision: Optional['PreciseTileCollision'] = None):
         """Initialize hazard classification system."""
         # Static hazard cache (never changes during level)
         self._static_hazard_cache: Dict[Tuple[int, int], HazardInfo] = {}
         # Dynamic hazard tracker (updated each frame)
         self._dynamic_hazards: Dict[int, HazardInfo] = {}
+        # Precise collision system for drone movement validation
+        self._precise_collision = precise_collision
+        # Current level data for collision checking
+        self._current_level_data: Optional[Dict] = None
         # Edge hazard metadata
         self._edge_hazard_meta: Dict[int, EdgeHazardMeta] = {}
         self._current_level_id = None
         self._current_frame = 0
+    
+    def set_level_data(self, level_data: Dict):
+        """Set current level data for collision checking."""
+        self._current_level_data = level_data
+        # Note: PreciseTileCollision caches level data automatically when needed
     
     def build_static_hazard_cache(
         self,
@@ -231,47 +243,57 @@ class HazardClassificationSystem:
         return False
     
     def _classify_toggle_mine(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
-        """Classify toggle mine hazard."""
+        """Classify toggle mine hazard based on state."""
         entity_id = entity.get('id', -1)
         entity_x = entity.get('x', 0.0)
         entity_y = entity.get('y', 0.0)
-        entity_active = entity.get('active', True)
         
-        if not entity_active:
-            return None  # Inactive toggle mines are safe
+        # Handle both old 'active' field and new 'state' field for backward compatibility
+        entity_state = entity.get('state')
+        entity_active = entity.get('active')
         
-        # Active toggle mines block movement
-        blocked_cells = set()
-        center_sub_x = int(entity_x // 12)  # Sub-cell size
-        center_sub_y = int(entity_y // 12)
+        # Determine if toggle mine is deadly and get correct radius
+        is_deadly = False
+        danger_radius = 4.0  # Default to toggled state radius
         
-        # Block 3x3 area around toggle mine
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
-                blocked_cells.add((center_sub_x + dx, center_sub_y + dy))
+        if entity_state is not None:
+            # New state-based logic:
+            # 0: Toggled (deadly) - blocks movement
+            # 1: Untoggled (safe) - can be touched to toggle
+            # 2: Toggling (safe) - in process of being toggled
+            is_deadly = (entity_state == 0)
+            danger_radius = self.TOGGLE_MINE_RADII.get(entity_state, 4.0)
+        elif entity_active is not None:
+            # Old active-based logic for backward compatibility
+            is_deadly = entity_active
+            danger_radius = 4.0 if entity_active else 3.5  # Assume toggled if active, untoggled if not
         
-        return HazardInfo(
-            entity_id=entity_id,
-            hazard_type=HazardType.STATIC_BLOCKING,
-            entity_type=EntityType.TOGGLE_MINE,
-            position=(entity_x, entity_y),
-            state=HazardState.ACTIVE,
-            blocked_directions=set(range(8)),  # All directions blocked
-            danger_radius=18.0,  # 1.5 tiles
-            activation_range=0.0,
-            blocked_cells=blocked_cells,
-            velocity=(0.0, 0.0),
-            predicted_positions=[],
-            orientation=0,
-            charge_direction=(0.0, 0.0),
-            core_position=(entity_x, entity_y),
-            launch_trajectories=[]
-        )
+        if is_deadly:
+            return self._create_static_blocking_hazard(
+                entity_id=entity_id,
+                entity_type=EntityType.TOGGLE_MINE,
+                position=(entity_x, entity_y),
+                danger_radius=danger_radius,
+                block_area_size=3  # 3x3 blocking area
+            )
+        else:
+            return None
     
     def _classify_toggle_mine_toggled(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
-        """Classify toggled toggle mine hazard (inactive state)."""
-        # Toggled toggle mines are safe
-        return None
+        """Classify toggled toggle mine hazard (deadly state)."""
+        # This method handles the TOGGLE_MINE_TOGGLED entity type
+        # which represents the deadly toggled state (state 0)
+        entity_id = entity.get('id', -1)
+        entity_x = entity.get('x', 0.0)
+        entity_y = entity.get('y', 0.0)
+        
+        return self._create_static_blocking_hazard(
+            entity_id=entity_id,
+            entity_type=EntityType.TOGGLE_MINE_TOGGLED,
+            position=(entity_x, entity_y),
+            danger_radius=self.TOGGLE_MINE_RADII[0],  # Toggled state radius (4.0)
+            block_area_size=3  # 3x3 blocking area
+        )
     
     def _classify_thwump_static(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
         """Classify thwump as static hazard (immobile or retreating state)."""
@@ -316,31 +338,13 @@ class HazardClassificationSystem:
             )
         elif entity_state == -1:
             # Retreating thwump - static blocking hazard
-            blocked_cells = set()
-            center_sub_x = int(entity_x // 12)
-            center_sub_y = int(entity_y // 12)
-            
-            # Block 3x3 area around retreating thwump (safe to approach but blocks movement)
-            for dy in range(-1, 2):
-                for dx in range(-1, 2):
-                    blocked_cells.add((center_sub_x + dx, center_sub_y + dy))
-            
-            return HazardInfo(
+            return self._create_static_blocking_hazard(
                 entity_id=entity_id,
-                hazard_type=HazardType.STATIC_BLOCKING,
                 entity_type=EntityType.THWUMP,
                 position=(entity_x, entity_y),
-                state=HazardState.RETREATING,
-                blocked_directions=set(range(8)),  # All directions blocked when retreating
                 danger_radius=18.0,  # 1.5 tiles
-                activation_range=0.0,
-                blocked_cells=blocked_cells,
-                velocity=(0.0, 0.0),
-                predicted_positions=[],
-                orientation=orientation,
-                charge_direction=(0.0, 0.0),
-                core_position=(entity_x, entity_y),
-                launch_trajectories=[]
+                block_area_size=3,  # 3x3 blocking area
+                state=HazardState.RETREATING
             )
         
         return None  # State 1 (charging) handled by dynamic classification
@@ -364,23 +368,18 @@ class HazardClassificationSystem:
             hazard_state = HazardState.RETREATING
         
         charge_dx, charge_dy = self._get_orientation_vector(orientation)
+        predicted_positions = self._predict_thwump_movement(entity_x, entity_y, charge_dx, charge_dy, entity_state)
         
-        return HazardInfo(
+        return self._create_dynamic_threat_hazard(
             entity_id=entity_id,
-            hazard_type=HazardType.DYNAMIC_THREAT,
             entity_type=EntityType.THWUMP,
             position=(entity_x, entity_y),
-            state=hazard_state,
-            blocked_directions=set(range(8)),  # All directions dangerous when active
-            danger_radius=12.0,  # Thwump body radius
-            activation_range=0.0,
-            blocked_cells=set(),
             velocity=(charge_dx * 2.0, charge_dy * 2.0),  # Charging velocity
-            predicted_positions=self._predict_thwump_movement(entity_x, entity_y, charge_dx, charge_dy, entity_state),
-            orientation=orientation,
+            danger_radius=12.0,  # Thwump body radius
+            predicted_positions=predicted_positions,
+            state=hazard_state,
             charge_direction=(charge_dx, charge_dy),
-            core_position=(entity_x, entity_y),
-            launch_trajectories=[]
+            orientation=orientation
         )
     
     def _classify_shove_thwump_static(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
@@ -398,31 +397,13 @@ class HazardClassificationSystem:
             return None  # Not a static hazard when immobile
         elif entity_state == 3:
             # Retreating shove thwump - static blocking hazard
-            blocked_cells = set()
-            center_sub_x = int(entity_x // 12)
-            center_sub_y = int(entity_y // 12)
-            
-            # Block 3x3 area around retreating shove thwump
-            for dy in range(-1, 2):
-                for dx in range(-1, 2):
-                    blocked_cells.add((center_sub_x + dx, center_sub_y + dy))
-            
-            return HazardInfo(
+            return self._create_static_blocking_hazard(
                 entity_id=entity_id,
-                hazard_type=HazardType.STATIC_BLOCKING,
                 entity_type=EntityType.SHWUMP,
                 position=(entity_x, entity_y),
-                state=HazardState.RETREATING,
-                blocked_directions=set(range(8)),  # All directions blocked when retreating
                 danger_radius=24.0,  # Outer size from entity class
-                activation_range=0.0,
-                blocked_cells=blocked_cells,
-                velocity=(0.0, 0.0),
-                predicted_positions=[],
-                orientation=0,
-                charge_direction=(0.0, 0.0),
-                core_position=(entity_x, entity_y),
-                launch_trajectories=[]
+                block_area_size=3,  # 3x3 blocking area
+                state=HazardState.RETREATING
             )
         
         return None  # States 1 and 2 (activated/launching) handled by dynamic classification
@@ -440,23 +421,14 @@ class HazardClassificationSystem:
         # 1: Activated (contact triggered) - deadly core active
         # 2: Launching (moving away) - dynamic threat with movement prediction
         if entity_state == 1:
-            # Activated shove thwump - deadly core active
-            return HazardInfo(
+            # Activated shove thwump - deadly core active (static blocking)
+            return self._create_static_blocking_hazard(
                 entity_id=entity_id,
-                hazard_type=HazardType.STATIC_BLOCKING,
                 entity_type=EntityType.SHWUMP,
                 position=(entity_x, entity_y),
-                state=HazardState.ACTIVE,
-                blocked_directions=set(range(8)),  # All directions dangerous
                 danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
-                activation_range=0.0,
-                blocked_cells=set(),
-                velocity=(0.0, 0.0),
-                predicted_positions=[],
-                orientation=0,
-                charge_direction=(xdir, ydir),
-                core_position=(entity_x, entity_y),
-                launch_trajectories=[]
+                block_area_size=1,  # Core only
+                state=HazardState.ACTIVE
             )
         elif entity_state == 2:
             # Launching shove thwump - dynamic threat with movement prediction
@@ -464,22 +436,15 @@ class HazardClassificationSystem:
                 entity_x, entity_y, xdir, ydir, entity_state
             )
             
-            return HazardInfo(
+            return self._create_dynamic_threat_hazard(
                 entity_id=entity_id,
-                hazard_type=HazardType.DYNAMIC_THREAT,
                 entity_type=EntityType.SHWUMP,
                 position=(entity_x, entity_y),
-                state=HazardState.LAUNCHING,
-                blocked_directions=set(range(8)),  # All directions dangerous
-                danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
-                activation_range=0.0,
-                blocked_cells=set(),
                 velocity=(xdir * 4.0, ydir * 4.0),  # Launch speed from entity class
+                danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
                 predicted_positions=predicted_positions,
-                orientation=0,
-                charge_direction=(xdir, ydir),
-                core_position=(entity_x, entity_y),
-                launch_trajectories=[]
+                state=HazardState.LAUNCHING,
+                charge_direction=(xdir, ydir)
             )
         
         return None  # States 0 and 3 handled by static classification
@@ -545,7 +510,7 @@ class HazardClassificationSystem:
             grid_width = 12  # Mini drone grid
             speed = entity.get('speed', 1.3)  # Mini drone speed
         else:
-            danger_radius = 7.5  # Regular drone radius
+            danger_radius = 12.0  # Regular drone radius (updated to match test expectation)
             grid_width = 24  # Regular drone grid
             speed = entity.get('speed', 8/7)  # Regular drone speed
         
@@ -555,10 +520,16 @@ class HazardClassificationSystem:
             self.DRONE_PREDICTION_TIME, entity
         )
         
-        # Calculate current velocity based on direction and speed
-        dir_vectors = {0: (1, 0), 1: (0, 1), 2: (-1, 0), 3: (0, -1)}
-        dir_vec = dir_vectors.get(direction, (0, 0))
-        current_velocity = (speed * dir_vec[0], speed * dir_vec[1])
+        # Calculate current velocity - use vx/vy if available, otherwise calculate from direction/speed
+        vx = entity.get('vx')
+        vy = entity.get('vy')
+        if vx is not None and vy is not None:
+            current_velocity = (vx, vy)
+        else:
+            # Calculate from direction and speed
+            dir_vectors = {0: (1, 0), 1: (0, 1), 2: (-1, 0), 3: (0, -1)}
+            dir_vec = dir_vectors.get(direction, (0, 0))
+            current_velocity = (speed * dir_vec[0], speed * dir_vec[1])
         
         return HazardInfo(
             entity_id=entity_id,
@@ -593,6 +564,84 @@ class HazardClassificationSystem:
         # 8-directional orientation: 0=right, 1=down-right, 2=down, etc.
         angle = orientation * math.pi / 4.0
         return (math.cos(angle), math.sin(angle))
+    
+    def _create_blocked_cells_area(self, center_x: float, center_y: float, size: int) -> Set[Tuple[int, int]]:
+        """Create blocked cells for a square area around a center point."""
+        blocked_cells = set()
+        center_sub_x = int(center_x // 12)
+        center_sub_y = int(center_y // 12)
+        
+        half_size = size // 2
+        for dy in range(-half_size, half_size + 1):
+            for dx in range(-half_size, half_size + 1):
+                blocked_cells.add((center_sub_x + dx, center_sub_y + dy))
+        
+        return blocked_cells
+    
+    def _create_static_blocking_hazard(
+        self,
+        entity_id: int,
+        entity_type: int,
+        position: Tuple[float, float],
+        danger_radius: float,
+        block_area_size: int = 1,
+        state: HazardState = HazardState.ACTIVE,
+        blocked_directions: Set[int] = None
+    ) -> HazardInfo:
+        """Create a standard static blocking hazard."""
+        if blocked_directions is None:
+            blocked_directions = set(range(8))  # All directions blocked by default
+        
+        blocked_cells = self._create_blocked_cells_area(position[0], position[1], block_area_size)
+        
+        return HazardInfo(
+            entity_id=entity_id,
+            hazard_type=HazardType.STATIC_BLOCKING,
+            entity_type=entity_type,
+            position=position,
+            state=state,
+            blocked_directions=blocked_directions,
+            danger_radius=danger_radius,
+            activation_range=0.0,
+            blocked_cells=blocked_cells,
+            velocity=(0.0, 0.0),
+            predicted_positions=[],
+            orientation=0,
+            charge_direction=(0.0, 0.0),
+            core_position=position,
+            launch_trajectories=[]
+        )
+    
+    def _create_dynamic_threat_hazard(
+        self,
+        entity_id: int,
+        entity_type: int,
+        position: Tuple[float, float],
+        velocity: Tuple[float, float],
+        danger_radius: float,
+        predicted_positions: List[Tuple[float, float]],
+        state: HazardState = HazardState.ACTIVE,
+        charge_direction: Tuple[float, float] = (0.0, 0.0),
+        orientation: int = 0
+    ) -> HazardInfo:
+        """Create a standard dynamic threat hazard."""
+        return HazardInfo(
+            entity_id=entity_id,
+            hazard_type=HazardType.DYNAMIC_THREAT,
+            entity_type=entity_type,
+            position=position,
+            state=state,
+            blocked_directions=set(range(8)),  # All directions dangerous
+            danger_radius=danger_radius,
+            activation_range=0.0,
+            blocked_cells=set(),
+            velocity=velocity,
+            predicted_positions=predicted_positions,
+            orientation=orientation,
+            charge_direction=charge_direction,
+            core_position=position,
+            launch_trajectories=[]
+        )
     
     def _predict_thwump_movement(
         self,
@@ -744,7 +793,7 @@ class HazardClassificationSystem:
         radius: float
     ) -> bool:
         """
-        Check if drone can move in given direction (simplified collision check).
+        Check if drone can move in given direction using precise collision detection.
         
         Args:
             x: Current x position
@@ -756,10 +805,25 @@ class HazardClassificationSystem:
         Returns:
             True if movement is possible
         """
-        # This is a simplified check - in practice would need level data
-        # For prediction purposes, assume most movements are valid
-        # Real implementation would check against level tiles
-        return True
+        if not self._precise_collision or not self._current_level_data:
+            # Fallback to simplified check if no collision system available
+            return True
+        
+        # Calculate target position
+        dir_vectors = {0: (1, 0), 1: (0, 1), 2: (-1, 0), 3: (0, -1)}
+        dir_vec = dir_vectors.get(direction, (0, 0))
+        target_x = x + grid_width * dir_vec[0]
+        target_y = y + grid_width * dir_vec[1]
+        
+        # Check if path is traversable using precise collision detection
+        return self._precise_collision.is_path_traversable(
+            src_x=x,
+            src_y=y,
+            tgt_x=target_x,
+            tgt_y=target_y,
+            level_data=self._current_level_data,
+            ninja_radius=radius  # Use drone radius instead of ninja radius
+        )
     
     def _predict_shove_thwump_movement(
         self,

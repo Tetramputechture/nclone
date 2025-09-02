@@ -142,7 +142,7 @@ class TestHazardClassificationSystem:
         assert hazard_info.hazard_type == HazardType.STATIC_BLOCKING
         assert hazard_info.state == HazardState.ACTIVE
         assert len(hazard_info.blocked_cells) == 9  # 3x3 area
-        assert hazard_info.danger_radius == 18.0
+        assert hazard_info.danger_radius == 4.0  # Toggled state radius
         
         # Test inactive toggle mine
         inactive_mine = {

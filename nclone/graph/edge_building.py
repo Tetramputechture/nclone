@@ -257,7 +257,7 @@ class EdgeBuilder:
         """
         self.feature_extractor = feature_extractor
         self.precise_collision = PreciseTileCollision()
-        self.hazard_system = HazardClassificationSystem()
+        self.hazard_system = HazardClassificationSystem(self.precise_collision)
         
         # Cache for static hazards (rebuilt when level changes)
         self._static_hazard_cache = {}
@@ -300,6 +300,9 @@ class EdgeBuilder:
         Returns:
             Updated edge count
         """
+        # Set level data for hazard system collision checking
+        self.hazard_system.set_level_data(level_data)
+        
         # Build sub-grid traversability edges
         for (sub_row, sub_col), src_idx in sub_grid_node_map.items():
             if edge_count >= E_MAX_EDGES - 8:  # Leave room for 8 directions
