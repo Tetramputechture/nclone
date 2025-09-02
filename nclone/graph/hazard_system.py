@@ -30,6 +30,7 @@ class HazardState(IntEnum):
     ACTIVE = 1      # Currently dangerous
     CHARGING = 2    # Building up to dangerous state
     RETREATING = 3  # Moving away from dangerous state
+    LAUNCHING = 4   # Launching/moving phase (shove thwumps)
 
 
 @dataclass
@@ -273,45 +274,76 @@ class HazardClassificationSystem:
         return None
     
     def _classify_thwump_static(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
-        """Classify thwump as static hazard (immobile state)."""
+        """Classify thwump as static hazard (immobile or retreating state)."""
         entity_id = entity.get('id', -1)
         entity_x = entity.get('x', 0.0)
         entity_y = entity.get('y', 0.0)
         entity_state = entity.get('state', 0)
         orientation = entity.get('orientation', 0)
         
-        if entity_state != 0:  # Not in immobile state
-            return None
+        # Handle different thwump states:
+        # 0: Immobile (at rest) - activation trigger
+        # -1: Retreating - static blocking hazard
+        if entity_state == 0:
+            # Immobile thwump - activation trigger with charge lane blocking
+            charge_dx, charge_dy = self._get_orientation_vector(orientation)
+            blocked_cells = set()
+            
+            # Block cells in charge direction (up to 5 tiles)
+            for i in range(1, 6):
+                block_x = entity_x + i * TILE_PIXEL_SIZE * charge_dx
+                block_y = entity_y + i * TILE_PIXEL_SIZE * charge_dy
+                sub_x = int(block_x // 12)
+                sub_y = int(block_y // 12)
+                blocked_cells.add((sub_x, sub_y))
+            
+            return HazardInfo(
+                entity_id=entity_id,
+                hazard_type=HazardType.ACTIVATION_TRIGGER,
+                entity_type=EntityType.THWUMP,
+                position=(entity_x, entity_y),
+                state=HazardState.INACTIVE,
+                blocked_directions=set(),
+                danger_radius=0.0,
+                activation_range=38.0,  # 2 * (9 + 10) from entity class
+                blocked_cells=blocked_cells,
+                velocity=(0.0, 0.0),
+                predicted_positions=[],
+                orientation=orientation,
+                charge_direction=(charge_dx, charge_dy),
+                core_position=(entity_x, entity_y),
+                launch_trajectories=[]
+            )
+        elif entity_state == -1:
+            # Retreating thwump - static blocking hazard
+            blocked_cells = set()
+            center_sub_x = int(entity_x // 12)
+            center_sub_y = int(entity_y // 12)
+            
+            # Block 3x3 area around retreating thwump (safe to approach but blocks movement)
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    blocked_cells.add((center_sub_x + dx, center_sub_y + dy))
+            
+            return HazardInfo(
+                entity_id=entity_id,
+                hazard_type=HazardType.STATIC_BLOCKING,
+                entity_type=EntityType.THWUMP,
+                position=(entity_x, entity_y),
+                state=HazardState.RETREATING,
+                blocked_directions=set(range(8)),  # All directions blocked when retreating
+                danger_radius=18.0,  # 1.5 tiles
+                activation_range=0.0,
+                blocked_cells=blocked_cells,
+                velocity=(0.0, 0.0),
+                predicted_positions=[],
+                orientation=orientation,
+                charge_direction=(0.0, 0.0),
+                core_position=(entity_x, entity_y),
+                launch_trajectories=[]
+            )
         
-        # Thwumps in immobile state create static blocks in their charge direction
-        charge_dx, charge_dy = self._get_orientation_vector(orientation)
-        blocked_cells = set()
-        
-        # Block cells in charge direction (up to 5 tiles)
-        for i in range(1, 6):
-            block_x = entity_x + i * TILE_PIXEL_SIZE * charge_dx
-            block_y = entity_y + i * TILE_PIXEL_SIZE * charge_dy
-            sub_x = int(block_x // 12)
-            sub_y = int(block_y // 12)
-            blocked_cells.add((sub_x, sub_y))
-        
-        return HazardInfo(
-            entity_id=entity_id,
-            hazard_type=HazardType.ACTIVATION_TRIGGER,
-            entity_type=EntityType.THWUMP,
-            position=(entity_x, entity_y),
-            state=HazardState.INACTIVE,
-            blocked_directions=set(),  # No directions blocked when inactive
-            danger_radius=0.0,
-            activation_range=self.THWUMP_ACTIVATION_RANGE,
-            blocked_cells=blocked_cells,
-            velocity=(0.0, 0.0),
-            predicted_positions=[],
-            orientation=orientation,
-            charge_direction=(charge_dx, charge_dy),
-            core_position=(entity_x, entity_y),
-            launch_trajectories=[]
-        )
+        return None  # State 1 (charging) handled by dynamic classification
     
     def _classify_thwump_dynamic(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
         """Classify thwump as dynamic hazard (charging/retreating state)."""
@@ -352,51 +384,105 @@ class HazardClassificationSystem:
         )
     
     def _classify_shove_thwump_static(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
-        """Classify shove thwump as static hazard (untriggered state)."""
+        """Classify shove thwump as static hazard (immobile or retreating state)."""
         entity_id = entity.get('id', -1)
         entity_x = entity.get('x', 0.0)
         entity_y = entity.get('y', 0.0)
         entity_state = entity.get('state', 0)
         
-        if entity_state != 0:  # Not in untriggered state
-            return None
+        # Handle different shove thwump states:
+        # 0: Immobile (at rest) - safe to approach but can be activated
+        # 3: Retreating - static blocking hazard
+        if entity_state == 0:
+            # Immobile shove thwump - safe but can be activated on contact
+            return None  # Not a static hazard when immobile
+        elif entity_state == 3:
+            # Retreating shove thwump - static blocking hazard
+            blocked_cells = set()
+            center_sub_x = int(entity_x // 12)
+            center_sub_y = int(entity_y // 12)
+            
+            # Block 3x3 area around retreating shove thwump
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    blocked_cells.add((center_sub_x + dx, center_sub_y + dy))
+            
+            return HazardInfo(
+                entity_id=entity_id,
+                hazard_type=HazardType.STATIC_BLOCKING,
+                entity_type=EntityType.SHWUMP,
+                position=(entity_x, entity_y),
+                state=HazardState.RETREATING,
+                blocked_directions=set(range(8)),  # All directions blocked when retreating
+                danger_radius=24.0,  # Outer size from entity class
+                activation_range=0.0,
+                blocked_cells=blocked_cells,
+                velocity=(0.0, 0.0),
+                predicted_positions=[],
+                orientation=0,
+                charge_direction=(0.0, 0.0),
+                core_position=(entity_x, entity_y),
+                launch_trajectories=[]
+            )
         
-        # Untriggered shove thwumps are safe to touch from any side
-        return None
+        return None  # States 1 and 2 (activated/launching) handled by dynamic classification
     
     def _classify_shove_thwump_dynamic(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
-        """Classify shove thwump as dynamic hazard (triggered state)."""
+        """Classify shove thwump as dynamic hazard (activated/launching state)."""
         entity_id = entity.get('id', -1)
         entity_x = entity.get('x', 0.0)
         entity_y = entity.get('y', 0.0)
         entity_state = entity.get('state', 0)
+        xdir = entity.get('xdir', 0.0)
+        ydir = entity.get('ydir', 0.0)
         
-        if entity_state == 0:  # Untriggered state
-            return None
+        # Handle different shove thwump states:
+        # 1: Activated (contact triggered) - deadly core active
+        # 2: Launching (moving away) - dynamic threat with movement prediction
+        if entity_state == 1:
+            # Activated shove thwump - deadly core active
+            return HazardInfo(
+                entity_id=entity_id,
+                hazard_type=HazardType.STATIC_BLOCKING,
+                entity_type=EntityType.SHWUMP,
+                position=(entity_x, entity_y),
+                state=HazardState.ACTIVE,
+                blocked_directions=set(range(8)),  # All directions dangerous
+                danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
+                activation_range=0.0,
+                blocked_cells=set(),
+                velocity=(0.0, 0.0),
+                predicted_positions=[],
+                orientation=0,
+                charge_direction=(xdir, ydir),
+                core_position=(entity_x, entity_y),
+                launch_trajectories=[]
+            )
+        elif entity_state == 2:
+            # Launching shove thwump - dynamic threat with movement prediction
+            predicted_positions = self._predict_shove_thwump_movement(
+                entity_x, entity_y, xdir, ydir, entity_state
+            )
+            
+            return HazardInfo(
+                entity_id=entity_id,
+                hazard_type=HazardType.DYNAMIC_THREAT,
+                entity_type=EntityType.SHWUMP,
+                position=(entity_x, entity_y),
+                state=HazardState.LAUNCHING,
+                blocked_directions=set(range(8)),  # All directions dangerous
+                danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
+                activation_range=0.0,
+                blocked_cells=set(),
+                velocity=(xdir * 4.0, ydir * 4.0),  # Launch speed from entity class
+                predicted_positions=predicted_positions,
+                orientation=0,
+                charge_direction=(xdir, ydir),
+                core_position=(entity_x, entity_y),
+                launch_trajectories=[]
+            )
         
-        # Triggered shove thwumps have deadly core
-        blocked_cells = set()
-        center_sub_x = int(entity_x // 12)
-        center_sub_y = int(entity_y // 12)
-        blocked_cells.add((center_sub_x, center_sub_y))
-        
-        return HazardInfo(
-            entity_id=entity_id,
-            hazard_type=HazardType.STATIC_BLOCKING,
-            entity_type=EntityType.SHWUMP,
-            position=(entity_x, entity_y),
-            state=HazardState.ACTIVE,
-            blocked_directions=set(range(8)),  # All directions dangerous
-            danger_radius=self.SHOVE_THWUMP_CORE_RADIUS,
-            activation_range=0.0,
-            blocked_cells=blocked_cells,
-            velocity=(0.0, 0.0),
-            predicted_positions=[],
-            orientation=0,
-            charge_direction=(0.0, 0.0),
-            core_position=(entity_x, entity_y),
-            launch_trajectories=[]
-        )
+        return None  # States 0 and 3 handled by static classification
     
     def _classify_one_way_platform(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
         """Classify one-way platform hazard."""
@@ -441,31 +527,52 @@ class HazardClassificationSystem:
         )
     
     def _classify_drone(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
-        """Classify drone as dynamic hazard."""
+        """Classify drone as dynamic hazard with comprehensive movement prediction."""
         entity_id = entity.get('id', -1)
         entity_x = entity.get('x', 0.0)
         entity_y = entity.get('y', 0.0)
-        entity_vx = entity.get('vx', 0.0)
-        entity_vy = entity.get('vy', 0.0)
+        entity_type = entity.get('type', EntityType.DRONE_ZAP)
         
-        # Predict drone movement
-        predicted_positions = self._predict_drone_movement(
-            entity_x, entity_y, entity_vx, entity_vy, self.DRONE_PREDICTION_TIME
+        # Get drone-specific properties
+        orientation = entity.get('orientation', 0)
+        mode = entity.get('mode', 0)
+        direction = entity.get('dir', 0)
+        speed = entity.get('speed', 8/7)  # Default zap drone speed
+        
+        # Determine drone properties based on type
+        if entity_type == EntityType.MINI_DRONE:
+            danger_radius = 4.0  # Mini drone radius
+            grid_width = 12  # Mini drone grid
+            speed = entity.get('speed', 1.3)  # Mini drone speed
+        else:
+            danger_radius = 7.5  # Regular drone radius
+            grid_width = 24  # Regular drone grid
+            speed = entity.get('speed', 8/7)  # Regular drone speed
+        
+        # Predict drone movement using comprehensive patrol logic
+        predicted_positions = self._predict_drone_patrol_movement(
+            entity_x, entity_y, direction, mode, speed, grid_width, 
+            self.DRONE_PREDICTION_TIME, entity
         )
+        
+        # Calculate current velocity based on direction and speed
+        dir_vectors = {0: (1, 0), 1: (0, 1), 2: (-1, 0), 3: (0, -1)}
+        dir_vec = dir_vectors.get(direction, (0, 0))
+        current_velocity = (speed * dir_vec[0], speed * dir_vec[1])
         
         return HazardInfo(
             entity_id=entity_id,
             hazard_type=HazardType.DYNAMIC_THREAT,
-            entity_type=EntityType.DRONE_ZAP,
+            entity_type=entity_type,
             position=(entity_x, entity_y),
             state=HazardState.ACTIVE,
             blocked_directions=set(range(8)),  # All directions dangerous
-            danger_radius=12.0,  # Drone collision radius
+            danger_radius=danger_radius,
             activation_range=0.0,
             blocked_cells=set(),
-            velocity=(entity_vx, entity_vy),
+            velocity=current_velocity,
             predicted_positions=predicted_positions,
-            orientation=0,
+            orientation=orientation,
             charge_direction=(0.0, 0.0),
             core_position=(entity_x, entity_y),
             launch_trajectories=[]
@@ -521,14 +628,175 @@ class HazardClassificationSystem:
         vy: float,
         prediction_time: float
     ) -> List[Tuple[float, float]]:
-        """Predict drone movement over time."""
+        """Predict simple linear drone movement over time."""
         positions = []
         
-        # Simple linear prediction (could be enhanced with patrol route detection)
+        # Simple linear prediction (fallback for basic velocity-based prediction)
         for t in range(1, int(prediction_time) + 1, 5):  # Every 5 frames
             pred_x = start_x + vx * t
             pred_y = start_y + vy * t
             positions.append((pred_x, pred_y))
+        
+        return positions
+    
+    def _predict_drone_patrol_movement(
+        self,
+        start_x: float,
+        start_y: float,
+        direction: int,
+        mode: int,
+        speed: float,
+        grid_width: int,
+        prediction_time: float,
+        entity: Dict[str, Any]
+    ) -> List[Tuple[float, float]]:
+        """
+        Predict drone patrol movement using comprehensive movement logic.
+        
+        Drones follow grid-based patrol patterns:
+        - Mode 0: Follow wall clockwise
+        - Mode 1: Follow wall counter-clockwise  
+        - Mode 2: Wander clockwise
+        - Mode 3: Wander counter-clockwise
+        
+        Args:
+            start_x: Starting x position
+            start_y: Starting y position
+            direction: Current direction (0=right, 1=down, 2=left, 3=up)
+            mode: Patrol mode (0-3)
+            speed: Movement speed
+            grid_width: Grid cell size (24 for regular, 12 for mini)
+            prediction_time: Time to predict (frames)
+            entity: Full entity data for collision checking
+            
+        Returns:
+            List of predicted positions
+        """
+        positions = []
+        current_x, current_y = start_x, start_y
+        current_dir = direction
+        
+        # Direction vectors
+        dir_vectors = {0: (1, 0), 1: (0, 1), 2: (-1, 0), 3: (0, -1)}
+        
+        # Direction preference lists for each mode
+        # {0:follow wall CW, 1:follow wall CCW, 2:wander CW, 3:wander CCW}
+        # {0:keep forward, 1:turn right, 2:go backward, 3:turn left}
+        dir_lists = {
+            0: [1, 0, 3, 2],  # Follow wall CW: prefer right, forward, left, back
+            1: [3, 0, 1, 2],  # Follow wall CCW: prefer left, forward, right, back
+            2: [0, 1, 3, 2],  # Wander CW: prefer forward, right, left, back
+            3: [0, 3, 1, 2]   # Wander CCW: prefer forward, left, right, back
+        }
+        
+        # Get target position (drone moves between grid centers)
+        target_x = entity.get('xtarget', start_x)
+        target_y = entity.get('ytarget', start_y)
+        
+        for frame in range(int(prediction_time)):
+            # Calculate movement toward target
+            dx = target_x - current_x
+            dy = target_y - current_y
+            dist = math.sqrt(dx*dx + dy*dy)
+            
+            # If close to target, choose next direction and target
+            if dist < 0.1:
+                current_x, current_y = target_x, target_y
+                
+                # Try directions in mode preference order
+                new_dir = None
+                for i in range(4):
+                    test_dir = (current_dir + dir_lists[mode][i]) % 4
+                    if self._can_drone_move_direction(
+                        current_x, current_y, test_dir, grid_width, 
+                        entity.get('RADIUS', 7.5 if grid_width == 24 else 4.0)
+                    ):
+                        new_dir = test_dir
+                        break
+                
+                if new_dir is not None:
+                    current_dir = new_dir
+                    # Set new target
+                    dir_vec = dir_vectors[current_dir]
+                    target_x = current_x + grid_width * dir_vec[0]
+                    target_y = current_y + grid_width * dir_vec[1]
+                else:
+                    # No valid direction, stay in place
+                    target_x, target_y = current_x, current_y
+            
+            # Move toward target
+            if dist > 0.1:
+                move_x = speed * dx / dist
+                move_y = speed * dy / dist
+                current_x += move_x
+                current_y += move_y
+            
+            positions.append((current_x, current_y))
+        
+        return positions
+    
+    def _can_drone_move_direction(
+        self,
+        x: float,
+        y: float,
+        direction: int,
+        grid_width: int,
+        radius: float
+    ) -> bool:
+        """
+        Check if drone can move in given direction (simplified collision check).
+        
+        Args:
+            x: Current x position
+            y: Current y position
+            direction: Direction to test (0=right, 1=down, 2=left, 3=up)
+            grid_width: Grid cell size
+            radius: Drone radius
+            
+        Returns:
+            True if movement is possible
+        """
+        # This is a simplified check - in practice would need level data
+        # For prediction purposes, assume most movements are valid
+        # Real implementation would check against level tiles
+        return True
+    
+    def _predict_shove_thwump_movement(
+        self,
+        start_x: float,
+        start_y: float,
+        xdir: float,
+        ydir: float,
+        state: int
+    ) -> List[Tuple[float, float]]:
+        """
+        Predict shove thwump movement during launch phase.
+        
+        Args:
+            start_x: Starting x position
+            start_y: Starting y position
+            xdir: X direction (-1, 0, or 1)
+            ydir: Y direction (-1, 0, or 1)
+            state: Current state (2 = launching)
+            
+        Returns:
+            List of predicted positions
+        """
+        positions = []
+        current_x, current_y = start_x, start_y
+        
+        if state == 2:  # Launching
+            launch_speed = 4.0  # From entity class
+            
+            # Predict movement until wall collision (simplified)
+            for frame in range(60):  # Predict up to 60 frames
+                current_x += xdir * launch_speed
+                current_y += ydir * launch_speed
+                positions.append((current_x, current_y))
+                
+                # Stop prediction if moved too far (would hit wall)
+                if abs(current_x - start_x) > 240 or abs(current_y - start_y) > 240:
+                    break
         
         return positions
     
