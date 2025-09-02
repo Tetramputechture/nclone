@@ -3,6 +3,230 @@ Edge building utilities for graph construction.
 
 This module provides specialized edge building methods with comprehensive
 bounce block awareness and traversability checking.
+
+TODO: HAZARD-AWARE EDGE TRAVERSABILITY SYSTEM
+=============================================
+
+PRIORITY: HIGH - Player movement blocked by hazards affects core gameplay mechanics
+
+OVERVIEW:
+The current edge traversability system does not account for hazards that can block
+player movement. This leads to invalid paths being generated, causing the AI to
+attempt movements through dangerous or impossible areas.
+
+REQUIREMENTS:
+1. Players cannot move across or through hazards (collision detection)
+2. Static hazards (toggle mines, thwumps, shove thwumps) create permanent path blocks
+3. Dynamic hazards (moving drones, charging thwumps) create temporary path blocks 
+   that change position over time
+4. Directional hazards (one-way platforms) block movement from specific directions only
+5. Path invalidation must be computationally efficient for real-time gameplay
+
+IMPLEMENTATION STRATEGY:
+
+A. Hazard Classification System:
+   - Static hazards: Fixed position, permanent traversability impact
+     * Toggle mines (type 5): Block movement when active
+     * Thwumps (type 20): Block movement in charging direction when activated
+       - Deadly face during charge and stationary state
+       - Safe from sides and behind
+       - Line-of-sight activation (38-pixel range)
+     * Shove Thwumps (type 28): Block movement based on contact direction
+       - Deadly inner core (8-pixel radius) 
+       - Contact-triggered activation. Before triggering, any side can be touched safely (landed on or wall collision).
+        - After triggering (after the player breaks contact), the inner core is deadly.
+       - Launch direction affects traversability
+   - Directional traversability constraints:
+     * One-Way Platforms (type 11): Block movement from specific direction only
+       - Orientation-based collision (8 directions: 0-7)
+       - Adaptive collision width based on approach velocity
+       - Allow passage from non-blocking directions
+   - Dynamic hazards: Moving position, time-varying traversability impact
+     * Drones (moving enemies): Block current and predicted positions
+       - Track movement patterns and patrol routes
+       - Consider acceleration and turning radius
+
+B. Computational Efficiency Optimizations:
+   - Static Hazard Cache: Pre-compute static hazard positions at level load
+     * Create spatial hash map of permanently blocked grid cells
+     * Update only when level state changes (switches activated, doors opened)
+   - Dynamic Hazard Radius System: Only update edges for dynamic hazards within range
+     * HAZARD_UPDATE_RADIUS = 150 pixels from ninja position
+     * Outside radius: Use cached traversability from last update
+     * Inside radius: Real-time hazard position tracking and path blocking
+   - Incremental Edge Updates: Instead of rebuilding entire graph
+     * Mark affected edges as "hazard_dirty" when dynamic hazards move
+     * Batch update dirty edges every N frames or when hazard exits radius
+
+C. Integration Points:
+
+   1. is_traversable_with_bounce_blocks() method enhancement:
+      - Add hazard_entities parameter for dynamic hazards in range
+      - Check static hazard cache for permanent blocks
+      - Perform dynamic hazard intersection testing for nearby threats
+
+   2. New methods to implement:
+      - build_static_hazard_cache(entities, level_data) -> Dict[Tuple[int,int], bool]
+        * Index thwumps by charge direction and activation zones
+        * Cache shove thwump deadly cores and launch paths
+        * Map one-way platform blocked directions
+      - get_dynamic_hazards_in_range(entities, ninja_pos, radius) -> List[Entity]
+        * Filter for drones and moving entities within update radius
+        * Include thwumps in charging state (dynamic behavior)
+      - check_path_hazard_intersection(src, tgt, hazard_entity) -> bool
+        * Thwump: Check if path crosses charging lane
+        * Shove Thwump: Check core radius and potential launch trajectory
+        * One-Way Platform: Check approach direction vs blocked direction
+        * Drone: Check current position and predicted movement
+      - update_dynamic_hazard_edges(hazards, affected_edges) -> None
+        * Batch update edges affected by moving drones
+        * Update thwump state transitions (immobile -> charging -> retreating)
+
+   3. Edge feature enhancement:
+      - Add hazard_risk field to edge features (0.0 = safe, 1.0 = blocked)
+      - Add hazard_type field for different hazard response strategies
+        * Static blocking, directional blocking, moving threat, activation trigger
+      - Add time_to_hazard field for dynamic hazards (when will path be blocked)
+      - Add directional_safety field for one-way platforms (safe directions bitmask)
+
+D. Data Structures:
+   - Static hazard cache: Dict[(sub_row, sub_col), HazardInfo]
+     * HazardInfo: {blocked: bool, hazard_type: int, orientation: int, state: int}
+     * Toggle mines: {blocked: bool based on active state}
+     * Thwumps: {charge_direction: int, activation_zone: List[Tuple[int,int]]}
+     * Shove Thwumps: {core_position: Tuple[int,int], launch_states: Dict[int, bool]}
+     * One-Way Platforms: {blocked_direction: int, safe_directions: List[int]}
+   - Dynamic hazard tracker: List[DynamicHazard]
+     * DynamicHazard: {entity_id: int, entity_type: int, position: Tuple[float,float], 
+                       velocity: Tuple[float,float], danger_radius: float, 
+                       state: int, predicted_path: List[Tuple[float,float]]}
+     * Drones: Track patrol routes and turning points
+     * Active Thwumps: Track charging/retreating state and movement direction
+   - Edge hazard metadata: Array[edge_idx] -> EdgeHazardMeta
+     * EdgeHazardMeta: {last_update_frame: int, hazard_risk: float, 
+                        affecting_hazards: List[int], directional_safety: int}
+
+E. Performance Considerations:
+   - Limit hazard intersection checks to edges within hazard influence radius
+   - Use spatial partitioning for large numbers of dynamic hazards
+   - Cache line-segment intersection calculations for repeated path checks
+   - Consider hazard update frequency (every frame vs every N frames based on movement speed)
+
+TESTING STRATEGY:
+- Static hazard tests:
+  * Toggle mine activation/deactivation blocking
+  * Thwump charge direction and activation zone detection
+  * Shove thwump core collision and launch trajectory blocking
+  * One-way platform directional collision (all 8 orientations)
+- Dynamic hazard tests:
+  * Drone movement prediction and path intersection
+  * Thwump state transitions (immobile -> charging -> retreating)
+  * Radius-based update system with moving drones
+- Performance tests:
+  * < 1ms update time for typical entity counts (100+ entities)
+  * Efficient spatial partitioning for large levels
+- Edge case tests:
+  * Hazards at sub-cell grid boundaries
+  * Multiple overlapping hazard influence zones
+  * Thwump activation during ninja movement
+  * One-way platform edge cases (velocity-dependent collision width)
+
+TODO: PRECISE TILE COLLISION SYSTEM
+===================================
+
+PRIORITY: HIGH - Current boolean solid/empty tile checking is insufficient for accurate pathfinding
+
+OVERVIEW:
+The current tile traversability system in is_basic_traversable() only performs boolean 
+solid/empty checks (tile == 0 vs tile != 0). This oversimplified approach doesn't 
+account for the detailed tile geometry definitions available in tile_definitions.py, 
+leading to inaccurate path planning around complex tile shapes.
+
+CURRENT LIMITATIONS:
+- Boolean tile checking treats all non-zero tiles as completely impassable
+- Ignores precise collision geometry from TILE_GRID_EDGE_MAP, TILE_SEGMENT_ORTHO_MAP, 
+  TILE_SEGMENT_DIAG_MAP, and TILE_SEGMENT_CIRCULAR_MAP
+- Cannot handle partial tile traversability (slopes, quarter-pipes, etc.)
+- Misses opportunities for movement through tile gaps and along tile edges
+- Inconsistent with physics.py collision detection which uses precise segment geometry
+
+PLANNED ENHANCEMENT:
+Replace boolean tile checking with precise tile shape collision detection:
+
+A. Tile Geometry Integration:
+   - Import and utilize tile_definitions.py mapping tables
+   - Implement segment-based path intersection testing
+   - Support for orthogonal, diagonal, and circular tile segments
+   - Handle edge cases for tiles with multiple segment types
+
+B. Path-Segment Intersection Algorithm:
+   - Replace simple tile boundary checks with segment intersection testing
+   - Use existing physics.py collision functions as reference:
+     * get_time_of_intersection_circle_vs_lineseg() for linear segments
+     * get_time_of_intersection_circle_vs_arc() for circular segments
+   - Account for ninja radius (NINJA_RADIUS) in collision calculations
+   - Test movement ray against all tile segments in path
+
+C. Enhanced Traversability Logic:
+   - is_basic_traversable() -> is_precise_traversable()
+   - Check path intersection with tile segments instead of tile solidity
+   - Support partial traversability for slopes and complex tile shapes
+   - Maintain compatibility with existing bounce block logic
+
+D. Implementation Methods:
+   - get_tile_segments_for_path(src_x, src_y, tgt_x, tgt_y, level_data) -> List[Segment]
+     * Gather all tile segments that could intersect movement path
+     * Convert tile definitions to world-space segment coordinates
+     * Filter segments based on movement direction and tile position
+   - test_path_vs_tile_segments(src_x, src_y, tgt_x, tgt_y, segments, ninja_radius) -> bool
+     * Use swept-circle collision detection against tile segments
+     * Return True if path is clear, False if blocked by tile geometry
+   - convert_tile_definition_to_segments(tile_id, tile_x, tile_y) -> List[Segment]
+     * Convert tile definition data to world-space collision segments
+     * Handle coordinate transformation from tile-local to world coordinates
+     * Create appropriate segment objects (linear, circular) for collision testing
+
+CODEBASE PROPAGATION:
+This enhancement will require updates across multiple areas:
+
+1. graph/feature_extraction.py:
+   - Update edge feature extraction to use precise geometry
+   - Enhance movement cost calculations based on tile complexity
+   - Add tile shape complexity metrics to edge features
+
+2. physics.py integration:
+   - Leverage existing segment collision functions
+   - Ensure consistent collision detection between pathfinding and physics simulation
+   - May need additional helper functions for graph-specific collision queries
+
+3. environments/dynamic_graph_*.py:
+   - Update graph construction to use precise tile collision
+   - Modify edge invalidation logic to account for detailed tile geometry
+   - Update pathfinding validation with segment-based collision checking
+
+4. models/trajectory_calculator.py:
+   - Enhance trajectory feasibility checking with precise tile collision
+   - Update movement classification to consider tile shape complexity
+   - Improve path success probability estimation based on tile geometry
+
+5. Testing framework:
+   - Add comprehensive tests for all tile types (0-37)
+   - Test edge cases: slopes, quarter-pipes, circular segments
+   - Validate consistency between pathfinding and physics collision
+   - Performance testing for real-time path updates
+
+PERFORMANCE CONSIDERATIONS:
+- Cache tile segment conversions to avoid repeated calculations
+- Spatial partitioning for efficient segment queries
+- Optimize segment intersection testing for common movement patterns
+- Balance precision with computational overhead for real-time usage
+
+INTEGRATION ORDER:
+1. Implement precise tile collision system and integrate with existing traversability
+2. Implement static hazard cache system and integrate with existing traversability
+3. Add dynamic hazard radius system with incremental edge updates
+4. Enhance edge features with hazard risk information
+5. Optimize performance and add comprehensive testing
 """
 
 import math
