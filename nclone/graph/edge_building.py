@@ -466,8 +466,9 @@ class EdgeBuilder:
         if not self._check_dynamic_hazards(src_x, src_y, tgt_x, tgt_y, entities, ninja_position):
             return False
         
-        # Check for bounce blocks (these are traversable but affect movement)
-        self._check_bounce_block_interactions(src_x, src_y, tgt_x, tgt_y, entities)
+        # Check for bounce blocks that may block traversal in narrow passages
+        if not self._check_bounce_block_traversal(src_x, src_y, tgt_x, tgt_y, entities):
+            return False
         
         return True
     
@@ -592,6 +593,41 @@ class EdgeBuilder:
         
         return True  # Path is safe from dynamic hazards
     
+    def _check_bounce_block_traversal(
+        self,
+        src_x: float,
+        src_y: float,
+        tgt_x: float,
+        tgt_y: float,
+        entities: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Check if bounce blocks block traversal in narrow passages.
+        
+        Bounce blocks can block traversal if they're positioned in the center
+        of a one-tile (24px) path and the ninja cannot displace them enough
+        horizontally or vertically to get clearance.
+        
+        Args:
+            src_x: Source x coordinate
+            src_y: Source y coordinate
+            tgt_x: Target x coordinate
+            tgt_y: Target y coordinate
+            entities: List of entity dictionaries
+            
+        Returns:
+            True if path is traversable (not blocked by bounce blocks)
+        """
+        for entity in entities:
+            if entity.get('type') == EntityType.BOUNCE_BLOCK:
+                # Use hazard system's bounce block traversal analysis
+                if self.hazard_system.analyze_bounce_block_traversal_blocking(
+                    entity, entities, (src_x, src_y), (tgt_x, tgt_y)
+                ):
+                    return False  # Bounce block blocks this path
+        
+        return True  # No bounce blocks block the path
+    
     def _check_bounce_block_interactions(
         self,
         src_x: float,
@@ -601,10 +637,10 @@ class EdgeBuilder:
         entities: List[Dict[str, Any]]
     ) -> bool:
         """
-        Check for bounce block interactions along the path.
+        Check for bounce block interactions along the path for feature extraction.
         
-        Bounce blocks are traversable but may affect movement mechanics.
-        This method identifies potential bounce interactions for feature extraction.
+        This method identifies potential bounce interactions that affect movement
+        but don't necessarily block traversal.
         
         Args:
             src_x: Source x coordinate
@@ -619,7 +655,7 @@ class EdgeBuilder:
         bounce_detected = False
         
         for entity in entities:
-            if entity.get('type') == 17:  # Bounce block
+            if entity.get('type') == EntityType.BOUNCE_BLOCK:
                 entity_x = entity.get('x', 0.0)
                 entity_y = entity.get('y', 0.0)
                 
@@ -628,6 +664,6 @@ class EdgeBuilder:
                     src_x, src_y, tgt_x, tgt_y, entity_x, entity_y
                 ):
                     bounce_detected = True
-                    # Note: Bounce blocks don't block traversal, just affect movement
+                    # Note: This is for feature extraction, not traversal blocking
         
         return bounce_detected

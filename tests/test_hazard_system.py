@@ -418,6 +418,100 @@ class TestHazardClassificationSystem:
         # Should complete within reasonable time
         assert elapsed_time < 1.0, f"Large entity test took {elapsed_time:.3f}s, expected < 1.0s"
         assert len(cache) > 0  # Should have cached some hazards
+    
+    def test_bounce_block_traversal_analysis(self):
+        """Test bounce block traversal blocking analysis."""
+        # Create a bounce block in the center of a narrow passage
+        bounce_block = {
+            'id': 1,
+            'type': EntityType.BOUNCE_BLOCK,
+            'x': 100.0,
+            'y': 100.0
+        }
+        
+        # Create obstacles that form a narrow passage
+        wall_entities = [
+            {'id': 2, 'type': EntityType.REGULAR_DOOR, 'x': 88.0, 'y': 100.0},  # Left obstacle
+            {'id': 3, 'type': EntityType.REGULAR_DOOR, 'x': 112.0, 'y': 100.0}  # Right obstacle
+        ]
+        
+        all_entities = [bounce_block] + wall_entities
+        
+        # Test horizontal path through narrow passage
+        path_start = (80.0, 100.0)
+        path_end = (120.0, 100.0)
+        
+        # Should block traversal in narrow passage
+        blocks_path = self.hazard_system.analyze_bounce_block_traversal_blocking(
+            bounce_block, all_entities, path_start, path_end
+        )
+        
+        assert blocks_path, "Bounce block should block narrow horizontal passage"
+        
+        # Test path that doesn't intersect bounce block
+        path_start_clear = (80.0, 80.0)
+        path_end_clear = (120.0, 80.0)
+        
+        blocks_clear_path = self.hazard_system.analyze_bounce_block_traversal_blocking(
+            bounce_block, all_entities, path_start_clear, path_end_clear
+        )
+        
+        assert not blocks_clear_path, "Bounce block should not block non-intersecting path"
+    
+    def test_bounce_block_wide_passage(self):
+        """Test bounce block in wide passage (should not block)."""
+        # Create a bounce block in a wide passage
+        bounce_block = {
+            'id': 1,
+            'type': EntityType.BOUNCE_BLOCK,
+            'x': 100.0,
+            'y': 100.0
+        }
+        
+        # Create obstacles that form a wide passage (60px wide - enough clearance)
+        wall_entities = [
+            {'id': 2, 'type': EntityType.REGULAR_DOOR, 'x': 70.0, 'y': 100.0},  # Left obstacle
+            {'id': 3, 'type': EntityType.REGULAR_DOOR, 'x': 130.0, 'y': 100.0}  # Right obstacle
+        ]
+        
+        all_entities = [bounce_block] + wall_entities
+        
+        # Test horizontal path through wide passage
+        path_start = (80.0, 100.0)
+        path_end = (120.0, 100.0)
+        
+        # Should NOT block traversal in wide passage (bounce block can be displaced)
+        blocks_path = self.hazard_system.analyze_bounce_block_traversal_blocking(
+            bounce_block, all_entities, path_start, path_end
+        )
+        
+        assert not blocks_path, "Bounce block should not block wide passage"
+    
+    def test_point_intersects_path_utility(self):
+        """Test the point-path intersection utility method."""
+        # Test point on line segment
+        intersects = self.hazard_system._point_intersects_path(
+            (50.0, 50.0), (0.0, 50.0), (100.0, 50.0), 5.0
+        )
+        assert intersects, "Point on line segment should intersect"
+        
+        # Test point near line segment
+        intersects_near = self.hazard_system._point_intersects_path(
+            (50.0, 53.0), (0.0, 50.0), (100.0, 50.0), 5.0
+        )
+        assert intersects_near, "Point within radius should intersect"
+        
+        # Test point far from line segment
+        no_intersect = self.hazard_system._point_intersects_path(
+            (50.0, 60.0), (0.0, 50.0), (100.0, 50.0), 5.0
+        )
+        assert not no_intersect, "Point outside radius should not intersect"
+        
+        # Test point beyond line segment end
+        beyond_end = self.hazard_system._point_intersects_path(
+            (110.0, 50.0), (0.0, 50.0), (100.0, 50.0), 5.0
+        )
+        assert not beyond_end, "Point beyond line segment should not intersect"
 
 
 if __name__ == '__main__':

@@ -203,11 +203,13 @@ def calculate_clearance_directions(
     
     # Check for obstacles in each direction
     for entity in level_entities:
-        if entity.type == EntityType.BOUNCE_BLOCK:
+        # Handle both dictionary and object entities
+        entity_type = entity.get('type') if isinstance(entity, dict) else getattr(entity, 'type', None)
+        if entity_type == EntityType.BOUNCE_BLOCK:
             continue  # Skip other bounce blocks for clearance calculation
         
-        entity_x = entity.get('x', 0.0)
-        entity_y = entity.get('y', 0.0)
+        entity_x = entity.get('x', 0.0) if isinstance(entity, dict) else getattr(entity, 'x', 0.0)
+        entity_y = entity.get('y', 0.0) if isinstance(entity, dict) else getattr(entity, 'y', 0.0)
         
         # Calculate distances in each direction
         if abs(entity_y - block_y) < BOUNCE_BLOCK_SIZE:  # Same horizontal level

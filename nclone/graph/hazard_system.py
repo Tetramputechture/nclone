@@ -14,6 +14,7 @@ from enum import IntEnum
 
 from ..constants.entity_types import EntityType
 from ..constants.physics_constants import NINJA_RADIUS, TILE_PIXEL_SIZE
+from ..utils.physics_utils import calculate_clearance_directions
 
 
 class HazardType(IntEnum):
@@ -450,28 +451,32 @@ class HazardClassificationSystem:
         return None  # States 0 and 3 handled by static classification
     
     def _classify_one_way_platform(self, entity: Dict[str, Any]) -> Optional[HazardInfo]:
-        """Classify one-way platform hazard."""
+        """
+        Classify one-way platform hazard with continuous coordinate support.
+        
+        One-way platforms:
+        - Can have continuous coordinates (not grid-aligned)
+        - Block movement from specific direction based on orientation
+        - Size: 12*12 pixel square (24*24 total)
+        - Complex collision detection based on approach angle and velocity
+        """
         entity_id = entity.get('id', -1)
         entity_x = entity.get('x', 0.0)
         entity_y = entity.get('y', 0.0)
         orientation = entity.get('orientation', 0)
         
-        # One-way platforms block movement from specific direction
+        # Get platform normal vector (direction it blocks from)
+        normal_x, normal_y = self._get_orientation_vector(orientation)
+        
+        # One-way platforms block movement from the direction of their normal
         blocked_direction = orientation
         blocked_directions = {blocked_direction}
         
-        # Calculate blocked cells based on platform orientation
-        blocked_cells = set()
-        platform_dx, platform_dy = self._get_orientation_vector(orientation)
-        
-        # Block cells in the platform area
-        for i in range(-1, 2):  # 3-cell wide platform
-            for j in range(-1, 2):
-                block_x = entity_x + i * 12 * platform_dy  # Perpendicular to orientation
-                block_y = entity_y + j * 12 * platform_dx
-                sub_x = int(block_x // 12)
-                sub_y = int(block_y // 12)
-                blocked_cells.add((sub_x, sub_y))
+        # Platform is 24x24 pixels (SEMI_SIDE = 12)
+        platform_semi_side = 12.0
+        blocked_cells = self._create_blocked_cells_area(
+            entity_x, entity_y, int(platform_semi_side * 2)  # 24 pixels
+        )
         
         return HazardInfo(
             entity_id=entity_id,
@@ -480,7 +485,7 @@ class HazardClassificationSystem:
             position=(entity_x, entity_y),
             state=HazardState.ACTIVE,
             blocked_directions=blocked_directions,
-            danger_radius=self.ONE_WAY_PLATFORM_THICKNESS,
+            danger_radius=platform_semi_side * 2,  # 24 pixels
             activation_range=0.0,
             blocked_cells=blocked_cells,
             velocity=(0.0, 0.0),
@@ -558,6 +563,113 @@ class HazardClassificationSystem:
         """Classify death ball as dynamic hazard."""
         # Similar to drone but with different movement pattern
         return self._classify_drone(entity)  # Reuse drone logic for now
+    
+    def analyze_bounce_block_traversal_blocking(
+        self, 
+        bounce_block: Dict[str, Any], 
+        all_entities: List[Dict[str, Any]],
+        path_start: Tuple[float, float],
+        path_end: Tuple[float, float]
+    ) -> bool:
+        """
+        Analyze if a bounce block blocks traversal in a narrow passage.
+        
+        Bounce blocks can block traversal if they're positioned in the center
+        of a one-tile (24px) path and the ninja cannot displace them enough
+        horizontally or vertically to get clearance.
+        
+        Args:
+            bounce_block: Bounce block entity data
+            all_entities: All entities in the level for clearance calculation
+            path_start: Start position of the path being checked
+            path_end: End position of the path being checked
+            
+        Returns:
+            True if bounce block blocks the path, False otherwise
+        """
+        block_x = bounce_block.get('x', 0.0)
+        block_y = bounce_block.get('y', 0.0)
+        
+        # Bounce block size: 9*9 pixel square
+        bounce_block_semi_side = 9.0 / 2  # 4.5 pixels (half the side length)
+        bounce_block_radius = bounce_block_semi_side * math.sqrt(2)  # Diagonal radius
+        
+        # Check if bounce block intersects with the path
+        if not self._point_intersects_path(
+            (block_x, block_y), path_start, path_end, 
+            bounce_block_radius + NINJA_RADIUS
+        ):
+            return False  # Doesn't intersect path
+        
+        # Calculate clearance in all directions
+        clearance_dirs = calculate_clearance_directions((block_x, block_y), all_entities)
+        
+        # Determine path direction
+        path_dx = path_end[0] - path_start[0]
+        path_dy = path_end[1] - path_start[1]
+        path_length = math.sqrt(path_dx * path_dx + path_dy * path_dy)
+        
+        if path_length < 1e-6:
+            return False  # No meaningful path
+        
+        path_dx /= path_length
+        path_dy /= path_length
+        
+        # Check if ninja can displace bounce block enough to get clearance
+        required_clearance = NINJA_RADIUS + bounce_block_semi_side + 2.0  # 2px safety margin
+        
+        # Check displacement options perpendicular to path direction
+        if abs(path_dx) > abs(path_dy):  # Horizontal path
+            # For horizontal path, check horizontal displacement options
+            left_clearance = clearance_dirs.get('left', 0.0)
+            right_clearance = clearance_dirs.get('right', 0.0)
+            
+            # If bounce block can't be displaced horizontally enough, it blocks
+            if left_clearance < required_clearance and right_clearance < required_clearance:
+                return True
+        else:  # Vertical path
+            # For vertical path, check vertical displacement options
+            up_clearance = clearance_dirs.get('up', 0.0)
+            down_clearance = clearance_dirs.get('down', 0.0)
+            
+            # If bounce block can't be displaced vertically enough, it blocks
+            if up_clearance < required_clearance and down_clearance < required_clearance:
+                return True
+        
+        return False  # Bounce block can be displaced, doesn't block traversal
+    
+    def _point_intersects_path(
+        self, 
+        point: Tuple[float, float], 
+        path_start: Tuple[float, float], 
+        path_end: Tuple[float, float],
+        radius: float
+    ) -> bool:
+        """Check if a point (with radius) intersects a path line segment."""
+        px, py = point
+        x1, y1 = path_start
+        x2, y2 = path_end
+        
+        # Calculate distance from point to line segment
+        dx = x2 - x1
+        dy = y2 - y1
+        length_sq = dx * dx + dy * dy
+        
+        if length_sq < 1e-6:
+            # Path is a point
+            dist_sq = (px - x1) * (px - x1) + (py - y1) * (py - y1)
+            return dist_sq <= radius * radius
+        
+        # Project point onto line segment
+        t = max(0, min(1, ((px - x1) * dx + (py - y1) * dy) / length_sq))
+        
+        # Find closest point on line segment
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+        
+        # Check distance
+        dist_sq = (px - closest_x) * (px - closest_x) + (py - closest_y) * (py - closest_y)
+        return dist_sq <= radius * radius
     
     def _get_orientation_vector(self, orientation: int) -> Tuple[float, float]:
         """Convert orientation (0-7) to unit vector."""
