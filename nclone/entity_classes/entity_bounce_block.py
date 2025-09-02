@@ -103,7 +103,7 @@ class EntityBounceBlock(Entity):
         self._nearby_blocks_update_counter = 0
 
     def move(self):
-        """Move the bounce block."""
+        """Update the position and speed of the bounce block by applying the spring force and dampening."""
         self.xspeed *= self.DAMPENING
         self.yspeed *= self.DAMPENING
         self.xpos += self.xspeed
@@ -123,7 +123,7 @@ class EntityBounceBlock(Entity):
         self._update_data_tracking()
 
     def physical_collision(self):
-        """Physical collision with data tracking."""
+        """Apply 80% of the depenetration to the bounce block and 20% to the ninja."""
         ninja = self.sim.ninja
         depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
                                             self.SEMI_SIDE + NINJA_RADIUS)
@@ -142,7 +142,7 @@ class EntityBounceBlock(Entity):
             return (depen_x, depen_y), (depen_len * self.STRENGTH, depen[1][1])
 
     def logical_collision(self):
-        """Logical collision."""
+        """Check if the ninja can interact with the wall of the bounce block"""
         ninja = self.sim.ninja
         depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
                                             self.SEMI_SIDE + NINJA_RADIUS + 0.1)
