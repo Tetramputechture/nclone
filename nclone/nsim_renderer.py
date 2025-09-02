@@ -4,10 +4,9 @@ from . import render_utils
 from .tile_renderer import TileRenderer
 from .entity_renderer import EntityRenderer
 from .debug_overlay_renderer import DebugOverlayRenderer
-from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
 
 class NSimRenderer:
-    def __init__(self, sim, render_mode: str = 'rgb_array', enable_debug_overlay: bool = False, pathfinding_visualizer: Optional[PathfindingVisualizer] = None):
+    def __init__(self, sim, render_mode: str = 'rgb_array', enable_debug_overlay: bool = False):
         self.sim = sim
         if render_mode == 'human':
             self.screen = pygame.display.set_mode(
@@ -31,7 +30,7 @@ class NSimRenderer:
 
         self.tile_renderer = TileRenderer(self.sim, self.screen, self.adjust)
         self.entity_renderer = EntityRenderer(self.sim, self.screen, self.adjust, self.width, self.height)
-        self.debug_overlay_renderer = DebugOverlayRenderer(self.sim, self.screen, self.adjust, self.tile_x_offset, self.tile_y_offset, pathfinding_visualizer)
+        self.debug_overlay_renderer = DebugOverlayRenderer(self.sim, self.screen, self.adjust, self.tile_x_offset, self.tile_y_offset)
 
     def draw(self, init: bool, debug_info: Optional[dict] = None) -> pygame.Surface:
         self._update_screen_size_and_offsets()

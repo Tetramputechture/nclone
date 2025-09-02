@@ -51,7 +51,6 @@ class EntityDeathBall(Entity):
         - Supports position logging for debugging/replay
         - Maintains separate collision radii for different interaction types
     """
-    ENTITY_TYPE = 25
     RADIUS = 5  # radius for collisions against ninjas
     RADIUS2 = 8  # radius for collisions against other balls and tiles
     ACCELERATION = 0.04

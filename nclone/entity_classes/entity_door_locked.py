@@ -40,7 +40,6 @@ class EntityDoorLocked(EntityDoorBase):
         - Updates ninja progression metrics
         - One-time state change on activation
     """
-    ENTITY_TYPE = 6
     RADIUS = 5
     MAX_COUNT_PER_LEVEL = 256
 

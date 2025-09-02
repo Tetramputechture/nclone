@@ -50,7 +50,6 @@ class EntityExit(Entity):
         - Handles win condition triggering
         - Manages entity grid presence
     """
-    ENTITY_TYPE = 3
     RADIUS = 12
     MAX_COUNT_PER_LEVEL = 16
 

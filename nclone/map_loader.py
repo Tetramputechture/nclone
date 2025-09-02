@@ -3,23 +3,7 @@ import math
 from .ninja import Ninja
 # Import base classes from entities.py module
 from .entities import GridSegmentLinear, GridSegmentCircular, Entity
-# Import entity classes from entity_classes package
-from .entity_classes.entity_toggle_mine import EntityToggleMine
-from .entity_classes.entity_gold import EntityGold
-from .entity_classes.entity_exit import EntityExit
-from .entity_classes.entity_exit_switch import EntityExitSwitch
-from .entity_classes.entity_door_regular import EntityDoorRegular
-from .entity_classes.entity_door_locked import EntityDoorLocked
-from .entity_classes.entity_door_trap import EntityDoorTrap
-from .entity_classes.entity_launch_pad import EntityLaunchPad
-from .entity_classes.entity_one_way_platform import EntityOneWayPlatform
-from .entity_classes.entity_drone_zap import EntityDroneZap
-from .entity_classes.entity_bounce_block import EntityBounceBlock
-from .entity_classes.entity_thwump import EntityThwump
-from .entity_classes.entity_boost_pad import EntityBoostPad
-from .entity_classes.entity_death_ball import EntityDeathBall
-from .entity_classes.entity_mini_drone import EntityMiniDrone
-from .entity_classes.entity_shove_thwump import EntityShoveThwump
+from .utils.entity_factory import create_entity_instance
 from .tile_definitions import (
     TILE_GRID_EDGE_MAP, TILE_SEGMENT_ORTHO_MAP, TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_CIRCULAR_MAP
 )
@@ -130,62 +114,12 @@ class MapLoader:
             ycoord = self.sim.map_data[index + 2]
             orientation = self.sim.map_data[index + 3]
             mode = self.sim.map_data[index + 4]
-            entity = None # Initialize entity to None
-
-            if entity_type == 1:
-                entity = EntityToggleMine(entity_type, self.sim, xcoord, ycoord, 0)
-            elif entity_type == 2:
-                entity = EntityGold(entity_type, self.sim, xcoord, ycoord)
-            elif entity_type == 3:
-                parent = EntityExit(entity_type, self.sim, xcoord, ycoord)
-                self.sim.entity_dic[entity_type].append(parent)
-                child_xcoord = self.sim.map_data[index + 5 * exit_door_count + 1]
-                child_ycoord = self.sim.map_data[index + 5 * exit_door_count + 2]
-                entity = EntityExitSwitch(
-                    4, self.sim, child_xcoord, child_ycoord, parent)
-            elif entity_type == 5:
-                entity = EntityDoorRegular(
-                    entity_type, self.sim, xcoord, ycoord, orientation, xcoord, ycoord)
-            elif entity_type == 6:
-                switch_xcoord = self.sim.map_data[index + 6]
-                switch_ycoord = self.sim.map_data[index + 7]
-                entity = EntityDoorLocked(
-                    entity_type, self.sim, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
-            elif entity_type == 8:
-                switch_xcoord = self.sim.map_data[index + 6]
-                switch_ycoord = self.sim.map_data[index + 7]
-                entity = EntityDoorTrap(
-                    entity_type, self.sim, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
-            elif entity_type == 10:
-                entity = EntityLaunchPad(
-                    entity_type, self.sim, xcoord, ycoord, orientation)
-            elif entity_type == 11:
-                entity = EntityOneWayPlatform(
-                    entity_type, self.sim, xcoord, ycoord, orientation)
-            elif entity_type == 14 and not self.sim.sim_config.basic_sim:
-                entity = EntityDroneZap(
-                    entity_type, self.sim, xcoord, ycoord, orientation, mode)
-            # elif type == 15 and not ARGUMENTS.basic_sim: # Placeholder for EntityDroneChaser
-            #    entity = EntityDroneChaser(type, self.sim, xcoord, ycoord, orientation, mode)
-            elif entity_type == 17:
-                entity = EntityBounceBlock(entity_type, self.sim, xcoord, ycoord)
-            elif entity_type == 20:
-                entity = EntityThwump(
-                    entity_type, self.sim, xcoord, ycoord, orientation)
-            elif entity_type == 21:
-                entity = EntityToggleMine(entity_type, self.sim, xcoord, ycoord, 1) # Active mine
-            # elif entity_type == 23 and not self.sim.sim_config.basic_sim: # Placeholder for EntityLaser
-            #     entity = EntityLaser(
-            #         entity_type, self.sim, xcoord, ycoord, orientation, mode)
-            elif entity_type == 24:
-                entity = EntityBoostPad(entity_type, self.sim, xcoord, ycoord)
-            elif entity_type == 25 and not self.sim.sim_config.basic_sim:
-                entity = EntityDeathBall(entity_type, self.sim, xcoord, ycoord)
-            elif entity_type == 26 and not self.sim.sim_config.basic_sim:
-                entity = EntityMiniDrone(
-                    entity_type, self.sim, xcoord, ycoord, orientation, mode)
-            elif entity_type == 28:
-                entity = EntityShoveThwump(entity_type, self.sim, xcoord, ycoord)
+            
+            # Create entity using the entity factory utility
+            entity = create_entity_instance(
+                entity_type, self.sim, xcoord, ycoord, orientation, mode,
+                map_data=self.sim.map_data, index=index, exit_door_count=exit_door_count
+            )
             
             if entity:
                 # It's possible that the entity type does not yet exist in entity_dic if it's the first of its kind

@@ -50,7 +50,6 @@ class EntityGold(Entity):
         - Supports collection logging
         - No complex physics interactions
     """
-    ENTITY_TYPE = 2
     RADIUS = 6
     MAX_COUNT_PER_LEVEL = 8192
 

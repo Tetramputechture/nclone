@@ -71,7 +71,6 @@ class EntityToggleMine(Entity):
             * Death state checks
             * Transition timing
     """
-    ENTITY_TYPE = 1  # Also handles type 21 for toggled state
     RADII = {0: 4, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
     MAX_COUNT_PER_LEVEL = 8192
 

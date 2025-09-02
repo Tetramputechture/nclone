@@ -72,7 +72,6 @@ class EntityShoveThwump(Entity):
             * Position restoration
             * Grid cell transitions
     """
-    ENTITY_TYPE = 28
     SEMI_SIDE = 12
     RADIUS = 8  # for the projectile inside
     MAX_COUNT_PER_LEVEL = 128

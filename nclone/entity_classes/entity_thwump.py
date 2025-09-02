@@ -71,7 +71,6 @@ class EntityThwump(Entity):
             * Origin position tracking
             * Direction-based behavior
     """
-    ENTITY_TYPE = 20
     SEMI_SIDE = 9
     FORWARD_SPEED = 20/7
     BACKWARD_SPEED = 8/7

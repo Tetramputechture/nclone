@@ -3,15 +3,15 @@ Graph-based structural representations for N++ environments.
 
 This package provides hierarchical multi-resolution graph processing
 for N++ levels, enabling both precise local movement decisions and
-strategic global pathfinding.
+strategic global pathfinding with comprehensive bounce block mechanics.
 
 Key Components:
-    - HierarchicalGraphBuilder: Multi-resolution graph builder (6px, 24px, 96px)
+    - HierarchicalGraphBuilder: Consolidated multi-resolution graph builder with bounce block support
     - HierarchicalGraphData: Container for multi-resolution graph data
     - ResolutionLevel: Enumeration of resolution levels
 
-Note: The standard GraphBuilder has been moved to archive/ in favor
-of the more advanced hierarchical approach.
+The HierarchicalGraphBuilder now includes all bounce block-aware graph building
+functionality in a single, consolidated class.
 """
 
 from .hierarchical_builder import (
@@ -19,6 +19,9 @@ from .hierarchical_builder import (
     HierarchicalGraphData,
     ResolutionLevel
 )
+from .feature_extraction import FeatureExtractor
+from .edge_building import EdgeBuilder
+from .graph_construction import GraphConstructor
 from .common import (
     GraphData,
     NodeType,
@@ -34,6 +37,9 @@ __all__ = [
     'HierarchicalGraphBuilder',
     'HierarchicalGraphData', 
     'ResolutionLevel',
+    'FeatureExtractor',
+    'EdgeBuilder',
+    'GraphConstructor',
     'GraphData',
     'NodeType',
     'EdgeType',

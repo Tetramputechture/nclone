@@ -1,21 +1,18 @@
 import pygame
 import numpy as np
 from . import render_utils
-# Legacy pathfinding visualizer moved to archive
-# from .pathfinding.pathfinding_visualizer import PathfindingVisualizer
 from typing import Optional
 from .constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT, TILE_PIXEL_SIZE
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
 from .graph.common import EdgeType, GraphData
 
 class DebugOverlayRenderer:
-    def __init__(self, sim, screen, adjust, tile_x_offset, tile_y_offset, pathfinding_visualizer: Optional[object] = None):
+    def __init__(self, sim, screen, adjust, tile_x_offset, tile_y_offset):
         self.sim = sim
         self.screen = screen
         self.adjust = adjust
         self.tile_x_offset = tile_x_offset
         self.tile_y_offset = tile_y_offset
-        self.pathfinding_visualizer = pathfinding_visualizer
         pygame.font.init() # Ensure font module is initialized
         # Quadtree visualization removed
         # Colors for Entity Grid visualization
@@ -221,24 +218,6 @@ class DebugOverlayRenderer:
         if not debug_info:
             return surface # Return empty surface if no debug info
 
-        # Draw pathfinding visualization if visualizer and data are available
-        if self.pathfinding_visualizer and debug_info.get('pathfinding'):
-            pf_data = debug_info['pathfinding']
-            # Ensure pathfinding visualizer has the latest screen parameters
-            self.pathfinding_visualizer.update_params(self.adjust, self.tile_x_offset, self.tile_y_offset)
-
-            if 'surfaces' in pf_data:
-                self.pathfinding_visualizer.draw_surfaces(surface, pf_data['surfaces'])
-            if 'nav_graph' in pf_data:
-                self.pathfinding_visualizer.draw_nav_graph(surface, pf_data['nav_graph'])
-            if 'path' in pf_data and 'nav_graph' in pf_data: # Path needs graph to get node positions
-                self.pathfinding_visualizer.draw_path(surface, pf_data['path'], pf_data['nav_graph'])
-            if 'jump_trajectory' in pf_data:
-                self.pathfinding_visualizer.draw_jump_trajectory(surface, pf_data['jump_trajectory'])
-            if 'los_path' in pf_data:
-                self.pathfinding_visualizer.draw_los_lines(surface, pf_data['los_path'])
-            # We might add enemy prediction visualization here later if needed
-
         # Draw exploration grid if available
         exploration_surface = self._draw_exploration_grid(debug_info)
         if exploration_surface:
@@ -258,11 +237,6 @@ class DebugOverlayRenderer:
             grid_surface = self._draw_grid_outline(debug_info['grid_outline'])
             surface.blit(grid_surface, (0, 0))
 
-        # # Draw entity grid if sim.grid_entity exists
-        # if hasattr(self.sim, 'grid_entity'):
-        #     entity_grid_surface = self._draw_entity_grid()
-        #     surface.blit(entity_grid_surface, (0,0))
-
         # Base font and settings
         try:
             font = pygame.font.Font(None, 20)  # Small font size
@@ -278,8 +252,6 @@ class DebugOverlayRenderer:
             height = 0
             for key, value in d.items():
                 if key == 'exploration': # Don't count exploration dict for text height
-                    continue
-                if key == 'pathfinding': # Don't count pathfinding dict for text height, it's visual
                     continue
                 if key == 'grid_outline': # Don't count grid outline dict for text height, it's visual
                     continue
@@ -312,8 +284,6 @@ class DebugOverlayRenderer:
 
             for key, value in d.items():
                 if key == 'exploration': # Skip rendering exploration data as text
-                    continue
-                if key == 'pathfinding': # Skip rendering pathfinding data as text
                     continue
                 if key == 'graph': # Skip rendering graph data as text
                     continue

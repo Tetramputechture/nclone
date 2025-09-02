@@ -4,7 +4,6 @@ from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
 
-
 class EntityBoostPad(Entity):
     """Launch Pad Entity (Type 24)
 
@@ -34,7 +33,6 @@ class EntityBoostPad(Entity):
         - Normalizes velocity vector before applying boost
         - Applies boost instantaneously on first frame of contact
     """
-    ENTITY_TYPE = 24
     RADIUS = 6
     MAX_COUNT_PER_LEVEL = 128
 

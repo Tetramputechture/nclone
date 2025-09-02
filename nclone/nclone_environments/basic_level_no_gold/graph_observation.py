@@ -6,7 +6,7 @@ alongside the existing visual and symbolic observations.
 """
 
 import numpy as np
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple
 from gymnasium.spaces import Box, Dict as SpacesDict
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder

@@ -69,7 +69,6 @@ class EntityLaunchPad(Entity):
             * Upward enhancement
             * Precise thresholds
     """
-    ENTITY_TYPE = 10
     RADIUS = 6
     BOOST = 36/7
     MAX_COUNT_PER_LEVEL = 256
