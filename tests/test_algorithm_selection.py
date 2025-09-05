@@ -9,7 +9,7 @@ import unittest
 import time
 from unittest.mock import Mock, patch
 
-from nclone.graph.pathfinding import AccuratePathfindingEngine, PathfindingAlgorithm
+from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
 from nclone.graph.common import GraphData, NodeType, EdgeType
 
 
@@ -18,7 +18,7 @@ class TestAlgorithmSelection(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.engine = AccuratePathfindingEngine()
+        self.engine = PathfindingEngine()
         
         # Create a simple test graph using the actual GraphData structure
         import numpy as np
@@ -203,7 +203,7 @@ class TestAlgorithmPerformanceCharacteristics(unittest.TestCase):
     
     def setUp(self):
         """Set up performance test fixtures."""
-        self.engine = AccuratePathfindingEngine()
+        self.engine = PathfindingEngine()
         
         # Create simple test graph (reuse from main test class)
         import numpy as np

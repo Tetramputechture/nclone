@@ -110,7 +110,7 @@ class PathNode:
         return self.f_cost < other.f_cost
 
 
-class AccuratePathfindingEngine:
+class PathfindingEngine:
     """
     Physics-accurate pathfinding engine for N++ graph navigation.
     
@@ -713,7 +713,3 @@ class AccuratePathfindingEngine:
                 tiles.append(tile_idx)
         
         return tiles
-
-
-# Compatibility alias for existing code
-PathfindingEngine = AccuratePathfindingEngine

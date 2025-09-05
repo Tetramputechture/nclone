@@ -13,7 +13,7 @@ from enum import IntEnum
 import json
 
 from .visualization import GraphVisualizer, VisualizationConfig, VisualizationMode, InteractiveGraphVisualizer
-from .pathfinding import AccuratePathfindingEngine, PathfindingAlgorithm, PathResult
+from .pathfinding import PathfindingEngine, PathfindingAlgorithm, PathResult
 from .enhanced_debug_overlay import EnhancedDebugOverlay, OverlayMode
 from .hierarchical_builder import HierarchicalGraphBuilder
 from .graph_construction import GraphConstructor
@@ -129,7 +129,7 @@ class GraphVisualizationAPI:
                 
                 # Initialize pathfinding engine with level data for accurate physics
                 if self.pathfinding_engine is None or self.pathfinding_engine.level_data != request.level_data:
-                    self.pathfinding_engine = AccuratePathfindingEngine(
+                    self.pathfinding_engine = PathfindingEngine(
                         level_data=request.level_data,
                         entities=request.entities or []
                     )

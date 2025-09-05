@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from enum import IntEnum
 
 from .visualization import GraphVisualizer, VisualizationConfig, VisualizationMode
-from .pathfinding import AccuratePathfindingEngine, PathfindingAlgorithm
+from .pathfinding import PathfindingEngine, PathfindingAlgorithm
 from .common import GraphData, NodeType, EdgeType
 from .hierarchical_builder import HierarchicalGraphBuilder
 from ..constants import TILE_PIXEL_SIZE, FULL_MAP_WIDTH, FULL_MAP_HEIGHT
@@ -210,7 +210,7 @@ class EnhancedDebugOverlay:
             entities = self._extract_entities_from_sim()
             
             if self.pathfinding_engine is None:
-                self.pathfinding_engine = AccuratePathfindingEngine(
+                self.pathfinding_engine = PathfindingEngine(
                     level_data=level_data,
                     entities=entities
                 )

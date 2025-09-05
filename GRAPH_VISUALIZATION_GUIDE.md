@@ -135,10 +135,10 @@ font_size = VisualizationDefaults.MEDIUM_FONT_SIZE
 ### Visualizing Shortest Paths
 
 ```python
-from nclone.graph.pathfinding import AccuratePathfindingEngine, PathfindingAlgorithm
+from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
 
 # Create pathfinding engine
-pathfinder = AccuratePathfindingEngine(level_data, entities)
+pathfinder = PathfindingEngine(level_data, entities)
 
 # Find shortest path using A* (fast, for real-time visualization)
 start_pos = (50, 300)
