@@ -3,6 +3,7 @@ import math
 from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
+from ..constants.physics_constants import SHOVE_THWUMP_SEMI_SIDE, SHOVE_THWUMP_PROJECTILE_RADIUS
 
 
 class EntityShoveThwump(Entity):
@@ -72,8 +73,8 @@ class EntityShoveThwump(Entity):
             * Position restoration
             * Grid cell transitions
     """
-    SEMI_SIDE = 12
-    RADIUS = 8  # for the projectile inside
+    SEMI_SIDE = SHOVE_THWUMP_SEMI_SIDE
+    RADIUS = SHOVE_THWUMP_PROJECTILE_RADIUS  # for the projectile inside
     MAX_COUNT_PER_LEVEL = 128
 
     def __init__(self, type, sim, xcoord, ycoord):
