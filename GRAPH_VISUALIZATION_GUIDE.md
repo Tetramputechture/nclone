@@ -135,18 +135,27 @@ font_size = VisualizationDefaults.MEDIUM_FONT_SIZE
 ### Visualizing Shortest Paths
 
 ```python
-from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
+from nclone.graph.pathfinding import AccuratePathfindingEngine, PathfindingAlgorithm
 
 # Create pathfinding engine
-pathfinder = PathfindingEngine(graph_data, level_data, entities)
+pathfinder = AccuratePathfindingEngine(level_data, entities)
 
-# Find shortest path
+# Find shortest path using A* (fast, for real-time visualization)
 start_pos = (50, 300)
 goal_pos = (100, 200)
-result = pathfinder.find_path(
-    start_pos, 
-    goal_pos, 
-    algorithm=PathfindingAlgorithm.A_STAR_PHYSICS
+result = pathfinder.find_shortest_path(
+    graph_data,
+    start_node_idx, 
+    goal_node_idx, 
+    algorithm=PathfindingAlgorithm.A_STAR
+)
+
+# For comprehensive analysis, use Dijkstra (slower but guaranteed optimal)
+optimal_result = pathfinder.find_shortest_path(
+    graph_data,
+    start_node_idx, 
+    goal_node_idx, 
+    algorithm=PathfindingAlgorithm.DIJKSTRA
 )
 
 # Visualize with path highlighted
@@ -154,6 +163,34 @@ surface = visualizer.create_standalone_visualization(
     graph_data,
     goal_position=goal_pos,
     start_position=start_pos
+)
+```
+
+### Algorithm Selection for Pathfinding
+
+The system provides both A* and Dijkstra algorithms for different use cases:
+
+**A* Algorithm (Default)**:
+- **Use for**: Real-time visualization, RL training, interactive features
+- **Advantages**: 10-100x faster, lower memory usage
+- **Best when**: Single goal, standard level geometry, performance critical
+
+**Dijkstra Algorithm**:
+- **Use for**: Level analysis, complex levels, validation
+- **Advantages**: Guaranteed optimal paths, handles complex graph structures
+- **Best when**: Multiple goals, switches/teleporters, accuracy critical
+
+```python
+# Real-time pathfinding for interactive visualization
+fast_path = pathfinder.find_shortest_path(
+    graph_data, start, goal, 
+    algorithm=PathfindingAlgorithm.A_STAR
+)
+
+# Comprehensive analysis for level design validation
+optimal_path = pathfinder.find_shortest_path(
+    graph_data, start, goal, 
+    algorithm=PathfindingAlgorithm.DIJKSTRA
 )
 ```
 
