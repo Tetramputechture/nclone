@@ -4,6 +4,7 @@ from .ninja import Ninja
 # Import base classes from entities.py module
 from .entities import GridSegmentLinear, GridSegmentCircular, Entity
 from .utils.entity_factory import create_entity_instance
+from .utils.tile_segment_factory import TileSegmentFactory
 from .tile_definitions import (
     TILE_GRID_EDGE_MAP, TILE_SEGMENT_ORTHO_MAP, TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_CIRCULAR_MAP
 )
@@ -35,63 +36,37 @@ class MapLoader:
             self.sim.tile_dic[(0, y_coord_tile)] = 1
             self.sim.tile_dic[(43, y_coord_tile)] = 1
 
-        # This loops makes the inventory of grid edges and orthogonal linear segments,
-        # and initiates non-orthogonal linear segments and circular segments.
+        # Use centralized tile segment factory to create all segments
+        # This ensures consistency with PreciseCollision and eliminates code duplication
+        self._populate_segment_dictionaries()
+
+    def _populate_segment_dictionaries(self):
+        """
+        Populate segment dictionaries using the centralized TileSegmentFactory.
+        
+        This method handles both grid edge creation (for MapLoader compatibility)
+        and segment creation using the shared factory logic.
+        """
+        # Process grid edges (still needed for MapLoader's grid edge dictionaries)
         for coord, tile_id in self.sim.tile_dic.items():
             xcoord, ycoord = coord
-            # Assign every grid edge and orthogonal linear segment to the dictionaries.
-            if tile_id in TILE_GRID_EDGE_MAP and tile_id in TILE_SEGMENT_ORTHO_MAP:
+            if tile_id in TILE_GRID_EDGE_MAP:
                 grid_edge_list = TILE_GRID_EDGE_MAP[tile_id]
-                segment_ortho_list = TILE_SEGMENT_ORTHO_MAP[tile_id]
+                # Process horizontal grid edges
                 for y_loop_idx in range(3):
                     for x_loop_idx in range(2):
-                        self.sim.hor_grid_edge_dic[(2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)] = \
-                            (self.sim.hor_grid_edge_dic[(2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)] + grid_edge_list[2 * y_loop_idx + x_loop_idx]) % 2
-                        self.sim.hor_segment_dic[(2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)] += segment_ortho_list[2 * y_loop_idx + x_loop_idx]
+                        key = (2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)
+                        self.sim.hor_grid_edge_dic[key] = \
+                            (self.sim.hor_grid_edge_dic[key] + grid_edge_list[2 * y_loop_idx + x_loop_idx]) % 2
+                # Process vertical grid edges
                 for x_loop_idx in range(3):
                     for y_loop_idx in range(2):
-                        self.sim.ver_grid_edge_dic[(2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)] = \
-                            (self.sim.ver_grid_edge_dic[(2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)] + grid_edge_list[2 * x_loop_idx + y_loop_idx + 6]) % 2
-                        self.sim.ver_segment_dic[(2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)] += segment_ortho_list[2 * x_loop_idx + y_loop_idx + 6]
-
-            # Initiate non-orthogonal linear and circular segments.
-            xtl = xcoord * 24
-            ytl = ycoord * 24
-            if tile_id in TILE_SEGMENT_DIAG_MAP:
-                ((x1, y1), (x2, y2)) = TILE_SEGMENT_DIAG_MAP[tile_id]
-                self.sim.segment_dic[coord].append(
-                    GridSegmentLinear((xtl + x1, ytl + y1), (xtl + x2, ytl + y2)))
-            if tile_id in TILE_SEGMENT_CIRCULAR_MAP:
-                ((x_center, y_center), quadrant,
-                 convex) = TILE_SEGMENT_CIRCULAR_MAP[tile_id]
-                self.sim.segment_dic[coord].append(
-                    GridSegmentCircular((xtl + x_center, ytl + y_center), quadrant, convex))
-
-        # Initiate segments from the dictionaries of orthogonal linear segments.
-        # Note that two segments of the same position but opposite orientation cancel each other,
-        # and no segment is initiated.
-        for coord, state in self.sim.hor_segment_dic.items():
-            if state:
-                xcoord, ycoord = coord
-                cell = (math.floor(xcoord / 2),
-                        math.floor((ycoord - 0.1 * state) / 2))
-                point1 = (12 * xcoord, 12 * ycoord)
-                point2 = (12 * xcoord + 12, 12 * ycoord)
-                if state == -1:
-                    point1, point2 = point2, point1
-                self.sim.segment_dic[cell].append(
-                    GridSegmentLinear(point1, point2))
-        for coord, state in self.sim.ver_segment_dic.items():
-            if state:
-                xcoord, ycoord = coord
-                cell = (math.floor((xcoord - 0.1 * state) / 2),
-                        math.floor(ycoord / 2))
-                point1 = (12 * xcoord, 12 * ycoord + 12)
-                point2 = (12 * xcoord, 12 * ycoord)
-                if state == -1:
-                    point1, point2 = point2, point1
-                self.sim.segment_dic[cell].append(
-                    GridSegmentLinear(point1, point2))
+                        key = (2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)
+                        self.sim.ver_grid_edge_dic[key] = \
+                            (self.sim.ver_grid_edge_dic[key] + grid_edge_list[2 * x_loop_idx + y_loop_idx + 6]) % 2
+        
+        # Use centralized factory for segment creation
+        TileSegmentFactory.create_segments_for_simulator(self.sim, self.sim.tile_dic)
 
     def load_map_entities(self):
         """Load the map entities into the simulation. These should change during the simulation,
