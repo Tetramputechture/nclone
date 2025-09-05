@@ -2,6 +2,7 @@
 from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
+from ..constants.physics_constants import TOGGLE_MINE_RADII
 
 
 class EntityToggleMine(Entity):
@@ -71,7 +72,7 @@ class EntityToggleMine(Entity):
             * Death state checks
             * Transition timing
     """
-    RADII = {0: 4, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
+    RADII = TOGGLE_MINE_RADII  # 0:toggled, 1:untoggled, 2:toggling
     MAX_COUNT_PER_LEVEL = 8192
 
     def __init__(self, entity_type, sim, xcoord, ycoord, state):

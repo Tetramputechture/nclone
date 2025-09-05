@@ -3,6 +3,7 @@ import math
 from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
+from ..constants.physics_constants import THWUMP_SEMI_SIDE, THWUMP_FORWARD_SPEED, THWUMP_BACKWARD_SPEED
 
 
 class EntityThwump(Entity):
@@ -71,9 +72,9 @@ class EntityThwump(Entity):
             * Origin position tracking
             * Direction-based behavior
     """
-    SEMI_SIDE = 9
-    FORWARD_SPEED = 20/7
-    BACKWARD_SPEED = 8/7
+    SEMI_SIDE = THWUMP_SEMI_SIDE
+    FORWARD_SPEED = THWUMP_FORWARD_SPEED
+    BACKWARD_SPEED = THWUMP_BACKWARD_SPEED
     MAX_COUNT_PER_LEVEL = 128
 
     def __init__(self, type, sim, xcoord, ycoord, orientation):

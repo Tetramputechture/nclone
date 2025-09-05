@@ -236,21 +236,32 @@ from typing import Dict, Any, List, Optional, Tuple
 from ..constants.physics_constants import FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
 from .common import SUB_CELL_SIZE, EdgeType, E_MAX_EDGES
 from .feature_extraction import FeatureExtractor
+from .precise_collision import PreciseTileCollision
+from .hazard_system import HazardClassificationSystem, HazardInfo, EdgeHazardMeta
 
 
 class EdgeBuilder:
     """
-    Handles edge construction with bounce block awareness and traversability checking.
+    Handles edge construction with precise collision detection and hazard awareness.
+    
+    This enhanced edge builder uses segment-based tile collision detection and
+    comprehensive hazard classification to create accurate traversability graphs.
     """
     
     def __init__(self, feature_extractor: FeatureExtractor):
         """
-        Initialize edge builder.
+        Initialize edge builder with precise collision and hazard systems.
         
         Args:
             feature_extractor: Feature extraction utility instance
         """
         self.feature_extractor = feature_extractor
+        self.precise_collision = PreciseTileCollision()
+        self.hazard_system = HazardClassificationSystem(self.precise_collision)
+        
+        # Cache for static hazards (rebuilt when level changes)
+        self._static_hazard_cache = {}
+        self._current_level_id = None
     
     def build_edges(
         self,
@@ -289,6 +300,9 @@ class EdgeBuilder:
         Returns:
             Updated edge count
         """
+        # Set level data for hazard system collision checking
+        self.hazard_system.set_level_data(level_data)
+        
         # Build sub-grid traversability edges
         for (sub_row, sub_col), src_idx in sub_grid_node_map.items():
             if edge_count >= E_MAX_EDGES - 8:  # Leave room for 8 directions
@@ -307,9 +321,9 @@ class EdgeBuilder:
                 if (tgt_row, tgt_col) in sub_grid_node_map:
                     tgt_idx = sub_grid_node_map[(tgt_row, tgt_col)]
                     
-                    # Check traversability with bounce block awareness
-                    if self.is_traversable_with_bounce_blocks(
-                        sub_row, sub_col, tgt_row, tgt_col, entities, level_data
+                    # Check traversability with precise collision and hazard awareness
+                    if self.is_traversable_with_hazards(
+                        sub_row, sub_col, tgt_row, tgt_col, entities, level_data, ninja_position
                     ):
                         edge_index[0, edge_count] = src_idx
                         edge_index[1, edge_count] = tgt_idx
@@ -406,17 +420,21 @@ class EdgeBuilder:
         
         return edge_count
     
-    def is_traversable_with_bounce_blocks(
+    def is_traversable_with_hazards(
         self,
         src_row: int,
         src_col: int,
         tgt_row: int,
         tgt_col: int,
         entities: List[Dict[str, Any]],
-        level_data: Dict[str, Any]
+        level_data: Dict[str, Any],
+        ninja_position: Tuple[float, float]
     ) -> bool:
         """
-        Check if movement between sub-cells is traversable considering bounce blocks.
+        Check if movement between sub-cells is traversable with hazard awareness.
+        
+        This method uses precise tile collision detection and comprehensive hazard
+        classification to determine path traversability.
         
         Args:
             src_row: Source sub-cell row
@@ -425,6 +443,7 @@ class EdgeBuilder:
             tgt_col: Target sub-cell column
             entities: List of entity dictionaries
             level_data: Level tile data and structure
+            ninja_position: Current ninja position for dynamic hazard range
             
         Returns:
             True if movement is traversable
@@ -435,21 +454,25 @@ class EdgeBuilder:
         tgt_x = tgt_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         tgt_y = tgt_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         
-        # Check for bounce blocks in the path
-        for entity in entities:
-            if entity.get('type') == 17:  # Bounce block
-                entity_x = entity.get('x', 0.0)
-                entity_y = entity.get('y', 0.0)
-                
-                # Check if path intersects with bounce block
-                if self.feature_extractor._path_intersects_bounce_block(src_x, src_y, tgt_x, tgt_y, entity_x, entity_y):
-                    # Bounce blocks are traversable but may affect movement
-                    return True
+        # Check precise tile collision first
+        if not self.is_precise_traversable(src_x, src_y, tgt_x, tgt_y, level_data):
+            return False
         
-        # Check basic tile traversability
-        return self.is_basic_traversable(src_x, src_y, tgt_x, tgt_y, level_data)
+        # Check static hazards
+        if not self._check_static_hazards(src_x, src_y, tgt_x, tgt_y, entities, level_data):
+            return False
+        
+        # Check dynamic hazards within range
+        if not self._check_dynamic_hazards(src_x, src_y, tgt_x, tgt_y, entities, ninja_position):
+            return False
+        
+        # Check for bounce blocks that may block traversal in narrow passages
+        if not self._check_bounce_block_traversal(src_x, src_y, tgt_x, tgt_y, entities):
+            return False
+        
+        return True
     
-    def is_basic_traversable(
+    def is_precise_traversable(
         self,
         src_x: float,
         src_y: float,
@@ -458,7 +481,10 @@ class EdgeBuilder:
         level_data: Dict[str, Any]
     ) -> bool:
         """
-        Check basic tile traversability.
+        Check precise tile traversability using segment-based collision detection.
+        
+        This method replaces the simplified boolean tile checking with accurate
+        physics-based collision testing against tile geometry segments.
         
         Args:
             src_x: Source x coordinate
@@ -468,24 +494,176 @@ class EdgeBuilder:
             level_data: Level tile data and structure
             
         Returns:
-            True if tiles are traversable
+            True if path is traversable through tile geometry
         """
-        # Convert to tile coordinates
-        src_tile_x = int(src_x // TILE_PIXEL_SIZE)
-        src_tile_y = int(src_y // TILE_PIXEL_SIZE)
-        tgt_tile_x = int(tgt_x // TILE_PIXEL_SIZE)
-        tgt_tile_y = int(tgt_y // TILE_PIXEL_SIZE)
+        return self.precise_collision.is_path_traversable(
+            src_x, src_y, tgt_x, tgt_y, level_data
+        )
+    
+    def _check_static_hazards(
+        self,
+        src_x: float,
+        src_y: float,
+        tgt_x: float,
+        tgt_y: float,
+        entities: List[Dict[str, Any]],
+        level_data: Dict[str, Any]
+    ) -> bool:
+        """
+        Check if path is blocked by static hazards.
         
-        # Check bounds
-        if not (0 <= src_tile_x < FULL_MAP_WIDTH and 0 <= src_tile_y < FULL_MAP_HEIGHT):
-            return False
-        if not (0 <= tgt_tile_x < FULL_MAP_WIDTH and 0 <= tgt_tile_y < FULL_MAP_HEIGHT):
-            return False
+        Args:
+            src_x: Source x coordinate
+            src_y: Source y coordinate
+            tgt_x: Target x coordinate
+            tgt_y: Target y coordinate
+            entities: List of entity dictionaries
+            level_data: Level data and structure
+            
+        Returns:
+            True if path is safe from static hazards
+        """
+        # Build/update static hazard cache
+        level_id = level_data.get('level_id', id(level_data))
+        if self._current_level_id != level_id:
+            self._static_hazard_cache = self.hazard_system.build_static_hazard_cache(
+                entities, level_data
+            )
+            self._current_level_id = level_id
         
-        # Check if tiles are solid
-        tiles = level_data.get('tiles', np.zeros((FULL_MAP_HEIGHT, FULL_MAP_WIDTH), dtype=np.int32))
-        src_tile = tiles[src_tile_y, src_tile_x]
-        tgt_tile = tiles[tgt_tile_y, tgt_tile_x]
+        # Check path against cached static hazards
+        src_sub_x = int(src_x // 12)  # Sub-cell coordinates
+        src_sub_y = int(src_y // 12)
+        tgt_sub_x = int(tgt_x // 12)
+        tgt_sub_y = int(tgt_y // 12)
         
-        # Basic traversability: both tiles should be empty (0) or non-solid
-        return src_tile == 0 and tgt_tile == 0
+        # Check all sub-cells along the path
+        steps = max(abs(tgt_sub_x - src_sub_x), abs(tgt_sub_y - src_sub_y))
+        if steps == 0:
+            steps = 1
+        
+        for i in range(steps + 1):
+            t = i / steps
+            check_sub_x = int(src_sub_x + t * (tgt_sub_x - src_sub_x))
+            check_sub_y = int(src_sub_y + t * (tgt_sub_y - src_sub_y))
+            
+            if (check_sub_x, check_sub_y) in self._static_hazard_cache:
+                hazard_info = self._static_hazard_cache[(check_sub_x, check_sub_y)]
+                if self.hazard_system.check_path_hazard_intersection(
+                    src_x, src_y, tgt_x, tgt_y, hazard_info
+                ):
+                    return False  # Path blocked by static hazard
+        
+        return True  # Path is safe from static hazards
+    
+    def _check_dynamic_hazards(
+        self,
+        src_x: float,
+        src_y: float,
+        tgt_x: float,
+        tgt_y: float,
+        entities: List[Dict[str, Any]],
+        ninja_position: Tuple[float, float]
+    ) -> bool:
+        """
+        Check if path is blocked by dynamic hazards within range.
+        
+        Args:
+            src_x: Source x coordinate
+            src_y: Source y coordinate
+            tgt_x: Target x coordinate
+            tgt_y: Target y coordinate
+            entities: List of entity dictionaries
+            ninja_position: Current ninja position for range calculation
+            
+        Returns:
+            True if path is safe from dynamic hazards
+        """
+        # Get dynamic hazards within range
+        dynamic_hazards = self.hazard_system.get_dynamic_hazards_in_range(
+            entities, ninja_position
+        )
+        
+        # Check path against each dynamic hazard
+        for hazard_info in dynamic_hazards:
+            if self.hazard_system.check_path_hazard_intersection(
+                src_x, src_y, tgt_x, tgt_y, hazard_info
+            ):
+                return False  # Path blocked by dynamic hazard
+        
+        return True  # Path is safe from dynamic hazards
+    
+    def _check_bounce_block_traversal(
+        self,
+        src_x: float,
+        src_y: float,
+        tgt_x: float,
+        tgt_y: float,
+        entities: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Check if bounce blocks block traversal in narrow passages.
+        
+        Bounce blocks can block traversal if they're positioned in the center
+        of a one-tile (24px) path and the ninja cannot displace them enough
+        horizontally or vertically to get clearance.
+        
+        Args:
+            src_x: Source x coordinate
+            src_y: Source y coordinate
+            tgt_x: Target x coordinate
+            tgt_y: Target y coordinate
+            entities: List of entity dictionaries
+            
+        Returns:
+            True if path is traversable (not blocked by bounce blocks)
+        """
+        for entity in entities:
+            if entity.get('type') == EntityType.BOUNCE_BLOCK:
+                # Use hazard system's bounce block traversal analysis
+                if self.hazard_system.analyze_bounce_block_traversal_blocking(
+                    entity, entities, (src_x, src_y), (tgt_x, tgt_y)
+                ):
+                    return False  # Bounce block blocks this path
+        
+        return True  # No bounce blocks block the path
+    
+    def _check_bounce_block_interactions(
+        self,
+        src_x: float,
+        src_y: float,
+        tgt_x: float,
+        tgt_y: float,
+        entities: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Check for bounce block interactions along the path for feature extraction.
+        
+        This method identifies potential bounce interactions that affect movement
+        but don't necessarily block traversal.
+        
+        Args:
+            src_x: Source x coordinate
+            src_y: Source y coordinate
+            tgt_x: Target x coordinate
+            tgt_y: Target y coordinate
+            entities: List of entity dictionaries
+            
+        Returns:
+            True if bounce blocks detected (for feature extraction)
+        """
+        bounce_detected = False
+        
+        for entity in entities:
+            if entity.get('type') == EntityType.BOUNCE_BLOCK:
+                entity_x = entity.get('x', 0.0)
+                entity_y = entity.get('y', 0.0)
+                
+                # Check if path intersects with bounce block
+                if self.feature_extractor._path_intersects_bounce_block(
+                    src_x, src_y, tgt_x, tgt_y, entity_x, entity_y
+                ):
+                    bounce_detected = True
+                    # Note: This is for feature extraction, not traversal blocking
+        
+        return bounce_detected

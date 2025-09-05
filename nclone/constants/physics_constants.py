@@ -3,9 +3,34 @@ Centralized physics constants for N++ simulation and RL integration.
 All physics-related constants should be defined here to avoid duplication.
 """
 
-# === NINJA PHYSICS CONSTANTS ===
-# Basic ninja properties
+# === ENTITY PHYSICS CONSTANTS ===
+# Basic entity properties
 NINJA_RADIUS = 10  # Ninja collision radius in pixels
+DRONE_RADIUS = 7.5  # Drone collision radius in pixels
+MINI_DRONE_RADIUS = 4.0  # Mini drone collision radius in pixels
+
+# Grid and movement constants
+DRONE_GRID_SIZE = 24  # Regular drone grid cell size in pixels
+MINI_DRONE_GRID_SIZE = 12  # Mini drone grid cell size in pixels
+DRONE_LAUNCH_SPEED = 4.0  # Drone launch speed in pixels/frame
+
+# Thwump constants
+THWUMP_SEMI_SIDE = 9  # Thwump semi-side size in pixels
+THWUMP_FORWARD_SPEED = 20/7  # Thwump forward movement speed
+THWUMP_BACKWARD_SPEED = 8/7  # Thwump backward movement speed
+
+# Shove Thwump constants  
+SHOVE_THWUMP_SEMI_SIDE = 12  # Shove thwump semi-side size in pixels
+SHOVE_THWUMP_PROJECTILE_RADIUS = 8  # Shove thwump projectile radius in pixels
+
+# One-way platform constants
+ONE_WAY_PLATFORM_SEMI_SIDE = 12  # One-way platform semi-side size in pixels
+
+# Toggle mine radii by state (from entity_toggle_mine.py)
+TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
+
+# Bounce block constants
+BOUNCE_BLOCK_SEMI_SIDE = 4.5  # Bounce block semi-side size in pixels (9x9 pixel square)
 
 # Movement speeds
 MAX_HOR_SPEED = 9.0  # Maximum horizontal speed of the ninja (player)
@@ -53,6 +78,8 @@ VERTICAL_MOVEMENT_THRESHOLD = 1e-6  # Vertical movement threshold
 WALK_SPEED_THRESHOLD = 0.5  # Speed threshold for walk classification
 JUMP_VELOCITY_THRESHOLD = 0.3  # Velocity threshold for jump detection
 WALL_CONTACT_DISTANCE = 15.0  # Distance for wall contact detection
+MIN_BOUNCE_BLOCK_MOVEMENT_DISTANCE = 10.0  # Minimum distance for bounce block movement detection
+MIN_UPWARD_MOVEMENT_FOR_BOUNCE = -10.0  # Minimum upward movement to consider bounce block
 
 # Movement direction thresholds
 HORIZONTAL_MOVEMENT_THRESHOLD = 2.0  # Threshold for horizontal movement
@@ -153,6 +180,24 @@ INACTIVE_STATES = {6, 7, 8, 9}  # Inactive movement states
 PROXIMITY_THRESHOLD = 100.0  # General proximity threshold for entities
 HAZARD_PROXIMITY_THRESHOLD = 50.0  # Proximity threshold for hazard detection
 
+# === HAZARD SYSTEM CONSTANTS ===
+# Hazard detection and analysis
+HAZARD_UPDATE_RADIUS = 150.0  # Pixels from ninja position for hazard updates
+THWUMP_ACTIVATION_RANGE = 38.0  # Line-of-sight activation range for thwumps
+SHOVE_THWUMP_CORE_RADIUS = 8.0  # Deadly core radius for shove thwumps
+ONE_WAY_PLATFORM_THICKNESS = 12.0  # Platform collision thickness
+DRONE_PREDICTION_TIME = 60.0  # Frames to predict drone movement
+
+# Toggle mine radii by state
+TOGGLE_MINE_RADIUS_TOGGLED = 4.0  # Toggled state radius
+TOGGLE_MINE_RADIUS_UNTOGGLED = 3.5  # Untoggled state radius  
+TOGGLE_MINE_RADIUS_TOGGLING = 4.5  # Toggling state radius
+
+# Entity danger radii
+THWUMP_DANGER_RADIUS = 18.0  # 1.5 tiles danger radius
+SHOVE_THWUMP_DANGER_RADIUS = 24.0  # Outer size danger radius
+ONE_WAY_PLATFORM_SIZE = 24  # Platform size in pixels (12*2)
+
 # === LEVEL GEOMETRY CONSTANTS ===
 # Level dimensions (duplicated from map constants for convenience)
 LEVEL_WIDTH_PX = 1056.0  # Level width in pixels
@@ -201,8 +246,7 @@ FRICTION_GROUND = 0.9459290248857720  # 0.92^(2/3)
 FRICTION_GROUND_SLOW = 0.8617738760127536  # 0.80^(2/3)
 FRICTION_WALL = 0.9113380468927672  # 0.87^(2/3)
 
-# Speed limits
-MAX_HOR_SPEED = 3.333333333333333
+# Speed limits (MAX_HOR_SPEED defined above as 9.0)
 
 # Jump mechanics
 MAX_JUMP_DURATION = 45
