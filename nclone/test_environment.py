@@ -88,7 +88,7 @@ import os
 # Graph visualization imports
 try:
     from nclone.graph.visualization import GraphVisualizer, VisualizationConfig, InteractiveGraphVisualizer
-    from nclone.graph.pathfinding import AccuratePathfindingEngine, PathfindingAlgorithm
+    from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
     from nclone.graph.graph_construction import GraphConstructor
     from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
     GRAPH_VISUALIZATION_AVAILABLE = True
@@ -196,7 +196,7 @@ if GRAPH_VISUALIZATION_AVAILABLE and (args.visualize_graph or args.standalone_gr
             # Get level data from environment
             level_data = getattr(env, 'level_data', None)
             entities = getattr(env, 'entities', [])
-            pathfinding_engine = AccuratePathfindingEngine(level_data, entities)
+            pathfinding_engine = PathfindingEngine(level_data, entities)
             print(f"Pathfinding engine initialized with {args.algorithm} algorithm")
         except Exception as e:
             print(f"Warning: Could not initialize pathfinding engine: {e}")
