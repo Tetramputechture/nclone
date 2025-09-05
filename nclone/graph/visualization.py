@@ -9,6 +9,7 @@ traversability analysis.
 import pygame
 import numpy as np
 import math
+import logging
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass
 from enum import IntEnum
@@ -16,7 +17,11 @@ from enum import IntEnum
 from .common import GraphData, NodeType, EdgeType
 from .pathfinding import PathfindingEngine, PathResult, PathfindingAlgorithm
 from .hierarchical_builder import HierarchicalGraphData
+from .constants import VisualizationDefaults, ColorScheme, OverlayDefaults
 from ..constants import TILE_PIXEL_SIZE, FULL_MAP_WIDTH, FULL_MAP_HEIGHT
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class VisualizationMode(IntEnum):
@@ -55,15 +60,15 @@ class VisualizationConfig:
     show_functional_edges: bool = True
     
     # Visual settings
-    node_size: float = 3.0
-    edge_width: float = 1.0
-    path_width: float = 3.0
-    alpha: float = 0.8
+    node_size: float = VisualizationDefaults.NODE_SIZE
+    edge_width: float = VisualizationDefaults.EDGE_WIDTH
+    path_width: float = VisualizationDefaults.PATH_WIDTH
+    alpha: float = VisualizationDefaults.ALPHA
     
     # Colors
-    background_color: Tuple[int, int, int] = (20, 20, 30)
-    grid_color: Tuple[int, int, int] = (60, 60, 70)
-    text_color: Tuple[int, int, int] = (255, 255, 255)
+    background_color: Tuple[int, int, int] = ColorScheme.BACKGROUND_COLOR
+    grid_color: Tuple[int, int, int] = ColorScheme.GRID_COLOR
+    text_color: Tuple[int, int, int] = ColorScheme.TEXT_COLOR
 
 
 class GraphVisualizer:
@@ -86,28 +91,16 @@ class GraphVisualizer:
             pygame.font.init()
         
         # Fonts for text rendering
-        self.small_font = pygame.font.Font(None, 16)
-        self.medium_font = pygame.font.Font(None, 20)
-        self.large_font = pygame.font.Font(None, 24)
+        self.small_font = pygame.font.Font(None, VisualizationDefaults.SMALL_FONT_SIZE)
+        self.medium_font = pygame.font.Font(None, VisualizationDefaults.MEDIUM_FONT_SIZE)
+        self.large_font = pygame.font.Font(None, VisualizationDefaults.LARGE_FONT_SIZE)
         
-        # Color schemes
-        self.node_colors = {
-            NodeType.GRID_CELL: (120, 120, 140, 180),
-            NodeType.ENTITY: (255, 100, 100, 220),
-            NodeType.NINJA: (100, 255, 255, 255),
-        }
+        # Color schemes from constants
+        self.node_colors = ColorScheme.NODE_COLORS
+        self.edge_colors = ColorScheme.EDGE_COLORS
         
-        self.edge_colors = {
-            EdgeType.WALK: (100, 255, 100, 150),
-            EdgeType.JUMP: (255, 200, 100, 180),
-            EdgeType.FALL: (100, 150, 255, 120),
-            EdgeType.WALL_SLIDE: (200, 100, 255, 160),
-            EdgeType.ONE_WAY: (200, 200, 200, 140),
-            EdgeType.FUNCTIONAL: (255, 255, 100, 200),
-        }
-        
-        self.path_color = (255, 50, 50, 255)  # Bright red for shortest path
-        self.path_node_color = (255, 100, 100, 255)
+        self.path_color = ColorScheme.PATH_COLOR
+        self.path_node_color = ColorScheme.GOAL_COLOR
         
         # Cached surfaces for performance
         self._cached_surfaces = {}
@@ -116,7 +109,7 @@ class GraphVisualizer:
     def create_standalone_visualization(
         self,
         graph_data: GraphData,
-        width: int = 1200,
+        width: int = 1200,  # Default window width
         height: int = 800,
         goal_position: Optional[Tuple[float, float]] = None,
         start_position: Optional[Tuple[float, float]] = None
@@ -537,8 +530,8 @@ class GraphVisualizer:
         ]
         
         # Draw background panel
-        panel_height = len(info_lines) * 20 + 20
-        panel_rect = pygame.Rect(width - 250, 10, 240, panel_height)
+        panel_height = len(info_lines) * OverlayDefaults.LINE_HEIGHT + OverlayDefaults.TEXT_MARGIN * 2
+        panel_rect = pygame.Rect(width - 250, OverlayDefaults.TEXT_MARGIN, 240, panel_height)
         panel_surface = pygame.Surface((240, panel_height), pygame.SRCALPHA)
         panel_surface.fill((0, 0, 0, 180))
         surface.blit(panel_surface, panel_rect.topleft)
@@ -546,7 +539,7 @@ class GraphVisualizer:
         # Draw info text
         for i, line in enumerate(info_lines):
             text_surface = self.small_font.render(line, True, self.config.text_color)
-            surface.blit(text_surface, (width - 240, 20 + i * 20))
+            surface.blit(text_surface, (width - 240, OverlayDefaults.TEXT_MARGIN * 2 + i * OverlayDefaults.LINE_HEIGHT))
     
     def _draw_legend(self, surface: pygame.Surface, width: int, height: int):
         """Draw legend showing node and edge types."""
@@ -583,24 +576,24 @@ class GraphVisualizer:
             return
         
         # Draw legend background
-        legend_height = len(legend_items) * 16 + 20
-        legend_rect = pygame.Rect(10, height - legend_height - 10, 200, legend_height)
+        legend_height = len(legend_items) * VisualizationDefaults.SMALL_FONT_SIZE + OverlayDefaults.TEXT_MARGIN * 2
+        legend_rect = pygame.Rect(OverlayDefaults.TEXT_MARGIN, height - legend_height - OverlayDefaults.TEXT_MARGIN, 200, legend_height)
         legend_surface = pygame.Surface((200, legend_height), pygame.SRCALPHA)
         legend_surface.fill((0, 0, 0, 180))
         surface.blit(legend_surface, legend_rect.topleft)
         
         # Draw legend items
         for i, (label, color) in enumerate(legend_items):
-            y_pos = height - legend_height + 10 + i * 16
+            y_pos = height - legend_height + OverlayDefaults.TEXT_MARGIN + i * VisualizationDefaults.SMALL_FONT_SIZE
             
             if color is not None:
                 # Draw color indicator
                 if len(color) == 4:  # RGBA
                     color_surface = pygame.Surface((12, 12), pygame.SRCALPHA)
                     color_surface.fill(color)
-                    surface.blit(color_surface, (20, y_pos + 2))
+                    surface.blit(color_surface, (OverlayDefaults.TEXT_MARGIN * 2, y_pos + 2))
                 else:  # RGB
-                    pygame.draw.rect(surface, color, (20, y_pos + 2, 12, 12))
+                    pygame.draw.rect(surface, color, (OverlayDefaults.TEXT_MARGIN * 2, y_pos + 2, 12, 12))
                 
                 # Draw label
                 text_surface = self.small_font.render(label, True, self.config.text_color)
@@ -609,7 +602,7 @@ class GraphVisualizer:
                 # Header or spacer
                 if label:
                     text_surface = self.small_font.render(label, True, self.config.text_color)
-                    surface.blit(text_surface, (20, y_pos))
+                    surface.blit(text_surface, (OverlayDefaults.TEXT_MARGIN * 2, y_pos))
     
     def _draw_line_with_alpha(
         self,
@@ -725,8 +718,8 @@ class InteractiveGraphVisualizer:
         self.start_position = None
         
         # UI elements (simplified for this implementation)
-        self.font = pygame.font.Font(None, 20)
-        self.small_font = pygame.font.Font(None, 16)
+        self.font = pygame.font.Font(None, VisualizationDefaults.MEDIUM_FONT_SIZE)
+        self.small_font = pygame.font.Font(None, VisualizationDefaults.SMALL_FONT_SIZE)
     
     def run(self, graph_data: GraphData):
         """Run interactive visualization."""
@@ -817,4 +810,4 @@ class InteractiveGraphVisualizer:
         
         for i, instruction in enumerate(instructions):
             text = self.small_font.render(instruction, True, (200, 200, 200))
-            self.screen.blit(text, (10, 50 + i * 20))
+            self.screen.blit(text, (OverlayDefaults.TEXT_MARGIN, 50 + i * OverlayDefaults.LINE_HEIGHT))

@@ -10,27 +10,24 @@ import heapq
 import math
 import sys
 import os
+import logging
 from typing import Dict, List, Tuple, Optional, Set, Any
 from dataclasses import dataclass
 from enum import IntEnum
 
 import numpy as np
 
-# Add npp-rl to path for accurate physics integration
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../../npp-rl'))
-
 from .common import GraphData, NodeType, EdgeType
 from .graph_construction import GraphConstructor
 from .hierarchical_builder import HierarchicalGraphBuilder, HierarchicalGraphData
+from .constants import PathfindingDefaults, PhysicsIntegration, ErrorHandling
 
-# Import accurate movement classification and trajectory calculation
-try:
-    from npp_rl.models.movement_classifier import MovementClassifier, MovementType, NinjaState
-    from npp_rl.models.trajectory_calculator import TrajectoryCalculator, TrajectoryResult, MovementState
-    ACCURATE_PHYSICS_AVAILABLE = True
-except ImportError:
-    print("Warning: npp-rl physics modules not available, using simplified physics")
-    ACCURATE_PHYSICS_AVAILABLE = False
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Import movement classification and trajectory calculation from nclone
+from .movement_classifier import MovementClassifier, MovementType, NinjaState
+from .trajectory_calculator import TrajectoryCalculator, TrajectoryResult, MovementState
 
 
 class PathfindingAlgorithm(IntEnum):
@@ -75,28 +72,17 @@ class AccuratePathfindingEngine:
         """Initialize accurate pathfinding engine."""
         self.graph_builder = HierarchicalGraphBuilder()
         
-        # Initialize accurate physics components if available
-        if ACCURATE_PHYSICS_AVAILABLE:
-            self.movement_classifier = MovementClassifier()
-            self.trajectory_calculator = TrajectoryCalculator()
-        else:
-            self.movement_classifier = None
-            self.trajectory_calculator = None
+        # Initialize physics components
+        self.movement_classifier = MovementClassifier()
+        self.trajectory_calculator = TrajectoryCalculator()
         
         # Cache level data and entities for physics calculations
         self.level_data = level_data
         self.entities = entities or []
         
-        # Heuristic weight for A* (lower = more optimal, higher = faster)
-        self.heuristic_weight = 1.0
-        
-        # Physics-based cost calculation parameters
-        self.cost_weights = {
-            'energy_cost': 1.0,
-            'time_estimate': 0.5,
-            'difficulty': 2.0,
-            'success_probability': -1.0,  # Negative because higher probability = lower cost
-        }
+        # Pathfinding parameters from constants
+        self.heuristic_weight = PathfindingDefaults.HEURISTIC_WEIGHT
+        self.cost_weights = PathfindingDefaults.EDGE_COST_WEIGHTS.copy()
     
     def find_shortest_path(
         self,
@@ -481,23 +467,9 @@ class AccuratePathfindingEngine:
         ninja_state: Optional[Dict[str, Any]] = None
     ) -> float:
         """Calculate accurate physics-based cost for traversing an edge."""
-        if not ACCURATE_PHYSICS_AVAILABLE or not self.movement_classifier:
-            # Fallback to simplified cost calculation
-            edge_features = graph_data.edge_features[edge_idx]
-            base_cost = edge_features[0] if len(edge_features) > 0 else 1.0
-            type_multipliers = {
-                EdgeType.WALK: 1.0,
-                EdgeType.JUMP: 1.5,
-                EdgeType.FALL: 1.2,
-                EdgeType.WALL_SLIDE: 2.0,
-                EdgeType.ONE_WAY: 1.3,
-                EdgeType.FUNCTIONAL: 1.1,
-            }
-            return max(base_cost * type_multipliers.get(edge_type, 1.0), 0.1)
-        
-        # Get node positions
-        src_pos = self._get_node_position(graph_data, src_node)
-        dst_pos = self._get_node_position(graph_data, dst_node)
+        # Use physics-accurate cost calculation
+        src_pos = (graph_data.node_features[src_node, 0], graph_data.node_features[src_node, 1])
+        dst_pos = (graph_data.node_features[dst_node, 0], graph_data.node_features[dst_node, 1])
         
         # Create ninja state for movement classification
         ninja_state_obj = NinjaState(
@@ -508,63 +480,23 @@ class AccuratePathfindingEngine:
             wall_contact=ninja_state.get('wall_contact', False) if ninja_state else False
         )
         
-        # Use accurate movement classification
+        # Classify movement and get physics parameters
         movement_type, physics_params = self.movement_classifier.classify_movement(
             src_pos, dst_pos, ninja_state_obj, self.level_data
         )
         
         # Calculate cost based on physics parameters
         cost = 0.0
+        if 'energy_cost' in physics_params:
+            cost += physics_params['energy_cost'] * self.cost_weights['energy_cost']
+        if 'time_estimate' in physics_params:
+            cost += physics_params['time_estimate'] * self.cost_weights['time_estimate']
+        if 'difficulty' in physics_params:
+            cost += physics_params['difficulty'] * self.cost_weights['difficulty']
+        if 'success_probability' in physics_params:
+            cost += (1.0 - physics_params['success_probability']) * abs(self.cost_weights['success_probability'])
         
-        # Energy cost component
-        energy_cost = physics_params.get('energy_cost', 1.0)
-        cost += energy_cost * self.cost_weights['energy_cost']
-        
-        # Time estimate component
-        time_estimate = physics_params.get('time_estimate', 1.0)
-        cost += time_estimate * self.cost_weights['time_estimate']
-        
-        # Difficulty component
-        difficulty = physics_params.get('difficulty', 0.5)
-        cost += difficulty * self.cost_weights['difficulty']
-        
-        # Success probability component (lower probability = higher cost)
-        success_probability = physics_params.get('success_probability', 0.8)
-        cost += (1.0 - success_probability) * abs(self.cost_weights['success_probability'])
-        
-        # Additional trajectory validation if available
-        if self.trajectory_calculator:
-            # Check if movement is physically feasible
-            is_feasible = self.movement_classifier.is_movement_physically_feasible(
-                src_pos, dst_pos, self.level_data, self.entities
-            )
-            
-            if not is_feasible:
-                cost += 1000.0  # Very high cost for infeasible movements
-            else:
-                # Calculate trajectory-specific costs
-                if movement_type in [MovementType.JUMP, MovementType.WALL_JUMP]:
-                    trajectory_result = self.trajectory_calculator.calculate_jump_trajectory(
-                        src_pos, dst_pos, 
-                        MovementState.JUMPING if movement_type == MovementType.JUMP else MovementState.WALL_JUMPING
-                    )
-                    
-                    if trajectory_result.feasible:
-                        # Add trajectory-specific costs
-                        cost += trajectory_result.energy_cost * 0.5
-                        cost += (1.0 - trajectory_result.success_probability) * 2.0
-                        
-                        # Validate trajectory clearance
-                        if trajectory_result.trajectory_points:
-                            is_clear = self.trajectory_calculator.validate_trajectory_clearance(
-                                trajectory_result.trajectory_points, self.level_data, self.entities
-                            )
-                            if not is_clear:
-                                cost += 500.0  # High cost for blocked trajectories
-                    else:
-                        cost += 1000.0  # Very high cost for infeasible trajectories
-        
-        return max(cost, 0.1)  # Minimum cost to avoid zero-cost edges
+        return max(cost, 0.1)  # Ensure minimum positive cost
     
     def _calculate_heuristic(self, pos1: Tuple[float, float], pos2: Tuple[float, float]) -> float:
         """Calculate physics-informed heuristic distance between two positions."""
@@ -574,8 +506,7 @@ class AccuratePathfindingEngine:
         # Basic Euclidean distance
         euclidean_distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         
-        if not ACCURATE_PHYSICS_AVAILABLE or not self.movement_classifier:
-            return euclidean_distance
+        # Use physics-informed heuristic
         
         # Physics-informed heuristic based on movement type
         dx = x2 - x1
