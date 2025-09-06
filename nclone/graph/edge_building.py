@@ -293,6 +293,19 @@ class EdgeBuilder:
             edge_feature_dim,
         )
 
+        # Build long-distance corridor connections between empty tile clusters
+        edge_count = self.build_corridor_connections(
+            sub_grid_node_map,
+            level_data,
+            ninja_position,
+            edge_index,
+            edge_features,
+            edge_mask,
+            edge_types,
+            edge_count,
+            edge_feature_dim,
+        )
+
         return edge_count
 
     def build_entity_edges(
@@ -749,3 +762,211 @@ class EdgeBuilder:
                     # Note: This is for feature extraction, not traversal blocking
 
         return bounce_detected
+
+    def build_corridor_connections(
+        self,
+        sub_grid_node_map: Dict[Tuple[int, int], int],
+        level_data: LevelData,
+        ninja_position: Tuple[float, float],
+        edge_index: np.ndarray,
+        edge_features: np.ndarray,
+        edge_mask: np.ndarray,
+        edge_types: np.ndarray,
+        edge_count: int,
+        edge_feature_dim: int,
+    ) -> int:
+        """
+        Build long-distance corridor connections between empty tile clusters.
+        
+        This method identifies separate empty tile clusters and creates bridge
+        connections between them when they are separated by narrow gaps or
+        single solid tiles, enabling long-distance pathfinding.
+        
+        Args:
+            sub_grid_node_map: Mapping from (row, col) to node indices
+            level_data: Level tile data and structure
+            ninja_position: Current ninja position (x, y)
+            edge_index: Edge connectivity array
+            edge_features: Edge feature array
+            edge_mask: Edge mask array
+            edge_types: Edge type array
+            edge_count: Current edge count
+            edge_feature_dim: Edge feature dimension
+            
+        Returns:
+            Updated edge count
+        """
+        # Find empty tile clusters
+        visited_tiles = set()
+        empty_clusters = []
+        
+        for y in range(level_data.height):
+            for x in range(level_data.width):
+                if (x, y) in visited_tiles or level_data.get_tile(y, x) != 0:
+                    continue
+                
+                # Found new empty tile cluster
+                cluster = []
+                stack = [(x, y)]
+                
+                while stack:
+                    cx, cy = stack.pop()
+                    if (cx, cy) in visited_tiles:
+                        continue
+                    
+                    visited_tiles.add((cx, cy))
+                    cluster.append((cx, cy))
+                    
+                    # Check 4-connected neighbors
+                    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        nx, ny = cx + dx, cy + dy
+                        if (0 <= nx < level_data.width and 0 <= ny < level_data.height and
+                            (nx, ny) not in visited_tiles and level_data.get_tile(ny, nx) == 0):
+                            stack.append((nx, ny))
+                
+                empty_clusters.append(cluster)
+        
+        # Sort clusters by size (largest first)
+        empty_clusters.sort(key=len, reverse=True)
+        
+        # Only process if we have multiple clusters
+        if len(empty_clusters) < 2:
+            return edge_count
+        
+        # Create corridor connections between nearby clusters
+        max_corridor_distance = 120.0  # Maximum distance for corridor connections (5 tiles)
+        
+        for i in range(len(empty_clusters)):
+            for j in range(i + 1, len(empty_clusters)):
+                if edge_count >= E_MAX_EDGES - 10:
+                    break
+                
+                cluster1 = empty_clusters[i]
+                cluster2 = empty_clusters[j]
+                
+                # Find closest points between clusters
+                min_distance = float('inf')
+                best_connection = None
+                
+                for tile1_x, tile1_y in cluster1:
+                    for tile2_x, tile2_y in cluster2:
+                        # Calculate distance between tile centers
+                        center1_x = tile1_x * 24 + 12
+                        center1_y = tile1_y * 24 + 12
+                        center2_x = tile2_x * 24 + 12
+                        center2_y = tile2_y * 24 + 12
+                        
+                        distance = math.sqrt((center2_x - center1_x)**2 + (center2_y - center1_y)**2)
+                        
+                        if distance < min_distance and distance <= max_corridor_distance:
+                            # Check if there's a potential corridor (not too many blocking tiles)
+                            blocking_tiles = self._count_blocking_tiles(
+                                center1_x, center1_y, center2_x, center2_y, level_data
+                            )
+                            
+                            # Allow corridors with up to 2 blocking tiles (narrow passages)
+                            if blocking_tiles <= 2:
+                                min_distance = distance
+                                best_connection = (
+                                    (tile1_x, tile1_y, center1_x, center1_y),
+                                    (tile2_x, tile2_y, center2_x, center2_y),
+                                    distance
+                                )
+                
+                # Create corridor connection if found
+                if best_connection:
+                    (tile1_x, tile1_y, center1_x, center1_y), (tile2_x, tile2_y, center2_x, center2_y), distance = best_connection
+                    
+                    # Find nodes in these tiles
+                    nodes1 = self._find_nodes_in_tile(tile1_x, tile1_y, sub_grid_node_map)
+                    nodes2 = self._find_nodes_in_tile(tile2_x, tile2_y, sub_grid_node_map)
+                    
+                    # Create connections between closest nodes
+                    for node1_idx, (node1_row, node1_col) in nodes1:
+                        for node2_idx, (node2_row, node2_col) in nodes2:
+                            if edge_count >= E_MAX_EDGES:
+                                break
+                            
+                            # Create bidirectional corridor edge
+                            for src_idx, dst_idx in [(node1_idx, node2_idx), (node2_idx, node1_idx)]:
+                                if edge_count >= E_MAX_EDGES:
+                                    break
+                                
+                                edge_index[0, edge_count] = src_idx
+                                edge_index[1, edge_count] = dst_idx
+                                
+                                # Create corridor edge features
+                                corridor_features = np.zeros(edge_feature_dim, dtype=np.float32)
+                                corridor_features[EdgeType.WALK] = 1.0  # Walk edge type
+                                
+                                # Higher cost for corridor connections (they're longer/harder)
+                                corridor_features[len(EdgeType) + 2] = min(2.0, distance / 24.0)  # Cost based on distance
+                                
+                                edge_features[edge_count] = corridor_features
+                                edge_mask[edge_count] = 1.0
+                                edge_types[edge_count] = EdgeType.WALK
+                                edge_count += 1
+                            
+                            # Only connect the closest pair to avoid too many edges
+                            break
+                        if edge_count >= E_MAX_EDGES:
+                            break
+        
+        return edge_count
+    
+    def _count_blocking_tiles(
+        self, 
+        x1: float, 
+        y1: float, 
+        x2: float, 
+        y2: float, 
+        level_data: LevelData
+    ) -> int:
+        """Count solid tiles that block the path between two points."""
+        # Sample points along the line
+        distance = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        num_samples = max(3, int(distance / 12))  # Sample every 12 pixels
+        
+        blocking_tiles = set()
+        
+        for i in range(1, num_samples):  # Skip endpoints
+            t = i / num_samples
+            sample_x = x1 + t * (x2 - x1)
+            sample_y = y1 + t * (y2 - y1)
+            
+            # Check tile at this position
+            tile_x = int(sample_x // 24)
+            tile_y = int(sample_y // 24)
+            
+            if (0 <= tile_x < level_data.width and 0 <= tile_y < level_data.height):
+                tile_value = level_data.get_tile(tile_y, tile_x)
+                if tile_value == 1:  # Solid tile
+                    blocking_tiles.add((tile_x, tile_y))
+        
+        return len(blocking_tiles)
+    
+    def _find_nodes_in_tile(
+        self, 
+        tile_x: int, 
+        tile_y: int, 
+        sub_grid_node_map: Dict[Tuple[int, int], int]
+    ) -> List[Tuple[int, Tuple[int, int]]]:
+        """Find all sub-grid nodes within a specific tile."""
+        nodes_in_tile = []
+        
+        # Calculate sub-grid range for this tile
+        tile_left = tile_x * 24
+        tile_right = (tile_x + 1) * 24
+        tile_top = tile_y * 24
+        tile_bottom = (tile_y + 1) * 24
+        
+        for (sub_row, sub_col), node_idx in sub_grid_node_map.items():
+            # Calculate node position
+            node_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+            node_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+            
+            # Check if node is in this tile
+            if tile_left <= node_x < tile_right and tile_top <= node_y < tile_bottom:
+                nodes_in_tile.append((node_idx, (sub_row, sub_col)))
+        
+        return nodes_in_tile
