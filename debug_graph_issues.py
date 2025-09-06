@@ -125,11 +125,26 @@ def analyze_graph_data(graph_data: GraphData, level_data: LevelData, entities: L
     print(f"\n=== ISSUE 3: PATHFINDING ===")
     pathfinder = PathfindingEngine()
     
-    # Try to find a path between two nodes that should be reachable
-    if graph_data.num_nodes >= 2:
-        # Find two nodes that should be reachable
-        start_node = 0
-        goal_node = min(10, graph_data.num_nodes - 1)
+    # Find nodes that are actually connected by building adjacency list
+    adjacency = {}
+    for i in range(graph_data.num_nodes):
+        if graph_data.node_mask[i] > 0:
+            adjacency[i] = []
+    
+    for i in range(graph_data.num_edges):
+        if graph_data.edge_mask[i] > 0:
+            src = graph_data.edge_index[0, i]
+            dst = graph_data.edge_index[1, i]
+            if src in adjacency and dst in adjacency:
+                adjacency[src].append(dst)
+    
+    # Find a node with connections
+    connected_nodes = [node for node, neighbors in adjacency.items() if len(neighbors) > 0]
+    
+    if len(connected_nodes) >= 2:
+        start_node = connected_nodes[0]
+        # Find a node that's reachable from start_node
+        goal_node = adjacency[start_node][0] if adjacency[start_node] else connected_nodes[1]
         
         result = pathfinder.find_shortest_path(
             graph_data, start_node, goal_node, PathfindingAlgorithm.A_STAR
@@ -145,6 +160,20 @@ def analyze_graph_data(graph_data: GraphData, level_data: LevelData, entities: L
             print("❌ PATHFINDING FAILED - This might be the third issue!")
         else:
             print("✅ Pathfinding succeeded")
+            
+        # Test a longer path
+        if len(connected_nodes) >= 10:
+            longer_goal = connected_nodes[9]
+            result2 = pathfinder.find_shortest_path(
+                graph_data, start_node, longer_goal, PathfindingAlgorithm.A_STAR
+            )
+            print(f"\nLonger pathfinding test (node {start_node} -> {longer_goal}):")
+            print(f"  Success: {result2.success}")
+            print(f"  Path length: {len(result2.path) if result2.success else 0}")
+            print(f"  Total cost: {result2.total_cost}")
+            print(f"  Nodes explored: {result2.nodes_explored}")
+    else:
+        print("❌ NO CONNECTED NODES FOUND - Graph connectivity issue!")
 
 
 def create_visualization(graph_data: GraphData, level_data: LevelData, entities: List[Dict]):
