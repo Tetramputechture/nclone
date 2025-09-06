@@ -67,6 +67,10 @@ class FeatureExtractor:
         pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
 
+        # Store position coordinates at the beginning of features
+        features[0] = float(pixel_x)
+        features[1] = float(pixel_y)
+
         # Convert to tile coordinates
         tile_x = pixel_x // TILE_PIXEL_SIZE
         tile_y = pixel_y // TILE_PIXEL_SIZE
@@ -79,36 +83,36 @@ class FeatureExtractor:
         )
         map_height, map_width = tiles_array.shape
 
-        # Extract tile features if within bounds
+        # Extract tile features if within bounds (offset by 2 for position coordinates)
         if 0 <= tile_x < map_width and 0 <= tile_y < map_height:
             tile_type = tiles_array[tile_y, tile_x]
             if 0 <= tile_type < self.tile_type_dim:
-                features[tile_type] = 1.0
+                features[2 + tile_type] = 1.0
 
-        # Add ninja position flag
+        # Add ninja position flag (offset by 2 for position coordinates)
         ninja_x, ninja_y = ninja_position
         ninja_distance = math.sqrt((pixel_x - ninja_x) ** 2 + (pixel_y - ninja_y) ** 2)
-        features[self.tile_type_dim + 4 + self.entity_type_dim + 8] = (
+        features[2 + self.tile_type_dim + 4 + self.entity_type_dim + 8] = (
             1.0 if ninja_distance < SUB_CELL_SIZE else 0.0
         )
 
-        # Add physics state features
+        # Add physics state features (offset by 2 for position coordinates)
         if ninja_velocity is not None:
             vx, vy = ninja_velocity
             # Normalize velocity features
             max_speed = 200.0  # Approximate max speed
-            features[self.tile_type_dim + 4 + self.entity_type_dim + 8 + 1] = (
+            features[2 + self.tile_type_dim + 4 + self.entity_type_dim + 8 + 1] = (
                 vx / max_speed
             )
-            features[self.tile_type_dim + 4 + self.entity_type_dim + 8 + 2] = (
+            features[2 + self.tile_type_dim + 4 + self.entity_type_dim + 8 + 2] = (
                 vy / max_speed
             )
-            features[self.tile_type_dim + 4 + self.entity_type_dim + 8 + 3] = (
+            features[2 + self.tile_type_dim + 4 + self.entity_type_dim + 8 + 3] = (
                 math.sqrt(vx * vx + vy * vy) / max_speed
             )
 
         if ninja_state is not None:
-            features[self.tile_type_dim + 4 + self.entity_type_dim + 8 + 4] = (
+            features[2 + self.tile_type_dim + 4 + self.entity_type_dim + 8 + 4] = (
                 ninja_state / 8.0
             )
 
@@ -135,18 +139,22 @@ class FeatureExtractor:
         """
         features = np.zeros(feature_dim, dtype=np.float32)
 
-        # Entity type one-hot encoding
+        # Store entity position coordinates at the beginning of features
+        entity_x = entity.get("x", 0.0)  # Already in full map coords
+        entity_y = entity.get("y", 0.0)  # Already in full map coords
+        features[0] = float(entity_x)
+        features[1] = float(entity_y)
+
+        # Entity type one-hot encoding (offset by 2 for position coordinates)
         entity_type = entity.get("type", 0)
         if 0 <= entity_type < self.entity_type_dim:
-            features[self.tile_type_dim + 4 + entity_type] = 1.0
+            features[2 + self.tile_type_dim + 4 + entity_type] = 1.0
 
-        # Entity state features
-        state_offset = self.tile_type_dim + 4 + self.entity_type_dim
+        # Entity state features (offset by 2 for position coordinates)
+        state_offset = 2 + self.tile_type_dim + 4 + self.entity_type_dim
         features[state_offset] = 1.0  # Active flag
         # Entity positions from simulator already include the 1-tile border offset
         # They are in the full 44x25 map coordinate system (0-1056, 0-600)
-        entity_x = entity.get("x", 0.0)  # Already in full map coords
-        entity_y = entity.get("y", 0.0)  # Already in full map coords
         features[state_offset + 1] = entity_x / float(
             FULL_MAP_WIDTH_PX
         )  # Normalized position (1056)
