@@ -18,6 +18,7 @@ from .common import (
 )
 from .level_data import LevelData
 from .feature_extraction import FeatureExtractor
+from ..constants.entity_types import EntityType
 from .edge_building import EdgeBuilder
 
 
@@ -110,18 +111,60 @@ class GraphConstructor:
             if node_count >= N_MAX_NODES:
                 break
 
-            node_idx = node_count
-            entity_nodes.append((node_idx, entity))
+            entity_type = entity.get("type")
+            
+            # Handle LOCKED_DOOR entities specially - create two nodes (switch and door)
+            if entity_type == EntityType.LOCKED_DOOR:
+                # Create switch node
+                switch_node_idx = node_count
+                switch_entity = entity.copy()
+                # Switch position is already in entity['x'], entity['y']
+                entity_nodes.append((switch_node_idx, switch_entity))
+                
+                # Extract switch features
+                switch_features = self.feature_extractor.extract_entity_features(
+                    switch_entity, ninja_position, ninja_velocity, node_feature_dim
+                )
+                node_features[switch_node_idx] = switch_features
+                node_mask[switch_node_idx] = 1.0
+                node_types[switch_node_idx] = NodeType.ENTITY
+                node_count += 1
+                
+                if node_count >= N_MAX_NODES:
+                    break
+                
+                # Create door node
+                door_node_idx = node_count
+                door_entity = entity.copy()
+                door_entity['x'] = entity.get('door_x', entity.get('x'))
+                door_entity['y'] = entity.get('door_y', entity.get('y'))
+                # Mark as door part of locked door
+                door_entity['is_door_part'] = True
+                entity_nodes.append((door_node_idx, door_entity))
+                
+                # Extract door features
+                door_features = self.feature_extractor.extract_entity_features(
+                    door_entity, ninja_position, ninja_velocity, node_feature_dim
+                )
+                node_features[door_node_idx] = door_features
+                node_mask[door_node_idx] = 1.0
+                node_types[door_node_idx] = NodeType.ENTITY
+                node_count += 1
+                
+            else:
+                # Regular entity - create single node
+                node_idx = node_count
+                entity_nodes.append((node_idx, entity))
 
-            # Extract entity features
-            entity_features = self.feature_extractor.extract_entity_features(
-                entity, ninja_position, ninja_velocity, node_feature_dim
-            )
-
-            node_features[node_idx] = entity_features
-            node_mask[node_idx] = 1.0
-            node_types[node_idx] = NodeType.ENTITY
-            node_count += 1
+                # Extract entity features
+                entity_features = self.feature_extractor.extract_entity_features(
+                    entity, ninja_position, ninja_velocity, node_feature_dim
+                )
+                
+                node_features[node_idx] = entity_features
+                node_mask[node_idx] = 1.0
+                node_types[node_idx] = NodeType.ENTITY
+                node_count += 1
 
         # Build edges with bounce block awareness
         edge_count = self.edge_builder.build_edges(

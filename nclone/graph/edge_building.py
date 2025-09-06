@@ -10,6 +10,7 @@ import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 
 from ..constants.entity_types import EntityType
+from ..constants.physics_constants import TILE_PIXEL_SIZE
 from ..graph.level_data import LevelData
 from .common import SUB_CELL_SIZE, EdgeType, E_MAX_EDGES
 from .feature_extraction import FeatureExtractor
@@ -141,6 +142,20 @@ class EdgeBuilder:
             entity_x = entity.get("x", 0.0)  # Already in full map coords
             entity_y = entity.get("y", 0.0)  # Already in full map coords
 
+            # Check if entity is in a solid tile - if so, don't create walkable edges
+            entity_tile_x = int(entity_x // TILE_PIXEL_SIZE)
+            entity_tile_y = int(entity_y // TILE_PIXEL_SIZE)
+            
+            entity_in_solid_tile = False
+            if (0 <= entity_tile_y < level_data.height and 0 <= entity_tile_x < level_data.width):
+                tile_value = level_data.get_tile(entity_tile_y, entity_tile_x)
+                if tile_value == 1:  # Solid tile
+                    entity_in_solid_tile = True
+
+            # Skip creating walkable edges for entities in solid tiles
+            if entity_in_solid_tile:
+                continue
+
             # Find nearby sub-grid nodes
             entity_sub_col = int(entity_x // SUB_CELL_SIZE)
             entity_sub_row = int(entity_y // SUB_CELL_SIZE)
@@ -263,8 +278,10 @@ class EdgeBuilder:
                         ):
                             is_matching = True
                     elif entity_type == EntityType.LOCKED_DOOR:
-                        # Locked doors have both switch and door positions
-                        if entity.get("entity_id") == other_entity.get("entity_id"):
+                        # For LOCKED_DOOR, match switch node to door node of same entity
+                        if (entity.get("entity_id") == other_entity.get("entity_id") and
+                            not entity.get("is_door_part", False) and
+                            other_entity.get("is_door_part", False)):
                             is_matching = True
 
                     if is_matching:

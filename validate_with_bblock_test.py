@@ -44,11 +44,18 @@ def load_bblock_test_map():
 
 def create_level_data_from_simulator(sim):
     """Extract level data from the loaded simulator."""
+    # Load the map data into the simulator
+    map_data = load_bblock_test_map()
+    if map_data is not None:
+        sim.load(map_data)
+    
     # Extract tile data (42x23 grid)
     tiles = np.zeros((42, 23), dtype=int)
     
     for (x, y), tile_id in sim.tile_dic.items():
-        # Skip boundary tiles (they're added by the loader)
+        # Map simulator coordinates to level data coordinates
+        # Simulator uses 0-based coordinates with 1-tile border
+        # Level data uses 0-based coordinates without border
         if 1 <= x <= 42 and 1 <= y <= 23:
             tiles[x-1, y-1] = tile_id
     
