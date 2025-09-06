@@ -797,8 +797,10 @@ class GraphVisualizer:
             node_features = graph_data.node_features[node_idx]
             # Feature layout: tile_type + 4 + entity_type + state_features
             # Position is stored at state_offset + 1, state_offset + 2
-            tile_type_dim = 38  # From hierarchical_builder.py
-            entity_type_dim = 30  # From hierarchical_builder.py
+            # Get dimensions from the actual feature vector structure
+            # These should match the values used in HierarchicalGraphBuilder
+            tile_type_dim = 38  # Number of tile types in N++
+            entity_type_dim = 30  # Extended for bounce block states
             state_offset = tile_type_dim + 4 + entity_type_dim
 
             if len(node_features) > state_offset + 2:
