@@ -1,12 +1,11 @@
-import math
 
 from .ninja import Ninja
 # Import base classes from entities.py module
-from .entities import GridSegmentLinear, GridSegmentCircular, Entity
+from .entities import Entity
 from .utils.entity_factory import create_entity_instance
 from .utils.tile_segment_factory import TileSegmentFactory
 from .tile_definitions import (
-    TILE_GRID_EDGE_MAP, TILE_SEGMENT_ORTHO_MAP, TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_CIRCULAR_MAP
+    TILE_GRID_EDGE_MAP
 )
 
 
