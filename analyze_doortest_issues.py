@@ -173,6 +173,19 @@ def analyze_doortest_map():
                 node2_pos = (float(node_features[node2_id, 0]), float(node_features[node2_id, 1]))
                 
                 # Check if either node is in a solid tile
+                # Skip ninja edges - ninja is allowed to have edges even in solid tiles
+                ninja_pos = env.nplay_headless.ninja_position()
+                is_ninja_edge = False
+                
+                for pos in [node1_pos, node2_pos]:
+                    # Check if this position is the ninja position (within 1 pixel)
+                    if abs(pos[0] - ninja_pos[0]) < 1.0 and abs(pos[1] - ninja_pos[1]) < 1.0:
+                        is_ninja_edge = True
+                        break
+                
+                if is_ninja_edge:
+                    continue  # Skip ninja edges
+                
                 for pos in [node1_pos, node2_pos]:
                     tile_x = int(pos[0] // TILE_PIXEL_SIZE)
                     tile_y = int(pos[1] // TILE_PIXEL_SIZE)
@@ -214,17 +227,41 @@ def analyze_doortest_map():
     start_pos = ninja_pos
     print(f"Testing pathfinding from ninja position: {start_pos}")
     
-    # Test positions at various distances and directions
-    test_positions = [
-        (start_pos[0] + 24, start_pos[1]),      # 1 tile right
-        (start_pos[0] - 24, start_pos[1]),      # 1 tile left
-        (start_pos[0], start_pos[1] + 24),      # 1 tile down
-        (start_pos[0], start_pos[1] - 24),      # 1 tile up
-        (start_pos[0] + 48, start_pos[1]),      # 2 tiles right
-        (start_pos[0] - 48, start_pos[1]),      # 2 tiles left
-        (start_pos[0] + 24, start_pos[1] + 24), # diagonal
-        (start_pos[0] + 100, start_pos[1]),     # further right
-    ]
+    # Find empty tiles to test pathfinding to
+    test_positions = []
+    
+    # Look for empty tiles in the level
+    for tile_y in range(level_data.height):
+        for tile_x in range(level_data.width):
+            if level_data.get_tile(tile_y, tile_x) == 0:  # Empty tile
+                # Convert tile coordinates to pixel coordinates (center of tile)
+                pixel_x = tile_x * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
+                pixel_y = tile_y * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
+                
+                # Calculate distance from ninja
+                distance = ((pixel_x - start_pos[0])**2 + (pixel_y - start_pos[1])**2)**0.5
+                
+                # Add tiles at various distances
+                if 50 < distance < 200:  # Not too close, not too far
+                    test_positions.append((pixel_x, pixel_y))
+                    
+                    if len(test_positions) >= 8:  # Limit to 8 tests
+                        break
+        if len(test_positions) >= 8:
+            break
+    
+    # If no empty tiles found, use entity positions
+    if not test_positions:
+        for entity in level_data.entities:
+            entity_x = entity.get('x', 0)
+            entity_y = entity.get('y', 0)
+            distance = ((entity_x - start_pos[0])**2 + (entity_y - start_pos[1])**2)**0.5
+            
+            if distance > 50:  # Not too close to ninja
+                test_positions.append((entity_x, entity_y))
+                
+                if len(test_positions) >= 8:
+                    break
     
     successful_paths = 0
     total_tests = len(test_positions)

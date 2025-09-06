@@ -105,6 +105,27 @@ class GraphConstructor:
 
         # Build entity nodes (sorted by type then position for determinism)
         entity_nodes = []
+        
+        # First, create a ninja entity node
+        ninja_node_idx = node_count
+        ninja_entity = {
+            'type': EntityType.NINJA,
+            'x': ninja_position[0],
+            'y': ninja_position[1],
+            'is_ninja': True
+        }
+        entity_nodes.append((ninja_node_idx, ninja_entity))
+        
+        # Extract ninja features
+        ninja_features = self.feature_extractor.extract_entity_features(
+            ninja_entity, ninja_position, ninja_velocity, node_feature_dim
+        )
+        node_features[ninja_node_idx] = ninja_features
+        node_mask[ninja_node_idx] = 1.0
+        node_types[ninja_node_idx] = NodeType.ENTITY
+        node_count += 1
+        
+        # Then process other entities
         sorted_entities = sorted(level_data.entities, key=self.entity_sort_key)
 
         for entity in sorted_entities:

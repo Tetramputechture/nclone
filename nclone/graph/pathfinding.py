@@ -695,27 +695,28 @@ class PathfindingEngine:
         sub_grid_nodes_count = SUB_GRID_WIDTH * SUB_GRID_HEIGHT
 
         if node_idx < sub_grid_nodes_count:
-            # Sub-grid node: calculate position from index
-            sub_row = node_idx // SUB_GRID_WIDTH
-            sub_col = node_idx % SUB_GRID_WIDTH
-            # Center in sub-cell, add 1-tile offset for simulator border
-            x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
-            y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
-            return (float(x), float(y))
-        else:
-            # Entity node: extract normalized position from features
+            # Sub-grid node: extract position from features (already in correct coordinates)
             node_features = graph_data.node_features[node_idx]
-            # Feature layout: tile_type + 4 + entity_type + state_features
-            tile_type_dim = 38  # From hierarchical_builder.py
-            entity_type_dim = 30  # From hierarchical_builder.py
-            state_offset = tile_type_dim + 4 + entity_type_dim
-
-            if len(node_features) > state_offset + 2:
-                norm_x = float(node_features[state_offset + 1])
-                norm_y = float(node_features[state_offset + 2])
-                # Denormalize from [0,1] to pixel coordinates
-                x = norm_x * float(FULL_MAP_WIDTH_PX)  # 1056 pixels
-                y = norm_y * float(FULL_MAP_HEIGHT_PX)  # 600 pixels
+            if len(node_features) >= 2:
+                x = float(node_features[0])
+                y = float(node_features[1])
+                return (float(x), float(y))
+            else:
+                # Fallback: calculate position from index
+                sub_row = node_idx // SUB_GRID_WIDTH
+                sub_col = node_idx % SUB_GRID_WIDTH
+                # Center in sub-cell, add 1-tile offset for simulator border
+                x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
+                y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
+                return (float(x), float(y))
+        else:
+            # Entity node: extract position from features
+            node_features = graph_data.node_features[node_idx]
+            # Feature layout: position(2) + tile_type + 4 + entity_type + state_features
+            # Position coordinates are stored at indices 0 and 1 (already in pixel coordinates)
+            if len(node_features) >= 2:
+                x = float(node_features[0])
+                y = float(node_features[1])
                 return (float(x), float(y))
             else:
                 return (0.0, 0.0)
