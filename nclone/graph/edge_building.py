@@ -133,81 +133,7 @@ class EdgeBuilder:
                         edge_types[edge_count] = EdgeType.WALK
                         edge_count += 1
 
-        # Special ninja escape connections: connect solid tile nodes near ninja to empty tile nodes
-        ninja_x, ninja_y = ninja_position
-        ninja_escape_range = SUB_CELL_SIZE * 4  # 24 pixels
-        
-        # Find nodes near ninja in solid tiles
-        solid_nodes_near_ninja = []
-        for (sub_row, sub_col), node_idx in sub_grid_node_map.items():
-            node_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-            node_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-            
-            # Check if close to ninja
-            distance = math.sqrt((node_x - ninja_x)**2 + (node_y - ninja_y)**2)
-            if distance <= ninja_escape_range:
-                # Check if in solid tile
-                tile_x = int(node_x // 24)
-                tile_y = int(node_y // 24)
-                if (0 <= tile_x < level_data.width and 0 <= tile_y < level_data.height and
-                    level_data.get_tile(tile_y, tile_x) == 1):
-                    solid_nodes_near_ninja.append((sub_row, sub_col, node_idx))
-        
-        # Find empty tile nodes that could be escape targets
-        empty_nodes_near_ninja = []
-        for (sub_row, sub_col), node_idx in sub_grid_node_map.items():
-            node_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-            node_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-            
-            # Check if close to ninja
-            distance = math.sqrt((node_x - ninja_x)**2 + (node_y - ninja_y)**2)
-            if distance <= ninja_escape_range:
-                # Check if in empty tile
-                tile_x = int(node_x // 24)
-                tile_y = int(node_y // 24)
-                if (0 <= tile_x < level_data.width and 0 <= tile_y < level_data.height and
-                    level_data.get_tile(tile_y, tile_x) == 0):
-                    empty_nodes_near_ninja.append((sub_row, sub_col, node_idx))
-        
-        # Create escape connections from solid to empty nodes
-        for solid_row, solid_col, solid_idx in solid_nodes_near_ninja:
-            for empty_row, empty_col, empty_idx in empty_nodes_near_ninja:
-                if edge_count >= E_MAX_EDGES - 1:
-                    break
-                
-                # Check if tiles are adjacent
-                solid_tile_x = int((solid_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2) // 24)
-                solid_tile_y = int((solid_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2) // 24)
-                empty_tile_x = int((empty_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2) // 24)
-                empty_tile_y = int((empty_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2) // 24)
-                
-                tile_distance = max(abs(solid_tile_x - empty_tile_x), abs(solid_tile_y - empty_tile_y))
-                
-                if tile_distance <= 1:  # Adjacent tiles
-                    # Check traversability using escape logic
-                    if self.is_traversable_with_hazards(
-                        solid_row, solid_col, empty_row, empty_col, level_data, ninja_position
-                    ):
-                        edge_index[0, edge_count] = solid_idx
-                        edge_index[1, edge_count] = empty_idx
-                        
-                        # Extract edge features
-                        edge_features[edge_count] = (
-                            self.feature_extractor.extract_edge_features(
-                                solid_row,
-                                solid_col,
-                                empty_row,
-                                empty_col,
-                                level_data.entities,
-                                ninja_position,
-                                ninja_velocity,
-                                edge_feature_dim,
-                            )
-                        )
-                        
-                        edge_mask[edge_count] = 1.0
-                        edge_types[edge_count] = EdgeType.WALK
-                        edge_count += 1
+        # No special ninja escape connections - all edges must follow proper collision detection
 
         # Build edges connecting sub-grid nodes to entity nodes
         for entity_node_idx, entity in entity_nodes:
@@ -507,48 +433,8 @@ class EdgeBuilder:
         tgt_x = tgt_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         tgt_y = tgt_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
 
-        # Special case: Allow ninja to escape from solid spawn tiles to nearby empty areas
-        ninja_x, ninja_y = ninja_position
-        ninja_distance_src = math.sqrt((src_x - ninja_x)**2 + (src_y - ninja_y)**2)
-        ninja_distance_tgt = math.sqrt((tgt_x - ninja_x)**2 + (tgt_y - ninja_y)**2)
-        
-        # If either node is very close to ninja (within 4 sub-cells = 24 pixels)
-        ninja_escape_range = SUB_CELL_SIZE * 4
-        near_ninja = (ninja_distance_src <= ninja_escape_range or 
-                     ninja_distance_tgt <= ninja_escape_range)
-        
-        if near_ninja:
-            # Check if this is a connection from solid to empty area
-            src_tile_x = int(src_x // 24)
-            src_tile_y = int(src_y // 24)
-            tgt_tile_x = int(tgt_x // 24)
-            tgt_tile_y = int(tgt_y // 24)
-            
-            src_solid = (0 <= src_tile_x < level_data.width and 
-                        0 <= src_tile_y < level_data.height and
-                        level_data.get_tile(src_tile_y, src_tile_x) == 1)
-            tgt_empty = (0 <= tgt_tile_x < level_data.width and 
-                        0 <= tgt_tile_y < level_data.height and
-                        level_data.get_tile(tgt_tile_y, tgt_tile_x) == 0)
-            
-            # Allow ninja to escape from solid tiles to adjacent empty tiles
-            if src_solid and tgt_empty:
-                # Check if tiles are adjacent (within 1 tile distance)
-                tile_distance = max(abs(src_tile_x - tgt_tile_x), abs(src_tile_y - tgt_tile_y))
-                if tile_distance <= 1:
-                    # Skip collision detection for ninja escape routes
-                    # Still check other hazards
-                    if not self._check_static_hazards(src_x, src_y, tgt_x, tgt_y, level_data):
-                        return False
-                    if not self._check_dynamic_hazards(
-                        src_x, src_y, tgt_x, tgt_y, level_data.entities, ninja_position
-                    ):
-                        return False
-                    if not self._check_bounce_block_traversal(
-                        src_x, src_y, tgt_x, tgt_y, level_data.entities
-                    ):
-                        return False
-                    return True
+        # No special ninja escape logic - all movement must follow proper collision detection
+        # The ninja should only be able to move between traversable positions
 
         # Check precise tile collision first
         if not self.is_precise_traversable(
