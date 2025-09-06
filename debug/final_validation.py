@@ -7,7 +7,7 @@ import os
 import sys
 
 # Add the nclone package to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nclone'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'nclone'))
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
