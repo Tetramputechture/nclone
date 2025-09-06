@@ -5,8 +5,7 @@ This module contains all configurable constants used throughout the graph
 visualization system to avoid magic numbers and provide centralized configuration.
 """
 
-from typing import Tuple, Dict
-from enum import IntEnum
+from typing import Tuple
 
 # Import actual physics constants from nclone
 from ..constants.physics_constants import (
@@ -84,16 +83,15 @@ class ColorScheme:
     }
     
     # Edge colors by type (RGBA)
+    # Keys align 1:1 with EdgeType in `graph/common.py`:
+    # 0: WALK, 1: JUMP, 2: WALL_SLIDE, 3: FALL, 4: ONE_WAY, 5: FUNCTIONAL
     EDGE_COLORS = {
-        0: (100, 255, 100, 150),  # WALK
-        1: (255, 200, 100, 180),  # JUMP
-        2: (100, 150, 255, 120),  # FALL
-        3: (200, 100, 255, 160),  # WALL_SLIDE
-        4: (255, 100, 200, 170),  # WALL_JUMP
-        5: (255, 255, 100, 200),  # LAUNCH_PAD
-        6: (100, 255, 200, 160),  # BOUNCE_BLOCK
-        7: (200, 255, 100, 180),  # BOUNCE_CHAIN
-        8: (255, 150, 100, 190),  # BOUNCE_BOOST
+        0: (100, 255, 100, 170),  # WALK (green)
+        1: (255, 180, 80, 190),   # JUMP (orange)
+        2: (180, 100, 255, 160),  # WALL_SLIDE (purple)
+        3: (100, 160, 255, 180),  # FALL (blue)
+        4: (255, 120, 200, 180),  # ONE_WAY (pink)
+        5: (255, 255, 100, 210),  # FUNCTIONAL (yellow)
     }
     
     # Special visualization colors

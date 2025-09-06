@@ -8,10 +8,10 @@ and entities.py to ensure perfect consistency.
 """
 
 import math
-from typing import Dict, Any, List, Optional, Tuple, Union
+import numpy as np
 
-from ..constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS, FULL_MAP_WIDTH, FULL_MAP_HEIGHT
-from ..physics import sweep_circle_vs_tiles, gather_segments_from_region
+from ..constants.physics_constants import NINJA_RADIUS, FULL_MAP_WIDTH, FULL_MAP_HEIGHT
+from ..physics import sweep_circle_vs_tiles
 from ..utils.tile_segment_factory import TileSegmentFactory
 
 
@@ -36,7 +36,7 @@ class PreciseTileCollision:
         src_y: float,
         tgt_x: float,
         tgt_y: float,
-        level_data: Dict[str, Any],
+        tiles: np.ndarray,
         ninja_radius: float = NINJA_RADIUS
     ) -> bool:
         """
@@ -47,7 +47,7 @@ class PreciseTileCollision:
             src_y: Source y coordinate
             tgt_x: Target x coordinate
             tgt_y: Target y coordinate
-            level_data: Level tile data and structure
+            tiles: Level tile data as NumPy array
             ninja_radius: Ninja collision radius
             
         Returns:
@@ -62,7 +62,7 @@ class PreciseTileCollision:
             return True
         
         # Create a mock simulator object with the segment dictionary
-        mock_sim = self._create_mock_simulator(level_data)
+        mock_sim = self._create_mock_simulator(tiles)
         
         # Use the existing sweep_circle_vs_tiles function
         # This uses the same collision detection as the actual ninja physics
@@ -73,20 +73,20 @@ class PreciseTileCollision:
         # If collision_time < 1.0, there's a collision before reaching the target
         return collision_time >= 1.0
     
-    def _create_mock_simulator(self, level_data: Dict[str, Any]):
+    def _create_mock_simulator(self, tiles: np.ndarray):
         """
         Create a mock simulator object with segment dictionary for collision detection.
         
         Args:
-            level_data: Level tile data and structure
+            tiles: Level tile data as NumPy array
             
         Returns:
             Mock simulator object with segment_dic attribute
         """
         # Cache segments for performance
-        level_id = level_data.get('level_id', id(level_data))
+        level_id = id(tiles)
         if self._current_level_id != level_id:
-            self._build_segment_dictionary(level_data)
+            self._build_segment_dictionary(tiles)
             self._current_level_id = level_id
         
         # Create a simple mock object with the segment dictionary
@@ -96,18 +96,17 @@ class PreciseTileCollision:
         
         return MockSimulator(self._segment_cache[level_id])
     
-    def _build_segment_dictionary(self, level_data: Dict[str, Any]) -> None:
+    def _build_segment_dictionary(self, tiles: np.ndarray) -> None:
         """
         Build the segment dictionary using the centralized TileSegmentFactory.
         
         Args:
-            level_data: Level tile data
+            tiles: Level tile data as NumPy array
         """
-        level_id = level_data.get('level_id', id(level_data))
+        level_id = id(tiles)
         
-        # Get tile data
-        tiles = level_data.get('tiles', {})
-        if not tiles:
+        # Check if tiles array is empty
+        if tiles is None or tiles.size == 0:
             # Create empty segment dictionary for empty level
             segment_dic = {}
             for x in range(FULL_MAP_WIDTH):

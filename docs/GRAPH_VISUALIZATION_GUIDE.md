@@ -253,7 +253,7 @@ from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 
 # Build hierarchical graph
 hierarchical_builder = HierarchicalGraphBuilder()
-hierarchical_data = hierarchical_builder.build_hierarchical_graph(level_data, entities)
+hierarchical_data = hierarchical_builder.build_graph(level_data, entities)
 
 # Visualize with hierarchy levels
 surface = visualizer.create_standalone_visualization(

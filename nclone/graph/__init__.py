@@ -22,6 +22,7 @@ from .hierarchical_builder import (
 from .feature_extraction import FeatureExtractor
 from .edge_building import EdgeBuilder
 from .graph_construction import GraphConstructor
+from .level_data import LevelData, ensure_level_data, create_level_data_dict
 from .common import (
     GraphData,
     NodeType,
@@ -40,6 +41,9 @@ __all__ = [
     'FeatureExtractor',
     'EdgeBuilder',
     'GraphConstructor',
+    'LevelData',
+    'ensure_level_data',
+    'create_level_data_dict',
     'GraphData',
     'NodeType',
     'EdgeType',
