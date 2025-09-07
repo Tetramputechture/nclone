@@ -60,8 +60,9 @@ def validate_doortest_fixes():
     
     print(f"Entity types found: {sorted(entity_types_found)}")
     
-    # Expected entities: ninja(0) + exit_door(3) + exit_switch(4) + locked_doors(6,6) + trap_door(8) + one_ways(11*8) = 14
-    expected_count = 14
+    # Expected entities: ninja(0) + exit_door(3) + exit_switch(4) + locked_doors(6*4) + trap_door(8*2) + one_ways(11*8) = 17
+    # ninja(1) + exit_door(1) + exit_switch(1) + locked_door_switches(2) + locked_door_doors(2) + trap_door_switch(1) + trap_door_door(1) + one_ways(8) = 17
+    expected_count = 17
     actual_count = len(level_data.entities)
     validation_results["correct_entity_count"] = (actual_count == expected_count)
     print(f"Entity count: {actual_count}/{expected_count} {'✅' if validation_results['correct_entity_count'] else '❌'}")

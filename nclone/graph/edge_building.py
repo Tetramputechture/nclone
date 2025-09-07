@@ -300,6 +300,12 @@ class EdgeBuilder:
                             not entity.get("is_door_part", False) and
                             other_entity.get("is_door_part", False)):
                             is_matching = True
+                    elif entity_type == EntityType.TRAP_DOOR:
+                        # For TRAP_DOOR, match switch node to door node of same entity
+                        if (entity.get("entity_id") == other_entity.get("entity_id") and
+                            not entity.get("is_door_part", False) and
+                            other_entity.get("is_door_part", False)):
+                            is_matching = True
 
                     if is_matching:
                         # Create functional edge from switch to door
