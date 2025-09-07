@@ -20,6 +20,7 @@ from .level_data import LevelData
 from .feature_extraction import FeatureExtractor
 from ..constants.entity_types import EntityType
 from .edge_building import EdgeBuilder
+from .reachability_analyzer import ReachabilityAnalyzer
 
 
 class GraphConstructor:
@@ -37,6 +38,7 @@ class GraphConstructor:
         """
         self.feature_extractor = feature_extractor
         self.edge_builder = edge_builder
+        self.reachability_analyzer = ReachabilityAnalyzer(edge_builder.trajectory_calculator)
 
     def build_sub_cell_graph(
         self,
@@ -76,32 +78,45 @@ class GraphConstructor:
         node_count = 0
         edge_count = 0
 
-        # Build sub-grid nodes (canonical ordering: sub-row by sub-row)
+        # Analyze reachability from ninja position to optimize graph
+        print(f"DEBUG: Analyzing reachability from ninja position {ninja_position}")
+        reachability_state = self.reachability_analyzer.analyze_reachability(
+            level_data, ninja_position
+        )
+        
+        print(f"DEBUG: Found {len(reachability_state.reachable_positions)} reachable positions")
+        print(f"DEBUG: Identified {len(reachability_state.subgoals)} subgoals")
+        
+        # Build sub-grid nodes ONLY for reachable positions (player-centric optimization)
         sub_grid_node_map = {}  # (sub_row, sub_col) -> node_index
+        
+        # Sort reachable positions for deterministic ordering
+        sorted_reachable = sorted(reachability_state.reachable_positions)
+        
+        for sub_row, sub_col in sorted_reachable:
+            if node_count >= N_MAX_NODES:
+                break
 
-        for sub_row in range(SUB_GRID_HEIGHT):
-            for sub_col in range(SUB_GRID_WIDTH):
-                if node_count >= N_MAX_NODES:
-                    break
+            node_idx = node_count
+            sub_grid_node_map[(sub_row, sub_col)] = node_idx
 
-                node_idx = node_count
-                sub_grid_node_map[(sub_row, sub_col)] = node_idx
+            # Extract sub-cell features
+            sub_cell_features = self.feature_extractor.extract_sub_cell_features(
+                level_data,
+                sub_row,
+                sub_col,
+                ninja_position,
+                ninja_velocity,
+                ninja_state,
+                node_feature_dim,
+            )
 
-                # Extract sub-cell features
-                sub_cell_features = self.feature_extractor.extract_sub_cell_features(
-                    level_data,
-                    sub_row,
-                    sub_col,
-                    ninja_position,
-                    ninja_velocity,
-                    ninja_state,
-                    node_feature_dim,
-                )
-
-                node_features[node_idx] = sub_cell_features
-                node_mask[node_idx] = 1.0
-                node_types[node_idx] = NodeType.GRID_CELL
-                node_count += 1
+            node_features[node_idx] = sub_cell_features
+            node_mask[node_idx] = 1.0
+            node_types[node_idx] = NodeType.GRID_CELL
+            node_count += 1
+            
+        print(f"DEBUG: Created {node_count} reachable sub-grid nodes (vs {SUB_GRID_WIDTH * SUB_GRID_HEIGHT} total possible)")
 
         # Build entity nodes (sorted by type then position for determinism)
         entity_nodes = []

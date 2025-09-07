@@ -360,8 +360,10 @@ while running:
                     print(f"Graph overlay: {'ON' if args.visualize_graph else 'OFF'}")
 
                 if event.key == pygame.K_p and pathfinding_engine and graph_data:
-                    # Trigger pathfinding demonstration
+                    # Trigger hierarchical pathfinding demonstration
                     try:
+                        print("=== Hierarchical Pathfinding Demo ===")
+                        
                         # Get current ninja position
                         if hasattr(env, "nplay_headless") and hasattr(
                             env.nplay_headless, "ninja_position"
@@ -372,50 +374,106 @@ while running:
                         else:
                             ninja_pos = (100, 100)  # Fallback
 
-                        # Set goal position to a reasonable location
-                        # Use mouse position if available, otherwise use a fixed goal
-                        mouse_pos = pygame.mouse.get_pos()
-                        if mouse_pos[0] > 0 and mouse_pos[1] > 0:
-                            # Convert screen coordinates to world coordinates
-                            screen = pygame.display.get_surface()
-                            if screen:
-                                screen_width = screen.get_width()
-                                screen_height = screen.get_height()
-                                # Proper coordinate conversion: screen -> world
-                                # Full map is 1056x600 pixels
-                                world_x = (mouse_pos[0] / screen_width) * 1056.0
-                                world_y = (mouse_pos[1] / screen_height) * 600.0
-                                goal_pos = (world_x, world_y)
-                            else:
-                                goal_pos = (400, 200)
-                        else:
-                            goal_pos = (400, 200)  # Default goal
+                        print(f"Ninja position: {ninja_pos}")
 
-                        print(f"Pathfinding from {ninja_pos} to {goal_pos}")
-
-                        # Find closest nodes to positions
-                        start_node = None
-                        goal_node = None
-
-                        # Use the visualization API's node finding method
-                        if hasattr(graph_visualizer, "_find_closest_node"):
-                            from nclone.graph.visualization_api import (
-                                GraphVisualizationAPI,
-                            )
-
-                            api = GraphVisualizationAPI()
-                            start_node = api._find_closest_node(graph_data, ninja_pos)
-                            goal_node = api._find_closest_node(graph_data, goal_pos)
-
-                        if start_node is not None and goal_node is not None:
-                            algorithm = (
-                                PathfindingAlgorithm.A_STAR
-                                if args.algorithm == "astar"
-                                else PathfindingAlgorithm.DIJKSTRA
-                            )
-                            path_result = pathfinding_engine.find_shortest_path(
-                                graph_data, start_node, goal_node, algorithm=algorithm
-                            )
+                        # Find ninja node
+                        from nclone.graph.visualization_api import GraphVisualizationAPI
+                        api = GraphVisualizationAPI()
+                        start_node = api._find_closest_node(graph_data, ninja_pos)
+                        
+                        if start_node is not None:
+                            print(f"Ninja node: {start_node}")
+                            
+                            # Try hierarchical pathfinding to exit
+                            try:
+                                from nclone.graph.subgoal_planner import SubgoalPlanner
+                                
+                                # Create subgoal planner
+                                subgoal_planner = SubgoalPlanner(pathfinding_engine)
+                                
+                                # Get reachability state from graph builder
+                                if hasattr(graph_builder, 'graph_constructor') and hasattr(graph_builder.graph_constructor, 'reachability_analyzer'):
+                                    # Re-run reachability analysis to get subgoals
+                                    level_data = getattr(env, "level_data", None)
+                                    if level_data:
+                                        reachability_state = graph_builder.graph_constructor.reachability_analyzer.analyze_reachability(
+                                            level_data, ninja_pos
+                                        )
+                                        
+                                        # Create subgoal plan to reach exit
+                                        subgoal_plan = subgoal_planner.create_subgoal_plan(
+                                            reachability_state, graph_data, start_node, target_goal_type='exit'
+                                        )
+                                        
+                                        if subgoal_plan:
+                                            print(f"✅ Created hierarchical plan with {len(subgoal_plan.execution_order)} subgoals")
+                                            
+                                            # Execute the plan
+                                            paths = subgoal_planner.execute_subgoal_plan(subgoal_plan, start_node)
+                                            
+                                            if paths:
+                                                print(f"✅ Found {len(paths)} path segments")
+                                                for i, path in enumerate(paths):
+                                                    subgoal = subgoal_plan.subgoals[subgoal_plan.execution_order[i]]
+                                                    print(f"  Path {i+1} to {subgoal.goal_type}: {len(path)} nodes")
+                                                    
+                                                # Store first path for visualization
+                                                if paths:
+                                                    path_result = type('PathResult', (), {
+                                                        'success': True,
+                                                        'path': paths[0],
+                                                        'cost': len(paths[0]) * 10.0,
+                                                        'nodes_explored': len(paths[0])
+                                                    })()
+                                            else:
+                                                print("❌ No paths found in hierarchical plan")
+                                                path_result = None
+                                        else:
+                                            print("❌ Could not create hierarchical plan")
+                                            path_result = None
+                                    else:
+                                        print("❌ No level data available for reachability analysis")
+                                        path_result = None
+                                else:
+                                    print("❌ Reachability analyzer not available")
+                                    path_result = None
+                                    
+                            except Exception as e:
+                                print(f"❌ Hierarchical pathfinding failed: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                path_result = None
+                                
+                            # Fallback to simple pathfinding if hierarchical fails
+                            if path_result is None:
+                                print("Falling back to simple pathfinding...")
+                                
+                                # Use mouse position or default goal
+                                mouse_pos = pygame.mouse.get_pos()
+                                if mouse_pos[0] > 0 and mouse_pos[1] > 0:
+                                    screen = pygame.display.get_surface()
+                                    if screen:
+                                        screen_width = screen.get_width()
+                                        screen_height = screen.get_height()
+                                        world_x = (mouse_pos[0] / screen_width) * 1056.0
+                                        world_y = (mouse_pos[1] / screen_height) * 600.0
+                                        goal_pos = (world_x, world_y)
+                                    else:
+                                        goal_pos = (400, 200)
+                                else:
+                                    goal_pos = (400, 200)  # Default goal
+                                    
+                                goal_node = api._find_closest_node(graph_data, goal_pos)
+                                
+                                if goal_node is not None:
+                                    algorithm = (
+                                        PathfindingAlgorithm.A_STAR
+                                        if args.algorithm == "astar"
+                                        else PathfindingAlgorithm.DIJKSTRA
+                                    )
+                                    path_result = pathfinding_engine.find_shortest_path(
+                                        graph_data, start_node, goal_node, algorithm=algorithm
+                                    )
 
                             if path_result.success:
                                 print(
