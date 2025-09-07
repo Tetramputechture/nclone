@@ -151,12 +151,9 @@ class BaseEnvironment(gymnasium.Env):
 
     def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
-        if not self._enable_debug_overlay:
-            return None
-
         info: Dict[str, Any] = {}
 
-        # Add graph visualization payload if enabled
+        # Add graph visualization payload if enabled (independent of general debug overlay)
         if self._graph_debug_enabled:
             if self._graph_builder is None:
                 self._graph_builder = HierarchicalGraphBuilder()
@@ -166,13 +163,15 @@ class BaseEnvironment(gymnasium.Env):
                     "data": graph_data,
                 }
 
-        # Add grid outline debug info if enabled
-        if self._grid_debug_enabled:
-            info["grid_outline"] = True
+        # Add other debug info only if general debug overlay is enabled
+        if self._enable_debug_overlay:
+            # Add grid outline debug info if enabled
+            if self._grid_debug_enabled:
+                info["grid_outline"] = True
 
-        # Allow subclasses to add more debug info
-        # For example, agent-specific state or exploration data
-        # Example: info['agent_state'] = {'foo': 'bar'}
+            # Allow subclasses to add more debug info
+            # For example, agent-specific state or exploration data
+            # Example: info['agent_state'] = {'foo': 'bar'}
 
         return info if info else None  # Return None if no debug info is to be shown
 
@@ -227,34 +226,41 @@ class BaseEnvironment(gymnasium.Env):
             # Get exit entities from entity_dic key 3 (contains both EntityExit and EntityExitSwitch)
             if hasattr(self.nplay_headless.sim, "entity_dic"):
                 exit_entities = self.nplay_headless.sim.entity_dic.get(3, [])
-
-                for i, entity in enumerate(exit_entities):
-                    entity_type_name = type(entity).__name__
+                
+                # Find exit switch and door pairs
+                exit_switches = [e for e in exit_entities if type(e).__name__ == "EntityExitSwitch"]
+                exit_doors = [e for e in exit_entities if type(e).__name__ == "EntityExit"]
+                
+                # Create switch-door pairs with matching entity IDs
+                for i, switch in enumerate(exit_switches):
+                    switch_id = f"exit_pair_{i}"
                     
-                    if entity_type_name == "EntityExitSwitch":
-                        # Add exit switch entity
-                        entities.append(
-                            {
-                                "type": EntityType.EXIT_SWITCH,
-                                "x": entity.xpos,
-                                "y": entity.ypos,
-                                "active": getattr(entity, "active", True),
-                                "state": 1.0 if getattr(entity, "active", True) else 0.0,
-                                "entity_id": f"exit_switch_{i}",
-                                "entity_ref": entity,
-                            }
-                        )
-                    elif entity_type_name == "EntityExit":
-                        # Add exit door entity
+                    # Add exit switch entity
+                    entities.append(
+                        {
+                            "type": EntityType.EXIT_SWITCH,
+                            "x": switch.xpos,
+                            "y": switch.ypos,
+                            "active": getattr(switch, "active", True),
+                            "state": 1.0 if getattr(switch, "active", True) else 0.0,
+                            "entity_id": switch_id,
+                            "entity_ref": switch,
+                        }
+                    )
+                    
+                    # Find corresponding door (usually there's one door per switch)
+                    if i < len(exit_doors):
+                        door = exit_doors[i]
                         entities.append(
                             {
                                 "type": EntityType.EXIT_DOOR,
-                                "x": entity.xpos,
-                                "y": entity.ypos,
-                                "active": getattr(entity, "active", True),
-                                "state": 1.0 if getattr(entity, "active", True) else 0.0,
+                                "x": door.xpos,
+                                "y": door.ypos,
+                                "active": getattr(door, "active", True),
+                                "state": 1.0 if getattr(door, "active", True) else 0.0,
                                 "entity_id": f"exit_door_{i}",
-                                "entity_ref": entity,
+                                "switch_entity_id": switch_id,  # Link to switch
+                                "entity_ref": door,
                             }
                         )
 
@@ -287,7 +293,9 @@ class BaseEnvironment(gymnasium.Env):
                 else:
                     door_x, door_y = 0.0, 0.0
 
-                # Add unified locked door entity with both switch and door info
+                entity_id = f"locked_{i}"
+                
+                # Add locked door switch part
                 entities.append(
                     {
                         "type": EntityType.LOCKED_DOOR,
@@ -299,7 +307,26 @@ class BaseEnvironment(gymnasium.Env):
                         "closed": getattr(locked_door, "closed", True),
                         "radius": getattr(locked_door, "RADIUS", 5.0),
                         "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
-                        "entity_id": f"locked_{i}",
+                        "entity_id": entity_id,
+                        "is_door_part": False,  # This is the switch part
+                        "entity_ref": locked_door,
+                    }
+                )
+                
+                # Add locked door door part (at door segment position)
+                entities.append(
+                    {
+                        "type": EntityType.LOCKED_DOOR,
+                        "x": door_x,  # Door segment position
+                        "y": door_y,  # Door segment position
+                        "door_x": door_x,  # Door segment position
+                        "door_y": door_y,  # Door segment position
+                        "active": getattr(locked_door, "active", True),
+                        "closed": getattr(locked_door, "closed", True),
+                        "radius": getattr(locked_door, "RADIUS", 5.0),
+                        "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
+                        "entity_id": entity_id,
+                        "is_door_part": True,  # This is the door part
                         "entity_ref": locked_door,
                     }
                 )
@@ -313,7 +340,9 @@ class BaseEnvironment(gymnasium.Env):
                 else:
                     door_x, door_y = 0.0, 0.0
 
-                # Add unified trap door entity with both switch and door info
+                entity_id = f"trap_{i}"
+                
+                # Add trap door switch part
                 entities.append(
                     {
                         "type": EntityType.TRAP_DOOR,
@@ -327,7 +356,28 @@ class BaseEnvironment(gymnasium.Env):
                         ),  # Trap doors start open
                         "radius": getattr(trap_door, "RADIUS", 5.0),
                         "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
-                        "entity_id": f"trap_{i}",
+                        "entity_id": entity_id,
+                        "is_door_part": False,  # This is the switch part
+                        "entity_ref": trap_door,
+                    }
+                )
+                
+                # Add trap door door part (at door segment position)
+                entities.append(
+                    {
+                        "type": EntityType.TRAP_DOOR,
+                        "x": door_x,  # Door segment position
+                        "y": door_y,  # Door segment position
+                        "door_x": door_x,  # Door segment position
+                        "door_y": door_y,  # Door segment position
+                        "active": getattr(trap_door, "active", True),
+                        "closed": getattr(
+                            trap_door, "closed", False
+                        ),  # Trap doors start open
+                        "radius": getattr(trap_door, "RADIUS", 5.0),
+                        "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
+                        "entity_id": entity_id,
+                        "is_door_part": True,  # This is the door part
                         "entity_ref": trap_door,
                     }
                 )
