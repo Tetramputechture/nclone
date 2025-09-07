@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 from .common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
 from .trajectory_calculator import TrajectoryCalculator
+from .precise_collision import PreciseTileCollision
+from .optimized_collision import get_collision_detector
 from ..constants.physics_constants import (
     MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE, GRAVITY_FALL, JUMP_INITIAL_VELOCITY,
     TILE_PIXEL_SIZE
@@ -50,7 +52,9 @@ class ReachabilityAnalyzer:
             debug: Enable debug output (default: False)
         """
         self.trajectory_calculator = trajectory_calculator
+        self.precise_collision = PreciseTileCollision()
         self.debug = debug
+        self.collision_detector = get_collision_detector()
         
     def analyze_reachability(
         self, 
@@ -72,6 +76,9 @@ class ReachabilityAnalyzer:
         if initial_switch_states is None:
             initial_switch_states = {}
             
+        # Initialize collision detector for this level
+        self.collision_detector.initialize_for_level(level_data.tiles)
+        
         # Convert ninja position to sub-grid coordinates
         ninja_sub_row = int(ninja_position[1] // SUB_CELL_SIZE)
         ninja_sub_col = int(ninja_position[0] // SUB_CELL_SIZE)
@@ -92,7 +99,7 @@ class ReachabilityAnalyzer:
             
             # Analyze reachability from current state
             self._analyze_reachability_iteration(
-                level_data, ninja_sub_row, ninja_sub_col, state
+                level_data, ninja_position, ninja_sub_row, ninja_sub_col, state
             )
             
             # Early termination: if no new areas were discovered, we're done
@@ -109,6 +116,7 @@ class ReachabilityAnalyzer:
     def _analyze_reachability_iteration(
         self, 
         level_data, 
+        ninja_position: Tuple[float, float],
         start_sub_row: int, 
         start_sub_col: int, 
         state: ReachabilityState
@@ -128,7 +136,20 @@ class ReachabilityAnalyzer:
         
         # If this is the first iteration, mark starting position as reachable
         if not state.reachable_positions:
-            state.reachable_positions.add((start_sub_row, start_sub_col))
+            # For the ninja's starting position, check if the actual ninja position is traversable
+            # even if the sub-cell center is not (due to discretization effects)
+            if (start_sub_row, start_sub_col) == (int(ninja_position[1] // SUB_CELL_SIZE), 
+                                                  int(ninja_position[0] // SUB_CELL_SIZE)):
+                # Check if the actual ninja position is traversable
+                ninja_x, ninja_y = ninja_position
+                if self._is_position_traversable_with_radius(ninja_x, ninja_y, level_data.tiles, 10.0):
+                    state.reachable_positions.add((start_sub_row, start_sub_col))
+                    if self.debug:
+                        print(f"DEBUG: Added ninja starting position ({start_sub_row}, {start_sub_col}) based on actual ninja position ({ninja_x}, {ninja_y})")
+                elif self.debug:
+                    print(f"DEBUG: Ninja starting position ({ninja_x}, {ninja_y}) is not traversable")
+            else:
+                state.reachable_positions.add((start_sub_row, start_sub_col))
             
         while queue:
             sub_row, sub_col, came_from = queue.popleft()
@@ -143,7 +164,13 @@ class ReachabilityAnalyzer:
                 continue
                 
             # Skip if position is not traversable (solid tile)
-            if not self._is_traversable_position(level_data, sub_row, sub_col, state):
+            # For the ninja's starting position, use the actual ninja position instead of sub-cell center
+            ninja_pos_override = None
+            if (sub_row, sub_col) == (int(ninja_position[1] // SUB_CELL_SIZE), 
+                                      int(ninja_position[0] // SUB_CELL_SIZE)):
+                ninja_pos_override = ninja_position
+                
+            if not self._is_traversable_position(level_data, sub_row, sub_col, state, ninja_pos_override):
                 continue
                 
             # Mark as reachable
@@ -156,6 +183,12 @@ class ReachabilityAnalyzer:
             neighbors = self._get_physics_based_neighbors(
                 level_data, sub_row, sub_col, came_from, state
             )
+            
+            if self.debug and (sub_row, sub_col) == (int(ninja_position[1] // SUB_CELL_SIZE), 
+                                                     int(ninja_position[0] // SUB_CELL_SIZE)):
+                print(f"DEBUG: Exploring {len(neighbors)} neighbors from ninja position ({sub_row}, {sub_col})")
+                for neighbor_row, neighbor_col, movement_type in neighbors:
+                    print(f"  Neighbor ({neighbor_row}, {neighbor_col}) via {movement_type}")
             
             for neighbor_row, neighbor_col, movement_type in neighbors:
                 if (neighbor_row, neighbor_col) not in visited_this_iteration:
@@ -171,39 +204,162 @@ class ReachabilityAnalyzer:
         level_data, 
         sub_row: int, 
         sub_col: int, 
-        state: ReachabilityState
+        state: ReachabilityState,
+        ninja_position: Optional[Tuple[float, float]] = None
     ) -> bool:
         """
-        Check if position is traversable considering current game state.
+        Check if position is traversable using segment-based collision detection.
         
         Args:
             level_data: Level data
             sub_row: Sub-grid row
             sub_col: Sub-grid column
             state: Current reachability state
+            ninja_position: If provided, use this position instead of sub-cell center
             
         Returns:
-            True if position can be occupied by player
+            True if position can be occupied by player (10px radius ninja)
         """
-        # Convert to pixel coordinates
-        pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-        pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+        # Use ninja's actual position if provided, otherwise use sub-cell center
+        if ninja_position is not None:
+            pixel_x, pixel_y = ninja_position
+        else:
+            # Convert to pixel coordinates (center of sub-cell)
+            pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+            pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         
-        # Check if position is in solid tile
+        # Check bounds first
         tile_x = int(pixel_x // TILE_PIXEL_SIZE)
         tile_y = int(pixel_y // TILE_PIXEL_SIZE)
         
-        if (0 <= tile_y < len(level_data.tiles) and 
-            0 <= tile_x < len(level_data.tiles[0])):
-            tile_value = level_data.tiles[tile_y][tile_x]
+        # Account for padding: tile data is unpadded, but coordinates assume padding
+        # Visual cell (5,18) corresponds to tile_data[17][4] (subtract 1 from both x,y)
+        data_tile_x = tile_x - 1
+        data_tile_y = tile_y - 1
+        
+        if not (0 <= data_tile_y < len(level_data.tiles) and 
+                0 <= data_tile_x < len(level_data.tiles[0])):
+            return False
+        
+        # Use proper tile-based traversability check
+        # This accounts for the ninja's 10px radius and handles all tile types correctly
+        is_traversable = self._is_position_traversable_with_radius(
+            pixel_x, pixel_y, level_data.tiles, 10.0  # ninja radius
+        )
+        
+        if self.debug:
+            tile_value = level_data.tiles[data_tile_y][data_tile_x]
+            print(f"DEBUG: Position ({sub_row}, {sub_col}) -> pixel ({pixel_x}, {pixel_y}) tile ({tile_x}, {tile_y}) -> data[{data_tile_y}][{data_tile_x}] tile_value={tile_value} traversable: {is_traversable}")
+        
+        return is_traversable
             
-            # Solid tiles are not traversable
-            if tile_value == 1:  # Solid tile
-                return False
-                
-            # Check for locked doors that are still locked
-            if self._is_position_blocked_by_door(level_data, pixel_x, pixel_y, state):
-                return False
+    def _is_position_traversable_with_radius(self, x: float, y: float, tiles: np.ndarray, radius: float) -> bool:
+        """
+        Check if a position is traversable considering ninja radius and proper tile definitions.
+        
+        Args:
+            x: X coordinate (padded coordinate system)
+            y: Y coordinate (padded coordinate system)  
+            tiles: Level tile data (unpadded)
+            radius: Ninja collision radius
+            
+        Returns:
+            True if position is traversable, False if blocked
+        """
+        # Use optimized collision detector with full segment-based collision detection
+        return self.collision_detector.is_circle_position_clear(x, y, radius, tiles)
+    
+    def _check_circle_tile_collision(self, x: float, y: float, tile_x: int, tile_y: int, radius: float) -> bool:
+        """Check if a circle collides with a solid tile using simple geometry."""
+        # Tile bounds in world coordinates
+        tile_left = tile_x * TILE_PIXEL_SIZE
+        tile_right = tile_left + TILE_PIXEL_SIZE
+        tile_top = tile_y * TILE_PIXEL_SIZE
+        tile_bottom = tile_top + TILE_PIXEL_SIZE
+        
+        # Find closest point on tile to circle center
+        closest_x = max(tile_left, min(x, tile_right))
+        closest_y = max(tile_top, min(y, tile_bottom))
+        
+        # Check if distance to closest point is less than radius
+        dx = x - closest_x
+        dy = y - closest_y
+        distance_squared = dx * dx + dy * dy
+        
+        return distance_squared < (radius * radius)
+    
+    def _check_circle_shaped_tile_collision(self, x: float, y: float, tile_x: int, tile_y: int, tiles: np.ndarray, radius: float) -> bool:
+        """Check if a circle collides with a shaped tile using proper segment-based collision detection."""
+        from ..utils.tile_segment_factory import TileSegmentFactory
+        from ..physics import overlap_circle_vs_segment
+        
+        # Get the tile ID
+        tile_id = tiles[tile_y, tile_x]
+        
+        # Debug output for problematic positions
+        debug_pos = (abs(x - 135) < 1 and abs(y - 447) < 1)
+        if debug_pos:
+            print(f"DEBUG SHAPED COLLISION: pos=({x:.1f},{y:.1f}) tile=({tile_x},{tile_y}) tile_id={tile_id}")
+        
+        # Create a single-tile dictionary for the segment factory
+        single_tile = {(tile_x, tile_y): tile_id}
+        
+        # Generate segments for this tile
+        segment_dict = TileSegmentFactory.create_segment_dictionary(single_tile)
+        
+        # Check collision with all segments in this tile
+        tile_coord = (tile_x, tile_y)
+        if tile_coord in segment_dict:
+            segments = segment_dict[tile_coord]
+            if debug_pos:
+                print(f"DEBUG SHAPED COLLISION: Found {len(segments)} segments for tile ({tile_x},{tile_y})")
+            
+            for i, segment in enumerate(segments):
+                if hasattr(segment, 'x1') and hasattr(segment, 'y1'):
+                    # Linear segment
+                    collision = overlap_circle_vs_segment(x, y, radius, segment.x1, segment.y1, segment.x2, segment.y2)
+                    if debug_pos:
+                        print(f"DEBUG SHAPED COLLISION: Linear segment {i}: ({segment.x1},{segment.y1})-({segment.x2},{segment.y2}) collision={collision}")
+                    if collision:
+                        return True
+                elif hasattr(segment, 'xpos') and hasattr(segment, 'ypos'):
+                    # Circular segment - implement collision detection
+                    collision = self._check_circle_vs_circular_segment(x, y, radius, segment)
+                    if debug_pos:
+                        print(f"DEBUG SHAPED COLLISION: Circular segment {i}: center=({segment.xpos},{segment.ypos}) collision={collision}")
+                    if collision:
+                        return True
+        elif debug_pos:
+            print(f"DEBUG SHAPED COLLISION: No segments found for tile ({tile_x},{tile_y})")
+        
+        return False
+    
+    def _check_circle_vs_circular_segment(self, x: float, y: float, radius: float, segment) -> bool:
+        """Check if a circle collides with a circular segment (quarter-circle)."""
+        import math
+        
+        # Distance from circle center to arc center
+        dx = x - segment.xpos
+        dy = y - segment.ypos
+        distance = math.sqrt(dx * dx + dy * dy)
+        
+        # Check if we're in the right quadrant
+        in_quadrant = (dx * segment.hor >= 0) and (dy * segment.ver >= 0)
+        
+        if segment.convex:
+            # Convex arc (quarter-pipe) - collision if inside the arc and in quadrant
+            if in_quadrant and distance < (segment.radius + radius):
+                return True
+        else:
+            # Concave arc (quarter-moon) - collision if outside inner radius but inside outer radius
+            if in_quadrant and (segment.radius - radius) < distance < (segment.radius + radius):
+                return True
+        
+        return False
+
+        # Check for locked doors that are still locked
+        if self._is_position_blocked_by_door(level_data, pixel_x, pixel_y, state):
+            return False
                 
         return True
     
@@ -284,6 +440,9 @@ class ReachabilityAnalyzer:
         pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         
+        if self.debug:
+            print(f"DEBUG: _get_physics_based_neighbors for ({sub_row}, {sub_col}) at pixel ({pixel_x}, {pixel_y})")
+        
         # Walking neighbors (adjacent sub-cells)
         walk_directions = [
             (-1, 0, 'walk_up'),    # Up
@@ -301,6 +460,10 @@ class ReachabilityAnalyzer:
             
             if self._is_valid_position(new_row, new_col):
                 neighbors.append((new_row, new_col, movement_type))
+                if self.debug:
+                    print(f"  Added walking neighbor ({new_row}, {new_col}) via {movement_type}")
+            elif self.debug:
+                print(f"  Rejected walking neighbor ({new_row}, {new_col}) via {movement_type} - out of bounds")
         
         # Jump neighbors (physics-based)
         jump_neighbors = self._get_jump_neighbors(level_data, pixel_x, pixel_y, state)
