@@ -1,9 +1,9 @@
 # All entity types in the game
 
-from enum import IntEnum
 
-class EntityType(IntEnum):
+class EntityType:
     """All entity types in the game"""
+
     NINJA = 0
     TOGGLE_MINE = 1
     GOLD = 2

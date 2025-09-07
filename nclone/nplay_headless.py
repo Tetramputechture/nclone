@@ -452,12 +452,12 @@ class NPlayHeadless:
             EntityType.TRAP_DOOR: 32,
             EntityType.LAUNCH_PAD: 32,
             EntityType.ONE_WAY: 32,
-            EntityType.DRONE_CLOCKWISE: 32,
+            EntityType.DRONE_ZAP: 32,
             EntityType.BOUNCE_BLOCK: 32,
             EntityType.THWUMP: 32,
             EntityType.BOOST_PAD: 32,
             EntityType.DEATH_BALL: 32,
-            EntityType.DRONE_COUNTER_CLOCKWISE: 32,
+            EntityType.MINI_DRONE: 32,
             EntityType.SHWUMP: 32
         }
 
