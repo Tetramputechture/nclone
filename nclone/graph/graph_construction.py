@@ -122,7 +122,7 @@ class GraphConstructor:
         )
         node_features[ninja_node_idx] = ninja_features
         node_mask[ninja_node_idx] = 1.0
-        node_types[ninja_node_idx] = NodeType.ENTITY
+        node_types[ninja_node_idx] = NodeType.NINJA
         node_count += 1
         
         # Then process other entities

@@ -211,43 +211,50 @@ class BaseEnvironment(gymnasium.Env):
         """
         entities = []
 
+        # Add ninja as a special entity node
+        ninja_pos = self.nplay_headless.ninja_position()
+        entities.append({
+            "type": EntityType.NINJA,
+            "x": ninja_pos[0],
+            "y": ninja_pos[1],
+            "active": True,
+            "state": 0.0,
+            "entity_id": "ninja",
+        })
+
         # Exit doors and switches using direct entity relationships
         try:
-            # Get exit switches directly from entity_dic to preserve parent relationships
+            # Get exit entities from entity_dic key 3 (contains both EntityExit and EntityExitSwitch)
             if hasattr(self.nplay_headless.sim, "entity_dic"):
-                exit_switches = self.nplay_headless.sim.entity_dic.get(
-                    EntityType.EXIT_SWITCH, []
-                )
+                exit_entities = self.nplay_headless.sim.entity_dic.get(3, [])
 
-                for i, exit_switch in enumerate(exit_switches):
-                    # Add exit switch entity
-                    entities.append(
-                        {
-                            "type": EntityType.EXIT_SWITCH,
-                            "x": exit_switch.xpos,
-                            "y": exit_switch.ypos,
-                            "active": exit_switch.active,
-                            "state": 1.0 if exit_switch.active else 0.0,
-                            "entity_id": i,
-                            "entity_ref": exit_switch,
-                        }
-                    )
-
-                    # Add corresponding exit door using parent relationship
-                    if hasattr(exit_switch, "parent") and exit_switch.parent:
-                        exit_door = exit_switch.parent
+                for i, entity in enumerate(exit_entities):
+                    entity_type_name = type(entity).__name__
+                    
+                    if entity_type_name == "EntityExitSwitch":
+                        # Add exit switch entity
+                        entities.append(
+                            {
+                                "type": EntityType.EXIT_SWITCH,
+                                "x": entity.xpos,
+                                "y": entity.ypos,
+                                "active": getattr(entity, "active", True),
+                                "state": 1.0 if getattr(entity, "active", True) else 0.0,
+                                "entity_id": f"exit_switch_{i}",
+                                "entity_ref": entity,
+                            }
+                        )
+                    elif entity_type_name == "EntityExit":
+                        # Add exit door entity
                         entities.append(
                             {
                                 "type": EntityType.EXIT_DOOR,
-                                "x": exit_door.xpos,
-                                "y": exit_door.ypos,
-                                "active": getattr(exit_door, "switch_hit", False),
-                                "state": 1.0
-                                if getattr(exit_door, "switch_hit", False)
-                                else 0.0,
-                                "entity_id": i,  # Same ID to indicate pairing
-                                "switch_entity_id": i,  # Reference to associated switch
-                                "entity_ref": exit_door,
+                                "x": entity.xpos,
+                                "y": entity.ypos,
+                                "active": getattr(entity, "active", True),
+                                "state": 1.0 if getattr(entity, "active", True) else 0.0,
+                                "entity_id": f"exit_door_{i}",
+                                "entity_ref": entity,
                             }
                         )
 
