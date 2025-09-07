@@ -161,8 +161,10 @@ def debug_graph_visualization_issues():
         width, height = 1000, 600
         surface = pygame.Surface((width, height))
         
-        # Render graph
-        visualizer.render_graph(surface, graph, ninja_pos)
+        # Render graph using the correct method
+        surface = visualizer.create_standalone_visualization(
+            graph, width=width, height=height
+        )
         
         print("✅ Graph visualization rendered successfully")
         

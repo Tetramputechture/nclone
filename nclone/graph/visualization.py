@@ -793,22 +793,13 @@ class GraphVisualizer:
             y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
             return (float(x), float(y))
         else:
-            # Entity node: extract normalized position from features
+            # Entity node: extract world position from features
             node_features = graph_data.node_features[node_idx]
-            # Feature layout: tile_type + 4 + entity_type + state_features
-            # Position is stored at state_offset + 1, state_offset + 2
-            # Get dimensions from the actual feature vector structure
-            # These should match the values used in HierarchicalGraphBuilder
-            tile_type_dim = 38  # Number of tile types in N++
-            entity_type_dim = 30  # Extended for bounce block states
-            state_offset = tile_type_dim + 4 + entity_type_dim
-
-            if len(node_features) > state_offset + 2:
-                norm_x = float(node_features[state_offset + 1])
-                norm_y = float(node_features[state_offset + 2])
-                # Denormalize from [0,1] to pixel coordinates
-                x = norm_x * float(FULL_MAP_WIDTH_PX)
-                y = norm_y * float(FULL_MAP_HEIGHT_PX)
+            # Entity positions are stored directly in the first 2 features
+            # as world coordinates (already in pixels)
+            if len(node_features) >= 2:
+                x = float(node_features[0])
+                y = float(node_features[1])
                 return (float(x), float(y))
             else:
                 return (0.0, 0.0)
