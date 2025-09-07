@@ -94,6 +94,86 @@ from nclone.graph.visualization import (
 from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 
+
+def _get_ninja_position(env):
+    """Get current ninja position from environment."""
+    if hasattr(env, "nplay_headless") and hasattr(env.nplay_headless, "ninja_position"):
+        return env.nplay_headless.ninja_position()
+    elif hasattr(env, "sim") and hasattr(env.sim, "ninja"):
+        return (env.sim.ninja.x, env.sim.ninja.y)
+    else:
+        return (100, 100)  # Fallback
+
+
+def _run_hierarchical_pathfinding_demo(env, graph_builder, pathfinding_engine, graph_data, level_data):
+    """Run hierarchical pathfinding demonstration."""
+    try:
+        print("=== Hierarchical Pathfinding Demo ===")
+        
+        ninja_pos = _get_ninja_position(env)
+        print(f"Ninja position: {ninja_pos}")
+
+        # Find ninja node
+        from nclone.graph.visualization_api import GraphVisualizationAPI
+        api = GraphVisualizationAPI()
+        start_node = api._find_closest_node(graph_data, ninja_pos)
+        
+        if start_node is None:
+            print("❌ Could not find ninja node")
+            return None
+            
+        print(f"Ninja node: {start_node}")
+        
+        # Try hierarchical pathfinding
+        if not (hasattr(graph_builder, 'graph_constructor') and 
+                hasattr(graph_builder.graph_constructor, 'reachability_analyzer')):
+            print("❌ Reachability analyzer not available")
+            return None
+            
+        if not level_data:
+            print("❌ No level data available")
+            return None
+            
+        from nclone.graph.subgoal_planner import SubgoalPlanner
+        
+        # Create subgoal planner
+        subgoal_planner = SubgoalPlanner(pathfinding_engine, debug=True)
+        
+        # Get reachability state
+        reachability_state = graph_builder.graph_constructor.reachability_analyzer.analyze_reachability(
+            level_data, ninja_pos
+        )
+        
+        # Create and execute plan
+        subgoal_plan = subgoal_planner.create_subgoal_plan(
+            reachability_state, graph_data, start_node, target_goal_type='exit'
+        )
+
+        if subgoal_plan:
+            print(f"✅ Created hierarchical plan with {len(subgoal_plan.execution_order)} subgoals")
+            paths = subgoal_planner.execute_subgoal_plan(subgoal_plan, start_node)
+
+            if paths:
+                print(f"✅ Found {len(paths)} path segments")
+                # Use first path for visualization
+                return type('PathResult', (), {
+                    'path': paths[0],
+                    'cost': len(paths[0]) * 10.0,
+                    'nodes_explored': len(paths[0])
+                })()
+            else:
+                print("❌ No paths found in hierarchical plan")
+        else:
+            print("❌ Could not create hierarchical plan")
+            
+    except Exception as e:
+        print(f"❌ Hierarchical pathfinding failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    return None
+
+
 # Initialize pygame
 pygame.init()
 pygame.display.set_caption("N++ Environment Test")

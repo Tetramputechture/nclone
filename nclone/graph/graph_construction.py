@@ -28,17 +28,19 @@ class GraphConstructor:
     Handles core graph construction with bounce block awareness.
     """
 
-    def __init__(self, feature_extractor: FeatureExtractor, edge_builder: EdgeBuilder):
+    def __init__(self, feature_extractor: FeatureExtractor, edge_builder: EdgeBuilder, debug: bool = False):
         """
         Initialize graph constructor.
 
         Args:
             feature_extractor: Feature extraction utility instance
             edge_builder: Edge building utility instance
+            debug: Enable debug output (default: False)
         """
         self.feature_extractor = feature_extractor
         self.edge_builder = edge_builder
-        self.reachability_analyzer = ReachabilityAnalyzer(edge_builder.trajectory_calculator)
+        self.reachability_analyzer = ReachabilityAnalyzer(edge_builder.trajectory_calculator, debug=debug)
+        self.debug = debug
 
     def build_sub_cell_graph(
         self,
@@ -79,21 +81,38 @@ class GraphConstructor:
         edge_count = 0
 
         # Analyze reachability from ninja position to optimize graph
-        print(f"DEBUG: Analyzing reachability from ninja position {ninja_position}")
-        reachability_state = self.reachability_analyzer.analyze_reachability(
-            level_data, ninja_position
-        )
+        if self.debug:
+            print(f"DEBUG: Analyzing reachability from ninja position {ninja_position}")
         
-        print(f"DEBUG: Found {len(reachability_state.reachable_positions)} reachable positions")
-        print(f"DEBUG: Identified {len(reachability_state.subgoals)} subgoals")
+        try:
+            reachability_state = self.reachability_analyzer.analyze_reachability(
+                level_data, ninja_position
+            )
+        except Exception as e:
+            print(f"Warning: Reachability analysis failed: {e}")
+            # Fallback to full grid if reachability analysis fails
+            reachability_state = None
+        
+        if reachability_state:
+            if self.debug:
+                print(f"DEBUG: Found {len(reachability_state.reachable_positions)} reachable positions")
+                print(f"DEBUG: Identified {len(reachability_state.subgoals)} subgoals")
+        else:
+            if self.debug:
+                print("DEBUG: Using full grid fallback due to reachability analysis failure")
         
         # Build sub-grid nodes ONLY for reachable positions (player-centric optimization)
         sub_grid_node_map = {}  # (sub_row, sub_col) -> node_index
         
-        # Sort reachable positions for deterministic ordering
-        sorted_reachable = sorted(reachability_state.reachable_positions)
+        # Determine which positions to use
+        if reachability_state:
+            # Sort reachable positions for deterministic ordering
+            sorted_positions = sorted(reachability_state.reachable_positions)
+        else:
+            # Fallback to full grid
+            sorted_positions = [(r, c) for r in range(SUB_GRID_HEIGHT) for c in range(SUB_GRID_WIDTH)]
         
-        for sub_row, sub_col in sorted_reachable:
+        for sub_row, sub_col in sorted_positions:
             if node_count >= N_MAX_NODES:
                 break
 
@@ -116,7 +135,10 @@ class GraphConstructor:
             node_types[node_idx] = NodeType.GRID_CELL
             node_count += 1
             
-        print(f"DEBUG: Created {node_count} reachable sub-grid nodes (vs {SUB_GRID_WIDTH * SUB_GRID_HEIGHT} total possible)")
+        if self.debug:
+            total_possible = SUB_GRID_WIDTH * SUB_GRID_HEIGHT
+            optimization_ratio = (total_possible - node_count) / total_possible * 100 if total_possible > 0 else 0
+            print(f"DEBUG: Created {node_count} sub-grid nodes (vs {total_possible} total possible, {optimization_ratio:.1f}% reduction)")
 
         # Build entity nodes (sorted by type then position for determinism)
         entity_nodes = []

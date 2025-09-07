@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from .common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
 from .trajectory_calculator import TrajectoryCalculator
 from ..constants.physics_constants import (
-    MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE, GRAVITY_FALL, JUMP_INITIAL_VELOCITY
+    MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE, GRAVITY_FALL, JUMP_INITIAL_VELOCITY,
+    TILE_PIXEL_SIZE
 )
 from ..constants.entity_types import EntityType
 
@@ -40,9 +41,16 @@ class ReachabilityAnalyzer:
     - Subgoal identification for hierarchical planning
     """
     
-    def __init__(self, trajectory_calculator: TrajectoryCalculator):
-        """Initialize reachability analyzer with physics calculator."""
+    def __init__(self, trajectory_calculator: TrajectoryCalculator, debug: bool = False):
+        """
+        Initialize reachability analyzer with physics calculator.
+        
+        Args:
+            trajectory_calculator: Physics-based trajectory calculator
+            debug: Enable debug output (default: False)
+        """
         self.trajectory_calculator = trajectory_calculator
+        self.debug = debug
         
     def analyze_reachability(
         self, 
@@ -78,7 +86,7 @@ class ReachabilityAnalyzer:
         
         # Perform iterative reachability analysis
         # Each iteration may unlock new areas via switch activation
-        max_iterations = 10  # Prevent infinite loops
+        max_iterations = 10  # Prevent infinite loops in complex switch dependencies
         for iteration in range(max_iterations):
             initial_size = len(state.reachable_positions)
             
@@ -87,8 +95,10 @@ class ReachabilityAnalyzer:
                 level_data, ninja_sub_row, ninja_sub_col, state
             )
             
-            # If no new areas were discovered, we're done
+            # Early termination: if no new areas were discovered, we're done
             if len(state.reachable_positions) == initial_size:
+                if self.debug:
+                    print(f"DEBUG: Reachability analysis converged after {iteration + 1} iterations")
                 break
                 
         # Identify subgoals for hierarchical planning
@@ -180,8 +190,8 @@ class ReachabilityAnalyzer:
         pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
         
         # Check if position is in solid tile
-        tile_x = int(pixel_x // 24)  # TILE_PIXEL_SIZE = 24
-        tile_y = int(pixel_y // 24)
+        tile_x = int(pixel_x // TILE_PIXEL_SIZE)
+        tile_y = int(pixel_y // TILE_PIXEL_SIZE)
         
         if (0 <= tile_y < len(level_data.tiles) and 
             0 <= tile_x < len(level_data.tiles[0])):
@@ -215,8 +225,9 @@ class ReachabilityAnalyzer:
                     door_y = entity.get('door_y', entity.get('y', 0))
                     
                     # Simple overlap check (could be refined)
-                    if (abs(pixel_x - door_x) < 12 and  # Half tile width
-                        abs(pixel_y - door_y) < 12):   # Half tile height
+                    half_tile = TILE_PIXEL_SIZE // 2
+                    if (abs(pixel_x - door_x) < half_tile and
+                        abs(pixel_y - door_y) < half_tile):
                         return True
         return False
     
@@ -239,13 +250,14 @@ class ReachabilityAnalyzer:
                 switch_y = entity.get('y', 0)
                 
                 # Activation range (within ~1 tile)
-                if (abs(pixel_x - switch_x) < 24 and 
-                    abs(pixel_y - switch_y) < 24):
+                if (abs(pixel_x - switch_x) < TILE_PIXEL_SIZE and 
+                    abs(pixel_y - switch_y) < TILE_PIXEL_SIZE):
                     entity_id = id(entity)
                     if not state.switch_states.get(entity_id, False):
                         # Activate the switch
                         state.switch_states[entity_id] = True
-                        print(f"DEBUG: Activated switch at ({switch_x}, {switch_y}) - type {entity_type}")
+                        if self.debug:
+                            print(f"DEBUG: Activated switch at ({switch_x}, {switch_y}) - type {entity_type}")
     
     def _get_physics_based_neighbors(
         self, 
@@ -311,13 +323,13 @@ class ReachabilityAnalyzer:
         neighbors = []
         
         # Sample jump targets within physics range
-        max_jump_pixels = min(MAX_JUMP_DISTANCE, 150)  # Reasonable limit
+        max_jump_pixels = min(MAX_JUMP_DISTANCE, 150)  # Reasonable limit to avoid excessive computation
         
-        # Sample jump directions and distances
-        for angle in np.linspace(15, 165, 8):  # Jump angles from 15° to 165°
+        # Sample jump directions and distances (8×4=32 samples total)
+        for angle in np.linspace(15, 165, 8):  # Jump angles from 15° to 165° (upward arcs)
             angle_rad = np.radians(angle)
             
-            for distance in np.linspace(24, max_jump_pixels, 4):  # Jump distances
+            for distance in np.linspace(TILE_PIXEL_SIZE, max_jump_pixels, 4):  # Jump distances from min to max
                 target_x = pixel_x + distance * np.cos(angle_rad)
                 target_y = pixel_y - distance * np.sin(angle_rad)  # Y decreases upward
                 
@@ -347,8 +359,10 @@ class ReachabilityAnalyzer:
         # Sample fall targets below current position
         max_fall_pixels = min(MAX_FALL_DISTANCE, 200)  # Reasonable limit
         
-        for horizontal_offset in [-48, -24, 0, 24, 48]:  # Horizontal drift while falling
-            for fall_distance in np.linspace(24, max_fall_pixels, 6):
+        # Horizontal drift while falling (in multiples of tile size)
+        horizontal_offsets = [-2 * TILE_PIXEL_SIZE, -TILE_PIXEL_SIZE, 0, TILE_PIXEL_SIZE, 2 * TILE_PIXEL_SIZE]
+        for horizontal_offset in horizontal_offsets:
+            for fall_distance in np.linspace(TILE_PIXEL_SIZE, max_fall_pixels, 6):
                 target_x = pixel_x + horizontal_offset
                 target_y = pixel_y + fall_distance
                 
@@ -386,8 +400,8 @@ class ReachabilityAnalyzer:
             sample_y = start_y + t * (end_y - start_y) - 0.5 * GRAVITY_FALL * t * t * 10  # Simplified gravity
             
             # Check if sample point is in solid tile
-            tile_x = int(sample_x // 24)
-            tile_y = int(sample_y // 24)
+            tile_x = int(sample_x // TILE_PIXEL_SIZE)
+            tile_y = int(sample_y // TILE_PIXEL_SIZE)
             
             if (0 <= tile_y < len(level_data.tiles) and 
                 0 <= tile_x < len(level_data.tiles[0])):
@@ -415,8 +429,8 @@ class ReachabilityAnalyzer:
             sample_y = start_y + t * (end_y - start_y)
             
             # Check if sample point is in solid tile
-            tile_x = int(sample_x // 24)
-            tile_y = int(sample_y // 24)
+            tile_x = int(sample_x // TILE_PIXEL_SIZE)
+            tile_y = int(sample_y // TILE_PIXEL_SIZE)
             
             if (0 <= tile_y < len(level_data.tiles) and 
                 0 <= tile_x < len(level_data.tiles[0])):
@@ -465,4 +479,5 @@ class ReachabilityAnalyzer:
         }
         state.subgoals.sort(key=lambda x: priority_order.get(x[2], 999))
         
-        print(f"DEBUG: Identified {len(state.subgoals)} subgoals: {[g[2] for g in state.subgoals]}")
+        if self.debug:
+            print(f"DEBUG: Identified {len(state.subgoals)} subgoals: {[g[2] for g in state.subgoals]}")

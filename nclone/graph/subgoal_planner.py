@@ -11,6 +11,7 @@ from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
 from collections import deque
 
+from .common import SUB_CELL_SIZE
 from .reachability_analyzer import ReachabilityState
 from .pathfinding import PathfindingEngine
 from ..constants.entity_types import EntityType
@@ -52,9 +53,16 @@ class SubgoalPlanner:
     - Navigating to final objectives (exits)
     """
     
-    def __init__(self, pathfinding_engine: PathfindingEngine):
-        """Initialize subgoal planner with pathfinding engine."""
+    def __init__(self, pathfinding_engine: PathfindingEngine, debug: bool = False):
+        """
+        Initialize subgoal planner with pathfinding engine.
+        
+        Args:
+            pathfinding_engine: Engine for finding paths between nodes
+            debug: Enable debug output (default: False)
+        """
         self.pathfinding_engine = pathfinding_engine
+        self.debug = debug
         
     def create_subgoal_plan(
         self, 
@@ -79,7 +87,8 @@ class SubgoalPlanner:
         subgoals = self._create_subgoal_objects(reachability_state, graph_data)
         
         if not subgoals:
-            print("DEBUG: No subgoals found in reachability analysis")
+            if self.debug:
+                print("DEBUG: No subgoals found in reachability analysis")
             return None
             
         # Analyze dependencies between subgoals
@@ -93,14 +102,16 @@ class SubgoalPlanner:
                 break
                 
         if not target_subgoal:
-            print(f"DEBUG: Target goal type '{target_goal_type}' not found in subgoals")
+            if self.debug:
+                print(f"DEBUG: Target goal type '{target_goal_type}' not found in subgoals")
             return None
             
         # Create execution plan using topological sort
         execution_order = self._create_execution_order(subgoals, target_subgoal)
         
         if not execution_order:
-            print("DEBUG: Could not create valid execution order (circular dependencies?)")
+            if self.debug:
+                print("DEBUG: Could not create valid execution order (circular dependencies?)")
             return None
             
         # Estimate total cost
@@ -112,7 +123,8 @@ class SubgoalPlanner:
             total_estimated_cost=total_cost
         )
         
-        print(f"DEBUG: Created subgoal plan with {len(execution_order)} steps, estimated cost: {total_cost:.1f}")
+        if self.debug:
+            print(f"DEBUG: Created subgoal plan with {len(execution_order)} steps, estimated cost: {total_cost:.1f}")
         return plan
     
     def _create_subgoal_objects(
@@ -126,8 +138,8 @@ class SubgoalPlanner:
         
         for sub_row, sub_col, goal_type in reachability_state.subgoals:
             # Find closest graph node to this subgoal position
-            pixel_x = sub_col * 6 + 3  # SUB_CELL_SIZE = 6, center of sub-cell
-            pixel_y = sub_row * 6 + 3
+            pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+            pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
             
             # Find closest node
             distances = np.sqrt(
@@ -196,10 +208,11 @@ class SubgoalPlanner:
         Returns:
             List of indices into subgoals list, in execution order
         """
-        # Build dependency graph
+        # Build dependency graph for efficient lookup
         subgoal_map = {s.goal_type: i for i, s in enumerate(subgoals)}
         
-        # Find all subgoals needed to reach target (backwards BFS)
+        # Find all subgoals needed to reach target using backwards BFS
+        # This ensures we only include necessary subgoals in the execution order
         needed_subgoals = set()
         queue = deque([target_subgoal.goal_type])
         needed_subgoals.add(target_subgoal.goal_type)
@@ -234,7 +247,8 @@ class SubgoalPlanner:
             
             if not ready:
                 # Circular dependency or missing dependency
-                print("DEBUG: Circular dependency detected in subgoal planning")
+                if self.debug:
+                    print("DEBUG: Circular dependency detected in subgoal planning")
                 return []
                 
             # Sort ready subgoals by priority
@@ -306,9 +320,11 @@ class SubgoalPlanner:
                 if path:
                     paths.append(path)
                     current_node = subgoal.node_idx
-                    print(f"DEBUG: Path to {subgoal.goal_type}: {len(path)} nodes")
+                    if self.debug:
+                        print(f"DEBUG: Path to {subgoal.goal_type}: {len(path)} nodes")
                 else:
-                    print(f"DEBUG: No path found to {subgoal.goal_type}")
+                    if self.debug:
+                        print(f"DEBUG: No path found to {subgoal.goal_type}")
                     break
         
         return paths
