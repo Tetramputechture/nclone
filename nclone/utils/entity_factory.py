@@ -38,7 +38,7 @@ def get_entity_class_for_type(entity_type, sim_config=None):
               or None if the entity type is not supported or should be skipped
     """
     # Handle entities that require basic_sim check
-    if sim_config and entity_type in [EntityType.DRONE_CLOCKWISE, EntityType.DEATH_BALL, EntityType.DRONE_COUNTER_CLOCKWISE]:
+    if sim_config and entity_type in [EntityType.DRONE_ZAP, EntityType.MINI_DRONE, EntityType.DEATH_BALL]:
         if sim_config.basic_sim:
             return None
     
@@ -184,7 +184,9 @@ def create_entity_instance(entity_type, sim, xcoord, ycoord, orientation, mode, 
         entity = entity_class(entity_type, sim, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord)
     elif entity_type in [EntityType.LAUNCH_PAD, EntityType.ONE_WAY, EntityType.THWUMP]:
         entity = entity_class(entity_type, sim, xcoord, ycoord, orientation)
-    elif entity_type in [EntityType.DRONE_CLOCKWISE, EntityType.DRONE_COUNTER_CLOCKWISE]:
+    elif entity_type == EntityType.DRONE_ZAP:
+        entity = entity_class(entity_type, sim, xcoord, ycoord, orientation, mode)
+    elif entity_type == EntityType.MINI_DRONE:
         entity = entity_class(entity_type, sim, xcoord, ycoord, orientation, mode)
     elif entity_type in [EntityType.BOUNCE_BLOCK, EntityType.BOOST_PAD, EntityType.DEATH_BALL, EntityType.SHWUMP]:
         entity = entity_class(entity_type, sim, xcoord, ycoord)

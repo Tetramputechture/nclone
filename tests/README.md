@@ -1,10 +1,12 @@
-# Graph Traversability Tests
+# Graph System Tests
 
-This directory contains tests for the graph traversability improvements made to nclone. These tests help prevent regressions and ensure the improvements continue to work correctly.
+This directory contains tests for the graph system improvements made to nclone. These tests help prevent regressions and ensure the improvements continue to work correctly.
 
 ## Test Files
 
-### `test_graph_traversability.py`
+### Core Graph System Tests
+
+#### `test_graph_traversability.py`
 Tests the core graph builder improvements:
 - Sub-grid resolution for better spatial accuracy
 - Raycasting collision detection with ninja radius
@@ -13,12 +15,54 @@ Tests the core graph builder improvements:
 - Diagonal traversability for slopes
 - Graph edge generation and types
 
-### `test_debug_overlay_renderer.py`
+#### `test_debug_overlay_renderer.py`
 Tests the debug overlay renderer coordinate fixes:
 - Sub-grid coordinate conversion for rendering
 - Node indexing consistency
 - Edge coordinate consistency
 - Sub-grid constants validation
+
+### Graph Visualization Fixes Tests
+
+#### `test_graph_fixes_unit_tests.py` ⭐ **MAIN TEST SUITE**
+Comprehensive unit tests for the three major graph visualization issues:
+- **Issue #1**: Functional edges between switches and doors
+- **Issue #2**: Invalid walkable edges in solid tiles  
+- **Issue #3**: Ninja pathfinding from solid spawn tiles
+- Graph structure integrity validation
+- Corridor connections system validation
+
+#### `test_doortest_fixes.py`
+Integration tests for the doortest map fixes:
+- Functional edge detection and creation
+- Solid tile edge validation
+- Pathfinding improvements
+
+#### `test_corridor_connections.py`
+Tests for the corridor connections system:
+- Long-distance pathfinding improvements
+- Empty tile cluster connectivity
+- Graph fragmentation resolution
+
+#### `test_local_pathfinding.py`
+Tests for local pathfinding improvements:
+- Ninja escape from solid tiles
+- Nearby target reachability
+- Path traversability validation
+
+### Specialized Component Tests
+
+#### `test_collision_detection_fix.py`
+Tests for collision detection improvements
+
+#### `test_precise_collision.py`
+Tests for the precise tile collision system
+
+#### `test_hazard_system.py`
+Tests for the hazard classification system
+
+#### `test_pathfinding_functionality.py`
+Tests for pathfinding engine functionality
 
 ## Running Tests
 

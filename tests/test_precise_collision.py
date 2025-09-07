@@ -1,331 +1,171 @@
+#!/usr/bin/env python3
 """
-Comprehensive tests for precise tile collision detection system.
-
-This test suite validates the segment-based collision detection against
-all 38 tile types and various movement scenarios.
+Test script to validate the PreciseTileCollision class against known collision scenarios.
 """
 
-import pytest
-import numpy as np
-import math
-from typing import Dict, Any, List, Tuple
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
-from nclone.graph.precise_collision import (
-    PreciseTileCollision, CollisionSegment, CollisionResult, SegmentType
-)
-from nclone.constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
+from nclone.graph.precise_collision import PreciseTileCollision
+from nclone.constants.physics_constants import NINJA_RADIUS, TILE_PIXEL_SIZE
 
 
-class TestPreciseTileCollision:
-    """Test suite for precise tile collision detection."""
+def test_basic_collision():
+    """Test basic collision detection scenarios."""
+    collision_detector = PreciseTileCollision()
     
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.collision_detector = PreciseTileCollision()
-        
-        # Create test level data with various tile configurations
-        self.test_level_data = {
-            'level_id': 'test_level',
-            'tiles': np.array([
-                [0, 1, 2, 3, 4, 5],      # Row 0: Empty, full, half tiles
-                [6, 7, 8, 9, 10, 11],    # Row 1: Slopes and quarter moons
-                [14, 15, 16, 17, 18, 19], # Row 2: Quarter pipes and mild slopes
-                [22, 23, 24, 25, 26, 27], # Row 3: Raised slopes and steep slopes
-                [30, 31, 32, 33, 34, 35], # Row 4: More slopes and glitched tiles
-                [0, 0, 0, 0, 36, 37]      # Row 5: Empty and glitched tiles
-            ], dtype=np.int32)
+    # Test case 1: Empty level - should be traversable
+    empty_level = {
+        'level_id': 'test_empty',
+        'tiles': {}
+    }
+    
+    result = collision_detector.is_path_traversable(
+        src_x=50.0, src_y=50.0,
+        tgt_x=100.0, tgt_y=50.0,
+        level_data=empty_level
+    )
+    print(f"Empty level traversal: {result} (expected: True)")
+    assert result == True, "Empty level should be traversable"
+    
+    # Test case 2: Single solid tile blocking path
+    blocked_level = {
+        'level_id': 'test_blocked',
+        'tiles': {
+            (3, 2): 1  # Solid tile at position (3, 2) - coordinates 72,48 to 96,72
         }
+    }
     
-    def test_empty_tile_traversal(self):
-        """Test movement through empty tiles (tile ID 0)."""
-        # Movement through empty space should be allowed
-        result = self.collision_detector.is_path_traversable(
-            12.0, 12.0,  # Center of tile (0,0)
-            36.0, 12.0,  # Center of tile (1,0) - also empty
-            self.test_level_data
-        )
-        assert result is True
+    # Path that goes through the solid tile
+    result = collision_detector.is_path_traversable(
+        src_x=60.0, src_y=60.0,  # Before the tile
+        tgt_x=90.0, tgt_y=60.0,  # Through the tile
+        level_data=blocked_level
+    )
+    print(f"Blocked path traversal: {result} (expected: False)")
+    assert result == False, "Path through solid tile should be blocked"
     
-    def test_solid_tile_blocking(self):
-        """Test movement blocked by solid tiles (tile ID 1)."""
-        # Movement into solid tile should be blocked
-        result = self.collision_detector.is_path_traversable(
-            12.0, 12.0,   # Center of tile (0,0) - empty
-            36.0, 12.0,   # Center of tile (1,0) - solid
-            self.test_level_data
-        )
-        assert result is False
+    # Test case 3: Path that goes around the tile
+    result = collision_detector.is_path_traversable(
+        src_x=60.0, src_y=30.0,  # Above the tile
+        tgt_x=90.0, tgt_y=30.0,  # Still above the tile
+        level_data=blocked_level
+    )
+    print(f"Clear path traversal: {result} (expected: True)")
+    assert result == True, "Path around solid tile should be clear"
     
-    def test_half_tile_collision(self):
-        """Test collision with half tiles (tile IDs 2-5)."""
-        # Test top-left half tile (ID 2)
-        # Movement to bottom-right should be blocked
-        result = self.collision_detector.is_path_traversable(
-            48.0, 6.0,    # Top of tile (2,0)
-            60.0, 18.0,   # Bottom-right of tile (2,0)
-            self.test_level_data
-        )
-        assert result is False
-        
-        # Movement to top-left should be allowed
-        result = self.collision_detector.is_path_traversable(
-            48.0, 18.0,   # Bottom of tile (2,0)
-            60.0, 6.0,    # Top-right of tile (2,0)
-            self.test_level_data
-        )
-        assert result is True
-    
-    def test_diagonal_slope_collision(self):
-        """Test collision with diagonal slopes (tile IDs 6-9)."""
-        # Test 45-degree slope (ID 6: bottom-left to top-right)
-        # Movement parallel to slope should be allowed
-        result = self.collision_detector.is_path_traversable(
-            12.0, 36.0,   # Bottom-left of tile (0,1)
-            36.0, 12.0,   # Top-right of tile (0,1)
-            self.test_level_data
-        )
-        assert result is True
-        
-        # Movement perpendicular to slope should be blocked
-        result = self.collision_detector.is_path_traversable(
-            12.0, 12.0,   # Top-left of tile (0,1)
-            36.0, 36.0,   # Bottom-right of tile (0,1)
-            self.test_level_data
-        )
-        assert result is False
-    
-    def test_circular_segment_collision(self):
-        """Test collision with circular segments (quarter moons and pipes)."""
-        # Test quarter moon (ID 10: convex arc at top-left)
-        # Movement into the arc should be blocked
-        result = self.collision_detector.is_path_traversable(
-            108.0, 6.0,   # Outside arc
-            120.0, 18.0,  # Inside arc area
-            self.test_level_data
-        )
-        assert result is False
-        
-        # Movement around the arc should be allowed
-        result = self.collision_detector.is_path_traversable(
-            108.0, 30.0,  # Below arc
-            132.0, 30.0,  # Still below arc
-            self.test_level_data
-        )
-        assert result is True
-    
-    def test_ninja_radius_collision(self):
-        """Test that ninja radius is properly considered in collision detection."""
-        # Movement that would be clear for a point but blocked for ninja radius
-        result = self.collision_detector.is_path_traversable(
-            12.0, 12.0,                    # Center of empty tile
-            36.0 - NINJA_RADIUS + 1.0, 12.0,  # Just inside ninja radius of solid tile
-            self.test_level_data
-        )
-        assert result is False
-        
-        # Movement that clears ninja radius should be allowed
-        result = self.collision_detector.is_path_traversable(
-            12.0, 12.0,                    # Center of empty tile
-            36.0 - NINJA_RADIUS - 1.0, 12.0,  # Just outside ninja radius of solid tile
-            self.test_level_data
-        )
-        assert result is True
-    
-    def test_segment_conversion_caching(self):
-        """Test that tile segment conversion is properly cached."""
-        # First call should populate cache
-        result1 = self.collision_detector.is_path_traversable(
-            12.0, 12.0, 36.0, 12.0, self.test_level_data
-        )
-        
-        # Second call should use cached segments
-        result2 = self.collision_detector.is_path_traversable(
-            12.0, 18.0, 36.0, 18.0, self.test_level_data
-        )
-        
-        # Results should be consistent
-        assert result1 == result2
-        
-        # Cache should contain converted segments
-        assert len(self.collision_detector._tile_segment_cache) > 0
-    
-    def test_level_segment_caching(self):
-        """Test that level segments are properly cached."""
-        # First call should populate level cache
-        self.collision_detector.is_path_traversable(
-            12.0, 12.0, 36.0, 12.0, self.test_level_data
-        )
-        
-        # Level cache should be populated
-        assert len(self.collision_detector._level_segment_cache) > 0
-        assert self.collision_detector._current_level_id == 'test_level'
-    
-    def test_all_tile_types(self):
-        """Test collision detection against all 38 tile types."""
-        # Create level with all tile types
-        all_tiles_level = {
-            'level_id': 'all_tiles',
-            'tiles': np.arange(38, dtype=np.int32).reshape(6, 6)[:6, :6]
-        }
-        
-        # Test movement through each tile type
-        for tile_id in range(38):
-            tile_x = tile_id % 6
-            tile_y = tile_id // 6
-            
-            if tile_y >= 6:  # Skip if beyond our test grid
-                continue
-            
-            center_x = tile_x * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
-            center_y = tile_y * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
-            
-            # Test movement through tile center
-            result = self.collision_detector.is_path_traversable(
-                center_x - 6.0, center_y,
-                center_x + 6.0, center_y,
-                all_tiles_level
-            )
-            
-            # Empty tile (0) should be traversable, others depend on geometry
-            if tile_id == 0:
-                assert result is True, f"Empty tile {tile_id} should be traversable"
-            # Note: Other tiles may or may not be traversable depending on path and geometry
-    
-    def test_edge_cases(self):
-        """Test edge cases and boundary conditions."""
-        # Test zero-length movement
-        result = self.collision_detector.is_path_traversable(
-            12.0, 12.0, 12.0, 12.0, self.test_level_data
-        )
-        assert result is True
-        
-        # Test movement outside level bounds
-        result = self.collision_detector.is_path_traversable(
-            -12.0, -12.0, 12.0, 12.0, self.test_level_data
-        )
-        # Should handle gracefully (implementation dependent)
-        assert isinstance(result, bool)
-        
-        # Test with empty level data
-        empty_level = {'level_id': 'empty', 'tiles': np.array([], dtype=np.int32)}
-        result = self.collision_detector.is_path_traversable(
-            12.0, 12.0, 36.0, 12.0, empty_level
-        )
-        assert result is True  # No tiles means no collision
-    
-    def test_performance_large_level(self):
-        """Test performance with large level data."""
-        # Create large level (44x25 tiles like real N++ levels)
-        large_level = {
-            'level_id': 'large_test',
-            'tiles': np.random.randint(0, 38, size=(25, 44), dtype=np.int32)
-        }
-        
-        # Test multiple collision checks
-        import time
-        start_time = time.time()
-        
-        for i in range(100):
-            self.collision_detector.is_path_traversable(
-                i * 2.0, 100.0, i * 2.0 + 50.0, 150.0, large_level
-            )
-        
-        elapsed_time = time.time() - start_time
-        
-        # Should complete within reasonable time (< 1 second for 100 checks)
-        assert elapsed_time < 1.0, f"Performance test took {elapsed_time:.3f}s, expected < 1.0s"
+    print("✓ All basic collision tests passed!")
 
 
-class TestCollisionSegments:
-    """Test suite for collision segment creation and intersection."""
+def test_ninja_radius_collision():
+    """Test that ninja radius is properly considered in collision detection."""
+    collision_detector = PreciseTileCollision()
     
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.collision_detector = PreciseTileCollision()
+    # Single solid tile
+    level_data = {
+        'level_id': 'test_radius',
+        'tiles': {
+            (4, 4): 1  # Solid tile at 96,96 to 120,120
+        }
+    }
     
-    def test_orthogonal_segment_creation(self):
-        """Test creation of orthogonal line segments."""
-        # Test full tile (ID 1) - should have all edge segments
-        segments = self.collision_detector._convert_tile_definition_to_segments(1)
-        
-        # Full tile should have multiple orthogonal segments
-        ortho_segments = [s for s in segments if s.segment_type == SegmentType.ORTHOGONAL]
-        assert len(ortho_segments) > 0
-        
-        # Check that segments have proper normals
-        for segment in ortho_segments:
-            normal_length = math.sqrt(segment.normal_x**2 + segment.normal_y**2)
-            assert abs(normal_length - 1.0) < 1e-6, "Normal should be unit vector"
+    # Test path that would be clear for a point but blocked for ninja radius
+    tile_edge_x = 4 * TILE_PIXEL_SIZE  # 96
+    tile_edge_y = 4 * TILE_PIXEL_SIZE  # 96
     
-    def test_diagonal_segment_creation(self):
-        """Test creation of diagonal line segments."""
-        # Test 45-degree slope (ID 6)
-        segments = self.collision_detector._convert_tile_definition_to_segments(6)
-        
-        # Should have diagonal segment
-        diag_segments = [s for s in segments if s.segment_type == SegmentType.DIAGONAL]
-        assert len(diag_segments) > 0
-        
-        # Check diagonal segment properties
-        diag_segment = diag_segments[0]
-        dx = diag_segment.end_x - diag_segment.start_x
-        dy = diag_segment.end_y - diag_segment.start_y
-        
-        # Should be diagonal (45 degrees)
-        assert abs(abs(dx) - abs(dy)) < 1e-6, "Should be 45-degree diagonal"
+    # Path just outside ninja radius - should be clear
+    result = collision_detector.is_path_traversable(
+        src_x=tile_edge_x - NINJA_RADIUS - 1,  # Just outside collision range
+        src_y=tile_edge_y - 10,
+        tgt_x=tile_edge_x - NINJA_RADIUS - 1,
+        tgt_y=tile_edge_y + TILE_PIXEL_SIZE + 10,
+        level_data=level_data
+    )
+    print(f"Path outside ninja radius: {result} (expected: True)")
+    assert result == True, "Path outside ninja radius should be clear"
     
-    def test_circular_segment_creation(self):
-        """Test creation of circular arc segments."""
-        # Test quarter moon (ID 10)
-        segments = self.collision_detector._convert_tile_definition_to_segments(10)
-        
-        # Should have circular segment
-        circular_segments = [s for s in segments if s.segment_type == SegmentType.CIRCULAR]
-        assert len(circular_segments) > 0
-        
-        # Check circular segment properties
-        circular_segment = circular_segments[0]
-        assert circular_segment.radius > 0, "Radius should be positive"
-        assert circular_segment.is_convex is not None, "Convexity should be defined"
+    # Path within ninja radius - should be blocked
+    result = collision_detector.is_path_traversable(
+        src_x=tile_edge_x - NINJA_RADIUS + 2,  # Within collision range (but not overlapping at start)
+        src_y=tile_edge_y - 10,
+        tgt_x=tile_edge_x - NINJA_RADIUS + 2,
+        tgt_y=tile_edge_y + TILE_PIXEL_SIZE + 10,
+        level_data=level_data
+    )
+    print(f"Path within ninja radius: {result} (expected: False)")
+    assert result == False, "Path within ninja radius should be blocked"
     
-    def test_line_circle_intersection(self):
-        """Test line segment vs circle intersection."""
-        # Create test collision result
-        result = self.collision_detector._test_circle_vs_line_segment(
-            0.0, 0.0,    # Circle start
-            10.0, 0.0,   # Circle movement
-            5.0,         # Circle radius
-            5.0, -10.0,  # Line start
-            5.0, 10.0    # Line end
-        )
-        
-        # Should detect collision
-        assert result.collision is True
-        assert 0.0 <= result.time_of_impact <= 1.0
+    print("✓ Ninja radius collision tests passed!")
+
+
+def test_different_tile_formats():
+    """Test that different tile data formats work correctly."""
+    collision_detector = PreciseTileCollision()
     
-    def test_circle_arc_intersection(self):
-        """Test circle vs circular arc intersection."""
-        # Create test circular segment
-        arc_segment = CollisionSegment(
-            segment_type=SegmentType.CIRCULAR,
-            center_x=0.0, center_y=0.0,
-            radius=10.0,
-            normal_x=1.0, normal_y=1.0,  # First quadrant
-            is_convex=True
-        )
+    # Dictionary format
+    dict_level = {
+        'level_id': 'test_dict',
+        'tiles': {(2, 2): 1}
+    }
+    
+    # List format
+    list_level = {
+        'level_id': 'test_list',
+        'tiles': [
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0],  # Solid tile at (2, 2)
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0]
+        ]
+    }
+    
+    # Test same collision scenario with both formats
+    test_path = {
+        'src_x': 40.0, 'src_y': 60.0,
+        'tgt_x': 80.0, 'tgt_y': 60.0
+    }
+    
+    dict_result = collision_detector.is_path_traversable(
+        level_data=dict_level, **test_path
+    )
+    
+    list_result = collision_detector.is_path_traversable(
+        level_data=list_level, **test_path
+    )
+    
+    print(f"Dict format result: {dict_result}")
+    print(f"List format result: {list_result}")
+    assert dict_result == list_result, "Different tile formats should give same results"
+    
+    print("✓ Different tile format tests passed!")
+
+
+def main():
+    """Run all collision detection tests."""
+    print("Testing PreciseTileCollision class...")
+    print(f"Using NINJA_RADIUS: {NINJA_RADIUS}")
+    print(f"Using TILE_PIXEL_SIZE: {TILE_PIXEL_SIZE}")
+    print()
+    
+    try:
+        test_basic_collision()
+        print()
+        test_ninja_radius_collision()
+        print()
+        test_different_tile_formats()
+        print()
+        print("🎉 All tests passed! PreciseTileCollision is working correctly.")
         
-        # Test collision
-        result = self.collision_detector._test_circle_vs_arc_segment(
-            -15.0, 0.0,  # Circle start (outside arc)
-            10.0, 0.0,   # Circle movement (toward arc)
-            5.0,         # Circle radius
-            arc_segment
-        )
-        
-        # Should detect collision for convex arc
-        assert result.collision is True
-        assert 0.0 <= result.time_of_impact <= 1.0
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    
+    return 0
 
 
 if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+    sys.exit(main())

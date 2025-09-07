@@ -24,7 +24,7 @@ nclone/_version.py
 *.egg-info/
 
 # Virtual environment
-venv/
+.venv/
 
 # maps
 maps/
@@ -37,3 +37,6 @@ global_frame.png
 
 # Openhands tasks
 .openhands/TASKS.md
+
+# Ruff
+.ruff_cache/
