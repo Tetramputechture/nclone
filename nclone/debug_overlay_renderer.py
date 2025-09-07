@@ -394,16 +394,11 @@ class DebugOverlayRenderer:
                 wx = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
                 wy = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
                 return wx, wy
-            # Entity node: decode normalized position from features
+            # Entity node: use raw pixel coordinates from features
             feat = data.node_features[node_idx]
-            # Offsets based on GraphBuilder layout
-            tile_type_dim = self._graph_builder_for_dims.tile_type_dim
-            entity_type_dim = self._graph_builder_for_dims.entity_type_dim
-            state_offset = tile_type_dim + 4 + entity_type_dim
-            norm_x = float(feat[state_offset + 1])
-            norm_y = float(feat[state_offset + 2])
-            wx = norm_x * (MAP_TILE_WIDTH * TILE_PIXEL_SIZE)
-            wy = norm_y * (MAP_TILE_HEIGHT * TILE_PIXEL_SIZE)
+            # Raw pixel coordinates are stored at the beginning of features
+            wx = float(feat[0])  # Raw pixel x coordinate
+            wy = float(feat[1])  # Raw pixel y coordinate
             return wx, wy
 
         # Draw edges first (under nodes) with performance optimizations
