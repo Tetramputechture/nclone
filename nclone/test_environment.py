@@ -265,7 +265,7 @@ if (
 
     print("\nRuntime Controls:")
     print("  V - Toggle graph overlay")
-    print("  P - Trigger pathfinding demo")
+    print("  P - Enhanced pathfinding to locked door switch (CRITICAL TEST)")
     print("  S - Save graph visualization")
     print("  G/E/C - Toggle debug overlays")
     print("  R - Reset environment")
@@ -298,6 +298,7 @@ pathfinding_engine = None
 graph_data = None
 standalone_window = None
 graph_overlay_surface = None
+pathfinding_result = None  # Store pathfinding visualization result
 
 if (
     args.visualize_graph
@@ -440,9 +441,9 @@ while running:
                     print(f"Graph overlay: {'ON' if args.visualize_graph else 'OFF'}")
 
                 if event.key == pygame.K_p and pathfinding_engine and graph_data:
-                    # Trigger hierarchical pathfinding demonstration
+                    # Trigger enhanced pathfinding visualization
                     try:
-                        print("=== Hierarchical Pathfinding Demo ===")
+                        print("=== Enhanced Pathfinding Visualization ===")
                         
                         # Get current ninja position
                         if hasattr(env, "nplay_headless") and hasattr(
@@ -455,6 +456,30 @@ while running:
                             ninja_pos = (100, 100)  # Fallback
 
                         print(f"Ninja position: {ninja_pos}")
+                        
+                        # Initialize pathfinding visualizer
+                        from nclone.graph.pathfinding_visualizer import PathfindingVisualizer
+                        from nclone.constants.entity_types import EntityType
+                        
+                        pathfinding_viz = PathfindingVisualizer()
+                        
+                        # Find path to exit switch (critical test requirement)
+                        print("🎯 Finding path to exit switch...")
+                        result = pathfinding_viz.find_path_to_entity_type(
+                            graph_data, ninja_pos, EntityType.EXIT_SWITCH
+                        )
+                        
+                        if result and result.success:
+                            print(f"✅ SUCCESS: Found path to exit switch!")
+                            print(f"   Path length: {len(result.path_result.path)} nodes")
+                            print(f"   Total cost: {result.path_result.total_cost:.1f}")
+                            print(f"   Target: {result.target.label} at {result.target.position}")
+                            
+                            # Store result for visualization (make it global)
+                            globals()['pathfinding_result'] = result
+                        else:
+                            print(f"❌ FAILED: {result.error_message if result else 'Unknown error'}")
+                            globals()['pathfinding_result'] = None
 
                         # Find ninja node
                         from nclone.graph.visualization_api import GraphVisualizationAPI
@@ -668,6 +693,22 @@ while running:
                     screen = pygame.display.get_surface()
                     if screen:
                         screen.blit(graph_overlay_surface, (0, 0))
+                        
+                        # Add pathfinding visualization overlay if available
+                        if pathfinding_result and pathfinding_result.success:
+                            try:
+                                from nclone.graph.pathfinding_visualizer import PathfindingVisualizer
+                                pathfinding_viz = PathfindingVisualizer()
+                                
+                                # Draw enhanced path visualization on top of graph overlay
+                                pathfinding_viz._draw_enhanced_path(screen, graph_data, pathfinding_result)
+                                
+                                # Draw path info panel
+                                if pathfinding_viz.show_path_info:
+                                    pathfinding_viz._draw_path_info_panel(screen, pathfinding_result)
+                                    
+                            except Exception as e:
+                                print(f"Pathfinding visualization error: {e}")
 
             # Render standalone graph window (cache this too for performance)
             if args.standalone_graph and standalone_window:
