@@ -13,6 +13,7 @@ from .common import (
     NodeType,
     SUB_GRID_WIDTH,
     SUB_GRID_HEIGHT,
+    SUB_CELL_SIZE,
     N_MAX_NODES,
     E_MAX_EDGES,
 )
@@ -80,37 +81,25 @@ class GraphConstructor:
         node_count = 0
         edge_count = 0
 
-        # Analyze reachability from ninja position to optimize graph
+        # CONNECTIVITY FIX: Use full grid to ensure proper connectivity
+        # The reachability analyzer was too restrictive, creating disconnected graphs
         if self.debug:
-            print(f"DEBUG: Analyzing reachability from ninja position {ninja_position}")
+            print(f"DEBUG: Building full grid for connectivity (ninja at {ninja_position})")
         
-        try:
-            reachability_state = self.reachability_analyzer.analyze_reachability(
-                level_data, ninja_position
-            )
-        except Exception as e:
-            print(f"Warning: Reachability analysis failed: {e}")
-            # Fallback to full grid if reachability analysis fails
-            reachability_state = None
-        
-        if reachability_state:
-            if self.debug:
-                print(f"DEBUG: Found {len(reachability_state.reachable_positions)} reachable positions")
-                print(f"DEBUG: Identified {len(reachability_state.subgoals)} subgoals")
-        else:
-            if self.debug:
-                print("DEBUG: Using full grid fallback due to reachability analysis failure")
-        
-        # Build sub-grid nodes ONLY for reachable positions (player-centric optimization)
+        # Build sub-grid nodes for ALL traversable positions to ensure connectivity
         sub_grid_node_map = {}  # (sub_row, sub_col) -> node_index
         
-        # Determine which positions to use
-        if reachability_state:
-            # Sort reachable positions for deterministic ordering
-            sorted_positions = sorted(reachability_state.reachable_positions)
-        else:
-            # Fallback to full grid
-            sorted_positions = [(r, c) for r in range(SUB_GRID_HEIGHT) for c in range(SUB_GRID_WIDTH)]
+        # Use full grid with traversability filtering for better connectivity
+        sorted_positions = []
+        for sub_row in range(SUB_GRID_HEIGHT):
+            for sub_col in range(SUB_GRID_WIDTH):
+                # Convert to pixel coordinates
+                pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+                pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+                
+                # Check if position is traversable (not in solid tile)
+                if self._is_position_traversable(pixel_x, pixel_y, level_data.tiles):
+                    sorted_positions.append((sub_row, sub_col))
         
         for sub_row, sub_col in sorted_positions:
             if node_count >= N_MAX_NODES:
@@ -269,3 +258,33 @@ class GraphConstructor:
         x = entity.get("x", 0.0)
         y = entity.get("y", 0.0)
         return (entity_type, x, y)
+    
+    def _is_position_traversable(self, pixel_x: float, pixel_y: float, tiles: np.ndarray) -> bool:
+        """
+        Check if a position is traversable (not in solid tile).
+        
+        Args:
+            pixel_x: X coordinate in pixels
+            pixel_y: Y coordinate in pixels  
+            tiles: Tile data array
+            
+        Returns:
+            True if position is traversable
+        """
+        from ..constants.physics_constants import TILE_PIXEL_SIZE
+        
+        # Convert to tile coordinates
+        tile_x = int(pixel_x // TILE_PIXEL_SIZE)
+        tile_y = int(pixel_y // TILE_PIXEL_SIZE)
+        
+        # Account for padding: tile data is unpadded, but coordinates assume padding
+        data_tile_x = tile_x - 1
+        data_tile_y = tile_y - 1
+        
+        # Check bounds
+        if not (0 <= data_tile_y < len(tiles) and 0 <= data_tile_x < len(tiles[0])):
+            return False
+        
+        # Check if tile is solid (value 1)
+        tile_value = tiles[data_tile_y][data_tile_x]
+        return tile_value != 1  # Not solid
