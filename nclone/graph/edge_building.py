@@ -16,6 +16,7 @@ from .common import SUB_CELL_SIZE, EdgeType, E_MAX_EDGES
 from .feature_extraction import FeatureExtractor
 from .precise_collision import PreciseTileCollision
 from .hazard_system import HazardClassificationSystem
+from .trajectory_calculator import TrajectoryCalculator, MovementState
 
 
 class EdgeBuilder:
@@ -36,6 +37,7 @@ class EdgeBuilder:
         self.feature_extractor = feature_extractor
         self.precise_collision = PreciseTileCollision()
         self.hazard_system = HazardClassificationSystem(self.precise_collision)
+        self.trajectory_calculator = TrajectoryCalculator()
 
         # Cache for static hazards (rebuilt when level changes)
         self._static_hazard_cache = {}
@@ -230,6 +232,22 @@ class EdgeBuilder:
             edge_types,
             edge_count,
             edge_feature_dim,
+        )
+
+        # Build jump and fall edges for vertical movement
+        edge_count = self.build_jump_fall_edges(
+            sub_grid_node_map,
+            level_data,
+            ninja_position,
+            ninja_velocity,
+            ninja_state,
+            edge_index,
+            edge_features,
+            edge_mask,
+            edge_types,
+            edge_count,
+            edge_feature_dim,
+            entity_nodes=entity_nodes,
         )
 
         return edge_count
@@ -862,3 +880,536 @@ class EdgeBuilder:
                 nodes_in_tile.append((node_idx, (sub_row, sub_col)))
         
         return nodes_in_tile
+
+    def build_jump_fall_edges(
+        self,
+        sub_grid_node_map: Dict[Tuple[int, int], int],
+        level_data: LevelData,
+        ninja_position: Tuple[float, float],
+        ninja_velocity: Optional[Tuple[float, float]],
+        ninja_state: Optional[int],
+        edge_index: np.ndarray,
+        edge_features: np.ndarray,
+        edge_mask: np.ndarray,
+        edge_types: np.ndarray,
+        edge_count: int,
+        edge_feature_dim: int,
+        entity_nodes: Optional[List[Tuple[int, Dict[str, Any]]]] = None,
+    ) -> int:
+        """
+        Build jump and fall edges for vertical movement between nodes.
+        
+        This method creates edges that allow the ninja to jump up to higher platforms
+        and fall down to lower platforms, using accurate N++ physics calculations.
+        
+        Args:
+            sub_grid_node_map: Mapping from (row, col) to node indices
+            level_data: Level tile data and structure
+            ninja_position: Current ninja position (x, y)
+            ninja_velocity: Current ninja velocity (vx, vy)
+            ninja_state: Current ninja movement state (0-8)
+            edge_index: Edge connectivity array
+            edge_features: Edge feature array
+            edge_mask: Edge mask array
+            edge_types: Edge type array
+            edge_count: Current edge count
+            edge_feature_dim: Edge feature dimension
+            
+        Returns:
+            Updated edge count after adding jump/fall edges
+        """
+        from ..constants.physics_constants import (
+            MAX_JUMP_DISTANCE,
+            MAX_FALL_DISTANCE,
+        )
+        
+        # Correct ninja position to ensure it's in clear space
+        corrected_ninja_position = self._correct_ninja_position(ninja_position, level_data)
+        
+        # Convert ninja state to MovementState enum
+        movement_state = None
+        if ninja_state is not None:
+            try:
+                movement_state = MovementState(ninja_state)
+            except ValueError:
+                movement_state = MovementState.IMMOBILE
+        
+        # Get all node positions for efficient distance calculations
+        node_positions = {}
+        
+        # Add sub-cell nodes
+        for (sub_row, sub_col), node_idx in sub_grid_node_map.items():
+            x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+            y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+            node_positions[node_idx] = (x, y, sub_row, sub_col)
+        
+        # Add entity nodes (including ninja node)
+        if entity_nodes is not None:
+            for node_idx, entity_data in entity_nodes:
+                x = entity_data.get('x', 0.0)
+                y = entity_data.get('y', 0.0)
+                # Convert to sub-cell coordinates for consistency
+                sub_row = int(y // SUB_CELL_SIZE)
+                sub_col = int(x // SUB_CELL_SIZE)
+                node_positions[node_idx] = (x, y, sub_row, sub_col)
+        
+        # Build jump and fall edges with aggressive optimization
+        node_list = list(node_positions.items())
+        
+        # Limit search to reasonable distances and sample nodes for performance
+        max_search_distance = min(MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE)  # Use physics constants
+        max_row_diff = int(max_search_distance / SUB_CELL_SIZE) + 1
+        max_col_diff = int(max_search_distance / SUB_CELL_SIZE) + 1
+        
+        # Sample nodes to reduce computational complexity, but ensure ninja node is included
+        sampled_src_nodes = node_list[::8]  # Sample every 8th node as source
+        sampled_tgt_nodes = node_list[::4]  # Sample every 4th node as target
+        
+        # Find ninja node and ensure it's included in both source and target samples
+        # Find the closest node to corrected ninja position (could be entity node)
+        ninja_node_entry = None
+        min_distance = float('inf')
+        for node_idx, (x, y, row, col) in node_list:
+            distance = math.sqrt((x - corrected_ninja_position[0])**2 + (y - corrected_ninja_position[1])**2)
+            if distance < min_distance:
+                min_distance = distance
+                ninja_node_entry = (node_idx, (x, y, row, col))
+        
+        # Only use if reasonably close (within 20px)
+        if ninja_node_entry is not None and min_distance > 20:
+            ninja_node_entry = None
+        
+        if ninja_node_entry is not None:
+            print(f"DEBUG: Found closest node {ninja_node_entry[0]} at ({ninja_node_entry[1][0]:.1f}, {ninja_node_entry[1][1]:.1f}) - distance {min_distance:.1f}px")
+            # Ensure ninja node is in source samples
+            if ninja_node_entry not in sampled_src_nodes:
+                sampled_src_nodes.append(ninja_node_entry)
+                print(f"DEBUG: Added ninja node to source samples")
+            # Ensure ninja node is in target samples  
+            if ninja_node_entry not in sampled_tgt_nodes:
+                sampled_tgt_nodes.append(ninja_node_entry)
+                print(f"DEBUG: Added ninja node to target samples")
+        else:
+            print(f"DEBUG: No close node found! Ninja position: {ninja_position} -> corrected: {corrected_ninja_position}")
+            # Show closest few nodes for debugging
+            print(f"DEBUG: Closest 5 nodes:")
+            distances = []
+            for node_idx, (x, y, row, col) in node_list:
+                distance = math.sqrt((x - corrected_ninja_position[0])**2 + (y - corrected_ninja_position[1])**2)
+                distances.append((distance, node_idx, x, y))
+            distances.sort()
+            for i, (distance, node_idx, x, y) in enumerate(distances[:5]):
+                print(f"  Node {node_idx} at ({x:.1f}, {y:.1f}) - distance {distance:.1f}px")
+        
+        ninja_edges_created = 0
+        for src_idx, (src_x, src_y, src_row, src_col) in sampled_src_nodes:
+            if edge_count >= E_MAX_EDGES - 100:  # Leave room for more edges
+                break
+            
+            is_ninja_src = abs(src_x - corrected_ninja_position[0]) < 5 and abs(src_y - corrected_ninja_position[1]) < 5
+            if is_ninja_src:
+                print(f"DEBUG: Processing ninja as source node {src_idx} at ({src_x:.1f}, {src_y:.1f})")
+                
+            # Only check sampled target nodes within reasonable spatial bounds
+            ninja_target_count = 0
+            for tgt_idx, (tgt_x, tgt_y, tgt_row, tgt_col) in sampled_tgt_nodes:
+                if src_idx == tgt_idx:  # Skip self-connections
+                    continue
+                    
+                if edge_count >= E_MAX_EDGES - 10:
+                    break
+                
+                # Limit debugging output for ninja
+                if is_ninja_src:
+                    ninja_target_count += 1
+                    if ninja_target_count > 3:  # Only debug first 3 targets
+                        continue
+                
+                # Quick spatial filtering to avoid expensive calculations
+                row_diff = abs(src_row - tgt_row)
+                col_diff = abs(src_col - tgt_col)
+                
+                if is_ninja_src and ninja_target_count <= 3:
+                    print(f"DEBUG: Target {ninja_target_count}: ({tgt_x:.1f}, {tgt_y:.1f}) row_diff={row_diff} col_diff={col_diff} max_row={max_row_diff} max_col={max_col_diff}")
+                
+                if row_diff > max_row_diff or col_diff > max_col_diff:
+                    if is_ninja_src and ninja_target_count <= 3:
+                        print(f"DEBUG: Target {ninja_target_count} filtered out by spatial bounds")
+                    continue
+                
+                # Skip adjacent nodes (already handled by WALK edges)
+                if row_diff <= 1 and col_diff <= 1:
+                    if is_ninja_src and ninja_target_count <= 3:
+                        print(f"DEBUG: Target {ninja_target_count} filtered out as adjacent")
+                    continue
+                
+                # Calculate distance and height difference
+                dx = tgt_x - src_x
+                dy = tgt_y - src_y
+                distance = math.sqrt(dx * dx + dy * dy)
+                
+                # Skip if too far for any movement type
+                if distance > max_search_distance:
+                    continue
+                
+                # Determine movement type based on height difference
+                edge_type = None
+                trajectory_result = None
+                
+                if dy < -SUB_CELL_SIZE:  # Target is above source - JUMP
+                    if distance <= MAX_JUMP_DISTANCE:
+                        trajectory_result = self.trajectory_calculator.calculate_jump_trajectory(
+                            (src_x, src_y), (tgt_x, tgt_y), movement_state
+                        )
+                        if trajectory_result.feasible:
+                            edge_type = EdgeType.JUMP
+                            
+                elif dy > SUB_CELL_SIZE:  # Target is below source - FALL
+                    if distance <= MAX_FALL_DISTANCE:
+                        # For falls, we can use a simpler calculation
+                        trajectory_result = self._calculate_fall_trajectory(
+                            (src_x, src_y), (tgt_x, tgt_y), movement_state
+                        )
+                        if trajectory_result.feasible:
+                            edge_type = EdgeType.FALL
+                
+                # Create edge if trajectory is feasible
+                if edge_type is not None and trajectory_result is not None:
+                    # Use optimized trajectory validation for physical accuracy
+                    if self._validate_jump_fall_trajectory_optimized(
+                        (src_x, src_y), (tgt_x, tgt_y), trajectory_result, level_data, corrected_ninja_position
+                    ):
+                        # Create edge
+                        edge_index[0, edge_count] = src_idx
+                        edge_index[1, edge_count] = tgt_idx
+                        
+                        # Debug ninja edges
+                        if is_ninja_src:
+                            ninja_edges_created += 1
+                            print(f"DEBUG: Created {edge_type.name} edge from ninja to node {tgt_idx} at ({tgt_x:.1f}, {tgt_y:.1f})")
+                        
+                        # Create edge features based on trajectory
+                        jump_fall_features = self._create_jump_fall_edge_features(
+                            trajectory_result, edge_type, edge_feature_dim
+                        )
+                        edge_features[edge_count] = jump_fall_features
+                        
+                        edge_mask[edge_count] = 1.0
+                        edge_types[edge_count] = edge_type
+                        edge_count += 1
+                    elif is_ninja_src:
+                        print(f"DEBUG: {edge_type.name} trajectory from ninja to ({tgt_x:.1f}, {tgt_y:.1f}) failed validation")
+        
+        print(f"DEBUG: Created {ninja_edges_created} jump/fall edges from ninja node")
+        return edge_count
+    
+    def _calculate_fall_trajectory(
+        self,
+        start_pos: Tuple[float, float],
+        end_pos: Tuple[float, float],
+        ninja_state: Optional[MovementState],
+    ):
+        """
+        Calculate fall trajectory using simplified physics.
+        
+        For falls, we assume the ninja starts with minimal horizontal velocity
+        and falls under gravity to reach the target position.
+        """
+        from ..constants.physics_constants import (
+            GRAVITY_FALL,
+            MAX_HOR_SPEED,
+            MIN_HORIZONTAL_VELOCITY,
+        )
+        from .trajectory_calculator import TrajectoryResult
+        
+        x0, y0 = start_pos
+        x1, y1 = end_pos
+        
+        dx = x1 - x0
+        dy = y1 - y0
+        
+        # For falls, dy should be positive (falling down)
+        if dy <= 0:
+            return TrajectoryResult(
+                feasible=False,
+                time_of_flight=0.0,
+                energy_cost=float("inf"),
+                success_probability=0.0,
+                min_velocity=0.0,
+                max_velocity=0.0,
+                requires_jump=False,
+                requires_wall_contact=False,
+                trajectory_points=[],
+            )
+        
+        # Calculate time of flight for vertical fall
+        # Using: y = 0.5 * g * t^2 (assuming initial vertical velocity is 0)
+        time_of_flight = math.sqrt(2 * dy / GRAVITY_FALL)
+        
+        # Calculate required horizontal velocity
+        horizontal_velocity = dx / time_of_flight if time_of_flight > 0 else 0
+        
+        # Check if horizontal velocity is achievable
+        if abs(horizontal_velocity) > MAX_HOR_SPEED:
+            return TrajectoryResult(
+                feasible=False,
+                time_of_flight=time_of_flight,
+                energy_cost=float("inf"),
+                success_probability=0.0,
+                min_velocity=abs(horizontal_velocity),
+                max_velocity=MAX_HOR_SPEED,
+                requires_jump=False,
+                requires_wall_contact=False,
+                trajectory_points=[],
+            )
+        
+        # Generate trajectory points for collision checking (optimized)
+        trajectory_points = []
+        num_points = min(10, max(3, int(time_of_flight * 5)))  # Fewer points for performance
+        
+        for i in range(num_points + 1):
+            t = (i / num_points) * time_of_flight
+            x = x0 + horizontal_velocity * t
+            y = y0 + 0.5 * GRAVITY_FALL * t * t
+            trajectory_points.append((x, y))
+        
+        # Calculate energy cost (falls are generally easier than jumps)
+        from ..constants.physics_constants import FALL_ENERGY_BASE, FALL_ENERGY_DISTANCE_DIVISOR
+        energy_cost = FALL_ENERGY_BASE + math.sqrt(dx * dx + dy * dy) / FALL_ENERGY_DISTANCE_DIVISOR
+        
+        # Calculate success probability (falls are generally more reliable)
+        success_probability = max(0.7, 1.0 - abs(horizontal_velocity) / MAX_HOR_SPEED * 0.3)
+        
+        return TrajectoryResult(
+            feasible=True,
+            time_of_flight=time_of_flight,
+            energy_cost=energy_cost,
+            success_probability=success_probability,
+            min_velocity=abs(horizontal_velocity),
+            max_velocity=MAX_HOR_SPEED,
+            requires_jump=False,
+            requires_wall_contact=False,
+            trajectory_points=trajectory_points,
+        )
+    
+    def _validate_jump_fall_trajectory_optimized(
+        self,
+        start_pos: Tuple[float, float],
+        end_pos: Tuple[float, float], 
+        trajectory_result,
+        level_data: LevelData,
+        ninja_position: Optional[Tuple[float, float]] = None,
+    ) -> bool:
+        """
+        Optimized trajectory validation using strategic sampling and early termination.
+        
+        This method provides physically accurate validation while being computationally efficient
+        by checking only key points along the trajectory and using fast tile lookups.
+        
+        Args:
+            start_pos: Starting position (x, y)
+            end_pos: Ending position (x, y)
+            trajectory_result: Result from trajectory calculation
+            level_data: Level data containing tile information
+            
+        Returns:
+            True if trajectory is clear, False if it collides with obstacles
+        """
+        if not trajectory_result.trajectory_points:
+            return False
+        
+        # Fast validation using strategic point sampling
+        trajectory_points = trajectory_result.trajectory_points
+        
+        # Check if this is a ninja trajectory for debugging
+        is_ninja_trajectory = False
+        if ninja_position is not None:
+            is_ninja_trajectory = (abs(start_pos[0] - ninja_position[0]) < 5 and abs(start_pos[1] - ninja_position[1]) < 5)
+        
+        # Check start and end points first (most likely to fail)
+        if not self._is_position_clear(start_pos, level_data, debug_ninja=is_ninja_trajectory):
+            if is_ninja_trajectory:
+                print(f"DEBUG: Start position failed validation")
+            return False
+        if not self._is_position_clear(end_pos, level_data, debug_ninja=is_ninja_trajectory):
+            if is_ninja_trajectory:
+                print(f"DEBUG: End position failed validation")
+            return False
+        
+        # Check key trajectory points (start, middle, end, and peak if jumping)
+        key_points = []
+        
+        # Always check start and end
+        key_points.extend([trajectory_points[0], trajectory_points[-1]])
+        
+        # Check middle point
+        if len(trajectory_points) > 2:
+            mid_idx = len(trajectory_points) // 2
+            key_points.append(trajectory_points[mid_idx])
+        
+        # For jumps, check the highest point (likely to hit ceiling)
+        if len(trajectory_points) > 4:
+            highest_point = min(trajectory_points, key=lambda p: p[1])  # Min Y = highest
+            key_points.append(highest_point)
+        
+        # Check quarter points for longer trajectories
+        if len(trajectory_points) > 6:
+            quarter_idx = len(trajectory_points) // 4
+            three_quarter_idx = 3 * len(trajectory_points) // 4
+            key_points.extend([trajectory_points[quarter_idx], trajectory_points[three_quarter_idx]])
+        
+        # Validate all key points
+        for i, point in enumerate(key_points):
+            if not self._is_position_clear(point, level_data, debug_ninja=is_ninja_trajectory):
+                if is_ninja_trajectory:
+                    print(f"DEBUG: Key point {i} failed validation")
+                return False
+        
+        # For very long trajectories, do additional sampling
+        if len(trajectory_points) > 8:
+            # Sample every 3rd point for detailed validation
+            for i in range(0, len(trajectory_points), 3):
+                if not self._is_position_clear(trajectory_points[i], level_data):
+                    return False
+        
+        return True
+    
+    def _is_position_clear(
+        self,
+        position: Tuple[float, float],
+        level_data: LevelData,
+        debug_ninja: bool = False,
+    ) -> bool:
+        """
+        Fast check if a position is clear of solid tiles.
+        
+        Args:
+            position: (x, y) position to check
+            level_data: Level data containing tile information
+            debug_ninja: Whether to print debug info for ninja trajectories
+            
+        Returns:
+            True if position is clear, False if it's in a solid tile
+        """
+        x, y = position
+        
+        # Convert to tile coordinates
+        tile_x = int(x // 24)  # TILE_PIXEL_SIZE = 24
+        tile_y = int(y // 24)
+        
+        # Check bounds
+        from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
+        if tile_x < 0 or tile_x >= MAP_TILE_WIDTH or tile_y < 0 or tile_y >= MAP_TILE_HEIGHT:
+            if debug_ninja:
+                print(f"DEBUG: Position ({x:.1f}, {y:.1f}) -> tile ({tile_x}, {tile_y}) OUT OF BOUNDS")
+            return False
+        
+        # Check if tile is solid (tile_id > 0 means solid)
+        tile_id = level_data.tiles[tile_y, tile_x]
+        is_clear = tile_id == 0  # 0 = empty, >0 = solid
+        
+        if debug_ninja:
+            print(f"DEBUG: Position ({x:.1f}, {y:.1f}) -> tile ({tile_x}, {tile_y}) -> tile_id={tile_id} -> {'CLEAR' if is_clear else 'SOLID'}")
+        
+        return is_clear
+
+    def _correct_ninja_position(
+        self,
+        ninja_position: Tuple[float, float],
+        level_data: LevelData,
+    ) -> Tuple[float, float]:
+        """
+        Correct ninja position to ensure it's in clear space.
+        
+        If ninja is positioned inside a solid tile, adjust it to be standing
+        on top of the nearest platform.
+        
+        Args:
+            ninja_position: Original ninja position (x, y)
+            level_data: Level data for collision detection
+            
+        Returns:
+            Corrected ninja position in clear space
+        """
+        x, y = ninja_position
+        
+        # Check if current position is clear
+        if self._is_position_clear(ninja_position, level_data):
+            return ninja_position
+        
+        # If ninja is in solid space, try to find a clear position above
+        tile_x = int(x // 24)  # TILE_PIXEL_SIZE = 24
+        tile_y = int(y // 24)
+        
+        # Look for the first clear tile above the current position
+        for offset_y in range(1, 5):  # Check up to 4 tiles above
+            test_y = (tile_y - offset_y) * 24 + 23  # Bottom edge of tile above (standing on platform)
+            test_pos = (x, test_y)
+            
+            if self._is_position_clear(test_pos, level_data):
+                print(f"DEBUG: Corrected ninja position from {ninja_position} to {test_pos}")
+                return test_pos
+        
+        # If no clear position found above, try the original position
+        print(f"DEBUG: Could not find clear position for ninja at {ninja_position}")
+        return ninja_position
+    
+    def _validate_jump_fall_trajectory(
+        self,
+        trajectory_points: List[Tuple[float, float]],
+        level_data: LevelData,
+    ) -> bool:
+        """
+        Legacy trajectory validation method (kept for compatibility).
+        
+        Args:
+            trajectory_points: List of (x, y) points along the trajectory
+            level_data: Level data containing tile information
+            
+        Returns:
+            True if trajectory is clear, False if it collides with obstacles
+        """
+        if not trajectory_points:
+            return False
+        
+        # Use optimized validation
+        return all(self._is_position_clear(point, level_data) for point in trajectory_points)
+    
+    def _create_jump_fall_edge_features(
+        self,
+        trajectory_result,
+        edge_type: EdgeType,
+        edge_feature_dim: int,
+    ) -> np.ndarray:
+        """
+        Create edge features for jump or fall edges based on trajectory calculation.
+        
+        Args:
+            trajectory_result: Result from trajectory calculation
+            edge_type: Type of edge (JUMP or FALL)
+            edge_feature_dim: Dimension of edge features
+            
+        Returns:
+            Edge feature array
+        """
+        features = np.zeros(edge_feature_dim, dtype=np.float32)
+        
+        # Set edge type indicator
+        features[edge_type] = 1.0
+        
+        # Set movement cost (index after edge types)
+        cost_idx = len(EdgeType) + 2
+        if cost_idx < edge_feature_dim:
+            features[cost_idx] = min(5.0, trajectory_result.energy_cost)
+        
+        # Set success probability (if there's space)
+        prob_idx = len(EdgeType) + 3
+        if prob_idx < edge_feature_dim:
+            features[prob_idx] = trajectory_result.success_probability
+        
+        # Set time of flight (if there's space)
+        time_idx = len(EdgeType) + 4
+        if time_idx < edge_feature_dim:
+            features[time_idx] = min(10.0, trajectory_result.time_of_flight)
+        
+        return features

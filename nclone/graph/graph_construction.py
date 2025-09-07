@@ -106,19 +106,22 @@ class GraphConstructor:
         # Build entity nodes (sorted by type then position for determinism)
         entity_nodes = []
         
+        # Correct ninja position to ensure it's in clear space
+        corrected_ninja_position = self.edge_builder._correct_ninja_position(ninja_position, level_data)
+        
         # First, create a ninja entity node
         ninja_node_idx = node_count
         ninja_entity = {
             'type': EntityType.NINJA,
-            'x': ninja_position[0],
-            'y': ninja_position[1],
+            'x': corrected_ninja_position[0],
+            'y': corrected_ninja_position[1],
             'is_ninja': True
         }
         entity_nodes.append((ninja_node_idx, ninja_entity))
         
         # Extract ninja features
         ninja_features = self.feature_extractor.extract_entity_features(
-            ninja_entity, ninja_position, ninja_velocity, node_feature_dim
+            ninja_entity, corrected_ninja_position, ninja_velocity, node_feature_dim
         )
         node_features[ninja_node_idx] = ninja_features
         node_mask[ninja_node_idx] = 1.0
@@ -192,7 +195,7 @@ class GraphConstructor:
             sub_grid_node_map,
             entity_nodes,
             level_data,
-            ninja_position,
+            corrected_ninja_position,
             ninja_velocity,
             ninja_state,
             edge_index,
