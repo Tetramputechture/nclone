@@ -151,6 +151,8 @@ class EdgeBuilder:
             # Check if entity is in a solid tile - if so, don't create walkable edges
             # Exception: Always create edges for ninja (type 0) even if in solid tile
             entity_type = entity.get("type", -1)
+            
+
             entity_tile_x = int(entity_x // TILE_PIXEL_SIZE)
             entity_tile_y = int(entity_y // TILE_PIXEL_SIZE)
             
