@@ -1270,12 +1270,14 @@ class EdgeBuilder:
                     print(f"DEBUG: Key point {i} failed validation")
                 return False
         
-        # For very long trajectories, do additional sampling
-        if len(trajectory_points) > 8:
-            # Sample every 3rd point for detailed validation
-            for i in range(0, len(trajectory_points), 3):
-                if not self._is_position_clear(trajectory_points[i], level_data):
-                    return False
+        # For all trajectories, do thorough sampling to ensure no solid tile collisions
+        # Sample every 2nd point for detailed validation (more thorough than before)
+        sample_step = max(1, len(trajectory_points) // 8)  # At least 8 samples
+        for i in range(0, len(trajectory_points), sample_step):
+            if not self._is_position_clear(trajectory_points[i], level_data, check_ninja_radius=True):
+                if is_ninja_trajectory:
+                    print(f"DEBUG: Trajectory point {i} failed detailed validation")
+                return False
         
         return True
     
