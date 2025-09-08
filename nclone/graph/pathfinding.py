@@ -170,7 +170,7 @@ class PathfindingEngine:
         graph_data: GraphData,
         start_node: int,
         goal_node: int,
-        algorithm: PathfindingAlgorithm = PathfindingAlgorithm.A_STAR,
+        algorithm: PathfindingAlgorithm = PathfindingAlgorithm.DIJKSTRA,
         max_nodes_to_explore: int = 10000,
         ninja_state: Optional[Dict[str, Any]] = None,
     ) -> PathResult:
@@ -178,15 +178,14 @@ class PathfindingEngine:
         Find shortest path between two nodes using accurate physics.
 
         Algorithm Selection Guide:
-        - Use A_STAR (default) for real-time pathfinding, RL training, and standard levels
-        - Use DIJKSTRA for level analysis, complex levels with switches/teleporters,
-          or when you need guaranteed optimal paths for multiple goals
+        - Use DIJKSTRA (default) for optimal pathfinding with realistic movement costs
+        - Use A_STAR for real-time pathfinding when speed is more critical than optimality
 
         Args:
             graph_data: Graph data containing nodes and edges
             start_node: Starting node index
             goal_node: Goal node index
-            algorithm: Pathfinding algorithm to use (A_STAR for speed, DIJKSTRA for accuracy)
+            algorithm: Pathfinding algorithm to use (DIJKSTRA for optimal paths, A_STAR for speed)
             max_nodes_to_explore: Maximum nodes to explore before giving up
             ninja_state: Current ninja state for accurate physics calculations
 
@@ -194,8 +193,8 @@ class PathfindingEngine:
             PathResult with path information, including physics-accurate costs
 
         Performance Notes:
+            - DIJKSTRA: Guarantees optimal paths, O((V+E)logV) complexity
             - A_STAR: Typically 10-100x faster, O(E) best case
-            - DIJKSTRA: More consistent performance, O((V+E)logV) always
             - Both use identical physics-based edge costs for accuracy
         """
         if start_node == goal_node:
@@ -512,7 +511,7 @@ class PathfindingEngine:
 
             visited.add(current_node)
             nodes_explored += 1
-
+            
             # Check if we reached the goal
             if current_node == goal_node:
                 path = self._reconstruct_path(parent_map, start_node, goal_node)
@@ -571,10 +570,17 @@ class PathfindingEngine:
                 graph_data, edge_idx, edge_type, src_node, dst_node, ninja_state
             )
 
-            # Add edge to adjacency list
+            # Add edge to adjacency list (bidirectional)
             if src_node not in adjacency:
                 adjacency[src_node] = []
             adjacency[src_node].append((dst_node, edge_cost, edge_type))
+            
+            # Add reverse edge for bidirectional connectivity
+            if dst_node not in adjacency:
+                adjacency[dst_node] = []
+            adjacency[dst_node].append((src_node, edge_cost, edge_type))
+
+
 
         return adjacency
 
@@ -587,46 +593,31 @@ class PathfindingEngine:
         dst_node: int,
         ninja_state: Optional[Dict[str, Any]] = None,
     ) -> float:
-        """Calculate accurate physics-based cost for traversing an edge."""
-        # Use physics-accurate cost calculation
-        # Use the same node position helper used elsewhere to avoid relying on feature layout
+        """Calculate realistic physics-based cost for traversing an edge."""
+        # Get node positions
         src_pos = self._get_node_position(graph_data, src_node)
         dst_pos = self._get_node_position(graph_data, dst_node)
-
-        # Create ninja state for movement classification
-        ninja_state_obj = NinjaState(
-            movement_state=ninja_state.get("movement_state", 0) if ninja_state else 0,
-            velocity=ninja_state.get("velocity", (0.0, 0.0))
-            if ninja_state
-            else (0.0, 0.0),
-            position=src_pos,
-            ground_contact=ninja_state.get("ground_contact", True)
-            if ninja_state
-            else True,
-            wall_contact=ninja_state.get("wall_contact", False)
-            if ninja_state
-            else False,
-        )
-
-        # Classify movement and get physics parameters
-        movement_type, physics_params = self.movement_classifier.classify_movement(
-            src_pos, dst_pos, ninja_state_obj, self.level_data
-        )
-
-        # Calculate cost based on physics parameters
-        cost = 0.0
-        if "energy_cost" in physics_params:
-            cost += physics_params["energy_cost"] * self.cost_weights["energy_cost"]
-        if "time_estimate" in physics_params:
-            cost += physics_params["time_estimate"] * self.cost_weights["time_estimate"]
-        if "difficulty" in physics_params:
-            cost += physics_params["difficulty"] * self.cost_weights["difficulty"]
-        if "success_probability" in physics_params:
-            cost += (1.0 - physics_params["success_probability"]) * abs(
-                self.cost_weights["success_probability"]
-            )
-
-        return max(cost, 0.1)  # Ensure minimum positive cost
+        
+        # Calculate base Euclidean distance
+        distance = math.sqrt((dst_pos[0] - src_pos[0])**2 + (dst_pos[1] - src_pos[1])**2)
+        
+        # Apply realistic movement type multipliers based on N++ gameplay mechanics
+        movement_multipliers = {
+            EdgeType.WALK: 1.0,      # Base movement cost
+            EdgeType.JUMP: 1.2,      # Slightly more expensive (energy cost)
+            EdgeType.FALL: 0.8,      # Cheaper (gravity assists)
+            EdgeType.WALL_SLIDE: 1.5, # More expensive (requires precision)
+            EdgeType.ONE_WAY: 1.1,   # Slightly more expensive (limited options)
+            EdgeType.FUNCTIONAL: 2.0  # Most expensive (requires interaction)
+        }
+        
+        # Get cost multiplier for this edge type
+        cost_multiplier = movement_multipliers.get(edge_type, 1.0)
+        
+        # Apply multiplier to distance
+        realistic_cost = distance * cost_multiplier
+        
+        return max(realistic_cost, 0.1)  # Ensure minimum positive cost
 
     def _calculate_heuristic(
         self, pos1: Tuple[float, float], pos2: Tuple[float, float]
