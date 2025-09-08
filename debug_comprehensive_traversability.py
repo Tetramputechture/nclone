@@ -244,8 +244,8 @@ def create_corrected_visualization(level_data, ninja_position, test_positions, c
     non_traversable_positions = [(x, y) for x, y, is_trav in test_positions if not is_trav]
     
     if traversable_positions:
-        trav_x = [pos[0] for pos in traversable_positions]
-        trav_y = [pos[1] for pos in traversable_positions]
+        trav_x = [pos[0] - 24 for pos in traversable_positions]  # Apply -24px X offset
+        trav_y = [pos[1] - 24 for pos in traversable_positions]  # Apply -24px Y offset
         ax1.scatter(trav_x, trav_y, c='lime', alpha=0.6, s=1, label=f'Traversable ({len(traversable_positions)})')
     
     # Sample non-traversable for visibility
@@ -253,18 +253,18 @@ def create_corrected_visualization(level_data, ninja_position, test_positions, c
         sample_size = min(len(non_traversable_positions), 2000)
         sampled_non_trav = non_traversable_positions[::len(non_traversable_positions)//sample_size]
         
-        non_trav_x = [pos[0] for pos in sampled_non_trav]
-        non_trav_y = [pos[1] for pos in sampled_non_trav]
+        non_trav_x = [pos[0] - 24 for pos in sampled_non_trav]  # Apply -24px X offset
+        non_trav_y = [pos[1] - 24 for pos in sampled_non_trav]  # Apply -24px Y offset
         ax1.scatter(non_trav_x, non_trav_y, c='red', alpha=0.3, s=0.5, label=f'Non-traversable (sampled)')
     
-    # Mark ninja
-    ax1.scatter([ninja_position[0]], [ninja_position[1]], c='blue', s=100, marker='*', 
+    # Mark ninja (apply coordinate offset)
+    ax1.scatter([ninja_position[0] - 24], [ninja_position[1] - 24], c='blue', s=100, marker='*', 
                label='Ninja', edgecolors='white', linewidth=2, zorder=10)
     
-    # Mark collision entities
+    # Mark collision entities (apply coordinate offset)
     if collision_entities:
-        entity_x = [e[1] for e in collision_entities]
-        entity_y = [e[2] for e in collision_entities]
+        entity_x = [e[1] - 24 for e in collision_entities]  # Apply -24px X offset
+        entity_y = [e[2] - 24 for e in collision_entities]  # Apply -24px Y offset
         ax1.scatter(entity_x, entity_y, c='orange', s=50, marker='D', 
                    label='Collision Entities', edgecolors='black', linewidth=1, zorder=9)
     
