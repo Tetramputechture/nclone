@@ -1,14 +1,11 @@
 from .sim_config import SimConfig
 from .map_loader import MapLoader
-from .constants import NINJA_RADIUS
 
 # Quadtree removed: grid cell-based collision queries are used instead.
 
+
 class Simulator:
     """Main class that handles ninjas, entities and tile geometry for simulation."""
-    
-    # Class constants
-    NINJA_RADIUS = NINJA_RADIUS
 
     def __init__(self, sc: SimConfig):
         """Initializes the simulator with a given SimConfig."""
@@ -26,15 +23,15 @@ class Simulator:
         self.hor_segment_dic = {}
         self.ver_segment_dic = {}
         self.map_data = None
-        self.map_loader = MapLoader(self) # Initialize MapLoader
+        self.map_loader = MapLoader(self)  # Initialize MapLoader
 
     def load(self, map_data):
         """From the given map data, initiate the level geometry, the entities and the ninja."""
         self.map_data = map_data
-        self.reset_map_tile_data() # Clears segment_dic
-        self.map_loader.load_map_tiles() # Loads segments into segment_dic and tiles into tile_dic
-        
-        self.reset() # Resets entities and ninja
+        self.reset_map_tile_data()  # Clears segment_dic
+        self.map_loader.load_map_tiles()  # Loads segments into segment_dic and tiles into tile_dic
+
+        self.reset()  # Resets entities and ninja
 
     def load_from_created(self, created_map):
         """Load a map that was manually constructed using the Map class."""
@@ -47,7 +44,7 @@ class Simulator:
         self.collisionlog = []
         self.ninja = None
         self.reset_map_entity_data()
-        self.map_loader.load_map_entities() # Use MapLoader
+        self.map_loader.load_map_entities()  # Use MapLoader
 
     def reset_map_entity_data(self):
         """Reset the map entity data. This is used when a new map is loaded or when the map is reset."""
@@ -55,16 +52,18 @@ class Simulator:
         for x in range(44):
             for y in range(25):
                 self.grid_entity[(x, y)] = []
-        self.entity_dic = {i: [] for i in range(1, 29)} # Initialize with expected entity types
+        self.entity_dic = {
+            i: [] for i in range(1, 29)
+        }  # Initialize with expected entity types
 
     def reset_map_tile_data(self):
         """Reset the map cell data. This is used when a new map is loaded."""
         self.segment_dic = {}
-        for x in range(45): # map_width_tiles + a buffer often
-            for y in range(26): # map_height_tiles + a buffer often
+        for x in range(45):  # map_width_tiles + a buffer often
+            for y in range(26):  # map_height_tiles + a buffer often
                 self.segment_dic[(x, y)] = []
-        
-        self.tile_dic = {} # Clear tile_dic as well
+
+        self.tile_dic = {}  # Clear tile_dic as well
 
         # Initialize horizontal grid edges, with outer edges set to 1 (solid)
         for x in range(89):
@@ -116,13 +115,15 @@ class Simulator:
 
         if self.ninja.state != 9:  # 9 typically means inactive or similar
             # if dead, apply physics to ragdoll instead.
-            ninja_to_update = self.ninja if self.ninja.state != 6 else self.ninja.ragdoll # 6 for dead state
-            if ninja_to_update: # Ensure there is a ninja or ragdoll to update
+            ninja_to_update = (
+                self.ninja if self.ninja.state != 6 else self.ninja.ragdoll
+            )  # 6 for dead state
+            if ninja_to_update:  # Ensure there is a ninja or ragdoll to update
                 ninja_to_update.integrate()  # Do preliminary speed and position updates.
                 ninja_to_update.pre_collision()  # Do pre collision calculations.
 
                 # Cache collision results
-                for _ in range(4): # Number of physics substeps
+                for _ in range(4):  # Number of physics substeps
                     # Handle PHYSICAL collisions with entities.
                     ninja_to_update.collide_vs_objects()
                     # Handle physical collisions with tiles.
@@ -134,8 +135,8 @@ class Simulator:
                 self.ninja.update_graphics()  # Update limbs of ninja
 
         if self.ninja.state == 6 and self.sim_config.enable_anim:  # Ragdoll state
-            self.ninja.anim_frame = 105 # Specific animation frame for ragdoll
-            self.ninja.anim_state = 7   # Specific animation state for ragdoll
+            self.ninja.anim_frame = 105  # Specific animation frame for ragdoll
+            self.ninja.anim_state = 7  # Specific animation state for ragdoll
             self.ninja.calc_ninja_position()
 
         if self.sim_config.log_data:
@@ -143,11 +144,16 @@ class Simulator:
             self.ninja.log()
 
             # Batch entity position logging
-            for entity in active_movable_entities: # Log only active and movable entities
+            for (
+                entity
+            ) in active_movable_entities:  # Log only active and movable entities
                 entity.log_position()
 
         # Clear physics caches periodically to prevent memory bloat or stale data
         if self.frame % 100 == 0:  # Clear caches every 100 frames
-            from .physics import clear_caches # Local import to avoid circular dependencies if physics imports Simulator
-            clear_caches() # This clears helper caches in physics.py
+            from .physics import (
+                clear_caches,
+            )  # Local import to avoid circular dependencies if physics imports Simulator
+
+            clear_caches()  # This clears helper caches in physics.py
             # No quadtree clearing necessary

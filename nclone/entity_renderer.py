@@ -2,6 +2,8 @@ import cairo
 import pygame
 import math
 from . import render_utils
+from .constants.physics_constants import NINJA_RADIUS
+
 
 class EntityRenderer:
     def __init__(self, sim, screen, adjust, width, height):
@@ -31,11 +33,11 @@ class EntityRenderer:
         current_screen_width, current_screen_height = self.screen.get_size()
 
         recreate_surface = (
-            self.entitydraw_surface is None or
-            self.entitydraw_surface.get_width() != current_screen_width or
-            self.entitydraw_surface.get_height() != current_screen_height or
-            init or
-            self.cached_entity_adjust != self.adjust
+            self.entitydraw_surface is None
+            or self.entitydraw_surface.get_width() != current_screen_width
+            or self.entitydraw_surface.get_height() != current_screen_height
+            or init
+            or self.cached_entity_adjust != self.adjust
         )
 
         if recreate_surface:
@@ -48,7 +50,7 @@ class EntityRenderer:
         self.entitydraw_context.set_operator(cairo.Operator.CLEAR)
         self.entitydraw_context.paint()
         self.entitydraw_context.set_operator(cairo.Operator.SOURCE)
-        
+
         context = self.entitydraw_context
 
         # --- Collect all active entities first ---
@@ -63,23 +65,31 @@ class EntityRenderer:
         # Their segments are drawn with TILECOLOR_RGB and DOORWIDTH
         context.set_source_rgb(*render_utils.TILECOLOR_RGB)
         context.set_line_width(render_utils.DOORWIDTH * self.adjust)
-        
+
         door_segments_coords_to_draw = []
         # Draw door segments regardless of the entity's active flag. Some doors
         # (e.g., trap doors) deactivate their switch entity when toggled but the
         # blocking door segment should still be rendered when closed.
         for entity_list_for_type in self.sim.entity_dic.values():
             for entity in entity_list_for_type:
-                if entity.type in [5, 6, 8] and hasattr(entity, 'segment'):
+                if entity.type in [5, 6, 8] and hasattr(entity, "segment"):
                     segment = entity.segment
                     # Draw if the segment is active (door is closed) and it's a
                     # linear, non-oriented segment (criteria for door visuals)
-                    if segment.active and segment.type == "linear" and not segment.oriented:
+                    if (
+                        segment.active
+                        and segment.type == "linear"
+                        and not segment.oriented
+                    ):
                         door_segments_coords_to_draw.append(
-                            (segment.x1 * self.adjust, segment.y1 * self.adjust,
-                             segment.x2 * self.adjust, segment.y2 * self.adjust)
+                            (
+                                segment.x1 * self.adjust,
+                                segment.y1 * self.adjust,
+                                segment.x2 * self.adjust,
+                                segment.y2 * self.adjust,
+                            )
                         )
-        
+
         if door_segments_coords_to_draw:
             for x1, y1, x2, y2 in door_segments_coords_to_draw:
                 context.move_to(x1, y1)
@@ -97,15 +107,19 @@ class EntityRenderer:
             if entity.type not in entity_groups:
                 entity_groups[entity.type] = []
             entity_groups[entity.type].append(entity)
-        
+
         # --- Draw grouped entities (excluding doors) ---
-        context.set_line_width(render_utils.PLATFORMWIDTH * self.adjust) # Default line width for other entities
+        context.set_line_width(
+            render_utils.PLATFORMWIDTH * self.adjust
+        )  # Default line width for other entities
         for entity_type, entities_in_group in entity_groups.items():
             # Set color based on entity_type
             if entity_type in render_utils.ENTITYCOLORS_RGB:
-                 context.set_source_rgb(*render_utils.ENTITYCOLORS_RGB[entity_type])
+                context.set_source_rgb(*render_utils.ENTITYCOLORS_RGB[entity_type])
             else:
-                 context.set_source_rgb(0,0,0) # Default to black if color not specified
+                context.set_source_rgb(
+                    0, 0, 0
+                )  # Default to black if color not specified
 
             for entity in entities_in_group:
                 x = entity.xpos * self.adjust
@@ -113,20 +127,26 @@ class EntityRenderer:
                 y = entity.ypos * self.adjust
 
                 # Special coloring for EntityExit (type 3) when its switch is hit
-                if entity.type == 3 and hasattr(entity, 'switch_hit') and entity.switch_hit:
+                if (
+                    entity.type == 3
+                    and hasattr(entity, "switch_hit")
+                    and entity.switch_hit
+                ):
                     context.set_source_rgb(0, 0, 0.5)  # Dark Blue
-                elif entity_type in render_utils.ENTITYCOLORS_RGB: # Reset to default color
+                elif (
+                    entity_type in render_utils.ENTITYCOLORS_RGB
+                ):  # Reset to default color
                     context.set_source_rgb(*render_utils.ENTITYCOLORS_RGB[entity_type])
-                else: # Reset to default black for types not in ENTITYCOLORS_RGB
-                    context.set_source_rgb(0,0,0)
+                else:  # Reset to default black for types not in ENTITYCOLORS_RGB
+                    context.set_source_rgb(0, 0, 0)
 
                 # Draw entity based on its properties/type
                 if hasattr(entity, "normal_x") and hasattr(entity, "normal_y"):
                     self._draw_oriented_entity(context, entity, x, y)
-                elif entity.type != 23: # Type 23 has a special drawing method
+                elif entity.type != 23:  # Type 23 has a special drawing method
                     self._draw_physical_entity(context, entity, x, y)
-                
-                if entity.type == 23: # Draw type 23 entities
+
+                if entity.type == 23:  # Draw type 23 entities
                     self._draw_type_23_entity(context, entity, x, y)
 
         context.set_source_rgb(*render_utils.NINJACOLOR_RGB)
@@ -135,9 +155,11 @@ class EntityRenderer:
         self._draw_ninja(context)
 
         buffer = self.entitydraw_surface.get_data()
-        return pygame.image.frombuffer(buffer, 
-                                       (self.entitydraw_surface.get_width(), self.entitydraw_surface.get_height()), 
-                                       "BGRA")
+        return pygame.image.frombuffer(
+            buffer,
+            (self.entitydraw_surface.get_width(), self.entitydraw_surface.get_height()),
+            "BGRA",
+        )
 
     def _draw_oriented_entity(self, context, entity, x, y):
         """Helper method to draw oriented entities"""
@@ -147,10 +169,8 @@ class EntityRenderer:
         if hasattr(entity, "SEMI_SIDE"):
             radius = entity.SEMI_SIDE * self.adjust
         angle = math.atan2(entity.normal_x, entity.normal_y) + render_utils.PI_DIV_2
-        context.move_to(x + math.sin(angle) * radius,
-                        y + math.cos(angle) * radius)
-        context.line_to(x - math.sin(angle) * radius,
-                        y - math.cos(angle) * radius)
+        context.move_to(x + math.sin(angle) * radius, y + math.cos(angle) * radius)
+        context.line_to(x - math.sin(angle) * radius, y - math.cos(angle) * radius)
         context.stroke()
 
     def _draw_physical_entity(self, context, entity, x, y):
@@ -173,7 +193,7 @@ class EntityRenderer:
 
     def _draw_ninja(self, context):
         """Helper method to draw ninja"""
-        radius = self.sim.NINJA_RADIUS * self.adjust
+        radius = NINJA_RADIUS * self.adjust
         x = self.sim.ninja.xpos * self.adjust
         y = self.sim.ninja.ypos * self.adjust
 
@@ -192,4 +212,4 @@ class EntityRenderer:
             context.stroke()
         else:
             context.arc(x, y, radius, 0, 2 * math.pi)
-            context.fill() 
+            context.fill()

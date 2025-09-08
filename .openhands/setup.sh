@@ -23,6 +23,11 @@ echo "✅ Python version check passed: $python_version"
 echo "📦 Installing nclone package with dependencies..."
 pip install -e . --quiet
 
+# Create necessary directories
+echo "🗂️  Creating necessary directories..."
+mkdir -p maps/official maps/eval
+echo "✅ Necessary directories created"
+
 # Install development dependencies
 echo "🛠️  Installing development dependencies..."
 pip install -e ".[dev]" --quiet

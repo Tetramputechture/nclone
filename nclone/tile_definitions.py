@@ -2,6 +2,74 @@
 This module contains the definitions for tile properties, including grid edges,
 orthogonal segments, diagonal segments, and circular segments. These definitions
 are used by the simulator to construct the level geometry from map data.
+
+COMPREHENSIVE TILE TYPE DOCUMENTATION:
+
+Tile Types 0-1: Basic tiles
+- 0: Empty tile (no collision)
+- 1: Full solid tile (complete collision)
+
+Tile Types 2-5: Half tiles
+- 2: Top half solid (bottom half traversable)
+- 3: Right half solid (left half traversable)  
+- 4: Bottom half solid (top half traversable)
+- 5: Left half solid (right half traversable)
+
+Tile Types 6-9: 45-degree slopes
+- 6: Slope from top-left to bottom-right (\ shape)
+- 7: Slope from top-right to bottom-left (/ shape)
+- 8: Slope from bottom-left to top-right (/ shape, inverted)
+- 9: Slope from bottom-right to top-left (\ shape, inverted)
+
+Tile Types 10-13: Quarter circles (convex corners)
+- 10: Bottom-right quarter circle (solid in bottom-right corner)
+- 11: Bottom-left quarter circle (solid in bottom-left corner)
+- 12: Top-left quarter circle (solid in top-left corner)
+- 13: Top-right quarter circle (solid in top-right corner)
+
+Tile Types 14-17: Quarter pipes (concave corners)
+- 14: Top-left quarter pipe (hollow in top-left, solid elsewhere)
+- 15: Top-right quarter pipe (hollow in top-right, solid elsewhere)
+- 16: Bottom-right quarter pipe (hollow in bottom-right, solid elsewhere)
+- 17: Bottom-left quarter pipe (hollow in bottom-left, solid elsewhere)
+
+Tile Types 18-21: Short mild slopes (gentle slopes, short rise)
+- 18: Mild slope up-left, short rise from left edge to middle
+- 19: Mild slope up-right, short rise from middle to right edge
+- 20: Mild slope down-right, short drop from middle to right edge
+- 21: Mild slope down-left, short drop from left edge to middle
+
+Tile Types 22-25: Raised mild slopes (gentle slopes, raised platform)
+- 22: Raised mild slope, platform on left with gentle rise
+- 23: Raised mild slope, platform on right with gentle rise
+- 24: Raised mild slope, platform on right with gentle drop
+- 25: Raised mild slope, platform on left with gentle drop
+
+Tile Types 26-29: Short steep slopes (steep slopes, short rise)
+- 26: Steep slope up-left, sharp rise from left edge to middle
+- 27: Steep slope up-right, sharp rise from middle to right edge
+- 28: Steep slope down-right, sharp drop from middle to right edge
+- 29: Steep slope down-left, sharp drop from left edge to middle
+
+Tile Types 30-33: Raised steep slopes (steep slopes, raised platform)
+- 30: Raised steep slope, platform on left with sharp rise
+- 31: Raised steep slope, platform on right with sharp rise
+- 32: Raised steep slope, platform on right with sharp drop
+- 33: Raised steep slope, platform on left with sharp drop
+
+Tile Types 34-37: Glitched tiles (not used in normal gameplay)
+- 34-37: Various glitched configurations with partial edges
+
+DIAGONAL SEGMENT COORDINATES:
+The TILE_SEGMENT_DIAG_MAP defines diagonal lines within tiles using two points:
+- Point coordinates are relative to tile corner (0,0) = top-left, (24,24) = bottom-right
+- Lines connect the two specified points to create slopes and ramps
+
+CIRCULAR SEGMENT PARAMETERS:
+The TILE_SEGMENT_CIRCULAR_MAP defines circular arcs using:
+- Center point: (x, y) relative to tile corner
+- Quadrant: (dx, dy) direction vector indicating which quadrant
+- Convex flag: True for solid corners, False for hollow pipes
 """
 
 # This is a dictionary mapping every tile id to the grid edges it contains.
