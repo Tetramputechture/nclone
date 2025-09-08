@@ -134,19 +134,26 @@ class SubgoalPlanner:
     ) -> List[Subgoal]:
         """Convert reachability subgoals to Subgoal objects with node indices."""
         subgoals = []
-        node_positions = graph_data.x  # Node positions in pixel coordinates
         
         for sub_row, sub_col, goal_type in reachability_state.subgoals:
             # Find closest graph node to this subgoal position
             pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
             pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
             
-            # Find closest node
-            distances = np.sqrt(
-                (node_positions[:, 0] - pixel_x)**2 + 
-                (node_positions[:, 1] - pixel_y)**2
-            )
-            closest_node_idx = np.argmin(distances)
+            # Find closest node by checking all valid nodes
+            closest_node_idx = None
+            min_distance = float('inf')
+            
+            for node_idx in range(graph_data.num_nodes):
+                if graph_data.node_mask[node_idx] == 0:
+                    continue
+                    
+                node_pos = self._get_node_position(graph_data, node_idx)
+                distance = np.sqrt((node_pos[0] - pixel_x) ** 2 + (node_pos[1] - pixel_y) ** 2)
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_node_idx = node_idx
             
             # Set priority based on goal type
             priority_map = {
@@ -156,13 +163,14 @@ class SubgoalPlanner:
                 'exit': 4
             }
             
-            subgoal = Subgoal(
-                goal_type=goal_type,
-                position=(sub_row, sub_col),
-                node_idx=closest_node_idx,
-                priority=priority_map.get(goal_type, 999)
-            )
-            subgoals.append(subgoal)
+            if closest_node_idx is not None:
+                subgoal = Subgoal(
+                    goal_type=goal_type,
+                    position=(sub_row, sub_col),
+                    node_idx=closest_node_idx,
+                    priority=priority_map.get(goal_type, 999)
+                )
+                subgoals.append(subgoal)
             
         return subgoals
     
@@ -328,3 +336,45 @@ class SubgoalPlanner:
                     break
         
         return paths
+    
+    def _get_node_position(self, graph_data, node_idx: int) -> Tuple[float, float]:
+        """Extract world position from node index and features."""
+        if node_idx >= graph_data.num_nodes or graph_data.node_mask[node_idx] == 0:
+            return (0.0, 0.0)
+
+        from .common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
+        from ..constants.physics_constants import (
+            FULL_MAP_WIDTH_PX,
+            FULL_MAP_HEIGHT_PX,
+            TILE_PIXEL_SIZE,
+        )
+
+        # Calculate sub-grid nodes count
+        sub_grid_nodes_count = SUB_GRID_WIDTH * SUB_GRID_HEIGHT
+
+        if node_idx < sub_grid_nodes_count:
+            # Sub-grid node: extract position from features (already in correct coordinates)
+            node_features = graph_data.node_features[node_idx]
+            if len(node_features) >= 2:
+                x = float(node_features[0])
+                y = float(node_features[1])
+                return (float(x), float(y))
+            else:
+                # Fallback: calculate position from index
+                sub_row = node_idx // SUB_GRID_WIDTH
+                sub_col = node_idx % SUB_GRID_WIDTH
+                # Center in sub-cell, add 1-tile offset for simulator border
+                x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
+                y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE * 0.5 + TILE_PIXEL_SIZE
+                return (float(x), float(y))
+        else:
+            # Entity node: extract position from features
+            node_features = graph_data.node_features[node_idx]
+            # Feature layout: position(2) + tile_type + 4 + entity_type + state_features
+            # Position coordinates are stored at indices 0 and 1 (already in pixel coordinates)
+            if len(node_features) >= 2:
+                x = float(node_features[0])
+                y = float(node_features[1])
+                return (float(x), float(y))
+            else:
+                return (0.0, 0.0)

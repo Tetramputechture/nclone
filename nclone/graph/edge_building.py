@@ -151,6 +151,8 @@ class EdgeBuilder:
             # Check if entity is in a solid tile - if so, don't create walkable edges
             # Exception: Always create edges for ninja (type 0) even if in solid tile
             entity_type = entity.get("type", -1)
+            
+
             entity_tile_x = int(entity_x // TILE_PIXEL_SIZE)
             entity_tile_y = int(entity_y // TILE_PIXEL_SIZE)
             
@@ -959,13 +961,14 @@ class EdgeBuilder:
         node_list = list(node_positions.items())
         
         # Limit search to reasonable distances and sample nodes for performance
-        max_search_distance = min(MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE)  # Use physics constants
+        # Increase search distance to allow connections across platform gaps
+        max_search_distance = max(MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE)  # Use larger of the two
         max_row_diff = int(max_search_distance / SUB_CELL_SIZE) + 1
         max_col_diff = int(max_search_distance / SUB_CELL_SIZE) + 1
         
-        # Sample nodes to reduce computational complexity, but ensure ninja node is included
-        sampled_src_nodes = node_list[::8]  # Sample every 8th node as source
-        sampled_tgt_nodes = node_list[::4]  # Sample every 4th node as target
+        # Reduce sampling to find more connection opportunities, especially for ninja
+        sampled_src_nodes = node_list[::4]  # Sample every 4th node as source (was 8th)
+        sampled_tgt_nodes = node_list[::2]  # Sample every 2nd node as target (was 4th)
         
         # Find ninja node and ensure it's included in both source and target samples
         # Find the closest node to corrected ninja position (could be entity node)
