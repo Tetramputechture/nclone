@@ -761,7 +761,7 @@ class EdgeBuilder:
             return edge_count
         
         # Create physics-accurate corridor connections between nearby clusters
-        max_corridor_distance = 96.0  # Reduced max distance for realistic jumps (4 tiles)
+        max_corridor_distance = 144.0  # Increased for better connectivity (6 tiles)
         
         for i in range(len(empty_clusters)):
             for j in range(i + 1, len(empty_clusters)):
@@ -1186,12 +1186,14 @@ class EdgeBuilder:
         # Limit search to reasonable distances and sample nodes for performance
         # Increase search distance to allow connections across platform gaps
         max_search_distance = max(MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE)  # Use larger of the two
-        max_row_diff = int(max_search_distance / SUB_CELL_SIZE) + 1
-        max_col_diff = int(max_search_distance / SUB_CELL_SIZE) + 1
+        # Increase spatial bounds to allow for wider level coverage
+        # The doortest level is 42x23 tiles = 1008x552 pixels, so we need larger bounds
+        max_row_diff = int(max_search_distance / SUB_CELL_SIZE) + 20  # Add buffer for level height
+        max_col_diff = int(max_search_distance / SUB_CELL_SIZE) + 50  # Add buffer for level width
         
-        # Reduce sampling to find more connection opportunities, especially for ninja
-        sampled_src_nodes = node_list[::4]  # Sample every 4th node as source (was 8th)
-        sampled_tgt_nodes = node_list[::2]  # Sample every 2nd node as target (was 4th)
+        # Balanced sampling density for complex pathfinding
+        sampled_src_nodes = node_list[::3]  # Sample every 3rd node as source for good connectivity
+        sampled_tgt_nodes = node_list[::2]  # Sample every 2nd node as target for good connectivity
         
         # Find ninja node and ensure it's included in both source and target samples
         # Find the closest node to corrected ninja position (could be entity node)

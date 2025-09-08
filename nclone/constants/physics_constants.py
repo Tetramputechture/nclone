@@ -212,8 +212,8 @@ PLATFORM_EDGE_WEIGHT = 0.9  # Weight for platform edges
 
 # Traversability
 MIN_TRAVERSABLE_GAP = 18.0  # Minimum gap size for traversability
-MAX_JUMP_DISTANCE = 150.0  # Maximum jump distance for edge creation
-MAX_FALL_DISTANCE = 300.0  # Maximum fall distance for edge creation
+MAX_JUMP_DISTANCE = 200.0  # Increased maximum jump distance for better connectivity
+MAX_FALL_DISTANCE = 400.0  # Increased maximum fall distance for better connectivity
 
 # === ANIMATION CONSTANTS ===
 # Animation data file
