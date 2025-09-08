@@ -5,103 +5,315 @@
 # It installs dependencies and sets up the environment for development
 
 set -e  # Exit on any error
+set -u  # Exit on undefined variables
+set -o pipefail  # Exit on pipe failures
 
-echo "🚀 Setting up nclone development environment..."
+# Configuration
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+readonly LOG_FILE="${SCRIPT_DIR}/setup.log"
+readonly PID_FILE="${SCRIPT_DIR}/setup.pid"
+readonly LOCK_FILE="${SCRIPT_DIR}/setup.lock"
 
-# Check Python version
-python_version=$(python3 --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2)
-required_version="3.8"
+# Timeout settings (in seconds)
+readonly PIP_TIMEOUT=300  # 5 minutes
+readonly IMPORT_TIMEOUT=30  # 30 seconds
+readonly CLEANUP_TIMEOUT=60  # 1 minute
 
-if [ "$(printf '%s\n' "$required_version" "$python_version" | sort -V | head -n1)" != "$required_version" ]; then
-    echo "❌ Error: Python $required_version or higher is required. Found: $python_version"
-    exit 1
-fi
+# Resource requirements (in MB)
+readonly MIN_DISK_SPACE=1000  # 1GB
+readonly MIN_MEMORY=512       # 512MB
 
-echo "✅ Python version check passed: $python_version"
+# Colors for output
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
 
-# Install the nclone package in editable mode with all dependencies
-echo "📦 Installing nclone package with dependencies..."
-pip install -e . --quiet
+# Initialize logging
+exec 3>&1 4>&2
+trap 'exec 2>&4 1>&3' 0 1 2 3
+exec 1> >(tee -a "$LOG_FILE")
+exec 2>&1
 
-# Create necessary directories
-echo "🗂️  Creating necessary directories..."
-mkdir -p maps/official maps/eval
-echo "✅ Necessary directories created"
+# Store PID for cleanup
+echo $$ > "$PID_FILE"
 
-# Install development dependencies
-echo "🛠️  Installing development dependencies..."
-pip install -e ".[dev]" --quiet
+# Cleanup function
+cleanup() {
+    local exit_code=$?
+    echo -e "${YELLOW}🧹 Performing cleanup...${NC}"
+    
+    # Remove lock file
+    [[ -f "$LOCK_FILE" ]] && rm -f "$LOCK_FILE"
+    [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
+    
+    # Kill any hanging pip processes
+    pkill -f "pip install" 2>/dev/null || true
+    
+    if [[ $exit_code -ne 0 ]]; then
+        echo -e "${RED}❌ Setup failed with exit code $exit_code${NC}"
+        echo -e "${YELLOW}📋 Check the log file for details: $LOG_FILE${NC}"
+    fi
+    
+    exit $exit_code
+}
 
-# Install test dependencies
-echo "🧪 Installing test dependencies..."
-pip install -e ".[test]" --quiet
+# Set up signal handlers
+trap cleanup EXIT
+trap 'echo "Interrupted by user"; exit 130' INT TERM
 
-# Install linting tools (Ruff)
-echo "🔍 Installing linting tools..."
-pip install ruff --quiet
+# Utility functions
+log_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
 
-# Set up environment variables for headless operation
-echo "🖥️  Setting up environment variables..."
-export SDL_VIDEODRIVER=dummy
-export XDG_RUNTIME_DIR=/tmp/runtime-$(whoami)
-mkdir -p $XDG_RUNTIME_DIR
-chmod 700 $XDG_RUNTIME_DIR
+log_success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
 
-# Verify installation by running a quick test
-echo "✅ Verifying installation..."
-if python -c "import nclone; print('nclone package imported successfully')" 2>/dev/null; then
-    echo "✅ nclone package installation verified"
-else
-    echo "❌ Error: nclone package installation failed"
-    exit 1
-fi
+log_warning() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
 
-# Test pygame import (critical for the simulation)
-if python -c "import pygame; print('pygame imported successfully')" 2>/dev/null; then
-    echo "✅ pygame installation verified"
-else
-    echo "❌ Error: pygame installation failed"
-    exit 1
-fi
+log_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
 
-# Test numpy import (required for graph operations)
-if python -c "import numpy; print('numpy imported successfully')" 2>/dev/null; then
-    echo "✅ numpy installation verified"
-else
-    echo "❌ Error: numpy installation failed"
-    exit 1
-fi
+# Progress indicator for long operations
+show_progress() {
+    local pid=$1
+    local message=$2
+    local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    local delay=0.1
+    
+    while kill -0 $pid 2>/dev/null; do
+        for (( i=0; i<${#chars}; i++ )); do
+            printf "\r${BLUE}${chars:$i:1} $message${NC}"
+            sleep $delay
+            if ! kill -0 $pid 2>/dev/null; then
+                break 2
+            fi
+        done
+    done
+    printf "\r"
+}
 
-# Test gymnasium import (required for RL environments)
-if python -c "import gymnasium; print('gymnasium imported successfully')" 2>/dev/null; then
-    echo "✅ gymnasium installation verified"
-else
-    echo "❌ Error: gymnasium installation failed"
-    exit 1
-fi
+# Check if another instance is running
+check_lock() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        local lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+            log_error "Another instance of setup is already running (PID: $lock_pid)"
+            exit 1
+        else
+            log_warning "Removing stale lock file"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+    echo $$ > "$LOCK_FILE"
+}
 
-# Display helpful information
-echo ""
-echo "🎉 nclone development environment setup complete!"
-echo ""
-echo "📋 Quick reference:"
-echo "   • Run tests: python tests/test_graph_fixes_unit_tests.py"
-echo "   • Run all tests: python tests/run_tests.py"
-echo "   • Test environment: python -m nclone.test_environment"
-echo "   • Lint code: make lint"
-echo "   • Fix code: make fix"
-echo "   • Debug graph: python debug/final_validation.py"
-echo ""
-echo "📁 Key directories:"
-echo "   • nclone/graph/: Core graph system implementation"
-echo "   • tests/: Comprehensive test suite"
-echo "   • debug/: Debugging and analysis scripts"
-echo "   • docs/: Documentation and guides"
-echo ""
-echo "🔧 Development workflow:"
-echo "   1. Make changes to nclone/graph/ files"
-echo "   2. Run tests: python tests/test_graph_fixes_unit_tests.py"
-echo "   3. Debug issues: python debug/final_validation.py"
-echo "   4. Lint code: make lint"
-echo "   5. Commit changes with descriptive messages"
-echo ""
+# Check system resources
+check_resources() {
+    log_info "Checking system resources..."
+    
+    # Check available disk space
+    local disk_space=$(df "$PROJECT_ROOT" | awk 'NR==2 {print int($4/1024)}')
+    if [[ $disk_space -lt $MIN_DISK_SPACE ]]; then
+        log_error "Insufficient disk space. Required: ${MIN_DISK_SPACE}MB, Available: ${disk_space}MB"
+        exit 1
+    fi
+    
+    # Check available memory
+    if command -v free >/dev/null 2>&1; then
+        local available_memory=$(free -m | awk 'NR==2{print $7}')
+        if [[ -n "$available_memory" ]] && [[ $available_memory -lt $MIN_MEMORY ]]; then
+            log_warning "Low available memory. Available: ${available_memory}MB, Recommended: ${MIN_MEMORY}MB"
+        fi
+    fi
+    
+    log_success "Resource check passed"
+}
+
+# Run command with timeout
+run_with_timeout() {
+    local timeout_duration=$1
+    local error_message=$2
+    shift 2
+    
+    if timeout "$timeout_duration" "$@"; then
+        return 0
+    else
+        local exit_code=$?
+        log_error "$error_message"
+        if [[ $exit_code -eq 124 ]]; then
+            log_error "Command timed out after ${timeout_duration} seconds"
+        fi
+        return $exit_code
+    fi
+}
+
+# Test Python import with timeout
+test_import_with_timeout() {
+    local module=$1
+    local description=$2
+    
+    log_info "Testing $description import..."
+    
+    if run_with_timeout $IMPORT_TIMEOUT "Failed to import $module" \
+       python -c "import $module; print('$description imported successfully')" >/dev/null 2>&1; then
+        log_success "$description installation verified"
+        return 0
+    else
+        log_error "$description installation failed"
+        return 1
+    fi
+}
+
+# Enhanced pip install with progress and timeout
+pip_install_with_progress() {
+    local packages=("$@")
+    local pip_args=(
+        --timeout=60
+        --retries=2
+        --disable-pip-version-check
+        --no-warn-script-location
+        --progress-bar=off
+    )
+    
+    log_info "Installing packages: ${packages[*]}"
+    
+    # Start pip install in background
+    pip install "${pip_args[@]}" "${packages[@]}" &
+    local pip_pid=$!
+    
+    # Show progress indicator
+    show_progress $pip_pid "Installing packages"
+    
+    # Wait for completion with timeout
+    if wait $pip_pid; then
+        log_success "Package installation completed"
+        return 0
+    else
+        log_error "Package installation failed"
+        return 1
+    fi
+}
+
+# Main setup function
+main() {
+    local start_time=$(date +%s)
+    
+    echo "🚀 Setting up nclone development environment..."
+    echo "📁 Project root: $PROJECT_ROOT"
+    echo "📝 Log file: $LOG_FILE"
+    echo "⏰ Started at: $(date)"
+    echo ""
+    
+    # Preliminary checks
+    check_lock
+    check_resources
+    
+    # Change to project root
+    cd "$PROJECT_ROOT"
+    
+    # Check Python version
+    log_info "Checking Python version..."
+    if ! python_version=$(python3 --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2); then
+        log_error "Failed to get Python version"
+        exit 1
+    fi
+    
+    required_version="3.8"
+    if [[ "$(printf '%s\n' "$required_version" "$python_version" | sort -V | head -n1)" != "$required_version" ]]; then
+        log_error "Python $required_version or higher is required. Found: $python_version"
+        exit 1
+    fi
+    
+    log_success "Python version check passed: $python_version"
+    
+    # Create necessary directories
+    log_info "Creating necessary directories..."
+    mkdir -p maps/official maps/eval
+    log_success "Necessary directories created"
+    
+    # Set up environment variables for headless operation
+    log_info "Setting up environment variables..."
+    export SDL_VIDEODRIVER=dummy
+    export XDG_RUNTIME_DIR=/tmp/runtime-$(whoami)
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+    log_success "Environment variables configured"
+    
+    # Install all packages in one optimized command
+    log_info "Installing nclone with all dependencies..."
+    
+    # Combine all installations into a single command for efficiency
+    local packages=(
+        "-e .[dev,test]"  # Install nclone with dev and test extras
+        "ruff"            # Linting tools
+    )
+    
+    if run_with_timeout $PIP_TIMEOUT "Package installation failed" \
+       pip_install_with_progress "${packages[@]}"; then
+        log_success "All packages installed successfully"
+    else
+        log_error "Failed to install packages"
+        exit 1
+    fi
+    
+    # Verify installations
+    log_info "Verifying package installations..."
+    
+    local verification_failed=false
+    
+    # Test critical imports
+    test_import_with_timeout "nclone" "nclone package" || verification_failed=true
+    test_import_with_timeout "pygame" "pygame" || verification_failed=true
+    test_import_with_timeout "numpy" "numpy" || verification_failed=true
+    test_import_with_timeout "gymnasium" "gymnasium" || verification_failed=true
+    
+    if [[ "$verification_failed" == "true" ]]; then
+        log_error "Package verification failed"
+        exit 1
+    fi
+    
+    # Calculate setup time
+    local end_time=$(date +%s)
+    local setup_duration=$((end_time - start_time))
+    
+    # Success message
+    echo ""
+    echo "🎉 nclone development environment setup complete!"
+    echo "⏱️  Setup completed in ${setup_duration} seconds"
+    echo ""
+    echo "📋 Quick reference:"
+    echo "   • Run tests: python tests/test_graph_fixes_unit_tests.py"
+    echo "   • Run all tests: python tests/run_tests.py"
+    echo "   • Test environment: python -m nclone.test_environment"
+    echo "   • Lint code: make lint"
+    echo "   • Fix code: make fix"
+    echo "   • Debug graph: python debug/final_validation.py"
+    echo ""
+    echo "📁 Key directories:"
+    echo "   • nclone/graph/: Core graph system implementation"
+    echo "   • tests/: Comprehensive test suite"
+    echo "   • debug/: Debugging and analysis scripts"
+    echo "   • docs/: Documentation and guides"
+    echo ""
+    echo "🔧 Development workflow:"
+    echo "   1. Make changes to nclone/graph/ files"
+    echo "   2. Run tests: python tests/test_graph_fixes_unit_tests.py"
+    echo "   3. Debug issues: python debug/final_validation.py"
+    echo "   4. Lint code: make lint"
+    echo "   5. Commit changes with descriptive messages"
+    echo ""
+    echo "📝 Setup log saved to: $LOG_FILE"
+    echo ""
+}
+
+# Run main function
+main "$@"
