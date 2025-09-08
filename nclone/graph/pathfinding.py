@@ -511,7 +511,7 @@ class PathfindingEngine:
 
             visited.add(current_node)
             nodes_explored += 1
-
+            
             # Check if we reached the goal
             if current_node == goal_node:
                 path = self._reconstruct_path(parent_map, start_node, goal_node)
@@ -570,10 +570,17 @@ class PathfindingEngine:
                 graph_data, edge_idx, edge_type, src_node, dst_node, ninja_state
             )
 
-            # Add edge to adjacency list
+            # Add edge to adjacency list (bidirectional)
             if src_node not in adjacency:
                 adjacency[src_node] = []
             adjacency[src_node].append((dst_node, edge_cost, edge_type))
+            
+            # Add reverse edge for bidirectional connectivity
+            if dst_node not in adjacency:
+                adjacency[dst_node] = []
+            adjacency[dst_node].append((src_node, edge_cost, edge_type))
+
+
 
         return adjacency
 

@@ -21,6 +21,7 @@ sys.path.insert(0, '/workspace/nclone')
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
+from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
 from nclone.constants.entity_types import EntityType
 from nclone.constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS, MAP_PADDING
 from nclone.graph.common import EdgeType
@@ -331,26 +332,32 @@ def create_game_accurate_visualization():
         print(f"❌ Failed to find nodes: {e}")
         return False
     
-    # Find path using BFS with edge types
+    # Find path using centralized PathfindingEngine
     try:
         print("\n🚀 Finding optimal path using Dijkstra's algorithm with realistic movement costs...")
-        path, path_edge_types = find_optimal_path_with_edge_types(graph, ninja_node, target_node, level_data, entities)
         
-        if not path:
-            print(f"❌ Dijkstra pathfinding failed!")
+        # Create pathfinding engine
+        pathfinding_engine = PathfindingEngine(level_data, entities)
+        
+        # Find path using Dijkstra algorithm
+        result = pathfinding_engine.find_shortest_path(
+            graph, ninja_node, target_node, PathfindingAlgorithm.DIJKSTRA
+        )
+        
+        if not result.success:
+            print(f"❌ Dijkstra pathfinding failed! Explored {result.nodes_explored} nodes")
             return False
         
         print(f"🎉 SUCCESS! Found optimal path:")
-        print(f"   Path length: {len(path)} nodes")
-        print(f"   Movement types: {[EdgeType(et).name for et in path_edge_types]}")
+        print(f"   Path length: {len(result.path)} nodes")
+        print(f"   Total cost: {result.total_cost:.1f}px")
+        print(f"   Nodes explored: {result.nodes_explored}")
+        print(f"   Movement types: {[EdgeType(et).name for et in result.edge_types]}")
         
-        # Extract path coordinates
-        path_coords = []
-        for node_idx in path:
-            if graph.node_mask[node_idx] == 1:  # Valid node
-                node_x = graph.node_features[node_idx, 0]
-                node_y = graph.node_features[node_idx, 1]
-                path_coords.append((node_x, node_y))
+        # Use path coordinates from result
+        path_coords = result.path_coordinates
+        path = result.path
+        path_edge_types = result.edge_types
         
         print(f"✅ Extracted {len(path_coords)} path coordinates")
         
