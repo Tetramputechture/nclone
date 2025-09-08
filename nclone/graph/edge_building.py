@@ -690,11 +690,11 @@ class EdgeBuilder:
         edge_feature_dim: int,
     ) -> int:
         """
-        Build long-distance corridor connections between empty tile clusters.
+        Build physics-accurate corridor connections between empty tile clusters.
         
-        This method identifies separate empty tile clusters and creates bridge
-        connections between them when they are separated by narrow gaps or
-        single solid tiles, enabling long-distance pathfinding.
+        This method identifies separate empty tile clusters and creates physics-accurate
+        bridge connections using proper movement types (JUMP/FALL) instead of impossible
+        long-distance WALK movements.
         
         Args:
             sub_grid_node_map: Mapping from (row, col) to node indices
@@ -747,8 +747,8 @@ class EdgeBuilder:
         if len(empty_clusters) < 2:
             return edge_count
         
-        # Create corridor connections between nearby clusters
-        max_corridor_distance = 120.0  # Maximum distance for corridor connections (5 tiles)
+        # Create physics-accurate corridor connections between nearby clusters
+        max_corridor_distance = 96.0  # Reduced max distance for realistic jumps (4 tiles)
         
         for i in range(len(empty_clusters)):
             for j in range(i + 1, len(empty_clusters)):
@@ -773,27 +773,40 @@ class EdgeBuilder:
                         distance = math.sqrt((center2_x - center1_x)**2 + (center2_y - center1_y)**2)
                         
                         if distance < min_distance and distance <= max_corridor_distance:
-                            # Check if there's a potential corridor (not too many blocking tiles)
-                            blocking_tiles = self._count_blocking_tiles(
-                                center1_x, center1_y, center2_x, center2_y, level_data
+                            # Use trajectory calculator to validate physics feasibility
+                            trajectory_result = self.trajectory_calculator.calculate_jump_trajectory(
+                                (center1_x, center1_y), (center2_x, center2_y)
                             )
                             
-                            # Allow corridors with up to 2 blocking tiles (narrow passages)
-                            if blocking_tiles <= 2:
+                            # Only create connection if trajectory is physically possible
+                            if trajectory_result.feasible and trajectory_result.success_probability > 0.3:
                                 min_distance = distance
                                 best_connection = (
                                     (tile1_x, tile1_y, center1_x, center1_y),
                                     (tile2_x, tile2_y, center2_x, center2_y),
-                                    distance
+                                    distance,
+                                    trajectory_result
                                 )
                 
-                # Create corridor connection if found
+                # Create physics-accurate corridor connection if found
                 if best_connection:
-                    (tile1_x, tile1_y, center1_x, center1_y), (tile2_x, tile2_y, center2_x, center2_y), distance = best_connection
+                    (tile1_x, tile1_y, center1_x, center1_y), (tile2_x, tile2_y, center2_x, center2_y), distance, trajectory = best_connection
                     
                     # Find nodes in these tiles
                     nodes1 = self._find_nodes_in_tile(tile1_x, tile1_y, sub_grid_node_map)
                     nodes2 = self._find_nodes_in_tile(tile2_x, tile2_y, sub_grid_node_map)
+                    
+                    # Determine physics-accurate movement type
+                    dy = center2_y - center1_y
+                    if dy < -12:  # Moving upward significantly
+                        movement_type = EdgeType.JUMP
+                    elif dy > 12:  # Moving downward significantly
+                        movement_type = EdgeType.FALL
+                    else:  # Horizontal movement - but only if very short distance
+                        if distance <= 48:  # Max 2 tiles for horizontal "walk"
+                            movement_type = EdgeType.WALK
+                        else:
+                            movement_type = EdgeType.JUMP  # Long horizontal = jump
                     
                     # Create connections between closest nodes
                     for node1_idx, (node1_row, node1_col) in nodes1:
@@ -801,24 +814,42 @@ class EdgeBuilder:
                             if edge_count >= E_MAX_EDGES:
                                 break
                             
-                            # Create bidirectional corridor edge
-                            for src_idx, dst_idx in [(node1_idx, node2_idx), (node2_idx, node1_idx)]:
+                            # Create physics-accurate corridor edge (usually unidirectional for jumps/falls)
+                            edge_directions = []
+                            if movement_type == EdgeType.WALK:
+                                # Bidirectional for short walks
+                                edge_directions = [(node1_idx, node2_idx), (node2_idx, node1_idx)]
+                            elif movement_type == EdgeType.JUMP:
+                                # Unidirectional from lower to higher position
+                                if center1_y >= center2_y:  # node1 is lower, can jump to node2
+                                    edge_directions = [(node1_idx, node2_idx)]
+                                else:  # node2 is lower, can jump to node1
+                                    edge_directions = [(node2_idx, node1_idx)]
+                            elif movement_type == EdgeType.FALL:
+                                # Unidirectional from higher to lower position
+                                if center1_y <= center2_y:  # node1 is higher, can fall to node2
+                                    edge_directions = [(node1_idx, node2_idx)]
+                                else:  # node2 is higher, can fall to node1
+                                    edge_directions = [(node2_idx, node1_idx)]
+                            
+                            for src_idx, dst_idx in edge_directions:
                                 if edge_count >= E_MAX_EDGES:
                                     break
                                 
                                 edge_index[0, edge_count] = src_idx
                                 edge_index[1, edge_count] = dst_idx
                                 
-                                # Create corridor edge features
+                                # Create physics-accurate corridor edge features
                                 corridor_features = np.zeros(edge_feature_dim, dtype=np.float32)
-                                corridor_features[EdgeType.WALK] = 1.0  # Walk edge type
+                                corridor_features[movement_type] = 1.0  # Correct movement type
                                 
-                                # Higher cost for corridor connections (they're longer/harder)
-                                corridor_features[len(EdgeType) + 2] = min(2.0, distance / 24.0)  # Cost based on distance
+                                # Physics-based cost using trajectory energy
+                                physics_cost = trajectory.energy_cost if hasattr(trajectory, 'energy_cost') else distance / 24.0
+                                corridor_features[len(EdgeType) + 2] = min(3.0, physics_cost)
                                 
                                 edge_features[edge_count] = corridor_features
                                 edge_mask[edge_count] = 1.0
-                                edge_types[edge_count] = EdgeType.WALK
+                                edge_types[edge_count] = movement_type  # Use physics-accurate movement type
                                 edge_count += 1
                             
                             # Only connect the closest pair to avoid too many edges
