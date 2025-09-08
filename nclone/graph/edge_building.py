@@ -994,6 +994,25 @@ class EdgeBuilder:
             if ninja_node_entry not in sampled_tgt_nodes:
                 sampled_tgt_nodes.append(ninja_node_entry)
                 print(f"DEBUG: Added ninja node to target samples")
+            
+            # Add nearby nodes to target samples for ninja escape connections
+            # Insert them at the beginning to prioritize them
+            ninja_x, ninja_y = ninja_node_entry[1][0], ninja_node_entry[1][1]
+            nearby_nodes = []
+            for node_idx, (x, y, row, col) in node_list:
+                distance = math.sqrt((x - ninja_x)**2 + (y - ninja_y)**2)
+                if distance < 100 and distance > 5:  # Within 100px but not too close
+                    # Check if the target position is clear before adding it
+                    if self._is_position_clear((x, y), level_data, debug_ninja=False):
+                        node_entry = (node_idx, (x, y, row, col))
+                        if node_entry not in sampled_tgt_nodes:
+                            nearby_nodes.append(node_entry)
+                            if len(nearby_nodes) >= 20:  # Limit to avoid too many targets
+                                break
+            
+            # Insert nearby nodes at the beginning of target samples to prioritize them
+            sampled_tgt_nodes = nearby_nodes + sampled_tgt_nodes
+            print(f"DEBUG: Added {len(nearby_nodes)} nearby nodes to target samples for ninja escape (prioritized)")
         else:
             print(f"DEBUG: No close node found! Ninja position: {ninja_position} -> corrected: {corrected_ninja_position}")
             # Show closest few nodes for debugging
@@ -1037,9 +1056,13 @@ class EdgeBuilder:
                 if is_ninja_src and ninja_target_count <= 3:
                     print(f"DEBUG: Target {ninja_target_count}: ({tgt_x:.1f}, {tgt_y:.1f}) row_diff={row_diff} col_diff={col_diff} max_row={max_row_diff} max_col={max_col_diff}")
                 
-                if row_diff > max_row_diff or col_diff > max_col_diff:
+                # Use more generous spatial bounds for ninja escape connections
+                effective_max_row = max_row_diff * 2 if is_ninja_src else max_row_diff
+                effective_max_col = max_col_diff * 2 if is_ninja_src else max_col_diff
+                
+                if row_diff > effective_max_row or col_diff > effective_max_col:
                     if is_ninja_src and ninja_target_count <= 3:
-                        print(f"DEBUG: Target {ninja_target_count} filtered out by spatial bounds")
+                        print(f"DEBUG: Target {ninja_target_count} filtered out by spatial bounds (effective max: {effective_max_row}, {effective_max_col})")
                     continue
                 
                 # Skip adjacent nodes (already handled by WALK edges)
@@ -1232,10 +1255,14 @@ class EdgeBuilder:
             is_ninja_trajectory = (abs(start_pos[0] - ninja_position[0]) < 5 and abs(start_pos[1] - ninja_position[1]) < 5)
         
         # Check start and end points first (most likely to fail)
-        if not self._is_position_clear(start_pos, level_data, debug_ninja=is_ninja_trajectory):
-            if is_ninja_trajectory:
-                print(f"DEBUG: Start position failed validation")
+        # Special case: Allow ninja to escape from solid tile positions
+        start_clear = self._is_position_clear(start_pos, level_data, debug_ninja=is_ninja_trajectory)
+        if not start_clear and not is_ninja_trajectory:
             return False
+        elif not start_clear and is_ninja_trajectory:
+            if is_ninja_trajectory:
+                print(f"DEBUG: Ninja start position in solid tile - allowing escape trajectory")
+        
         if not self._is_position_clear(end_pos, level_data, debug_ninja=is_ninja_trajectory):
             if is_ninja_trajectory:
                 print(f"DEBUG: End position failed validation")
