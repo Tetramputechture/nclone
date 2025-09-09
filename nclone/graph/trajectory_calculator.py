@@ -19,14 +19,14 @@ from nclone.constants.physics_constants import (
     MAX_HOR_SPEED,
     AIR_ACCEL,
     GROUND_ACCEL,
-    JUMP_FLAT_GROUND_Y,
+    JUMP_FLOOR_Y,
     MAX_JUMP_DURATION,
     NINJA_RADIUS,
     DRAG_REGULAR,
     DRAG_SLOW,
-    JUMP_WALL_REGULAR_X,
+    JUMP_WALL_REGULAR_X_MULTIPLIER,
     JUMP_WALL_REGULAR_Y,
-    JUMP_WALL_SLIDE_X,
+    JUMP_WALL_SLIDE_X_MULTIPLIER,
     JUMP_WALL_SLIDE_Y,
     TILE_PIXEL_SIZE,
     # Movement and trajectory constants
@@ -189,7 +189,7 @@ class TrajectoryCalculator:
             initial_vy = 0
 
         # Check if initial velocity is achievable
-        max_initial_vy = abs(JUMP_FLAT_GROUND_Y)
+        max_initial_vy = abs(JUMP_FLOOR_Y)
         if abs(initial_vy) > max_initial_vy * VELOCITY_MARGIN_MULTIPLIER:
             return TrajectoryResult(
                 feasible=False,
@@ -1445,11 +1445,11 @@ class TrajectoryCalculator:
         # Determine wall jump type based on movement direction
         if abs(dy) > abs(dx) and dy < 0:
             # Regular wall jump (away from wall, upward)
-            initial_vx = JUMP_WALL_REGULAR_X * (-nx)  # Away from wall
+            initial_vx = JUMP_WALL_REGULAR_X_MULTIPLIER * (-nx)  # Away from wall
             initial_vy = -abs(JUMP_WALL_REGULAR_Y)  # Upward
         else:
             # Wall slide jump (along wall)
-            initial_vx = JUMP_WALL_SLIDE_X * (-nx)
+            initial_vx = JUMP_WALL_SLIDE_X_MULTIPLIER * (-nx)
             initial_vy = -abs(JUMP_WALL_SLIDE_Y)
 
         # Use momentum trajectory calculation with wall jump initial velocity
@@ -1492,7 +1492,7 @@ class TrajectoryCalculator:
         # For upward movement, use jump physics
         if dy < 0:
             # Solve: dy = v0*t + 0.5*g*t² where v0 is initial jump velocity
-            v0 = abs(JUMP_FLAT_GROUND_Y)
+            v0 = abs(JUMP_FLOOR_Y)
             # Quadratic formula: 0.5*g*t² + v0*t - |dy| = 0
             discriminant = v0 * v0 + 2 * gravity * abs(dy)
             if discriminant >= 0:

@@ -32,17 +32,17 @@ TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggli
 # Bounce block constants
 BOUNCE_BLOCK_SEMI_SIDE = 4.5  # Bounce block semi-side size in pixels (9x9 pixel square)
 
-# Movement speeds
-MAX_HOR_SPEED = 9.0  # Maximum horizontal speed of the ninja (player)
+# Movement speeds (exact values from sim_mechanics_doc.md)
+MAX_HOR_SPEED = 3.333  # Maximum horizontal speed: 3.333 pixels/frame
 MAX_VER_SPEED = 12.0  # Maximum vertical speed (upward) of the ninja (player)
 MIN_HORIZONTAL_VELOCITY = 0.1  # Minimum horizontal velocity for calculations
 
-# Gravity and physics (using original N++ values)
-GRAVITY_FALL = 0.06666666666666665  # Original N++ gravity when falling
-GRAVITY_JUMP = 0.01111111111111111  # Original N++ gravity when jumping
+# Gravity and physics (exact values from sim_mechanics_doc.md)
+GRAVITY_FALL = 0.0667  # Fall gravity: 0.0667 pixels/frame²
+GRAVITY_JUMP = 0.0111  # Jump gravity: 0.0111 pixels/frame²
 TERMINAL_VELOCITY = 12.0  # Maximum falling speed
 
-# Jump mechanics
+# Jump mechanics (exact values from sim_mechanics_doc.md)
 JUMP_INITIAL_VELOCITY = -6.0  # Initial upward velocity when jumping
 WALL_JUMP_HORIZONTAL_BOOST = 4.5  # Horizontal boost from wall jumps
 
@@ -255,22 +255,25 @@ MAX_JUMP_DURATION = 45
 MAX_SURVIVABLE_IMPACT = 6
 MIN_SURVIVABLE_CRUSHING = 0.05
 
-# Basic jump velocities
-JUMP_FLAT_GROUND_Y = -2
+# Jump velocities (exact values from sim_mechanics_doc.md)
+# Floor Jump: From flat ground, applies velocity (0, -2)
+JUMP_FLOOR_X = 0
+JUMP_FLOOR_Y = -2
+
+# Wall Jump (Regular): Applies velocity (1 * wall_normal, -1.4)
+JUMP_WALL_REGULAR_X_MULTIPLIER = 1
+JUMP_WALL_REGULAR_Y = -1.4
+
+# Wall Jump (Slide): From wall slide state, applies velocity (2/3 * wall_normal, -1)
+JUMP_WALL_SLIDE_X_MULTIPLIER = 2/3
+JUMP_WALL_SLIDE_Y = -1
 
 # Slope jump constants
-JUMP_SLOPE_DOWNHILL_X = 2/3
-JUMP_SLOPE_DOWNHILL_Y = 2
-JUMP_SLOPE_DOWNHILL_OPPOSITE_Y = -1.4
-JUMP_SLOPE_UPHILL_FORWARD_Y = -1.4
-JUMP_SLOPE_UPHILL_PERP_X = 2/3
-JUMP_SLOPE_UPHILL_PERP_Y = 2
-
-# Wall jump constants
-JUMP_WALL_SLIDE_X = 2/3
-JUMP_WALL_SLIDE_Y = -1
-JUMP_WALL_REGULAR_X = 1
-JUMP_WALL_REGULAR_Y = -1.4
+JUMP_SLOPE_DOWNHILL_X_MULTIPLIER = 2/3
+JUMP_SLOPE_DOWNHILL_Y_MULTIPLIER = 2
+JUMP_SLOPE_UPHILL_DEFAULT_Y = -1.4
+JUMP_SLOPE_UPHILL_PERP_X_MULTIPLIER = 2/3
+JUMP_SLOPE_UPHILL_PERP_Y_MULTIPLIER = 2
 
 # Launch pad constants
 JUMP_LAUNCH_PAD_BOOST_SCALAR = 1.7

@@ -15,6 +15,7 @@ from .edge_building import EdgeBuilder
 from .physics_waypoint_pathfinder import PhysicsWaypointPathfinder
 from .level_data import LevelData
 from .common import SUB_CELL_SIZE, EdgeType
+from .movement_classifier import MovementClassifier
 from ..constants.physics_constants import NINJA_RADIUS, MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE
 
 
@@ -36,6 +37,7 @@ class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
         """Initialize physics-enhanced edge builder."""
         super().__init__(feature_extractor)
         self.waypoint_pathfinder = PhysicsWaypointPathfinder()
+        self.movement_classifier = None  # Will be initialized in build_edges
         self._waypoint_nodes = {}  # Maps waypoint positions to node indices
         
     def build_edges(

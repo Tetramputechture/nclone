@@ -34,16 +34,15 @@ from .constants import (
     NINJA_RADIUS,
     
     # Jump constants
-    JUMP_FLAT_GROUND_Y,
-    JUMP_SLOPE_DOWNHILL_X,
-    JUMP_SLOPE_DOWNHILL_Y,
-    JUMP_SLOPE_DOWNHILL_OPPOSITE_Y,
-    JUMP_SLOPE_UPHILL_FORWARD_Y,
-    JUMP_SLOPE_UPHILL_PERP_X,
-    JUMP_SLOPE_UPHILL_PERP_Y,
-    JUMP_WALL_SLIDE_X,
+    JUMP_FLOOR_Y,
+    JUMP_SLOPE_DOWNHILL_X_MULTIPLIER,
+    JUMP_SLOPE_DOWNHILL_Y_MULTIPLIER,
+    JUMP_SLOPE_UPHILL_DEFAULT_Y,
+    JUMP_SLOPE_UPHILL_PERP_X_MULTIPLIER,
+    JUMP_SLOPE_UPHILL_PERP_Y_MULTIPLIER,
+    JUMP_WALL_SLIDE_X_MULTIPLIER,
     JUMP_WALL_SLIDE_Y,
-    JUMP_WALL_REGULAR_X,
+    JUMP_WALL_REGULAR_X_MULTIPLIER,
     JUMP_WALL_REGULAR_Y,
     JUMP_LAUNCH_PAD_BOOST_SCALAR,
     JUMP_LAUNCH_PAD_BOOST_FACTOR,
@@ -390,25 +389,25 @@ class Ninja:
         self.applied_gravity = GRAVITY_JUMP
         if self.floor_normalized_x == 0:  # Jump from flat ground
             jx = 0
-            jy = JUMP_FLAT_GROUND_Y
+            jy = JUMP_FLOOR_Y
         else:  # Slope jump
             dx = self.floor_normalized_x
             dy = self.floor_normalized_y
             if self.xspeed * dx >= 0:  # Moving downhill
                 if self.xspeed * self.hor_input >= 0:
-                    jx = JUMP_SLOPE_DOWNHILL_X * dx
-                    jy = JUMP_SLOPE_DOWNHILL_Y * dy
+                    jx = JUMP_SLOPE_DOWNHILL_X_MULTIPLIER * dx
+                    jy = JUMP_SLOPE_DOWNHILL_Y_MULTIPLIER * dy
                 else:
                     jx = 0
-                    jy = JUMP_SLOPE_DOWNHILL_OPPOSITE_Y
+                    jy = JUMP_SLOPE_UPHILL_DEFAULT_Y
             else:  # Moving uphill
                 if self.xspeed * self.hor_input > 0:  # Forward jump
                     jx = 0
-                    jy = JUMP_SLOPE_UPHILL_FORWARD_Y
+                    jy = JUMP_SLOPE_UPHILL_DEFAULT_Y
                 else:
                     self.xspeed = 0  # Perp jump
-                    jx = JUMP_SLOPE_UPHILL_PERP_X * dx
-                    jy = JUMP_SLOPE_UPHILL_PERP_Y * dy
+                    jx = JUMP_SLOPE_UPHILL_PERP_X_MULTIPLIER * dx
+                    jy = JUMP_SLOPE_UPHILL_PERP_Y_MULTIPLIER * dy
         if self.yspeed > 0:
             self.yspeed = 0
         self.xspeed += jx
@@ -420,10 +419,10 @@ class Ninja:
     def wall_jump(self):
         """Perform wall jump depending on wall normal and if sliding or not."""
         if self.hor_input * self.wall_normal < 0 and self.state == 5:  # Slide wall jump
-            jx = JUMP_WALL_SLIDE_X
+            jx = JUMP_WALL_SLIDE_X_MULTIPLIER
             jy = JUMP_WALL_SLIDE_Y
         else:  # Regular wall jump
-            jx = JUMP_WALL_REGULAR_X
+            jx = JUMP_WALL_REGULAR_X_MULTIPLIER
             jy = JUMP_WALL_REGULAR_Y
         self.state = 3
         self.applied_gravity = GRAVITY_JUMP
