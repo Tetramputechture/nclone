@@ -74,7 +74,7 @@ from nclone.utils.collision_utils import (
     find_bounce_blocks_near_trajectory,
     find_chainable_bounce_blocks,
 )
-from nclone.graph.physics_trajectory_validator import PhysicsTrajectoryValidator
+from nclone.graph.trajectory_calculator import TrajectoryCalculator, ValidationResult
 
 
 class MovementType(IntEnum):
@@ -131,7 +131,7 @@ class MovementClassifier:
         self.hazard_system = HazardClassificationSystem()
         
         # Initialize physics trajectory validator
-        self.trajectory_validator = PhysicsTrajectoryValidator()
+        self.trajectory_validator = TrajectoryCalculator()
 
     def classify_movement(
         self,
@@ -255,21 +255,21 @@ class MovementClassifier:
         if walk_result.is_valid:
             movement_candidates.append((MovementType.WALK, walk_result))
 
-        # 2. Try jumping if walking failed or for upward movement
-        if dy < 0 or not walk_result.is_valid:
-            jump_result = self.trajectory_validator.validate_jump_trajectory(
-                src_pos, tgt_pos, None, level_data
-            )
-            if jump_result.is_valid:
-                movement_candidates.append((MovementType.JUMP, jump_result))
-
-        # 3. Try falling for downward movement
+        # 2. Try falling first for downward movement (more natural)
         if dy > 0:
             fall_result = self.trajectory_validator.validate_fall_movement(
                 src_pos, tgt_pos, level_data
             )
             if fall_result.is_valid:
                 movement_candidates.append((MovementType.FALL, fall_result))
+
+        # 3. Try jumping for upward movement or when walking/falling failed
+        if dy < 0 or not walk_result.is_valid or (dy > 0 and not any(mt == MovementType.FALL for mt, _ in movement_candidates)):
+            jump_result = self.trajectory_validator.validate_jump_trajectory(
+                src_pos, tgt_pos, None, level_data
+            )
+            if jump_result.is_valid:
+                movement_candidates.append((MovementType.JUMP, jump_result))
 
         # 4. If no simple movement works, consider complex movements
         if not movement_candidates:
@@ -282,12 +282,20 @@ class MovementClassifier:
             # Sort by combined score (lower energy cost + lower risk = better)
             def movement_score(candidate):
                 movement_type, result = candidate
-                # Prefer walking, then jumping, then falling
-                type_preference = {
-                    MovementType.WALK: 0,
-                    MovementType.JUMP: 1,
-                    MovementType.FALL: 2
-                }.get(movement_type, 3)
+                
+                # Physics-aware type preference based on movement direction
+                if dy > 0:  # Downward movement - prefer falling over jumping
+                    type_preference = {
+                        MovementType.WALK: 0,
+                        MovementType.FALL: 1,
+                        MovementType.JUMP: 2
+                    }.get(movement_type, 3)
+                else:  # Upward or horizontal movement - prefer walking then jumping
+                    type_preference = {
+                        MovementType.WALK: 0,
+                        MovementType.JUMP: 1,
+                        MovementType.FALL: 2
+                    }.get(movement_type, 3)
                 
                 return (
                     type_preference * 10 +  # Type preference weight

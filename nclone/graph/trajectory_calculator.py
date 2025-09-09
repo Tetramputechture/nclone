@@ -2036,3 +2036,179 @@ class TrajectoryCalculator:
             requires_wall_contact=False,
             trajectory_points=[],
         )
+
+    # ===== PHYSICS VALIDATION METHODS =====
+    # These methods provide validation for specific movement types
+    # and are used by the MovementClassifier for physics-aware pathfinding
+
+    def validate_jump_trajectory(
+        self,
+        start_pos: Tuple[float, float],
+        end_pos: Tuple[float, float],
+        ninja_state: Optional[Dict[str, Any]] = None,
+        level_data: Optional[Dict[str, Any]] = None,
+    ) -> 'ValidationResult':
+        """
+        Validate a jump trajectory using N++ physics.
+        
+        Returns ValidationResult compatible with MovementClassifier.
+        """
+        # Use existing jump trajectory calculation
+        trajectory_result = self.calculate_jump_trajectory(start_pos, end_pos, None)
+        
+        # Convert to ValidationResult format
+        return ValidationResult(
+            is_valid=trajectory_result.feasible,
+            required_velocity=(0, 0),  # Simplified for now
+            flight_time=trajectory_result.time_of_flight,
+            landing_velocity=(0, 0),  # Simplified for now
+            max_height=0,  # Would need to calculate from trajectory_points
+            energy_cost=trajectory_result.energy_cost,
+            risk_factor=1.0 - trajectory_result.success_probability,
+            failure_reason=None if trajectory_result.feasible else "Jump trajectory not feasible"
+        )
+
+    def validate_walk_movement(
+        self,
+        start_pos: Tuple[float, float],
+        end_pos: Tuple[float, float],
+        level_data: Optional[Dict[str, Any]] = None,
+    ) -> 'ValidationResult':
+        """
+        Validate a walking movement.
+        
+        Checks that surfaces are connected and walkable.
+        """
+        x0, y0 = start_pos
+        x1, y1 = end_pos
+        
+        dx = x1 - x0
+        dy = y1 - y0
+        distance = math.sqrt(dx**2 + dy**2)
+        
+        # Check if path is walkable (simplified - would need proper collision checking)
+        is_walkable = abs(dy) < TILE_PIXEL_SIZE / 2  # Rough check for level surfaces
+        
+        if not is_walkable:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(0, 0),
+                flight_time=0,
+                landing_velocity=(0, 0),
+                max_height=0,
+                energy_cost=0,
+                risk_factor=1.0,
+                failure_reason="Path is not walkable - significant height difference"
+            )
+        
+        # Calculate walking time and energy
+        walking_time = distance / MAX_HOR_SPEED
+        energy_cost = distance * 0.1  # Walking is low energy
+        
+        return ValidationResult(
+            is_valid=True,
+            required_velocity=(dx / walking_time if walking_time > 0 else 0, 0),
+            flight_time=walking_time,
+            landing_velocity=(0, 0),
+            max_height=0,
+            energy_cost=energy_cost,
+            risk_factor=0.1  # Walking is low risk
+        )
+
+    def validate_fall_movement(
+        self,
+        start_pos: Tuple[float, float],
+        end_pos: Tuple[float, float],
+        level_data: Optional[Dict[str, Any]] = None,
+    ) -> 'ValidationResult':
+        """
+        Validate a falling movement.
+        
+        Checks that the fall is physically possible and safe.
+        """
+        x0, y0 = start_pos
+        x1, y1 = end_pos
+        
+        dx = x1 - x0
+        dy = y1 - y0
+        
+        # Falls must be downward
+        if dy <= 0:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(0, 0),
+                flight_time=0,
+                landing_velocity=(0, 0),
+                max_height=0,
+                energy_cost=0,
+                risk_factor=1.0,
+                failure_reason="Fall movement must be downward"
+            )
+        
+        # Calculate fall time using physics
+        fall_time = math.sqrt(2 * dy / GRAVITY_FALL)
+        
+        # Calculate horizontal velocity needed
+        horizontal_velocity = dx / fall_time if fall_time > 0 else 0
+        
+        # Check if horizontal velocity is achievable
+        if abs(horizontal_velocity) > MAX_HOR_SPEED:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(horizontal_velocity, 0),
+                flight_time=fall_time,
+                landing_velocity=(horizontal_velocity, GRAVITY_FALL * fall_time),
+                max_height=0,
+                energy_cost=0,
+                risk_factor=1.0,
+                failure_reason=f"Required horizontal velocity {abs(horizontal_velocity):.1f} exceeds max {MAX_HOR_SPEED}"
+            )
+        
+        # Calculate landing velocity
+        landing_vy = GRAVITY_FALL * fall_time
+        landing_velocity = (horizontal_velocity, landing_vy)
+        impact_speed = math.sqrt(horizontal_velocity**2 + landing_vy**2)
+        
+        # Check survivable impact (using MAX_SURVIVABLE_IMPACT if available)
+        max_impact = getattr(self, 'MAX_SURVIVABLE_IMPACT', 6.0)  # Default from requirements
+        if impact_speed > max_impact:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(0, 0),
+                flight_time=fall_time,
+                landing_velocity=landing_velocity,
+                max_height=0,
+                energy_cost=0,
+                risk_factor=1.0,
+                failure_reason=f"Landing impact {impact_speed:.1f} exceeds survivable limit {max_impact}"
+            )
+        
+        # Calculate energy cost (falling is low energy)
+        energy_cost = dy * 0.05
+        
+        # Calculate risk factor based on impact speed
+        risk_factor = min(impact_speed / max_impact, 0.8)
+        
+        return ValidationResult(
+            is_valid=True,
+            required_velocity=(0, 0),  # Initial velocity for fall
+            flight_time=fall_time,
+            landing_velocity=landing_velocity,
+            max_height=0,
+            energy_cost=energy_cost,
+            risk_factor=risk_factor
+        )
+
+
+# ValidationResult class for compatibility with MovementClassifier
+@dataclass
+class ValidationResult:
+    """Result of movement validation - compatible with PhysicsTrajectoryValidator."""
+    is_valid: bool
+    required_velocity: Tuple[float, float]
+    flight_time: float
+    landing_velocity: Tuple[float, float]
+    max_height: float
+    energy_cost: float
+    risk_factor: float
+    failure_reason: Optional[str] = None

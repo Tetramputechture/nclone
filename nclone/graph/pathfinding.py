@@ -434,13 +434,20 @@ class PathfindingEngine:
             if current_node == goal_node:
                 path = self._reconstruct_path(parent_map, start_node, goal_node)
                 edge_types = self._get_path_edge_types(graph_data, adjacency, path)
+                path_coordinates = self._get_node_coordinates(graph_data, path)
+                
+                # Consolidate consecutive segments of the same movement type
+                consolidated_coords, consolidated_types = self._consolidate_path_segments(
+                    path_coordinates, edge_types
+                )
+                
                 return PathResult(
                     path=path,
                     total_cost=current.g_cost,
                     success=True,
                     nodes_explored=nodes_explored,
-                    path_coordinates=self._get_node_coordinates(graph_data, path),
-                    edge_types=edge_types,
+                    path_coordinates=consolidated_coords,
+                    edge_types=consolidated_types,
                 )
 
             # Explore neighbors
@@ -516,13 +523,20 @@ class PathfindingEngine:
             if current_node == goal_node:
                 path = self._reconstruct_path(parent_map, start_node, goal_node)
                 edge_types = self._get_path_edge_types(graph_data, adjacency, path)
+                path_coordinates = self._get_node_coordinates(graph_data, path)
+                
+                # Consolidate consecutive segments of the same movement type
+                consolidated_coords, consolidated_types = self._consolidate_path_segments(
+                    path_coordinates, edge_types
+                )
+                
                 return PathResult(
                     path=path,
                     total_cost=current_dist,
                     success=True,
                     nodes_explored=nodes_explored,
-                    path_coordinates=self._get_node_coordinates(graph_data, path),
-                    edge_types=edge_types,
+                    path_coordinates=consolidated_coords,
+                    edge_types=consolidated_types,
                 )
 
             # Explore neighbors
@@ -745,6 +759,55 @@ class PathfindingEngine:
                 edge_types.append(EdgeType.WALK)  # Default if not found
 
         return edge_types
+
+    def _consolidate_path_segments(
+        self,
+        path_coordinates: List[Tuple[float, float]],
+        edge_types: List[EdgeType]
+    ) -> Tuple[List[Tuple[float, float]], List[EdgeType]]:
+        """
+        Consolidate consecutive path segments of the same movement type.
+        
+        This addresses the issue of "many small WALK segments clustered together"
+        by combining adjacent segments with the same movement type into single
+        coherent movements.
+        
+        Args:
+            path_coordinates: List of waypoint coordinates
+            edge_types: List of edge types for each segment
+            
+        Returns:
+            Tuple of (consolidated_coordinates, consolidated_edge_types)
+        """
+        if len(path_coordinates) <= 2 or len(edge_types) == 0:
+            return path_coordinates, edge_types
+            
+        consolidated_coords = [path_coordinates[0]]  # Always keep start point
+        consolidated_types = []
+        
+        current_type = edge_types[0]
+        
+        for i in range(1, len(edge_types)):
+            next_type = edge_types[i]
+            
+            # If movement type changes, finalize current segment
+            if next_type != current_type:
+                consolidated_coords.append(path_coordinates[i])
+                consolidated_types.append(current_type)
+                current_type = next_type
+            # Otherwise, continue consolidating (skip intermediate waypoint)
+            
+        # Add final segment and destination
+        consolidated_coords.append(path_coordinates[-1])
+        consolidated_types.append(current_type)
+        
+        # Log consolidation results
+        original_segments = len(edge_types)
+        consolidated_segments = len(consolidated_types)
+        if original_segments > consolidated_segments:
+            logger.info(f"Consolidated {original_segments} segments into {consolidated_segments} segments")
+            
+        return consolidated_coords, consolidated_types
 
     def _reconstruct_path(
         self, parent_map: Dict[int, int], start_node: int, goal_node: int
