@@ -126,8 +126,32 @@ class PathfindingVisualizer:
         
         return test_maps
     
-    def visualize_map(self, map_name: str, level_data: LevelData, output_path: str):
+    def get_standard_output_path(self, map_name: str, output_dir: str = 'pathfinding_tests') -> str:
+        """Generate standard output path in format {name-name}-path.png"""
+        return os.path.join(output_dir, f'{map_name}-path.png')
+    
+    def generate_all_visualizations(self, output_dir: str = 'pathfinding_tests') -> List[str]:
+        """Generate all pathfinding visualizations with standard naming format."""
+        test_maps = self.create_test_maps()
+        generated_files = []
+        
+        print(f'🎨 Generating all pathfinding visualizations with standard naming format...')
+        
+        for map_name, level_data in test_maps.items():
+            output_path = self.get_standard_output_path(map_name, output_dir)
+            self.visualize_map(map_name, level_data, output_path)
+            generated_files.append(output_path)
+        
+        print(f'\n✅ Generated {len(generated_files)} pathfinding visualizations!')
+        return generated_files
+    
+    def visualize_map(self, map_name: str, level_data: LevelData, output_path: str = None):
         """Create visualization for a single map with standard canvas size."""
+        
+        # Use standard output path if none provided
+        if output_path is None:
+            output_path = self.get_standard_output_path(map_name)
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
         print(f"\n=== Visualizing {map_name} ===")
         
