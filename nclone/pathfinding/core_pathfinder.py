@@ -344,12 +344,28 @@ class CorePathfinder:
         segments = []
         max_wall_jump_height = 48.0  # Each wall jump covers ~48px vertically
         num_segments = max(1, int(vertical_distance / max_wall_jump_height))
+        min_horizontal_displacement = 36.0  # Minimum 36px horizontal displacement
         
         for i in range(num_segments):
             segment_start_y = start_pos[1] + (dy * i / num_segments)
             segment_end_y = start_pos[1] + (dy * (i + 1) / num_segments)
-            segment_start_x = start_pos[0] + (dx * i / num_segments)
-            segment_end_x = start_pos[0] + (dx * (i + 1) / num_segments)
+            
+            # Ensure minimum horizontal displacement for wall jumps
+            # Alternate between walls with at least 36px displacement
+            if i % 2 == 0:
+                # Jump to right wall
+                segment_start_x = start_pos[0] + (dx * i / num_segments)
+                segment_end_x = segment_start_x + min_horizontal_displacement
+            else:
+                # Jump to left wall
+                segment_start_x = start_pos[0] + (dx * i / num_segments)
+                segment_end_x = segment_start_x - min_horizontal_displacement
+            
+            # Ensure we don't go out of bounds
+            if segment_end_x < 24:  # Left boundary
+                segment_end_x = 24 + min_horizontal_displacement
+            elif segment_end_x > 42 * 24:  # Right boundary (42 tiles)
+                segment_end_x = 42 * 24 - min_horizontal_displacement
             
             segment_start = (segment_start_x, segment_start_y)
             segment_end = (segment_end_x, segment_end_y)
@@ -426,18 +442,36 @@ class CorePathfinder:
         
         # Create climbing wall jumps (upward rappelling)
         for i in range(num_climbing_jumps):
-            # Each wall jump moves up and slightly alternates position for rappelling effect
+            # Each wall jump moves up and has mandatory horizontal displacement
             climb_height = wall_jump_height
-            # Alternate between wall contact and slight separation for rappelling
-            rappel_offset = 6 if i % 2 == 0 else -6
             
-            next_x = wall_x + rappel_offset  # Stay near the wall
+            # Wall jumps must have minimum 36px horizontal displacement from current position
+            min_displacement = 36.0  # 1.5 tiles minimum
+            
+            # Alternate direction for rappelling effect, but always maintain minimum displacement
+            if i % 2 == 0:
+                # Move away from wall (right if left wall, left if right wall)
+                if wall_x <= 48:  # Left wall
+                    next_x = current_pos[0] + min_displacement  # Move right
+                else:  # Right wall
+                    next_x = current_pos[0] - min_displacement  # Move left
+            else:
+                # Move back toward wall but still maintain minimum displacement
+                if wall_x <= 48:  # Left wall
+                    # Move left but not closer than min_displacement from current position
+                    next_x = current_pos[0] - min_displacement
+                else:  # Right wall
+                    # Move right but not closer than min_displacement from current position
+                    next_x = current_pos[0] + min_displacement
+                
             next_y = current_pos[1] - climb_height  # Move up
-            next_pos = (next_x, next_y)
             
             # Ensure we don't go out of bounds
-            if next_x < 24:  # Don't go into the padding wall
-                next_x = 24 + 6
+            map_width = 42 * 24 + 24  # 42 tiles + padding = 1032px
+            if next_x < 24:  # Don't go into left padding
+                next_x = 24 + min_displacement
+            elif next_x > map_width - 24:  # Don't go into right padding
+                next_x = map_width - 24 - min_displacement
             if next_y < 0:  # Don't go above map
                 next_y = max(0, current_pos[1] - (target_height - (i * wall_jump_height)))
             
