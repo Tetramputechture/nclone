@@ -2,7 +2,7 @@
 Movement classification for N++ ninja physics.
 
 This module classifies movement types and calculates physics parameters
-based on ninja state and level geometry.
+based on ninja state and level geometry using comprehensive physics validation.
 """
 
 import math
@@ -24,6 +24,7 @@ from nclone.constants.physics_constants import (
     DRAG_REGULAR,
     FRICTION_WALL,
     MAX_SURVIVABLE_IMPACT,
+    TILE_PIXEL_SIZE,
     # Movement classification constants
     MIN_HORIZONTAL_VELOCITY,
     HORIZONTAL_MOVEMENT_THRESHOLD,
@@ -73,6 +74,7 @@ from nclone.utils.collision_utils import (
     find_bounce_blocks_near_trajectory,
     find_chainable_bounce_blocks,
 )
+from nclone.graph.physics_trajectory_validator import PhysicsTrajectoryValidator
 
 
 class MovementType(IntEnum):
@@ -87,6 +89,7 @@ class MovementType(IntEnum):
     BOUNCE_BLOCK = 6  # Bounce block interaction
     BOUNCE_CHAIN = 7  # Chained bounce block sequence
     BOUNCE_BOOST = 8  # Repeated boost on extending bounce block
+    COMBO = 9  # Complex sequence combining multiple movement types
 
 
 class NinjaState:
@@ -126,6 +129,9 @@ class MovementClassifier:
         # Initialize precise collision and hazard systems
         self.precise_collision = PreciseTileCollision()
         self.hazard_system = HazardClassificationSystem()
+        
+        # Initialize physics trajectory validator
+        self.trajectory_validator = PhysicsTrajectoryValidator()
 
     def classify_movement(
         self,
@@ -228,11 +234,10 @@ class MovementClassifier:
         level_data: Optional[Dict[str, Any]],
     ) -> MovementType:
         """
-        Classify movement based on actual N++ physics requirements.
+        Classify movement based on comprehensive N++ physics requirements.
 
-        This method analyzes whether a movement can be accomplished through
-        walking or requires jumping/falling based on tile geometry and
-        physics constraints from sim_mechanics_doc.md.
+        This method uses physics trajectory validation to determine the most
+        appropriate movement type based on actual N++ mechanics and constraints.
         """
         distance = math.sqrt(dx * dx + dy * dy)
 
@@ -240,33 +245,131 @@ class MovementClassifier:
         if distance < 1.0:
             return MovementType.WALK
 
-        # Analyze tile geometry to determine movement requirements
-        if level_data and hasattr(level_data, "tiles"):
-            # Check if there's a ground connection between positions
-            if self._has_ground_connection(src_pos, tgt_pos, level_data.tiles):
-                # Ground connection exists - check if walking is sufficient
-                if self._can_walk_between_positions(src_pos, tgt_pos, level_data.tiles):
-                    return MovementType.WALK
-                else:
-                    # Ground connection but requires small jump (step up/down)
-                    if abs(dy) < 24:  # Less than one tile height
-                        return MovementType.WALK
-                    else:
-                        return MovementType.JUMP
-            else:
-                # No ground connection - requires air movement
-                if dy < 0:  # Upward movement
-                    return MovementType.JUMP
-                else:  # Downward movement
-                    return MovementType.FALL
+        # Test different movement types in order of preference
+        movement_candidates = []
 
-        # Fallback to physics-based classification when no level data
+        # 1. Try walking first (most efficient)
+        walk_result = self.trajectory_validator.validate_walk_movement(
+            src_pos, tgt_pos, level_data
+        )
+        if walk_result.is_valid:
+            movement_candidates.append((MovementType.WALK, walk_result))
+
+        # 2. Try jumping if walking failed or for upward movement
+        if dy < 0 or not walk_result.is_valid:
+            jump_result = self.trajectory_validator.validate_jump_trajectory(
+                src_pos, tgt_pos, None, level_data
+            )
+            if jump_result.is_valid:
+                movement_candidates.append((MovementType.JUMP, jump_result))
+
+        # 3. Try falling for downward movement
+        if dy > 0:
+            fall_result = self.trajectory_validator.validate_fall_movement(
+                src_pos, tgt_pos, level_data
+            )
+            if fall_result.is_valid:
+                movement_candidates.append((MovementType.FALL, fall_result))
+
+        # 4. If no simple movement works, consider complex movements
+        if not movement_candidates:
+            # Check if this requires a combination of movements
+            if self._requires_combo_movement(src_pos, tgt_pos, dx, dy, level_data):
+                return MovementType.COMBO
+
+        # Select best movement type based on efficiency and risk
+        if movement_candidates:
+            # Sort by combined score (lower energy cost + lower risk = better)
+            def movement_score(candidate):
+                movement_type, result = candidate
+                # Prefer walking, then jumping, then falling
+                type_preference = {
+                    MovementType.WALK: 0,
+                    MovementType.JUMP: 1,
+                    MovementType.FALL: 2
+                }.get(movement_type, 3)
+                
+                return (
+                    type_preference * 10 +  # Type preference weight
+                    result.energy_cost +    # Energy cost
+                    result.risk_factor * 5  # Risk factor weight
+                )
+
+            best_movement, _ = min(movement_candidates, key=movement_score)
+            return best_movement
+
+        # Fallback to physics-based classification when validation fails
         if abs(dy) < 6:  # Very small vertical movement
             return MovementType.WALK
         elif dy < 0:  # Upward movement requires jumping
             return MovementType.JUMP
         else:  # Downward movement is falling
             return MovementType.FALL
+
+    def _requires_combo_movement(
+        self,
+        src_pos: Tuple[float, float],
+        tgt_pos: Tuple[float, float],
+        dx: float,
+        dy: float,
+        level_data: Optional[Dict[str, Any]],
+    ) -> bool:
+        """
+        Check if movement requires a combination of movement types.
+        
+        This detects complex scenarios like jump-then-fall or wall-jump sequences.
+        """
+        distance = math.sqrt(dx**2 + dy**2)
+        
+        # Very long distances might require multiple movement segments
+        if distance > 200:  # Longer than typical single jump
+            return True
+        
+        # Complex vertical movements (both up and down significantly)
+        if abs(dx) > 50 and abs(dy) > 50:
+            return True
+        
+        # Check for obstacles that require complex navigation
+        if level_data and self._has_complex_obstacles(src_pos, tgt_pos, level_data):
+            return True
+        
+        return False
+
+    def _has_complex_obstacles(
+        self,
+        src_pos: Tuple[float, float],
+        tgt_pos: Tuple[float, float],
+        level_data: Dict[str, Any],
+    ) -> bool:
+        """Check if path has complex obstacles requiring combo movements."""
+        # Simplified implementation - check for multiple obstacles in path
+        x0, y0 = src_pos
+        x1, y1 = tgt_pos
+        
+        if not hasattr(level_data, 'tiles'):
+            return False
+        
+        # Sample points along direct path
+        steps = max(1, int(abs(x1 - x0) // (TILE_PIXEL_SIZE // 2)))
+        obstacle_count = 0
+        
+        for i in range(steps + 1):
+            t = i / max(1, steps)
+            x = x0 + t * (x1 - x0)
+            y = y0 + t * (y1 - y0)
+            
+            # Check for solid tiles
+            tile_x = int(x // TILE_PIXEL_SIZE)
+            tile_y = int(y // TILE_PIXEL_SIZE)
+            
+            if (0 <= tile_x < level_data.tiles.shape[1] and 
+                0 <= tile_y < level_data.tiles.shape[0]):
+                tile_type = level_data.tiles[tile_y, tile_x]
+                if tile_type != 0:  # Non-empty tile
+                    obstacle_count += 1
+        
+        # Multiple obstacles suggest complex navigation needed
+        return obstacle_count > 2
 
     def _has_ground_connection(
         self,

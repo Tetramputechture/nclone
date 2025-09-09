@@ -270,12 +270,12 @@ def create_accurate_doortest_visualization():
                     for patch in tile_patches:
                         ax.add_patch(patch)
         
-        # Draw entities
+        # Draw entities (with 1-tile offset correction)
         print("🎨 Rendering entities...")
         for entity in entities:
             entity_type = entity.get("type", 0)
-            entity_x = entity.get("x", 0)
-            entity_y = entity.get("y", 0)
+            entity_x = entity.get("x", 0) - TILE_PIXEL_SIZE  # Correct 1-tile left offset
+            entity_y = entity.get("y", 0) - TILE_PIXEL_SIZE  # Correct 1-tile up offset
             
             entity_patch = create_entity_representation(entity_type, entity_x, entity_y)
             ax.add_patch(entity_patch)
@@ -283,7 +283,7 @@ def create_accurate_doortest_visualization():
             # Label important entities
             if entity_type == EntityType.NINJA:
                 ax.text(entity_x + 15, entity_y - 15, 'NINJA\nSTART', fontsize=10, fontweight='bold', color='blue')
-            elif entity_type == EntityType.LOCKED_DOOR and entity_x == target_x:
+            elif entity_type == EntityType.LOCKED_DOOR and (entity_x + TILE_PIXEL_SIZE) == target_x:
                 ax.text(entity_x + 15, entity_y - 15, 'TARGET\nSWITCH', fontsize=10, fontweight='bold', color='red')
         
         # Draw path
