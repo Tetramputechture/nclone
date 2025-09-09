@@ -162,16 +162,48 @@ class PathfindingVisualizer:
         print(f"✅ Saved visualization to {output_path}")
     
     def _draw_tiles(self, ctx, tiles):
-        """Draw the tile grid with padding on top and right sides."""
+        """Draw the tile grid with padding on left and bottom sides."""
         
         height, width = tiles.shape
         padding_tiles = 1
         
-        # Draw original tiles first (no offset needed)
+        # Draw padding tiles on left edge (solid wall)
+        for row in range(height + padding_tiles):
+            x = 0
+            y = row * self.tile_size
+            
+            # Fill padding tile
+            ctx.set_source_rgb(*TILECOLOR_RGB)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.fill()
+            
+            # Draw tile border
+            ctx.set_source_rgb(0.5, 0.5, 0.5)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.set_line_width(1)
+            ctx.stroke()
+        
+        # Draw padding tiles on bottom edge (solid floor)
+        for col in range(width + padding_tiles):
+            x = col * self.tile_size
+            y = height * self.tile_size
+            
+            # Fill padding tile
+            ctx.set_source_rgb(*TILECOLOR_RGB)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.fill()
+            
+            # Draw tile border
+            ctx.set_source_rgb(0.5, 0.5, 0.5)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.set_line_width(1)
+            ctx.stroke()
+        
+        # Draw original tiles (offset by left padding)
         for row in range(height):
             for col in range(width):
                 if tiles[row, col] == 1:  # Solid tile
-                    x = col * self.tile_size
+                    x = (col + padding_tiles) * self.tile_size
                     y = row * self.tile_size
                     
                     # Fill tile
@@ -184,38 +216,6 @@ class PathfindingVisualizer:
                     ctx.rectangle(x, y, self.tile_size, self.tile_size)
                     ctx.set_line_width(1)
                     ctx.stroke()
-        
-        # Draw padding tiles on top edge (solid ceiling)
-        for col in range(width + padding_tiles):
-            x = col * self.tile_size
-            y = -padding_tiles * self.tile_size  # Above the map
-            
-            # Fill padding tile
-            ctx.set_source_rgb(*TILECOLOR_RGB)
-            ctx.rectangle(x, y, self.tile_size, self.tile_size)
-            ctx.fill()
-            
-            # Draw tile border
-            ctx.set_source_rgb(0.5, 0.5, 0.5)
-            ctx.rectangle(x, y, self.tile_size, self.tile_size)
-            ctx.set_line_width(1)
-            ctx.stroke()
-        
-        # Draw padding tiles on right edge (solid wall)
-        for row in range(height + padding_tiles):
-            x = width * self.tile_size
-            y = (row - padding_tiles) * self.tile_size  # Account for top padding
-            
-            # Fill padding tile
-            ctx.set_source_rgb(*TILECOLOR_RGB)
-            ctx.rectangle(x, y, self.tile_size, self.tile_size)
-            ctx.fill()
-            
-            # Draw tile border
-            ctx.set_source_rgb(0.5, 0.5, 0.5)
-            ctx.rectangle(x, y, self.tile_size, self.tile_size)
-            ctx.set_line_width(1)
-            ctx.stroke()
     
     def _draw_entities(self, ctx, entities) -> Dict[str, Tuple[float, float]]:
         """Draw entities and return their positions."""
@@ -229,7 +229,8 @@ class PathfindingVisualizer:
             
             # Convert to canvas coordinates
             # Entities are in simulation coordinates with padding already included
-            canvas_x = ((entity_x - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
+            # Add 1 tile offset for left padding in visualization
+            canvas_x = ((entity_x - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE + 1) * self.tile_size
             canvas_y = ((entity_y - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
             
             # Store position for pathfinding
@@ -295,9 +296,10 @@ class PathfindingVisualizer:
             
             # Convert to canvas coordinates
             # Paths use simulation coordinates with padding already included
-            start_canvas_x = ((start_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
+            # Add 1 tile offset for left padding in visualization
+            start_canvas_x = ((start_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE + 1) * self.tile_size
             start_canvas_y = ((start_pos[1] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
-            end_canvas_x = ((end_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
+            end_canvas_x = ((end_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE + 1) * self.tile_size
             end_canvas_y = ((end_pos[1] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
             
             # Draw path segment
