@@ -34,7 +34,7 @@ TEST_MAP_SPECS = {
     'simple-walk': {
         'description': 'Basic horizontal movement on flat platform',
         'expected_movement_types': ['WALK'],
-        'expected_distance': 288.0,  # Total path: ninja→switch→door
+        'expected_distance': 192.0,  # Corrected path: ninja→switch→door
         'expected_segments': 2,      # Current system generates 2 WALK segments
         'validation_criteria': {
             'must_have_walk': True,
@@ -55,9 +55,9 @@ TEST_MAP_SPECS = {
     },
     'path-jump-required': {
         'description': 'Jump mechanics for reaching elevated platforms',
-        'expected_movement_types': ['WALK', 'JUMP'],  # Both WALK and JUMP are present
-        'expected_distance': 291.0,  # Total path including both segments
-        'expected_segments': 2,      # Current system generates 2 segments
+        'expected_movement_types': ['JUMP'],  # Only JUMP segments (no WALK needed for elevated switch)
+        'expected_distance': 197.9,  # Corrected path: ninja→switch→door via jumps
+        'expected_segments': 2,      # Current system generates 2 JUMP segments
         'validation_criteria': {
             'must_have_jump': True,
             'vertical_navigation': True,
@@ -66,13 +66,14 @@ TEST_MAP_SPECS = {
     },
     'only-jump': {
         'description': 'Vertical wall jumping in corridor',
-        'expected_movement_types': ['JUMP', 'FALL'],  # JUMP and FALL are present
-        'expected_distance': 144.0,  # Total path including both segments
-        'expected_segments': 2,      # Current system generates 2 segments
+        'expected_movement_types': ['JUMP'],  # Should have ONLY JUMP segments, no FALL
+        'expected_distance': 96.0,   # Distance should be just the vertical jump distance
+        'expected_segments': 1,      # Should be a single JUMP segment or multiple JUMP segments
         'validation_criteria': {
             'must_have_jump': True,
             'vertical_only': True,
-            'wall_jumping': True
+            'wall_jumping': True,
+            'no_fall_segments': True  # Explicitly no FALL segments allowed
         }
     }
 }
@@ -180,8 +181,11 @@ def validate_test_map(map_name: str, level_data: Any, visualizer: PathfindingVis
         return False, {'error': f'No specification found for map {map_name}'}
     
     try:
-        # Get waypoints from level data (ninja -> switch -> door)
-        waypoints = []
+        # Get waypoints from level data in correct order: ninja -> switch -> door
+        ninja_pos = None
+        switch_pos = None
+        door_pos = None
+        
         for entity in level_data.entities:
             # Handle both dict and object formats
             if isinstance(entity, dict):
@@ -194,11 +198,20 @@ def validate_test_map(map_name: str, level_data: Any, visualizer: PathfindingVis
                 y = getattr(entity, 'y', None)
             
             if entity_type == 0:  # Ninja
-                waypoints.append((x, y))
+                ninja_pos = (x, y)
             elif entity_type == 4:  # Switch
-                waypoints.append((x, y))
+                switch_pos = (x, y)
             elif entity_type == 3:  # Door
-                waypoints.append((x, y))
+                door_pos = (x, y)
+        
+        # Build waypoints in correct order
+        waypoints = []
+        if ninja_pos:
+            waypoints.append(ninja_pos)
+        if switch_pos:
+            waypoints.append(switch_pos)
+        if door_pos:
+            waypoints.append(door_pos)
         
         if len(waypoints) < 2:
             return False, {'error': f'Insufficient waypoints found: {len(waypoints)} (need at least 2)'}
@@ -241,6 +254,11 @@ def validate_test_map(map_name: str, level_data: Any, visualizer: PathfindingVis
         # Check movement types (convert from summary format)
         found_movement_types = list(movement_types.keys()) if movement_types else []
         movement_types_ok = all(mt in found_movement_types for mt in spec['expected_movement_types'])
+        
+        # Special validation for only-jump test: should have NO FALL segments
+        if map_name == 'only-jump':
+            if 'FALL' in found_movement_types:
+                movement_types_ok = False
         
         # Check validation criteria
         criteria_ok = True
