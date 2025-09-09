@@ -74,16 +74,6 @@ class Ninja:
     self.xposlog and self.yposlog contain all the coordinates used to generate the traces of the replays.
     """
 
-    # Class constants
-    MAX_HOR_SPEED = MAX_HOR_SPEED
-    MAX_JUMP_DURATION = MAX_JUMP_DURATION
-    GRAVITY_JUMP = GRAVITY_JUMP
-    GRAVITY_FALL = GRAVITY_FALL
-    DRAG_SLOW = DRAG_SLOW
-    DRAG_REGULAR = DRAG_REGULAR
-    FRICTION_WALL = FRICTION_WALL
-    FRICTION_GROUND = FRICTION_GROUND
-
     def __init__(self, sim, ninja_anim_mode: bool):
         """Initiate ninja position at spawn point, and initiate other values to their initial state"""
         self.ninja_anim_mode = ninja_anim_mode and os.path.isfile(ANIM_DATA)
