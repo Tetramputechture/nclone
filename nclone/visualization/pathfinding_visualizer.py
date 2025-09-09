@@ -16,6 +16,7 @@ from ..pathfinding.movement_types import MOVEMENT_COLORS
 from ..graph.level_data import LevelData
 from ..constants.entity_types import EntityType
 from ..constants.physics_constants import TILE_PIXEL_SIZE
+from ..nplay_headless import NPlayHeadless
 
 # Entity colors
 ENTITY_COLORS = {
@@ -27,6 +28,10 @@ ENTITY_COLORS = {
 # Background and tile colors
 BGCOLOR_RGB = (0.1, 0.1, 0.1)  # Dark gray background
 TILECOLOR_RGB = (0.75, 0.75, 0.75)  # Light gray tiles
+
+# Standard level dimensions for consistent visualization
+STANDARD_LEVEL_WIDTH = 50  # tiles
+STANDARD_LEVEL_HEIGHT = 20  # tiles
 
 class PathfindingVisualizer:
     """
@@ -41,63 +46,80 @@ class PathfindingVisualizer:
         self.pathfinder = CorePathfinder()
     
     def create_test_maps(self) -> Dict[str, LevelData]:
-        """Create the four validation test maps."""
+        """Load the four validation test maps from actual map files."""
         
         test_maps = {}
+        test_map_names = ["simple-walk", "long-walk", "path-jump-required", "only-jump"]
         
-        # Simple-walk map: 9 tiles wide, single horizontal platform
-        tiles = np.zeros((5, 9), dtype=int)
-        tiles[3, :] = 1  # Ground platform on row 3
-        entities = [
-            {"type": 0, "x": 24, "y": 60},     # Ninja at leftmost tile
-            {"type": 4, "x": 120, "y": 60},    # Exit switch at middle tile (5th)
-            {"type": 3, "x": 192, "y": 60}     # Exit door at rightmost tile
-        ]
-        test_maps["simple-walk"] = LevelData(tiles, entities)
-        
-        # Long-walk map: 42 tiles wide, single horizontal platform
-        tiles = np.zeros((5, 42), dtype=int)
-        tiles[3, :] = 1  # Ground platform on row 3
-        entities = [
-            {"type": 0, "x": 24, "y": 60},      # Ninja at leftmost tile
-            {"type": 4, "x": 960, "y": 60},     # Exit switch at 41st tile
-            {"type": 3, "x": 984, "y": 60}      # Exit door at rightmost tile
-        ]
-        test_maps["long-walk"] = LevelData(tiles, entities)
-        
-        # Path-jump-required map: elevated switch position
-        tiles = np.zeros((5, 9), dtype=int)
-        tiles[3, :] = 1  # Ground platform on row 3
-        tiles[2, 4] = 1  # Elevated tile for switch at column 4
-        entities = [
-            {"type": 0, "x": 24, "y": 60},     # Ninja on ground
-            {"type": 4, "x": 120, "y": 36},    # Switch on elevated tile
-            {"type": 3, "x": 192, "y": 60}     # Door on ground
-        ]
-        test_maps["path-jump-required"] = LevelData(tiles, entities)
-        
-        # Only-jump map: vertical corridor
-        tiles = np.zeros((8, 3), dtype=int)
-        tiles[:, 0] = 1  # Left wall
-        tiles[:, 2] = 1  # Right wall
-        entities = [
-            {"type": 0, "x": 36, "y": 156},    # Ninja at bottom
-            {"type": 4, "x": 36, "y": 108},    # Switch in middle
-            {"type": 3, "x": 36, "y": 60}      # Door at top
-        ]
-        test_maps["only-jump"] = LevelData(tiles, entities)
+        for map_name in test_map_names:
+            # Get the path relative to the nclone package directory
+            import os
+            package_dir = os.path.dirname(os.path.dirname(__file__))
+            map_path = os.path.join(package_dir, "test_maps", map_name)
+            
+            # Load the binary map file using NPlayHeadless (following base_environment.py pattern)
+            try:
+                # Create NPlayHeadless instance to load the map
+                nplay = NPlayHeadless()
+                nplay.load_map(map_path)
+                
+                # Extract tile data (42x23 grid with 1-tile padding)
+                tiles = np.zeros((STANDARD_LEVEL_HEIGHT, STANDARD_LEVEL_WIDTH), dtype=int)
+                
+                # Copy the actual map tiles into our standard grid
+                for x in range(1, 43):  # Skip padding
+                    for y in range(1, 24):  # Skip padding
+                        if x < STANDARD_LEVEL_WIDTH and y < STANDARD_LEVEL_HEIGHT:
+                            tile_id = nplay.sim.tile_dic.get((x, y), 0)
+                            tiles[y-1, x-1] = tile_id  # Convert to 0-based indexing
+                
+                # Extract entity data
+                entities = []
+                
+                # Add ninja
+                if nplay.sim.ninja:
+                    entities.append({
+                        "type": 0,  # Ninja
+                        "x": nplay.sim.ninja.xpos,
+                        "y": nplay.sim.ninja.ypos
+                    })
+                
+                # Add other entities from entity_dic
+                for entity_type_id, entity_list in nplay.sim.entity_dic.items():
+                    for entity in entity_list:
+                        # Map entity types to our visualization types based on class name
+                        entity_class = type(entity).__name__
+                        if entity_class == 'EntityExitSwitch':
+                            viz_type = 4  # Switch
+                        elif entity_class == 'EntityExit':
+                            viz_type = 3  # Door
+                        else:
+                            viz_type = entity_type_id  # Use original type ID for other entities
+                        
+                        entities.append({
+                            "type": viz_type,
+                            "x": entity.xpos,
+                            "y": entity.ypos
+                        })
+                
+                test_maps[map_name] = LevelData(tiles, entities)
+                print(f"✅ Loaded test map: {map_name} ({tiles.shape[1]}x{tiles.shape[0]} tiles, {len(entities)} entities)")
+                
+            except FileNotFoundError:
+                print(f"❌ Test map file not found: {map_path}")
+            except Exception as e:
+                print(f"❌ Error loading test map {map_name}: {e}")
         
         return test_maps
     
     def visualize_map(self, map_name: str, level_data: LevelData, output_path: str):
-        """Create visualization for a single map."""
+        """Create visualization for a single map with standard canvas size."""
         
         print(f"\n=== Visualizing {map_name} ===")
         
-        # Calculate canvas size
-        height, width = level_data.tiles.shape
-        canvas_width = width * self.tile_size + 150  # Extra space for legend
-        canvas_height = height * self.tile_size + 100
+        # Use fixed canvas size based on standard level dimensions
+        canvas_width = STANDARD_LEVEL_WIDTH * self.tile_size + 150  # Extra space for legend
+        canvas_height = STANDARD_LEVEL_HEIGHT * self.tile_size + 100
         
         # Create Cairo surface
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, canvas_width, canvas_height)
