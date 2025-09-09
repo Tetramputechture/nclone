@@ -177,9 +177,12 @@ class PathfindingVisualizer:
             entity_x = entity.get("x", 0.0)
             entity_y = entity.get("y", 0.0)
             
-            # Convert to canvas coordinates
-            canvas_x = (entity_x / TILE_PIXEL_SIZE) * self.tile_size
-            canvas_y = (entity_y / TILE_PIXEL_SIZE) * self.tile_size
+            # Convert to canvas coordinates, accounting for 1-tile padding offset
+            # Entity coordinates include padding, but our tile grid has padding removed
+            adjusted_x = entity_x - TILE_PIXEL_SIZE  # Remove 1-tile padding offset
+            adjusted_y = entity_y - TILE_PIXEL_SIZE  # Remove 1-tile padding offset
+            canvas_x = (adjusted_x / TILE_PIXEL_SIZE) * self.tile_size
+            canvas_y = (adjusted_y / TILE_PIXEL_SIZE) * self.tile_size
             
             # Store position for pathfinding
             if entity_type == 0:  # Ninja
@@ -242,11 +245,12 @@ class PathfindingVisualizer:
             # Get color for movement type
             color = MOVEMENT_COLORS.get(movement_type, (0.5, 0.5, 0.5))
             
-            # Convert to canvas coordinates
-            start_canvas_x = (start_pos[0] / TILE_PIXEL_SIZE) * self.tile_size
-            start_canvas_y = (start_pos[1] / TILE_PIXEL_SIZE) * self.tile_size
-            end_canvas_x = (end_pos[0] / TILE_PIXEL_SIZE) * self.tile_size
-            end_canvas_y = (end_pos[1] / TILE_PIXEL_SIZE) * self.tile_size
+            # Convert to canvas coordinates, accounting for 1-tile padding in simulation
+            # Simulation has 1 tile padding on bottom and right, so subtract TILE_PIXEL_SIZE
+            start_canvas_x = ((start_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
+            start_canvas_y = ((start_pos[1] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
+            end_canvas_x = ((end_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
+            end_canvas_y = ((end_pos[1] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
             
             # Draw path segment
             ctx.set_source_rgb(*color)
