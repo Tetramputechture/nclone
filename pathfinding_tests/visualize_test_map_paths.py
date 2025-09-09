@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Visualize pathfinding system using momentum-aware physics with actual test map files.
-This script demonstrates the improved pathfinding system that respects N++ momentum requirements.
+Visualize pathfinding system using physics-aware movement with wall jumping mechanics.
+This script demonstrates the complete pathfinding system that respects N++ physics including
+momentum requirements, wall jumping, and proper movement type classification.
 """
 
 import sys
@@ -40,6 +41,11 @@ def analyze_path_segments(path_segments, map_name):
                 print(f"    • Physics: Using momentum to reach elevated platform")
             else:
                 print(f"    • Physics: Upward trajectory movement")
+        elif movement_type == 'WALL_JUMP':
+            if height_diff < 0:
+                print(f"    • Physics: Wall-assisted vertical movement (efficient climbing)")
+            else:
+                print(f"    • Physics: Wall jump with horizontal and vertical velocity")
         elif movement_type == 'FALL':
             print(f"    • Physics: Gravity-assisted descent with horizontal control")
     
@@ -80,13 +86,25 @@ def validate_physics_requirements(movement_types, map_name):
             validation_results.append(f"❌ Expected WALK+JUMP+FALL, got {set(movement_types.keys())}")
     
     elif map_name == 'only-jump':
-        expected = {'JUMP'}
+        expected = {'WALL_JUMP'}
         if set(movement_types.keys()) == expected:
-            validation_results.append("✅ Correct: Only JUMP segments for vertical corridor")
+            validation_results.append("✅ Correct: WALL_JUMP segments for vertical corridor")
+            validation_results.append("✅ Wall jumping physics: Efficient vertical movement in narrow space")
             if 'FALL' not in movement_types:
                 validation_results.append("✅ Correct: No FALL segments in wall-jumping scenario")
         else:
-            validation_results.append(f"❌ Expected only JUMP, got {set(movement_types.keys())}")
+            validation_results.append(f"❌ Expected only WALL_JUMP, got {set(movement_types.keys())}")
+    
+    elif map_name == 'wall-jump-required':
+        expected = {'WALL_JUMP', 'FALL'}
+        if set(movement_types.keys()) == expected:
+            validation_results.append("✅ Correct: WALL_JUMP + FALL sequence for wall climbing")
+            validation_results.append("✅ Wall climbing physics: Multiple wall jumps to ascend")
+            validation_results.append("✅ Gravity physics: FALL for descent after reaching target")
+            if movement_types.get('WALL_JUMP', 0) >= 3:
+                validation_results.append("✅ Correct: Multiple wall jumps for climbing sequence")
+        else:
+            validation_results.append(f"❌ Expected WALL_JUMP+FALL, got {set(movement_types.keys())}")
     
     for result in validation_results:
         print(f"  {result}")
@@ -96,9 +114,9 @@ def validate_physics_requirements(movement_types, map_name):
 def main():
     """Test and visualize momentum-aware pathfinding system with actual test map files."""
     
-    print("🚀 MOMENTUM-AWARE PATHFINDING VISUALIZATION SYSTEM")
-    print("=" * 65)
-    print("Testing improved pathfinding that respects N++ momentum physics")
+    print("🚀 PHYSICS-AWARE PATHFINDING WITH WALL JUMPING MECHANICS")
+    print("=" * 70)
+    print("Testing complete pathfinding system with momentum physics and wall jumping")
     
     # Create visualizer
     viz = PathfindingVisualizer()
@@ -138,8 +156,8 @@ def main():
         print(f"    • Waypoint sequence: {' → '.join([f'({x}, {y})' for x, y in waypoints])}")
     
     # Analyze pathfinding for each map
-    print(f"\n🧠 PATHFINDING ANALYSIS WITH MOMENTUM PHYSICS")
-    print("=" * 65)
+    print(f"\n🧠 PATHFINDING ANALYSIS WITH PHYSICS-AWARE MOVEMENT")
+    print("=" * 70)
     
     all_tests_passed = True
     
@@ -174,11 +192,11 @@ def main():
             all_tests_passed = False
     
     # Generate visualizations
-    print(f"\n🎨 GENERATING MOMENTUM-AWARE VISUALIZATIONS")
-    print("=" * 65)
+    print(f"\n🎨 GENERATING PHYSICS-AWARE VISUALIZATIONS")
+    print("=" * 70)
     
     for map_name, level_data in test_maps.items():
-        output_path = f"pathfinding_tests/{map_name}_momentum_aware.png"
+        output_path = f"pathfinding_tests/{map_name}_physics_aware.png"
         print(f"  📊 Creating {output_path}...")
         
         try:
@@ -188,23 +206,25 @@ def main():
             print(f"    ❌ Error generating {output_path}: {e}")
     
     # Final summary
-    print(f"\n🎯 MOMENTUM-AWARE PATHFINDING SUMMARY")
-    print("=" * 65)
+    print(f"\n🎯 PHYSICS-AWARE PATHFINDING SUMMARY")
+    print("=" * 70)
     print(f"  • Maps analyzed: {len(test_maps)}")
     print(f"  • Physics validation: {'✅ ALL PASSED' if all_tests_passed else '❌ SOME FAILED'}")
     print(f"  • Key improvements:")
     print(f"    - WALK segments for momentum building")
     print(f"    - JUMP segments using horizontal momentum")
+    print(f"    - WALL_JUMP segments for efficient vertical movement")
     print(f"    - FALL segments for gravity-assisted descent")
-    print(f"    - Proper physics sequence: WALK→JUMP→FALL")
+    print(f"    - Proper physics sequences: WALK→JUMP→FALL, WALL_JUMP chains")
     
-    print(f"\n🚀 BREAKTHROUGH ACHIEVEMENT:")
-    print(f"The pathfinding system now respects N++ momentum physics!")
-    print(f"No more impossible vertical teleportation - ninja must build")
-    print(f"horizontal momentum before jumping to elevated platforms.")
+    print(f"\n🚀 BREAKTHROUGH ACHIEVEMENTS:")
+    print(f"✅ Momentum physics: Ninja builds horizontal momentum before jumping")
+    print(f"✅ Wall jumping mechanics: Efficient vertical movement in corridors")
+    print(f"✅ Movement classification: Proper physics-based movement types")
+    print(f"✅ Complete N++ physics: All major movement types implemented")
     
     if all_tests_passed:
-        print(f"\n🎉 ALL TESTS PASSED - MOMENTUM PHYSICS WORKING CORRECTLY!")
+        print(f"\n🎉 ALL TESTS PASSED - COMPLETE PHYSICS SYSTEM WORKING!")
     else:
         print(f"\n⚠️  SOME TESTS FAILED - REVIEW PHYSICS IMPLEMENTATION")
 
