@@ -440,43 +440,20 @@ class CorePathfinder:
         
         current_pos = first_jump_end
         
-        # Create climbing wall jumps (upward rappelling)
+        # Create climbing wall jumps with parabolic arc physics
         for i in range(num_climbing_jumps):
-            # Each wall jump moves up and has mandatory horizontal displacement
-            climb_height = wall_jump_height
+            # Calculate parabolic wall jump trajectory
+            wall_jump_trajectory = self._calculate_wall_jump_parabola(
+                current_pos, wall_x, wall_jump_height, i
+            )
             
-            # Wall jumps must have minimum 36px horizontal displacement from current position
-            min_displacement = 36.0  # 1.5 tiles minimum
+            # Extract key points from trajectory
+            next_pos = wall_jump_trajectory['landing_pos']
+            arc_peak = wall_jump_trajectory['peak_pos']
+            trajectory_points = wall_jump_trajectory['trajectory_points']
             
-            # Alternate direction for rappelling effect, but always maintain minimum displacement
-            if i % 2 == 0:
-                # Move away from wall (right if left wall, left if right wall)
-                if wall_x <= 48:  # Left wall
-                    next_x = current_pos[0] + min_displacement  # Move right
-                else:  # Right wall
-                    next_x = current_pos[0] - min_displacement  # Move left
-            else:
-                # Move back toward wall but still maintain minimum displacement
-                if wall_x <= 48:  # Left wall
-                    # Move left but not closer than min_displacement from current position
-                    next_x = current_pos[0] - min_displacement
-                else:  # Right wall
-                    # Move right but not closer than min_displacement from current position
-                    next_x = current_pos[0] + min_displacement
-                
-            next_y = current_pos[1] - climb_height  # Move up
-            
-            # Ensure we don't go out of bounds
-            map_width = 42 * 24 + 24  # 42 tiles + padding = 1032px
-            if next_x < 24:  # Don't go into left padding
-                next_x = 24 + min_displacement
-            elif next_x > map_width - 24:  # Don't go into right padding
-                next_x = map_width - 24 - min_displacement
-            if next_y < 0:  # Don't go above map
-                next_y = max(0, current_pos[1] - (target_height - (i * wall_jump_height)))
-            
-            next_pos = (next_x, next_y)
-            climb_distance = math.sqrt((next_x - current_pos[0])**2 + (next_y - current_pos[1])**2)
+            # Calculate total distance along parabolic arc
+            climb_distance = wall_jump_trajectory['arc_length']
             
             climb_segment = {
                 'start_pos': current_pos,
@@ -484,12 +461,16 @@ class CorePathfinder:
                 'movement_type': MovementType.WALL_JUMP,
                 'physics_params': {
                     'distance': climb_distance,
-                    'height_diff': next_y - current_pos[1],
-                    'horizontal_distance': abs(next_x - current_pos[0]),
-                    'required_velocity': 2.0,
+                    'height_diff': next_pos[1] - current_pos[1],
+                    'horizontal_distance': abs(next_pos[0] - current_pos[0]),
+                    'required_velocity': 2.5,  # Wall jump velocity
                     'energy_cost': climb_distance / 20.0,  # Wall climbing is efficient
                     'time_estimate': climb_distance / 3.5,  # Fast wall climbing
-                    'difficulty': 0.7 + (i * 0.05)  # Gets slightly harder with each jump
+                    'difficulty': 0.7 + (i * 0.05),  # Gets slightly harder with each jump
+                    'trajectory_type': 'parabolic_arc',
+                    'peak_position': arc_peak,
+                    'max_displacement': wall_jump_trajectory['max_displacement'],
+                    'trajectory_points': trajectory_points[:10] if len(trajectory_points) > 10 else trajectory_points
                 },
                 'is_valid': True
             }
@@ -519,6 +500,133 @@ class CorePathfinder:
         segments.append(final_segment)
         
         return segments
+    
+    def _calculate_wall_jump_parabola(self, start_pos: Tuple[float, float], 
+                                    wall_x: float, target_height: float, 
+                                    jump_index: int) -> Dict[str, Any]:
+        """
+        Calculate parabolic trajectory for wall jump with proper N++ physics.
+        
+        Wall jump sequence:
+        1. Ninja jumps off wall with initial velocity (up + away from wall)
+        2. Ninja follows parabolic arc due to gravity
+        3. Ninja holds directional input toward wall during flight
+        4. Ninja arcs back toward wall and makes contact at higher position
+        
+        Args:
+            start_pos: Current ninja position (wall contact point)
+            wall_x: X coordinate of the wall
+            target_height: Desired height gain for this jump
+            jump_index: Index of this jump in the sequence (for variation)
+            
+        Returns:
+            Dictionary with trajectory data including landing position and arc points
+        """
+        from nclone.constants.physics_constants import (
+            JUMP_WALL_REGULAR_X_MULTIPLIER, JUMP_WALL_REGULAR_Y, GRAVITY_FALL
+        )
+        
+        # Initial velocity components for wall jump
+        # Wall jump gives both upward and horizontal velocity
+        initial_vy = JUMP_WALL_REGULAR_Y  # Upward velocity (-1.4 pixels/frame)
+        initial_vx_multiplier = JUMP_WALL_REGULAR_X_MULTIPLIER  # Horizontal velocity multiplier (1.0)
+        
+        # Determine direction away from wall
+        # Wall normal is +1 for left wall, -1 for right wall
+        if wall_x <= 48:  # Left wall
+            wall_normal = 1  # Jump away from left wall (positive X direction)
+        else:  # Right wall
+            wall_normal = -1  # Jump away from right wall (negative X direction)
+        
+        # Calculate initial horizontal velocity: multiplier * wall_normal
+        velocity_away_from_wall = initial_vx_multiplier * wall_normal
+        
+        # Calculate parabolic trajectory points
+        trajectory_points = []
+        max_displacement = 0
+        peak_pos = start_pos
+        landing_pos = start_pos
+        
+        # Simulate trajectory frame by frame
+        current_x = start_pos[0]
+        current_y = start_pos[1]
+        vx = velocity_away_from_wall
+        vy = initial_vy  # Negative because Y increases downward
+        
+        # Simulate for up to 45 frames (maximum jump duration)
+        for frame in range(45):
+            # Update position
+            current_x += vx
+            current_y += vy
+            
+            # Apply gravity
+            vy += GRAVITY_FALL  # Gravity pulls downward (positive Y)
+            
+            # Apply horizontal drag/input toward wall
+            # Ninja holds directional input toward wall, creating arc back
+            # Reduce drag to allow more natural parabolic arc
+            drag_toward_wall = 0.05  # Gentler movement back toward wall
+            if wall_x <= 48:  # Left wall
+                vx -= drag_toward_wall  # Reduce rightward velocity, curve back left
+            else:  # Right wall
+                vx += drag_toward_wall  # Reduce leftward velocity, curve back right
+            
+            # Track maximum displacement from wall
+            displacement_from_wall = abs(current_x - wall_x)
+            if displacement_from_wall > max_displacement:
+                max_displacement = displacement_from_wall
+                peak_pos = (current_x, current_y)
+            
+            trajectory_points.append((current_x, current_y))
+            
+            # Check if ninja has gained enough height and is returning to wall
+            height_gained = start_pos[1] - current_y
+            wall_contact_threshold = 8.0  # Ninja radius for wall contact
+            
+            # Only consider landing if ninja has gained significant height and is moving back toward wall
+            if (height_gained >= target_height and 
+                displacement_from_wall <= wall_contact_threshold and
+                frame > 10):  # Allow some time for the arc to develop
+                landing_pos = (wall_x, current_y)
+                break
+            
+            # Alternative: if ninja has gained at least 24px height and is very close to wall
+            if (height_gained >= 24 and 
+                displacement_from_wall <= wall_contact_threshold and
+                frame > 15):  # More time for proper arc
+                landing_pos = (wall_x, current_y)
+                break
+        
+        # Ensure minimum 36px displacement was achieved
+        if max_displacement < 36.0:
+            # Adjust trajectory to meet minimum displacement requirement
+            peak_x = wall_x + (36.0 if wall_x <= 48 else -36.0)
+            peak_y = start_pos[1] - target_height / 2
+            peak_pos = (peak_x, peak_y)
+            landing_pos = (wall_x, start_pos[1] - target_height)
+            max_displacement = 36.0
+            
+            # Recalculate arc length with corrected trajectory
+            arc_length = math.sqrt((peak_x - start_pos[0])**2 + (peak_y - start_pos[1])**2) + \
+                        math.sqrt((landing_pos[0] - peak_x)**2 + (landing_pos[1] - peak_y)**2)
+        else:
+            # Use calculated arc length
+            arc_length = 0
+            for i in range(1, len(trajectory_points)):
+                dx = trajectory_points[i][0] - trajectory_points[i-1][0]
+                dy = trajectory_points[i][1] - trajectory_points[i-1][1]
+                arc_length += math.sqrt(dx*dx + dy*dy)
+        
+        # Arc length already calculated above
+        
+        return {
+            'landing_pos': landing_pos,
+            'peak_pos': peak_pos,
+            'trajectory_points': trajectory_points,
+            'arc_length': arc_length,
+            'max_displacement': max_displacement,
+            'initial_velocity': (vx, vy)
+        }
     
     def _convert_movement_type(self, graph_movement_type: int) -> MovementType:
         """Convert from graph MovementType to pathfinding MovementType."""

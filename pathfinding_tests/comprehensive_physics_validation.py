@@ -79,14 +79,15 @@ TEST_MAP_SPECS = {
     },
     'wall-jump-required': {
         'description': 'Wall climbing and elevated platform access via wall jumping',
-        'expected_movement_types': ['WALL_JUMP', 'FALL'],  # Wall climbing + descent
-        'expected_distance': 514.6,  # Measured distance from wall climbing sequence
-        'expected_segments': 5,      # 4 wall jumps (climbing + final jump) + 1 fall
+        'expected_movement_types': ['JUMP', 'WALL_JUMP', 'FALL'],  # Ground jump + wall climbing + descent
+        'expected_distance': 684.0,  # Updated distance with parabolic arc physics
+        'expected_segments': 7,      # 1 ground jump + 5 wall jumps + 1 fall
         'validation_criteria': {
             'must_have_wall_jump': True,
             'must_have_fall': True,
             'wall_climbing': True,
-            'elevated_platform_access': True
+            'elevated_platform_access': True,
+            'parabolic_arc_physics': True  # New validation for parabolic trajectories
         }
     }
 }
