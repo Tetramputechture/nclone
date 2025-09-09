@@ -223,6 +223,7 @@ class EdgeBuilder:
             edge_types,
             edge_count,
             edge_feature_dim,
+            sub_grid_node_map,
         )
 
         # Build long-distance corridor connections between empty tile clusters
@@ -281,6 +282,7 @@ class EdgeBuilder:
         edge_types: np.ndarray,
         edge_count: int,
         edge_feature_dim: int,
+        sub_grid_node_map: Dict[Tuple[int, int], int],
     ) -> int:
         """
         Build entity interaction edges with bounce block chaining support.
@@ -440,6 +442,115 @@ class EdgeBuilder:
                             edge_types[edge_count] = EdgeType.FUNCTIONAL
                             edge_count += 1
 
+        # Create navigation edges from regular nodes to entity nodes
+        # This allows entity nodes to be reachable by pathfinding
+        edge_count = self._connect_entity_nodes_to_graph(
+            entity_nodes, sub_grid_node_map, edge_index, edge_features, edge_mask, edge_types, 
+            edge_count, edge_feature_dim
+        )
+
+        return edge_count
+
+    def _connect_entity_nodes_to_graph(
+        self,
+        entity_nodes: List[Tuple[int, Dict[str, Any]]],
+        sub_grid_node_map: Dict[Tuple[int, int], int],
+        edge_index: np.ndarray,
+        edge_features: np.ndarray,
+        edge_mask: np.ndarray,
+        edge_types: np.ndarray,
+        edge_count: int,
+        edge_feature_dim: int,
+    ) -> int:
+        """
+        Connect entity nodes to nearby regular nodes in the graph.
+        
+        This ensures entity nodes are reachable by pathfinding by creating
+        edges from nearby walkable nodes to entity nodes. Only creates
+        connections to nodes that are truly adjacent (within 2 tiles).
+        
+        Args:
+            entity_nodes: List of (node_idx, entity) tuples
+            sub_grid_node_map: Mapping from (row, col) to node indices
+            edge_index: Edge connectivity array
+            edge_features: Edge feature array
+            edge_mask: Edge mask array
+            edge_types: Edge type array
+            edge_count: Current edge count
+            edge_feature_dim: Edge feature dimension
+            
+        Returns:
+            Updated edge count
+        """
+        from ..constants.physics_constants import TILE_PIXEL_SIZE
+        from .common import SUB_CELL_SIZE
+        
+        # For each entity node, find truly nearby regular nodes and connect them
+        for entity_node_idx, entity in entity_nodes:
+            if edge_count >= E_MAX_EDGES - 10:  # Leave room for more edges
+                break
+                
+            entity_x = entity.get("x", 0.0)
+            entity_y = entity.get("y", 0.0)
+            
+            # Convert entity position to grid coordinates
+            entity_grid_col = int(entity_x // SUB_CELL_SIZE)
+            entity_grid_row = int(entity_y // SUB_CELL_SIZE)
+            
+            # Find nearby grid positions within connection distance
+            max_grid_distance = 2  # Check within 2 grid cells
+            connections_made = 0
+            max_connections = 6  # Limit connections per entity
+            
+            # Check nearby grid positions
+            for dr in range(-max_grid_distance, max_grid_distance + 1):
+                for dc in range(-max_grid_distance, max_grid_distance + 1):
+                    if dr == 0 and dc == 0:  # Skip the entity's own position
+                        continue
+                        
+                    if connections_made >= max_connections or edge_count >= E_MAX_EDGES - 5:
+                        break
+                        
+                    nearby_row = entity_grid_row + dr
+                    nearby_col = entity_grid_col + dc
+                    
+                    # Check if there's a node at this grid position
+                    if (nearby_row, nearby_col) in sub_grid_node_map:
+                        nearby_node_idx = sub_grid_node_map[(nearby_row, nearby_col)]
+                        
+                        # Calculate actual distance
+                        nearby_x = nearby_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+                        nearby_y = nearby_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+                        distance = ((entity_x - nearby_x)**2 + (entity_y - nearby_y)**2)**0.5
+                        
+                        # Only connect if within reasonable distance (2 tiles)
+                        if distance <= TILE_PIXEL_SIZE * 2.0:
+                            # Create bidirectional connection
+                            # From regular node to entity node
+                            edge_index[0, edge_count] = nearby_node_idx
+                            edge_index[1, edge_count] = entity_node_idx
+                            
+                            # Set edge features for navigation
+                            nav_features = np.zeros(edge_feature_dim, dtype=np.float32)
+                            nav_features[EdgeType.WALK] = 1.0
+                            nav_features[len(EdgeType) + 2] = distance / TILE_PIXEL_SIZE  # Distance-based cost
+                            
+                            edge_features[edge_count] = nav_features
+                            edge_mask[edge_count] = 1.0
+                            edge_types[edge_count] = EdgeType.WALK
+                            edge_count += 1
+                            connections_made += 1
+                            
+                            # From entity node to regular node (bidirectional)
+                            if edge_count < E_MAX_EDGES - 1:
+                                edge_index[0, edge_count] = entity_node_idx
+                                edge_index[1, edge_count] = nearby_node_idx
+                                
+                                edge_features[edge_count] = nav_features
+                                edge_mask[edge_count] = 1.0
+                                edge_types[edge_count] = EdgeType.WALK
+                                edge_count += 1
+        
         return edge_count
 
     def is_traversable_with_hazards(
@@ -1567,10 +1678,10 @@ class EdgeBuilder:
         tile_x = int(x // TILE_PIXEL_SIZE)
         tile_y = int(y // TILE_PIXEL_SIZE)
         
-        # Account for padding: tile data is unpadded, but coordinates assume padding
-        # Visual cell (5,18) corresponds to tile_data[17][4] (subtract 1 from both x,y)
-        data_tile_x = tile_x - 1
-        data_tile_y = tile_y - 1
+        # Map tile coordinates directly to data coordinates
+        # The level data should already include proper padding
+        data_tile_x = tile_x
+        data_tile_y = tile_y
         
         if data_tile_x < 0 or data_tile_x >= len(level_data.tiles[0]) or data_tile_y < 0 or data_tile_y >= len(level_data.tiles):
             if debug_ninja:
@@ -1608,9 +1719,9 @@ class EdgeBuilder:
         """
         import math
         
-        # Convert to unpadded coordinates for tile array access
-        unpadded_x = x - TILE_PIXEL_SIZE
-        unpadded_y = y - TILE_PIXEL_SIZE
+        # Use coordinates directly since level data already includes padding
+        unpadded_x = x
+        unpadded_y = y
         
         # Calculate the range of tiles that could intersect with the ninja's radius
         min_tile_x = int(math.floor((unpadded_x - radius) / TILE_PIXEL_SIZE))

@@ -96,9 +96,11 @@ def create_pathfinding_visualization():
     
     for entity in entities:
         if entity.get('type') == 0:  # Ninja
-            ninja_pos = (entity['x'], entity['y'])
+            # Apply -1 tile offset to correct for padding in visualization
+            ninja_pos = (entity['x'] - TILE_PIXEL_SIZE, entity['y'] - TILE_PIXEL_SIZE)
         elif entity.get('type') == 4:  # Switch
-            switch_pos = (entity['x'], entity['y'])
+            # Apply -1 tile offset to correct for padding in visualization
+            switch_pos = (entity['x'] - TILE_PIXEL_SIZE, entity['y'] - TILE_PIXEL_SIZE)
             
     if ninja_pos is None or switch_pos is None:
         print("❌ Could not find ninja or switch positions")
@@ -338,9 +340,11 @@ def create_comparison_visualization():
     
     for entity in entities:
         if entity.get('type') == 0:  # Ninja
-            ninja_pos = (entity['x'], entity['y'])
+            # Apply -1 tile offset to correct for padding in visualization
+            ninja_pos = (entity['x'] - TILE_PIXEL_SIZE, entity['y'] - TILE_PIXEL_SIZE)
         elif entity.get('type') == 4:  # Switch
-            switch_pos = (entity['x'], entity['y'])
+            # Apply -1 tile offset to correct for padding in visualization
+            switch_pos = (entity['x'] - TILE_PIXEL_SIZE, entity['y'] - TILE_PIXEL_SIZE)
             
     if ninja_pos and switch_pos:
         result = pathfinder.find_path(ninja_pos, switch_pos)

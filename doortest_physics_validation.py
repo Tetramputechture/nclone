@@ -284,8 +284,9 @@ def create_doortest_physics_validation():
         print("🎯 Drawing doortest entities...")
         for entity in entities:
             entity_type = entity.get('type')
-            entity_x = entity.get('x', 0)
-            entity_y = entity.get('y', 0)
+            # Apply -1 tile offset to correct for padding in visualization
+            entity_x = entity.get('x', 0) - TILE_PIXEL_SIZE
+            entity_y = entity.get('y', 0) - TILE_PIXEL_SIZE
             
             if entity_type is not None:
                 entity_patch = create_entity_representation(entity_type, entity_x, entity_y)
