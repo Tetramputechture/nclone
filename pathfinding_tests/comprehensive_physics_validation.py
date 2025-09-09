@@ -54,14 +54,15 @@ TEST_MAP_SPECS = {
         }
     },
     'path-jump-required': {
-        'description': 'Jump mechanics for reaching elevated platforms',
-        'expected_movement_types': ['JUMP'],  # Only JUMP segments (no WALK needed for elevated switch)
-        'expected_distance': 197.9,  # Corrected path: ninja→switch→door via jumps
-        'expected_segments': 2,      # Current system generates 2 JUMP segments
+        'description': 'Jump mechanics for reaching elevated platforms with momentum',
+        'expected_movement_types': ['WALK', 'JUMP', 'FALL'],  # Need all three: momentum, jump, descent
+        'expected_distance': 199.8,  # Actual physics-correct path: WALK(38.4) + JUMP(62.4) + FALL(99.0)
+        'expected_segments': 3,      # Should have 3 segments: WALK→JUMP→FALL
         'validation_criteria': {
-            'must_have_jump': True,
-            'vertical_navigation': True,
-            'elevated_target': True
+            'must_have_walk': True,   # Need to build momentum
+            'must_have_jump': True,   # Need to reach elevated platform
+            'must_have_fall': True,   # Need to descend from platform
+            'momentum_physics': True  # Horizontal momentum required for non-vertical jumps
         }
     },
     'only-jump': {
