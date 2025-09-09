@@ -254,20 +254,39 @@ main() {
     chmod 700 "$XDG_RUNTIME_DIR"
     log_success "Environment variables configured"
     
-    # Install all packages in one optimized command
-    log_info "Installing nclone with all dependencies..."
+    # Install build dependencies first
+    log_info "Installing build dependencies..."
     
-    # Combine all installations into a single command for efficiency
-    local packages=(
-        "-e .[dev,test]"  # Install nclone with dev and test extras
-        "ruff"            # Linting tools
+    local build_packages=(
+        "setuptools>=45"
+        "wheel"
+        "setuptools_scm[toml]>=6.2"
     )
     
-    if pip_install_with_progress "${packages[@]}"; then
-        log_success "All packages installed successfully"
+    if pip_install_with_progress "${build_packages[@]}"; then
+        log_success "Build dependencies installed successfully"
     else
-        log_error "Failed to install packages"
+        log_error "Failed to install build dependencies"
         exit 1
+    fi
+    
+    # Install nclone with all dependencies
+    log_info "Installing nclone with all dependencies..."
+    
+    # Install nclone first, then additional tools
+    if pip_install_with_progress "-e .[dev,test]"; then
+        log_success "nclone installed successfully"
+    else
+        log_error "Failed to install nclone package"
+        exit 1
+    fi
+    
+    # Install additional development tools
+    log_info "Installing additional development tools..."
+    if pip_install_with_progress "ruff"; then
+        log_success "Additional tools installed successfully"
+    else
+        log_warning "Some additional tools failed to install, but continuing..."
     fi
     
     # Verify installations
