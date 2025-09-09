@@ -1,6 +1,5 @@
-
 from ..entities import Entity
-from ..physics import *
+from ..physics import map_orientation_to_vector
 from ..ninja import NINJA_RADIUS
 from ..constants.physics_constants import ONE_WAY_PLATFORM_SEMI_SIDE
 
@@ -66,6 +65,7 @@ class EntityOneWayPlatform(Entity):
             * Separate collision zones
             * Direction-specific behavior
     """
+
     SEMI_SIDE = ONE_WAY_PLATFORM_SEMI_SIDE
     MAX_COUNT_PER_LEVEL = 512
 
@@ -83,20 +83,26 @@ class EntityOneWayPlatform(Entity):
         dx = ninja.xpos - self.xpos
         dy = ninja.ypos - self.ypos
         lateral_dist = dy * self.normal_x - dx * self.normal_y
-        direction = (ninja.yspeed * self.normal_x -
-                     ninja.xspeed * self.normal_y) * lateral_dist
+        direction = (
+            ninja.yspeed * self.normal_x - ninja.xspeed * self.normal_y
+        ) * lateral_dist
         # The platform has a bigger width if the ninja is moving towards its center.
         radius_scalar = 0.91 if direction < 0 else 0.51
         if abs(lateral_dist) < radius_scalar * NINJA_RADIUS + self.SEMI_SIDE:
             normal_dist = dx * self.normal_x + dy * self.normal_y
             if 0 < normal_dist <= NINJA_RADIUS:
-                normal_proj = ninja.xspeed * self.normal_x + ninja.yspeed * self.normal_y
+                normal_proj = (
+                    ninja.xspeed * self.normal_x + ninja.yspeed * self.normal_y
+                )
                 if normal_proj <= 0:
                     dx_old = ninja.xpos_old - self.xpos
                     dy_old = ninja.ypos_old - self.ypos
                     normal_dist_old = dx_old * self.normal_x + dy_old * self.normal_y
                     if NINJA_RADIUS - normal_dist_old <= 1.1:
-                        return (self.normal_x, self.normal_y), (NINJA_RADIUS - normal_dist, 0)
+                        return (self.normal_x, self.normal_y), (
+                            NINJA_RADIUS - normal_dist,
+                            0,
+                        )
 
     def physical_collision(self):
         """Return depenetration between ninja and one way (None if no penetration)."""
