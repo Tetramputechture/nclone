@@ -186,19 +186,25 @@ pip_install_with_progress() {
     
     log_info "Installing packages: ${packages[*]}"
     
-    # Start pip install in background
-    pip install "${pip_args[@]}" "${packages[@]}" &
+    # Start pip install in background with timeout
+    timeout $PIP_TIMEOUT pip install "${pip_args[@]}" "${packages[@]}" &
     local pip_pid=$!
     
     # Show progress indicator
     show_progress $pip_pid "Installing packages"
     
-    # Wait for completion with timeout
-    if wait $pip_pid; then
+    # Wait for completion and check result
+    wait $pip_pid
+    local exit_code=$?
+    
+    if [[ $exit_code -eq 0 ]]; then
         log_success "Package installation completed"
         return 0
+    elif [[ $exit_code -eq 124 ]]; then
+        log_error "Package installation timed out after ${PIP_TIMEOUT} seconds"
+        return 1
     else
-        log_error "Package installation failed"
+        log_error "Package installation failed with exit code: $exit_code"
         return 1
     fi
 }
@@ -237,7 +243,7 @@ main() {
     
     # Create necessary directories
     log_info "Creating necessary directories..."
-    mkdir -p maps/official maps/eval
+    mkdir -p nclone/maps/official nclone/maps/eval
     log_success "Necessary directories created"
     
     # Set up environment variables for headless operation
@@ -257,8 +263,7 @@ main() {
         "ruff"            # Linting tools
     )
     
-    if run_with_timeout $PIP_TIMEOUT "Package installation failed" \
-       pip_install_with_progress "${packages[@]}"; then
+    if pip_install_with_progress "${packages[@]}"; then
         log_success "All packages installed successfully"
     else
         log_error "Failed to install packages"
