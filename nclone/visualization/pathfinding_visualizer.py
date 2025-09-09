@@ -63,15 +63,29 @@ class PathfindingVisualizer:
                 nplay = NPlayHeadless()
                 nplay.load_map(map_path)
                 
-                # Extract tile data (42x23 grid with 1-tile padding)
-                tiles = np.zeros((STANDARD_LEVEL_HEIGHT, STANDARD_LEVEL_WIDTH), dtype=int)
+                # Extract tile data from simulation grid (44x25 including padding)
+                # Find actual simulation bounds
+                sim_tiles = {}
+                for (x, y), tile_id in nplay.sim.tile_dic.items():
+                    sim_tiles[(x, y)] = tile_id
                 
-                # Copy the actual map tiles into our standard grid
-                for x in range(1, 43):  # Skip padding
-                    for y in range(1, 24):  # Skip padding
-                        if x < STANDARD_LEVEL_WIDTH and y < STANDARD_LEVEL_HEIGHT:
-                            tile_id = nplay.sim.tile_dic.get((x, y), 0)
-                            tiles[y-1, x-1] = tile_id  # Convert to 0-based indexing
+                # Determine simulation grid size
+                if sim_tiles:
+                    max_x = max(x for x, y in sim_tiles.keys())
+                    max_y = max(y for x, y in sim_tiles.keys())
+                    sim_width = max_x + 1
+                    sim_height = max_y + 1
+                else:
+                    sim_width, sim_height = STANDARD_LEVEL_WIDTH, STANDARD_LEVEL_HEIGHT
+                
+                # Create tiles array with simulation dimensions (excluding padding)
+                tiles = np.zeros((sim_height - 2, sim_width - 2), dtype=int)  # Remove 1-tile padding on each side
+                
+                # Copy the actual map tiles (skip padding border)
+                for x in range(1, sim_width - 1):  # Skip padding
+                    for y in range(1, sim_height - 1):  # Skip padding
+                        tile_id = sim_tiles.get((x, y), 0)
+                        tiles[y-1, x-1] = tile_id  # Convert to 0-based indexing
                 
                 # Extract entity data
                 entities = []
@@ -117,9 +131,11 @@ class PathfindingVisualizer:
         
         print(f"\n=== Visualizing {map_name} ===")
         
-        # Use fixed canvas size based on standard level dimensions
-        canvas_width = STANDARD_LEVEL_WIDTH * self.tile_size + 150  # Extra space for legend
-        canvas_height = STANDARD_LEVEL_HEIGHT * self.tile_size + 100
+        # Use fixed canvas size based on standard level dimensions with padding
+        # Add 24px (1 tile) padding on left and bottom for display
+        padding_tiles = 1
+        canvas_width = (STANDARD_LEVEL_WIDTH + padding_tiles) * self.tile_size + 150  # Extra space for legend
+        canvas_height = (STANDARD_LEVEL_HEIGHT + padding_tiles) * self.tile_size + 100
         
         # Create Cairo surface
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, canvas_width, canvas_height)
@@ -146,10 +162,12 @@ class PathfindingVisualizer:
         print(f"✅ Saved visualization to {output_path}")
     
     def _draw_tiles(self, ctx, tiles):
-        """Draw the tile grid."""
+        """Draw the tile grid with padding on top and right sides."""
         
         height, width = tiles.shape
+        padding_tiles = 1
         
+        # Draw original tiles first (no offset needed)
         for row in range(height):
             for col in range(width):
                 if tiles[row, col] == 1:  # Solid tile
@@ -166,6 +184,38 @@ class PathfindingVisualizer:
                     ctx.rectangle(x, y, self.tile_size, self.tile_size)
                     ctx.set_line_width(1)
                     ctx.stroke()
+        
+        # Draw padding tiles on top edge (solid ceiling)
+        for col in range(width + padding_tiles):
+            x = col * self.tile_size
+            y = -padding_tiles * self.tile_size  # Above the map
+            
+            # Fill padding tile
+            ctx.set_source_rgb(*TILECOLOR_RGB)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.fill()
+            
+            # Draw tile border
+            ctx.set_source_rgb(0.5, 0.5, 0.5)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.set_line_width(1)
+            ctx.stroke()
+        
+        # Draw padding tiles on right edge (solid wall)
+        for row in range(height + padding_tiles):
+            x = width * self.tile_size
+            y = (row - padding_tiles) * self.tile_size  # Account for top padding
+            
+            # Fill padding tile
+            ctx.set_source_rgb(*TILECOLOR_RGB)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.fill()
+            
+            # Draw tile border
+            ctx.set_source_rgb(0.5, 0.5, 0.5)
+            ctx.rectangle(x, y, self.tile_size, self.tile_size)
+            ctx.set_line_width(1)
+            ctx.stroke()
     
     def _draw_entities(self, ctx, entities) -> Dict[str, Tuple[float, float]]:
         """Draw entities and return their positions."""
@@ -177,12 +227,10 @@ class PathfindingVisualizer:
             entity_x = entity.get("x", 0.0)
             entity_y = entity.get("y", 0.0)
             
-            # Convert to canvas coordinates, accounting for 1-tile padding offset
-            # Entity coordinates include padding, but our tile grid has padding removed
-            adjusted_x = entity_x - TILE_PIXEL_SIZE  # Remove 1-tile padding offset
-            adjusted_y = entity_y - TILE_PIXEL_SIZE  # Remove 1-tile padding offset
-            canvas_x = (adjusted_x / TILE_PIXEL_SIZE) * self.tile_size
-            canvas_y = (adjusted_y / TILE_PIXEL_SIZE) * self.tile_size
+            # Convert to canvas coordinates
+            # Entities are in simulation coordinates with padding already included
+            canvas_x = ((entity_x - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
+            canvas_y = ((entity_y - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
             
             # Store position for pathfinding
             if entity_type == 0:  # Ninja
@@ -245,8 +293,8 @@ class PathfindingVisualizer:
             # Get color for movement type
             color = MOVEMENT_COLORS.get(movement_type, (0.5, 0.5, 0.5))
             
-            # Convert to canvas coordinates, accounting for 1-tile padding in simulation
-            # Simulation has 1 tile padding on bottom and right, so subtract TILE_PIXEL_SIZE
+            # Convert to canvas coordinates
+            # Paths use simulation coordinates with padding already included
             start_canvas_x = ((start_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
             start_canvas_y = ((start_pos[1] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size
             end_canvas_x = ((end_pos[0] - TILE_PIXEL_SIZE) / TILE_PIXEL_SIZE) * self.tile_size

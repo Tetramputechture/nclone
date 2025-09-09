@@ -382,33 +382,67 @@ class CorePathfinder:
         """
         Create wall climbing sequence for scenarios like wall-jump-required map.
         
-        This creates a sequence of wall jumps that climb up a wall, then a final
-        wall jump that launches away from the wall to reach the target.
+        This creates a sequence starting with a ground jump to get airborne,
+        then wall jumps that climb up a wall, then a final jump to reach the target.
         """
         segments = []
         
-        # Phase 1: Climb the wall with multiple wall jumps
-        # Each wall jump climbs approximately 48px and moves slightly away from wall
+        # Phase 0: Ground jump to get airborne (ninja must be airborne for wall jumps)
+        # Jump up and toward the wall to initiate wall jumping
+        initial_jump_height = 24.0  # One tile up
+        initial_jump_horizontal = 12.0  # Small movement toward wall
+        
+        # Determine wall direction - climb the left wall (x=24 after padding)
+        wall_x = 24.0  # Left wall position (1 tile from left edge)
+        
+        # First jump: from start position toward the wall
+        first_jump_end = (wall_x + 12, start_pos[1] - initial_jump_height)
+        first_jump_distance = math.sqrt(initial_jump_horizontal**2 + initial_jump_height**2)
+        
+        ground_jump_segment = {
+            'start_pos': start_pos,
+            'end_pos': first_jump_end,
+            'movement_type': MovementType.JUMP,
+            'physics_params': {
+                'distance': first_jump_distance,
+                'height_diff': -initial_jump_height,
+                'horizontal_distance': abs(first_jump_end[0] - start_pos[0]),
+                'required_velocity': 2.0,
+                'energy_cost': 1.0,
+                'difficulty': 0.3
+            },
+            'is_valid': True
+        }
+        segments.append(ground_jump_segment)
+        
+        # Phase 1: Wall climbing with upward rappelling
+        # Each wall jump climbs 48px with maximum height gain (216px total possible)
         wall_jump_height = 48.0
-        num_climbing_jumps = max(1, int(vertical_distance * 0.8 / wall_jump_height))  # Use 80% of vertical distance for climbing
+        max_wall_jumps = 4  # Limit to prevent going out of bounds
+        target_height = abs(dy) - initial_jump_height  # Remaining height to climb
+        num_climbing_jumps = min(max_wall_jumps, max(1, int(target_height / wall_jump_height)))
         
-        # Determine which wall to climb (left or right based on level geometry)
-        # For wall-jump-required, the ninja starts at bottom-left and needs to climb left wall
-        wall_side = -1 if dx > 0 else 1  # Climb left wall if moving right, right wall if moving left
+        current_pos = first_jump_end
         
-        current_pos = start_pos
-        
-        # Create climbing wall jumps
+        # Create climbing wall jumps (upward rappelling)
         for i in range(num_climbing_jumps):
-            # Each wall jump moves up and slightly away from the wall
+            # Each wall jump moves up and slightly alternates position for rappelling effect
             climb_height = wall_jump_height
-            climb_horizontal = 12  # Small horizontal movement away from wall
+            # Alternate between wall contact and slight separation for rappelling
+            rappel_offset = 6 if i % 2 == 0 else -6
             
-            next_x = current_pos[0] + (climb_horizontal * wall_side)
-            next_y = current_pos[1] - climb_height  # Negative because Y decreases upward
+            next_x = wall_x + rappel_offset  # Stay near the wall
+            next_y = current_pos[1] - climb_height  # Move up
             next_pos = (next_x, next_y)
             
-            climb_distance = math.sqrt(climb_horizontal**2 + climb_height**2)
+            # Ensure we don't go out of bounds
+            if next_x < 24:  # Don't go into the padding wall
+                next_x = 24 + 6
+            if next_y < 0:  # Don't go above map
+                next_y = max(0, current_pos[1] - (target_height - (i * wall_jump_height)))
+            
+            next_pos = (next_x, next_y)
+            climb_distance = math.sqrt((next_x - current_pos[0])**2 + (next_y - current_pos[1])**2)
             
             climb_segment = {
                 'start_pos': current_pos,
@@ -416,8 +450,8 @@ class CorePathfinder:
                 'movement_type': MovementType.WALL_JUMP,
                 'physics_params': {
                     'distance': climb_distance,
-                    'height_diff': -climb_height,
-                    'horizontal_distance': climb_horizontal,
+                    'height_diff': next_y - current_pos[1],
+                    'horizontal_distance': abs(next_x - current_pos[0]),
                     'required_velocity': 2.0,
                     'energy_cost': climb_distance / 20.0,  # Wall climbing is efficient
                     'time_estimate': climb_distance / 3.5,  # Fast wall climbing
