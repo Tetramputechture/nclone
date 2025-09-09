@@ -271,7 +271,24 @@ class MovementClassifier:
             if jump_result.is_valid:
                 movement_candidates.append((MovementType.JUMP, jump_result))
 
-        # 4. If no simple movement works, consider complex movements
+        # 4. Try wall jumping for vertical movement in corridors
+        if abs(dy) > TILE_PIXEL_SIZE and abs(dx) < TILE_PIXEL_SIZE * 2:  # Vertical movement in narrow space
+            # Try wall jump from left wall
+            if hasattr(self.trajectory_validator, 'validate_wall_jump_trajectory'):
+                wall_jump_left = self.trajectory_validator.validate_wall_jump_trajectory(
+                    src_pos, tgt_pos, (-1, 0), None, level_data  # Left wall normal
+                )
+                if wall_jump_left.is_valid:
+                    movement_candidates.append((MovementType.WALL_JUMP, wall_jump_left))
+                
+                # Try wall jump from right wall
+                wall_jump_right = self.trajectory_validator.validate_wall_jump_trajectory(
+                    src_pos, tgt_pos, (1, 0), None, level_data  # Right wall normal
+                )
+                if wall_jump_right.is_valid:
+                    movement_candidates.append((MovementType.WALL_JUMP, wall_jump_right))
+
+        # 5. If no simple movement works, consider complex movements
         if not movement_candidates:
             # Check if this requires a combination of movements
             if self._requires_combo_movement(src_pos, tgt_pos, dx, dy, level_data):
@@ -288,14 +305,23 @@ class MovementClassifier:
                     type_preference = {
                         MovementType.WALK: 0,
                         MovementType.FALL: 1,
-                        MovementType.JUMP: 2
-                    }.get(movement_type, 3)
+                        MovementType.JUMP: 2,
+                        MovementType.WALL_JUMP: 3
+                    }.get(movement_type, 4)
+                elif abs(dy) > TILE_PIXEL_SIZE * 2:  # Large vertical movement - prefer wall jumps
+                    type_preference = {
+                        MovementType.WALK: 0,
+                        MovementType.WALL_JUMP: 1,  # Wall jumps preferred for vertical movement
+                        MovementType.JUMP: 2,
+                        MovementType.FALL: 3
+                    }.get(movement_type, 4)
                 else:  # Upward or horizontal movement - prefer walking then jumping
                     type_preference = {
                         MovementType.WALK: 0,
                         MovementType.JUMP: 1,
-                        MovementType.FALL: 2
-                    }.get(movement_type, 3)
+                        MovementType.WALL_JUMP: 2,
+                        MovementType.FALL: 3
+                    }.get(movement_type, 4)
                 
                 return (
                     type_preference * 10 +  # Type preference weight

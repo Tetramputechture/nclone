@@ -2056,16 +2056,84 @@ class TrajectoryCalculator:
         # Use existing jump trajectory calculation
         trajectory_result = self.calculate_jump_trajectory(start_pos, end_pos, None)
         
-        # Convert to ValidationResult format
+        if not trajectory_result.feasible:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(0, 0),
+                flight_time=0,
+                landing_velocity=(0, 0),
+                max_height=0,
+                energy_cost=float('inf'),
+                risk_factor=1.0,
+                failure_reason="Jump trajectory not feasible"
+            )
+        
+        # Calculate detailed physics parameters
+        dx = end_pos[0] - start_pos[0]
+        dy = end_pos[1] - start_pos[1]
+        
+        # Determine required initial velocity
+        if dy < 0:  # Upward jump
+            # Use floor jump velocity for upward movement
+            initial_vy = JUMP_FLOOR_Y  # Negative value (upward)
+            # Calculate required horizontal velocity
+            flight_time = trajectory_result.time_of_flight
+            required_vx = dx / flight_time if flight_time > 0 else 0
+        else:  # Horizontal or downward jump
+            # Calculate trajectory for horizontal jump with some initial upward velocity
+            initial_vy = JUMP_FLOOR_Y * 0.5  # Smaller upward component
+            flight_time = trajectory_result.time_of_flight
+            required_vx = dx / flight_time if flight_time > 0 else 0
+        
+        # Validate velocity constraints
+        if abs(required_vx) > MAX_HOR_SPEED:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(required_vx, initial_vy),
+                flight_time=flight_time,
+                landing_velocity=(0, 0),
+                max_height=0,
+                energy_cost=float('inf'),
+                risk_factor=1.0,
+                failure_reason=f"Required horizontal velocity {abs(required_vx):.1f} exceeds max {MAX_HOR_SPEED}"
+            )
+        
+        # Calculate landing velocity
+        landing_vx = required_vx  # Horizontal velocity maintained (ignoring drag for simplicity)
+        landing_vy = initial_vy + GRAVITY_FALL * flight_time
+        landing_velocity = (landing_vx, landing_vy)
+        
+        # Calculate maximum height reached
+        if initial_vy < 0:  # Upward initial velocity
+            time_to_peak = abs(initial_vy) / GRAVITY_FALL
+            max_height = start_pos[1] + initial_vy * time_to_peak + 0.5 * GRAVITY_FALL * time_to_peak**2
+        else:
+            max_height = start_pos[1]  # No upward movement
+        
+        # Check survivable landing impact
+        impact_speed = math.sqrt(landing_vx**2 + landing_vy**2)
+        max_impact = 6.0  # From requirements
+        if impact_speed > max_impact:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(required_vx, initial_vy),
+                flight_time=flight_time,
+                landing_velocity=landing_velocity,
+                max_height=max_height,
+                energy_cost=trajectory_result.energy_cost,
+                risk_factor=1.0,
+                failure_reason=f"Landing impact {impact_speed:.1f} exceeds survivable limit {max_impact}"
+            )
+        
         return ValidationResult(
-            is_valid=trajectory_result.feasible,
-            required_velocity=(0, 0),  # Simplified for now
-            flight_time=trajectory_result.time_of_flight,
-            landing_velocity=(0, 0),  # Simplified for now
-            max_height=0,  # Would need to calculate from trajectory_points
+            is_valid=True,
+            required_velocity=(required_vx, initial_vy),
+            flight_time=flight_time,
+            landing_velocity=landing_velocity,
+            max_height=max_height,
             energy_cost=trajectory_result.energy_cost,
             risk_factor=1.0 - trajectory_result.success_probability,
-            failure_reason=None if trajectory_result.feasible else "Jump trajectory not feasible"
+            failure_reason=None
         )
 
     def validate_walk_movement(
@@ -2077,7 +2145,7 @@ class TrajectoryCalculator:
         """
         Validate a walking movement.
         
-        Checks that surfaces are connected and walkable.
+        Checks that surfaces are connected and walkable using N++ physics.
         """
         x0, y0 = start_pos
         x1, y1 = end_pos
@@ -2086,10 +2154,9 @@ class TrajectoryCalculator:
         dy = y1 - y0
         distance = math.sqrt(dx**2 + dy**2)
         
-        # Check if path is walkable (simplified - would need proper collision checking)
-        is_walkable = abs(dy) < TILE_PIXEL_SIZE / 2  # Rough check for level surfaces
-        
-        if not is_walkable:
+        # Walking requires relatively level surfaces
+        max_walkable_slope = TILE_PIXEL_SIZE / 3  # Allow for some slope variation
+        if abs(dy) > max_walkable_slope:
             return ValidationResult(
                 is_valid=False,
                 required_velocity=(0, 0),
@@ -2098,21 +2165,56 @@ class TrajectoryCalculator:
                 max_height=0,
                 energy_cost=0,
                 risk_factor=1.0,
-                failure_reason="Path is not walkable - significant height difference"
+                failure_reason=f"Path too steep for walking - height difference {abs(dy):.1f} exceeds walkable limit {max_walkable_slope:.1f}"
             )
         
-        # Calculate walking time and energy
-        walking_time = distance / MAX_HOR_SPEED
-        energy_cost = distance * 0.1  # Walking is low energy
+        # Check if horizontal distance is reasonable for walking
+        if distance < 1e-6:  # Zero distance
+            return ValidationResult(
+                is_valid=True,
+                required_velocity=(0, 0),
+                flight_time=0,
+                landing_velocity=(0, 0),
+                max_height=0,
+                energy_cost=0,
+                risk_factor=0,
+                failure_reason=None
+            )
+        
+        # Calculate walking physics
+        # Ninja accelerates to max speed, then maintains it
+        acceleration_time = MAX_HOR_SPEED / GROUND_ACCEL
+        acceleration_distance = 0.5 * GROUND_ACCEL * acceleration_time**2
+        
+        if distance <= acceleration_distance:
+            # Short distance - ninja doesn't reach max speed
+            walking_time = math.sqrt(2 * distance / GROUND_ACCEL)
+            final_velocity = GROUND_ACCEL * walking_time
+        else:
+            # Long distance - ninja reaches max speed
+            constant_speed_distance = distance - acceleration_distance
+            constant_speed_time = constant_speed_distance / MAX_HOR_SPEED
+            walking_time = acceleration_time + constant_speed_time
+            final_velocity = MAX_HOR_SPEED
+        
+        # Energy cost based on distance and any elevation change
+        base_energy = distance * 0.05  # Base walking energy
+        elevation_penalty = abs(dy) * 0.02  # Extra energy for elevation changes
+        energy_cost = base_energy + elevation_penalty
+        
+        # Risk factor based on slope steepness
+        slope_factor = abs(dy) / max_walkable_slope
+        risk_factor = 0.05 + slope_factor * 0.1  # Low base risk, increases with slope
         
         return ValidationResult(
             is_valid=True,
-            required_velocity=(dx / walking_time if walking_time > 0 else 0, 0),
+            required_velocity=(final_velocity * (1 if dx >= 0 else -1), 0),
             flight_time=walking_time,
-            landing_velocity=(0, 0),
-            max_height=0,
+            landing_velocity=(final_velocity * (1 if dx >= 0 else -1), 0),
+            max_height=max(y0, y1),  # Walking follows surface
             energy_cost=energy_cost,
-            risk_factor=0.1  # Walking is low risk
+            risk_factor=min(risk_factor, 0.3),  # Cap risk factor
+            failure_reason=None
         )
 
     def validate_fall_movement(
@@ -2197,6 +2299,136 @@ class TrajectoryCalculator:
             max_height=0,
             energy_cost=energy_cost,
             risk_factor=risk_factor
+        )
+
+    def validate_wall_jump_trajectory(
+        self,
+        start_pos: Tuple[float, float],
+        end_pos: Tuple[float, float],
+        wall_normal: Tuple[float, float] = (1, 0),  # Default to right wall
+        ninja_state: Optional[Dict[str, Any]] = None,
+        level_data: Optional[Dict[str, Any]] = None,
+    ) -> 'ValidationResult':
+        """
+        Validate a wall jump trajectory using N++ physics.
+        
+        Wall jumps have different velocity capabilities than floor jumps.
+        """
+        dx = end_pos[0] - start_pos[0]
+        dy = end_pos[1] - start_pos[1]
+        distance = math.sqrt(dx**2 + dy**2)
+        
+        # Wall jumps must be away from the wall (or purely vertical is acceptable)
+        wall_nx, wall_ny = wall_normal
+        if dx * wall_nx > 0:  # Moving into wall (but allow parallel/vertical movement)
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(0, 0),
+                flight_time=0,
+                landing_velocity=(0, 0),
+                max_height=0,
+                energy_cost=0,
+                risk_factor=1.0,
+                failure_reason="Wall jump cannot move into wall surface"
+            )
+        
+        # Use wall jump velocities from physics constants
+        initial_vx = JUMP_WALL_REGULAR_X_MULTIPLIER * (-wall_nx)  # Away from wall
+        initial_vy = JUMP_WALL_REGULAR_Y  # Upward
+        
+        # Calculate trajectory
+        # For wall jumps, we have fixed initial velocities
+        # Check if we can reach the target with these velocities
+        
+        # Time to reach target height
+        if dy < 0:  # Upward movement
+            # Solve: dy = vy*t + 0.5*g*t²
+            # Quadratic: 0.5*g*t² + vy*t - |dy| = 0
+            discriminant = initial_vy**2 + 2 * GRAVITY_FALL * abs(dy)
+            if discriminant < 0:
+                return ValidationResult(
+                    is_valid=False,
+                    required_velocity=(initial_vx, initial_vy),
+                    flight_time=0,
+                    landing_velocity=(0, 0),
+                    max_height=0,
+                    energy_cost=0,
+                    risk_factor=1.0,
+                    failure_reason="Cannot reach target height with wall jump"
+                )
+            flight_time = (-initial_vy + math.sqrt(discriminant)) / GRAVITY_FALL
+        else:  # Downward movement
+            # Time when ninja reaches target y position
+            # dy = vy*t + 0.5*g*t²
+            discriminant = initial_vy**2 + 2 * GRAVITY_FALL * dy
+            if discriminant < 0:
+                flight_time = 0
+            else:
+                flight_time = (-initial_vy + math.sqrt(discriminant)) / GRAVITY_FALL
+        
+        # Check if horizontal distance matches
+        horizontal_distance = initial_vx * flight_time
+        horizontal_error = abs(horizontal_distance - dx)
+        
+        # Allow more tolerance for wall jump targeting, especially for vertical movement
+        base_tolerance = TILE_PIXEL_SIZE / 2
+        # For mostly vertical movement, allow larger horizontal error
+        if abs(dy) > abs(dx) * 3:  # Mostly vertical movement
+            max_horizontal_error = TILE_PIXEL_SIZE * 1.5  # More tolerance
+        else:
+            max_horizontal_error = base_tolerance
+            
+        if horizontal_error > max_horizontal_error:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(initial_vx, initial_vy),
+                flight_time=flight_time,
+                landing_velocity=(0, 0),
+                max_height=0,
+                energy_cost=0,
+                risk_factor=1.0,
+                failure_reason=f"Wall jump horizontal error {horizontal_error:.1f} exceeds tolerance {max_horizontal_error:.1f}"
+            )
+        
+        # Calculate landing velocity
+        landing_vx = initial_vx  # Horizontal velocity maintained
+        landing_vy = initial_vy + GRAVITY_FALL * flight_time
+        landing_velocity = (landing_vx, landing_vy)
+        
+        # Calculate maximum height
+        time_to_peak = abs(initial_vy) / GRAVITY_FALL
+        max_height = start_pos[1] + initial_vy * time_to_peak + 0.5 * GRAVITY_FALL * time_to_peak**2
+        
+        # Check survivable landing
+        impact_speed = math.sqrt(landing_vx**2 + landing_vy**2)
+        max_impact = 6.0
+        if impact_speed > max_impact:
+            return ValidationResult(
+                is_valid=False,
+                required_velocity=(initial_vx, initial_vy),
+                flight_time=flight_time,
+                landing_velocity=landing_velocity,
+                max_height=max_height,
+                energy_cost=0,
+                risk_factor=1.0,
+                failure_reason=f"Wall jump landing impact {impact_speed:.1f} exceeds survivable limit {max_impact}"
+            )
+        
+        # Wall jumps are higher energy but very effective
+        energy_cost = distance * 0.15 + abs(dy) * 0.1
+        
+        # Risk factor based on complexity and timing requirements
+        risk_factor = 0.2 + min(horizontal_error / max_horizontal_error * 0.3, 0.3)
+        
+        return ValidationResult(
+            is_valid=True,
+            required_velocity=(initial_vx, initial_vy),
+            flight_time=flight_time,
+            landing_velocity=landing_velocity,
+            max_height=max_height,
+            energy_cost=energy_cost,
+            risk_factor=risk_factor,
+            failure_reason=None
         )
 
 
