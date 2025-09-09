@@ -274,7 +274,7 @@ main() {
     log_info "Installing nclone with all dependencies..."
     
     # Install nclone first, then additional tools
-    if pip_install_with_progress "-e '.[dev,test]'"; then
+    if pip_install_with_progress "-e ."; then
         log_success "nclone installed successfully"
     else
         log_error "Failed to install nclone package"
