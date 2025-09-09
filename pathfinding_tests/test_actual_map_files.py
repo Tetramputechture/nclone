@@ -46,7 +46,7 @@ def main():
     print(f"\n🎨 Generating visualizations...")
     
     for map_name, level_data in test_maps.items():
-        output_path = f"actual_map_{map_name}_pathfinding.png"
+        output_path = f"corrected_{map_name}_pathfinding.png"
         print(f"  • Creating {output_path}...")
         
         try:
