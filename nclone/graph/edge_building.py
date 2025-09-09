@@ -1084,27 +1084,31 @@ class EdgeBuilder:
     
     def _is_basic_traversable(self, src_x: float, src_y: float, tgt_x: float, tgt_y: float, level_data) -> bool:
         """
-        Simplified traversability check that ensures basic connectivity.
+        Physics-aware traversability check for WALK edges.
         
-        This method provides a balance between physics accuracy and functional pathfinding.
-        It's more permissive than the full collision system to ensure WALK edges are created.
+        This method ensures WALK edges are only created for movements that can actually
+        be performed by walking, not jumping. It prevents incorrect connectivity to
+        elevated platforms that should require jumping.
         """
-        # Sample a few points along the path to check for major obstacles
-        dx = tgt_x - src_x
+        # Check height difference - WALK edges should not have significant vertical movement
         dy = tgt_y - src_y
+        if abs(dy) > SUB_CELL_SIZE:  # More than 6 pixels vertical difference requires jumping
+            return False
+        
+        # Sample points along the path to check for obstacles
+        dx = tgt_x - src_x
         distance = math.sqrt(dx*dx + dy*dy)
         
         if distance == 0:
             return True
         
-        # Check 3 points along the path: start, middle, end
-        sample_points = [
-            (src_x, src_y),
-            (src_x + dx * 0.5, src_y + dy * 0.5),
-            (tgt_x, tgt_y)
-        ]
-        
-        for x, y in sample_points:
+        # Check 5 points along the path for more thorough obstacle detection
+        num_samples = 5
+        for i in range(num_samples):
+            t = i / (num_samples - 1)
+            x = src_x + dx * t
+            y = src_y + dy * t
+            
             # Check if position is within bounds
             if x < 0 or y < 0 or x >= level_data.width * TILE_PIXEL_SIZE or y >= level_data.height * TILE_PIXEL_SIZE:
                 return False
@@ -1116,23 +1120,10 @@ class EdgeBuilder:
             if 0 <= tile_x < level_data.width and 0 <= tile_y < level_data.height:
                 tile_value = level_data.get_tile(tile_y, tile_x)
                 
-                # Allow movement through empty tiles (0) and some special tiles
-                # This is more permissive than the full collision system
-                if tile_value == 0:  # Empty tile - always traversable
-                    continue
-                elif tile_value in [13, 14, 16, 23]:  # Some special tiles that might be traversable
-                    continue
-                else:  # Solid tiles - check if we're close to the edge
-                    # Allow movement near tile edges (ninja radius consideration)
-                    tile_center_x = tile_x * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
-                    tile_center_y = tile_y * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
-                    dist_from_center = math.sqrt((x - tile_center_x)**2 + (y - tile_center_y)**2)
-                    
-                    # If we're close to the tile edge, allow movement (ninja radius ~10px)
-                    if dist_from_center > TILE_PIXEL_SIZE // 2 - 8:
-                        continue
-                    else:
-                        return False  # Too deep in solid tile
+                # Only allow movement through empty tiles for WALK edges
+                # This prevents walking through or around solid obstacles
+                if tile_value != 0:  # Any non-empty tile blocks walking
+                    return False
             else:
                 return False  # Out of bounds
         
