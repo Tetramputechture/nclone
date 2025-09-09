@@ -133,8 +133,14 @@ class EdgeBuilder:
                             )
                         )
 
+                        # Debug: Check for long WALK edges
+                        distance = math.sqrt((tgt_x - src_x)**2 + (tgt_y - src_y)**2)
+                        if distance > 50:
+                            print(f"DEBUG: Long WALK edge created: {distance:.1f}px from ({src_x},{src_y}) to ({tgt_x},{tgt_y})")
+                        
                         edge_mask[edge_count] = 1.0
                         edge_types[edge_count] = EdgeType.WALK
+                        print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from ({src_x:.1f},{src_y:.1f}) to ({tgt_x:.1f},{tgt_y:.1f}) [basic grid]")
                         edge_count += 1
 
         # No special ninja escape connections - all edges must follow proper collision detection
@@ -206,9 +212,14 @@ class EdgeBuilder:
                                 connect_features[EdgeType.WALK] = 1.0
                                 connect_features[len(EdgeType) + 2] = 0.5  # Medium cost
 
+                                # Debug: Check for long WALK edges in entity connections
+                                if distance > 50:
+                                    print(f"DEBUG: Long WALK edge (entity connection): {distance:.1f}px from ({grid_x},{grid_y}) to ({entity_x},{entity_y})")
+                                
                                 edge_features[edge_count] = connect_features
                                 edge_mask[edge_count] = 1.0
                                 edge_types[edge_count] = EdgeType.WALK
+                                print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from ({grid_x:.1f},{grid_y:.1f}) to ({entity_x:.1f},{entity_y:.1f}) [entity connection]")
                                 edge_count += 1
 
         # Build entity interaction edges
@@ -535,9 +546,14 @@ class EdgeBuilder:
                             nav_features[EdgeType.WALK] = 1.0
                             nav_features[len(EdgeType) + 2] = distance / TILE_PIXEL_SIZE  # Distance-based cost
                             
+                            # Debug: Check for long WALK edges in entity node connections
+                            if distance > 50:
+                                print(f"DEBUG: Long WALK edge (entity node): {distance:.1f}px from node {nearby_node_idx} to entity {entity_node_idx}")
+                            
                             edge_features[edge_count] = nav_features
                             edge_mask[edge_count] = 1.0
                             edge_types[edge_count] = EdgeType.WALK
+                            print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from node {nearby_node_idx} to entity {entity_node_idx} [entity node connection]")
                             edge_count += 1
                             connections_made += 1
                             
@@ -546,9 +562,14 @@ class EdgeBuilder:
                                 edge_index[0, edge_count] = entity_node_idx
                                 edge_index[1, edge_count] = nearby_node_idx
                                 
+                                # Debug: Check for long WALK edges in bidirectional entity connections
+                                if distance > 50:
+                                    print(f"DEBUG: Long WALK edge (bidirectional entity): {distance:.1f}px from entity {entity_node_idx} to node {nearby_node_idx}")
+                                
                                 edge_features[edge_count] = nav_features
                                 edge_mask[edge_count] = 1.0
                                 edge_types[edge_count] = EdgeType.WALK
+                                print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from entity {entity_node_idx} to node {nearby_node_idx} [bidirectional entity]")
                                 edge_count += 1
         
         return edge_count
@@ -921,8 +942,8 @@ class EdgeBuilder:
                         movement_type = EdgeType.JUMP
                     elif dy > 12:  # Moving downward significantly
                         movement_type = EdgeType.FALL
-                    else:  # Horizontal movement - but only if very short distance
-                        if distance <= 48:  # Max 2 tiles for horizontal "walk"
+                    else:  # Horizontal movement - strict physics constraints
+                        if distance <= 30:  # Max 1.25 tiles for horizontal "walk" - stricter constraint
                             movement_type = EdgeType.WALK
                         else:
                             movement_type = EdgeType.JUMP  # Long horizontal = jump
@@ -1195,10 +1216,44 @@ class EdgeBuilder:
             ninja_idx, ninja_x, ninja_y = ninja_node
             target_idx, target_x, target_y = target_node
             
+            print(f"DEBUG: Critical connectivity - ninja at ({ninja_x:.1f},{ninja_y:.1f}), target at ({target_x:.1f},{target_y:.1f})")
+            
 
             
-            # Create bidirectional WALK connection
-            for src_idx, dst_idx in [(ninja_idx, target_idx), (target_idx, ninja_idx)]:
+            # Calculate distance and determine appropriate movement type
+            distance = math.sqrt((target_x - ninja_x)**2 + (target_y - ninja_y)**2)
+            dy = target_y - ninja_y
+            
+            # Determine physics-accurate movement type for critical connection
+            if dy < -12:  # Moving upward significantly
+                movement_type = EdgeType.JUMP
+            elif dy > 12:  # Moving downward significantly
+                movement_type = EdgeType.FALL
+            else:  # Horizontal movement
+                if distance <= 30:  # Short distance
+                    movement_type = EdgeType.WALK
+                else:  # Long distance
+                    movement_type = EdgeType.JUMP
+            
+            print(f"DEBUG: Critical connectivity - distance={distance:.1f}px, dy={dy:.1f}px, movement_type={movement_type.name}")
+            
+            # Create unidirectional connection based on movement type
+            edge_directions = []
+            if movement_type == EdgeType.WALK:
+                # Bidirectional for short walks
+                edge_directions = [(ninja_idx, target_idx), (target_idx, ninja_idx)]
+            elif movement_type == EdgeType.JUMP:
+                # Unidirectional from lower to higher or for long horizontal
+                if dy <= 0:  # ninja is lower or same level, can jump to target
+                    edge_directions = [(ninja_idx, target_idx)]
+                else:  # target is lower, ninja can't jump down (would be fall)
+                    movement_type = EdgeType.FALL
+                    edge_directions = [(ninja_idx, target_idx)]
+            elif movement_type == EdgeType.FALL:
+                # Unidirectional from higher to lower
+                edge_directions = [(ninja_idx, target_idx)]
+            
+            for src_idx, dst_idx in edge_directions:
                 if edge_count >= E_MAX_EDGES:
                     break
                 
@@ -1206,13 +1261,13 @@ class EdgeBuilder:
                 edge_index[0, edge_count] = src_idx
                 edge_index[1, edge_count] = dst_idx
                 
-                # Set edge features as WALK type
+                # Set edge features with appropriate movement type
                 edge_features[edge_count] = np.zeros(edge_feature_dim, dtype=np.float32)
-                edge_features[edge_count, EdgeType.WALK] = 1.0
-                edge_features[edge_count, len(EdgeType) + 2] = 0.1  # Very low cost for critical connections
+                edge_features[edge_count, movement_type] = 1.0
+                edge_features[edge_count, len(EdgeType) + 2] = distance / TILE_PIXEL_SIZE  # Distance-based cost
                 
                 edge_mask[edge_count] = 1.0
-                edge_types[edge_count] = EdgeType.WALK
+                edge_types[edge_count] = movement_type
                 edge_count += 1
                 connections_created += 1
                 

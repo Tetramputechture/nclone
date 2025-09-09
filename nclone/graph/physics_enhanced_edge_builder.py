@@ -386,6 +386,11 @@ class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
         
         # Set physics-based edge features
         if edge_feature_dim > 0:
-            edge_features[edge_idx, 0] = distance / 100.0  # Normalized distance cost
+            # Set the correct edge type feature (not always index 0)
+            edge_features[edge_idx, edge_type] = 1.0  # Edge type indicator
+            # Set distance cost at the appropriate index (after edge types)
+            cost_idx = len(EdgeType) + 2
+            if cost_idx < edge_feature_dim:
+                edge_features[edge_idx, cost_idx] = distance / 100.0  # Normalized distance cost
         
         return True

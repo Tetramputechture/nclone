@@ -18,3 +18,25 @@ timeout: failed to run command ‘pip_install_with_progress’: No such file or 
 [1;33m🧹 Performing cleanup...[0m
 [0;31m❌ Setup failed with exit code 1[0m
 [1;33m📋 Check the log file for details: /workspace/nclone/.openhands/setup.log[0m
+🚀 Setting up nclone development environment...
+📁 Project root: /workspace/nclone
+📝 Log file: /workspace/nclone/.openhands/setup.log
+⏰ Started at: Tue Sep  9 02:56:12 UTC 2025
+
+[0;34mℹ️  Checking system resources...[0m
+[0;32m✅ Resource check passed[0m
+[0;34mℹ️  Checking Python version...[0m
+[0;32m✅ Python version check passed: 3.12[0m
+[0;34mℹ️  Creating necessary directories...[0m
+[0;32m✅ Necessary directories created[0m
+[0;34mℹ️  Setting up environment variables...[0m
+[0;32m✅ Environment variables configured[0m
+[0;34mℹ️  Installing nclone with all dependencies...[0m
+[0;34mℹ️  Installing packages: -e .[dev,test] ruff[0m
+[0;34m⠋ Installing packages[0m[0;34m⠙ Installing packages[0m[0;34m⠹ Installing packages[0m[0;34m⠸ Installing packages[0mERROR:  .[dev,test] is not a valid editable requirement. It should either be a path to a local project or a VCS URL (beginning with bzr+http, bzr+https, bzr+ssh, bzr+sftp, bzr+ftp, bzr+lp, bzr+file, git+http, git+https, git+ssh, git+git, git+file, hg+file, hg+http, hg+https, hg+ssh, hg+static-http, svn+ssh, svn+http, svn+https, svn+svn, svn+file).
+[0;34m⠼ Installing packages[0m[1]+  Exit 1                  timeout $PIP_TIMEOUT pip install "${pip_args[@]}" "${packages[@]}"
+[0;31m❌ Package installation failed with exit code: 1[0m
+[0;31m❌ Failed to install packages[0m
+[1;33m🧹 Performing cleanup...[0m
+[0;31m❌ Setup failed with exit code 1[0m
+[1;33m📋 Check the log file for details: /workspace/nclone/.openhands/setup.log[0m
