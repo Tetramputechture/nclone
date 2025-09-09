@@ -186,13 +186,13 @@ class PathfindingVisualizer:
             entity_x = entity.get("x", 0)
             entity_y = entity.get("y", 0)
             
-            # Move entities left and down by 24px (1 tile) to account for padding
-            corrected_x = entity_x - TILE_PIXEL_SIZE  # Move left by 24px
-            corrected_y = entity_y - TILE_PIXEL_SIZE  # Move down by 24px
+            # Convert entity position to tile coordinates and account for padding
+            tile_x = int(entity_x // TILE_PIXEL_SIZE)
+            tile_y = int(entity_y // TILE_PIXEL_SIZE)
             
-            # Adjust to canvas coordinates
-            adj_x = (corrected_x / self.tile_size + padding) * self.tile_size + self.tile_size / 2
-            adj_y = (corrected_y / self.tile_size + padding) * self.tile_size + self.tile_size / 2
+            # Adjust to canvas coordinates (add padding offset)
+            adj_x = (tile_x + padding) * self.tile_size + self.tile_size / 2
+            adj_y = (tile_y + padding) * self.tile_size + self.tile_size / 2
             
             # Draw entity based on type
             if entity_type == EntityType.NINJA:
@@ -323,11 +323,16 @@ class PathfindingVisualizer:
                     edge_type = result.edge_types[i] if i < len(result.edge_types) else EdgeType.WALK
                     color = MOVEMENT_COLORS.get(edge_type, (0.5, 0.5, 0.5))
                     
-                    # Adjust coordinates to canvas space (move left and down by 24px)
-                    start_x = (start_pos[0] - TILE_PIXEL_SIZE) / self.tile_size + padding
-                    start_y = (start_pos[1] - TILE_PIXEL_SIZE) / self.tile_size + padding
-                    end_x = (end_pos[0] - TILE_PIXEL_SIZE) / self.tile_size + padding
-                    end_y = (end_pos[1] - TILE_PIXEL_SIZE) / self.tile_size + padding
+                    # Convert to tile coordinates and adjust to canvas space
+                    start_tile_x = int(start_pos[0] // self.tile_size)
+                    start_tile_y = int(start_pos[1] // self.tile_size)
+                    end_tile_x = int(end_pos[0] // self.tile_size)
+                    end_tile_y = int(end_pos[1] // self.tile_size)
+                    
+                    start_x = start_tile_x + padding
+                    start_y = start_tile_y + padding
+                    end_x = end_tile_x + padding
+                    end_y = end_tile_y + padding
                     
                     start_x *= self.tile_size
                     start_y *= self.tile_size
