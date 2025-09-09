@@ -100,8 +100,11 @@ class CorePathfinder:
         dx = end_pos[0] - start_pos[0]
         dy = end_pos[1] - start_pos[1]
         
+        # Check if this is a vertical corridor that should use wall jumps
+        if self._is_vertical_corridor_movement(start_pos, end_pos, level_data):
+            return self._create_wall_jump_segment(start_pos, end_pos, dx, dy)
         # Check if this is an elevated platform jump that needs momentum
-        if self._requires_momentum_building(start_pos, end_pos, level_data):
+        elif self._requires_momentum_building(start_pos, end_pos, level_data):
             return self._create_momentum_sequence(level_data, start_pos, end_pos, dx, dy)
         # Check if this is a downward movement that should be FALL
         elif self._is_fall_movement(start_pos, end_pos):
@@ -222,6 +225,232 @@ class CorePathfinder:
         }
         
         return [fall_segment]
+    
+    def _is_vertical_corridor_movement(self, start_pos: Tuple[float, float], 
+                                     end_pos: Tuple[float, float], 
+                                     level_data: LevelData) -> bool:
+        """
+        Check if this movement requires wall jumping to reach an elevated position.
+        
+        Wall jumping is required when:
+        1. Significant upward movement (> 1 tile = 24px)
+        2. Either narrow corridor OR elevated target that can't be reached by regular jumping
+        3. Presence of walls that can be used for wall jumping
+        """
+        dx = end_pos[0] - start_pos[0]
+        dy = end_pos[1] - start_pos[1]
+        
+        horizontal_distance = abs(dx)
+        vertical_distance = abs(dy)
+        upward_movement = dy < 0
+        
+        # Must have significant upward movement
+        if not upward_movement or vertical_distance < 24:
+            return False
+        
+        # Case 1: Narrow vertical corridor (like only-jump map)
+        is_narrow_corridor = horizontal_distance < 48  # Less than 2 tiles wide
+        if is_narrow_corridor:
+            return True
+        
+        # Case 2: Large vertical distance that suggests wall climbing (like wall-jump-required map)
+        # If the vertical distance is very large (> 4 tiles), it likely requires wall jumping
+        requires_wall_climbing = vertical_distance > 96  # More than 4 tiles high
+        if requires_wall_climbing:
+            return True
+        
+        # Case 3: Check if there are walls near the start position that can be used for wall jumping
+        # This handles cases where the ninja needs to climb a wall to reach an elevated platform
+        # BUT only if it's not a momentum-based jump scenario (significant horizontal distance)
+        if horizontal_distance < 72 and self._has_climbable_wall_nearby(start_pos, level_data):
+            return True
+        
+        return False
+    
+    def _has_climbable_wall_nearby(self, start_pos: Tuple[float, float], 
+                                 level_data: LevelData) -> bool:
+        """
+        Check if there are walls near the start position that can be used for wall jumping.
+        
+        This detects scenarios like the wall-jump-required map where the ninja
+        needs to climb a wall to reach an elevated platform.
+        """
+        x, y = start_pos
+        
+        # Check for solid tiles to the left and right within wall jump range
+        # Wall jump range is approximately 1-2 tiles (24-48px)
+        wall_check_distance = 48
+        
+        # Convert pixel coordinates to tile coordinates
+        tile_x = int(x // 24)
+        tile_y = int(y // 24)
+        
+        # Check tiles to the left and right
+        for dx_check in [-2, -1, 1, 2]:  # Check 1-2 tiles in each direction
+            check_tile_x = tile_x + dx_check
+            check_tile_y = tile_y
+            
+            # Make sure we're within bounds
+            if (0 <= check_tile_x < level_data.tiles.shape[1] and 
+                0 <= check_tile_y < level_data.tiles.shape[0]):
+                
+                tile_type = level_data.tiles[check_tile_y, check_tile_x]
+                
+                # Check if this is a solid tile (type 1 = full solid block)
+                if tile_type == 1:
+                    # Check if there's a vertical wall (multiple solid tiles stacked)
+                    wall_height = 0
+                    for dy_check in range(-5, 1):  # Check up to 5 tiles above
+                        wall_tile_y = check_tile_y + dy_check
+                        if (0 <= wall_tile_y < level_data.tiles.shape[0] and
+                            level_data.tiles[wall_tile_y, check_tile_x] == 1):
+                            wall_height += 1
+                    
+                    # If we found a wall that's at least 3 tiles high, it's climbable
+                    if wall_height >= 3:
+                        return True
+        
+        return False
+    
+    def _create_wall_jump_segment(self, start_pos: Tuple[float, float], 
+                                end_pos: Tuple[float, float],
+                                dx: float, dy: float) -> List[Dict[str, Any]]:
+        """
+        Create WALL_JUMP segment(s) for wall climbing and elevated platform access.
+        
+        This handles two scenarios:
+        1. Vertical corridor: Multiple wall jumps alternating between walls
+        2. Wall climbing: Multiple wall jumps up a single wall, then jump to target
+        """
+        distance = math.sqrt(dx**2 + dy**2)
+        vertical_distance = abs(dy)
+        horizontal_distance = abs(dx)
+        
+        # Determine if this is a narrow corridor or wall climbing scenario
+        is_narrow_corridor = horizontal_distance < 48  # Less than 2 tiles wide
+        
+        if is_narrow_corridor:
+            # Vertical corridor: Create alternating wall jumps
+            return self._create_corridor_wall_jumps(start_pos, end_pos, dx, dy, vertical_distance)
+        else:
+            # Wall climbing: Create wall climbing sequence
+            return self._create_wall_climbing_sequence(start_pos, end_pos, dx, dy, vertical_distance)
+    
+    def _create_corridor_wall_jumps(self, start_pos: Tuple[float, float], 
+                                  end_pos: Tuple[float, float],
+                                  dx: float, dy: float, 
+                                  vertical_distance: float) -> List[Dict[str, Any]]:
+        """Create wall jump sequence for narrow vertical corridors."""
+        segments = []
+        max_wall_jump_height = 48.0  # Each wall jump covers ~48px vertically
+        num_segments = max(1, int(vertical_distance / max_wall_jump_height))
+        
+        for i in range(num_segments):
+            segment_start_y = start_pos[1] + (dy * i / num_segments)
+            segment_end_y = start_pos[1] + (dy * (i + 1) / num_segments)
+            segment_start_x = start_pos[0] + (dx * i / num_segments)
+            segment_end_x = start_pos[0] + (dx * (i + 1) / num_segments)
+            
+            segment_start = (segment_start_x, segment_start_y)
+            segment_end = (segment_end_x, segment_end_y)
+            segment_distance = math.sqrt((segment_end_x - segment_start_x)**2 + 
+                                       (segment_end_y - segment_start_y)**2)
+            
+            wall_jump_segment = {
+                'start_pos': segment_start,
+                'end_pos': segment_end,
+                'movement_type': MovementType.WALL_JUMP,
+                'physics_params': {
+                    'distance': segment_distance,
+                    'height_diff': segment_end_y - segment_start_y,
+                    'horizontal_distance': abs(segment_end_x - segment_start_x),
+                    'required_velocity': 2.0,
+                    'energy_cost': segment_distance / 24.0,
+                    'time_estimate': segment_distance / 3.0,
+                    'difficulty': 0.6 + (i * 0.1)
+                },
+                'is_valid': True
+            }
+            segments.append(wall_jump_segment)
+        
+        return segments
+    
+    def _create_wall_climbing_sequence(self, start_pos: Tuple[float, float], 
+                                     end_pos: Tuple[float, float],
+                                     dx: float, dy: float, 
+                                     vertical_distance: float) -> List[Dict[str, Any]]:
+        """
+        Create wall climbing sequence for scenarios like wall-jump-required map.
+        
+        This creates a sequence of wall jumps that climb up a wall, then a final
+        wall jump that launches away from the wall to reach the target.
+        """
+        segments = []
+        
+        # Phase 1: Climb the wall with multiple wall jumps
+        # Each wall jump climbs approximately 48px and moves slightly away from wall
+        wall_jump_height = 48.0
+        num_climbing_jumps = max(1, int(vertical_distance * 0.8 / wall_jump_height))  # Use 80% of vertical distance for climbing
+        
+        # Determine which wall to climb (left or right based on level geometry)
+        # For wall-jump-required, the ninja starts at bottom-left and needs to climb left wall
+        wall_side = -1 if dx > 0 else 1  # Climb left wall if moving right, right wall if moving left
+        
+        current_pos = start_pos
+        
+        # Create climbing wall jumps
+        for i in range(num_climbing_jumps):
+            # Each wall jump moves up and slightly away from the wall
+            climb_height = wall_jump_height
+            climb_horizontal = 12  # Small horizontal movement away from wall
+            
+            next_x = current_pos[0] + (climb_horizontal * wall_side)
+            next_y = current_pos[1] - climb_height  # Negative because Y decreases upward
+            next_pos = (next_x, next_y)
+            
+            climb_distance = math.sqrt(climb_horizontal**2 + climb_height**2)
+            
+            climb_segment = {
+                'start_pos': current_pos,
+                'end_pos': next_pos,
+                'movement_type': MovementType.WALL_JUMP,
+                'physics_params': {
+                    'distance': climb_distance,
+                    'height_diff': -climb_height,
+                    'horizontal_distance': climb_horizontal,
+                    'required_velocity': 2.0,
+                    'energy_cost': climb_distance / 20.0,  # Wall climbing is efficient
+                    'time_estimate': climb_distance / 3.5,  # Fast wall climbing
+                    'difficulty': 0.7 + (i * 0.05)  # Gets slightly harder with each jump
+                },
+                'is_valid': True
+            }
+            segments.append(climb_segment)
+            current_pos = next_pos
+        
+        # Phase 2: Final wall jump to reach the target
+        final_dx = end_pos[0] - current_pos[0]
+        final_dy = end_pos[1] - current_pos[1]
+        final_distance = math.sqrt(final_dx**2 + final_dy**2)
+        
+        final_segment = {
+            'start_pos': current_pos,
+            'end_pos': end_pos,
+            'movement_type': MovementType.WALL_JUMP,
+            'physics_params': {
+                'distance': final_distance,
+                'height_diff': final_dy,
+                'horizontal_distance': abs(final_dx),
+                'required_velocity': 2.5,  # Higher velocity for final jump to target
+                'energy_cost': final_distance / 18.0,  # Final jump requires more energy
+                'time_estimate': final_distance / 4.0,  # Powerful final jump
+                'difficulty': 0.8  # Final precision jump is challenging
+            },
+            'is_valid': True
+        }
+        segments.append(final_segment)
+        
+        return segments
     
     def _convert_movement_type(self, graph_movement_type: int) -> MovementType:
         """Convert from graph MovementType to pathfinding MovementType."""

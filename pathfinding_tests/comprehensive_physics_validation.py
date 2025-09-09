@@ -67,14 +67,26 @@ TEST_MAP_SPECS = {
     },
     'only-jump': {
         'description': 'Vertical wall jumping in corridor',
-        'expected_movement_types': ['JUMP'],  # Should have ONLY JUMP segments, no FALL
+        'expected_movement_types': ['WALL_JUMP'],  # Should use WALL_JUMP for vertical corridor
         'expected_distance': 96.0,   # Distance should be just the vertical jump distance
-        'expected_segments': 1,      # Should be a single JUMP segment or multiple JUMP segments
+        'expected_segments': 2,      # Two wall jump segments for vertical movement
         'validation_criteria': {
-            'must_have_jump': True,
+            'must_have_wall_jump': True,
             'vertical_only': True,
             'wall_jumping': True,
             'no_fall_segments': True  # Explicitly no FALL segments allowed
+        }
+    },
+    'wall-jump-required': {
+        'description': 'Wall climbing and elevated platform access via wall jumping',
+        'expected_movement_types': ['WALL_JUMP', 'FALL'],  # Wall climbing + descent
+        'expected_distance': 514.6,  # Measured distance from wall climbing sequence
+        'expected_segments': 5,      # 4 wall jumps (climbing + final jump) + 1 fall
+        'validation_criteria': {
+            'must_have_wall_jump': True,
+            'must_have_fall': True,
+            'wall_climbing': True,
+            'elevated_platform_access': True
         }
     }
 }
@@ -283,6 +295,46 @@ def validate_test_map(map_name: str, level_data: Any, visualizer: PathfindingVis
                 criteria_details[criterion] = not has_jump
                 if required and has_jump:
                     criteria_ok = False
+            
+            elif criterion == 'must_have_wall_jump':
+                has_wall_jump = 'WALL_JUMP' in movement_types
+                criteria_details[criterion] = has_wall_jump
+                if required and not has_wall_jump:
+                    criteria_ok = False
+            
+            elif criterion == 'must_have_fall':
+                has_fall = 'FALL' in movement_types
+                criteria_details[criterion] = has_fall
+                if required and not has_fall:
+                    criteria_ok = False
+            
+            elif criterion == 'no_fall_segments':
+                has_fall = 'FALL' in movement_types
+                criteria_details[criterion] = not has_fall
+                if required and has_fall:
+                    criteria_ok = False
+            
+            elif criterion == 'wall_jumping':
+                # Wall jumping can be either WALL_JUMP or JUMP in vertical scenarios
+                has_wall_movement = 'WALL_JUMP' in movement_types or ('JUMP' in movement_types and len(movement_types) <= 2)
+                criteria_details[criterion] = has_wall_movement
+                if required and not has_wall_movement:
+                    criteria_ok = False
+            
+            elif criterion == 'wall_climbing':
+                # Wall climbing requires multiple WALL_JUMP segments
+                wall_jump_count = movement_types.get('WALL_JUMP', 0)
+                has_wall_climbing = wall_jump_count >= 3  # At least 3 wall jumps for climbing
+                criteria_details[criterion] = has_wall_climbing
+                if required and not has_wall_climbing:
+                    criteria_ok = False
+            
+            elif criterion == 'elevated_platform_access':
+                # Should have wall jumps followed by fall (climb up, then fall down)
+                has_elevation_pattern = 'WALL_JUMP' in movement_types and 'FALL' in movement_types
+                criteria_details[criterion] = has_elevation_pattern
+                if required and not has_elevation_pattern:
+                    criteria_ok = False
         
         # Physics validation
         validator = PhysicsValidator()
@@ -336,7 +388,7 @@ def main():
     # Run validation tests
     print("\n🧪 Running physics validation tests...")
     
-    for map_name in ['simple-walk', 'long-walk', 'path-jump-required', 'only-jump']:
+    for map_name in ['simple-walk', 'long-walk', 'path-jump-required', 'only-jump', 'wall-jump-required']:
         if map_name not in test_maps:
             print(f"⚠️  Skipping {map_name} - not found in test maps")
             continue

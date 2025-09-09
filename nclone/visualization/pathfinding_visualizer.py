@@ -46,10 +46,10 @@ class PathfindingVisualizer:
         self.pathfinder = CorePathfinder()
     
     def create_test_maps(self) -> Dict[str, LevelData]:
-        """Load the four validation test maps from actual map files."""
+        """Load the validation test maps from actual map files."""
         
         test_maps = {}
-        test_map_names = ["simple-walk", "long-walk", "path-jump-required", "only-jump"]
+        test_map_names = ["simple-walk", "long-walk", "path-jump-required", "only-jump", "wall-jump-required"]
         
         for map_name in test_map_names:
             # Get the path relative to the nclone package directory
