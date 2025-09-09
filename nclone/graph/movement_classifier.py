@@ -188,7 +188,7 @@ class MovementClassifier:
     ) -> MovementType:
         """
         Determine the primary movement type based on N++ physics requirements.
-        
+
         Uses physics-aware analysis instead of simple thresholds to properly
         classify movements according to actual N++ mechanics.
         """
@@ -215,7 +215,9 @@ class MovementClassifier:
             return MovementType.LAUNCH_PAD
 
         # Physics-aware movement classification
-        return self._classify_by_physics_requirements(src_pos, tgt_pos, dx, dy, level_data)
+        return self._classify_by_physics_requirements(
+            src_pos, tgt_pos, dx, dy, level_data
+        )
 
     def _classify_by_physics_requirements(
         self,
@@ -227,19 +229,19 @@ class MovementClassifier:
     ) -> MovementType:
         """
         Classify movement based on actual N++ physics requirements.
-        
+
         This method analyzes whether a movement can be accomplished through
         walking or requires jumping/falling based on tile geometry and
         physics constraints from sim_mechanics_doc.md.
         """
         distance = math.sqrt(dx * dx + dy * dy)
-        
+
         # Very short movements are always walking
         if distance < 1.0:
             return MovementType.WALK
-        
+
         # Analyze tile geometry to determine movement requirements
-        if level_data and hasattr(level_data, 'tiles'):
+        if level_data and hasattr(level_data, "tiles"):
             # Check if there's a ground connection between positions
             if self._has_ground_connection(src_pos, tgt_pos, level_data.tiles):
                 # Ground connection exists - check if walking is sufficient
@@ -257,7 +259,7 @@ class MovementClassifier:
                     return MovementType.JUMP
                 else:  # Downward movement
                     return MovementType.FALL
-        
+
         # Fallback to physics-based classification when no level data
         if abs(dy) < 6:  # Very small vertical movement
             return MovementType.WALK
@@ -265,7 +267,7 @@ class MovementClassifier:
             return MovementType.JUMP
         else:  # Downward movement is falling
             return MovementType.FALL
-    
+
     def _has_ground_connection(
         self,
         src_pos: Tuple[float, float],
@@ -274,25 +276,25 @@ class MovementClassifier:
     ) -> bool:
         """
         Check if there's a ground connection between two positions.
-        
+
         This method checks if the ninja can walk between positions without
         needing to jump over gaps or obstacles.
         """
         x0, y0 = src_pos
         x1, y1 = tgt_pos
-        
+
         # Sample points along the path
         steps = max(1, int(abs(x1 - x0) // 12))  # Check every 12 pixels
-        
+
         for i in range(steps + 1):
             t = i / max(1, steps)
             x = x0 + t * (x1 - x0)
             y = max(y0, y1) + 12  # Check slightly below the path
-            
+
             # Convert to tile coordinates
             tile_x = int(x // 24)
             tile_y = int(y // 24)
-            
+
             # Check bounds
             if 0 <= tile_x < tiles.shape[1] and 0 <= tile_y < tiles.shape[0]:
                 tile_type = tiles[tile_y, tile_x]
@@ -300,9 +302,9 @@ class MovementClassifier:
                     return False
             else:
                 return False  # Out of bounds
-        
+
         return True
-    
+
     def _can_walk_between_positions(
         self,
         src_pos: Tuple[float, float],
@@ -311,33 +313,33 @@ class MovementClassifier:
     ) -> bool:
         """
         Check if ninja can walk between positions without jumping.
-        
+
         This considers step-up/step-down capabilities and obstacle clearance.
         """
         x0, y0 = src_pos
         x1, y1 = tgt_pos
-        
+
         # Check vertical displacement - walking allows small steps
         if abs(y1 - y0) > 12:  # More than half a tile - likely requires jumping
             return False
-        
+
         # Check for obstacles in the path
         steps = max(1, int(abs(x1 - x0) // 6))  # Check every 6 pixels
-        
+
         for i in range(steps + 1):
             t = i / max(1, steps)
             x = x0 + t * (x1 - x0)
             y = y0 + t * (y1 - y0)
-            
+
             # Check for solid tiles at ninja height
             tile_x = int(x // 24)
             tile_y = int(y // 24)
-            
+
             if 0 <= tile_x < tiles.shape[1] and 0 <= tile_y < tiles.shape[0]:
                 tile_type = tiles[tile_y, tile_x]
                 if tile_type != 0:  # Solid tile blocking path
                     return False
-        
+
         return True
 
     def _calculate_physics_parameters(
