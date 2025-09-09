@@ -186,9 +186,9 @@ class PathfindingVisualizer:
             entity_x = entity.get("x", 0)
             entity_y = entity.get("y", 0)
             
-            # Move entities left and up by 24px (1 tile) to account for padding
+            # Move entities left and down by 24px (1 tile) to account for padding
             corrected_x = entity_x - TILE_PIXEL_SIZE  # Move left by 24px
-            corrected_y = entity_y + TILE_PIXEL_SIZE  # Move up by 24px
+            corrected_y = entity_y - TILE_PIXEL_SIZE  # Move down by 24px
             
             # Convert to canvas coordinates directly
             adj_x = (corrected_x / TILE_PIXEL_SIZE + padding) * self.tile_size + self.tile_size / 2
@@ -323,11 +323,11 @@ class PathfindingVisualizer:
                     edge_type = result.edge_types[i] if i < len(result.edge_types) else EdgeType.WALK
                     color = MOVEMENT_COLORS.get(edge_type, (0.5, 0.5, 0.5))
                     
-                    # Move path coordinates left and up by 24px and convert to canvas space
+                    # Move path coordinates left and down by 24px and convert to canvas space
                     corrected_start_x = start_pos[0] - TILE_PIXEL_SIZE
-                    corrected_start_y = start_pos[1] + TILE_PIXEL_SIZE
+                    corrected_start_y = start_pos[1] - TILE_PIXEL_SIZE
                     corrected_end_x = end_pos[0] - TILE_PIXEL_SIZE
-                    corrected_end_y = end_pos[1] + TILE_PIXEL_SIZE
+                    corrected_end_y = end_pos[1] - TILE_PIXEL_SIZE
                     
                     start_x = corrected_start_x / TILE_PIXEL_SIZE + padding
                     start_y = corrected_start_y / TILE_PIXEL_SIZE + padding
