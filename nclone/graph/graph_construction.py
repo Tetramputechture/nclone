@@ -97,8 +97,12 @@ class GraphConstructor:
                 pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
                 pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
                 
-                # Check if position is traversable (not in solid tile or entity collision)
-                if self._is_position_traversable(pixel_x, pixel_y, level_data.tiles, level_data.entities):
+                # Check if position is traversable with ninja radius (not in solid tile or entity collision)
+                # OR if position is near an important entity (switch, door) - these must be reachable
+                is_near_entity = self._is_near_important_entity(pixel_x, pixel_y, level_data.entities)
+                is_traversable = self._is_position_traversable_with_radius(pixel_x, pixel_y, level_data.tiles, level_data.entities)
+                
+                if is_traversable or is_near_entity:
                     sorted_positions.append((sub_row, sub_col))
         
         for sub_row, sub_col in sorted_positions:
@@ -320,6 +324,124 @@ class GraphConstructor:
             return self._check_entity_collision(pixel_x, pixel_y, entities)
         
         return True
+
+    def _is_position_traversable_with_radius(self, pixel_x: float, pixel_y: float, tiles: np.ndarray, entities=None) -> bool:
+        """
+        Check if a position is traversable considering ninja radius.
+        
+        This method checks if the ninja's full 10px radius can fit at the given position
+        without colliding with any solid tiles or entities.
+        
+        Args:
+            pixel_x: X coordinate in pixels
+            pixel_y: Y coordinate in pixels  
+            tiles: Tile data array
+            entities: Optional list of entities to check for collision
+            
+        Returns:
+            True if position is traversable with ninja radius
+        """
+        from ..constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
+        import math
+        
+        # Use the ninja's actual radius
+        radius = NINJA_RADIUS  # 10.0 pixels
+        
+        # Calculate the range of tiles that could intersect with the ninja's radius
+        min_tile_x = int(math.floor((pixel_x - radius) / TILE_PIXEL_SIZE))
+        max_tile_x = int(math.ceil((pixel_x + radius) / TILE_PIXEL_SIZE))
+        min_tile_y = int(math.floor((pixel_y - radius) / TILE_PIXEL_SIZE))
+        max_tile_y = int(math.ceil((pixel_y + radius) / TILE_PIXEL_SIZE))
+        
+        # Check each tile in the range
+        for check_tile_y in range(min_tile_y, max_tile_y + 1):
+            for check_tile_x in range(min_tile_x, max_tile_x + 1):
+                # Account for 1-tile padding when accessing tile data
+                data_tile_x = check_tile_x - 1
+                data_tile_y = check_tile_y - 1
+                
+                # Skip tiles outside the map bounds
+                if (data_tile_x < 0 or data_tile_x >= tiles.shape[1] or 
+                    data_tile_y < 0 or data_tile_y >= tiles.shape[0]):
+                    continue
+                
+                tile_id = tiles[data_tile_y, data_tile_x]
+                if tile_id == 0:
+                    continue  # Empty tile, no collision
+                
+                # For fully solid tiles, use simple geometric check
+                if tile_id == 1 or tile_id > 33:
+                    if self._check_circle_tile_collision(pixel_x, pixel_y, check_tile_x, check_tile_y, radius):
+                        return False
+                
+                # For shaped tiles (2-33), use conservative approach
+                elif 2 <= tile_id <= 33:
+                    # For now, allow traversal through shaped tiles unless they're very close to solid parts
+                    # This is a reasonable approximation for node placement
+                    pass
+        
+        # Check entity-based collision if entities provided
+        if entities is not None:
+            return self._check_entity_collision(pixel_x, pixel_y, entities)
+        
+        return True
+
+    def _check_circle_tile_collision(self, x: float, y: float, tile_x: int, tile_y: int, radius: float) -> bool:
+        """Check if a circle collides with a solid tile using simple geometry."""
+        from ..constants.physics_constants import TILE_PIXEL_SIZE
+        
+        # Tile bounds in world coordinates
+        tile_left = tile_x * TILE_PIXEL_SIZE
+        tile_right = tile_left + TILE_PIXEL_SIZE
+        tile_top = tile_y * TILE_PIXEL_SIZE
+        tile_bottom = tile_top + TILE_PIXEL_SIZE
+        
+        # Find closest point on tile to circle center
+        closest_x = max(tile_left, min(x, tile_right))
+        closest_y = max(tile_top, min(y, tile_bottom))
+        
+        # Check if distance to closest point is less than radius
+        dx = x - closest_x
+        dy = y - closest_y
+        distance_squared = dx * dx + dy * dy
+        
+        return distance_squared < (radius * radius)
+
+    def _is_near_important_entity(self, pixel_x: float, pixel_y: float, entities) -> bool:
+        """
+        Check if a position is near an important entity (switch, door, etc.).
+        
+        Important entities must be reachable even if they're close to solid tiles,
+        so we create nodes near them regardless of radius collision checks.
+        
+        Args:
+            pixel_x: X coordinate in pixels
+            pixel_y: Y coordinate in pixels  
+            entities: List of entities to check
+            
+        Returns:
+            True if position is near an important entity
+        """
+        if not entities:
+            return False
+            
+        # Define important entity types that must be reachable
+        important_types = {3, 4}  # 3=exit door, 4=switch
+        
+        # Check distance to each important entity
+        for entity in entities:
+            entity_type = entity.get("type", 0)
+            if entity_type in important_types:
+                entity_x = entity.get("x", 0.0)
+                entity_y = entity.get("y", 0.0)
+                
+                # Check if position is within 30 pixels of the entity
+                # This ensures we create nodes around important entities
+                distance_squared = (pixel_x - entity_x)**2 + (pixel_y - entity_y)**2
+                if distance_squared <= (30.0 * 30.0):  # 30 pixel radius around entities
+                    return True
+        
+        return False
     
     def _check_entity_collision(self, pixel_x: float, pixel_y: float, entities) -> bool:
         """

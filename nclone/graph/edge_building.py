@@ -1355,6 +1355,20 @@ class EdgeBuilder:
         sampled_src_nodes = node_list[::3]  # Sample every 3rd node as source for good connectivity
         sampled_tgt_nodes = node_list[::2]  # Sample every 2nd node as target for good connectivity
         
+        # Ensure all entity nodes are included in target samples (switches, doors must be reachable)
+        if entity_nodes is not None:
+            for node_idx, entity_data in entity_nodes:
+                entity_type = entity_data.get('type', 0)
+                if entity_type in {3, 4}:  # 3=exit door, 4=switch - critical targets
+                    x = entity_data.get('x', 0.0)
+                    y = entity_data.get('y', 0.0)
+                    sub_row = int(y // SUB_CELL_SIZE)
+                    sub_col = int(x // SUB_CELL_SIZE)
+                    entity_entry = (node_idx, (x, y, sub_row, sub_col))
+                    if entity_entry not in sampled_tgt_nodes:
+                        sampled_tgt_nodes.append(entity_entry)
+                        print(f"DEBUG: Added entity node {node_idx} (type {entity_type}) at ({x:.1f}, {y:.1f}) to target samples")
+        
         # Find ninja node and ensure it's included in both source and target samples
         # Find the closest node to corrected ninja position (could be entity node)
         ninja_node_entry = None
@@ -1727,10 +1741,11 @@ class EdgeBuilder:
         tile_x = int(x // TILE_PIXEL_SIZE)
         tile_y = int(y // TILE_PIXEL_SIZE)
         
-        # Map tile coordinates directly to data coordinates
-        # The level data should already include proper padding
-        data_tile_x = tile_x
-        data_tile_y = tile_y
+        # Account for 1-tile padding that MapLoader adds around the map
+        # The MapLoader loads actual map data into coordinates (x+1, y+1) and adds padding
+        # So we need to subtract 1 from tile coordinates to access the correct data
+        data_tile_x = tile_x - 1
+        data_tile_y = tile_y - 1
         
         if data_tile_x < 0 or data_tile_x >= len(level_data.tiles[0]) or data_tile_y < 0 or data_tile_y >= len(level_data.tiles):
             if debug_ninja:
@@ -1781,12 +1796,16 @@ class EdgeBuilder:
         # Check each tile in the range
         for check_tile_y in range(min_tile_y, max_tile_y + 1):
             for check_tile_x in range(min_tile_x, max_tile_x + 1):
+                # Account for 1-tile padding when accessing tile data
+                data_tile_x = check_tile_x - 1
+                data_tile_y = check_tile_y - 1
+                
                 # Skip tiles outside the map bounds
-                if (check_tile_x < 0 or check_tile_x >= tiles.shape[1] or 
-                    check_tile_y < 0 or check_tile_y >= tiles.shape[0]):
+                if (data_tile_x < 0 or data_tile_x >= tiles.shape[1] or 
+                    data_tile_y < 0 or data_tile_y >= tiles.shape[0]):
                     continue
                 
-                tile_id = tiles[check_tile_y, check_tile_x]
+                tile_id = tiles[data_tile_y, data_tile_x]
                 if tile_id == 0:
                     continue  # Empty tile, no collision
                 
