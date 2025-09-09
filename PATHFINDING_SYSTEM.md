@@ -1,6 +1,10 @@
 # N++ Consolidated Physics-Aware Pathfinding System
 
-This document describes the authoritative pathfinding system for N++, which consolidates all working physics-aware logic into a single, coherent implementation.
+This document provides a quick reference for the N++ pathfinding system. For comprehensive documentation, see [PATHFINDING_DOCUMENTATION.md](PATHFINDING_DOCUMENTATION.md).
+
+## Quick Start
+
+The authoritative pathfinding system consolidates all working physics-aware logic into a single, coherent implementation.
 
 ## System Architecture
 
@@ -58,6 +62,7 @@ visualizer.create_all_visualizations()
 ### Complete System Test
 
 ```bash
+cd pathfinding_tests
 python consolidated_pathfinding_system.py
 ```
 
@@ -140,12 +145,21 @@ The following outdated/duplicate files were removed to eliminate confusion:
 - `accurate_doortest_visualization.py`
 - Various `*_pathfinding.png` files
 
-## Key Files Retained
+## Directory Structure
 
-- `test_pathfinding_validation.py` - Original validation test (reference)
-- `consolidated_pathfinding_system.py` - Main system demonstration
-- `simple_physics_validation.py` - Physics validation reference
-- `*_consolidated.png` - Generated visualization outputs
+### Core System
+- `nclone/pathfinding/` - Consolidated pathfinding modules
+- `nclone/visualization/` - Visualization system
+- `nclone/graph/` - Graph construction and movement classification
+
+### Test Suite
+- `pathfinding_tests/` - All pathfinding tests and validations
+  - `consolidated_pathfinding_system.py` - Main system demonstration
+  - `test_pathfinding_validation.py` - Original validation test (reference)
+  - `simple_physics_validation.py` - Physics validation reference
+  - `comprehensive_physics_validation.py` - Complete physics validation
+  - `*_consolidated.png` - Generated visualization outputs
+  - `README.md` - Test suite documentation
 
 ## System Benefits
 
@@ -157,3 +171,15 @@ The following outdated/duplicate files were removed to eliminate confusion:
 6. **Extensible**: Easy to add new movement types or validation rules
 
 This consolidated system eliminates the confusion of multiple competing implementations and provides a single, reliable pathfinding solution for N++.
+
+## Complete Documentation
+
+For detailed information including:
+- Comprehensive architecture overview
+- Physics integration details
+- Complete API reference
+- Development history and design decisions
+- Future enhancement plans
+- Technical implementation details
+
+See the complete documentation: **[PATHFINDING_DOCUMENTATION.md](PATHFINDING_DOCUMENTATION.md)**
