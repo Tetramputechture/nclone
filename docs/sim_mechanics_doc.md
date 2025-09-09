@@ -57,7 +57,7 @@ The ninja has 9 distinct movement states with specific transition conditions:
 - **Air Acceleration**: 0.04444444444444444 pixels/frame² (horizontal movement in air) - see `AIR_ACCEL` in physics_constants.py
 
 #### Speed Limits
-- **Maximum Horizontal Speed**: 9.0 pixels/frame - see `MAX_HOR_SPEED` in physics_constants.py
+- **Maximum Horizontal Speed**: 3.333 pixels/frame - see `MAX_HOR_SPEED` in physics_constants.py
 - **Maximum Jump Duration**: 45 frames - see `MAX_JUMP_DURATION` in physics_constants.py
 
 #### Drag and Friction

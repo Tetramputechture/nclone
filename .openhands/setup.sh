@@ -223,9 +223,6 @@ main() {
     check_lock
     check_resources
     
-    # Change to project root
-    cd "$PROJECT_ROOT"
-    
     # Check Python version
     log_info "Checking Python version..."
     if ! python_version=$(python3 --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2); then
