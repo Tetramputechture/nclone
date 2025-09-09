@@ -140,7 +140,6 @@ class EdgeBuilder:
                         
                         edge_mask[edge_count] = 1.0
                         edge_types[edge_count] = EdgeType.WALK
-                        print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from ({src_x:.1f},{src_y:.1f}) to ({tgt_x:.1f},{tgt_y:.1f}) [basic grid]")
                         edge_count += 1
 
         # No special ninja escape connections - all edges must follow proper collision detection
@@ -219,7 +218,6 @@ class EdgeBuilder:
                                 edge_features[edge_count] = connect_features
                                 edge_mask[edge_count] = 1.0
                                 edge_types[edge_count] = EdgeType.WALK
-                                print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from ({grid_x:.1f},{grid_y:.1f}) to ({entity_x:.1f},{entity_y:.1f}) [entity connection]")
                                 edge_count += 1
 
         # Build entity interaction edges
@@ -553,7 +551,6 @@ class EdgeBuilder:
                             edge_features[edge_count] = nav_features
                             edge_mask[edge_count] = 1.0
                             edge_types[edge_count] = EdgeType.WALK
-                            print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from node {nearby_node_idx} to entity {entity_node_idx} [entity node connection]")
                             edge_count += 1
                             connections_made += 1
                             
@@ -569,7 +566,6 @@ class EdgeBuilder:
                                 edge_features[edge_count] = nav_features
                                 edge_mask[edge_count] = 1.0
                                 edge_types[edge_count] = EdgeType.WALK
-                                print(f"DEBUG: WALK edge {edge_count} created: {distance:.1f}px from entity {entity_node_idx} to node {nearby_node_idx} [bidirectional entity]")
                                 edge_count += 1
         
         return edge_count
@@ -1216,8 +1212,6 @@ class EdgeBuilder:
             ninja_idx, ninja_x, ninja_y = ninja_node
             target_idx, target_x, target_y = target_node
             
-            print(f"DEBUG: Critical connectivity - ninja at ({ninja_x:.1f},{ninja_y:.1f}), target at ({target_x:.1f},{target_y:.1f})")
-            
 
             
             # Calculate distance and determine appropriate movement type
@@ -1235,7 +1229,7 @@ class EdgeBuilder:
                 else:  # Long distance
                     movement_type = EdgeType.JUMP
             
-            print(f"DEBUG: Critical connectivity - distance={distance:.1f}px, dy={dy:.1f}px, movement_type={movement_type.name}")
+
             
             # Create unidirectional connection based on movement type
             edge_directions = []

@@ -336,11 +336,9 @@ def create_doortest_physics_validation():
                     if graph.edge_features[edge_idx, et] > 0.5:
                         if et in edge_analysis:
                             edge_analysis[et].append(distance)
-                            # Debug: Find the long WALK edge
+                            # Check for physics violations
                             if et == EdgeType.WALK and distance > 50:
-                                print(f"DEBUG: Found long WALK edge {edge_idx}: {distance:.1f}px from ({src_x:.1f},{src_y:.1f}) to ({dst_x:.1f},{dst_y:.1f})")
-                                print(f"       Edge features: WALK={graph.edge_features[edge_idx, EdgeType.WALK]:.3f}, JUMP={graph.edge_features[edge_idx, EdgeType.JUMP]:.3f}, FALL={graph.edge_features[edge_idx, EdgeType.FALL]:.3f}")
-                                print(f"       Edge type array: {graph.edge_types[edge_idx]}")
+                                print(f"⚠️  Physics violation: WALK edge {distance:.1f}px from ({src_x:.1f},{src_y:.1f}) to ({dst_x:.1f},{dst_y:.1f})")
                         break
         
         # Draw path if found
