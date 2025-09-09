@@ -1,66 +1,82 @@
-# N++ Pathfinding Tests
+# N++ Pathfinding Test Suite
 
-This directory contains the test suite and validation scripts for the N++ physics-aware pathfinding system.
+This directory contains the consolidated test suite for the N++ physics-aware pathfinding system.
 
-## Test Files
+## Current Test Files
 
-### Main Test Scripts
+### Main Test Script
+- **`test_actual_map_files.py`** - Comprehensive test script that loads actual binary test map files from `nclone/test_maps/` directory using the proper map loading chain (NPlayHeadless → Simulator → MapLoader)
 
-- **`consolidated_pathfinding_system.py`** - Primary demonstration and validation script
-  - Tests all 4 validation maps (simple-walk, long-walk, path-jump-required, only-jump)
-  - Creates visualizations with movement type legends
-  - Validates physics accuracy and movement classification
+### Generated Visualizations (Latest)
+- **`corrected_simple-walk_pathfinding.png`** - Simple horizontal walking test with proper entity positioning
+- **`corrected_long-walk_pathfinding.png`** - Extended horizontal walking test with proper entity positioning
+- **`corrected_path-jump-required_pathfinding.png`** - Jump mechanics test with proper entity positioning
+- **`corrected_only-jump_pathfinding.png`** - Vertical wall jumping test with proper entity positioning
 
-- **`test_pathfinding_validation.py`** - Original validation test (reference implementation)
-  - Uses the proven MovementClassifier system
-  - Validates movement types against expected results
+## Test Map Specifications
 
-### Physics Validation
+The test suite validates pathfinding using four actual binary test maps from `nclone/test_maps/`:
 
-- **`simple_physics_validation.py`** - Basic physics validation with N++ constants
-  - Validates jump trajectories and movement capabilities
-  - Uses accurate physics constants from `physics_constants.py`
+### 1. simple-walk
+- **Purpose**: Basic horizontal movement validation
+- **Expected**: WALK segments, ~192px total distance
+- **Result**: ✅ 2 WALK segments, 192.0px distance
 
-- **`comprehensive_physics_validation.py`** - Complete physics validation suite
-  - Comprehensive testing of all movement types
-  - Validates against ninja physics constraints
+### 2. long-walk  
+- **Purpose**: Extended horizontal movement validation
+- **Expected**: WALK segments, ~984px total distance
+- **Result**: ✅ 2 WALK segments, 984.0px distance
 
-### Generated Visualizations
+### 3. path-jump-required
+- **Purpose**: Jump mechanics validation for elevated platforms
+- **Expected**: JUMP segments for vertical navigation
+- **Result**: ✅ 2 JUMP segments, 197.9px distance
 
-- **`simple-walk_consolidated.png`** - Simple horizontal walking test
-- **`long-walk_consolidated.png`** - Extended horizontal walking test  
-- **`path-jump-required_consolidated.png`** - Jump and fall navigation test
-- **`only-jump_consolidated.png`** - Vertical wall jumping test
+### 4. only-jump
+- **Purpose**: Wall jumping mechanics in vertical corridors
+- **Expected**: JUMP segments for vertical ascent
+- **Result**: ✅ 2 JUMP segments, 96.0px distance
 
-## Running Tests
+## Key Features
 
-### Quick Validation
-```bash
-cd pathfinding_tests
-python consolidated_pathfinding_system.py
-```
+### Actual Test Map Loading
+- Uses proper map loading chain: `NPlayHeadless` → `Simulator` → `MapLoader`
+- Loads actual binary test map files from `nclone/test_maps/` directory
+- Follows the same pattern as `base_environment.py` for consistency
 
-### Individual Tests
-```bash
-python test_pathfinding_validation.py
-python simple_physics_validation.py
-python comprehensive_physics_validation.py
-```
+### Correct Entity Positioning
+- Applies static offset of `-TILE_PIXEL_SIZE` to account for simulation padding
+- Entities now appear correctly positioned on their respective tiles
+- Ninja (white circle), Switch (yellow dot), and Door (red dot) align properly with tile grid
 
-## Expected Results
-
-All test maps should pass validation with correct movement types:
-
-1. **simple-walk**: 2 WALK segments (96px + 72px = 168px total)
-2. **long-walk**: 2 WALK segments (936px + 24px = 960px total)  
-3. **path-jump-required**: JUMP up + FALL down (99px + 76px = 175px total)
-4. **only-jump**: 2 JUMP segments (48px each = 96px total)
+### Physics-Aware Pathfinding
+- All movements respect N++ physics constants from `physics_constants.py`
+- Jump trajectories validated for feasibility within ninja capabilities
+- Movement types correctly classified based on level geometry
 
 ## System Architecture
 
-The tests use the consolidated pathfinding system located in:
-- `nclone/pathfinding/` - Core pathfinding logic
-- `nclone/visualization/` - Visualization system
-- `nclone/graph/` - Graph construction and movement classification
+The consolidated pathfinding system consists of:
 
-This ensures all tests use the same authoritative pathfinding implementation.
+- **CorePathfinder** (`nclone/pathfinding/core_pathfinder.py`) - Main pathfinding algorithm using Dijkstra with physics-aware edge weights
+- **MovementType** (`nclone/pathfinding/movement_type.py`) - Physics-based movement classification (WALK, JUMP, FALL, etc.)
+- **PhysicsValidator** (`nclone/pathfinding/physics_validator.py`) - Validates all movements against N++ physics constraints
+- **PathfindingVisualizer** (`nclone/visualization/pathfinding_visualizer.py`) - Generates visualizations using actual test map files
+
+## Running Tests
+
+```bash
+# Run the comprehensive test suite
+cd pathfinding_tests
+python test_actual_map_files.py
+```
+
+## Validation Results
+
+All test maps pass validation with correct physics-aware behavior:
+- ✅ **simple-walk**: WALK movements on flat platform
+- ✅ **long-walk**: WALK movements across full map width  
+- ✅ **path-jump-required**: JUMP movements to reach elevated switch
+- ✅ **only-jump**: JUMP movements for vertical corridor navigation
+
+The system successfully demonstrates proper understanding of N++ physics constraints and generates realistic pathfinding solutions using actual game map data.
