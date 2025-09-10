@@ -157,9 +157,9 @@ class OptimizedCollisionDetector:
         Returns:
             True if position is clear, False if collision detected
         """
-        # Convert to unpadded coordinates for tile array access
-        unpadded_x = x - TILE_PIXEL_SIZE
-        unpadded_y = y - TILE_PIXEL_SIZE
+        # Use coordinates directly since level data already includes padding
+        unpadded_x = x
+        unpadded_y = y
         
         # Calculate tile range that could intersect with circle
         min_tile_x = int(math.floor((unpadded_x - radius) / TILE_PIXEL_SIZE))

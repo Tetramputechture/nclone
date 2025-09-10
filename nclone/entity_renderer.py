@@ -81,12 +81,14 @@ class EntityRenderer:
                         and segment.type == "linear"
                         and not segment.oriented
                     ):
+                        # Apply -1 tile offset to correct for padding in visualization
+                        from .constants.physics_constants import TILE_PIXEL_SIZE
                         door_segments_coords_to_draw.append(
                             (
-                                segment.x1 * self.adjust,
-                                segment.y1 * self.adjust,
-                                segment.x2 * self.adjust,
-                                segment.y2 * self.adjust,
+                                (segment.x1 - TILE_PIXEL_SIZE) * self.adjust,
+                                (segment.y1 - TILE_PIXEL_SIZE) * self.adjust,
+                                (segment.x2 - TILE_PIXEL_SIZE) * self.adjust,
+                                (segment.y2 - TILE_PIXEL_SIZE) * self.adjust,
                             )
                         )
 
@@ -122,9 +124,11 @@ class EntityRenderer:
                 )  # Default to black if color not specified
 
             for entity in entities_in_group:
-                x = entity.xpos * self.adjust
+                # Apply -1 tile offset to correct for padding in visualization
+                from .constants.physics_constants import TILE_PIXEL_SIZE
+                x = (entity.xpos - TILE_PIXEL_SIZE) * self.adjust
 
-                y = entity.ypos * self.adjust
+                y = (entity.ypos - TILE_PIXEL_SIZE) * self.adjust
 
                 # Special coloring for EntityExit (type 3) when its switch is hit
                 if (
@@ -186,16 +190,20 @@ class EntityRenderer:
 
     def _draw_type_23_entity(self, context, entity, x, y):
         """Helper method to draw type 23 entities"""
+        from .constants.physics_constants import TILE_PIXEL_SIZE
         context.set_line_width(1)
         context.move_to(x, y)
-        context.line_to(entity.xend * self.adjust, entity.yend * self.adjust)
+        # Apply -1 tile offset to correct for padding in visualization
+        context.line_to((entity.xend - TILE_PIXEL_SIZE) * self.adjust, (entity.yend - TILE_PIXEL_SIZE) * self.adjust)
         context.stroke()
 
     def _draw_ninja(self, context):
         """Helper method to draw ninja"""
+        from .constants.physics_constants import TILE_PIXEL_SIZE
         radius = NINJA_RADIUS * self.adjust
-        x = self.sim.ninja.xpos * self.adjust
-        y = self.sim.ninja.ypos * self.adjust
+        # Apply -1 tile offset to correct for padding in visualization
+        x = (self.sim.ninja.xpos - TILE_PIXEL_SIZE) * self.adjust
+        y = (self.sim.ninja.ypos - TILE_PIXEL_SIZE) * self.adjust
 
         if self.sim.sim_config.enable_anim:
             bones = self.sim.ninja.bones
