@@ -2,11 +2,23 @@
 
 This is a simulation of the game N++. N++ is a 2D physics-based platformer where the player controls a ninja character through levels filled with obstacles, enemies, and objectives. The game features precise physics simulation with momentum-based movement, wall jumping, and various interactive elements.
 
+## Physics Constants Reference
+
+**Important**: All physics constants referenced in this document are centralized in `nclone/constants/physics_constants.py`. When implementing game logic or AI systems, always use the named constants from that file rather than hardcoded values to ensure consistency and maintainability.
+
+For example:
+- Use `NINJA_RADIUS` instead of hardcoding `10`
+- Use `GRAVITY_FALL` instead of approximating `0.0667`
+- Use `MAX_HOR_SPEED` instead of hardcoding speed limits
+- Use entity-specific constants like `THWUMP_FORWARD_SPEED`, `DRONE_RADIUS`, etc.
+
+This ensures your code remains synchronized with any physics updates and makes the codebase more maintainable.
+
 ## Level Structure
 
 ### Dimensions
-- **Level Size**: 42*23 grid cells (1056*600 pixels)
-- **Cell Size**: 24*24 pixels per grid cell
+- **Level Size**: 42*23 grid cells (1056*600 pixels) - see `MAP_TILE_WIDTH`, `MAP_TILE_HEIGHT`, `FULL_MAP_WIDTH_PX`, `FULL_MAP_HEIGHT_PX` in physics_constants.py
+- **Cell Size**: 24*24 pixels per grid cell - see `TILE_PIXEL_SIZE` in physics_constants.py
 - **Coordinate System**: Origin at top-left, X increases rightward, Y increases downward
 - **Visibility**: The entire level is always visible to the player
 
@@ -18,7 +30,7 @@ This is a simulation of the game N++. N++ is a 2D physics-based platformer where
 ## Player Character (Ninja)
 
 ### Physical Properties
-- **Radius**: 10 pixels (circular collision shape)
+- **Radius**: 10 pixels (circular collision shape) - see `NINJA_RADIUS` in physics_constants.py
 - **Spawn Position**: Defined by map data at coordinates `(map_data[1231]*6, map_data[1232]*6)`
 
 ### Movement States
@@ -37,27 +49,27 @@ The ninja has 9 distinct movement states with specific transition conditions:
 ### Physics Constants
 
 #### Gravity
-- **Fall Gravity**: 0.0667 pixels/frame² (when falling or not jumping)
-- **Jump Gravity**: 0.0111 pixels/frame² (when actively jumping)
+- **Fall Gravity**: 0.06666666666666665 pixels/frame² (when falling or not jumping) - see `GRAVITY_FALL` in physics_constants.py
+- **Jump Gravity**: 0.01111111111111111 pixels/frame² (when actively jumping) - see `GRAVITY_JUMP` in physics_constants.py
 
 #### Acceleration
-- **Ground Acceleration**: 0.0667 pixels/frame² (horizontal movement on ground)
-- **Air Acceleration**: 0.0444 pixels/frame² (horizontal movement in air)
+- **Ground Acceleration**: 0.06666666666666665 pixels/frame² (horizontal movement on ground) - see `GROUND_ACCEL` in physics_constants.py
+- **Air Acceleration**: 0.04444444444444444 pixels/frame² (horizontal movement in air) - see `AIR_ACCEL` in physics_constants.py
 
 #### Speed Limits
-- **Maximum Horizontal Speed**: 3.333 pixels/frame
-- **Maximum Jump Duration**: 45 frames
+- **Maximum Horizontal Speed**: 3.333 pixels/frame - see `MAX_HOR_SPEED` in physics_constants.py
+- **Maximum Jump Duration**: 45 frames - see `MAX_JUMP_DURATION` in physics_constants.py
 
 #### Drag and Friction
-- **Regular Drag**: 0.9933 (applied to both X and Y velocity each frame)
-- **Slow Drag**: 0.8618 (applied in certain conditions)
-- **Ground Friction**: 0.9459 (applied to horizontal velocity on ground)
-- **Ground Friction (Slow)**: 0.8618 (applied when moving slowly on ground)
-- **Wall Friction**: 0.9113 (applied to vertical velocity when wall sliding)
+- **Regular Drag**: 0.9933221725495059 (applied to both X and Y velocity each frame) - see `DRAG_REGULAR` in physics_constants.py
+- **Slow Drag**: 0.8617738760127536 (applied in certain conditions) - see `DRAG_SLOW` in physics_constants.py
+- **Ground Friction**: 0.9459290248857720 (applied to horizontal velocity on ground) - see `FRICTION_GROUND` in physics_constants.py
+- **Ground Friction (Slow)**: 0.8617738760127536 (applied when moving slowly on ground) - see `FRICTION_GROUND_SLOW` in physics_constants.py
+- **Wall Friction**: 0.9113380468927672 (applied to vertical velocity when wall sliding) - see `FRICTION_WALL` in physics_constants.py
 
 #### Death Conditions
-- **Maximum Survivable Impact**: 6 pixels/frame (impact velocity that causes death)
-- **Minimum Survivable Crushing**: 0.05 (crushing threshold)
+- **Maximum Survivable Impact**: 6 pixels/frame (impact velocity that causes death) - see `MAX_SURVIVABLE_IMPACT` in physics_constants.py
+- **Minimum Survivable Crushing**: 0.05 (crushing threshold) - see `MIN_SURVIVABLE_CRUSHING` in physics_constants.py
 
 ### Movement Mechanics
 
@@ -75,13 +87,13 @@ The ninja has 9 distinct movement states with specific transition conditions:
 - State 5→4: Not touching wall or input away from wall
 
 #### Jumping
-- **Floor Jump**: From flat ground, applies velocity `(0, -2)`
-- **Wall Jump (Regular)**: Applies velocity `(1 * wall_normal, -1.4)`
-- **Wall Jump (Slide)**: From wall slide state, applies velocity `(2/3 * wall_normal, -1)`
+- **Floor Jump**: From flat ground, applies velocity `(0, -2)` - see `JUMP_FLAT_GROUND_Y` in physics_constants.py
+- **Wall Jump (Regular)**: Applies velocity `(1 * wall_normal, -1.4)` - see `JUMP_WALL_REGULAR_X`, `JUMP_WALL_REGULAR_Y` in physics_constants.py
+- **Wall Jump (Slide)**: From wall slide state, applies velocity `(2/3 * wall_normal, -1)` - see `JUMP_WALL_SLIDE_X`, `JUMP_WALL_SLIDE_Y` in physics_constants.py
 - **Slope Jumping**: Complex mechanics based on slope angle and movement direction
-  - Downhill with input: `(2/3 * slope_x, 2 * slope_y)`
-  - Uphill perpendicular: `(2/3 * slope_x, 2 * slope_y)` with speed reset
-  - Default uphill: `(0, -1.4)`
+  - Downhill with input: `(2/3 * slope_x, 2 * slope_y)` - see `JUMP_SLOPE_DOWNHILL_X`, `JUMP_SLOPE_DOWNHILL_Y` in physics_constants.py
+  - Uphill perpendicular: `(2/3 * slope_x, 2 * slope_y)` with speed reset - see `JUMP_SLOPE_UPHILL_PERP_X`, `JUMP_SLOPE_UPHILL_PERP_Y` in physics_constants.py
+  - Default uphill: `(0, -1.4)` - see `JUMP_SLOPE_UPHILL_FORWARD_Y` in physics_constants.py
 
 #### Wall Interaction
 - **Wall Detection**: Ninja can interact with walls within radius + 0.1 pixels
@@ -148,7 +160,7 @@ The ninja has 9 distinct movement states with specific transition conditions:
 - **Types 14-17**: Quarter pipes (convex curves)
 - **Types 18-25**: Mild slopes (various angles)
 - **Types 26-33**: Steep slopes (various angles)
-- **Types 34-37**: Glitched tiles (special collision properties)
+- **Types 34-37**: Glitched tiles (these have no collision and are not used in the game)
 
 ### Collision Geometry
 Each tile can contain:
@@ -183,7 +195,7 @@ fixed 44*25 map size and small query regions used by the player physics.
 ### Hazards and Interactive Elements
 
 #### Toggle Mines (Type 1/21)
-- **States**: Untoggled (safe, 3.5px), Toggling (transitioning, 4.5px), Toggled (deadly, 4px)
+- **States**: Untoggled (safe, 3.5px), Toggling (transitioning, 4.5px), Toggled (deadly, 4px) - see `TOGGLE_MINE_RADII` in physics_constants.py
 - **State Transitions**:
   - Untoggled→Toggling: Ninja touches mine
   - Toggling→Toggled: Ninja stops touching mine  
@@ -193,33 +205,33 @@ fixed 44*25 map size and small query regions used by the player physics.
 #### Launch Pads (Type 10)
 - **Radius**: 6 pixels
 - **Boost Strength**: 36/7 pixels/frame in specified direction
-- **Function**: Propels ninja with velocity `(boost_x * 2/3, boost_y * 2/3)`
+- **Function**: Propels ninja with velocity `(boost_x * 2/3, boost_y * 2/3)` - see `JUMP_LAUNCH_PAD_BOOST_SCALAR`, `JUMP_LAUNCH_PAD_BOOST_FACTOR` in physics_constants.py
 - **Orientations**: 8 possible directions (0-7)
 - **AI Note**: Powerful movement tool, plan trajectory carefully
 
 #### Bounce Blocks (Type 17)
-- **Size**: 9*9 pixel square
-- **Physics**: Spring-based with stiffness 0.0222, dampening 0.98
-- **Interaction**: 80% force applied to block, 20% to ninja
+- **Size**: 9*9 pixel square - see `BOUNCE_BLOCK_SIZE` in physics_constants.py
+- **Physics**: Spring-based system - see bounce block constants in physics_constants.py
+- **Interaction**: Force distribution system for ninja-block interaction
 - **AI Strategy**: Use for momentum preservation and creative routing
 
 #### Thwumps (Type 20)
-- **Size**: 9*9 pixel square
+- **Size**: 9*9 pixel square - see `THWUMP_SEMI_SIDE` in physics_constants.py
 - **Facing**: Each thwump faces one of four sides (up, down, left, right)
 - **Deadly Side**: Only the side the thwump is facing is deadly during a charge; other sides behave as solid walls or floors and can be safely touched or stood on
-- **Movement**: Forward speed 20/7, backward speed 8/7 pixels/frame
+- **Movement**: Forward speed 20/7, backward speed 8/7 pixels/frame - see `THWUMP_FORWARD_SPEED`, `THWUMP_BACKWARD_SPEED` in physics_constants.py
 - **Behavior**: Charges toward ninja when in line of sight, returns to origin
 - **States**: Immobile (0), Forward (1), Backward (-1)
-- **Activation Range**: 2 * (9 + 10) = 38 pixels
+- **Activation Range**: 38 pixels - see `THWUMP_ACTIVATION_RANGE` in physics_constants.py
 - **Special Interaction**: Horizontally-moving thwumps can be 'ridden' on top of, enabling advanced movement and routing strategies
 - **AI Strategy**: Use timing and positioning to avoid the deadly face; consider using non-deadly sides for traversal or as moving platforms
 
 #### Drones (Types 14, 26)
-- **Radius**: 7.5 pixels (regular), 4 pixels (mini)
+- **Radius**: 7.5 pixels (regular), 4 pixels (mini) - see `DRONE_RADIUS`, `MINI_DRONE_RADIUS` in physics_constants.py
 - **Movement**: Grid-based patrolling with 4 modes:
   - 0: Follow wall clockwise, 1: Follow wall counter-clockwise
   - 2: Wander clockwise, 3: Wander counter-clockwise
-- **Speed**: 8/7 pixels/frame (regular), 1.3 pixels/frame (mini)
+- **Speed**: Various speeds based on drone type - see `DRONE_LAUNCH_SPEED` in physics_constants.py
 - **AI Strategy**: Predict patrol patterns, time movements accordingly
 
 #### Death Balls (Type 25)
@@ -231,7 +243,7 @@ fixed 44*25 map size and small query regions used by the player physics.
 ### Movement Aids
 
 #### One-Way Platforms (Type 11)
-- **Size**: 12*12 pixel square
+- **Size**: 12*12 pixel square - see `ONE_WAY_PLATFORM_SEMI_SIDE` in physics_constants.py
 - **Function**: Allows passage from one direction only
 - **Collision**: Depends on approach angle and velocity
 - **AI Note**: Critical for routing, understand approach requirements
@@ -261,7 +273,7 @@ fixed 44*25 map size and small query regions used by the player physics.
 
 ### Critical State Information
 - **Position**: `(ninja.xpos, ninja.ypos)` normalized to [0,1]
-- **Velocity**: `(ninja.xspeed, ninja.yspeed)` within [-3.333, 3.333]
+- **Velocity**: `(ninja.xspeed, ninja.yspeed)` within horizontal limits defined by `MAX_HOR_SPEED` in physics_constants.py
 - **State**: Current movement state (0-9) affects available actions
 - **Buffers**: Active input buffers enable delayed actions
 - **Physics**: Applied gravity/drag/friction indicate current physics mode

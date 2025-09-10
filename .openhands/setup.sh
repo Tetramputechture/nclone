@@ -186,19 +186,25 @@ pip_install_with_progress() {
     
     log_info "Installing packages: ${packages[*]}"
     
-    # Start pip install in background
-    pip install "${pip_args[@]}" "${packages[@]}" &
+    # Start pip install in background with timeout
+    timeout $PIP_TIMEOUT pip install "${pip_args[@]}" "${packages[@]}" &
     local pip_pid=$!
     
     # Show progress indicator
     show_progress $pip_pid "Installing packages"
     
-    # Wait for completion with timeout
-    if wait $pip_pid; then
+    # Wait for completion and check result
+    wait $pip_pid
+    local exit_code=$?
+    
+    if [[ $exit_code -eq 0 ]]; then
         log_success "Package installation completed"
         return 0
+    elif [[ $exit_code -eq 124 ]]; then
+        log_error "Package installation timed out after ${PIP_TIMEOUT} seconds"
+        return 1
     else
-        log_error "Package installation failed"
+        log_error "Package installation failed with exit code: $exit_code"
         return 1
     fi
 }
@@ -217,9 +223,6 @@ main() {
     check_lock
     check_resources
     
-    # Change to project root
-    cd "$PROJECT_ROOT"
-    
     # Check Python version
     log_info "Checking Python version..."
     if ! python_version=$(python3 --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1,2); then
@@ -237,7 +240,7 @@ main() {
     
     # Create necessary directories
     log_info "Creating necessary directories..."
-    mkdir -p maps/official maps/eval
+    mkdir -p nclone/maps/official nclone/maps/eval
     log_success "Necessary directories created"
     
     # Set up environment variables for headless operation
@@ -248,21 +251,39 @@ main() {
     chmod 700 "$XDG_RUNTIME_DIR"
     log_success "Environment variables configured"
     
-    # Install all packages in one optimized command
-    log_info "Installing nclone with all dependencies..."
+    # Install build dependencies first
+    log_info "Installing build dependencies..."
     
-    # Combine all installations into a single command for efficiency
-    local packages=(
-        "-e .[dev,test]"  # Install nclone with dev and test extras
-        "ruff"            # Linting tools
+    local build_packages=(
+        "setuptools>=45"
+        "wheel"
+        "setuptools_scm[toml]>=6.2"
     )
     
-    if run_with_timeout $PIP_TIMEOUT "Package installation failed" \
-       pip_install_with_progress "${packages[@]}"; then
-        log_success "All packages installed successfully"
+    if pip_install_with_progress "${build_packages[@]}"; then
+        log_success "Build dependencies installed successfully"
     else
-        log_error "Failed to install packages"
+        log_error "Failed to install build dependencies"
         exit 1
+    fi
+    
+    # Install nclone with all dependencies
+    log_info "Installing nclone with all dependencies..."
+    
+    # Install nclone first, then additional tools
+    if pip_install_with_progress "-e ."; then
+        log_success "nclone installed successfully"
+    else
+        log_error "Failed to install nclone package"
+        exit 1
+    fi
+    
+    # Install additional development tools
+    log_info "Installing additional development tools..."
+    if pip_install_with_progress "ruff"; then
+        log_success "Additional tools installed successfully"
+    else
+        log_warning "Some additional tools failed to install, but continuing..."
     fi
     
     # Verify installations

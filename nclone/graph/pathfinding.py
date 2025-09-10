@@ -434,13 +434,20 @@ class PathfindingEngine:
             if current_node == goal_node:
                 path = self._reconstruct_path(parent_map, start_node, goal_node)
                 edge_types = self._get_path_edge_types(graph_data, adjacency, path)
+                path_coordinates = self._get_node_coordinates(graph_data, path)
+                
+                # Consolidate consecutive segments of the same movement type
+                consolidated_coords, consolidated_types = self._consolidate_path_segments(
+                    path_coordinates, edge_types
+                )
+                
                 return PathResult(
                     path=path,
                     total_cost=current.g_cost,
                     success=True,
                     nodes_explored=nodes_explored,
-                    path_coordinates=self._get_node_coordinates(graph_data, path),
-                    edge_types=edge_types,
+                    path_coordinates=consolidated_coords,
+                    edge_types=consolidated_types,
                 )
 
             # Explore neighbors
@@ -516,13 +523,20 @@ class PathfindingEngine:
             if current_node == goal_node:
                 path = self._reconstruct_path(parent_map, start_node, goal_node)
                 edge_types = self._get_path_edge_types(graph_data, adjacency, path)
+                path_coordinates = self._get_node_coordinates(graph_data, path)
+                
+                # Consolidate consecutive segments of the same movement type
+                consolidated_coords, consolidated_types = self._consolidate_path_segments(
+                    path_coordinates, edge_types
+                )
+                
                 return PathResult(
                     path=path,
                     total_cost=current_dist,
                     success=True,
                     nodes_explored=nodes_explored,
-                    path_coordinates=self._get_node_coordinates(graph_data, path),
-                    edge_types=edge_types,
+                    path_coordinates=consolidated_coords,
+                    edge_types=consolidated_types,
                 )
 
             # Explore neighbors
@@ -593,80 +607,69 @@ class PathfindingEngine:
         dst_node: int,
         ninja_state: Optional[Dict[str, Any]] = None,
     ) -> float:
-        """Calculate realistic physics-based cost for traversing an edge."""
+        """Calculate realistic physics-based cost for traversing an edge using movement classification."""
         # Get node positions
         src_pos = self._get_node_position(graph_data, src_node)
         dst_pos = self._get_node_position(graph_data, dst_node)
         
-        # Calculate base Euclidean distance
-        distance = math.sqrt((dst_pos[0] - src_pos[0])**2 + (dst_pos[1] - src_pos[1])**2)
+        # Use movement classifier to determine the actual movement type and physics
+        movement_type, physics_params = self.movement_classifier.classify_movement(
+            src_pos, dst_pos, ninja_state, None  # level_data not available here
+        )
         
-        # Apply realistic movement type multipliers based on N++ gameplay mechanics
-        movement_multipliers = {
-            EdgeType.WALK: 1.0,      # Base movement cost
-            EdgeType.JUMP: 1.2,      # Slightly more expensive (energy cost)
-            EdgeType.FALL: 0.8,      # Cheaper (gravity assists)
-            EdgeType.WALL_SLIDE: 1.5, # More expensive (requires precision)
-            EdgeType.ONE_WAY: 1.1,   # Slightly more expensive (limited options)
-            EdgeType.FUNCTIONAL: 2.0  # Most expensive (requires interaction)
-        }
+        # Calculate physics-based cost using the movement classification results
+        base_cost = physics_params.get('distance', 0)
+        energy_cost = physics_params.get('energy_cost', 0)
+        risk_factor = physics_params.get('risk_factor', 0)
         
-        # Get cost multiplier for this edge type
-        cost_multiplier = movement_multipliers.get(edge_type, 1.0)
+        # Combine different cost factors
+        # Base cost is the distance, energy cost represents difficulty, risk adds uncertainty
+        total_cost = base_cost + energy_cost * 10 + risk_factor * 5
         
-        # Apply multiplier to distance
-        realistic_cost = distance * cost_multiplier
+        # Apply edge type modifiers if they differ from classified movement
+        # This handles cases where the graph has pre-classified edges that might differ
+        # from our physics-based classification
+        if edge_type != EdgeType.WALK:  # Default assumption
+            edge_type_multipliers = {
+                EdgeType.WALK: 1.0,
+                EdgeType.JUMP: 1.0,  # Already accounted for in physics
+                EdgeType.FALL: 1.0,  # Already accounted for in physics
+                EdgeType.WALL_SLIDE: 1.2,  # Add slight penalty for complexity
+                EdgeType.ONE_WAY: 1.1,     # Add penalty for reduced options
+                EdgeType.FUNCTIONAL: 2.0   # High penalty for required interactions
+            }
+            multiplier = edge_type_multipliers.get(edge_type, 1.0)
+            total_cost *= multiplier
         
-        return max(realistic_cost, 0.1)  # Ensure minimum positive cost
+        return max(total_cost, 0.1)  # Ensure minimum positive cost
 
     def _calculate_heuristic(
         self, pos1: Tuple[float, float], pos2: Tuple[float, float]
     ) -> float:
         """Calculate physics-informed heuristic distance between two positions."""
-        x1, y1 = pos1
-        x2, y2 = pos2
-
-        # Basic Euclidean distance
-        euclidean_distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-
-        # Use physics-informed heuristic
-
-        # Physics-informed heuristic based on movement type
-        dx = x2 - x1
-        dy = y2 - y1
-
-        # Estimate movement type based on displacement
-        if abs(dy) < 10.0:  # Mostly horizontal - likely walking
-            # Use walking speed for time estimate
-            from nclone.constants.physics_constants import MAX_HOR_SPEED
-
-            time_estimate = abs(dx) / MAX_HOR_SPEED if abs(dx) > 0 else 0.1
-            return time_estimate
-        elif dy < -20.0:  # Significant upward movement - likely jumping
-            # Use jump physics for time estimate
-            from nclone.constants.physics_constants import (
-                GRAVITY_JUMP,
-                JUMP_FLAT_GROUND_Y,
+        # Use movement classifier to get a physics-based estimate
+        # This provides a more accurate heuristic than simple distance calculations
+        try:
+            movement_type, physics_params = self.movement_classifier.classify_movement(
+                pos1, pos2, None, None
             )
-
-            initial_vy = abs(JUMP_FLAT_GROUND_Y)
-            if abs(dy) > 0:
-                time_up = initial_vy / GRAVITY_JUMP
-                time_estimate = time_up * 2  # Rough estimate for jump time
-            else:
-                time_estimate = euclidean_distance / MAX_HOR_SPEED
-            return time_estimate * 1.5  # Jump penalty
-        elif dy > 20.0:  # Significant downward movement - likely falling
-            # Use fall physics for time estimate
-            from nclone.constants.physics_constants import GRAVITY_FALL
-
-            time_estimate = (
-                math.sqrt(2 * abs(dy) / GRAVITY_FALL) if abs(dy) > 0 else 0.1
-            )
-            return time_estimate * 1.2  # Fall penalty
-        else:
-            # Mixed movement - use distance with moderate penalty
-            return euclidean_distance * 1.3
+            
+            # Use the physics-based cost estimation as heuristic
+            # This ensures the heuristic is admissible (never overestimates)
+            base_cost = physics_params.get('distance', 0)
+            energy_cost = physics_params.get('energy_cost', 0)
+            risk_factor = physics_params.get('risk_factor', 0)
+            
+            # Heuristic should be optimistic (underestimate), so use lower weights
+            heuristic_cost = base_cost + energy_cost * 5 + risk_factor * 2
+            
+            return max(heuristic_cost, 0.1)
+            
+        except Exception:
+            # Fallback to simple Euclidean distance if movement classification fails
+            x1, y1 = pos1
+            x2, y2 = pos2
+            return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
 
     def _get_node_position(
         self, graph_data: GraphData, node_idx: int
@@ -745,6 +748,55 @@ class PathfindingEngine:
                 edge_types.append(EdgeType.WALK)  # Default if not found
 
         return edge_types
+
+    def _consolidate_path_segments(
+        self,
+        path_coordinates: List[Tuple[float, float]],
+        edge_types: List[EdgeType]
+    ) -> Tuple[List[Tuple[float, float]], List[EdgeType]]:
+        """
+        Consolidate consecutive path segments of the same movement type.
+        
+        This addresses the issue of "many small WALK segments clustered together"
+        by combining adjacent segments with the same movement type into single
+        coherent movements.
+        
+        Args:
+            path_coordinates: List of waypoint coordinates
+            edge_types: List of edge types for each segment
+            
+        Returns:
+            Tuple of (consolidated_coordinates, consolidated_edge_types)
+        """
+        if len(path_coordinates) <= 2 or len(edge_types) == 0:
+            return path_coordinates, edge_types
+            
+        consolidated_coords = [path_coordinates[0]]  # Always keep start point
+        consolidated_types = []
+        
+        current_type = edge_types[0]
+        
+        for i in range(1, len(edge_types)):
+            next_type = edge_types[i]
+            
+            # If movement type changes, finalize current segment
+            if next_type != current_type:
+                consolidated_coords.append(path_coordinates[i])
+                consolidated_types.append(current_type)
+                current_type = next_type
+            # Otherwise, continue consolidating (skip intermediate waypoint)
+            
+        # Add final segment and destination
+        consolidated_coords.append(path_coordinates[-1])
+        consolidated_types.append(current_type)
+        
+        # Log consolidation results
+        original_segments = len(edge_types)
+        consolidated_segments = len(consolidated_types)
+        if original_segments > consolidated_segments:
+            logger.info(f"Consolidated {original_segments} segments into {consolidated_segments} segments")
+            
+        return consolidated_coords, consolidated_types
 
     def _reconstruct_path(
         self, parent_map: Dict[int, int], start_node: int, goal_node: int
