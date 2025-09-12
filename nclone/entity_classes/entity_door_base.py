@@ -22,7 +22,7 @@ class EntityDoorBase(Entity):
         - State Management:
             * Maintains open/closed state
             * Updates collision geometry based on state
-            * Handles grid edge updates for proper pathfinding
+            * Handles grid edge updates for proper navigation
         - Positioning:
             * Door segment position: Physical barrier location
             * Entity position: Switch/trigger location
@@ -35,7 +35,7 @@ class EntityDoorBase(Entity):
     Technical Implementation:
         - Grid Integration:
             * Creates and manages grid segments for collision
-            * Updates grid edge dictionaries for pathfinding
+            * Updates grid edge dictionaries for navigation
             * Handles cell-based positioning and updates
         - State Tracking:
             * Supports state queries for AI decision making

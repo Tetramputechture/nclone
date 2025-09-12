@@ -7,14 +7,10 @@ detection and hazard-aware traversability in the graph construction pipeline.
 
 import pytest
 import numpy as np
-from typing import Dict, Any, List, Tuple
 
 from nclone.graph.edge_building import EdgeBuilder
 from nclone.graph.feature_extraction import FeatureExtractor
-from nclone.graph.precise_collision import PreciseTileCollision
-from nclone.graph.hazard_system import HazardClassificationSystem
 from nclone.constants.entity_types import EntityType
-from nclone.constants.physics_constants import NINJA_RADIUS
 
 
 class TestEnhancedTraversabilityIntegration:

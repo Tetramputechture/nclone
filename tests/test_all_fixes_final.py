@@ -19,11 +19,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nclone'))
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.level_data import LevelData
-from nclone.graph.pathfinding import PathfindingEngine
+from nclone.graph.navigation import PathfindingEngine
 from nclone.graph.common import EdgeType
 from nclone.constants import TILE_PIXEL_SIZE
 from nclone.nsim import Simulator
-from nclone.sim_config import SimConfig
 import numpy as np
 
 
@@ -33,7 +32,7 @@ class TestAllGraphFixes(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.graph_builder = HierarchicalGraphBuilder()
-        self.pathfinding_engine = PathfindingEngine()
+        self.navigation_engine = PathfindingEngine()
 
     def load_bblock_test_map(self):
         """Load the original bblock_test map."""
@@ -165,7 +164,7 @@ class TestAllGraphFixes(unittest.TestCase):
         print(f"Walkable edges in solid tiles: {walkable_edges_in_solid}")
         self.assertEqual(walkable_edges_in_solid, 0, "Should have no walkable edges in solid tiles")
 
-    def test_issue_3_pathfinding_bblock_test(self):
+    def test_issue_3_navigation_bblock_test(self):
         """Test Issue #3: Pathfinding working (bblock_test)."""
         print("\n=== Testing Issue #3: Pathfinding (bblock_test) ===")
         
@@ -175,23 +174,23 @@ class TestAllGraphFixes(unittest.TestCase):
         # Build graph
         graph_data = self.graph_builder.build_hierarchical_graph(level_data, ninja_pos)
         
-        # Test pathfinding between nearby nodes
+        # Test navigation between nearby nodes
         start_pos = (150, 446)
         end_pos = (129, 446)
         
-        start_node = self.pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
-        end_node = self.pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
+        start_node = self.navigation_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
+        end_node = self.navigation_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
         
         self.assertIsNotNone(start_node, f"Should find node at {start_pos}")
         self.assertIsNotNone(end_node, f"Should find node at {end_pos}")
         
-        path_result = self.pathfinding_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
+        path_result = self.navigation_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
         
         print(f"Path found: {path_result.success}, nodes: {len(path_result.path)}, cost: {path_result.total_cost:.2f}")
         self.assertTrue(path_result.success, "Should find path between nearby traversable positions")
         self.assertGreater(len(path_result.path), 0, "Path should have nodes")
 
-    def test_issue_3_pathfinding_custom_map(self):
+    def test_issue_3_navigation_custom_map(self):
         """Test Issue #3: Pathfinding working (custom map)."""
         print("\n=== Testing Issue #3: Pathfinding (custom map) ===")
         
@@ -201,17 +200,17 @@ class TestAllGraphFixes(unittest.TestCase):
         # Build graph
         graph_data = self.graph_builder.build_hierarchical_graph(level_data, ninja_pos)
         
-        # Test pathfinding in open area
+        # Test navigation in open area
         start_pos = (120, 480)
         end_pos = (200, 480)
         
-        start_node = self.pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
-        end_node = self.pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
+        start_node = self.navigation_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
+        end_node = self.navigation_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
         
         self.assertIsNotNone(start_node, f"Should find node at {start_pos}")
         self.assertIsNotNone(end_node, f"Should find node at {end_pos}")
         
-        path_result = self.pathfinding_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
+        path_result = self.navigation_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
         
         print(f"Path found: {path_result.success}, nodes: {len(path_result.path)}, cost: {path_result.total_cost:.2f}")
         self.assertTrue(path_result.success, "Should find path between nearby traversable positions")

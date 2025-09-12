@@ -8,11 +8,9 @@ various movement scenarios with static and dynamic hazards.
 import pytest
 import numpy as np
 import math
-from typing import Dict, Any, List, Tuple
 
 from nclone.graph.hazard_system import (
-    HazardClassificationSystem, HazardInfo, HazardType, HazardState,
-    EdgeHazardMeta
+    HazardClassificationSystem, HazardInfo, HazardType, HazardState
 )
 from nclone.constants.entity_types import EntityType
 

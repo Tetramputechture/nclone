@@ -5,7 +5,7 @@ Comprehensive unit tests for the graph visualization fixes.
 This test suite ensures that all three issues remain resolved:
 1. Functional edges (switch-door connections)
 2. Walkable edges in solid tiles
-3. Ninja pathfinding from solid spawn tile
+3. Ninja navigation from solid spawn tile
 """
 
 import os
@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'nclone'))
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.pathfinding import PathfindingEngine
+from nclone.graph.navigation import PathfindingEngine
 from nclone.graph.common import EdgeType
 
 
@@ -47,10 +47,10 @@ class TestGraphVisualizationFixes(unittest.TestCase):
         cls.graph_builder = HierarchicalGraphBuilder()
         cls.hierarchical_data = cls.graph_builder.build_graph(cls.level_data, cls.ninja_pos)
         cls.graph_data = cls.hierarchical_data.sub_cell_graph
-        cls.pathfinding_engine = PathfindingEngine()
+        cls.navigation_engine = PathfindingEngine()
         
         # Find ninja node
-        cls.ninja_node = cls.pathfinding_engine._find_node_at_position(cls.graph_data, cls.ninja_pos)
+        cls.ninja_node = cls.navigation_engine._find_node_at_position(cls.graph_data, cls.ninja_pos)
     
     def test_issue1_functional_edges_exist(self):
         """Test that functional edges exist between switches and doors."""
@@ -65,8 +65,8 @@ class TestGraphVisualizationFixes(unittest.TestCase):
                 src_idx = int(self.graph_data.edge_index[0, edge_idx])
                 dst_idx = int(self.graph_data.edge_index[1, edge_idx])
                 
-                src_pos = self.pathfinding_engine._get_node_position(self.graph_data, src_idx)
-                dst_pos = self.pathfinding_engine._get_node_position(self.graph_data, dst_idx)
+                src_pos = self.navigation_engine._get_node_position(self.graph_data, src_idx)
+                dst_pos = self.navigation_engine._get_node_position(self.graph_data, dst_idx)
                 
                 functional_edges.append((src_pos, dst_pos))
         
@@ -102,8 +102,8 @@ class TestGraphVisualizationFixes(unittest.TestCase):
                 src_idx = int(self.graph_data.edge_index[0, edge_idx])
                 dst_idx = int(self.graph_data.edge_index[1, edge_idx])
                 
-                src_pos = self.pathfinding_engine._get_node_position(self.graph_data, src_idx)
-                dst_pos = self.pathfinding_engine._get_node_position(self.graph_data, dst_idx)
+                src_pos = self.navigation_engine._get_node_position(self.graph_data, src_idx)
+                dst_pos = self.navigation_engine._get_node_position(self.graph_data, dst_idx)
                 
                 # Check if source is in solid tile
                 src_tile_x = int(src_pos[0] // 24)
@@ -131,11 +131,11 @@ class TestGraphVisualizationFixes(unittest.TestCase):
         self.assertGreater(ninja_escape_edges, 0, 
                           "Should have ninja escape edges for spawn tile navigation")
     
-    def test_issue3_ninja_pathfinding_local(self):
-        """Test that ninja can pathfind to nearby empty areas."""
+    def test_issue3_ninja_navigation_local(self):
+        """Test that ninja can navigate to nearby empty areas."""
         self.assertIsNotNone(self.ninja_node, "Ninja node should be found")
         
-        # Test pathfinding to nearby empty tile positions
+        # Test navigation to nearby empty tile positions
         nearby_targets = [
             (129, 429),  # Empty tile
             (135, 429),  # Empty tile
@@ -146,20 +146,20 @@ class TestGraphVisualizationFixes(unittest.TestCase):
         successful_paths = 0
         
         for target_pos in nearby_targets:
-            target_node = self.pathfinding_engine._find_node_at_position(self.graph_data, target_pos)
+            target_node = self.navigation_engine._find_node_at_position(self.graph_data, target_pos)
             
             if target_node is not None:
-                path_result = self.pathfinding_engine.find_shortest_path(
+                path_result = self.navigation_engine.find_shortest_path(
                     self.graph_data, self.ninja_node, target_node
                 )
                 
                 if path_result and path_result.success and len(path_result.path) > 0:
                     successful_paths += 1
         
-        # Should achieve high success rate for local pathfinding
+        # Should achieve high success rate for local navigation
         success_rate = (successful_paths / len(nearby_targets)) * 100
         self.assertGreaterEqual(success_rate, 75, 
-                               f"Local pathfinding success rate should be >= 75%, got {success_rate:.1f}%")
+                               f"Local navigation success rate should be >= 75%, got {success_rate:.1f}%")
     
     def test_issue3_ninja_connectivity_improvement(self):
         """Test that ninja's connected component is significantly larger."""
@@ -207,8 +207,8 @@ class TestGraphVisualizationFixes(unittest.TestCase):
         self.assertGreater(total_edges, 3500, 
                           f"Should have > 3500 edges with corridor connections, got {total_edges}")
     
-    def test_long_distance_pathfinding_improvement(self):
-        """Test that some long-distance pathfinding is now possible."""
+    def test_long_distance_navigation_improvement(self):
+        """Test that some long-distance navigation is now possible."""
         # Test targets in different empty tile clusters
         distant_targets = [
             (168, 324),  # Cluster 5 center
@@ -220,20 +220,20 @@ class TestGraphVisualizationFixes(unittest.TestCase):
         successful_paths = 0
         
         for target_pos in distant_targets:
-            target_node = self.pathfinding_engine._find_node_at_position(self.graph_data, target_pos)
+            target_node = self.navigation_engine._find_node_at_position(self.graph_data, target_pos)
             
             if target_node is not None:
-                path_result = self.pathfinding_engine.find_shortest_path(
+                path_result = self.navigation_engine.find_shortest_path(
                     self.graph_data, self.ninja_node, target_node
                 )
                 
                 if path_result and path_result.success and len(path_result.path) > 0:
                     successful_paths += 1
         
-        # Should achieve some success for long-distance pathfinding
+        # Should achieve some success for long-distance navigation
         success_rate = (successful_paths / len(distant_targets)) * 100
         self.assertGreaterEqual(success_rate, 25, 
-                               f"Long-distance pathfinding success rate should be >= 25%, got {success_rate:.1f}%")
+                               f"Long-distance navigation success rate should be >= 25%, got {success_rate:.1f}%")
     
     def test_graph_structure_integrity(self):
         """Test that the graph structure is valid and consistent."""

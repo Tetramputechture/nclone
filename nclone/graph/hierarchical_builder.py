@@ -7,7 +7,7 @@ This module creates hierarchical graph representations with multiple resolution 
 - Level 2: Region (96px) - Strategic planning resolution
 
 The hierarchical structure enables both precise local movement decisions
-and strategic global pathfinding through multi-scale graph processing.
+and strategic global navigation through multi-scale graph processing.
 """
 
 import numpy as np
@@ -23,7 +23,6 @@ from ..constants.physics_constants import (
 )
 from .common import GraphData, EdgeType
 from .feature_extraction import FeatureExtractor
-from .edge_building import EdgeBuilder
 from .physics_enhanced_edge_builder import PhysicsEnhancedEdgeBuilder
 from .graph_construction import GraphConstructor
 from .level_data import LevelData
@@ -143,7 +142,7 @@ class HierarchicalGraphBuilder:
         self.feature_extractor = FeatureExtractor(
             self.tile_type_dim, self.entity_type_dim
         )
-        # Use physics-enhanced edge builder with comprehensive waypoint pathfinding for accurate multi-hop navigation
+        # Use physics-enhanced edge builder with comprehensive waypoint navigation for accurate multi-hop movement
         self.edge_builder = PhysicsEnhancedEdgeBuilder(self.feature_extractor)
         self.graph_constructor = GraphConstructor(
             self.feature_extractor, self.edge_builder

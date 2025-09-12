@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """
-Physics-accurate pathfinding visualization within the nclone graph system.
+Physics-accurate navigation visualization within the nclone graph system.
 
 This module provides visualization capabilities for the improved physics-accurate
-pathfinding system, showing proper movement types and realistic path costs.
+navigation system, showing proper movement types and realistic path costs.
 """
 
 import sys
 import os
 import math
-import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.patches import FancyArrowPatch, Rectangle, Circle
-from typing import List, Tuple, Optional, Dict
+from typing import List
 
 # Import nclone components
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
+from nclone.graph.navigation import PathfindingEngine, PathfindingAlgorithm
 from nclone.graph.common import EdgeType
 from nclone.constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
 
@@ -57,11 +56,11 @@ def create_tile_patches(tile_value: int, tile_x: float, tile_y: float) -> List[p
     
     return patches_list
 
-def create_physics_accurate_pathfinding_visualization(
-    save_path: str = '/workspace/nclone/physics_accurate_pathfinding.png'
+def create_physics_accurate_navigation_visualization(
+    save_path: str = '/workspace/nclone/physics_accurate_navigation.png'
 ) -> bool:
     """
-    Create comprehensive visualization of physics-accurate pathfinding.
+    Create comprehensive visualization of physics-accurate navigation.
     
     Args:
         save_path: Path to save the visualization image
@@ -90,7 +89,7 @@ def create_physics_accurate_pathfinding_visualization(
         
         print(f"✅ Graph built: {graph.num_nodes} nodes, {graph.num_edges} edges")
         
-        # Find ninja and target nodes for pathfinding
+        # Find ninja and target nodes for navigation
         ninja_node = None
         target_node = None
         min_ninja_dist = float('inf')
@@ -113,12 +112,12 @@ def create_physics_accurate_pathfinding_visualization(
                         target_node = node_idx
         
         if ninja_node is None or target_node is None:
-            print("❌ Could not find suitable nodes for pathfinding")
+            print("❌ Could not find suitable nodes for navigation")
             return False
         
         # Find optimal path
-        pathfinding_engine = PathfindingEngine(level_data, entities)
-        result = pathfinding_engine.find_shortest_path(
+        navigation_engine = PathfindingEngine(level_data, entities)
+        result = navigation_engine.find_shortest_path(
             graph, ninja_node, target_node, PathfindingAlgorithm.DIJKSTRA
         )
         
@@ -264,7 +263,7 @@ def create_physics_accurate_pathfinding_visualization(
         
         # Add summary statistics
         total_distance = sum(sum(distances) for distances in movement_distances.values())
-        summary_text = f"Path Summary:\n"
+        summary_text = "Path Summary:\n"
         summary_text += f"• Total nodes: {len(result.path)}\n"
         summary_text += f"• Total cost: {result.total_cost:.1f}px\n"
         summary_text += f"• Total distance: {total_distance:.1f}px\n"
@@ -295,7 +294,7 @@ def create_physics_accurate_pathfinding_visualization(
         print(f"✅ Visualization saved to: {save_path}")
         
         # Print summary
-        print(f"\n📊 PHYSICS-ACCURATE PATHFINDING SUMMARY:")
+        print("\n📊 PHYSICS-ACCURATE PATHFINDING SUMMARY:")
         print(f"   Path: {len(result.path)} nodes, {result.total_cost:.1f}px cost")
         print(f"   Movement types: {movement_counts}")
         
@@ -308,7 +307,7 @@ def create_physics_accurate_pathfinding_visualization(
                 physics_compliant = False
         
         if physics_compliant:
-            print(f"   ✅ All movements respect physics constraints")
+            print("   ✅ All movements respect physics constraints")
         
         plt.show()
         return True
@@ -318,4 +317,4 @@ def create_physics_accurate_pathfinding_visualization(
         return False
 
 if __name__ == "__main__":
-    create_physics_accurate_pathfinding_visualization()
+    create_physics_accurate_navigation_visualization()

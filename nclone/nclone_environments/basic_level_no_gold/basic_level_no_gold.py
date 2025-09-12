@@ -354,7 +354,7 @@ class BasicLevelNoGold(BaseEnvironment):
         self.reward_calculator.reset()
 
     def _debug_info(self):
-        # Start with any base debug info (pathfinding, graph, etc.)
+        # Start with any base debug info (navigation, graph, etc.)
         base_info = super()._debug_info()
 
         # Get current cell coordinates

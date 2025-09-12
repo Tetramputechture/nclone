@@ -27,9 +27,6 @@ from nclone.constants.physics_constants import (
     TILE_PIXEL_SIZE,
     # Movement classification constants
     MIN_HORIZONTAL_VELOCITY,
-    HORIZONTAL_MOVEMENT_THRESHOLD,
-    UPWARD_MOVEMENT_THRESHOLD,
-    DOWNWARD_MOVEMENT_THRESHOLD,
     DEFAULT_TIME_ESTIMATE,
     DEFAULT_DIFFICULTY,
     JUMP_TIME_FALLBACK,
@@ -74,7 +71,7 @@ from nclone.utils.collision_utils import (
     find_bounce_blocks_near_trajectory,
     find_chainable_bounce_blocks,
 )
-from nclone.graph.trajectory_calculator import TrajectoryCalculator, ValidationResult
+from nclone.graph.trajectory_calculator import TrajectoryCalculator
 
 
 class MovementType(IntEnum):

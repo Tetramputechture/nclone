@@ -53,7 +53,6 @@ make fix
 - **Graph System** (Primary Architecture):
   - `graph/hierarchical_builder.py`: Multi-resolution graph builder
   - `graph/edge_building.py`: Edge creation with functional/walkable/jump edges
-  - `graph/pathfinding.py`: A* pathfinding with graph navigation
   - `graph/precise_collision.py`: Collision detection with ninja radius awareness
   - `graph/visualization.py`: Graph debug overlay rendering
 
@@ -66,18 +65,8 @@ make fix
   - `debug_overlay_renderer.py`: Graph visualization overlay
   - `tile_renderer.py`, `entity_renderer.py`: Component renderers
 
-### Testing & Debugging
-- **`tests/`**: Comprehensive test suite with 23+ test files
-  - `test_graph_fixes_unit_tests.py`: **Main test suite** for graph system
-  - `run_tests.py`: Test runner script
-- **`debug/`**: 45+ debugging and analysis scripts
-  - `final_validation.py`: Comprehensive system validation
-  - Various analysis scripts for graph connectivity, pathfinding, etc.
-
 ### Documentation (`docs/`)
 - `sim_mechanics_doc.md`: Detailed simulation mechanics
-- `GRAPH_VISUALIZATION_GUIDE.md`: Graph system documentation
-- `pathfinding_strategy.md`: Pathfinding design notes
 - `FILE_INDEX.md`: Module descriptions
 
 ## Development Guidelines
@@ -126,23 +115,12 @@ python -m nclone.nplay_headless
 python -m nclone.run_multiple_headless --num-simulations 4 --num-steps 50000
 ```
 
-#### Graph System Debugging
-```bash
-# Comprehensive validation
-python debug/final_validation.py
-
-# Specific graph analysis
-python debug/analyze_graph_fragmentation.py
-python debug/debug_pathfinding.py
-```
-
 ## Important Technical Details
 
 ### Graph System Architecture
 - **Multi-resolution**: 6px (fine), 24px (medium), 96px (coarse) grid levels
 - **Edge Types**: WALK (green), JUMP (orange), FALL (blue), FUNCTIONAL (yellow)
 - **Collision Detection**: 10-pixel ninja radius awareness for traversability
-- **Pathfinding**: A* algorithm with graph-based navigation
 
 ### Environment Integration
 - Gym-compatible environments in `nclone_environments/`

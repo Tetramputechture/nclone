@@ -16,8 +16,7 @@ from .trajectory_calculator import TrajectoryCalculator
 from .precise_collision import PreciseTileCollision
 from .optimized_collision import get_collision_detector
 from ..constants.physics_constants import (
-    MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE, GRAVITY_FALL, JUMP_INITIAL_VELOCITY,
-    TILE_PIXEL_SIZE
+    MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE, GRAVITY_FALL, TILE_PIXEL_SIZE
 )
 from ..constants.entity_types import EntityType
 
@@ -604,7 +603,7 @@ class ReachabilityAnalyzer:
     
     def _identify_subgoals(self, level_data, state: ReachabilityState):
         """
-        Identify key subgoals for hierarchical pathfinding.
+        Identify key subgoals for hierarchical navigation.
         
         Subgoals are entities that unlock new areas or represent key objectives:
         - Switches that unlock doors

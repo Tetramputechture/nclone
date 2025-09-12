@@ -186,25 +186,17 @@ pip_install_with_progress() {
     
     log_info "Installing packages: ${packages[*]}"
     
-    # Start pip install in background with timeout
-    timeout $PIP_TIMEOUT pip install "${pip_args[@]}" "${packages[@]}" &
-    local pip_pid=$!
-    
-    # Show progress indicator
-    show_progress $pip_pid "Installing packages"
-    
-    # Wait for completion and check result
-    wait $pip_pid
-    local exit_code=$?
-    
-    if [[ $exit_code -eq 0 ]]; then
+    # Run pip install directly with timeout (no background process)
+    if timeout $PIP_TIMEOUT pip install "${pip_args[@]}" "${packages[@]}"; then
         log_success "Package installation completed"
         return 0
-    elif [[ $exit_code -eq 124 ]]; then
-        log_error "Package installation timed out after ${PIP_TIMEOUT} seconds"
-        return 1
     else
-        log_error "Package installation failed with exit code: $exit_code"
+        local exit_code=$?
+        if [[ $exit_code -eq 124 ]]; then
+            log_error "Package installation timed out after ${PIP_TIMEOUT} seconds"
+        else
+            log_error "Package installation failed with exit code: $exit_code"
+        fi
         return 1
     fi
 }
@@ -240,6 +232,10 @@ main() {
     
     # Create necessary directories
     log_info "Creating necessary directories..."
+    cd "$PROJECT_ROOT" || {
+        log_error "Failed to change to project root directory: $PROJECT_ROOT"
+        exit 1
+    }
     mkdir -p nclone/maps/official nclone/maps/eval
     log_success "Necessary directories created"
     
@@ -270,8 +266,15 @@ main() {
     # Install nclone with all dependencies
     log_info "Installing nclone with all dependencies..."
     
-    # Install nclone first, then additional tools
-    if pip_install_with_progress "-e ."; then
+    # Change to project root directory for editable install
+    cd "$PROJECT_ROOT" || {
+        log_error "Failed to change to project root directory: $PROJECT_ROOT"
+        exit 1
+    }
+    
+    # Install nclone package in editable mode
+    log_info "Installing nclone package in editable mode..."
+    if pip install -e "$PROJECT_ROOT"; then
         log_success "nclone installed successfully"
     else
         log_error "Failed to install nclone package"

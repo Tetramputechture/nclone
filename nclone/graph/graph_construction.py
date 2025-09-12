@@ -287,7 +287,7 @@ class GraphConstructor:
         Returns:
             True if position is traversable
         """
-        from ..constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
+        from ..constants.physics_constants import TILE_PIXEL_SIZE
         
         # Convert to tile coordinates
         tile_x = int(pixel_x // TILE_PIXEL_SIZE)
@@ -546,7 +546,7 @@ class GraphConstructor:
         Returns:
             True if position is traversable (no collision)
         """
-        from ..tile_definitions import TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_CIRCULAR_MAP
+        from ..tile_definitions import TILE_SEGMENT_DIAG_MAP
         
         # Half tiles (2-5) - very permissive collision detection for 10px ninja
         if tile_value == 2:  # Top half solid

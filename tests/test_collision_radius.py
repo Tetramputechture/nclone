@@ -47,7 +47,7 @@ def test_collision_radius_impact():
     # Test different ninja radii
     test_radii = [10, 8, 6, 4, 2]  # Original is 10
 
-    print(f"\nTesting traversability with different ninja radii:")
+    print("\nTesting traversability with different ninja radii:")
 
     # Test positions in empty tiles
     test_positions = [
@@ -95,7 +95,7 @@ def test_collision_radius_impact():
         )
 
     # Test path traversability between positions
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("TESTING PATH TRAVERSABILITY BETWEEN POSITIONS")
     print("=" * 60)
 
