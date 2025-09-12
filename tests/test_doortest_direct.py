@@ -138,12 +138,12 @@ def test_doortest_issues():
     print(f"✅ Ninja position: {ninja_pos}")
     
     # Print entity information
-    print(f"\nEntities in doortest map:")
+    print("\nEntities in doortest map:")
     for entity in level_data.entities:
         print(f"  {entity['type']}: ({entity['x']}, {entity['y']}) id={entity['id']}")
     
     # Build graph
-    print(f"\nBuilding hierarchical graph...")
+    print("\nBuilding hierarchical graph...")
     graph_builder = HierarchicalGraphBuilder()
     graph_data = graph_builder.build_hierarchical_graph(level_data, ninja_pos)
     
@@ -275,7 +275,7 @@ def test_doortest_issues():
                 successful_paths += 1
                 print(f"  ✅ Path found: {len(path_result.path)} nodes, cost {path_result.total_cost:.2f}")
             else:
-                print(f"  ❌ No path found")
+                print("  ❌ No path found")
         else:
             print(f"  ❌ Could not find nodes (start: {start_node}, end: {end_node})")
     
@@ -314,7 +314,7 @@ if __name__ == '__main__':
     try:
         results = test_doortest_issues()
         
-        print(f"\nTest Results Summary:")
+        print("\nTest Results Summary:")
         print(f"- Functional edges: {results['functional_edges']}")
         print(f"- Walkable edges in solid tiles: {results['walkable_edges_in_solid']}")
         print(f"- Pathfinding success rate: {results['navigation_success_rate']:.1%}")

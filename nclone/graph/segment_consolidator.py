@@ -10,7 +10,7 @@ from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 
 from nclone.graph.movement_classifier import MovementType
-from nclone.constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
+from nclone.constants.physics_constants import TILE_PIXEL_SIZE
 
 
 @dataclass

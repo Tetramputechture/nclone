@@ -776,8 +776,6 @@ class GraphVisualizer:
 
         from .common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
         from ..constants.physics_constants import (
-            FULL_MAP_WIDTH_PX,
-            FULL_MAP_HEIGHT_PX,
             TILE_PIXEL_SIZE,
         )
 

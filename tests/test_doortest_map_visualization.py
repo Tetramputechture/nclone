@@ -165,7 +165,7 @@ def test_doortest_map_issues():
         # Test A* navigation
         path_result = navigation_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
         
-        print(f"A* navigation result:")
+        print("A* navigation result:")
         print(f"  Success: {path_result.success}")
         print(f"  Path length: {len(path_result.path)} nodes")
         print(f"  Total cost: {path_result.total_cost:.2f}")

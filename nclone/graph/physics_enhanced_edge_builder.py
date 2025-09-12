@@ -15,8 +15,7 @@ from .edge_building import EdgeBuilder
 
 from .level_data import LevelData
 from .common import SUB_CELL_SIZE, EdgeType
-from .movement_classifier import MovementClassifier
-from ..constants.physics_constants import NINJA_RADIUS, MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE
+from ..constants.physics_constants import MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE
 
 
 class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
@@ -160,7 +159,7 @@ class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
             print(f"\n   Target {i+1}/{len(target_positions)}: ({target_pos[0]:.1f}, {target_pos[1]:.1f}) - {distance:.1f}px")
             
             # Waypoint functionality has been removed
-            print(f"     Skipping complex waypoint creation (functionality removed)")
+            print("     Skipping complex waypoint creation (functionality removed)")
         
         return total_waypoint_edges
     

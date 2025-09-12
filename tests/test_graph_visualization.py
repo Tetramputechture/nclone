@@ -7,7 +7,7 @@ Tests navigation, rendering, overlay functionality, and API integration.
 import unittest
 import pygame
 import numpy as np
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any
 import tempfile
 import os
 
@@ -15,14 +15,10 @@ import os
 from nclone.graph.visualization import GraphVisualizer, VisualizationConfig, VisualizationMode
 from nclone.graph.navigation import PathfindingEngine, PathfindingAlgorithm, PathResult
 from nclone.graph.visualization_api import (
-    GraphVisualizationAPI, VisualizationRequest, RenderTarget,
-    visualize_level_graph, find_path_and_visualize
+    GraphVisualizationAPI, VisualizationRequest, visualize_level_graph, find_path_and_visualize
 )
 from nclone.graph.enhanced_debug_overlay import EnhancedDebugOverlay, OverlayMode
-from nclone.graph.common import GraphData, NodeType, EdgeType
-from nclone.graph.graph_construction import GraphConstructor
-from nclone.graph.feature_extraction import FeatureExtractor
-from nclone.graph.edge_building import EdgeBuilder
+from nclone.graph.common import GraphData
 
 
 class MockSimulator:

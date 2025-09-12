@@ -23,7 +23,6 @@ from nclone.graph.navigation import PathfindingEngine
 from nclone.graph.common import EdgeType
 from nclone.constants import TILE_PIXEL_SIZE
 from nclone.nsim import Simulator
-from nclone.sim_config import SimConfig
 import numpy as np
 
 

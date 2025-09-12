@@ -7,14 +7,13 @@ like switch activation, door unlocking, and sequential dependencies.
 """
 
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Set
+from typing import List, Tuple, Optional
 from dataclasses import dataclass
 from collections import deque
 
 from .common import SUB_CELL_SIZE
 from .reachability_analyzer import ReachabilityState
 from .navigation import PathfindingEngine
-from ..constants.entity_types import EntityType
 
 
 @dataclass
@@ -344,8 +343,6 @@ class SubgoalPlanner:
 
         from .common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
         from ..constants.physics_constants import (
-            FULL_MAP_WIDTH_PX,
-            FULL_MAP_HEIGHT_PX,
             TILE_PIXEL_SIZE,
         )
 

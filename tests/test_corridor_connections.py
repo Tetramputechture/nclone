@@ -40,7 +40,7 @@ def test_corridor_connections():
     print(f"Ninja: {ninja_pos}")
     
     # Build graph with new corridor connections
-    print(f"\nBuilding graph with corridor connections...")
+    print("\nBuilding graph with corridor connections...")
     graph_builder = HierarchicalGraphBuilder()
     hierarchical_data = graph_builder.build_graph(level_data, ninja_pos)
     graph_data = hierarchical_data.sub_cell_graph
@@ -57,7 +57,7 @@ def test_corridor_connections():
         return
     
     # Test long-distance navigation to various targets
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("TESTING LONG-DISTANCE PATHFINDING")
     print("=" * 60)
     
@@ -103,7 +103,7 @@ def test_corridor_connections():
     print(f"\nLong-distance navigation success rate: {successful_paths}/{total_tests} ({success_rate:.1f}%)")
     
     # Analyze ninja's connectivity
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("ANALYZING NINJA'S CONNECTIVITY")
     print("=" * 60)
     
@@ -143,7 +143,7 @@ def test_corridor_connections():
     print(f"Improvement: +{improvement} nodes ({improvement_percent:+.1f}%)")
     
     # Test specific empty tile areas for reachability
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("TESTING REACHABILITY TO SPECIFIC EMPTY AREAS")
     print("=" * 60)
     
@@ -178,7 +178,7 @@ def test_corridor_connections():
         print(f"  Cluster reachability: {cluster_reachable}/{len(positions)} ({cluster_rate:.1f}%)")
     
     # Final assessment
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("CORRIDOR CONNECTIONS ASSESSMENT")
     print("=" * 60)
     

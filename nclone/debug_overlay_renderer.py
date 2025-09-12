@@ -3,8 +3,6 @@ import numpy as np
 from . import render_utils
 from typing import Optional
 from .constants.physics_constants import (
-    MAP_TILE_WIDTH,
-    MAP_TILE_HEIGHT,
     TILE_PIXEL_SIZE,
     FULL_MAP_WIDTH,
     FULL_MAP_HEIGHT,

@@ -7,7 +7,6 @@ and validates that both produce correct results.
 
 import unittest
 import time
-from unittest.mock import Mock, patch
 
 from nclone.graph.navigation import PathfindingEngine, PathfindingAlgorithm
 from nclone.graph.common import GraphData, NodeType, EdgeType
@@ -154,7 +153,7 @@ class TestAlgorithmSelection(unittest.TestCase):
             self.assertIsNotNone(astar_result)
             self.assertIsNotNone(dijkstra_result)
             
-        except Exception as e:
+        except Exception:
             # If navigation fails due to implementation details,
             # at least verify the algorithm selection works
             self.assertIn("PathfindingAlgorithm", str(type(PathfindingAlgorithm.A_STAR)))

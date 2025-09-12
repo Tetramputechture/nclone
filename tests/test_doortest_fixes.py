@@ -6,7 +6,6 @@ Comprehensive test of doortest map fixes to validate all three issues are resolv
 import os
 import sys
 import pygame
-import numpy as np
 
 # Add the nclone package to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nclone'))
@@ -184,7 +183,7 @@ def test_doortest_fixes():
         print("❌ ISSUE #3 NOT RESOLVED: Ninja navigation success rate too low")
     
     # Test ninja's connected component size
-    print(f"\nAnalyzing ninja's connectivity...")
+    print("\nAnalyzing ninja's connectivity...")
     
     visited = set()
     stack = [ninja_node]
@@ -219,7 +218,7 @@ def test_doortest_fixes():
         print("❌ Ninja connectivity still limited")
     
     # Generate visualization
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("GENERATING VISUALIZATION")
     print("=" * 60)
     
@@ -238,7 +237,7 @@ def test_doortest_fixes():
         print(f"❌ Visualization error: {e}")
     
     # Final Summary
-    print(f"\n" + "=" * 80)
+    print("\n" + "=" * 80)
     print("FINAL VALIDATION SUMMARY")
     print("=" * 80)
     

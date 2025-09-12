@@ -9,11 +9,10 @@ navigation system, showing proper movement types and realistic path costs.
 import sys
 import os
 import math
-import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.patches import FancyArrowPatch, Rectangle, Circle
-from typing import List, Tuple, Optional, Dict
+from typing import List
 
 # Import nclone components
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -264,7 +263,7 @@ def create_physics_accurate_navigation_visualization(
         
         # Add summary statistics
         total_distance = sum(sum(distances) for distances in movement_distances.values())
-        summary_text = f"Path Summary:\n"
+        summary_text = "Path Summary:\n"
         summary_text += f"• Total nodes: {len(result.path)}\n"
         summary_text += f"• Total cost: {result.total_cost:.1f}px\n"
         summary_text += f"• Total distance: {total_distance:.1f}px\n"
@@ -295,7 +294,7 @@ def create_physics_accurate_navigation_visualization(
         print(f"✅ Visualization saved to: {save_path}")
         
         # Print summary
-        print(f"\n📊 PHYSICS-ACCURATE PATHFINDING SUMMARY:")
+        print("\n📊 PHYSICS-ACCURATE PATHFINDING SUMMARY:")
         print(f"   Path: {len(result.path)} nodes, {result.total_cost:.1f}px cost")
         print(f"   Movement types: {movement_counts}")
         
@@ -308,7 +307,7 @@ def create_physics_accurate_navigation_visualization(
                 physics_compliant = False
         
         if physics_compliant:
-            print(f"   ✅ All movements respect physics constraints")
+            print("   ✅ All movements respect physics constraints")
         
         plt.show()
         return True

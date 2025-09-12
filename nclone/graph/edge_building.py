@@ -1379,15 +1379,15 @@ class EdgeBuilder:
             # Ensure ninja node is in source samples
             if ninja_node_entry not in sampled_src_nodes:
                 sampled_src_nodes.append(ninja_node_entry)
-                print(f"DEBUG: Added ninja node to source samples")
+                print("DEBUG: Added ninja node to source samples")
             # Ensure ninja node is in target samples  
             if ninja_node_entry not in sampled_tgt_nodes:
                 sampled_tgt_nodes.append(ninja_node_entry)
-                print(f"DEBUG: Added ninja node to target samples")
+                print("DEBUG: Added ninja node to target samples")
         else:
             print(f"DEBUG: No close node found! Ninja position: {ninja_position} -> corrected: {corrected_ninja_position}")
             # Show closest few nodes for debugging
-            print(f"DEBUG: Closest 5 nodes:")
+            print("DEBUG: Closest 5 nodes:")
             distances = []
             for node_idx, (x, y, row, col) in node_list:
                 distance = math.sqrt((x - corrected_ninja_position[0])**2 + (y - corrected_ninja_position[1])**2)
@@ -1513,7 +1513,6 @@ class EdgeBuilder:
         from ..constants.physics_constants import (
             GRAVITY_FALL,
             MAX_HOR_SPEED,
-            MIN_HORIZONTAL_VELOCITY,
         )
         from .trajectory_calculator import TrajectoryResult
         
@@ -1624,11 +1623,11 @@ class EdgeBuilder:
         # Check start and end points first (most likely to fail)
         if not self._is_position_clear(start_pos, level_data, debug_ninja=is_ninja_trajectory):
             if is_ninja_trajectory:
-                print(f"DEBUG: Start position failed validation")
+                print("DEBUG: Start position failed validation")
             return False
         if not self._is_position_clear(end_pos, level_data, debug_ninja=is_ninja_trajectory):
             if is_ninja_trajectory:
-                print(f"DEBUG: End position failed validation")
+                print("DEBUG: End position failed validation")
             return False
         
         # Check key trajectory points (start, middle, end, and peak if jumping)
@@ -1728,7 +1727,6 @@ class EdgeBuilder:
         x, y = position
         
         # Check bounds first
-        from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
         tile_x = int(x // TILE_PIXEL_SIZE)
         tile_y = int(y // TILE_PIXEL_SIZE)
         

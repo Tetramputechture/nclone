@@ -16,8 +16,7 @@ from .trajectory_calculator import TrajectoryCalculator
 from .precise_collision import PreciseTileCollision
 from .optimized_collision import get_collision_detector
 from ..constants.physics_constants import (
-    MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE, GRAVITY_FALL, JUMP_INITIAL_VELOCITY,
-    TILE_PIXEL_SIZE
+    MAX_JUMP_DISTANCE, MAX_FALL_DISTANCE, GRAVITY_FALL, TILE_PIXEL_SIZE
 )
 from ..constants.entity_types import EntityType
 

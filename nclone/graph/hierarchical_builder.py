@@ -23,7 +23,6 @@ from ..constants.physics_constants import (
 )
 from .common import GraphData, EdgeType
 from .feature_extraction import FeatureExtractor
-from .edge_building import EdgeBuilder
 from .physics_enhanced_edge_builder import PhysicsEnhancedEdgeBuilder
 from .graph_construction import GraphConstructor
 from .level_data import LevelData
