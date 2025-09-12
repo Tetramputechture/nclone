@@ -9,8 +9,7 @@ agent: 'CodeActAgent'
 #### When to Write Tests
 1. **Always** when fixing bugs - create tests that reproduce the issue
 2. **Always** when adding new graph features
-3. **Always** when modifying pathfinding algorithms
-4. **Always** when changing collision detection logic
+3. **Always** when changing collision detection logic
 
 #### Test Structure Pattern
 ```python
