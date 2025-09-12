@@ -7,7 +7,7 @@ name = "nclone"
 description = "N++ clone with reinforcement learning capabilities"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "nclone contributors"}
 ]
@@ -16,7 +16,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -60,8 +59,8 @@ Repository = "https://github.com/nclone/nclone"
 Documentation = "https://nclone.readthedocs.io"
 "Bug Tracker" = "https://github.com/nclone/nclone/issues"
 
-[tool.setuptools]
-packages = ["nclone"]
+[tool.setuptools.packages.find]
+include = ["nclone*"]
 
 [tool.setuptools_scm]
 write_to = "nclone/_version.py"
