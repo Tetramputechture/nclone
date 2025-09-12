@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Physics-enhanced edge builder with comprehensive waypoint pathfinding.
+Physics-enhanced edge builder with comprehensive waypoint navigation.
 
 This module extends the standard edge builder with a physics-accurate waypoint
 system that respects all N++ game mechanics and tile definitions.
@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple, Any, Optional
 import numpy as np
 
 from .edge_building import EdgeBuilder
-from .physics_waypoint_pathfinder import PhysicsWaypointPathfinder
+
 from .level_data import LevelData
 from .common import SUB_CELL_SIZE, EdgeType
 from .movement_classifier import MovementClassifier
@@ -21,7 +21,7 @@ from ..constants.physics_constants import NINJA_RADIUS, MAX_JUMP_DISTANCE, MAX_F
 
 class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
     """
-    Physics-enhanced edge builder with comprehensive waypoint pathfinding.
+    Physics-enhanced edge builder with comprehensive waypoint navigation.
     
     Extends the standard edge builder to create physics-accurate intermediate
     waypoints for long-distance navigation that exceeds game physics constraints.
@@ -36,7 +36,6 @@ class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
     def __init__(self, feature_extractor):
         """Initialize physics-enhanced edge builder."""
         super().__init__(feature_extractor)
-        self.waypoint_pathfinder = PhysicsWaypointPathfinder()
         self.movement_classifier = None  # Will be initialized in build_edges
         self._waypoint_nodes = {}  # Maps waypoint positions to node indices
         
@@ -56,7 +55,7 @@ class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
         edge_feature_dim: int,
     ) -> int:
         """
-        Build edges with physics-enhanced waypoint pathfinding.
+        Build edges with physics-enhanced waypoint navigation.
         
         This method:
         1. Builds all standard edges using the parent class
@@ -64,7 +63,7 @@ class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
         3. Creates physics-accurate waypoints for multi-hop navigation
         4. Builds edges connecting waypoints with proper physics validation
         """
-        print("🚀 Building physics-enhanced edges with comprehensive waypoint pathfinding...")
+        print("🚀 Building physics-enhanced edges with comprehensive waypoint navigation...")
         
         # Step 1: Build standard edges using parent class
         edge_count = super().build_edges(
@@ -160,177 +159,12 @@ class PhysicsEnhancedEdgeBuilder(EdgeBuilder):
             distance = math.sqrt((target_pos[0] - ninja_position[0])**2 + (target_pos[1] - ninja_position[1])**2)
             print(f"\n   Target {i+1}/{len(target_positions)}: ({target_pos[0]:.1f}, {target_pos[1]:.1f}) - {distance:.1f}px")
             
-            # Create physics-accurate waypoints for this path
-            waypoints = self.waypoint_pathfinder.create_physics_accurate_waypoints(
-                ninja_position, target_pos, level_data
-            )
-            
-            if waypoints:
-                # Add waypoint nodes to the graph
-                waypoint_node_indices = self._add_physics_waypoint_nodes(
-                    waypoints, sub_grid_node_map
-                )
-                
-                # Build physics-validated edges connecting the waypoints
-                edges_added = self._connect_physics_waypoint_nodes(
-                    waypoint_node_indices, ninja_position, target_pos,
-                    sub_grid_node_map, level_data,
-                    edge_index, edge_features, edge_mask, edge_types,
-                    edge_count + total_waypoint_edges, edge_feature_dim
-                )
-                
-                total_waypoint_edges += edges_added
-                print(f"     Added {edges_added} physics-validated edges for this target")
-            else:
-                print(f"     No physics-accurate waypoints could be created for this target")
-        
-        # Display comprehensive statistics
-        stats = self.waypoint_pathfinder.get_physics_statistics()
-        print(f"\n📊 Physics waypoint statistics:")
-        for key, value in stats.items():
-            if isinstance(value, float):
-                print(f"   {key}: {value:.1f}")
-            else:
-                print(f"   {key}: {value}")
+            # Waypoint functionality has been removed
+            print(f"     Skipping complex waypoint creation (functionality removed)")
         
         return total_waypoint_edges
     
-    def _add_physics_waypoint_nodes(
-        self,
-        waypoints: List,
-        sub_grid_node_map: Dict[Tuple[int, int], int]
-    ) -> List[int]:
-        """
-        Add physics-validated waypoint nodes to the graph.
-        
-        Returns list of node indices for the waypoints.
-        """
-        waypoint_node_indices = []
-        
-        for waypoint in waypoints:
-            # Convert waypoint position to sub-grid coordinates
-            sub_col = int(waypoint.x / SUB_CELL_SIZE)
-            sub_row = int(waypoint.y / SUB_CELL_SIZE)
-            
-            # Find or create node for this position
-            if (sub_row, sub_col) in sub_grid_node_map:
-                node_idx = sub_grid_node_map[(sub_row, sub_col)]
-                print(f"     Using existing node {node_idx} for waypoint at ({waypoint.x:.1f}, {waypoint.y:.1f})")
-            else:
-                # Create new node index
-                node_idx = len(sub_grid_node_map)
-                sub_grid_node_map[(sub_row, sub_col)] = node_idx
-                print(f"     Created new node {node_idx} for waypoint at ({waypoint.x:.1f}, {waypoint.y:.1f})")
-            
-            waypoint_node_indices.append(node_idx)
-            self._waypoint_nodes[(waypoint.x, waypoint.y)] = node_idx
-        
-        return waypoint_node_indices
-    
-    def _connect_physics_waypoint_nodes(
-        self,
-        waypoint_node_indices: List[int],
-        ninja_position: Tuple[float, float],
-        target_position: Tuple[float, float],
-        sub_grid_node_map: Dict[Tuple[int, int], int],
-        level_data: LevelData,
-        edge_index: np.ndarray,
-        edge_features: np.ndarray,
-        edge_mask: np.ndarray,
-        edge_types: np.ndarray,
-        edge_count: int,
-        edge_feature_dim: int,
-    ) -> int:
-        """
-        Connect waypoint nodes with physics-validated edges.
-        
-        Creates edges: ninja -> waypoint1 -> waypoint2 -> ... -> target
-        All edges are validated for physics accuracy.
-        """
-        edges_added = 0
-        
-        if not waypoint_node_indices:
-            return 0
-        
-        # Find ninja and target nodes
-        ninja_sub_col = int(ninja_position[0] / SUB_CELL_SIZE)
-        ninja_sub_row = int(ninja_position[1] / SUB_CELL_SIZE)
-        ninja_node = sub_grid_node_map.get((ninja_sub_row, ninja_sub_col))
-        
-        # If ninja node not found, try nearby positions
-        if ninja_node is None:
-            print(f"     Searching for ninja node near ({ninja_sub_row}, {ninja_sub_col})...")
-            for dr in range(-2, 3):
-                for dc in range(-2, 3):
-                    check_pos = (ninja_sub_row + dr, ninja_sub_col + dc)
-                    if check_pos in sub_grid_node_map:
-                        ninja_node = sub_grid_node_map[check_pos]
-                        print(f"     Found ninja node {ninja_node} at offset ({dr}, {dc})")
-                        break
-                if ninja_node is not None:
-                    break
-        
-        target_sub_col = int(target_position[0] / SUB_CELL_SIZE)
-        target_sub_row = int(target_position[1] / SUB_CELL_SIZE)
-        target_node = sub_grid_node_map.get((target_sub_row, target_sub_col))
-        
-        # If target node not found, try nearby positions
-        if target_node is None:
-            print(f"     Searching for target node near ({target_sub_row}, {target_sub_col})...")
-            for dr in range(-2, 3):
-                for dc in range(-2, 3):
-                    check_pos = (target_sub_row + dr, target_sub_col + dc)
-                    if check_pos in sub_grid_node_map:
-                        target_node = sub_grid_node_map[check_pos]
-                        print(f"     Found target node {target_node} at offset ({dr}, {dc})")
-                        break
-                if target_node is not None:
-                    break
-        
-        if ninja_node is None:
-            print(f"     Warning: Could not find ninja node at ({ninja_position[0]:.1f}, {ninja_position[1]:.1f})")
-            return 0
-        
-        if target_node is None:
-            print(f"     Warning: Could not find target node at ({target_position[0]:.1f}, {target_position[1]:.1f})")
-            return 0
-        
-        # Connect ninja to first waypoint
-        if len(waypoint_node_indices) > 0:
-            first_waypoint_node = waypoint_node_indices[0]
-            if self._add_physics_validated_edge(ninja_node, first_waypoint_node, ninja_position, 
-                                              self._get_node_position(first_waypoint_node, sub_grid_node_map),
-                                              edge_index, edge_features, edge_mask, edge_types, 
-                                              edge_count + edges_added, edge_feature_dim):
-                edges_added += 1
-                print(f"     Connected ninja node {ninja_node} to first waypoint {first_waypoint_node}")
-        
-        # Connect waypoints to each other
-        for i in range(len(waypoint_node_indices) - 1):
-            current_node = waypoint_node_indices[i]
-            next_node = waypoint_node_indices[i + 1]
-            
-            current_pos = self._get_node_position(current_node, sub_grid_node_map)
-            next_pos = self._get_node_position(next_node, sub_grid_node_map)
-            
-            if self._add_physics_validated_edge(current_node, next_node, current_pos, next_pos,
-                                              edge_index, edge_features, edge_mask, edge_types,
-                                              edge_count + edges_added, edge_feature_dim):
-                edges_added += 1
-                print(f"     Connected waypoint {current_node} to waypoint {next_node}")
-        
-        # Connect last waypoint to target
-        if len(waypoint_node_indices) > 0:
-            last_waypoint_node = waypoint_node_indices[-1]
-            last_waypoint_pos = self._get_node_position(last_waypoint_node, sub_grid_node_map)
-            
-            if self._add_physics_validated_edge(last_waypoint_node, target_node, last_waypoint_pos, target_position,
-                                              edge_index, edge_features, edge_mask, edge_types,
-                                              edge_count + edges_added, edge_feature_dim):
-                edges_added += 1
-                print(f"     Connected last waypoint {last_waypoint_node} to target {target_node}")
-        
-        return edges_added
+
     
     def _get_node_position(self, node_idx: int, sub_grid_node_map: Dict[Tuple[int, int], int]) -> Tuple[float, float]:
         """Get the position of a node from its index."""

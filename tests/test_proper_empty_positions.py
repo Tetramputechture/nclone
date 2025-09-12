@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test pathfinding between positions that are actually in the center of empty tiles.
+Test navigation between positions that are actually in the center of empty tiles.
 """
 
 import os
@@ -14,7 +14,7 @@ from nclone.graph.precise_collision import PreciseTileCollision
 
 
 def test_proper_empty_positions():
-    """Test pathfinding between positions in the center of empty tiles."""
+    """Test navigation between positions in the center of empty tiles."""
     print("=" * 80)
     print("TESTING PATHFINDING BETWEEN PROPER EMPTY TILE CENTERS")
     print("=" * 80)
@@ -77,13 +77,13 @@ def test_proper_empty_positions():
     
     print(f"\nTraversable empty tile centers: {len(traversable_centers)}/{len(empty_tile_centers)} ({len(traversable_centers)/len(empty_tile_centers)*100:.1f}%)")
     
-    # Test pathfinding between traversable centers
+    # Test navigation between traversable centers
     print(f"\n" + "=" * 60)
     print("TESTING PATHFINDING BETWEEN TRAVERSABLE EMPTY TILE CENTERS")
     print("=" * 60)
     
     if len(traversable_centers) < 2:
-        print("❌ Not enough traversable centers for pathfinding tests")
+        print("❌ Not enough traversable centers for navigation tests")
         return
     
     # Select some test pairs

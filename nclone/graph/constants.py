@@ -1,5 +1,5 @@
 """
-Constants for graph visualization and pathfinding system.
+Constants for graph visualization and navigation system.
 
 This module contains all configurable constants used throughout the graph
 visualization system to avoid magic numbers and provide centralized configuration.
@@ -18,13 +18,13 @@ from ..constants.physics_constants import (
 # =============================================================================
 
 class PathfindingDefaults:
-    """Default values for pathfinding algorithms."""
+    """Default values for navigation algorithms."""
     
     # Algorithm parameters
     HEURISTIC_WEIGHT: float = 1.0
     MAX_NODES_TO_EXPLORE: int = 10000
     
-    # Edge cost weights for physics-accurate pathfinding
+    # Edge cost weights for physics-accurate navigation
     EDGE_COST_WEIGHTS = {
         'energy_cost': 1.0,        # Weight for energy consumption
         'time_estimate': 0.5,      # Weight for time taken

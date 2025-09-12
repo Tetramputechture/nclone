@@ -19,7 +19,7 @@ from nclone.nsim import Simulator
 from nclone.sim_config import SimConfig
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.level_data import LevelData
-from nclone.graph.pathfinding import PathfindingEngine
+from nclone.graph.navigation import PathfindingEngine
 from nclone.graph.common import EdgeType
 from nclone.constants import TILE_PIXEL_SIZE
 
@@ -246,9 +246,9 @@ def test_doortest_issues():
     print("=== ISSUE #3: PATHFINDING ===")
     print("=" * 60)
     
-    pathfinding_engine = PathfindingEngine()
+    navigation_engine = PathfindingEngine()
     
-    # Test pathfinding between nearby positions
+    # Test navigation between nearby positions
     start_pos = ninja_pos
     # Choose positions that should be reachable
     test_positions = [
@@ -265,11 +265,11 @@ def test_doortest_issues():
         print(f"\nTest {i+1}: Pathfinding from {start_pos} to {end_pos}")
         
         # Find nodes at these positions
-        start_node = pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
-        end_node = pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
+        start_node = navigation_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
+        end_node = navigation_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
         
         if start_node is not None and end_node is not None:
-            path_result = pathfinding_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
+            path_result = navigation_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
             
             if path_result.success:
                 successful_paths += 1
@@ -304,7 +304,7 @@ def test_doortest_issues():
     return {
         'functional_edges': functional_edges,
         'walkable_edges_in_solid': walkable_edges_in_solid,
-        'pathfinding_success_rate': successful_paths / len(test_positions),
+        'navigation_success_rate': successful_paths / len(test_positions),
         'all_resolved': issue1_resolved and issue2_resolved and issue3_resolved,
         'solid_tiles': solid_tiles
     }
@@ -317,7 +317,7 @@ if __name__ == '__main__':
         print(f"\nTest Results Summary:")
         print(f"- Functional edges: {results['functional_edges']}")
         print(f"- Walkable edges in solid tiles: {results['walkable_edges_in_solid']}")
-        print(f"- Pathfinding success rate: {results['pathfinding_success_rate']:.1%}")
+        print(f"- Pathfinding success rate: {results['navigation_success_rate']:.1%}")
         print(f"- Solid tiles in map: {results['solid_tiles']}")
         
         # Exit with appropriate code

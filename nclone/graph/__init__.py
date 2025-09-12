@@ -3,7 +3,7 @@ Graph-based structural representations for N++ environments.
 
 This package provides hierarchical multi-resolution graph processing
 for N++ levels, enabling both precise local movement decisions and
-strategic global pathfinding with comprehensive bounce block mechanics.
+strategic global navigation with comprehensive bounce block mechanics.
 
 Key Components:
     - HierarchicalGraphBuilder: Consolidated multi-resolution graph builder with bounce block support

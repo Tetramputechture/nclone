@@ -2,7 +2,7 @@
 Comprehensive graph visualization system for N++ level analysis.
 
 This module provides both standalone graph rendering and simulator overlay
-capabilities for visualizing graph structure, pathfinding results, and
+capabilities for visualizing graph structure, navigation results, and
 traversability analysis.
 """
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from .common import GraphData, NodeType, EdgeType
-from .pathfinding import PathfindingEngine, PathResult, PathfindingAlgorithm
+from .navigation import PathfindingEngine, PathResult, PathfindingAlgorithm
 from .constants import VisualizationDefaults, ColorScheme, OverlayDefaults
 from .performance_cache import get_performance_cache
 from ..constants import TILE_PIXEL_SIZE, FULL_MAP_WIDTH, FULL_MAP_HEIGHT
@@ -83,7 +83,7 @@ class GraphVisualizer:
     def __init__(self, config: Optional[VisualizationConfig] = None):
         """Initialize graph visualizer."""
         self.config = config or VisualizationConfig()
-        self.pathfinding_engine = PathfindingEngine()
+        self.navigation_engine = PathfindingEngine()
         self.performance_cache = get_performance_cache()
 
         # Initialize pygame if not already done
@@ -126,8 +126,8 @@ class GraphVisualizer:
             graph_data: Graph data to visualize
             width: Surface width in pixels
             height: Surface height in pixels
-            goal_position: Goal position for pathfinding (x, y)
-            start_position: Start position for pathfinding (x, y)
+            goal_position: Goal position for navigation (x, y)
+            start_position: Start position for navigation (x, y)
 
         Returns:
             Pygame surface with graph visualization
@@ -147,7 +147,7 @@ class GraphVisualizer:
             goal_node = self._find_closest_node(graph_data, goal_position)
 
             if start_node is not None and goal_node is not None:
-                path_result = self.pathfinding_engine.find_shortest_path(
+                path_result = self.navigation_engine.find_shortest_path(
                     graph_data, start_node, goal_node, PathfindingAlgorithm.A_STAR
                 )
 
@@ -194,8 +194,8 @@ class GraphVisualizer:
         Args:
             graph_data: Graph data to visualize
             simulator_surface: Base simulator surface
-            goal_position: Goal position for pathfinding (x, y)
-            start_position: Start position for pathfinding (x, y)
+            goal_position: Goal position for navigation (x, y)
+            start_position: Start position for navigation (x, y)
             ninja_position: Current ninja position (x, y)
             level_data: Level data for caching (optional)
             entities: Entity list for caching (optional)
@@ -236,7 +236,7 @@ class GraphVisualizer:
             goal_node = self._find_closest_node(graph_data, goal_position)
 
             if start_node is not None and goal_node is not None:
-                path_result = self.pathfinding_engine.find_shortest_path(
+                path_result = self.navigation_engine.find_shortest_path(
                     graph_data, start_node, goal_node, PathfindingAlgorithm.A_STAR
                 )
 
@@ -300,8 +300,8 @@ class GraphVisualizer:
         Args:
             graph_data: Graph data to visualize
             simulator_surface: Base simulator surface
-            goal_position: Goal position for pathfinding (x, y)
-            start_position: Start position for pathfinding (x, y)
+            goal_position: Goal position for navigation (x, y)
+            start_position: Start position for navigation (x, y)
             ninja_position: Current ninja position (x, y)
 
         Returns:

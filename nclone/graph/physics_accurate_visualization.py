@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Physics-accurate pathfinding visualization within the nclone graph system.
+Physics-accurate navigation visualization within the nclone graph system.
 
 This module provides visualization capabilities for the improved physics-accurate
-pathfinding system, showing proper movement types and realistic path costs.
+navigation system, showing proper movement types and realistic path costs.
 """
 
 import sys
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
+from nclone.graph.navigation import PathfindingEngine, PathfindingAlgorithm
 from nclone.graph.common import EdgeType
 from nclone.constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
 
@@ -57,11 +57,11 @@ def create_tile_patches(tile_value: int, tile_x: float, tile_y: float) -> List[p
     
     return patches_list
 
-def create_physics_accurate_pathfinding_visualization(
-    save_path: str = '/workspace/nclone/physics_accurate_pathfinding.png'
+def create_physics_accurate_navigation_visualization(
+    save_path: str = '/workspace/nclone/physics_accurate_navigation.png'
 ) -> bool:
     """
-    Create comprehensive visualization of physics-accurate pathfinding.
+    Create comprehensive visualization of physics-accurate navigation.
     
     Args:
         save_path: Path to save the visualization image
@@ -90,7 +90,7 @@ def create_physics_accurate_pathfinding_visualization(
         
         print(f"✅ Graph built: {graph.num_nodes} nodes, {graph.num_edges} edges")
         
-        # Find ninja and target nodes for pathfinding
+        # Find ninja and target nodes for navigation
         ninja_node = None
         target_node = None
         min_ninja_dist = float('inf')
@@ -113,12 +113,12 @@ def create_physics_accurate_pathfinding_visualization(
                         target_node = node_idx
         
         if ninja_node is None or target_node is None:
-            print("❌ Could not find suitable nodes for pathfinding")
+            print("❌ Could not find suitable nodes for navigation")
             return False
         
         # Find optimal path
-        pathfinding_engine = PathfindingEngine(level_data, entities)
-        result = pathfinding_engine.find_shortest_path(
+        navigation_engine = PathfindingEngine(level_data, entities)
+        result = navigation_engine.find_shortest_path(
             graph, ninja_node, target_node, PathfindingAlgorithm.DIJKSTRA
         )
         
@@ -318,4 +318,4 @@ def create_physics_accurate_pathfinding_visualization(
         return False
 
 if __name__ == "__main__":
-    create_physics_accurate_pathfinding_visualization()
+    create_physics_accurate_navigation_visualization()

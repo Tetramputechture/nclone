@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nclone'))
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.pathfinding import PathfindingEngine
+from nclone.graph.navigation import PathfindingEngine
 from nclone.graph.common import EdgeType
 from nclone.constants import TILE_PIXEL_SIZE
 
@@ -146,26 +146,26 @@ def test_doortest_map_issues():
     print("=== ISSUE #3: PATHFINDING ===")
     print("=" * 60)
     
-    pathfinding_engine = PathfindingEngine()
+    navigation_engine = PathfindingEngine()
     
-    # Test pathfinding between nearby positions
+    # Test navigation between nearby positions
     start_pos = ninja_pos
     # Choose an end position that should be reachable
     end_pos = (ninja_pos[0] + 50, ninja_pos[1])  # 50 pixels to the right
     
-    print(f"Testing pathfinding from {start_pos} to {end_pos}")
+    print(f"Testing navigation from {start_pos} to {end_pos}")
     
     # Find nodes at these positions
-    start_node = pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
-    end_node = pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
+    start_node = navigation_engine._find_node_at_position(graph_data.sub_cell_graph, start_pos)
+    end_node = navigation_engine._find_node_at_position(graph_data.sub_cell_graph, end_pos)
     
     print(f"Start node: {start_node}, End node: {end_node}")
     
     if start_node is not None and end_node is not None:
-        # Test A* pathfinding
-        path_result = pathfinding_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
+        # Test A* navigation
+        path_result = navigation_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, end_node)
         
-        print(f"A* pathfinding result:")
+        print(f"A* navigation result:")
         print(f"  Success: {path_result.success}")
         print(f"  Path length: {len(path_result.path)} nodes")
         print(f"  Total cost: {path_result.total_cost:.2f}")
@@ -189,8 +189,8 @@ def test_doortest_map_issues():
         print(f"  Start node search result: {start_node}")
         print(f"  End node search result: {end_node}")
     
-    # Additional pathfinding tests with different positions
-    print("\nTesting additional pathfinding scenarios...")
+    # Additional navigation tests with different positions
+    print("\nTesting additional navigation scenarios...")
     
     # Test with positions that should definitely be reachable
     test_positions = [
@@ -202,9 +202,9 @@ def test_doortest_map_issues():
     
     successful_paths = 0
     for i, test_pos in enumerate(test_positions):
-        test_node = pathfinding_engine._find_node_at_position(graph_data.sub_cell_graph, test_pos)
+        test_node = navigation_engine._find_node_at_position(graph_data.sub_cell_graph, test_pos)
         if start_node is not None and test_node is not None:
-            path_result = pathfinding_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, test_node)
+            path_result = navigation_engine.find_shortest_path(graph_data.sub_cell_graph, start_node, test_node)
             if path_result.success:
                 successful_paths += 1
                 print(f"  Test {i+1}: ✅ Path found to {test_pos} ({len(path_result.path)} nodes, cost {path_result.total_cost:.2f})")
@@ -238,7 +238,7 @@ def test_doortest_map_issues():
     return {
         'functional_edges': functional_edges,
         'walkable_edges_in_solid': walkable_edges_in_solid,
-        'pathfinding_success_rate': successful_paths / len(test_positions),
+        'navigation_success_rate': successful_paths / len(test_positions),
         'all_resolved': issue1_resolved and issue2_resolved and issue3_resolved
     }
 

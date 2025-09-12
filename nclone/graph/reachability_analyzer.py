@@ -604,7 +604,7 @@ class ReachabilityAnalyzer:
     
     def _identify_subgoals(self, level_data, state: ReachabilityState):
         """
-        Identify key subgoals for hierarchical pathfinding.
+        Identify key subgoals for hierarchical navigation.
         
         Subgoals are entities that unlock new areas or represent key objectives:
         - Switches that unlock doors

@@ -3,7 +3,7 @@ Unified API for N++ graph visualization system.
 
 This module provides a high-level interface for controlling all aspects
 of graph visualization, including standalone rendering, simulator overlays,
-pathfinding, and interactive exploration.
+navigation, and interactive exploration.
 """
 
 import pygame
@@ -18,7 +18,7 @@ from .visualization import (
     VisualizationMode,
     InteractiveGraphVisualizer,
 )
-from .pathfinding import PathfindingEngine, PathfindingAlgorithm, PathResult
+from .navigation import PathfindingEngine, PathfindingAlgorithm, PathResult
 from .enhanced_debug_overlay import EnhancedDebugOverlay
 from .hierarchical_builder import HierarchicalGraphBuilder
 from .graph_construction import GraphConstructor
@@ -50,7 +50,7 @@ class VisualizationRequest:
     # Pathfinding
     goal_position: Optional[Tuple[float, float]] = None
     start_position: Optional[Tuple[float, float]] = None
-    pathfinding_algorithm: PathfindingAlgorithm = PathfindingAlgorithm.A_STAR
+    navigation_algorithm: PathfindingAlgorithm = PathfindingAlgorithm.A_STAR
 
     # Visualization settings
     mode: VisualizationMode = VisualizationMode.STANDALONE
@@ -88,7 +88,7 @@ class GraphVisualizationAPI:
         """Initialize visualization API."""
         # Core components
         self.visualizer = GraphVisualizer()
-        self.pathfinding_engine = None  # Will be initialized with level data
+        self.navigation_engine = None  # Will be initialized with level data
         self.graph_builder = HierarchicalGraphBuilder()
 
         # Graph construction components
@@ -106,7 +106,7 @@ class GraphVisualizationAPI:
         # Performance tracking
         self.stats = {
             "total_visualizations": 0,
-            "total_pathfinding_operations": 0,
+            "total_navigation_operations": 0,
             "average_render_time": 0.0,
             "cache_hits": 0,
         }
@@ -131,23 +131,23 @@ class GraphVisualizationAPI:
                     success=False, error_message="Failed to build graph data"
                 )
 
-            # Perform pathfinding if requested
+            # Perform navigation if requested
             path_result = None
             if request.goal_position and (
                 request.start_position or request.ninja_position
             ):
                 start_pos = request.start_position or request.ninja_position
 
-                # Initialize pathfinding engine with level data for accurate physics
+                # Initialize navigation engine with level data for accurate physics
                 if (
-                    self.pathfinding_engine is None
-                    or self.pathfinding_engine.level_data != request.level_data
+                    self.navigation_engine is None
+                    or self.navigation_engine.level_data != request.level_data
                 ):
-                    self.pathfinding_engine = PathfindingEngine(
+                    self.navigation_engine = PathfindingEngine(
                         level_data=request.level_data, entities=request.entities or []
                     )
 
-                # Create ninja state for accurate pathfinding
+                # Create ninja state for accurate navigation
                 ninja_state = {
                     "movement_state": request.ninja_state,
                     "velocity": request.ninja_velocity or (0.0, 0.0),
@@ -156,11 +156,11 @@ class GraphVisualizationAPI:
                     "wall_contact": False,  # Default assumption
                 }
 
-                path_result = self.pathfinding_engine.find_shortest_path(
+                path_result = self.navigation_engine.find_shortest_path(
                     graph_data,
                     self._find_closest_node(graph_data, start_pos),
                     self._find_closest_node(graph_data, request.goal_position),
-                    request.pathfinding_algorithm,
+                    request.navigation_algorithm,
                     ninja_state=ninja_state,
                 )
 
@@ -309,8 +309,8 @@ class GraphVisualizationAPI:
                 edge_types=[],
             )
 
-        self.stats["total_pathfinding_operations"] += 1
-        return self.pathfinding_engine.find_shortest_path(
+        self.stats["total_navigation_operations"] += 1
+        return self.navigation_engine.find_shortest_path(
             graph_data, start_node, goal_node, algorithm
         )
 
@@ -546,7 +546,7 @@ def visualize_level_graph(
         level_data: Level geometry data
         entities: List of entities
         output_path: Path to save visualization image
-        goal_position: Optional goal position for pathfinding
+        goal_position: Optional goal position for navigation
         ninja_position: Optional ninja position
         size: Output image size
 

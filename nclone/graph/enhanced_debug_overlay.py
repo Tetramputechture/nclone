@@ -2,7 +2,7 @@
 Enhanced debug overlay renderer with comprehensive graph visualization.
 
 This module extends the existing debug overlay system with advanced graph
-visualization capabilities, including pathfinding, trajectory display,
+visualization capabilities, including navigation, trajectory display,
 and interactive graph exploration.
 """
 
@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from enum import IntEnum
 
 from .visualization import GraphVisualizer, VisualizationConfig
-from .pathfinding import PathfindingEngine, PathfindingAlgorithm
+from .navigation import PathfindingEngine, PathfindingAlgorithm
 from .common import NodeType, EdgeType
 from .hierarchical_builder import HierarchicalGraphBuilder
 
@@ -30,7 +30,7 @@ class EnhancedDebugOverlay:
     Enhanced debug overlay with comprehensive graph visualization.
 
     Integrates with the existing debug overlay system while providing
-    advanced graph analysis and pathfinding visualization capabilities.
+    advanced graph analysis and navigation visualization capabilities.
     """
 
     def __init__(self, sim, screen, adjust, tile_x_offset, tile_y_offset):
@@ -48,7 +48,7 @@ class EnhancedDebugOverlay:
         # Visualization components
         self.config = VisualizationConfig()
         self.visualizer = GraphVisualizer(self.config)
-        self.pathfinding_engine = None  # Will be initialized with level data
+        self.navigation_engine = None  # Will be initialized with level data
         self.graph_builder = HierarchicalGraphBuilder()
 
         # State
@@ -70,7 +70,7 @@ class EnhancedDebugOverlay:
 
         # Performance tracking
         self.last_graph_build_time = 0
-        self.last_pathfinding_time = 0
+        self.last_navigation_time = 0
 
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         """Update rendering parameters."""
@@ -105,9 +105,9 @@ class EnhancedDebugOverlay:
             self.config.show_shortest_path = False
 
     def set_goal_position(self, position: Tuple[float, float]):
-        """Set goal position for pathfinding."""
+        """Set goal position for navigation."""
         self.goal_position = position
-        self._update_pathfinding()
+        self._update_navigation()
 
     def toggle_hierarchical_view(self):
         """Toggle between single-resolution and hierarchical graph view."""
@@ -141,7 +141,7 @@ class EnhancedDebugOverlay:
         if self.overlay_mode == OverlayMode.BASIC_GRAPH:
             self._draw_basic_graph_overlay(overlay)
         elif self.overlay_mode == OverlayMode.PATHFINDING:
-            self._draw_pathfinding_overlay(overlay)
+            self._draw_navigation_overlay(overlay)
         elif self.overlay_mode == OverlayMode.FULL_ANALYSIS:
             self._draw_full_analysis_overlay(overlay, debug_info)
 
@@ -194,16 +194,16 @@ class EnhancedDebugOverlay:
                     edge_feature_dim=8,
                 )
 
-            # Update pathfinding if goal is set
+            # Update navigation if goal is set
             if self.goal_position:
-                self._update_pathfinding()
+                self._update_navigation()
 
         except Exception as e:
             print(f"Error updating graph data: {e}")
             self.current_graph_data = None
 
-    def _update_pathfinding(self):
-        """Update pathfinding results."""
+    def _update_navigation(self):
+        """Update navigation results."""
         if not self.current_graph_data or not self.goal_position:
             self.current_path_result = None
             return
@@ -214,16 +214,16 @@ class EnhancedDebugOverlay:
             ninja_velocity = (self.sim.ninja.vx, self.sim.ninja.vy)
             ninja_state = getattr(self.sim.ninja, "movement_state", 0)
 
-            # Initialize pathfinding engine with current level data
+            # Initialize navigation engine with current level data
             level_data = self.sim.level_data if hasattr(self.sim, "level_data") else {}
             entities = self._extract_entities_from_sim()
 
-            if self.pathfinding_engine is None:
-                self.pathfinding_engine = PathfindingEngine(
+            if self.navigation_engine is None:
+                self.navigation_engine = PathfindingEngine(
                     level_data=level_data, entities=entities
                 )
 
-            # Create ninja state for accurate pathfinding
+            # Create ninja state for accurate navigation
             ninja_state_dict = {
                 "movement_state": ninja_state,
                 "velocity": ninja_velocity,
@@ -234,17 +234,17 @@ class EnhancedDebugOverlay:
 
             # Find shortest path with accurate physics
             start_time = pygame.time.get_ticks()
-            self.current_path_result = self.pathfinding_engine.find_shortest_path(
+            self.current_path_result = self.navigation_engine.find_shortest_path(
                 self.current_graph_data,
                 self._find_closest_node(ninja_position),
                 self._find_closest_node(self.goal_position),
                 PathfindingAlgorithm.A_STAR,
                 ninja_state=ninja_state_dict,
             )
-            self.last_pathfinding_time = pygame.time.get_ticks() - start_time
+            self.last_navigation_time = pygame.time.get_ticks() - start_time
 
         except Exception as e:
-            print(f"Error in pathfinding: {e}")
+            print(f"Error in navigation: {e}")
             self.current_path_result = None
 
     def _draw_basic_graph_overlay(self, overlay: pygame.Surface):
@@ -263,15 +263,15 @@ class EnhancedDebugOverlay:
         # Copy the overlay content
         overlay.blit(graph_overlay, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
 
-    def _draw_pathfinding_overlay(self, overlay: pygame.Surface):
-        """Draw pathfinding visualization overlay."""
+    def _draw_navigation_overlay(self, overlay: pygame.Surface):
+        """Draw navigation visualization overlay."""
         if not self.current_graph_data:
             return
 
         # Draw basic graph first
         self._draw_basic_graph_overlay(overlay)
 
-        # Draw pathfinding-specific elements
+        # Draw navigation-specific elements
         if self.current_path_result and self.current_path_result.success:
             self._draw_path_details(overlay)
 
@@ -282,8 +282,8 @@ class EnhancedDebugOverlay:
         if not self.current_graph_data:
             return
 
-        # Draw pathfinding overlay first
-        self._draw_pathfinding_overlay(overlay)
+        # Draw navigation overlay first
+        self._draw_navigation_overlay(overlay)
 
         # Add analysis-specific visualizations
         self._draw_node_analysis(overlay)
@@ -377,7 +377,7 @@ class EnhancedDebugOverlay:
     def _draw_info_panels(
         self, overlay: pygame.Surface, debug_info: Optional[Dict[str, Any]]
     ):
-        """Draw information panels with graph and pathfinding data."""
+        """Draw information panels with graph and navigation data."""
         panel_width = 300
         panel_height = 200
         panel_x = overlay.get_width() - panel_width - 10
@@ -423,7 +423,7 @@ class EnhancedDebugOverlay:
                 f"Path Length: {len(self.current_path_result.path)}",
                 f"Total Cost: {self.current_path_result.total_cost:.2f}",
                 f"Nodes Explored: {self.current_path_result.nodes_explored}",
-                f"Time: {self.last_pathfinding_time}ms",
+                f"Time: {self.last_navigation_time}ms",
             ]
 
             for stat in path_stats:
@@ -440,7 +440,7 @@ class EnhancedDebugOverlay:
         controls = [
             "G: Toggle graph mode",
             "H: Toggle hierarchical",
-            "P: Set pathfinding goal",
+            "P: Set navigation goal",
             "R: Reset visualization",
         ]
 
@@ -565,7 +565,7 @@ class EnhancedDebugOverlay:
             self.toggle_hierarchical_view()
             return True
         elif key == pygame.K_p:
-            # Set pathfinding goal to current mouse position
+            # Set navigation goal to current mouse position
             mouse_pos = pygame.mouse.get_pos()
             world_pos = self._screen_to_world_coords(mouse_pos)
             self.set_goal_position(world_pos)

@@ -9,7 +9,7 @@ import unittest
 import time
 from unittest.mock import Mock, patch
 
-from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
+from nclone.graph.navigation import PathfindingEngine, PathfindingAlgorithm
 from nclone.graph.common import GraphData, NodeType, EdgeType
 
 
@@ -104,7 +104,7 @@ class TestAlgorithmSelection(unittest.TestCase):
         start_node = 0
         goal_node = 5
         
-        # A* should be faster for single-goal pathfinding
+        # A* should be faster for single-goal navigation
         start_time = time.time()
         astar_result = self.engine.find_shortest_path(
             self.graph_data, start_node, goal_node, 
@@ -131,7 +131,7 @@ class TestAlgorithmSelection(unittest.TestCase):
     
     def test_complex_graph_scenario(self):
         """Test algorithm behavior with complex graph structures."""
-        # This test is simplified since the actual pathfinding implementation
+        # This test is simplified since the actual navigation implementation
         # may not be fully compatible with our test GraphData structure
         # The main purpose is to verify algorithm selection logic
         
@@ -155,7 +155,7 @@ class TestAlgorithmSelection(unittest.TestCase):
             self.assertIsNotNone(dijkstra_result)
             
         except Exception as e:
-            # If pathfinding fails due to implementation details,
+            # If navigation fails due to implementation details,
             # at least verify the algorithm selection works
             self.assertIn("PathfindingAlgorithm", str(type(PathfindingAlgorithm.A_STAR)))
             self.assertIn("PathfindingAlgorithm", str(type(PathfindingAlgorithm.DIJKSTRA)))

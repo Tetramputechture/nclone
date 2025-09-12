@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test the new corridor connections system for long-distance pathfinding.
+Test the new corridor connections system for long-distance navigation.
 """
 
 import os
@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nclone'))
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.pathfinding import PathfindingEngine
+from nclone.graph.navigation import PathfindingEngine
 
 
 def test_corridor_connections():
@@ -44,19 +44,19 @@ def test_corridor_connections():
     graph_builder = HierarchicalGraphBuilder()
     hierarchical_data = graph_builder.build_graph(level_data, ninja_pos)
     graph_data = hierarchical_data.sub_cell_graph
-    pathfinding_engine = PathfindingEngine()
+    navigation_engine = PathfindingEngine()
     
     print(f"Graph: {graph_data.num_nodes} nodes, {graph_data.num_edges} edges")
     
     # Find ninja node
-    ninja_node = pathfinding_engine._find_node_at_position(graph_data, ninja_pos)
+    ninja_node = navigation_engine._find_node_at_position(graph_data, ninja_pos)
     print(f"Ninja node: {ninja_node}")
     
     if ninja_node is None:
         print("❌ Ninja node not found!")
         return
     
-    # Test long-distance pathfinding to various targets
+    # Test long-distance navigation to various targets
     print(f"\n" + "=" * 60)
     print("TESTING LONG-DISTANCE PATHFINDING")
     print("=" * 60)
@@ -77,11 +77,11 @@ def test_corridor_connections():
     successful_paths = 0
     total_tests = len(distant_targets)
     
-    print(f"Testing pathfinding to {total_tests} distant cluster centers:")
+    print(f"Testing navigation to {total_tests} distant cluster centers:")
     
     for i, target_pos in enumerate(distant_targets, 1):
         target_x, target_y = target_pos
-        target_node = pathfinding_engine._find_node_at_position(graph_data, target_pos)
+        target_node = navigation_engine._find_node_at_position(graph_data, target_pos)
         
         if target_node is None:
             print(f"  {i:2d}. {target_pos} -> ❌ Target node not found")
@@ -90,8 +90,8 @@ def test_corridor_connections():
         # Calculate distance
         distance = ((ninja_pos[0] - target_x)**2 + (ninja_pos[1] - target_y)**2)**0.5
         
-        # Attempt pathfinding
-        path_result = pathfinding_engine.find_shortest_path(graph_data, ninja_node, target_node)
+        # Attempt navigation
+        path_result = navigation_engine.find_shortest_path(graph_data, ninja_node, target_node)
         
         if path_result and path_result.success and len(path_result.path) > 0:
             print(f"  {i:2d}. {target_pos} (dist: {distance:5.1f}) -> ✅ Path found! ({len(path_result.path)} nodes, cost: {path_result.total_cost:.1f})")
@@ -100,7 +100,7 @@ def test_corridor_connections():
             print(f"  {i:2d}. {target_pos} (dist: {distance:5.1f}) -> ❌ No path found")
     
     success_rate = (successful_paths / total_tests) * 100
-    print(f"\nLong-distance pathfinding success rate: {successful_paths}/{total_tests} ({success_rate:.1f}%)")
+    print(f"\nLong-distance navigation success rate: {successful_paths}/{total_tests} ({success_rate:.1f}%)")
     
     # Analyze ninja's connectivity
     print(f"\n" + "=" * 60)
@@ -161,12 +161,12 @@ def test_corridor_connections():
         cluster_reachable = 0
         
         for pos in positions:
-            target_node = pathfinding_engine._find_node_at_position(graph_data, pos)
+            target_node = navigation_engine._find_node_at_position(graph_data, pos)
             if target_node is None:
                 print(f"  {pos} -> ❌ No node")
                 continue
             
-            path_result = pathfinding_engine.find_shortest_path(graph_data, ninja_node, target_node)
+            path_result = navigation_engine.find_shortest_path(graph_data, ninja_node, target_node)
             if path_result and path_result.success:
                 distance = ((ninja_pos[0] - pos[0])**2 + (ninja_pos[1] - pos[1])**2)**0.5
                 print(f"  {pos} -> ✅ Reachable (dist: {distance:.1f}, cost: {path_result.total_cost:.1f})")
@@ -183,10 +183,10 @@ def test_corridor_connections():
     print("=" * 60)
     
     if success_rate >= 70:
-        print("🎉 EXCELLENT: Corridor connections dramatically improved long-distance pathfinding!")
+        print("🎉 EXCELLENT: Corridor connections dramatically improved long-distance navigation!")
         print("   ✅ Issue #3 is now fully resolved!")
     elif success_rate >= 40:
-        print("✅ GOOD: Corridor connections significantly improved pathfinding!")
+        print("✅ GOOD: Corridor connections significantly improved navigation!")
         print("   🔧 Some additional improvements possible")
     elif success_rate >= 20:
         print("⚠️  MODERATE: Some improvement but more work needed")

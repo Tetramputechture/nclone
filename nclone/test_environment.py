@@ -2,7 +2,7 @@
 N++ Environment Test with Graph Visualization
 
 This script provides a comprehensive testing environment for the N++ simulator
-with integrated graph visualization and pathfinding capabilities.
+with integrated graph visualization capabilities.
 
 GRAPH VISUALIZATION USAGE:
 ==========================
@@ -18,11 +18,7 @@ python test_environment.py --standalone-graph
 # Launch interactive graph exploration tool
 python test_environment.py --interactive-graph
 
-# Enable pathfinding with A* algorithm (fast)
-python test_environment.py --pathfind --algorithm astar
 
-# Enable pathfinding with Dijkstra algorithm (optimal)
-python test_environment.py --pathfind --algorithm dijkstra
 
 # Save graph visualization to image
 python test_environment.py --save-graph graph.png
@@ -30,13 +26,13 @@ python test_environment.py --save-graph graph.png
 Advanced Usage:
 --------------
 # Combine multiple features
-python test_environment.py --visualize-graph --pathfind --standalone-graph
+python test_environment.py --visualize-graph --standalone-graph
 
 # Customize edge visualization
 python test_environment.py --visualize-graph --show-edges walk jump fall
 
 # Use custom map with graph visualization
-python test_environment.py --map custom_level.txt --visualize-graph --pathfind
+python test_environment.py --map custom_level.txt --visualize-graph
 
 # Headless mode with graph export
 python test_environment.py --headless --save-graph analysis.png
@@ -44,17 +40,14 @@ python test_environment.py --headless --save-graph analysis.png
 Interactive Controls (during runtime):
 -------------------------------------
 V - Toggle graph overlay on/off
-P - Trigger pathfinding demonstration
+
 S - Save current graph visualization
 G - Toggle built-in graph debug overlay
 E - Toggle exploration debug overlay
 C - Toggle grid debug overlay
 R - Reset environment
 
-Algorithm Selection:
--------------------
---algorithm astar    : Use A* for fast pathfinding (default)
---algorithm dijkstra : Use Dijkstra for guaranteed optimal paths
+
 
 Edge Type Visualization:
 -----------------------
@@ -64,10 +57,10 @@ Default: walk jump
 Examples:
 --------
 # Real-time RL training visualization
-python test_environment.py --visualize-graph --pathfind --algorithm astar
+python test_environment.py --visualize-graph
 
 # Level analysis and validation
-python test_environment.py --standalone-graph --pathfind --algorithm dijkstra --show-edges walk jump fall
+python test_environment.py --standalone-graph --show-edges walk jump fall
 
 # Interactive graph exploration
 python test_environment.py --interactive-graph
@@ -91,7 +84,6 @@ from nclone.graph.visualization import (
     VisualizationConfig,
     InteractiveGraphVisualizer,
 )
-from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 
 
@@ -104,83 +96,13 @@ def _get_ninja_position(env):
     else:
         return (100, 100)  # Fallback
 
-
-def _run_hierarchical_pathfinding_demo(env, graph_builder, pathfinding_engine, graph_data, level_data):
-    """Run hierarchical pathfinding demonstration."""
-    try:
-        print("=== Hierarchical Pathfinding Demo ===")
-        
-        ninja_pos = _get_ninja_position(env)
-        print(f"Ninja position: {ninja_pos}")
-
-        # Find ninja node
-        from nclone.graph.visualization_api import GraphVisualizationAPI
-        api = GraphVisualizationAPI()
-        start_node = api._find_closest_node(graph_data, ninja_pos)
-        
-        if start_node is None:
-            print("❌ Could not find ninja node")
-            return None
-            
-        print(f"Ninja node: {start_node}")
-        
-        # Try hierarchical pathfinding
-        if not (hasattr(graph_builder, 'graph_constructor') and 
-                hasattr(graph_builder.graph_constructor, 'reachability_analyzer')):
-            print("❌ Reachability analyzer not available")
-            return None
-            
-        if not level_data:
-            print("❌ No level data available")
-            return None
-            
-        from nclone.graph.subgoal_planner import SubgoalPlanner
-        
-        # Create subgoal planner
-        subgoal_planner = SubgoalPlanner(pathfinding_engine, debug=True)
-        
-        # Get reachability state
-        reachability_state = graph_builder.graph_constructor.reachability_analyzer.analyze_reachability(
-            level_data, ninja_pos
-        )
-        
-        # Create and execute plan
-        subgoal_plan = subgoal_planner.create_subgoal_plan(
-            reachability_state, graph_data, start_node, target_goal_type='exit'
-        )
-
-        if subgoal_plan:
-            print(f"✅ Created hierarchical plan with {len(subgoal_plan.execution_order)} subgoals")
-            paths = subgoal_planner.execute_subgoal_plan(subgoal_plan, start_node)
-
-            if paths:
-                print(f"✅ Found {len(paths)} path segments")
-                # Use first path for visualization
-                return type('PathResult', (), {
-                    'path': paths[0],
-                    'cost': len(paths[0]) * 10.0,
-                    'nodes_explored': len(paths[0])
-                })()
-            else:
-                print("❌ No paths found in hierarchical plan")
-        else:
-            print("❌ Could not create hierarchical plan")
-            
-    except Exception as e:
-        print(f"❌ Hierarchical pathfinding failed: {e}")
-        import traceback
-        traceback.print_exc()
-        
-    return None
-
-
 # Initialize pygame
 pygame.init()
 pygame.display.set_caption("N++ Environment Test")
 
 # Argument parser
 parser = argparse.ArgumentParser(
-    description="Test N++ environment with graph visualization and pathfinding."
+    description="Test N++ environment with graph visualization."
 )
 parser.add_argument(
     "--log-frametimes", action="store_true", help="Enable frametime logging to stdout."
@@ -194,9 +116,7 @@ parser.add_argument(
     default=None,
     help="Run for a specific number of frames and then exit (for profiling).",
 )
-parser.add_argument(
-    "--pathfind", action="store_true", help="Enable pathfinding test and visualization."
-)
+
 parser.add_argument(
     "--map",
     type=str,
@@ -220,12 +140,7 @@ parser.add_argument(
     action="store_true",
     help="Launch interactive graph visualization.",
 )
-parser.add_argument(
-    "--algorithm",
-    choices=["astar", "dijkstra"],
-    default="astar",
-    help="Pathfinding algorithm to use (astar=fast, dijkstra=optimal).",
-)
+
 parser.add_argument(
     "--save-graph",
     type=str,
@@ -249,7 +164,6 @@ if (
     args.visualize_graph
     or args.standalone_graph
     or args.interactive_graph
-    or args.pathfind
 ):
     print("\n" + "=" * 60)
     print("GRAPH VISUALIZATION ACTIVE")
@@ -260,12 +174,9 @@ if (
         print("• Standalone graph window enabled")
     if args.interactive_graph:
         print("• Interactive graph mode enabled")
-    if args.pathfind:
-        print(f"• Pathfinding enabled with {args.algorithm.upper()} algorithm")
 
     print("\nRuntime Controls:")
     print("  V - Toggle graph overlay")
-    print("  P - Enhanced pathfinding to locked door switch (CRITICAL TEST)")
     print("  S - Save graph visualization")
     print("  G/E/C - Toggle debug overlays")
     print("  R - Reset environment")
@@ -294,11 +205,9 @@ env.reset()
 
 # Initialize graph visualization components
 graph_visualizer = None
-pathfinding_engine = None
 graph_data = None
 standalone_window = None
 graph_overlay_surface = None
-pathfinding_result = None  # Store pathfinding visualization result
 
 if (
     args.visualize_graph
@@ -316,28 +225,11 @@ if (
         show_wall_slide_edges="wall_slide" in args.show_edges,
         show_one_way_edges="one_way" in args.show_edges,
         show_functional_edges="functional" in args.show_edges,
-        show_shortest_path=args.pathfind,
+        show_shortest_path=False,
         alpha=0.7,  # Semi-transparent overlay
     )
 
     graph_visualizer = GraphVisualizer(config)
-
-    # Initialize pathfinding engine if needed
-    if args.pathfind or args.visualize_graph or args.standalone_graph:
-        try:
-            level_data = getattr(env, "level_data", None)
-            # Get entities for the pathfinding engine
-            entities = []
-            if hasattr(env, "_extract_graph_entities"):
-                entities = env._extract_graph_entities()
-
-            if level_data:
-                pathfinding_engine = PathfindingEngine(level_data, entities)
-                print(f"Pathfinding engine initialized with {args.algorithm} algorithm")
-            else:
-                print("Warning: No level data available for pathfinding engine")
-        except Exception as e:
-            print(f"Warning: Could not initialize pathfinding engine: {e}")
 
     # Build graph data
     try:
@@ -386,7 +278,7 @@ if (
 graph_debug_enabled = False
 exploration_debug_enabled = False
 grid_debug_enabled = False
-path_updated = False  # Track when pathfinding results change
+
 
 # Initialize clock for 60 FPS
 clock = None
@@ -440,165 +332,6 @@ while running:
                     args.visualize_graph = not args.visualize_graph
                     print(f"Graph overlay: {'ON' if args.visualize_graph else 'OFF'}")
 
-                if event.key == pygame.K_p and pathfinding_engine and graph_data:
-                    # Trigger enhanced pathfinding visualization
-                    try:
-                        print("=== Enhanced Pathfinding Visualization ===")
-                        
-                        # Get current ninja position
-                        if hasattr(env, "nplay_headless") and hasattr(
-                            env.nplay_headless, "ninja_position"
-                        ):
-                            ninja_pos = env.nplay_headless.ninja_position()
-                        elif hasattr(env, "sim") and hasattr(env.sim, "ninja"):
-                            ninja_pos = (env.sim.ninja.x, env.sim.ninja.y)
-                        else:
-                            ninja_pos = (100, 100)  # Fallback
-
-                        print(f"Ninja position: {ninja_pos}")
-                        
-                        # Initialize pathfinding visualizer
-                        from nclone.graph.pathfinding_visualizer import PathfindingVisualizer
-                        from nclone.constants.entity_types import EntityType
-                        
-                        pathfinding_viz = PathfindingVisualizer()
-                        
-                        # Find path to exit switch (critical test requirement)
-                        print("🎯 Finding path to exit switch...")
-                        result = pathfinding_viz.find_path_to_entity_type(
-                            graph_data, ninja_pos, EntityType.EXIT_SWITCH
-                        )
-                        
-                        if result and result.success:
-                            print(f"✅ SUCCESS: Found path to exit switch!")
-                            print(f"   Path length: {len(result.path_result.path)} nodes")
-                            print(f"   Total cost: {result.path_result.total_cost:.1f}")
-                            print(f"   Target: {result.target.label} at {result.target.position}")
-                            
-                            # Store result for visualization (make it global)
-                            globals()['pathfinding_result'] = result
-                        else:
-                            print(f"❌ FAILED: {result.error_message if result else 'Unknown error'}")
-                            globals()['pathfinding_result'] = None
-
-                        # Find ninja node
-                        from nclone.graph.visualization_api import GraphVisualizationAPI
-                        api = GraphVisualizationAPI()
-                        start_node = api._find_closest_node(graph_data, ninja_pos)
-                        
-                        if start_node is not None:
-                            print(f"Ninja node: {start_node}")
-                            
-                            # Try hierarchical pathfinding to exit
-                            try:
-                                from nclone.graph.subgoal_planner import SubgoalPlanner
-                                
-                                # Create subgoal planner
-                                subgoal_planner = SubgoalPlanner(pathfinding_engine)
-                                
-                                # Get reachability state from graph builder
-                                if hasattr(graph_builder, 'graph_constructor') and hasattr(graph_builder.graph_constructor, 'reachability_analyzer'):
-                                    # Re-run reachability analysis to get subgoals
-                                    level_data = getattr(env, "level_data", None)
-                                    if level_data:
-                                        reachability_state = graph_builder.graph_constructor.reachability_analyzer.analyze_reachability(
-                                            level_data, ninja_pos
-                                        )
-                                        
-                                        # Create subgoal plan to reach exit
-                                        subgoal_plan = subgoal_planner.create_subgoal_plan(
-                                            reachability_state, graph_data, start_node, target_goal_type='exit'
-                                        )
-                                        
-                                        if subgoal_plan:
-                                            print(f"✅ Created hierarchical plan with {len(subgoal_plan.execution_order)} subgoals")
-                                            
-                                            # Execute the plan
-                                            paths = subgoal_planner.execute_subgoal_plan(subgoal_plan, start_node)
-                                            
-                                            if paths:
-                                                print(f"✅ Found {len(paths)} path segments")
-                                                for i, path in enumerate(paths):
-                                                    subgoal = subgoal_plan.subgoals[subgoal_plan.execution_order[i]]
-                                                    print(f"  Path {i+1} to {subgoal.goal_type}: {len(path)} nodes")
-                                                    
-                                                # Store first path for visualization
-                                                if paths:
-                                                    path_result = type('PathResult', (), {
-                                                        'success': True,
-                                                        'path': paths[0],
-                                                        'cost': len(paths[0]) * 10.0,
-                                                        'nodes_explored': len(paths[0])
-                                                    })()
-                                            else:
-                                                print("❌ No paths found in hierarchical plan")
-                                                path_result = None
-                                        else:
-                                            print("❌ Could not create hierarchical plan")
-                                            path_result = None
-                                    else:
-                                        print("❌ No level data available for reachability analysis")
-                                        path_result = None
-                                else:
-                                    print("❌ Reachability analyzer not available")
-                                    path_result = None
-                                    
-                            except Exception as e:
-                                print(f"❌ Hierarchical pathfinding failed: {e}")
-                                import traceback
-                                traceback.print_exc()
-                                path_result = None
-                                
-                            # Fallback to simple pathfinding if hierarchical fails
-                            if path_result is None:
-                                print("Falling back to simple pathfinding...")
-                                
-                                # Use mouse position or default goal
-                                mouse_pos = pygame.mouse.get_pos()
-                                if mouse_pos[0] > 0 and mouse_pos[1] > 0:
-                                    screen = pygame.display.get_surface()
-                                    if screen:
-                                        screen_width = screen.get_width()
-                                        screen_height = screen.get_height()
-                                        world_x = (mouse_pos[0] / screen_width) * 1056.0
-                                        world_y = (mouse_pos[1] / screen_height) * 600.0
-                                        goal_pos = (world_x, world_y)
-                                    else:
-                                        goal_pos = (400, 200)
-                                else:
-                                    goal_pos = (400, 200)  # Default goal
-                                    
-                                goal_node = api._find_closest_node(graph_data, goal_pos)
-                                
-                                if goal_node is not None:
-                                    algorithm = (
-                                        PathfindingAlgorithm.A_STAR
-                                        if args.algorithm == "astar"
-                                        else PathfindingAlgorithm.DIJKSTRA
-                                    )
-                                    path_result = pathfinding_engine.find_shortest_path(
-                                        graph_data, start_node, goal_node, algorithm=algorithm
-                                    )
-
-                            if path_result.success:
-                                print(
-                                    f"Path found! Length: {len(path_result.path)} nodes, Cost: {path_result.total_cost:.2f}, Nodes explored: {path_result.nodes_explored}"
-                                )
-                                # Force recreation of graph overlay to show the path
-                                graph_overlay_surface = None
-                                path_updated = True
-                            else:
-                                print("No path found between the selected positions")
-                        else:
-                            print(
-                                f"Could not find valid nodes near positions (start: {start_node}, goal: {goal_node})"
-                            )
-                    except Exception as e:
-                        print(f"Pathfinding error: {e}")
-                        import traceback
-
-                        traceback.print_exc()
-
                 if (
                     event.key == pygame.K_s
                     and args.save_graph
@@ -646,19 +379,15 @@ while running:
 
     # Reset if episode is done
     if terminated or truncated:
-        # Pathfinding logic already handled above for the reset case
-        if not (
-            args.pathfind and not args.headless
-        ):  # if pathfinding didn't already reset
-            observation, info = env.reset()
+        observation, info = env.reset()
 
     # Graph visualization rendering with performance optimizations
     if graph_visualizer and graph_data and not args.headless:
         try:
             # Render graph overlay on main simulator window
             if args.visualize_graph:
-                # Only recreate overlay if it doesn't exist, on first frame, or after pathfinding
-                if not graph_overlay_surface or frame_counter == 1 or path_updated:
+                # Only recreate overlay if it doesn't exist or on first frame
+                if not graph_overlay_surface or frame_counter == 1:
                     screen = pygame.display.get_surface()
                     if screen:
                         # Get current ninja position for overlay
@@ -693,22 +422,7 @@ while running:
                     screen = pygame.display.get_surface()
                     if screen:
                         screen.blit(graph_overlay_surface, (0, 0))
-                        
-                        # Add pathfinding visualization overlay if available
-                        if pathfinding_result and pathfinding_result.success:
-                            try:
-                                from nclone.graph.pathfinding_visualizer import PathfindingVisualizer
-                                pathfinding_viz = PathfindingVisualizer()
-                                
-                                # Draw enhanced path visualization on top of graph overlay
-                                pathfinding_viz._draw_enhanced_path(screen, graph_data, pathfinding_result)
-                                
-                                # Draw path info panel
-                                if pathfinding_viz.show_path_info:
-                                    pathfinding_viz._draw_path_info_panel(screen, pathfinding_result)
-                                    
-                            except Exception as e:
-                                print(f"Pathfinding visualization error: {e}")
+
 
             # Render standalone graph window (cache this too for performance)
             if args.standalone_graph and standalone_window:

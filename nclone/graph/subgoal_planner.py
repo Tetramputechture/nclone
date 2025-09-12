@@ -1,7 +1,7 @@
 """
 Hierarchical subgoal planning for complex multi-step objectives.
 
-This module implements a hierarchical pathfinding system that breaks down
+This module implements a hierarchical navigation system that breaks down
 complex objectives into manageable subgoals, considering game mechanics
 like switch activation, door unlocking, and sequential dependencies.
 """
@@ -13,7 +13,7 @@ from collections import deque
 
 from .common import SUB_CELL_SIZE
 from .reachability_analyzer import ReachabilityState
-from .pathfinding import PathfindingEngine
+from .navigation import PathfindingEngine
 from ..constants.entity_types import EntityType
 
 
@@ -53,15 +53,15 @@ class SubgoalPlanner:
     - Navigating to final objectives (exits)
     """
     
-    def __init__(self, pathfinding_engine: PathfindingEngine, debug: bool = False):
+    def __init__(self, navigation_engine: PathfindingEngine, debug: bool = False):
         """
-        Initialize subgoal planner with pathfinding engine.
+        Initialize subgoal planner with navigation engine.
         
         Args:
-            pathfinding_engine: Engine for finding paths between nodes
+            navigation_engine: Engine for finding paths between nodes
             debug: Enable debug output (default: False)
         """
-        self.pathfinding_engine = pathfinding_engine
+        self.navigation_engine = navigation_engine
         self.debug = debug
         
     def create_subgoal_plan(
@@ -284,7 +284,7 @@ class SubgoalPlanner:
             
             if subgoal.node_idx is not None:
                 # Find path from current position to this subgoal
-                path = self.pathfinding_engine.find_shortest_path(
+                path = self.navigation_engine.find_shortest_path(
                     current_node, subgoal.node_idx
                 )
                 
@@ -321,7 +321,7 @@ class SubgoalPlanner:
             subgoal = plan.subgoals[subgoal_idx]
             
             if subgoal.node_idx is not None:
-                path = self.pathfinding_engine.find_shortest_path(
+                path = self.navigation_engine.find_shortest_path(
                     current_node, subgoal.node_idx
                 )
                 

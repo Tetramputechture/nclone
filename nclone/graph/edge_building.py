@@ -248,7 +248,7 @@ class EdgeBuilder:
             edge_feature_dim,
         )
         
-        # Build critical connectivity edges to ensure pathfinding works
+        # Build critical connectivity edges to ensure navigation works
         edge_count = self._build_critical_connectivity(
             sub_grid_node_map,
             level_data,
@@ -452,7 +452,7 @@ class EdgeBuilder:
                             edge_count += 1
 
         # Create navigation edges from regular nodes to entity nodes
-        # This allows entity nodes to be reachable by pathfinding
+        # This allows entity nodes to be reachable by navigation
         edge_count = self._connect_entity_nodes_to_graph(
             entity_nodes, sub_grid_node_map, edge_index, edge_features, edge_mask, edge_types, 
             edge_count, edge_feature_dim
@@ -474,7 +474,7 @@ class EdgeBuilder:
         """
         Connect entity nodes to nearby regular nodes in the graph.
         
-        This ensures entity nodes are reachable by pathfinding by creating
+        This ensures entity nodes are reachable by navigation by creating
         edges from nearby walkable nodes to entity nodes. Only creates
         connections to nodes that are truly adjacent (within 2 tiles).
         
@@ -1142,7 +1142,7 @@ class EdgeBuilder:
         edge_feature_dim: int,
     ) -> int:
         """
-        Build critical connectivity edges to ensure pathfinding works.
+        Build critical connectivity edges to ensure navigation works.
         
         This method creates essential connections between major areas of the map
         to ensure the ninja can reach important targets like switches and doors.
@@ -1342,7 +1342,7 @@ class EdgeBuilder:
         max_row_diff = int(max_search_distance / SUB_CELL_SIZE) + 20  # Add buffer for level height
         max_col_diff = int(max_search_distance / SUB_CELL_SIZE) + 50  # Add buffer for level width
         
-        # Balanced sampling density for complex pathfinding
+        # Balanced sampling density for complex navigation
         sampled_src_nodes = node_list[::3]  # Sample every 3rd node as source for good connectivity
         sampled_tgt_nodes = node_list[::2]  # Sample every 2nd node as target for good connectivity
         
@@ -1809,7 +1809,7 @@ class EdgeBuilder:
                 # TODO: Implement proper segment-based collision detection
                 elif 2 <= tile_id <= 33:
                     # For now, allow traversal through shaped tiles unless they're very close to solid parts
-                    # This is a reasonable approximation for pathfinding
+                    # This is a reasonable approximation for navigation
                     pass
         
         return True

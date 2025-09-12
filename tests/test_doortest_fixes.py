@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nclone'))
 
 from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.pathfinding import PathfindingEngine
+from nclone.graph.navigation import PathfindingEngine
 from nclone.graph.common import EdgeType
 
 
@@ -49,7 +49,7 @@ def test_doortest_fixes():
     graph_builder = HierarchicalGraphBuilder()
     hierarchical_data = graph_builder.build_graph(level_data, ninja_pos)
     graph_data = hierarchical_data.sub_cell_graph
-    pathfinding_engine = PathfindingEngine()
+    navigation_engine = PathfindingEngine()
     
     print(f"✅ Graph built: {graph_data.num_nodes} nodes, {graph_data.num_edges} edges")
     
@@ -68,8 +68,8 @@ def test_doortest_fixes():
             src_idx = int(graph_data.edge_index[0, edge_idx])
             dst_idx = int(graph_data.edge_index[1, edge_idx])
             
-            src_pos = pathfinding_engine._get_node_position(graph_data, src_idx)
-            dst_pos = pathfinding_engine._get_node_position(graph_data, dst_idx)
+            src_pos = navigation_engine._get_node_position(graph_data, src_idx)
+            dst_pos = navigation_engine._get_node_position(graph_data, dst_idx)
             
             distance = ((src_pos[0] - dst_pos[0])**2 + (src_pos[1] - dst_pos[1])**2)**0.5
             functional_edges.append((src_pos, dst_pos, distance))
@@ -100,8 +100,8 @@ def test_doortest_fixes():
             src_idx = int(graph_data.edge_index[0, edge_idx])
             dst_idx = int(graph_data.edge_index[1, edge_idx])
             
-            src_pos = pathfinding_engine._get_node_position(graph_data, src_idx)
-            dst_pos = pathfinding_engine._get_node_position(graph_data, dst_idx)
+            src_pos = navigation_engine._get_node_position(graph_data, src_idx)
+            dst_pos = navigation_engine._get_node_position(graph_data, dst_idx)
             
             # Check if source node is in solid tile
             src_tile_x = int(src_pos[0] // 24)
@@ -138,14 +138,14 @@ def test_doortest_fixes():
     print("=" * 60)
     
     # Find ninja node
-    ninja_node = pathfinding_engine._find_node_at_position(graph_data, ninja_pos)
+    ninja_node = navigation_engine._find_node_at_position(graph_data, ninja_pos)
     print(f"Ninja node: {ninja_node}")
     
     if ninja_node is None:
         print("❌ ISSUE #3 NOT RESOLVED: Ninja node not found")
         return
     
-    # Test pathfinding to various targets in empty areas
+    # Test navigation to various targets in empty areas
     test_targets = [
         (156, 252),  # Empty area
         (228, 276),  # Empty area  
@@ -157,17 +157,17 @@ def test_doortest_fixes():
     successful_paths = 0
     total_tests = len(test_targets)
     
-    print(f"Testing pathfinding from ninja position {ninja_pos}:")
+    print(f"Testing navigation from ninja position {ninja_pos}:")
     
     for i, target_pos in enumerate(test_targets, 1):
-        target_node = pathfinding_engine._find_node_at_position(graph_data, target_pos)
+        target_node = navigation_engine._find_node_at_position(graph_data, target_pos)
         
         if target_node is None:
             print(f"  Test {i}: {target_pos} -> ❌ Target node not found")
             continue
         
-        # Attempt pathfinding
-        path_result = pathfinding_engine.find_shortest_path(graph_data, ninja_node, target_node)
+        # Attempt navigation
+        path_result = navigation_engine.find_shortest_path(graph_data, ninja_node, target_node)
         
         if path_result and path_result.success and len(path_result.path) > 0:
             print(f"  Test {i}: {target_pos} -> ✅ Path found ({len(path_result.path)} nodes, cost: {path_result.total_cost:.1f})")
@@ -179,9 +179,9 @@ def test_doortest_fixes():
     print(f"\nPathfinding success rate: {successful_paths}/{total_tests} ({success_rate:.1f}%)")
     
     if success_rate >= 50:  # At least 50% success rate indicates ninja can move around
-        print("✅ ISSUE #3 RESOLVED: Ninja pathfinding is working")
+        print("✅ ISSUE #3 RESOLVED: Ninja navigation is working")
     else:
-        print("❌ ISSUE #3 NOT RESOLVED: Ninja pathfinding success rate too low")
+        print("❌ ISSUE #3 NOT RESOLVED: Ninja navigation success rate too low")
     
     # Test ninja's connected component size
     print(f"\nAnalyzing ninja's connectivity...")
@@ -248,7 +248,7 @@ def test_doortest_fixes():
     
     print(f"Issue #1 (Functional edges): {issue1_status}")
     print(f"Issue #2 (Solid tile edges): {issue2_status}")
-    print(f"Issue #3 (Ninja pathfinding): {issue3_status}")
+    print(f"Issue #3 (Ninja navigation): {issue3_status}")
     
     resolved_count = sum([
         len(functional_edges) >= 2,
@@ -267,7 +267,7 @@ def test_doortest_fixes():
         'functional_edges': len(functional_edges),
         'solid_violations': len(solid_violations),
         'ninja_escape_edges': ninja_escape_edges,
-        'pathfinding_success_rate': success_rate,
+        'navigation_success_rate': success_rate,
         'ninja_component_size': component_size,
         'issues_resolved': resolved_count
     }

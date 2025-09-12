@@ -1,7 +1,7 @@
 """
 Comprehensive tests for graph visualization system.
 
-Tests pathfinding, rendering, overlay functionality, and API integration.
+Tests navigation, rendering, overlay functionality, and API integration.
 """
 
 import unittest
@@ -13,7 +13,7 @@ import os
 
 # Import visualization components
 from nclone.graph.visualization import GraphVisualizer, VisualizationConfig, VisualizationMode
-from nclone.graph.pathfinding import PathfindingEngine, PathfindingAlgorithm, PathResult
+from nclone.graph.navigation import PathfindingEngine, PathfindingAlgorithm, PathResult
 from nclone.graph.visualization_api import (
     GraphVisualizationAPI, VisualizationRequest, RenderTarget,
     visualize_level_graph, find_path_and_visualize
@@ -216,15 +216,15 @@ class TestGraphVisualization(unittest.TestCase):
 
 
 class TestPathfinding(unittest.TestCase):
-    """Test pathfinding functionality."""
+    """Test navigation functionality."""
     
     def setUp(self):
         """Set up test fixtures."""
-        self.pathfinding_engine = PathfindingEngine()
-        self.graph_data = self._create_pathfinding_test_graph()
+        self.navigation_engine = PathfindingEngine()
+        self.graph_data = self._create_navigation_test_graph()
     
-    def _create_pathfinding_test_graph(self) -> GraphData:
-        """Create graph data suitable for pathfinding tests."""
+    def _create_navigation_test_graph(self) -> GraphData:
+        """Create graph data suitable for navigation tests."""
         # Create a simple grid graph
         grid_size = 5
         num_nodes = grid_size * grid_size
@@ -280,12 +280,12 @@ class TestPathfinding(unittest.TestCase):
             num_edges=num_edges
         )
     
-    def test_dijkstra_pathfinding(self):
-        """Test Dijkstra pathfinding algorithm."""
+    def test_dijkstra_navigation(self):
+        """Test Dijkstra navigation algorithm."""
         start_node = 0  # Top-left corner
         goal_node = 24  # Bottom-right corner (5x5 grid)
         
-        result = self.pathfinding_engine.find_shortest_path(
+        result = self.navigation_engine.find_shortest_path(
             self.graph_data,
             start_node,
             goal_node,
@@ -298,12 +298,12 @@ class TestPathfinding(unittest.TestCase):
         self.assertEqual(result.path[-1], goal_node)
         self.assertGreater(result.nodes_explored, 0)
     
-    def test_astar_pathfinding(self):
-        """Test A* pathfinding algorithm."""
+    def test_astar_navigation(self):
+        """Test A* navigation algorithm."""
         start_node = 0  # Top-left corner
         goal_node = 24  # Bottom-right corner
         
-        result = self.pathfinding_engine.find_shortest_path(
+        result = self.navigation_engine.find_shortest_path(
             self.graph_data,
             start_node,
             goal_node,
@@ -316,11 +316,11 @@ class TestPathfinding(unittest.TestCase):
         self.assertEqual(result.path[-1], goal_node)
         self.assertGreater(result.nodes_explored, 0)
     
-    def test_pathfinding_same_node(self):
-        """Test pathfinding when start and goal are the same."""
+    def test_navigation_same_node(self):
+        """Test navigation when start and goal are the same."""
         node = 5
         
-        result = self.pathfinding_engine.find_shortest_path(
+        result = self.navigation_engine.find_shortest_path(
             self.graph_data,
             node,
             node,
@@ -332,8 +332,8 @@ class TestPathfinding(unittest.TestCase):
         self.assertEqual(result.path[0], node)
         self.assertEqual(result.total_cost, 0.0)
     
-    def test_pathfinding_unreachable_goal(self):
-        """Test pathfinding with unreachable goal."""
+    def test_navigation_unreachable_goal(self):
+        """Test navigation with unreachable goal."""
         # Create graph with disconnected components
         graph_data = self.graph_data
         
@@ -341,7 +341,7 @@ class TestPathfinding(unittest.TestCase):
         graph_data.edge_mask.fill(0)
         graph_data.num_edges = 0
         
-        result = self.pathfinding_engine.find_shortest_path(
+        result = self.navigation_engine.find_shortest_path(
             graph_data,
             0,
             24,
@@ -406,8 +406,8 @@ class TestVisualizationAPI(unittest.TestCase):
         self.assertIsNotNone(result.graph_stats)
         self.assertGreater(result.render_time_ms, 0)
     
-    def test_pathfinding_integration(self):
-        """Test pathfinding integration with visualization."""
+    def test_navigation_integration(self):
+        """Test navigation integration with visualization."""
         start_pos = (50.0, 50.0)
         goal_pos = (200.0, 200.0)
         
@@ -514,7 +514,7 @@ class TestEnhancedDebugOverlay(unittest.TestCase):
         self.assertEqual(self.overlay.overlay_mode, OverlayMode.FULL_ANALYSIS)
     
     def test_goal_position_setting(self):
-        """Test goal position setting for pathfinding."""
+        """Test goal position setting for navigation."""
         goal_pos = (200.0, 200.0)
         self.overlay.set_goal_position(goal_pos)
         self.assertEqual(self.overlay.goal_position, goal_pos)
@@ -597,7 +597,7 @@ class TestConvenienceFunctions(unittest.TestCase):
                 os.unlink(temp_path)
     
     def test_find_path_and_visualize(self):
-        """Test pathfinding and visualization convenience function."""
+        """Test navigation and visualization convenience function."""
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
             temp_path = f.name
         

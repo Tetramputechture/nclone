@@ -1,5 +1,5 @@
 """
-Movement segment consolidation for N++ pathfinding.
+Movement segment consolidation for N++ navigation.
 
 This module consolidates consecutive movements of the same type to eliminate
 micro-movements and create more natural, flowing movement sequences.
@@ -28,7 +28,7 @@ class MovementSegment:
 
 
 class SegmentConsolidator:
-    """Consolidates movement segments for more natural pathfinding."""
+    """Consolidates movement segments for more natural navigation."""
     
     def __init__(self):
         self.min_segment_distance = TILE_PIXEL_SIZE // 4  # 6 pixels minimum
