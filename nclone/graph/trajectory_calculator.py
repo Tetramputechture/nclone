@@ -916,7 +916,7 @@ class TrajectoryCalculator:
         Args:
             start_pos: Starting position (x, y)
             level_data: Level data containing entities
-            graph_data: Optional graph structure for pathfinding
+            graph_data: Optional graph structure for navigation
 
         Returns:
             Dict containing subgoal paths:
@@ -1031,7 +1031,7 @@ class TrajectoryCalculator:
         for subgoal in completion_sequence:
             subgoal_pos = subgoal["position"]
 
-            # Calculate direct trajectory (placeholder for more sophisticated pathfinding)
+            # Calculate direct trajectory (placeholder for more sophisticated navigation)
             trajectory = self.calculate_jump_trajectory(start_pos, subgoal_pos)
 
             path_info = {
@@ -1185,12 +1185,12 @@ class TrajectoryCalculator:
         Simplified level completion analysis using direct entity relationships.
 
         Uses the actual nclone simulation entities to avoid proximity-based guessing
-        and integrates with hierarchical graph pathfinding when available.
+        and integrates with hierarchical graph navigation when available.
 
         Args:
             sim: The nclone simulation object
             start_pos: Starting position (x, y)
-            graph_data: Optional hierarchical graph data for pathfinding
+            graph_data: Optional hierarchical graph data for navigation
 
         Returns:
             Dict containing simplified completion analysis:
@@ -2039,7 +2039,7 @@ class TrajectoryCalculator:
 
     # ===== PHYSICS VALIDATION METHODS =====
     # These methods provide validation for specific movement types
-    # and are used by the MovementClassifier for physics-aware pathfinding
+    # and are used by the MovementClassifier for physics-aware navigation
 
     def validate_jump_trajectory(
         self,

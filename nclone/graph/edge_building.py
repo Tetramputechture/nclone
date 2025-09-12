@@ -248,7 +248,7 @@ class EdgeBuilder:
             edge_feature_dim,
         )
         
-        # Build critical connectivity edges to ensure pathfinding works
+        # Build critical connectivity edges to ensure navigation works
         edge_count = self._build_critical_connectivity(
             sub_grid_node_map,
             level_data,
@@ -452,7 +452,7 @@ class EdgeBuilder:
                             edge_count += 1
 
         # Create navigation edges from regular nodes to entity nodes
-        # This allows entity nodes to be reachable by pathfinding
+        # This allows entity nodes to be reachable by navigation
         edge_count = self._connect_entity_nodes_to_graph(
             entity_nodes, sub_grid_node_map, edge_index, edge_features, edge_mask, edge_types, 
             edge_count, edge_feature_dim
@@ -474,7 +474,7 @@ class EdgeBuilder:
         """
         Connect entity nodes to nearby regular nodes in the graph.
         
-        This ensures entity nodes are reachable by pathfinding by creating
+        This ensures entity nodes are reachable by navigation by creating
         edges from nearby walkable nodes to entity nodes. Only creates
         connections to nodes that are truly adjacent (within 2 tiles).
         
@@ -1142,7 +1142,7 @@ class EdgeBuilder:
         edge_feature_dim: int,
     ) -> int:
         """
-        Build critical connectivity edges to ensure pathfinding works.
+        Build critical connectivity edges to ensure navigation works.
         
         This method creates essential connections between major areas of the map
         to ensure the ninja can reach important targets like switches and doors.
@@ -1342,7 +1342,7 @@ class EdgeBuilder:
         max_row_diff = int(max_search_distance / SUB_CELL_SIZE) + 20  # Add buffer for level height
         max_col_diff = int(max_search_distance / SUB_CELL_SIZE) + 50  # Add buffer for level width
         
-        # Balanced sampling density for complex pathfinding
+        # Balanced sampling density for complex navigation
         sampled_src_nodes = node_list[::3]  # Sample every 3rd node as source for good connectivity
         sampled_tgt_nodes = node_list[::2]  # Sample every 2nd node as target for good connectivity
         
@@ -1379,15 +1379,15 @@ class EdgeBuilder:
             # Ensure ninja node is in source samples
             if ninja_node_entry not in sampled_src_nodes:
                 sampled_src_nodes.append(ninja_node_entry)
-                print(f"DEBUG: Added ninja node to source samples")
+                print("DEBUG: Added ninja node to source samples")
             # Ensure ninja node is in target samples  
             if ninja_node_entry not in sampled_tgt_nodes:
                 sampled_tgt_nodes.append(ninja_node_entry)
-                print(f"DEBUG: Added ninja node to target samples")
+                print("DEBUG: Added ninja node to target samples")
         else:
             print(f"DEBUG: No close node found! Ninja position: {ninja_position} -> corrected: {corrected_ninja_position}")
             # Show closest few nodes for debugging
-            print(f"DEBUG: Closest 5 nodes:")
+            print("DEBUG: Closest 5 nodes:")
             distances = []
             for node_idx, (x, y, row, col) in node_list:
                 distance = math.sqrt((x - corrected_ninja_position[0])**2 + (y - corrected_ninja_position[1])**2)
@@ -1513,7 +1513,6 @@ class EdgeBuilder:
         from ..constants.physics_constants import (
             GRAVITY_FALL,
             MAX_HOR_SPEED,
-            MIN_HORIZONTAL_VELOCITY,
         )
         from .trajectory_calculator import TrajectoryResult
         
@@ -1624,11 +1623,11 @@ class EdgeBuilder:
         # Check start and end points first (most likely to fail)
         if not self._is_position_clear(start_pos, level_data, debug_ninja=is_ninja_trajectory):
             if is_ninja_trajectory:
-                print(f"DEBUG: Start position failed validation")
+                print("DEBUG: Start position failed validation")
             return False
         if not self._is_position_clear(end_pos, level_data, debug_ninja=is_ninja_trajectory):
             if is_ninja_trajectory:
-                print(f"DEBUG: End position failed validation")
+                print("DEBUG: End position failed validation")
             return False
         
         # Check key trajectory points (start, middle, end, and peak if jumping)
@@ -1728,7 +1727,6 @@ class EdgeBuilder:
         x, y = position
         
         # Check bounds first
-        from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
         tile_x = int(x // TILE_PIXEL_SIZE)
         tile_y = int(y // TILE_PIXEL_SIZE)
         
@@ -1809,7 +1807,7 @@ class EdgeBuilder:
                 # TODO: Implement proper segment-based collision detection
                 elif 2 <= tile_id <= 33:
                     # For now, allow traversal through shaped tiles unless they're very close to solid parts
-                    # This is a reasonable approximation for pathfinding
+                    # This is a reasonable approximation for navigation
                     pass
         
         return True

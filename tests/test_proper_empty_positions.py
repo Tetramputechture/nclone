@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test pathfinding between positions that are actually in the center of empty tiles.
+Test navigation between positions that are actually in the center of empty tiles.
 """
 
 import os
@@ -14,7 +14,7 @@ from nclone.graph.precise_collision import PreciseTileCollision
 
 
 def test_proper_empty_positions():
-    """Test pathfinding between positions in the center of empty tiles."""
+    """Test navigation between positions in the center of empty tiles."""
     print("=" * 80)
     print("TESTING PATHFINDING BETWEEN PROPER EMPTY TILE CENTERS")
     print("=" * 80)
@@ -38,7 +38,7 @@ def test_proper_empty_positions():
     print(f"Map: {level_data.width}x{level_data.height} tiles")
     
     # Find actual empty tiles and their centers
-    print(f"\nFinding empty tiles and their centers:")
+    print("\nFinding empty tiles and their centers:")
     
     empty_tile_centers = []
     
@@ -53,7 +53,7 @@ def test_proper_empty_positions():
     print(f"Found {len(empty_tile_centers)} empty tiles")
     
     # Show first 10 empty tile centers
-    print(f"\nFirst 10 empty tile centers:")
+    print("\nFirst 10 empty tile centers:")
     for i, (center_x, center_y, tile_x, tile_y) in enumerate(empty_tile_centers[:10], 1):
         print(f"  {i:2d}. Tile ({tile_x:2d}, {tile_y:2d}) -> Center ({center_x:3d}, {center_y:3d})")
     
@@ -61,7 +61,7 @@ def test_proper_empty_positions():
     collision_detector = PreciseTileCollision()
     
     # Test traversability of empty tile centers
-    print(f"\nTesting traversability of empty tile centers:")
+    print("\nTesting traversability of empty tile centers:")
     
     traversable_centers = []
     
@@ -77,13 +77,13 @@ def test_proper_empty_positions():
     
     print(f"\nTraversable empty tile centers: {len(traversable_centers)}/{len(empty_tile_centers)} ({len(traversable_centers)/len(empty_tile_centers)*100:.1f}%)")
     
-    # Test pathfinding between traversable centers
-    print(f"\n" + "=" * 60)
+    # Test navigation between traversable centers
+    print("\n" + "=" * 60)
     print("TESTING PATHFINDING BETWEEN TRAVERSABLE EMPTY TILE CENTERS")
     print("=" * 60)
     
     if len(traversable_centers) < 2:
-        print("❌ Not enough traversable centers for pathfinding tests")
+        print("❌ Not enough traversable centers for navigation tests")
         return
     
     # Select some test pairs
@@ -136,7 +136,7 @@ def test_proper_empty_positions():
     print(f"\nPath success rate: {successful_paths}/{len(test_pairs)} ({success_rate:.1f}%)")
     
     # Test with different ninja radii
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("TESTING WITH DIFFERENT NINJA RADII")
     print("=" * 60)
     
@@ -165,7 +165,7 @@ def test_proper_empty_positions():
             print(f"  Success rate: {radius_successful}/{len(sample_pairs)} ({radius_rate:.1f}%)")
     
     # Analysis
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("ANALYSIS")
     print("=" * 60)
     

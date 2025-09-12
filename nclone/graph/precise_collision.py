@@ -2,7 +2,7 @@
 Precise tile collision detection system for graph traversability.
 
 This module provides a wrapper around the existing nclone collision system
-to enable accurate pathfinding that matches the actual ninja physics.
+to enable accurate navigation that matches the actual ninja physics.
 It reuses the existing segment-based collision detection from physics.py
 and entities.py to ensure perfect consistency.
 """
@@ -11,7 +11,7 @@ import math
 import numpy as np
 
 from ..constants.physics_constants import NINJA_RADIUS, FULL_MAP_WIDTH, FULL_MAP_HEIGHT, TILE_PIXEL_SIZE
-from ..physics import sweep_circle_vs_tiles, gather_segments_from_region
+from ..physics import sweep_circle_vs_tiles
 from ..utils.tile_segment_factory import TileSegmentFactory
 
 
@@ -19,9 +19,9 @@ class PreciseTileCollision:
     """
     Precise tile collision detection using the existing nclone collision system.
     
-    This class provides a pathfinding-friendly interface to the same collision
+    This class provides a navigation-friendly interface to the same collision
     detection used by the ninja physics, ensuring perfect consistency between
-    simulation and pathfinding.
+    simulation and navigation.
     """
     
     def __init__(self):

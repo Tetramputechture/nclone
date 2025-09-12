@@ -190,7 +190,6 @@ Top-level:
 - `README.md`: This overview.
 - `docs/`: Additional documentation.
   - `sim_mechanics_doc.md`: Detailed simulation mechanics.
-  - `pathfinding_strategy.md`: Design notes for the pathfinding system.
   - `FILE_INDEX.md`: One-line descriptions of key modules/files.
 
 Package `nclone/`:
@@ -224,13 +223,8 @@ Package `nclone/`:
 - Utilities
   - `constants.py`, `sim_config.py`, `debug_overlay_renderer.py`, `ntrace.py`, `test_environment.py`.
 
-- `archive/`: **Deprecated strategies** moved for reference:
-  - `graph_builder.py`: Legacy standard graph builder
-  - `pathfinding/`: Legacy pathfinding algorithms (A*, navigation graphs, surface parsing)
-
 ## Documentation
 
 - Simulation mechanics: `docs/sim_mechanics_doc.md`
 - **Hierarchical graph architecture**: `docs/mermaid-diagram-instructions.md` (see below)
-- Legacy pathfinding design: `docs/pathfinding_strategy.md` (archived approach)
 - File index: `docs/FILE_INDEX.md`

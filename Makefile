@@ -3,7 +3,7 @@
 # - Removes unused imports automatically when using the "fix" targets
 
 SHELL := /bin/bash
-PY_DIRS := nclone
+PY_DIRS := nclone tests
 
 .PHONY: help dev-setup lint fix imports
 
