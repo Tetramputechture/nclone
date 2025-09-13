@@ -14,20 +14,31 @@ map_data = generate_map()
 
 # Create argument parser so that we can pass parameters when executing the tool
 # Run the tool with the -h option to see the complete help
-parser = argparse.ArgumentParser(description='N++ physics clone')
-parser.add_argument('--basic-sim', action='store_true',
-                    help='Only simulate entities with physical collision')
-parser.add_argument('--full-export', action='store_true',
-                    help="Export coordinates of moving entities")
-parser.add_argument('-t', '--tolerance', type=float, default=1.0,
-                    help='Minimum units to consider an entity moved')
+parser = argparse.ArgumentParser(description="N++ physics clone")
+parser.add_argument(
+    "--basic-sim",
+    action="store_true",
+    help="Only simulate entities with physical collision",
+)
+parser.add_argument(
+    "--full-export", action="store_true", help="Export coordinates of moving entities"
+)
+parser.add_argument(
+    "-t",
+    "--tolerance",
+    type=float,
+    default=1.0,
+    help="Minimum units to consider an entity moved",
+)
 ARGUMENTS = parser.parse_args()
 
 sim = Simulator(SimConfig())
 
 pygame.init()
 pygame.display.set_caption("N++")
-screen = pygame.display.set_mode((render_utils.SRCWIDTH, render_utils.SRCHEIGHT), pygame.RESIZABLE)
+screen = pygame.display.set_mode(
+    (render_utils.SRCWIDTH, render_utils.SRCHEIGHT), pygame.RESIZABLE
+)
 clock = pygame.time.Clock()
 running = True
 running_mode = "playing"
@@ -38,8 +49,7 @@ running_mode = "playing"
 level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
 width = random.randint(4, 42)
 height = random.randint(4, 23)
-map_gen = generate_map(level_type=level_type,
-                       width=width, height=height)
+map_gen = generate_map(level_type=level_type, width=width, height=height)
 sim.load_from_created(map_gen)
 inputs = None
 if os.path.isfile("inputs"):
@@ -52,7 +62,7 @@ if os.path.isfile("inputs"):
     jump_inputs = [JUMP_INPUTS_DIC[inp] for inp in inputs]
     inp_len = len(inputs)
 
-sim_renderer = NSimRenderer(sim, render_mode='human')
+sim_renderer = NSimRenderer(sim, render_mode="human")
 
 # # Print space of NplayHeadless state, only ninja and exit and switch
 # np_headless = NPlayHeadless()
@@ -96,16 +106,14 @@ while running:
     if keys[pygame.K_g]:
         sim.reset()
         # Randomly choose between maze and simple horizontal level
-        level_type = random.choice(
-            ["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
+        level_type = random.choice(["MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK"])
         # level_type = "MULTI_CHAMBER"
         width = random.randint(4, 42)
         height = random.randint(4, 23)
         # 50% chance to generate a random map, 50% chance to load a random official map
         if random.random() < 0.5:
             print("Generating a random map")
-            map_gen = generate_map(level_type=level_type,
-                                   width=width, height=height)
+            map_gen = generate_map(level_type=level_type, width=width, height=height)
             sim.load_from_created(map_gen)
         else:
             print("Loading a random official map")
