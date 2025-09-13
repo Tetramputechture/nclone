@@ -9,7 +9,18 @@ from .sim_config import SimConfig
 import numpy as np
 from typing import List
 from .constants.entity_types import EntityType
+from .constants.physics_constants import (
+    MAX_HOR_SPEED,
+    MAX_JUMP_DURATION,
+    GRAVITY_JUMP,
+    GRAVITY_FALL,
+    DRAG_SLOW,
+    DRAG_REGULAR,
+    FRICTION_WALL,
+    FRICTION_GROUND,
+)
 from . import render_utils
+
 
 class NPlayHeadless:
     """
@@ -22,12 +33,14 @@ class NPlayHeadless:
     or jumping, loading a map, resetting and ticking the simulation).
     """
 
-    def __init__(self,
-                 render_mode: str = 'rgb_array',
-                 enable_animation: bool = False,
-                 enable_logging: bool = False,
-                 enable_debug_overlay: bool = False,
-                 seed: Optional[int] = None):
+    def __init__(
+        self,
+        render_mode: str = "rgb_array",
+        enable_animation: bool = False,
+        enable_logging: bool = False,
+        enable_debug_overlay: bool = False,
+        seed: Optional[int] = None,
+    ):
         """
         Initialize the simulation and renderer, as well as the headless pygame
         interface and display.
@@ -35,25 +48,26 @@ class NPlayHeadless:
         self.render_mode = render_mode
 
         self.sim = Simulator(
-            SimConfig(enable_anim=enable_animation, log_data=enable_logging))
-        
-        self.sim_renderer = NSimRenderer(
-            self.sim, render_mode, enable_debug_overlay)
+            SimConfig(enable_anim=enable_animation, log_data=enable_logging)
+        )
+
+        self.sim_renderer = NSimRenderer(self.sim, render_mode, enable_debug_overlay)
         self.current_map_data = None
         self.clock = pygame.time.Clock()
 
         # init pygame
         pygame.init()
         pygame.display.init()
-        if self.render_mode == 'rgb_array':
+        if self.render_mode == "rgb_array":
             os.environ["SDL_VIDEODRIVER"] = "dummy"
         else:
-            print('Setting up pygame display')
+            print("Setting up pygame display")
             pygame.display.set_mode((render_utils.SRCWIDTH, render_utils.SRCHEIGHT))
 
         # Pre-allocate buffer for surface to array conversion
         self._render_buffer = np.empty(
-            (render_utils.SRCWIDTH, render_utils.SRCHEIGHT, 3), dtype=np.uint8)
+            (render_utils.SRCWIDTH, render_utils.SRCHEIGHT, 3), dtype=np.uint8
+        )
 
         self.enable_debug_overlay = enable_debug_overlay
         self.seed = seed
@@ -77,9 +91,11 @@ class NPlayHeadless:
             # Grayscale it (H, W, 1)
             # Inline frame_to_grayscale logic
             processed_frame = transposed_array_hwc[..., :3]
-            grayscale = (0.2989 * processed_frame[..., 0] +
-                         0.5870 * processed_frame[..., 1] +
-                         0.1140 * processed_frame[..., 2])
+            grayscale = (
+                0.2989 * processed_frame[..., 0]
+                + 0.5870 * processed_frame[..., 1]
+                + 0.1140 * processed_frame[..., 2]
+            )
             final_gray_output_hw1 = grayscale[..., np.newaxis].astype(np.uint8)
             del referenced_array_whc  # Unlock surface
         except pygame.error:  # If pixels3d fails
@@ -90,9 +106,11 @@ class NPlayHeadless:
             # Grayscale it (H, W, 1)
             # Inline frame_to_grayscale logic
             processed_frame = transposed_render_buffer_hwc[..., :3]
-            grayscale = (0.2989 * processed_frame[..., 0] +
-                         0.5870 * processed_frame[..., 1] +
-                         0.1140 * processed_frame[..., 2])
+            grayscale = (
+                0.2989 * processed_frame[..., 0]
+                + 0.5870 * processed_frame[..., 1]
+                + 0.1140 * processed_frame[..., 2]
+            )
             final_gray_output_hw1 = grayscale[..., np.newaxis].astype(np.uint8)
         return final_gray_output_hw1
 
@@ -111,7 +129,9 @@ class NPlayHeadless:
             map_data = [int(b) for b in map_file.read()]
         self.load_map_from_map_data(map_data)
 
-    def load_random_map(self, map_type: Optional[str] = "SIMPLE_HORIZONTAL_NO_BACKTRACK"):
+    def load_random_map(
+        self, map_type: Optional[str] = "SIMPLE_HORIZONTAL_NO_BACKTRACK"
+    ):
         """
         Generate a random map and load it into the simulator.
         """
@@ -123,12 +143,14 @@ class NPlayHeadless:
         """
         Load a random official map from the maps/official folder.
         """
-        base_map_path = os.path.join(
-            os.path.dirname(__file__), 'maps', 'official')
+        base_map_path = os.path.join(os.path.dirname(__file__), "maps", "official")
 
         # Get all subfolders in maps/official
-        subfolders = [f for f in os.listdir(
-            base_map_path) if os.path.isdir(os.path.join(base_map_path, f))]
+        subfolders = [
+            f
+            for f in os.listdir(base_map_path)
+            if os.path.isdir(os.path.join(base_map_path, f))
+        ]
 
         # Choose random subfolder
         subfolder = self.rng.choice(subfolders)
@@ -142,7 +164,7 @@ class NPlayHeadless:
         return os.path.join(subfolder, map_file)
 
     def reset(self):
-        """ 
+        """
         Reset the simulation to the initial state, including rendering caches and ticks.
         """
         self.sim.reset()
@@ -161,7 +183,7 @@ class NPlayHeadless:
         self.cached_render_surface = None
         self.cached_render_buffer = None
         self.sim.tick(horizontal_input, jump_input)
-        if self.render_mode == 'human':
+        if self.render_mode == "human":
             self.clock.tick(120)
 
     def render(self, debug_info: Optional[dict] = None):
@@ -176,23 +198,30 @@ class NPlayHeadless:
         """
         # --- Cache Check ---
         if self.current_tick == self.last_rendered_tick:
-            if self.render_mode == 'human' and self.cached_render_surface is not None: # If human mode, return surface directly
+            if (
+                self.render_mode == "human" and self.cached_render_surface is not None
+            ):  # If human mode, return surface directly
                 if debug_info is not None:
                     # This will redraw the game and the overlay if new debug_info is provided
-                    surface = self.sim_renderer.draw(self.sim.frame <=1, debug_info)
+                    surface = self.sim_renderer.draw(self.sim.frame <= 1, debug_info)
                     self.cached_render_surface = surface
-                    return self.cached_render_surface 
-                return self.cached_render_surface 
+                    return self.cached_render_surface
+                return self.cached_render_surface
 
             # If not human mode, or surface cache miss, check buffer cache
             if self.cached_render_buffer is not None:  # This is H, W, 1 grayscale
                 return self.cached_render_buffer
-            elif self.cached_render_surface is not None:  # Mode might have switched from human to rgb_array, or first rgb_array render
+            elif (
+                self.cached_render_surface is not None
+            ):  # Mode might have switched from human to rgb_array, or first rgb_array render
                 # Generate grayscaled buffer from self.cached_render_surface
-                gray_array_hw1 = self._perform_grayscale_conversion(self.cached_render_surface)
-                self.cached_render_buffer = gray_array_hw1.copy()  # Cache the new grayscale buffer
+                gray_array_hw1 = self._perform_grayscale_conversion(
+                    self.cached_render_surface
+                )
+                self.cached_render_buffer = (
+                    gray_array_hw1.copy()
+                )  # Cache the new grayscale buffer
                 return self.cached_render_buffer
-
 
         # --- New Frame Rendering ---
         init = self.sim.frame <= 1
@@ -201,12 +230,14 @@ class NPlayHeadless:
         self.cached_render_surface = surface  # Always cache the raw surface for potential mode switch or human display
         self.last_rendered_tick = self.current_tick
 
-        if self.render_mode == 'human':
+        if self.render_mode == "human":
             # For human mode, the surface is already updated and displayed by NSimRenderer.draw
             return self.cached_render_surface
 
         final_gray_output_hw1 = self._perform_grayscale_conversion(surface)
-        self.cached_render_buffer = final_gray_output_hw1.copy()  # Cache the (H,W,1) grayscale buffer
+        self.cached_render_buffer = (
+            final_gray_output_hw1.copy()
+        )  # Cache the (H,W,1) grayscale buffer
         return final_gray_output_hw1
 
     def render_collision_map(self):
@@ -263,7 +294,11 @@ class NPlayHeadless:
     def mines(self):
         # We want to return a list of all mines in the simulation with state == 0 (toggled)
         # of type 1.
-        return [entity for entity in self.sim.entity_dic[1] if entity.active and entity.state == 0]
+        return [
+            entity
+            for entity in self.sim.entity_dic[1]
+            if entity.active and entity.state == 0
+        ]
 
     # ---- Door helpers for graph construction ----
     def regular_doors(self):
@@ -289,21 +324,23 @@ class NPlayHeadless:
     def get_grid_edges(self):
         """Get horizontal and vertical grid edges."""
         return {
-            'horizontal': self.sim.hor_grid_edge_dic,
-            'vertical': self.sim.ver_grid_edge_dic
+            "horizontal": self.sim.hor_grid_edge_dic,
+            "vertical": self.sim.ver_grid_edge_dic,
         }
 
     def get_segment_edges(self):
         """Get horizontal and vertical segment edges."""
         return {
-            'horizontal': self.sim.hor_segment_dic,
-            'vertical': self.sim.ver_segment_dic
+            "horizontal": self.sim.hor_segment_dic,
+            "vertical": self.sim.ver_segment_dic,
         }
 
     def exit(self):
         pygame.quit()
 
-    def get_state_vector(self, only_exit_and_switch: bool = False, use_rich_features: bool = True):
+    def get_state_vector(
+        self, only_exit_and_switch: bool = False, use_rich_features: bool = True
+    ):
         """
         Get a complete state representation of the game environment as a vector of float values.
         This includes ninja state, entity states, and environment geometry.
@@ -323,7 +360,9 @@ class NPlayHeadless:
         state.extend(ninja_state)
 
         # Add entity states with fixed size per entity type
-        entity_states = self.get_entity_states(only_exit_and_switch, use_rich_features=use_rich_features)
+        entity_states = self.get_entity_states(
+            only_exit_and_switch, use_rich_features=use_rich_features
+        )
         state.extend(entity_states)
 
         # Add environment geometry (fixed size)
@@ -362,19 +401,16 @@ class NPlayHeadless:
         state = [
             ninja.xpos / render_utils.SRCWIDTH,  # Position normalized
             ninja.ypos / render_utils.SRCHEIGHT,
-            (ninja.xspeed / ninja.MAX_HOR_SPEED + 1) / \
-            2,  # Speed normalized to [0,1]
-            (ninja.yspeed / ninja.MAX_HOR_SPEED + 1) / 2,
+            (ninja.xspeed / MAX_HOR_SPEED + 1) / 2,  # Speed normalized to [0,1]
+            (ninja.yspeed / MAX_HOR_SPEED + 1) / 2,
             float(ninja.airborn),  # Boolean already 0 or 1
             float(ninja.walled),
-            ninja.jump_duration / ninja.MAX_JUMP_DURATION,  # Already normalized
+            ninja.jump_duration / MAX_JUMP_DURATION,  # Already normalized
             # Physics parameters normalized based on their typical ranges
-            (ninja.applied_gravity - ninja.GRAVITY_JUMP) / \
-            (ninja.GRAVITY_FALL - ninja.GRAVITY_JUMP),
-            (ninja.applied_drag - ninja.DRAG_SLOW) / \
-            (ninja.DRAG_REGULAR - ninja.DRAG_SLOW),
-            (ninja.applied_friction - ninja.FRICTION_WALL) / \
-            (ninja.FRICTION_GROUND - ninja.FRICTION_WALL)
+            (ninja.applied_gravity - GRAVITY_JUMP) / (GRAVITY_FALL - GRAVITY_JUMP),
+            (ninja.applied_drag - DRAG_SLOW) / (DRAG_REGULAR - DRAG_SLOW),
+            (ninja.applied_friction - FRICTION_WALL)
+            / (FRICTION_GROUND - FRICTION_WALL),
         ]
 
         if not use_rich_features:
@@ -383,45 +419,57 @@ class NPlayHeadless:
         # Extended features for rich observation space
         # Buffer counters (normalized by typical window size of 5 frames)
         buffer_window_size = 5.0
-        state.extend([
-            max(ninja.jump_buffer, 0) / buffer_window_size,  # 0-1 range
-            max(ninja.floor_buffer, 0) / buffer_window_size,
-            max(ninja.wall_buffer, 0) / buffer_window_size,
-            max(ninja.launch_pad_buffer, 0) / buffer_window_size,
-        ])
+        state.extend(
+            [
+                max(ninja.jump_buffer, 0) / buffer_window_size,  # 0-1 range
+                max(ninja.floor_buffer, 0) / buffer_window_size,
+                max(ninja.wall_buffer, 0) / buffer_window_size,
+                max(ninja.launch_pad_buffer, 0) / buffer_window_size,
+            ]
+        )
 
         # Contact flags/counters (clipped to {0,1})
-        state.extend([
-            min(ninja.floor_count, 1),  # Already 0 or 1
-            min(ninja.wall_count, 1),
-            min(ninja.ceiling_count, 1),
-        ])
+        state.extend(
+            [
+                min(ninja.floor_count, 1),  # Already 0 or 1
+                min(ninja.wall_count, 1),
+                min(ninja.ceiling_count, 1),
+            ]
+        )
 
         # Floor/ceiling normals (already normalized to [-1,1], convert to [0,1])
-        state.extend([
-            (ninja.floor_normalized_x + 1) / 2,
-            (ninja.floor_normalized_y + 1) / 2,
-            (ninja.ceiling_normalized_x + 1) / 2,
-            (ninja.ceiling_normalized_y + 1) / 2,
-        ])
+        state.extend(
+            [
+                (ninja.floor_normalized_x + 1) / 2,
+                (ninja.floor_normalized_y + 1) / 2,
+                (ninja.ceiling_normalized_x + 1) / 2,
+                (ninja.ceiling_normalized_y + 1) / 2,
+            ]
+        )
 
         # Impact risk estimator (velocity magnitude and downward component)
-        velocity_magnitude = (ninja.xspeed**2 + ninja.yspeed**2)**0.5
-        max_velocity = ninja.MAX_HOR_SPEED * 2  # Approximate max velocity including vertical
+        velocity_magnitude = (ninja.xspeed**2 + ninja.yspeed**2) ** 0.5
+        max_velocity = MAX_HOR_SPEED * 2  # Approximate max velocity including vertical
         impact_vel = min(velocity_magnitude / max_velocity, 1.0)
-        downward_velocity = max(ninja.yspeed, 0) / max_velocity  # Only positive (downward) velocity
-        
-        state.extend([
-            impact_vel,
-            downward_velocity,
-        ])
+        downward_velocity = (
+            max(ninja.yspeed, 0) / max_velocity
+        )  # Only positive (downward) velocity
+
+        state.extend(
+            [
+                impact_vel,
+                downward_velocity,
+            ]
+        )
 
         # State flags (ninja.state: 0-9, normalize to [0,1])
         state.append(ninja.state / 9.0)
 
         return state
 
-    def get_entity_states(self, only_one_exit_and_switch: bool = False, use_rich_features: bool = True):
+    def get_entity_states(
+        self, only_one_exit_and_switch: bool = False, use_rich_features: bool = True
+    ):
         """Get all entity states as a list of floats with fixed length, all normalized between 0 and 1.
 
         Args:
@@ -436,7 +484,10 @@ class NPlayHeadless:
         # And only return:
         # [switch_active, exit_active]
         if only_one_exit_and_switch:
-            return [float(self._sim_exit_switch().active), float(self._sim_exit_door().active)]
+            return [
+                float(self._sim_exit_switch().active),
+                float(self._sim_exit_door().active),
+            ]
 
         # Maximum number of attributes per entity (padding with zeros if entity has fewer attributes)
         MAX_ATTRIBUTES = 6 if use_rich_features else 4
@@ -458,14 +509,17 @@ class NPlayHeadless:
             EntityType.BOOST_PAD: 32,
             EntityType.DEATH_BALL: 32,
             EntityType.MINI_DRONE: 32,
-            EntityType.SHWUMP: 32
+            EntityType.SHWUMP: 32,
         }
 
         exit_entity_type = EntityType.EXIT_DOOR
         switch_entity_type = EntityType.EXIT_SWITCH
 
-        entity_types = [
-            exit_entity_type, switch_entity_type] if only_one_exit_and_switch else list(MAX_COUNTS.keys())
+        entity_types = (
+            [exit_entity_type, switch_entity_type]
+            if only_one_exit_and_switch
+            else list(MAX_COUNTS.keys())
+        )
 
         # For each entity type in the simulation
         for entity_type in entity_types:
@@ -488,18 +542,20 @@ class NPlayHeadless:
                         # Distance to ninja (normalized by screen diagonal)
                         dx = entity.xpos - ninja.xpos
                         dy = entity.ypos - ninja.ypos
-                        distance = (dx**2 + dy**2)**0.5
-                        screen_diagonal = (render_utils.SRCWIDTH**2 + render_utils.SRCHEIGHT**2)**0.5
+                        distance = (dx**2 + dy**2) ** 0.5
+                        screen_diagonal = (
+                            render_utils.SRCWIDTH**2 + render_utils.SRCHEIGHT**2
+                        ) ** 0.5
                         normalized_distance = min(distance / screen_diagonal, 1.0)
                         entity_state.append(normalized_distance)
 
                         # Relative velocity (if entity has velocity attributes)
-                        if hasattr(entity, 'xspeed') and hasattr(entity, 'yspeed'):
+                        if hasattr(entity, "xspeed") and hasattr(entity, "yspeed"):
                             # Relative velocity magnitude normalized by ninja's max speed
                             rel_vx = entity.xspeed - ninja.xspeed
                             rel_vy = entity.yspeed - ninja.yspeed
-                            rel_speed = (rel_vx**2 + rel_vy**2)**0.5
-                            normalized_rel_speed = min(rel_speed / ninja.MAX_HOR_SPEED, 1.0)
+                            rel_speed = (rel_vx**2 + rel_vy**2) ** 0.5
+                            normalized_rel_speed = min(rel_speed / MAX_HOR_SPEED, 1.0)
                             entity_state.append(normalized_rel_speed)
                         else:
                             entity_state.append(0.0)  # No velocity information
@@ -509,9 +565,11 @@ class NPlayHeadless:
                     # index, and state.
                     if not all(0 <= state_val <= 1 for state_val in entity_state):
                         print(
-                            f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds")
+                            f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds"
+                        )
                         raise ValueError(
-                            f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds")
+                            f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds"
+                        )
 
                     while len(entity_state) < MAX_ATTRIBUTES:
                         entity_state.append(0.0)
@@ -565,8 +623,7 @@ class NPlayHeadless:
 
         # Assert that all states are between 0 and 1
         if not all(0 <= s <= 1 for s in state):
-            invalid_states = [(i, s)
-                              for i, s in enumerate(state) if not 0 <= s <= 1]
+            invalid_states = [(i, s) for i, s in enumerate(state) if not 0 <= s <= 1]
             print(f"Invalid states found at indices: {invalid_states}")
             raise ValueError("Some geometry states are out of bounds [0,1]")
 

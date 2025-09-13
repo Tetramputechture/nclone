@@ -37,17 +37,21 @@ This class should handle returning:
     - Vector between ninja and switch
     - Vector between ninja and exit door
 """
-from ...ninja import Ninja
+
 import numpy as np
 from collections import deque
 import cv2
 from typing import Dict, Any, Tuple
 from .constants import (
-    PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT,
-    LEVEL_WIDTH, LEVEL_HEIGHT,
+    PLAYER_FRAME_WIDTH,
+    PLAYER_FRAME_HEIGHT,
+    LEVEL_WIDTH,
+    LEVEL_HEIGHT,
     TEMPORAL_FRAMES,
-    RENDERED_VIEW_WIDTH, RENDERED_VIEW_HEIGHT,
+    RENDERED_VIEW_WIDTH,
+    RENDERED_VIEW_HEIGHT,
 )
+from ...constants.physics_constants import MAX_HOR_SPEED
 from .frame_augmentation import apply_consistent_augmentation
 
 
@@ -62,6 +66,7 @@ def stabilize_frame(frame: np.ndarray) -> np.ndarray:
     if not isinstance(frame, np.ndarray):
         try:
             import pygame  # type: ignore
+
             if isinstance(frame, pygame.Surface):
                 # pygame.surfarray.array3d returns shape (W, H, 3)
                 frame = np.transpose(pygame.surfarray.array3d(frame), (1, 0, 2))
@@ -71,13 +76,18 @@ def stabilize_frame(frame: np.ndarray) -> np.ndarray:
             frame = np.asarray(frame)
 
     # If channel-first (C, H, W), move channels last
-    if isinstance(frame, np.ndarray) and frame.ndim == 3 and frame.shape[0] in (1, 3, 4) and frame.shape[0] < min(frame.shape[1], frame.shape[2]):
+    if (
+        isinstance(frame, np.ndarray)
+        and frame.ndim == 3
+        and frame.shape[0] in (1, 3, 4)
+        and frame.shape[0] < min(frame.shape[1], frame.shape[2])
+    ):
         frame = np.moveaxis(frame, 0, -1)
 
     # Ensure uint8 dtype
     if frame.dtype != np.uint8:
         frame = np.clip(frame, 0, 255).astype(np.uint8)
-    
+
     # Ensure proper shape (H, W, 1) for grayscale
     if len(frame.shape) == 2:
         frame = frame[..., np.newaxis]
@@ -88,31 +98,29 @@ def stabilize_frame(frame: np.ndarray) -> np.ndarray:
             frame = frame[..., :3]
         if frame.shape[-1] == 3:
             # Convert RGB to grayscale
-            gray = (0.2989 * frame[..., 0] + 0.5870 * frame[..., 1] + 0.1140 * frame[..., 2])
+            gray = (
+                0.2989 * frame[..., 0] + 0.5870 * frame[..., 1] + 0.1140 * frame[..., 2]
+            )
             frame = gray[..., np.newaxis].astype(np.uint8)
         elif frame.shape[-1] != 1:
             raise ValueError(f"Unexpected frame shape: {frame.shape}")
-    
+
     return frame
 
 
 def normalize_position(x: float, y: float) -> Tuple[float, float]:
     """Normalize position coordinates to [-1, 1] range."""
-    return (
-        (x / LEVEL_WIDTH) * 2 - 1,
-        (y / LEVEL_HEIGHT) * 2 - 1
-    )
+    return ((x / LEVEL_WIDTH) * 2 - 1, (y / LEVEL_HEIGHT) * 2 - 1)
 
 
 def normalize_velocity(vx: float, vy: float) -> Tuple[float, float]:
     """Normalize velocity components to [-1, 1] range."""
-    return (
-        np.clip(vx / Ninja.MAX_HOR_SPEED, -1, 1),
-        np.clip(vy / Ninja.MAX_HOR_SPEED, -1, 1)
-    )
+    return (np.clip(vx / MAX_HOR_SPEED, -1, 1), np.clip(vy / MAX_HOR_SPEED, -1, 1))
 
 
-def calculate_vector(from_x: float, from_y: float, to_x: float, to_y: float) -> Tuple[float, float]:
+def calculate_vector(
+    from_x: float, from_y: float, to_x: float, to_y: float
+) -> Tuple[float, float]:
     """Calculate normalized vector between two points."""
     dx = to_x - from_x
     dy = to_y - from_y
@@ -134,7 +142,9 @@ class ObservationProcessor:
         else:
             self.frame_history = None
 
-    def frame_around_player(self, frame: np.ndarray, player_x: float, player_y: float) -> np.ndarray:
+    def frame_around_player(
+        self, frame: np.ndarray, player_x: float, player_y: float
+    ) -> np.ndarray:
         """Crop the frame to a rectangle centered on the player."""
         # Ensure frame stability
         player_frame = stabilize_frame(frame)
@@ -173,10 +183,12 @@ class ObservationProcessor:
         # Pad the frame
         player_frame = cv2.copyMakeBorder(
             player_frame,
-            top_pad, bottom_pad,
-            left_pad, right_pad,
+            top_pad,
+            bottom_pad,
+            left_pad,
+            right_pad,
             cv2.BORDER_CONSTANT,
-            value=0
+            value=0,
         )
 
         if len(player_frame.shape) == 2:
@@ -186,7 +198,8 @@ class ObservationProcessor:
         # Final size check and correction if needed
         if player_frame.shape[:2] != (PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH):
             player_frame = cv2.resize(
-                player_frame, (PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT))
+                player_frame, (PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT)
+            )
             if len(player_frame.shape) == 2:
                 player_frame = player_frame[..., np.newaxis]
 
@@ -196,23 +209,23 @@ class ObservationProcessor:
         """Process game state into normalized feature vector."""
         # Calculate normalized vectors to objectives
         to_switch = calculate_vector(
-            obs['player_x'], obs['player_y'],
-            obs['switch_x'], obs['switch_y']
+            obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
         )
         to_exit = calculate_vector(
-            obs['player_x'], obs['player_y'],
-            obs['exit_door_x'], obs['exit_door_y']
+            obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
         )
 
         # Extract the original game state which contains ninja state and entity states
-        game_state = obs['game_state']
+        game_state = obs["game_state"]
 
         # Combine all features
-        processed_state = np.concatenate([
-            game_state,  # Original ninja and entity states
-            [obs['time_remaining']],  # Time remaining
-            [*to_switch, *to_exit]  # Vectors to objectives
-        ]).astype(np.float32)
+        processed_state = np.concatenate(
+            [
+                game_state,  # Original ninja and entity states
+                [obs["time_remaining"]],  # Time remaining
+                [*to_switch, *to_exit],  # Vectors to objectives
+            ]
+        ).astype(np.float32)
 
         return processed_state
 
@@ -233,7 +246,7 @@ class ObservationProcessor:
         downsampled = cv2.resize(
             screen,
             (RENDERED_VIEW_WIDTH, RENDERED_VIEW_HEIGHT),
-            interpolation=cv2.INTER_AREA
+            interpolation=cv2.INTER_AREA,
         )
 
         # Ensure we have a channel dimension
@@ -245,18 +258,16 @@ class ObservationProcessor:
     def process_observation(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
         """Process observation into frame stack, base map, and feature vectors."""
         # Ensure screen stability and consistent format
-        screen = stabilize_frame(obs['screen'])
+        screen = stabilize_frame(obs["screen"])
 
         # Process current frame using already grayscale screen
         player_frame = self.frame_around_player(
-            screen,
-            obs['player_x'],
-            obs['player_y']
+            screen, obs["player_x"], obs["player_y"]
         )
 
         result = {
-            'game_state': self.process_game_state(obs),
-            'global_view': self.process_rendered_global_view(screen)
+            "game_state": self.process_game_state(obs),
+            "global_view": self.process_rendered_global_view(screen),
         }
 
         # Update frame history with cropped player frame instead of full frame
@@ -281,16 +292,17 @@ class ObservationProcessor:
                 player_frames = apply_consistent_augmentation(player_frames)
 
             # Stack frames along channel dimension
-            result['player_frame'] = np.concatenate(player_frames, axis=-1)
+            result["player_frame"] = np.concatenate(player_frames, axis=-1)
 
             # Verify we have exactly 3 channels
-            assert result['player_frame'].shape[
-                -1] == TEMPORAL_FRAMES, f"Expected {TEMPORAL_FRAMES} channels, got {result['player_frame'].shape[-1]}"
+            assert result["player_frame"].shape[-1] == TEMPORAL_FRAMES, (
+                f"Expected {TEMPORAL_FRAMES} channels, got {result['player_frame'].shape[-1]}"
+            )
         else:
             # Apply augmentation to single frame if enabled
             if self.enable_augmentation:
                 player_frame = apply_consistent_augmentation([player_frame])[0]
-            result['player_frame'] = player_frame
+            result["player_frame"] = player_frame
 
         return result
 

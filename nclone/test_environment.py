@@ -79,11 +79,6 @@ import cProfile
 import pstats
 import sys
 
-from nclone.graph.visualization import (
-    GraphVisualizer,
-    VisualizationConfig,
-    InteractiveGraphVisualizer,
-)
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 
 
@@ -96,14 +91,13 @@ def _get_ninja_position(env):
     else:
         return (100, 100)  # Fallback
 
+
 # Initialize pygame
 pygame.init()
 pygame.display.set_caption("N++ Environment Test")
 
 # Argument parser
-parser = argparse.ArgumentParser(
-    description="Test N++ environment with graph visualization."
-)
+parser = argparse.ArgumentParser(description="Test N++ environment.")
 parser.add_argument(
     "--log-frametimes", action="store_true", help="Enable frametime logging to stdout."
 )
@@ -160,11 +154,7 @@ args = parser.parse_args()
 print(f"Headless: {args.headless}")
 
 # Display help information for graph visualization
-if (
-    args.visualize_graph
-    or args.standalone_graph
-    or args.interactive_graph
-):
+if args.visualize_graph or args.standalone_graph or args.interactive_graph:
     print("\n" + "=" * 60)
     print("GRAPH VISUALIZATION ACTIVE")
     print("=" * 60)
@@ -203,12 +193,6 @@ env = BasicLevelNoGold(
 )
 env.reset()
 
-# Initialize graph visualization components
-graph_visualizer = None
-graph_data = None
-standalone_window = None
-graph_overlay_surface = None
-
 if (
     args.visualize_graph
     or args.standalone_graph
@@ -216,20 +200,6 @@ if (
     or args.save_graph
 ):
     print("Initializing graph visualization system...")
-
-    # Create visualization configuration
-    config = VisualizationConfig(
-        show_walk_edges="walk" in args.show_edges,
-        show_jump_edges="jump" in args.show_edges,
-        show_fall_edges="fall" in args.show_edges,
-        show_wall_slide_edges="wall_slide" in args.show_edges,
-        show_one_way_edges="one_way" in args.show_edges,
-        show_functional_edges="functional" in args.show_edges,
-        show_shortest_path=False,
-        alpha=0.7,  # Semi-transparent overlay
-    )
-
-    graph_visualizer = GraphVisualizer(config)
 
     # Build graph data
     try:
@@ -261,14 +231,6 @@ if (
         import traceback
 
         traceback.print_exc()
-
-    # Handle interactive graph mode
-    if args.interactive_graph and graph_data:
-        print("Launching interactive graph visualization...")
-        interactive_viz = InteractiveGraphVisualizer(width=1200, height=800)
-        interactive_viz.run(graph_data)
-        # Interactive mode exits after use
-        sys.exit(0)
 
     # Create standalone window if requested
     if args.standalone_graph and not args.headless:
@@ -326,27 +288,6 @@ while running:
                     except Exception:
                         pass
 
-                # Graph visualization controls
-                if event.key == pygame.K_v and graph_visualizer:
-                    # Toggle graph overlay visualization
-                    args.visualize_graph = not args.visualize_graph
-                    print(f"Graph overlay: {'ON' if args.visualize_graph else 'OFF'}")
-
-                if (
-                    event.key == pygame.K_s
-                    and args.save_graph
-                    and graph_visualizer
-                    and graph_data
-                ):
-                    # Save graph visualization
-                    try:
-                        surface = graph_visualizer.create_standalone_visualization(
-                            graph_data, width=1200, height=800
-                        )
-                        pygame.image.save(surface, args.save_graph)
-                        print(f"Graph visualization saved to {args.save_graph}")
-                    except Exception as e:
-                        print(f"Error saving graph: {e}")
     else:  # Minimal event handling for headless
         for event in pygame.event.get(pygame.QUIT):  # only process QUIT events
             if event.type == pygame.QUIT:
@@ -380,80 +321,6 @@ while running:
     # Reset if episode is done
     if terminated or truncated:
         observation, info = env.reset()
-
-    # Graph visualization rendering with performance optimizations
-    if graph_visualizer and graph_data and not args.headless:
-        try:
-            # Render graph overlay on main simulator window
-            if args.visualize_graph:
-                # Only recreate overlay if it doesn't exist or on first frame
-                if not graph_overlay_surface or frame_counter == 1:
-                    screen = pygame.display.get_surface()
-                    if screen:
-                        # Get current ninja position for overlay
-                        ninja_pos = None
-                        if hasattr(env, "nplay_headless") and hasattr(
-                            env.nplay_headless, "ninja_position"
-                        ):
-                            ninja_pos = env.nplay_headless.ninja_position()
-                        elif hasattr(env, "sim") and hasattr(env.sim, "ninja"):
-                            ninja_pos = (env.sim.ninja.x, env.sim.ninja.y)
-
-                        # Get level data and entities for caching
-                        level_data = getattr(env, "level_data", None)
-                        entities = (
-                            getattr(env, "entities", [])
-                            if hasattr(env, "entities")
-                            else []
-                        )
-
-                        graph_overlay_surface = (
-                            graph_visualizer.create_overlay_visualization(
-                                graph_data,
-                                screen,
-                                ninja_position=ninja_pos,
-                                level_data=level_data,
-                                entities=entities,
-                            )
-                        )
-                        path_updated = False  # Reset flag after recreation
-
-                if graph_overlay_surface:
-                    screen = pygame.display.get_surface()
-                    if screen:
-                        screen.blit(graph_overlay_surface, (0, 0))
-
-
-            # Render standalone graph window (cache this too for performance)
-            if args.standalone_graph and standalone_window:
-                # Only update standalone window every few frames for performance
-                if frame_counter % 5 == 0:  # Update every 5 frames
-                    standalone_surface = (
-                        graph_visualizer.create_standalone_visualization(
-                            graph_data,
-                            standalone_window.get_width(),
-                            standalone_window.get_height(),
-                        )
-                    )
-                    standalone_window.blit(standalone_surface, (0, 0))
-                    pygame.display.flip()  # Update standalone window
-
-        except Exception as e:
-            print(f"Graph visualization error: {e}")
-            import traceback
-
-            traceback.print_exc()
-
-    # Save graph image if requested (one-time save)
-    if args.save_graph and graph_visualizer and graph_data and frame_counter == 1:
-        try:
-            surface = graph_visualizer.create_standalone_visualization(
-                graph_data, width=1200, height=800
-            )
-            pygame.image.save(surface, args.save_graph)
-            print(f"Graph visualization saved to {args.save_graph}")
-        except Exception as e:
-            print(f"Error saving graph: {e}")
 
     current_time = time.perf_counter()
     if args.log_frametimes:
