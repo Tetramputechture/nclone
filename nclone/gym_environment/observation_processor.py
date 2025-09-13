@@ -51,7 +51,7 @@ from .constants import (
     RENDERED_VIEW_WIDTH,
     RENDERED_VIEW_HEIGHT,
 )
-from ...constants.physics_constants import MAX_HOR_SPEED
+from ..constants.physics_constants import MAX_HOR_SPEED
 from .frame_augmentation import apply_consistent_augmentation
 
 

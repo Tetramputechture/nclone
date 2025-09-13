@@ -15,7 +15,7 @@ import unittest
 # Add the nclone package to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'nclone'))
 
-from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import BasicLevelNoGold
+from nclone.nclone_environments.npp_environment import NppEnvironment
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.navigation import PathfindingEngine
 from nclone.graph.common import EdgeType
@@ -28,7 +28,7 @@ class TestGraphVisualizationFixes(unittest.TestCase):
     def setUpClass(cls):
         """Set up test environment once for all tests."""
         # Create environment
-        cls.env = BasicLevelNoGold(
+        cls.env = NppEnvironment(
             render_mode="rgb_array",
             enable_frame_stack=False,
             enable_debug_overlay=False,

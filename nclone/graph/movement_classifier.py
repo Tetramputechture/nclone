@@ -30,6 +30,8 @@ from nclone.constants.physics_constants import (
     DEFAULT_TIME_ESTIMATE,
     DEFAULT_DIFFICULTY,
     JUMP_TIME_FALLBACK,
+    JUMP_WALL_REGULAR_X,
+    JUMP_WALL_SLIDE_X,
     # Energy constants
     JUMP_ENERGY_BASE,
     HEIGHT_FACTOR_DIVISOR,
@@ -126,7 +128,7 @@ class MovementClassifier:
         # Initialize precise collision and hazard systems
         self.precise_collision = PreciseTileCollision()
         self.hazard_system = HazardClassificationSystem()
-        
+
         # Initialize physics trajectory validator
         self.trajectory_validator = TrajectoryCalculator()
 
@@ -261,7 +263,14 @@ class MovementClassifier:
                 movement_candidates.append((MovementType.FALL, fall_result))
 
         # 3. Try jumping for upward movement or when walking/falling failed
-        if dy < 0 or not walk_result.is_valid or (dy > 0 and not any(mt == MovementType.FALL for mt, _ in movement_candidates)):
+        if (
+            dy < 0
+            or not walk_result.is_valid
+            or (
+                dy > 0
+                and not any(mt == MovementType.FALL for mt, _ in movement_candidates)
+            )
+        ):
             jump_result = self.trajectory_validator.validate_jump_trajectory(
                 src_pos, tgt_pos, None, level_data
             )
@@ -269,21 +278,37 @@ class MovementClassifier:
                 movement_candidates.append((MovementType.JUMP, jump_result))
 
         # 4. Try wall jumping for vertical movement in corridors
-        if abs(dy) > TILE_PIXEL_SIZE and abs(dx) < TILE_PIXEL_SIZE * 2:  # Vertical movement in narrow space
+        if (
+            abs(dy) > TILE_PIXEL_SIZE and abs(dx) < TILE_PIXEL_SIZE * 2
+        ):  # Vertical movement in narrow space
             # Try wall jump from left wall
-            if hasattr(self.trajectory_validator, 'validate_wall_jump_trajectory'):
-                wall_jump_left = self.trajectory_validator.validate_wall_jump_trajectory(
-                    src_pos, tgt_pos, (-1, 0), None, level_data  # Left wall normal
+            if hasattr(self.trajectory_validator, "validate_wall_jump_trajectory"):
+                wall_jump_left = (
+                    self.trajectory_validator.validate_wall_jump_trajectory(
+                        src_pos,
+                        tgt_pos,
+                        (-1, 0),
+                        None,
+                        level_data,  # Left wall normal
+                    )
                 )
                 if wall_jump_left.is_valid:
                     movement_candidates.append((MovementType.WALL_JUMP, wall_jump_left))
-                
+
                 # Try wall jump from right wall
-                wall_jump_right = self.trajectory_validator.validate_wall_jump_trajectory(
-                    src_pos, tgt_pos, (1, 0), None, level_data  # Right wall normal
+                wall_jump_right = (
+                    self.trajectory_validator.validate_wall_jump_trajectory(
+                        src_pos,
+                        tgt_pos,
+                        (1, 0),
+                        None,
+                        level_data,  # Right wall normal
+                    )
                 )
                 if wall_jump_right.is_valid:
-                    movement_candidates.append((MovementType.WALL_JUMP, wall_jump_right))
+                    movement_candidates.append(
+                        (MovementType.WALL_JUMP, wall_jump_right)
+                    )
 
         # 5. If no simple movement works, consider complex movements
         if not movement_candidates:
@@ -296,34 +321,36 @@ class MovementClassifier:
             # Sort by combined score (lower energy cost + lower risk = better)
             def movement_score(candidate):
                 movement_type, result = candidate
-                
+
                 # Physics-aware type preference based on movement direction
                 if dy > 0:  # Downward movement - prefer falling over jumping
                     type_preference = {
                         MovementType.WALK: 0,
                         MovementType.FALL: 1,
                         MovementType.JUMP: 2,
-                        MovementType.WALL_JUMP: 3
+                        MovementType.WALL_JUMP: 3,
                     }.get(movement_type, 4)
-                elif abs(dy) > TILE_PIXEL_SIZE * 2:  # Large vertical movement - prefer wall jumps
+                elif (
+                    abs(dy) > TILE_PIXEL_SIZE * 2
+                ):  # Large vertical movement - prefer wall jumps
                     type_preference = {
                         MovementType.WALK: 0,
                         MovementType.WALL_JUMP: 1,  # Wall jumps preferred for vertical movement
                         MovementType.JUMP: 2,
-                        MovementType.FALL: 3
+                        MovementType.FALL: 3,
                     }.get(movement_type, 4)
                 else:  # Upward or horizontal movement - prefer walking then jumping
                     type_preference = {
                         MovementType.WALK: 0,
                         MovementType.JUMP: 1,
                         MovementType.WALL_JUMP: 2,
-                        MovementType.FALL: 3
+                        MovementType.FALL: 3,
                     }.get(movement_type, 4)
-                
+
                 return (
-                    type_preference * 10 +  # Type preference weight
-                    result.energy_cost +    # Energy cost
-                    result.risk_factor * 5  # Risk factor weight
+                    type_preference * 10  # Type preference weight
+                    + result.energy_cost  # Energy cost
+                    + result.risk_factor * 5  # Risk factor weight
                 )
 
             best_movement, _ = min(movement_candidates, key=movement_score)
@@ -347,23 +374,23 @@ class MovementClassifier:
     ) -> bool:
         """
         Check if movement requires a combination of movement types.
-        
+
         This detects complex scenarios like jump-then-fall or wall-jump sequences.
         """
         distance = math.sqrt(dx**2 + dy**2)
-        
+
         # Very long distances might require multiple movement segments
         if distance > 200:  # Longer than typical single jump
             return True
-        
+
         # Complex vertical movements (both up and down significantly)
         if abs(dx) > 50 and abs(dy) > 50:
             return True
-        
+
         # Check for obstacles that require complex navigation
         if level_data and self._has_complex_obstacles(src_pos, tgt_pos, level_data):
             return True
-        
+
         return False
 
     def _has_complex_obstacles(
@@ -376,29 +403,31 @@ class MovementClassifier:
         # Simplified implementation - check for multiple obstacles in path
         x0, y0 = src_pos
         x1, y1 = tgt_pos
-        
-        if not hasattr(level_data, 'tiles'):
+
+        if not hasattr(level_data, "tiles"):
             return False
-        
+
         # Sample points along direct path
         steps = max(1, int(abs(x1 - x0) // (TILE_PIXEL_SIZE // 2)))
         obstacle_count = 0
-        
+
         for i in range(steps + 1):
             t = i / max(1, steps)
             x = x0 + t * (x1 - x0)
             y = y0 + t * (y1 - y0)
-            
+
             # Check for solid tiles
             tile_x = int(x // TILE_PIXEL_SIZE)
             tile_y = int(y // TILE_PIXEL_SIZE)
-            
-            if (0 <= tile_x < level_data.tiles.shape[1] and 
-                0 <= tile_y < level_data.tiles.shape[0]):
+
+            if (
+                0 <= tile_x < level_data.tiles.shape[1]
+                and 0 <= tile_y < level_data.tiles.shape[0]
+            ):
                 tile_type = level_data.tiles[tile_y, tile_x]
                 if tile_type != 0:  # Non-empty tile
                     obstacle_count += 1
-        
+
         # Multiple obstacles suggest complex navigation needed
         return obstacle_count > 2
 

@@ -50,7 +50,7 @@ These maps test fundamental physics constraints and tile traversability:
      - Wall slide sections
      - Bounce block interactions
    - **Expected Reachability**: Single optimal path through course
-
+   
 #### Dynamic Entity Testing Maps
 
 4. **`drone_patrol.nmap`**
