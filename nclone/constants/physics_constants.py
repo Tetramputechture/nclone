@@ -16,10 +16,10 @@ DRONE_LAUNCH_SPEED = 4.0  # Drone launch speed in pixels/frame
 
 # Thwump constants
 THWUMP_SEMI_SIDE = 9  # Thwump semi-side size in pixels
-THWUMP_FORWARD_SPEED = 20/7  # Thwump forward movement speed
-THWUMP_BACKWARD_SPEED = 8/7  # Thwump backward movement speed
+THWUMP_FORWARD_SPEED = 20 / 7  # Thwump forward movement speed
+THWUMP_BACKWARD_SPEED = 8 / 7  # Thwump backward movement speed
 
-# Shove Thwump constants  
+# Shove Thwump constants
 SHOVE_THWUMP_SEMI_SIDE = 12  # Shove thwump semi-side size in pixels
 SHOVE_THWUMP_PROJECTILE_RADIUS = 8  # Shove thwump projectile radius in pixels
 
@@ -38,8 +38,8 @@ MAX_VER_SPEED = 12.0  # Maximum vertical speed (upward) of the ninja (player)
 MIN_HORIZONTAL_VELOCITY = 0.1  # Minimum horizontal velocity for calculations
 
 # Gravity and physics (exact values from sim_mechanics_doc.md)
-GRAVITY_FALL = 0.0667  # Fall gravity: 0.0667 pixels/frame²
-GRAVITY_JUMP = 0.0111  # Jump gravity: 0.0111 pixels/frame²
+GRAVITY_FALL = 0.06666666666666665  # Fall gravity
+GRAVITY_JUMP = 0.01111111111111111  # Jump gravity
 TERMINAL_VELOCITY = 12.0  # Maximum falling speed
 
 # Jump mechanics (exact values from sim_mechanics_doc.md)
@@ -78,8 +78,12 @@ VERTICAL_MOVEMENT_THRESHOLD = 1e-6  # Vertical movement threshold
 WALK_SPEED_THRESHOLD = 0.5  # Speed threshold for walk classification
 JUMP_VELOCITY_THRESHOLD = 0.3  # Velocity threshold for jump detection
 WALL_CONTACT_DISTANCE = 15.0  # Distance for wall contact detection
-MIN_BOUNCE_BLOCK_MOVEMENT_DISTANCE = 10.0  # Minimum distance for bounce block movement detection
-MIN_UPWARD_MOVEMENT_FOR_BOUNCE = -10.0  # Minimum upward movement to consider bounce block
+MIN_BOUNCE_BLOCK_MOVEMENT_DISTANCE = (
+    10.0  # Minimum distance for bounce block movement detection
+)
+MIN_UPWARD_MOVEMENT_FOR_BOUNCE = (
+    -10.0
+)  # Minimum upward movement to consider bounce block
 
 # Movement direction thresholds
 HORIZONTAL_MOVEMENT_THRESHOLD = 2.0  # Threshold for horizontal movement
@@ -190,7 +194,7 @@ DRONE_PREDICTION_TIME = 60.0  # Frames to predict drone movement
 
 # Toggle mine radii by state
 TOGGLE_MINE_RADIUS_TOGGLED = 4.0  # Toggled state radius
-TOGGLE_MINE_RADIUS_UNTOGGLED = 3.5  # Untoggled state radius  
+TOGGLE_MINE_RADIUS_UNTOGGLED = 3.5  # Untoggled state radius
 TOGGLE_MINE_RADIUS_TOGGLING = 4.5  # Toggling state radius
 
 # Entity danger radii
@@ -221,15 +225,34 @@ ANIM_DATA = "anim_data_line_new.txt.bin"
 
 # Victory dance settings
 DANCE_RANDOM = True  # Choose whether the victory dance is picked randomly.
-DANCE_ID_DEFAULT = 0  # Choose the id of the dance that will always play if DANCE_RANDOM is false.
+DANCE_ID_DEFAULT = (
+    0  # Choose the id of the dance that will always play if DANCE_RANDOM is false.
+)
 
 # Dance IDs (names of dances courtesy of Eddy, 0-12 are new, 13-20 are classics):
 DANCE_DIC = {
-    0: (104, 104), 1: (106, 225), 2: (226, 345), 3: (346, 465), 4: (466, 585), 5: (586, 705),
-    6: (706, 825), 7: (826, 945), 8: (946, 1065), 9: (1066, 1185), 10: (1186, 1305),
-    11: (1306, 1485), 12: (1486, 1605), 13: (1606, 1664), 14: (1665, 1731), 15: (1732, 1810),
-    16: (1811, 1852), 17: (1853, 1946), 18: (1947, 2004), 19: (2005, 2156), 20: (2157, 2241),
-    21: (2242, 2295)
+    0: (104, 104),
+    1: (106, 225),
+    2: (226, 345),
+    3: (346, 465),
+    4: (466, 585),
+    5: (586, 705),
+    6: (706, 825),
+    7: (826, 945),
+    8: (946, 1065),
+    9: (1066, 1185),
+    10: (1186, 1305),
+    11: (1306, 1485),
+    12: (1486, 1605),
+    13: (1606, 1664),
+    14: (1665, 1731),
+    15: (1732, 1810),
+    16: (1811, 1852),
+    17: (1853, 1946),
+    18: (1947, 2004),
+    19: (2005, 2156),
+    20: (2157, 2241),
+    21: (2242, 2295),
 }
 
 # === PHYSICS SIMULATION CONSTANTS ===
@@ -265,23 +288,23 @@ JUMP_WALL_REGULAR_X_MULTIPLIER = 1
 JUMP_WALL_REGULAR_Y = -1.4
 
 # Wall Jump (Slide): From wall slide state, applies velocity (2/3 * wall_normal, -1)
-JUMP_WALL_SLIDE_X_MULTIPLIER = 2/3
+JUMP_WALL_SLIDE_X_MULTIPLIER = 2 / 3
 JUMP_WALL_SLIDE_Y = -1
 
 # Slope jump constants
-JUMP_SLOPE_DOWNHILL_X_MULTIPLIER = 2/3
+JUMP_SLOPE_DOWNHILL_X_MULTIPLIER = 2 / 3
 JUMP_SLOPE_DOWNHILL_Y_MULTIPLIER = 2
 JUMP_SLOPE_UPHILL_DEFAULT_Y = -1.4
-JUMP_SLOPE_UPHILL_PERP_X_MULTIPLIER = 2/3
+JUMP_SLOPE_UPHILL_PERP_X_MULTIPLIER = 2 / 3
 JUMP_SLOPE_UPHILL_PERP_Y_MULTIPLIER = 2
 
 # Launch pad constants
 JUMP_LAUNCH_PAD_BOOST_SCALAR = 1.7
-JUMP_LAUNCH_PAD_BOOST_FACTOR = 2/3
+JUMP_LAUNCH_PAD_BOOST_FACTOR = 2 / 3
 
 # Ragdoll physics constants
 RAGDOLL_GRAVITY = 0.06666666666666665
-RAGDOLL_DRAG = 0.99999 
+RAGDOLL_DRAG = 0.99999
 
 # === MAP CONSTANTS ===
 # All N++ levels are exactly the same size: 44x25 tiles (1056x600 pixels)
