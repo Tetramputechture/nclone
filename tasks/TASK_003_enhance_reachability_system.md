@@ -129,12 +129,41 @@ The existing reachability system is implemented in the `nclone/graph/reachabilit
 
 ## Test Scenarios
 
+### Test Map Organization
+The following test maps from `nclone/test_maps/` are available for testing:
+
+**Basic Movement Tests:**
+- `simple-walk`: Basic walking mechanics validation
+- `long-walk`: Extended walking paths and endurance
+- `only-jump`: Jump-only movement constraints
+- `jump-then-fall`: Combined movement sequences
+- `fall-required`: Falling movement scenarios
+
+**Physics and Trajectory Tests:**
+- `long-jump-reachable`: Long jump physics within boundaries  
+- `long-jump-unreachable`: Long jump physics beyond boundaries
+- `wall-jump-required`: Wall jump mechanics and positioning
+- `path-jump-required`: Jump requirements for level progression
+- `halfaligned-path`: Sub-grid positioning and offset path traversability
+
+**Entity Integration Tests:**
+- `bounce-block-reachable`: Bounce block physics integration
+- `launch-pad-required`: Launch pad entity mechanics
+- `thwump-platform-required`: Thwump entity safe positioning
+- `drone-reachable`: Drone hazard zones with safe paths
+- `drone-unreachable`: Drone hazard zones blocking progression
+- `minefield`: Static mine hazard avoidance
+
+**Advanced Reachability Tests:**
+- `complex-path-switch-required`: Multi-switch dependencies with one-way platforms
+- `map-unreachable-areas`: Frontier detection and unreachable zone analysis
+
 ### Performance Testing
 ```python
 # Test real-time performance requirements
 def test_real_time_performance():
     analyzer = EnhancedReachabilityAnalyzer()
-    level_data = load_map('test_maps/large_level.nmap')
+    level_data = load_map('test_maps/complex-path-switch-required')
     
     # Test multiple queries in sequence (simulating RL training)
     ninja_positions = generate_ninja_trajectory(1000)  # 1000 positions
@@ -150,7 +179,7 @@ def test_real_time_performance():
 # Test cache efficiency
 def test_cache_efficiency():
     analyzer = EnhancedReachabilityAnalyzer()
-    level_data = load_map('test_maps/switch_puzzle_maze.nmap')
+    level_data = load_map('test_maps/complex-path-switch-required')
     
     # Perform repeated queries with slight variations
     base_pos = (100, 400)
@@ -169,6 +198,27 @@ def test_cache_efficiency():
     
     cache_hit_rate = analyzer.get_cache_hit_rate()
     assert cache_hit_rate > 0.8, f"Cache hit rate {cache_hit_rate:.2f} below 80% target"
+
+# Test performance with different map complexities
+def test_map_complexity_performance():
+    analyzer = EnhancedReachabilityAnalyzer()
+    test_maps = [
+        ('test_maps/simple-walk', 5),      # <5ms for simple maps
+        ('test_maps/long-walk', 8),        # <8ms for medium maps  
+        ('test_maps/complex-path-switch-required', 15), # <15ms for complex maps
+        ('test_maps/map-unreachable-areas', 12)         # <12ms for frontier maps
+    ]
+    
+    for map_path, time_limit_ms in test_maps:
+        level_data = load_map(map_path)
+        ninja_pos = (50, 400)
+        
+        start_time = time.time()
+        result = analyzer.analyze_reachability(level_data, ninja_pos, {})
+        analysis_time = (time.time() - start_time) * 1000  # Convert to ms
+        
+        assert analysis_time < time_limit_ms, \
+               f"Map {map_path} took {analysis_time:.1f}ms, exceeds {time_limit_ms}ms limit"
 ```
 
 ### Functional Testing
@@ -176,7 +226,7 @@ def test_cache_efficiency():
 # Test subgoal identification
 def test_subgoal_identification():
     analyzer = EnhancedReachabilityAnalyzer()
-    level_data = load_map('test_maps/complex_multi_switch_level.nmap')
+    level_data = load_map('test_maps/complex-path-switch-required')
     ninja_pos = (50, 400)
     
     result = analyzer.analyze_reachability(level_data, ninja_pos, {})
@@ -192,7 +242,7 @@ def test_subgoal_identification():
 # Test wall jump reachability
 def test_wall_jump_reachability():
     analyzer = EnhancedReachabilityAnalyzer()
-    level_data = load_map('test_maps/wall_jump_test_level.nmap')
+    level_data = load_map('test_maps/wall-jump-required')
     ninja_pos = (50, 400)
     
     result = analyzer.analyze_reachability(level_data, ninja_pos, {})
@@ -208,10 +258,76 @@ def test_wall_jump_reachability():
     assert high_ledge_pos in result.reachable_positions, \
            "Should reach high ledge via wall jump"
 
+# Test movement type coverage across different maps
+def test_movement_type_coverage():
+    analyzer = EnhancedReachabilityAnalyzer()
+    movement_tests = [
+        ('test_maps/simple-walk', 'walk'),
+        ('test_maps/only-jump', 'jump'),
+        ('test_maps/fall-required', 'fall'),
+        ('test_maps/wall-jump-required', 'wall_jump'),
+        ('test_maps/jump-then-fall', ['jump', 'fall']),
+        ('test_maps/halfaligned-path', 'walk')  # Sub-grid positioning
+    ]
+    
+    for map_path, expected_movements in movement_tests:
+        level_data = load_map(map_path)
+        ninja_pos = (50, 400)
+        
+        result = analyzer.analyze_reachability(level_data, ninja_pos, {})
+        movement_types_found = analyzer.get_movement_types_used(result)
+        
+        if isinstance(expected_movements, str):
+            assert expected_movements in movement_types_found, \
+                   f"Map {map_path} should use {expected_movements} movement"
+        else:
+            for movement in expected_movements:
+                assert movement in movement_types_found, \
+                       f"Map {map_path} should use {movement} movement"
+
+# Test entity integration
+def test_entity_integration():
+    analyzer = EnhancedReachabilityAnalyzer()
+    entity_tests = [
+        ('test_maps/bounce-block-reachable', 'bounce_block'),
+        ('test_maps/thwump-platform-required', 'thwump'),
+        ('test_maps/drone-reachable', 'drone'),
+        ('test_maps/drone-unreachable', 'drone'),
+        ('test_maps/minefield', 'mine'),
+        ('test_maps/launch-pad-required', 'launch_pad')
+    ]
+    
+    for map_path, entity_type in entity_tests:
+        level_data = load_map(map_path)
+        ninja_pos = (50, 400)
+        
+        result = analyzer.analyze_reachability(level_data, ninja_pos, {})
+        
+        # Verify entity constraints are properly handled
+        entity_constraints = analyzer.get_entity_constraints(level_data)
+        entity_types_found = [constraint['type'] for constraint in entity_constraints]
+        
+        assert any(entity_type in constraint_type for constraint_type in entity_types_found), \
+               f"Map {map_path} should have {entity_type} entity constraints"
+        
+        # Test reachability expectations
+        if 'unreachable' in map_path:
+            # Maps with 'unreachable' suffix should have limited reachable areas
+            total_positions = analyzer.get_total_traversable_positions(level_data)
+            reachable_ratio = len(result.reachable_positions) / total_positions
+            assert reachable_ratio < 1.0, \
+                   f"Unreachable map {map_path} should have some unreachable areas"
+        elif 'reachable' in map_path:
+            # Maps with 'reachable' suffix should have paths to key areas
+            key_areas = analyzer.get_key_level_areas(level_data)
+            for area in key_areas:
+                assert area in result.reachable_positions, \
+                       f"Reachable map {map_path} should reach key area {area}"
+
 # Test frontier detection
 def test_frontier_detection():
     analyzer = EnhancedReachabilityAnalyzer()
-    level_data = load_map('test_maps/maze_with_unreachable_areas.nmap')
+    level_data = load_map('test_maps/map-unreachable-areas')
     ninja_pos = (50, 400)
     
     result = analyzer.analyze_reachability(level_data, ninja_pos, {})
@@ -226,6 +342,43 @@ def test_frontier_detection():
         classification = analyzer.classify_frontier(frontier_pos, level_data, result)
         assert classification in ['unreachable', 'locked', 'dangerous'], \
                f"Invalid frontier classification: {classification}"
+    
+    # Test with different maps for frontier scenarios
+    frontier_test_maps = [
+        'test_maps/drone-unreachable',     # Dangerous frontiers near hazards
+        'test_maps/long-jump-unreachable', # Unreachable due to physics
+        'test_maps/complex-path-switch-required'  # Locked frontiers behind switches
+    ]
+    
+    for test_map in frontier_test_maps:
+        level_data = load_map(test_map)
+        result = analyzer.analyze_reachability(level_data, ninja_pos, {})
+        frontiers = analyzer.get_exploration_frontiers(result)
+        
+        assert len(frontiers) > 0, f"Map {test_map} should have exploration frontiers"
+
+# Test physics boundary detection
+def test_physics_boundaries():
+    analyzer = EnhancedReachabilityAnalyzer()
+    ninja_pos = (50, 400)
+    
+    # Test long jump boundaries
+    reachable_data = load_map('test_maps/long-jump-reachable')
+    unreachable_data = load_map('test_maps/long-jump-unreachable')
+    
+    reachable_result = analyzer.analyze_reachability(reachable_data, ninja_pos, {})
+    unreachable_result = analyzer.analyze_reachability(unreachable_data, ninja_pos, {})
+    
+    # Reachable map should reach the target, unreachable should not
+    target_area = analyzer.get_target_area(reachable_data)
+    if target_area:
+        assert target_area in reachable_result.reachable_positions, \
+               "Long jump reachable map should reach target area"
+    
+    target_area = analyzer.get_target_area(unreachable_data) 
+    if target_area:
+        assert target_area not in unreachable_result.reachable_positions, \
+               "Long jump unreachable map should not reach target area"
 ```
 
 ### Integration Testing
@@ -233,7 +386,7 @@ def test_frontier_detection():
 # Test RL integration compatibility
 def test_rl_integration():
     analyzer = EnhancedReachabilityAnalyzer()
-    level_data = load_map('test_maps/exploration_test.nmap')
+    level_data = load_map('test_maps/map-unreachable-areas')
     
     # Simulate RL training scenario
     ninja_pos = (50, 400)
@@ -252,6 +405,151 @@ def test_rl_integration():
     for target in test_targets:
         bonus = analyzer.compute_curiosity_bonus(ninja_pos, target, level_data)
         assert 0.0 <= bonus <= 1.0, f"Curiosity bonus {bonus} outside valid range"
+
+# Test hierarchical RL integration with multi-level planning
+def test_hierarchical_rl_integration():
+    analyzer = EnhancedReachabilityAnalyzer()
+    
+    # Test with maps requiring hierarchical planning
+    hierarchical_test_maps = [
+        'test_maps/complex-path-switch-required',  # Multi-step switch sequence
+        'test_maps/bounce-block-reachable',        # Physics-dependent routing
+        'test_maps/wall-jump-required'             # Advanced movement planning
+    ]
+    
+    for map_path in hierarchical_test_maps:
+        level_data = load_map(map_path)
+        ninja_pos = (50, 400)
+        
+        # Get hierarchical subgoals
+        high_level_plan = analyzer.plan_level_completion(ninja_pos, level_data, {})
+        assert len(high_level_plan) > 0, f"Map {map_path} should generate completion plan"
+        
+        # Get mid-level subgoals  
+        reachable_subgoals = analyzer.get_reachable_subgoals(ninja_pos, level_data, {})
+        assert len(reachable_subgoals) > 0, f"Map {map_path} should have reachable subgoals"
+        
+        # Get low-level movement waypoints
+        for subgoal in reachable_subgoals[:3]:  # Test first 3 subgoals
+            waypoints = analyzer.get_movement_waypoints(ninja_pos, subgoal, level_data)
+            assert len(waypoints) > 0, f"Should generate waypoints to reach subgoal {subgoal}"
+
+# Test curiosity-driven exploration with different map types
+def test_curiosity_exploration():
+    analyzer = EnhancedReachabilityAnalyzer()
+    ninja_pos = (50, 400)
+    
+    exploration_scenarios = [
+        ('test_maps/map-unreachable-areas', 'frontier_bonus'),  # Frontier exploration
+        ('test_maps/minefield', 'risk_assessment'),             # Risk vs reward
+        ('test_maps/drone-reachable', 'safe_path_finding'),     # Safe exploration
+        ('test_maps/long-walk', 'distance_bonus')               # Distance-based exploration
+    ]
+    
+    for map_path, exploration_type in exploration_scenarios:
+        level_data = load_map(map_path)
+        
+        # Test exploration bonus computation
+        test_positions = analyzer.get_sample_positions(level_data, count=10)
+        for test_pos in test_positions:
+            bonus = analyzer.compute_curiosity_bonus(ninja_pos, test_pos, level_data)
+            
+            # Bonus should be valid and reflect exploration type
+            assert 0.0 <= bonus <= 1.0, f"Invalid curiosity bonus {bonus}"
+            
+            if exploration_type == 'frontier_bonus':
+                # Positions near frontiers should have higher bonuses
+                is_near_frontier = analyzer.is_near_exploration_frontier(test_pos, level_data)
+                if is_near_frontier:
+                    assert bonus > 0.3, f"Frontier position should have substantial curiosity bonus"
+            
+            elif exploration_type == 'risk_assessment':  
+                # Risk should be factored into bonus calculation
+                risk_level = analyzer.assess_position_risk(test_pos, level_data)
+                if risk_level > 0.7:  # High risk
+                    assert bonus < 0.5, f"High-risk position should have lower curiosity bonus"
+
+# Test real-time RL training compatibility
+def test_realtime_rl_compatibility():
+    analyzer = EnhancedReachabilityAnalyzer()
+    
+    # Simulate rapid queries during RL training
+    training_maps = [
+        'test_maps/simple-walk',
+        'test_maps/jump-then-fall', 
+        'test_maps/complex-path-switch-required'
+    ]
+    
+    for map_path in training_maps:
+        level_data = load_map(map_path)
+        
+        # Generate training trajectory (100 steps)
+        ninja_trajectory = analyzer.generate_sample_trajectory(level_data, steps=100)
+        
+        # Test rapid-fire queries (simulating RL agent exploring)
+        start_time = time.time()
+        results = []
+        
+        for step, ninja_pos in enumerate(ninja_trajectory):
+            # Simulate switch state changes during exploration
+            switch_states = {0: step % 3 == 0, 1: step % 5 == 0}  
+            
+            result = analyzer.analyze_reachability(level_data, ninja_pos, switch_states)
+            results.append(result)
+            
+            # Quick validation that results are consistent
+            assert len(result.reachable_positions) > 0, "Should always find some reachable positions"
+        
+        total_time = time.time() - start_time
+        avg_time = total_time / len(ninja_trajectory)
+        
+        assert avg_time < 0.01, f"Average query time {avg_time:.3f}s too slow for RL training"
+        
+        # Test cache effectiveness during training
+        cache_hit_rate = analyzer.get_cache_hit_rate()
+        assert cache_hit_rate > 0.5, f"Cache hit rate {cache_hit_rate:.2f} too low for training efficiency"
+
+# Test switch-dependent reachability for RL state representation
+def test_switch_state_rl_integration():
+    analyzer = EnhancedReachabilityAnalyzer()
+    level_data = load_map('test_maps/complex-path-switch-required')
+    ninja_pos = (50, 400)
+    
+    # Test different switch state combinations
+    switch_combinations = [
+        {},                    # No switches activated
+        {0: True},            # First switch only
+        {1: True},            # Second switch only  
+        {0: True, 1: True}    # Both switches activated
+    ]
+    
+    reachability_results = {}
+    for i, switch_states in enumerate(switch_combinations):
+        result = analyzer.analyze_reachability(level_data, ninja_pos, switch_states)
+        reachability_results[i] = result
+        
+        # Each state should produce different reachable areas
+        reachable_count = len(result.reachable_positions)
+        assert reachable_count > 0, f"Switch state {i} should have reachable positions"
+    
+    # More switches activated should generally mean more reachable areas
+    base_reachable = len(reachability_results[0].reachable_positions)  # No switches
+    full_reachable = len(reachability_results[3].reachable_positions)  # All switches
+    
+    assert full_reachable >= base_reachable, "Activating switches should not reduce reachability"
+    
+    # Test RL state encoding from reachability results
+    for i, result in reachability_results.items():
+        rl_state_encoding = analyzer.encode_reachability_for_rl(result, level_data)
+        
+        assert 'reachable_area_ratio' in rl_state_encoding
+        assert 'subgoal_accessibility' in rl_state_encoding  
+        assert 'frontier_density' in rl_state_encoding
+        
+        # Validate encoding ranges
+        assert 0.0 <= rl_state_encoding['reachable_area_ratio'] <= 1.0
+        assert isinstance(rl_state_encoding['subgoal_accessibility'], dict)
+        assert 0.0 <= rl_state_encoding['frontier_density'] <= 1.0
 ```
 
 ## Implementation Steps
@@ -269,7 +567,7 @@ def test_rl_integration():
        
        # Run reachability analysis
        analyzer = ReachabilityAnalyzer(TrajectoryCalculator())
-       level_data = load_map('test_maps/large_level.nmap')
+       level_data = load_map('test_maps/complex-path-switch-required')
        result = analyzer.analyze_reachability(level_data, (50, 400), {})
        
        profiler.disable()
@@ -610,7 +908,7 @@ def test_rl_integration():
 
 ## Dependencies
 - Existing reachability analysis system
-- Test maps from Task 002
+- Test maps in `nclone/test_maps/` directory (18 test maps covering movement types, entity interactions, and reachability scenarios)
 - Performance profiling tools
 
 ## Estimated Effort
