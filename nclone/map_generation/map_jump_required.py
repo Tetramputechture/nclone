@@ -43,21 +43,23 @@ class MapJumpRequired(Map):
             for x in range(x1, x2 + 1):
                 self.set_tile(x, y, 0)
 
-    def create_pit_with_mines(self, chamber_x1: int, chamber_y1: int, chamber_x2: int, chamber_y2: int) -> Tuple[int, int, int]:
+    def create_pit_with_mines(
+        self, chamber_x1: int, chamber_y1: int, chamber_x2: int, chamber_y2: int
+    ) -> Tuple[int, int, int]:
         """Create a pit in the center of the chamber with mines at the bottom.
         Also creates elevated platforms on both sides of the pit.
         Returns the pit's x1, x2 coordinates and the pit's top y coordinate."""
         chamber_width = chamber_x2 - chamber_x1
-        pit_width = self.rng.randint(self.MIN_PIT_WIDTH, min(
-            self.MAX_PIT_WIDTH, chamber_width - 8))  # Leave more space for platforms
+        pit_width = self.rng.randint(
+            self.MIN_PIT_WIDTH, min(self.MAX_PIT_WIDTH, chamber_width - 8)
+        )  # Leave more space for platforms
 
         # Center the pit horizontally
         pit_x1 = chamber_x1 + (chamber_width - pit_width) // 2
         pit_x2 = pit_x1 + pit_width
 
         # Pit should extend from bottom of chamber up about 2/3 of chamber height plus a random deviation of +- 2
-        pit_height = (chamber_y2 - chamber_y1) * \
-            2 // 3 + self.rng.randint(-2, 2)
+        pit_height = (chamber_y2 - chamber_y1) * 2 // 3 + self.rng.randint(-2, 2)
         pit_top_y = chamber_y2 - pit_height
 
         # Create the pit (empty space)
@@ -65,8 +67,7 @@ class MapJumpRequired(Map):
 
         # Add mines at the bottom of the pit (at chamber ground level)
         for x in range(pit_x1, pit_x2 + 2):
-            self.add_entity(1, x + 1, chamber_y2 + 2, 0,
-                            1)  # Type 1 = toggle mine
+            self.add_entity(1, x + 1, chamber_y2 + 2, 0, 1)  # Type 1 = toggle mine
 
         # Create elevated platforms on both sides
         # Left platform
@@ -81,7 +82,17 @@ class MapJumpRequired(Map):
 
         return pit_x1, pit_x2, pit_top_y
 
-    def place_mines_on_platforms(self, pit_x1: int, pit_x2: int, pit_top_y: int, chamber_x1: int, chamber_x2: int, chamber_y2: int, ninja_x: int, door_x: int):
+    def place_mines_on_platforms(
+        self,
+        pit_x1: int,
+        pit_x2: int,
+        pit_top_y: int,
+        chamber_x1: int,
+        chamber_x2: int,
+        chamber_y2: int,
+        ninja_x: int,
+        door_x: int,
+    ):
         """Place mines on the platforms.
 
         Args:
@@ -98,34 +109,38 @@ class MapJumpRequired(Map):
         left_platform_positions = []
         for x in range(chamber_x1, pit_x1):
             # Check if position is not within 2 tiles of ninja or door
-            if not (ninja_x - 2 <= x + 1 <= ninja_x + 2) and not (door_x - 2 <= x + 1 <= door_x + 2):
+            if not (ninja_x - 2 <= x + 1 <= ninja_x + 2) and not (
+                door_x - 2 <= x + 1 <= door_x + 2
+            ):
                 left_platform_positions.append(x)
 
         # Right platform potential mine positions (exclude ninja spawn and door positions)
         right_platform_positions = []
         for x in range(pit_x2 + 1, chamber_x2 + 1):
             # Check if position is not within 2 tiles of ninja or door
-            if not (ninja_x - 2 <= x + 1 <= ninja_x + 2) and not (door_x - 2 <= x + 1 <= door_x + 2):
+            if not (ninja_x - 2 <= x + 1 <= ninja_x + 2) and not (
+                door_x - 2 <= x + 1 <= door_x + 2
+            ):
                 right_platform_positions.append(x)
 
         # Randomly select number of mines for each platform
         left_mine_count = self.rng.randint(
-            0, min(self.MAX_MINES_PER_PLATFORM, len(left_platform_positions)))
+            0, min(self.MAX_MINES_PER_PLATFORM, len(left_platform_positions))
+        )
         right_mine_count = self.rng.randint(
-            0, min(self.MAX_MINES_PER_PLATFORM, len(right_platform_positions)))
+            0, min(self.MAX_MINES_PER_PLATFORM, len(right_platform_positions))
+        )
 
         # Place mines on left platform
         if left_mine_count > 0 and left_platform_positions:
-            mine_positions = self.rng.sample(
-                left_platform_positions, left_mine_count)
+            mine_positions = self.rng.sample(left_platform_positions, left_mine_count)
             for x in mine_positions:
                 # Type 1 = toggle mine
                 self.add_entity(1, x + 1, pit_top_y + 2, 0, 1)
 
         # Place mines on right platform
         if right_mine_count > 0 and right_platform_positions:
-            mine_positions = self.rng.sample(
-                right_platform_positions, right_mine_count)
+            mine_positions = self.rng.sample(right_platform_positions, right_mine_count)
             for x in mine_positions:
                 # Type 1 = toggle mine
                 self.add_entity(1, x + 1, pit_top_y + 2, 0, 1)
@@ -162,19 +177,18 @@ class MapJumpRequired(Map):
         # Choose if tiles will be random, solid, or empty for the border
         choice = self.rng.randint(0, 2)
         if choice == 0:
-            tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
-                MAP_TILE_WIDTH * MAP_TILE_HEIGHT)]
+            tile_types = [
+                self.rng.randint(0, VALID_TILE_TYPES)
+                for _ in range(MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
+            ]
         elif choice == 1:
-            tile_types = [1] * (MAP_TILE_WIDTH *
-                                MAP_TILE_HEIGHT)  # Solid walls
+            tile_types = [1] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)  # Solid walls
         else:
-            tile_types = [0] * (MAP_TILE_WIDTH *
-                                MAP_TILE_HEIGHT)  # Empty tiles
+            tile_types = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
 
         # Create the empty chamber
-        self.set_empty_rectangle(
-            chamber_x1, chamber_y1, chamber_x2, chamber_y2)
+        self.set_empty_rectangle(chamber_x1, chamber_y1, chamber_x2, chamber_y2)
 
         # Create boundary walls
         for x in range(chamber_x1, chamber_x2 + 1):
@@ -187,7 +201,8 @@ class MapJumpRequired(Map):
 
         # Create pit with mines
         pit_x1, pit_x2, pit_top_y = self.create_pit_with_mines(
-            chamber_x1, chamber_y1, chamber_x2, chamber_y2)
+            chamber_x1, chamber_y1, chamber_x2, chamber_y2
+        )
 
         # Randomly choose which side the ninja starts on
         ninja_on_left = self.rng.choice([True, False])
@@ -208,12 +223,19 @@ class MapJumpRequired(Map):
 
         # Place switch somewhere between pit top and chamber top (-3 so its not too high)
         switch_x = self.rng.randint(pit_x1, pit_x2)
-        switch_y = self.rng.randint(max(pit_top_y - 3, chamber_y1),
-                                    pit_top_y - 1)
+        switch_y = self.rng.randint(max(pit_top_y - 3, chamber_y1), pit_top_y - 1)
 
         # Place mines on the platforms
         self.place_mines_on_platforms(
-            pit_x1, pit_x2, pit_top_y, chamber_x1, chamber_x2, chamber_y2, ninja_x, door_x)
+            pit_x1,
+            pit_x2,
+            pit_top_y,
+            chamber_x1,
+            chamber_x2,
+            chamber_y2,
+            ninja_x,
+            door_x,
+        )
 
         # Convert to screen coordinates and place entities
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
@@ -221,9 +243,9 @@ class MapJumpRequired(Map):
 
         # Add random entities outside the playspace
         # Our playspace is inside the chamber, so we need to add entities outside the chamber
-        playspace = (chamber_x1 - 4, chamber_y1 - 4,
-                     chamber_x2 + 4, chamber_y2 + 4)
+        playspace = (chamber_x1 - 4, chamber_y1 - 4, chamber_x2 + 4, chamber_y2 + 4)
         self.add_random_entities_outside_playspace(
-            playspace[0], playspace[1], playspace[2], playspace[3])
+            playspace[0], playspace[1], playspace[2], playspace[3]
+        )
 
         return self
