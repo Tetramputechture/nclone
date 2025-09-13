@@ -97,10 +97,13 @@ class MazeGenerator(Map):
         """Place the ninja in a random valid starting position (corners)."""
         # Define possible corner regions
         corners = {
-            'top_left': ((0, 2), (0, 2)),  # (x_range, y_range)
-            'top_right': ((self.width-3, self.width-1), (0, 2)),
-            'bottom_left': ((0, 2), (self.height-3, self.height-1)),
-            'bottom_right': ((self.width-3, self.width-1), (self.height-3, self.height-1))
+            "top_left": ((0, 2), (0, 2)),  # (x_range, y_range)
+            "top_right": ((self.width - 3, self.width - 1), (0, 2)),
+            "bottom_left": ((0, 2), (self.height - 3, self.height - 1)),
+            "bottom_right": (
+                (self.width - 3, self.width - 1),
+                (self.height - 3, self.height - 1),
+            ),
         }
 
         # Randomly select a corner
@@ -118,7 +121,7 @@ class MazeGenerator(Map):
             grid_x, grid_y = self.rng.choice(valid_positions)
             # Set orientation based on position
             orientation = 1  # Default facing right
-            if 'right' in corner_name:  # If on right side, face left
+            if "right" in corner_name:  # If on right side, face left
                 orientation = -1
             # Convert grid coordinates to pixel coordinates
             self.set_ninja_spawn(grid_x, grid_y, orientation)
@@ -134,15 +137,16 @@ class MazeGenerator(Map):
         """Place the exit door and switch in valid positions."""
         # Place exit door on the opposite side from ninja
         ninja_x, _ = self._from_screen_coordinates(
-            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX)
+            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX
+        )
 
         # Determine which side to place the exit based on ninja position
         if ninja_x < self.width // 2:  # Ninja on left side
             valid_door_positions = []
             for y in range(self.height):
                 # Check if cell next to right edge is path
-                if self.grid[y][self.width-2] == 0:
-                    valid_door_positions.append((self.width-2, y))
+                if self.grid[y][self.width - 2] == 0:
+                    valid_door_positions.append((self.width - 2, y))
             door_orientation = 2  # Face left
         else:  # Ninja on right side
             valid_door_positions = []
@@ -162,16 +166,22 @@ class MazeGenerator(Map):
                 for x in range(self.width):
                     if self.grid[y][x] == 0:
                         ninja_grid_x, ninja_grid_y = self._from_screen_coordinates(
-                            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX)
-                        if abs(x - ninja_grid_x) + abs(y - ninja_grid_y) >= min_distance and (x, y) != (door_x, door_y):
+                            self.ninja_spawn_x,
+                            self.ninja_spawn_y,
+                            NINJA_SPAWN_OFFSET_PX,
+                        )
+                        if abs(x - ninja_grid_x) + abs(
+                            y - ninja_grid_y
+                        ) >= min_distance and (x, y) != (door_x, door_y):
                             valid_switch_positions.append((x, y))
 
             if valid_switch_positions:
                 switch_x, switch_y = self.rng.choice(valid_switch_positions)
 
                 # Add exit door and switch using Map's add_entity method
-                self.add_entity(3, door_x, door_y,
-                                door_orientation, 0, switch_x, switch_y)
+                self.add_entity(
+                    3, door_x, door_y, door_orientation, 0, switch_x, switch_y
+                )
 
     def _place_gold(self):
         """Place gold pieces in valid positions."""
@@ -181,10 +191,18 @@ class MazeGenerator(Map):
                 if self.grid[y][x] == 0:
                     # Don't place gold at ninja spawn or switch
                     ninja_pixel_x, ninja_pixel_y = self._to_screen_coordinates(
-                        x + 1, y + 1, NINJA_SPAWN_OFFSET_PX)
+                        x + 1, y + 1, NINJA_SPAWN_OFFSET_PX
+                    )
                     switch_pixel_x, switch_pixel_y = self._to_screen_coordinates(
-                        x + 1, y + 1, SWITCH_OFFSET_PX)
-                    if (ninja_pixel_x, ninja_pixel_y) != (self.ninja_spawn_x, self.ninja_spawn_y) and (switch_pixel_x, switch_pixel_y) != (self.ninja_spawn_x, self.ninja_spawn_y):
+                        x + 1, y + 1, SWITCH_OFFSET_PX
+                    )
+                    if (ninja_pixel_x, ninja_pixel_y) != (
+                        self.ninja_spawn_x,
+                        self.ninja_spawn_y,
+                    ) and (switch_pixel_x, switch_pixel_y) != (
+                        self.ninja_spawn_x,
+                        self.ninja_spawn_y,
+                    ):
                         valid_positions.append((x, y))
 
         count = min(self.MAX_GOLD, len(valid_positions))
@@ -192,8 +210,7 @@ class MazeGenerator(Map):
 
         # Add gold entities using Map's add_entity method
         for x, y in selected_positions:
-            self.add_entity(2, (x + 1),
-                            (y + 1), 0, 0)
+            self.add_entity(2, (x + 1), (y + 1), 0, 0)
 
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a complete maze with entities.
@@ -223,14 +240,14 @@ class MazeGenerator(Map):
         # Choose if tiles will be random, solid, or empty for the border
         choice = self.rng.randint(0, 2)
         if choice == 0:
-            tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
-                MAP_TILE_WIDTH * MAP_TILE_HEIGHT)]
+            tile_types = [
+                self.rng.randint(0, VALID_TILE_TYPES)
+                for _ in range(MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
+            ]
         elif choice == 1:
-            tile_types = [1] * (MAP_TILE_WIDTH *
-                                MAP_TILE_HEIGHT)  # Solid walls
+            tile_types = [1] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)  # Solid walls
         else:
-            tile_types = [0] * (MAP_TILE_WIDTH *
-                                MAP_TILE_HEIGHT)  # Empty tiles
+            tile_types = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
         self._init_solid_map()
 
@@ -248,6 +265,7 @@ class MazeGenerator(Map):
         # For maze, playspace is the maze area plus some padding
         playspace = (2, 2, 2 + self.width * 2, 2 + self.height * 2)
         self.add_random_entities_outside_playspace(
-            playspace[0], playspace[1], playspace[2], playspace[3])
+            playspace[0], playspace[1], playspace[2], playspace[3]
+        )
 
         return self

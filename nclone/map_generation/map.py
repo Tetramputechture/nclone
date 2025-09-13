@@ -1,6 +1,12 @@
 from typing import Tuple, Optional, List
 import random
-from .constants import GRID_SIZE_FACTOR, NINJA_SPAWN_OFFSET_PX, EXIT_DOOR_OFFSET_PX, SWITCH_OFFSET_PX, GOLD_OFFSET_PX
+from .constants import (
+    GRID_SIZE_FACTOR,
+    NINJA_SPAWN_OFFSET_PX,
+    EXIT_DOOR_OFFSET_PX,
+    SWITCH_OFFSET_PX,
+    GOLD_OFFSET_PX,
+)
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 # Valid entity types that can be randomly placed
@@ -21,6 +27,7 @@ VALID_RANDOM_ENTITIES = [
 
 class Map:
     """Class for manually constructing simulator maps."""
+
     def __init__(self, seed: Optional[int] = None):
         # Initialize empty tile data (all tiles are empty, type 0)
         self.tile_data = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
@@ -29,11 +36,7 @@ class Map:
         self.entity_data = []
 
         # Initialize entity counts
-        self.entity_counts = {
-            'exit_door': 0,
-            'gold': 0,
-            'death_ball': 0
-        }
+        self.entity_counts = {"exit_door": 0, "gold": 0, "death_ball": 0}
 
         # Initialize ninja spawn point (defaults to top-left corner)
         self.ninja_spawn_x = 1
@@ -42,13 +45,19 @@ class Map:
 
         self.rng = random.Random(seed)
 
-    def _to_screen_coordinates(self, grid_x: int, grid_y: int, offset: int = 0) -> Tuple[int, int]:
+    def _to_screen_coordinates(
+        self, grid_x: int, grid_y: int, offset: int = 0
+    ) -> Tuple[int, int]:
         """Convert grid coordinates to screen coordinates."""
         return grid_x * GRID_SIZE_FACTOR + offset, grid_y * GRID_SIZE_FACTOR + offset
 
-    def _from_screen_coordinates(self, screen_x: int, screen_y: int, offset: int = 0) -> Tuple[int, int]:
+    def _from_screen_coordinates(
+        self, screen_x: int, screen_y: int, offset: int = 0
+    ) -> Tuple[int, int]:
         """Convert screen coordinates to grid coordinates."""
-        return (screen_x - offset) // GRID_SIZE_FACTOR, (screen_y - offset) // GRID_SIZE_FACTOR
+        return (screen_x - offset) // GRID_SIZE_FACTOR, (
+            screen_y - offset
+        ) // GRID_SIZE_FACTOR
 
     def set_tile(self, x, y, tile_type):
         """Set a tile at the given coordinates to the specified type."""
@@ -65,11 +74,21 @@ class Map:
         Converts tile coordinates to screen coordinates (x6 multiplier).
         Orientation: 1 = right, -1 = left"""
         self.ninja_spawn_x, self.ninja_spawn_y = self._to_screen_coordinates(
-            grid_x, grid_y, NINJA_SPAWN_OFFSET_PX)
+            grid_x, grid_y, NINJA_SPAWN_OFFSET_PX
+        )
         if orientation is not None:
             self.ninja_orientation = orientation
 
-    def add_entity(self, entity_type, grid_x, grid_y, orientation=0, mode=0, switch_x=None, switch_y=None):
+    def add_entity(
+        self,
+        entity_type,
+        grid_x,
+        grid_y,
+        orientation=0,
+        mode=0,
+        switch_x=None,
+        switch_y=None,
+    ):
         """Add an entity to the map.
         For doors that require switch coordinates (types 6 and 8), provide switch_x and switch_y.
         For exit doors (type 3), provide switch_x and switch_y for the switch location.
@@ -82,9 +101,14 @@ class Map:
         switch_screen_x, switch_screen_y = None, None
         if switch_x is not None and switch_y is not None:
             switch_screen_x, switch_screen_y = self._to_screen_coordinates(
-                switch_x, switch_y)
-        elif switch_x is not None or switch_y is not None: # If one is provided but not the other
-            raise ValueError("If switch coordinates are partially provided, both switch_x and switch_y must be set.")
+                switch_x, switch_y
+            )
+        elif (
+            switch_x is not None or switch_y is not None
+        ):  # If one is provided but not the other
+            raise ValueError(
+                "If switch coordinates are partially provided, both switch_x and switch_y must be set."
+            )
 
         # Handle entity offsets
         if entity_type == 3:
@@ -102,23 +126,28 @@ class Map:
             # Store the exit door data
             self.entity_data.extend(entity_data)
             # Store the switch data right after all exit doors
-            self.entity_counts['exit_door'] += 1
+            self.entity_counts["exit_door"] += 1
             self.entity_data.extend(
-                [4, switch_screen_x + SWITCH_OFFSET_PX, switch_screen_y + SWITCH_OFFSET_PX, 0, 0])  # Switch is type 4
+                [
+                    4,
+                    switch_screen_x + SWITCH_OFFSET_PX,
+                    switch_screen_y + SWITCH_OFFSET_PX,
+                    0,
+                    0,
+                ]
+            )  # Switch is type 4
         elif entity_type in (6, 8):  # Locked door or trap door
             if switch_x is None or switch_y is None:
-                raise ValueError(
-                    f"Door type {entity_type} requires switch coordinates")
+                raise ValueError(f"Door type {entity_type} requires switch coordinates")
             self.entity_data.extend(entity_data)
-            # self.entity_data.extend([switch_screen_x, switch_screen_y])
         else:
             self.entity_data.extend(entity_data)
 
         # Update other entity counts
         if entity_type == 2:  # Gold
-            self.entity_counts['gold'] += 1
+            self.entity_counts["gold"] += 1
         elif entity_type == 25:  # Death ball
-            self.entity_counts['death_ball'] += 1
+            self.entity_counts["death_ball"] += 1
 
     def map_data(self):
         """Generate the map data in the format expected by the simulator."""
@@ -127,12 +156,12 @@ class Map:
         map_data.extend(self.tile_data)  # Tile data (184-1149)
         map_data.extend([0] * 6)  # Unknown section (1150-1155)
         # Exit door count at 1156
-        map_data.append(self.entity_counts['exit_door'])
+        map_data.append(self.entity_counts["exit_door"])
         map_data.extend([0] * 43)  # Unknown section (1157-1199)
         # Death ball count at 1200
-        map_data.append(self.entity_counts['death_ball'])
+        map_data.append(self.entity_counts["death_ball"])
         map_data.extend([0] * 30)  # Unknown section (1201-1230)
-    # Ninja spawn at 1231-1232 to match Ninja class expectations
+        # Ninja spawn at 1231-1232 to match Ninja class expectations
         map_data.extend([self.ninja_spawn_x, self.ninja_spawn_y])
         # Ninja orientation at 1233
         map_data.extend([self.ninja_orientation, 0])
@@ -146,11 +175,7 @@ class Map:
         self.ninja_spawn_y = 1
         self.ninja_orientation = -1
         self.entity_data = []
-        self.entity_counts = {
-            'exit_door': 0,
-            'gold': 0,
-            'death_ball': 0
-        }
+        self.entity_counts = {"exit_door": 0, "gold": 0, "death_ball": 0}
 
     def set_empty_rectangle(self, x1, y1, x2, y2):
         """Set a rectangular area to empty tiles efficiently."""
@@ -168,7 +193,7 @@ class Map:
             self.tile_data[start_idx:end_idx] = [0] * (x2 - x1 + 1)
 
     @staticmethod
-    def from_map_data(map_data: list) -> 'Map':
+    def from_map_data(map_data: list) -> "Map":
         """Create a new Map instance from map data.
 
         Args:
@@ -194,8 +219,8 @@ class Map:
         map_instance.tile_data = map_data[184:1150]
 
         # Set entity counts
-        map_instance.entity_counts['exit_door'] = map_data[1156]
-        map_instance.entity_counts['death_ball'] = map_data[1200]
+        map_instance.entity_counts["exit_door"] = map_data[1156]
+        map_instance.entity_counts["death_ball"] = map_data[1200]
 
         # Set ninja spawn and orientation
         map_instance.ninja_spawn_x = map_data[1231]
@@ -207,15 +232,18 @@ class Map:
         # Update gold count by counting type 2 entities
         gold_count = 0
         for i in range(0, len(map_instance.entity_data), 5):
-            if i + 4 < len(map_instance.entity_data):  # Ensure we have a complete entity
+            if i + 4 < len(
+                map_instance.entity_data
+            ):  # Ensure we have a complete entity
                 if map_instance.entity_data[i] == 2:  # Type 2 is gold
                     gold_count += 1
-        map_instance.entity_counts['gold'] = gold_count
+        map_instance.entity_counts["gold"] = gold_count
 
         return map_instance
 
-    def add_random_entities_outside_playspace(self, playspace_x1: int, playspace_y1: int,
-                                              playspace_x2: int, playspace_y2: int) -> None:
+    def add_random_entities_outside_playspace(
+        self, playspace_x1: int, playspace_y1: int, playspace_x2: int, playspace_y2: int
+    ) -> None:
         """Add random entities outside the playspace of the map.
 
         Args:
@@ -252,8 +280,7 @@ class Map:
                 valid_positions.append((x, y))
 
         # Ensure x is not above 43 and y is not above 24
-        valid_positions = [
-            (x, y) for x, y in valid_positions if x <= 43 and y <= 24]
+        valid_positions = [(x, y) for x, y in valid_positions if x <= 43 and y <= 24]
 
         # Add random entities
         for _ in range(num_entities):

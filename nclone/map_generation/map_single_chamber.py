@@ -58,14 +58,14 @@ class SingleChamberGenerator(Map):
         # Choose if tiles will be random or solid for the border
         choice = self.rng.randint(0, 2)
         if choice == 0:
-            tile_types = [self.rng.randint(0, VALID_TILE_TYPES) for _ in range(
-                MAP_TILE_WIDTH * MAP_TILE_HEIGHT)]
+            tile_types = [
+                self.rng.randint(0, VALID_TILE_TYPES)
+                for _ in range(MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
+            ]
         elif choice == 1:
-            tile_types = [1] * (MAP_TILE_WIDTH *
-                                MAP_TILE_HEIGHT)  # Solid walls
+            tile_types = [1] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)  # Solid walls
         else:
-            tile_types = [0] * (MAP_TILE_WIDTH *
-                                MAP_TILE_HEIGHT)  # Empty tiles
+            tile_types = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)  # Empty tiles
         self.set_tiles_bulk(tile_types)
         # Create the empty play space
         self.set_empty_rectangle(play_x1, play_y1, play_x2, play_y2)
@@ -90,16 +90,12 @@ class SingleChamberGenerator(Map):
         # Place entities on X axis, choosing switch or door first
         if self.rng.choice([True, False]):
             switch_x = play_x1 + 1 + self.rng.randint(1, section_width - 1)
-            door_x = switch_x + \
-                self.rng.randint(1, max(1, play_x2 - switch_x - 1))
-            ninja_x = switch_x - \
-                self.rng.randint(1, max(1, switch_x - play_x1 - 1))
+            door_x = switch_x + self.rng.randint(1, max(1, play_x2 - switch_x - 1))
+            ninja_x = switch_x - self.rng.randint(1, max(1, switch_x - play_x1 - 1))
         else:
             door_x = play_x1 + self.rng.randint(1, section_width - 1)
-            switch_x = door_x + \
-                self.rng.randint(1, max(1, play_x2 - door_x - 1))
-            ninja_x = switch_x + \
-                self.rng.randint(1, max(1, play_x2 - switch_x))
+            switch_x = door_x + self.rng.randint(1, max(1, play_x2 - door_x - 1))
+            ninja_x = switch_x + self.rng.randint(1, max(1, play_x2 - switch_x))
 
         # Handle surface deviations
         deviations = {}
@@ -136,12 +132,12 @@ class SingleChamberGenerator(Map):
 
         # Convert to screen coordinates and place entities
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
-        self.add_entity(3, door_x, door_y, 0, 0,
-                        switch_x, switch_y)
+        self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
 
         # Add random entities outside playspace
         playspace = (play_x1 - 4, play_y1 - 4, play_x2 + 4, play_y2 + 4)
         self.add_random_entities_outside_playspace(
-            playspace[0], playspace[1], playspace[2], playspace[3])
+            playspace[0], playspace[1], playspace[2], playspace[3]
+        )
 
         return self
