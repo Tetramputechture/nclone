@@ -14,15 +14,46 @@ See [npp-rl comprehensive technical roadmap](../../../npp-rl/docs/comprehensive_
 3. **Add subgoal identification** for hierarchical RL integration
 4. **Implement frontier detection** for curiosity-driven exploration
 5. **Add strategic planning support** for level completion heuristics
+6. **Enhance entity handling** for comprehensive collision and hazard analysis
 
 ### Current System Analysis
-The existing `ReachabilityAnalyzer` in `nclone/graph/reachability_analyzer.py` provides:
+The existing reachability system is implemented in the `nclone/graph/reachability/` package:
+
+**Core Components:**
+- `ReachabilityAnalyzer` class in `nclone/graph/reachability/reachability_analyzer.py`
+- `PositionValidator` class in `nclone/graph/reachability/position_validator.py`
+- `CollisionChecker` class in `nclone/graph/reachability/collision_checker.py`
+- `PhysicsMovement` class in `nclone/graph/reachability/physics_movement.py`
+- `GameMechanics` class in `nclone/graph/reachability/game_mechanics.py`
+
+**Current Functionality:**
 - Physics-based BFS reachability analysis
 - Switch-door dependency handling
 - Dynamic entity integration
 - Basic subgoal identification
+- Modular component architecture
 
 ### Enhancements Required
+
+#### Entity Integration
+1. **Hazard Entity Handling**
+   - Toggled-on toggle mines (`EntityToggleMine` from `nclone/entity_classes/entity_toggle_mine.py`) as blocking hazards
+   - Drone movement patterns and collision zones:
+     - `EntityDroneZap` from `nclone/entity_classes/entity_drone_zap.py`
+     - `EntityMiniDrone` from `nclone/entity_classes/entity_mini_drone.py`
+   - Thwump crush zones and safe positioning (`EntityThwump` from `nclone/entity_classes/entity_thwump.py`)
+   - Shwump active/inactive state collision properties (`EntityShoveThwump` from `nclone/entity_classes/entity_shove_thwump.py`)
+
+2. **Collision Entity Handling**
+   - One way platform directional traversal rules (`EntityOneWayPlatform` from `nclone/entity_classes/entity_one_way_platform.py`)
+   - Safe side positioning for thwumps (using `EntityThwump` safe zones)
+   - Inactive shwump collision detection on all sides (using `EntityShoveThwump` state management)
+   - Bounce block physics integration for trajectory calculation (`EntityBounceBlock` from `nclone/entity_classes/entity_bounce_block.py`)
+
+3. **Movement Type Simplifications**
+   - Wall slide movement type excluded from reachability analysis (reserved for precise subcell-level agent actions)
+   - Focus on primary movement types: walk, jump, fall, wall jump
+   - Wall jump analysis critical for reaching positions otherwise inaccessible via standard jumping
 
 #### Performance Optimizations
 1. **Incremental Updates**
@@ -87,6 +118,8 @@ The existing `ReachabilityAnalyzer` in `nclone/graph/reachability_analyzer.py` p
 2. **Enhanced API**: New methods for RL-specific functionality
 3. **Robust Caching**: Cache survives switch state changes and ninja movement
 4. **Accurate Subgoals**: Subgoal identification matches expected strategic goals
+5. **Entity Awareness**: Proper handling of all hazards and collision entities
+6. **Movement Type Coverage**: Core movement types (walk, jump, fall, wall jump) fully supported
 
 ### Quality Requirements
 1. **Thread Safety**: Safe for concurrent access from RL training
@@ -155,6 +188,25 @@ def test_subgoal_identification():
     assert 'exit_switch' in subgoal_types, "Should identify exit switch as subgoal"
     assert 'door_switch' in subgoal_types, "Should identify door switches as subgoals"
     assert len([sg for sg in subgoals if sg[2] == 'door_switch']) >= 2, "Should find multiple door switches"
+
+# Test wall jump reachability
+def test_wall_jump_reachability():
+    analyzer = EnhancedReachabilityAnalyzer()
+    level_data = load_map('test_maps/wall_jump_test_level.nmap')
+    ninja_pos = (50, 400)
+    
+    result = analyzer.analyze_reachability(level_data, ninja_pos, {})
+    
+    # Should identify positions reachable only via wall jump
+    wall_jump_positions = [pos for pos in result.reachable_positions 
+                          if result.get_movement_type_to_position(pos) == 'wall_jump']
+    
+    assert len(wall_jump_positions) > 0, "Should find wall jump accessible positions"
+    
+    # Verify specific wall jump scenarios
+    high_ledge_pos = (200, 200)  # Position accessible only via wall jump
+    assert high_ledge_pos in result.reachable_positions, \
+           "Should reach high ledge via wall jump"
 
 # Test frontier detection
 def test_frontier_detection():
@@ -290,8 +342,157 @@ def test_rl_integration():
            return self.hit_count / total if total > 0 else 0.0
    ```
 
-### Phase 3: Subgoal and Frontier Enhancement
-1. **Enhanced Subgoal Identification**
+### Phase 3: Entity Integration and Enhancement
+1. **Entity State Management**
+   ```python
+   # Add to nclone/graph/reachability/reachability_analyzer.py
+   from ...entity_classes.entity_toggle_mine import EntityToggleMine
+   from ...entity_classes.entity_drone_zap import EntityDroneZap
+   from ...entity_classes.entity_mini_drone import EntityMiniDrone
+   from ...entity_classes.entity_thwump import EntityThwump
+   from ...entity_classes.entity_shove_thwump import EntityShoveThwump
+   from ...entity_classes.entity_one_way_platform import EntityOneWayPlatform
+   from ...entity_classes.entity_bounce_block import EntityBounceBlock
+   from ...constants.entity_types import EntityType
+   
+   def analyze_entity_interactions(self, level_data, ninja_pos, switch_states):
+       entity_constraints = []
+       
+       # Handle hazard entities
+       for toggle_mine in level_data.toggle_mines:
+           if self._is_toggled_on(toggle_mine, switch_states):
+               # Add blocking constraint for active toggle mine
+               entity_constraints.append({
+                   'type': 'blocking_hazard',
+                   'position': toggle_mine.position,
+                   'entity': toggle_mine
+               })
+       
+       # Handle different drone types
+       for drone in level_data.drones:
+           if isinstance(drone, EntityDroneZap):
+               # Add movement zone constraints for zap drone paths
+               drone_path = self._calculate_drone_zap_path(drone)
+           elif isinstance(drone, EntityMiniDrone):
+               # Add movement zone constraints for mini drone paths
+               drone_path = self._calculate_mini_drone_path(drone)
+           else:
+               drone_path = self._calculate_generic_drone_path(drone)
+           
+           entity_constraints.append({
+               'type': 'moving_hazard',
+               'positions': drone_path,
+               'entity': drone
+           })
+       
+       # Handle thwump entities (both types)
+       for thwump in level_data.thwumps:
+           if isinstance(thwump, EntityThwump):
+               # Regular thwump - vertical crushing
+               crush_zone = self._calculate_thwump_crush_zone(thwump)
+               safe_positions = self._calculate_thwump_safe_positions(thwump)
+           elif isinstance(thwump, EntityShoveThwump):
+               # Shove thwump (shwump) - horizontal pushing
+               crush_zone = self._calculate_shwump_crush_zone(thwump)
+               safe_positions = self._calculate_shwump_safe_positions(thwump)
+           
+           entity_constraints.append({
+               'type': 'conditional_hazard',
+               'crush_zone': crush_zone,
+               'safe_positions': safe_positions,
+               'entity': thwump
+           })
+       
+       # Handle shwumps (EntityShoveThwump) separately for state checking
+       for shwump in level_data.shwumps:
+           if isinstance(shwump, EntityShoveThwump) and not shwump.is_active:
+               # Inactive shwump acts as collision block on all sides
+               entity_constraints.append({
+                   'type': 'collision_block',
+                   'position': shwump.position,
+                   'entity': shwump
+               })
+       
+       # Handle collision entities
+       for platform in level_data.one_way_platforms:
+           if isinstance(platform, EntityOneWayPlatform):
+               entity_constraints.append({
+                   'type': 'directional_platform',
+                   'position': platform.position,
+                   'direction': platform.direction,
+                   'entity': platform
+               })
+       
+       for bounce_block in level_data.bounce_blocks:
+           if isinstance(bounce_block, EntityBounceBlock):
+               entity_constraints.append({
+                   'type': 'bounce_surface',
+                   'position': bounce_block.position,
+                   'bounce_vector': bounce_block.bounce_direction,
+                   'entity': bounce_block
+               })
+       
+       return entity_constraints
+   ```
+
+2. **Wall Jump Analysis Integration**
+   ```python
+   # Add to nclone/graph/reachability/physics_movement.py
+   def analyze_wall_jump_opportunities(self, src_pos, level_data, entity_constraints):
+       """Identify wall jump trajectories for enhanced reachability."""
+       wall_jump_targets = []
+       
+       # Find nearby walls suitable for wall jumping
+       nearby_walls = self._find_walls_in_radius(src_pos, wall_jump_detection_radius=100)
+       
+       for wall in nearby_walls:
+           # Check if wall can support wall jump
+           if self._can_wall_jump_from(wall, src_pos, level_data):
+               # Calculate possible wall jump trajectories
+               jump_targets = self._calculate_wall_jump_trajectories(
+                   src_pos, wall, level_data, entity_constraints
+               )
+               
+               for target_pos, trajectory in jump_targets:
+                   # Validate target position is safe and reachable
+                   if self._is_valid_wall_jump_target(target_pos, level_data, entity_constraints):
+                       wall_jump_targets.append({
+                           'target': target_pos,
+                           'trajectory': trajectory,
+                           'wall_position': wall.position,
+                           'movement_type': 'wall_jump'
+                       })
+       
+       return wall_jump_targets
+   
+   def _calculate_wall_jump_trajectories(self, src_pos, wall, level_data, entity_constraints):
+       """Calculate physics-accurate wall jump trajectories."""
+       trajectories = []
+       
+       # Use existing trajectory calculator with wall jump physics
+       wall_approach_trajectories = self.trajectory_calculator.calculate_wall_approach(
+           src_pos, wall.position
+       )
+       
+       for approach in wall_approach_trajectories:
+           if approach.is_feasible:
+               # Calculate wall jump launch physics
+               wall_jump_velocity = self._calculate_wall_jump_velocity(
+                   approach.final_velocity, wall.normal_vector
+               )
+               
+               # Calculate trajectory from wall jump launch
+               jump_trajectory = self.trajectory_calculator.calculate_trajectory(
+                   wall.position, wall_jump_velocity, level_data
+               )
+               
+               if jump_trajectory.is_feasible:
+                   trajectories.append((jump_trajectory.final_position, jump_trajectory))
+       
+       return trajectories
+   ```
+
+3. **Enhanced Subgoal Identification**
    ```python
    def identify_strategic_subgoals(self, level_data, reachability_state):
        subgoals = []
