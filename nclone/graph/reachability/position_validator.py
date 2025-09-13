@@ -76,9 +76,8 @@ class PositionValidator:
         if ninja_position_override is not None:
             pixel_x, pixel_y = ninja_position_override
         else:
-            # Convert to pixel coordinates (center of sub-cell)
-            pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-            pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+            # Convert to pixel coordinates using consistent coordinate system
+            pixel_x, pixel_y = self.convert_sub_grid_to_pixel(sub_row, sub_col)
 
         # Check bounds first
         tile_x = int(pixel_x // TILE_PIXEL_SIZE)
@@ -140,6 +139,8 @@ class PositionValidator:
         """
         Convert sub-grid coordinates to pixel coordinates (center of sub-cell).
 
+        Accounts for the 1-tile padding offset that the simulator uses for its border.
+
         Args:
             sub_row: Sub-grid row coordinate
             sub_col: Sub-grid column coordinate
@@ -147,8 +148,9 @@ class PositionValidator:
         Returns:
             Tuple of (pixel_x, pixel_y) coordinates
         """
-        pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-        pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+        # Center in sub-cell, add 1-tile offset for simulator border
+        pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2 + TILE_PIXEL_SIZE
+        pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2 + TILE_PIXEL_SIZE
         return pixel_x, pixel_y
 
     def convert_pixel_to_sub_grid(
@@ -157,6 +159,8 @@ class PositionValidator:
         """
         Convert pixel coordinates to sub-grid coordinates.
 
+        Accounts for the 1-tile padding offset that the simulator uses for its border.
+
         Args:
             pixel_x: X coordinate in pixels
             pixel_y: Y coordinate in pixels
@@ -164,6 +168,9 @@ class PositionValidator:
         Returns:
             Tuple of (sub_row, sub_col) coordinates
         """
-        sub_row = int(pixel_y // SUB_CELL_SIZE)
-        sub_col = int(pixel_x // SUB_CELL_SIZE)
+        # Remove 1-tile offset for simulator border before converting
+        adjusted_x = pixel_x - TILE_PIXEL_SIZE
+        adjusted_y = pixel_y - TILE_PIXEL_SIZE
+        sub_row = int(adjusted_y // SUB_CELL_SIZE)
+        sub_col = int(adjusted_x // SUB_CELL_SIZE)
         return sub_row, sub_col

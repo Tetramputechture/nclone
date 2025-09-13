@@ -41,8 +41,9 @@ class GameMechanics:
             sub_col: Current sub-grid column
             reachability_state: Current reachability state (modified in-place)
         """
-        pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
-        pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
+        # Convert sub-grid to pixel coordinates with padding offset
+        pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2 + TILE_PIXEL_SIZE
+        pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2 + TILE_PIXEL_SIZE
 
         for entity in level_data.entities:
             entity_type = entity.get("type")
@@ -125,9 +126,14 @@ class GameMechanics:
             entity_x = entity.get("x", 0)
             entity_y = entity.get("y", 0)
 
-            # Convert to sub-grid coordinates
-            sub_row = int(entity_y // SUB_CELL_SIZE)
-            sub_col = int(entity_x // SUB_CELL_SIZE)
+            # Entity positions are already in the correct coordinate system with padding
+            # Convert to sub-grid coordinates using position validator for consistency
+            from .position_validator import PositionValidator
+
+            position_validator = PositionValidator()
+            sub_row, sub_col = position_validator.convert_pixel_to_sub_grid(
+                entity_x, entity_y
+            )
 
             # Check if entity is in reachable area
             if (sub_row, sub_col) in reachability_state.reachable_positions:
@@ -191,9 +197,14 @@ class GameMechanics:
                     door_x = entity.get("door_x", entity.get("x", 0))
                     door_y = entity.get("door_y", entity.get("y", 0))
 
-                    # Convert door position to sub-grid coordinates
-                    sub_row = int(door_y // SUB_CELL_SIZE)
-                    sub_col = int(door_x // SUB_CELL_SIZE)
+                    # Door positions are already in the correct coordinate system with padding
+                    # Convert to sub-grid coordinates using position validator for consistency
+                    from .position_validator import PositionValidator
+
+                    position_validator = PositionValidator()
+                    sub_row, sub_col = position_validator.convert_pixel_to_sub_grid(
+                        door_x, door_y
+                    )
                     unlocked_areas.append((sub_row, sub_col))
 
         return unlocked_areas

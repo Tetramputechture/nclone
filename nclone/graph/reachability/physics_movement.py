@@ -11,7 +11,6 @@ This module handles all physics-related movement calculations including:
 import numpy as np
 from typing import List, Tuple, Optional
 
-from ..common import SUB_CELL_SIZE
 from .position_validator import PositionValidator
 from ...constants.physics_constants import (
     MAX_JUMP_DISTANCE,
@@ -60,6 +59,7 @@ class PhysicsMovement:
             List of (neighbor_row, neighbor_col, movement_type) tuples
         """
         neighbors = []
+        # Use position validator's coordinate conversion for consistency
         pixel_x, pixel_y = self.position_validator.convert_sub_grid_to_pixel(
             sub_row, sub_col
         )
