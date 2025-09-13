@@ -4,80 +4,27 @@ N++ Environment Test with Graph Visualization
 This script provides a comprehensive testing environment for the N++ simulator
 with integrated graph visualization capabilities.
 
-GRAPH VISUALIZATION USAGE:
-==========================
-
-Basic Usage:
------------
-# Run simulator with graph overlay
-python test_environment.py --visualize-graph
-
-# Show standalone graph window alongside simulator
-python test_environment.py --standalone-graph
-
-# Launch interactive graph exploration tool
-python test_environment.py --interactive-graph
-
-
-
-# Save graph visualization to image
-python test_environment.py --save-graph graph.png
-
-Advanced Usage:
---------------
-# Combine multiple features
-python test_environment.py --visualize-graph --standalone-graph
-
-# Customize edge visualization
-python test_environment.py --visualize-graph --show-edges walk jump fall
-
-# Use custom map with graph visualization
-python test_environment.py --map custom_level.txt --visualize-graph
-
-# Headless mode with graph export
-python test_environment.py --headless --save-graph analysis.png
-
 Interactive Controls (during runtime):
 -------------------------------------
-V - Toggle graph overlay on/off
 
-S - Save current graph visualization
-G - Toggle built-in graph debug overlay
 E - Toggle exploration debug overlay
 C - Toggle grid debug overlay
 R - Reset environment
 
-
-
-Edge Type Visualization:
------------------------
---show-edges walk jump fall wall_slide one_way functional
-Default: walk jump
-
 Examples:
 --------
-# Real-time RL training visualization
-python test_environment.py --visualize-graph
-
-# Level analysis and validation
-python test_environment.py --standalone-graph --show-edges walk jump fall
-
-# Interactive graph exploration
-python test_environment.py --interactive-graph
-
-# Export graph for documentation
-python test_environment.py --headless --save-graph level_graph.png --show-edges walk jump fall functional
+python test_environment.py --headless --export-frame test_level.png
 """
 
 import pygame
-from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import (
-    BasicLevelNoGold,
-)
+from nclone.gym_environment.npp_environment import NppEnvironment
 import argparse
 import time
 import cProfile
 import pstats
 import sys
+import numpy as np
+from PIL import Image
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 
@@ -149,6 +96,13 @@ parser.add_argument(
     help="Edge types to visualize.",
 )
 
+parser.add_argument(
+    "--export-frame",
+    type=str,
+    default=None,
+    help="Export first frame of simulation to specified image file and quit (for AI testing).",
+)
+
 args = parser.parse_args()
 
 print(f"Headless: {args.headless}")
@@ -183,7 +137,7 @@ if args.interactive_graph and args.headless:
 # Create environment
 render_mode = "rgb_array" if args.headless else "human"
 debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
-env = BasicLevelNoGold(
+env = NppEnvironment(
     render_mode=render_mode,
     enable_frame_stack=False,
     enable_debug_overlay=debug_overlay_enabled,
@@ -241,6 +195,61 @@ graph_debug_enabled = False
 exploration_debug_enabled = False
 grid_debug_enabled = False
 
+# Handle frame export if requested
+if args.export_frame:
+    print(f"Exporting initial frame to {args.export_frame}...")
+
+    # Step the environment once to get a proper frame
+    observation, reward, terminated, truncated, info = env.step(0)  # NOOP action
+
+    # Get the rendered frame
+    if args.headless or env.render_mode == "rgb_array":
+        # In headless mode, we need to call render to get the RGB array
+        frame = env.render()
+        if frame is not None:
+            # Convert to PIL Image and save
+            if isinstance(frame, np.ndarray):
+                # Handle different frame formats
+                if len(frame.shape) == 3:
+                    if frame.shape[2] == 1:
+                        # Single channel (grayscale) - squeeze to 2D
+                        frame_2d = np.squeeze(frame, axis=2)
+                        image = Image.fromarray(frame_2d.astype(np.uint8), mode="L")
+                        print(f"Exporting grayscale frame with shape {frame.shape}")
+                    elif frame.shape[2] == 3:
+                        # RGB format
+                        image = Image.fromarray(frame.astype(np.uint8), mode="RGB")
+                        print(f"Exporting RGB frame with shape {frame.shape}")
+                    elif frame.shape[2] == 4:
+                        # RGBA format
+                        image = Image.fromarray(frame.astype(np.uint8), mode="RGBA")
+                        print(f"Exporting RGBA frame with shape {frame.shape}")
+                    else:
+                        print(
+                            f"Warning: Unsupported frame format with {frame.shape[2]} channels"
+                        )
+                elif len(frame.shape) == 2:
+                    # Already 2D grayscale
+                    image = Image.fromarray(frame.astype(np.uint8), mode="L")
+                    print(f"Exporting 2D grayscale frame with shape {frame.shape}")
+                else:
+                    print(f"Warning: Unsupported frame shape {frame.shape}")
+
+                image.save(args.export_frame)
+                print(f"Frame successfully exported to {args.export_frame}")
+            else:
+                print(f"Warning: Frame is not a numpy array: {type(frame)}")
+        else:
+            print("Warning: Could not get frame from environment render()")
+    else:
+        print("Warning: Frame export requires headless mode or rgb_array render mode")
+        print("Hint: Use --headless flag with --export-frame")
+
+    # Clean up and exit
+    pygame.quit()
+    env.close()
+    sys.exit(0)
+
 
 # Initialize clock for 60 FPS
 clock = None
@@ -266,13 +275,6 @@ while running:
                 if event.key == pygame.K_r:
                     # Reset environment
                     observation, info = env.reset()
-                if event.key == pygame.K_g:
-                    # Toggle graph debug overlay
-                    graph_debug_enabled = not graph_debug_enabled
-                    try:
-                        env.set_graph_debug_enabled(graph_debug_enabled)
-                    except Exception:
-                        pass
                 if event.key == pygame.K_e:
                     # Toggle exploration debug overlay
                     exploration_debug_enabled = not exploration_debug_enabled

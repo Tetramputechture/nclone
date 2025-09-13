@@ -26,8 +26,7 @@ Brief purpose notes for key files in `nclone/` to aid navigation during Phase 1.
 
 Environments:
 
-- `nclone/nclone_environments/base_environment.py`: Base Gymnasium-compatible wrapper.
-- `nclone/nclone_environments/basic_level_no_gold/basic_level_no_gold.py`: Main env impl.
-- `nclone/nclone_environments/basic_level_no_gold/observation_processor.py`: Build observation dict (images + state vector).
-- `nclone/nclone_environments/basic_level_no_gold/constants.py`: Env-specific constants.
-- `nclone/nclone_environments/basic_level_no_gold/reward_calculation/*`: Reward shaping modules.
+- `nclone/gym_environment/npp_environment.py`: Gymnasium-compatible environment and main entrypoint.
+- `nclone/gym_environment/observation_processor.py`: Build observation dict (images + state vector).
+- `nclone/gym_environment/constants.py`: Env-specific constants.
+- `nclone/gym_environment/reward_calculation/*`: Reward shaping modules.
