@@ -172,14 +172,14 @@ class TestPBRSCalculator(unittest.TestCase):
     def test_visited_positions_tracking(self):
         """Test visited positions tracking."""
         # Initial calculation
-        potential1 = self.calculator.calculate_combined_potential(self.test_state)
+        self.calculator.calculate_combined_potential(self.test_state)
         
         # Move to new position
         new_state = self.test_state.copy()
         new_state['player_x'] = 150.0
         new_state['player_y'] = 125.0
         
-        potential2 = self.calculator.calculate_combined_potential(new_state)
+        self.calculator.calculate_combined_potential(new_state)
         
         # Should have updated visited positions
         self.assertGreater(len(self.calculator.visited_positions), 0)

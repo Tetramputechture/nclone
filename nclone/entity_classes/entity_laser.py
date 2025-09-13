@@ -139,7 +139,6 @@ class EntityLaser(Entity):
             xpos_new = self.xpos + xspeed
             ypos_new = self.ypos + yspeed
             shortest_distance = 9999999
-            result = 0
             closest_point = (0, 0)
             for segment in segments:
                 is_back_facing, a, b = segment.get_closest_point(
@@ -148,7 +147,6 @@ class EntityLaser(Entity):
                 if distance_sq < shortest_distance:
                     shortest_distance = distance_sq
                     closest_point = (a, b)
-                    result = -1 if is_back_facing else 1
             dx = xpos_new - closest_point[0]
             dy = ypos_new - closest_point[1]
             if ((self.xpos - self.sx)*dx + (self.ypos - self.sy)*dy) > 0.01 and segment.oriented:

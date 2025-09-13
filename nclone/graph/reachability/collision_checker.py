@@ -9,7 +9,6 @@ This module handles all collision detection logic including:
 
 import math
 import numpy as np
-from typing import Dict, Tuple, List
 
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 
