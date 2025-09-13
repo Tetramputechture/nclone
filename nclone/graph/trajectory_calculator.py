@@ -1972,8 +1972,8 @@ class TrajectoryCalculator:
 
         total_boost = 0.0
         for block in bounce_blocks:
-            compression = block.get("compression_amount", 0.0)
-            state = block.get("bounce_state", BounceBlockState.NEUTRAL)
+            block.get("compression_amount", 0.0)
+            block.get("bounce_state", BounceBlockState.NEUTRAL)
 
             # Use centralized utility for individual block boost calculation
             boost = calculate_bounce_block_boost_multiplier([block])

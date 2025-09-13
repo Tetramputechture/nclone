@@ -905,7 +905,7 @@ class Ragdoll:
         for seg in self.segs:
             dx = self.bones_pos_old[seg[0]][0] - self.bones_pos_old[seg[1]][0]
             dy = self.bones_pos_old[seg[0]][1] - self.bones_pos_old[seg[1]][1]
-            seg_len = math.sqrt(dx**2 + dy**2)
+            math.sqrt(dx**2 + dy**2)
 
     def collide_vs_objects(self):
         pass

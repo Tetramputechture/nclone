@@ -524,15 +524,6 @@ class GraphConstructor:
         """
         # Define which entity types have collision
         # Note: Switches themselves should not block movement - only their associated doors
-        collision_types = {
-            # EntityType.LOCKED_DOOR: False,     # Switch position should be traversable
-            # EntityType.TRAP_DOOR: False,       # Switch position should be traversable
-            # EntityType.REGULAR_DOOR: True,     # Always solid (not in current level)
-            # EntityType.ONE_WAY: True,          # Conditional collision (complex logic)
-            # EntityType.BOUNCE_BLOCK: True,     # Always solid (not in current level)
-            # EntityType.THWUMP: True,           # Moving solid obstacle (not in current level)
-            # EntityType.SHWUMP: True,           # Moving solid obstacle (not in current level)
-        }
 
         # For now, disable entity collision to focus on tile-based traversability
         # Entity collision can be re-enabled later with proper door/switch logic
