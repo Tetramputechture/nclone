@@ -143,9 +143,10 @@ class WallJumpAnalyzer:
                     )
                     
                     # Validate end position
+                    end_pixel_x, end_pixel_y = position_validator.convert_sub_grid_to_pixel(end_row, end_col)
                     if (position_validator.is_valid_sub_grid_position(end_row, end_col) and
                         position_validator.is_position_traversable_with_radius(
-                            end_row, end_col, NINJA_RADIUS
+                            end_pixel_x, end_pixel_y, tiles, NINJA_RADIUS
                         )):
                         neighbors.append((end_row, end_col, "wall_jump"))
                         

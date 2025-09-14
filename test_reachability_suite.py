@@ -272,24 +272,55 @@ class ReachabilityTestSuite:
             if 'exit' in entity_id.lower():
                 exit_entities.append(entity)
         
+        if self.verbose:
+            print(f"  DEBUG: Found {len(exit_entities)} exit entities")
+            for i, entity in enumerate(exit_entities):
+                print(f"    Exit {i}: {entity.get('entity_id', 'unknown')} at ({entity.get('x', 0)}, {entity.get('y', 0)})")
+        
         if not exit_entities:
             # No exit entities found, fall back to position count heuristic
+            if self.verbose:
+                print(f"  DEBUG: No exit entities found, using position count heuristic: {len(reachability_state.reachable_positions)} > 1")
             return len(reachability_state.reachable_positions) > 1
         
-        # Check if any exit entity position is reachable
-        for exit_entity in exit_entities:
+        # Check if any exit entity position is reachable using circle-to-circle collision
+        from nclone.graph.reachability.position_validator import PositionValidator
+        from nclone.constants.physics_constants import NINJA_RADIUS
+        import math
+        
+        validator = PositionValidator()
+        
+        for i, exit_entity in enumerate(exit_entities):
             exit_x = exit_entity.get('x', 0)
             exit_y = exit_entity.get('y', 0)
+            exit_radius = exit_entity.get('radius', 12)  # Default to 12 if not specified
             
-            # Convert exit position to sub-grid coordinates
-            from nclone.graph.reachability.position_validator import PositionValidator
-            validator = PositionValidator()
-            exit_sub_row, exit_sub_col = validator.convert_pixel_to_sub_grid(exit_x, exit_y)
+            if self.verbose:
+                print(f"    Exit {i}: {exit_entity.get('entity_id', 'unknown')} at pixel ({exit_x}, {exit_y}), radius={exit_radius}")
             
-            # Check if this position is in our reachable set
-            if (exit_sub_row, exit_sub_col) in reachability_state.reachable_positions:
-                return True
+            # Calculate the maximum distance at which ninja and exit circles can touch
+            max_interaction_distance = NINJA_RADIUS + exit_radius
+            
+            # Check all reachable positions to see if any allow ninja to reach the exit
+            for sub_row, sub_col in reachability_state.reachable_positions:
+                # Convert reachable position to pixel coordinates
+                ninja_pixel_x, ninja_pixel_y = validator.convert_sub_grid_to_pixel(sub_row, sub_col)
+                
+                # Calculate distance between ninja center and exit center
+                distance = math.sqrt((ninja_pixel_x - exit_x)**2 + (ninja_pixel_y - exit_y)**2)
+                
+                # If distance is less than sum of radii, circles overlap
+                if distance <= max_interaction_distance:
+                    if self.verbose:
+                        print(f"  DEBUG: Exit {i} is reachable! Ninja at ({sub_row}, {sub_col}) -> pixel ({ninja_pixel_x:.1f}, {ninja_pixel_y:.1f})")
+                        print(f"         Distance {distance:.1f} <= max_interaction {max_interaction_distance:.1f}")
+                    return True
+            
+            if self.verbose:
+                print(f"    Exit {i} not reachable from any ninja position")
         
+        if self.verbose:
+            print(f"  DEBUG: No exit entities are reachable")
         # No exit entities are reachable
         return False
     

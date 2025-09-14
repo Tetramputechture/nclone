@@ -15,6 +15,7 @@ from .position_validator import PositionValidator
 from .wall_jump_analyzer import WallJumpAnalyzer
 from ...constants.physics_constants import (
     MAX_JUMP_DISTANCE,
+    EXTENDED_JUMP_DISTANCE,
     MAX_FALL_DISTANCE,
     GRAVITY_FALL,
     TILE_PIXEL_SIZE,
@@ -156,19 +157,27 @@ class PhysicsMovement:
         """
         neighbors = []
 
-        # Sample jump targets within physics range
-        max_jump_pixels = min(
-            MAX_JUMP_DISTANCE, 150
-        )  # Reasonable limit to avoid excessive computation
+        # Detect if we need extended jump distance for gap crossing
+        max_jump_pixels = self._get_appropriate_jump_distance(pixel_x, pixel_y, level_data)
 
-        # Sample jump directions and distances (8×4=32 samples total)
+        # Use adaptive sampling based on max jump distance to avoid performance issues
+        if max_jump_pixels <= 200:
+            # Standard sampling for shorter jumps
+            num_angles = 8
+            num_distances = 4
+        else:
+            # Much more aggressive reduction for longer jumps to maintain performance
+            num_angles = 4  # Focus on key angles: 30°, 60°, 90°, 120°
+            num_distances = 2  # Just short and max distance
+
+        # Sample jump directions and distances
         for angle in np.linspace(
-            15, 165, 8
+            15, 165, num_angles
         ):  # Jump angles from 15° to 165° (upward arcs)
             angle_rad = np.radians(angle)
 
             for distance in np.linspace(
-                TILE_PIXEL_SIZE, max_jump_pixels, 4
+                TILE_PIXEL_SIZE, max_jump_pixels, num_distances
             ):  # Jump distances
                 target_x = pixel_x + distance * np.cos(angle_rad)
                 target_y = pixel_y - distance * np.sin(angle_rad)  # Y decreases upward
@@ -189,7 +198,7 @@ class PhysicsMovement:
                     # For very long jumps (>200px), apply stricter physics validation
                     if jump_distance > 200:  # ~8.3 tiles - beyond reasonable jump range
                         # Import trajectory calculator for long jump validation
-                        from ...trajectory_calculator import TrajectoryCalculator
+                        from ..trajectory_calculator import TrajectoryCalculator
                         trajectory_calc = TrajectoryCalculator()
                         
                         # Check if jump is physically possible
@@ -221,6 +230,78 @@ class PhysicsMovement:
                         neighbors.append((target_sub_row, target_sub_col, "jump"))
 
         return neighbors
+
+    def _get_appropriate_jump_distance(self, pixel_x: float, pixel_y: float, level_data) -> float:
+        """
+        Determine appropriate jump distance based on gap detection.
+        
+        Uses standard jump distance normally, but extended distance when a large gap is detected.
+        
+        Args:
+            pixel_x: Current X position in pixels
+            pixel_y: Current Y position in pixels  
+            level_data: Level data containing tiles
+            
+        Returns:
+            Appropriate jump distance in pixels
+        """
+        # Check for large horizontal gaps to the right
+        gap_detected = self._detect_horizontal_gap(pixel_x, pixel_y, level_data)
+        
+        if gap_detected:
+            return EXTENDED_JUMP_DISTANCE
+        else:
+            return MAX_JUMP_DISTANCE
+    
+    def _detect_horizontal_gap(self, pixel_x: float, pixel_y: float, level_data) -> bool:
+        """
+        Detect if there's a large horizontal gap that might require extended jumping.
+        
+        Args:
+            pixel_x: Current X position in pixels
+            pixel_y: Current Y position in pixels
+            level_data: Level data containing tiles
+            
+        Returns:
+            True if a large gap is detected
+        """
+        # Convert to tile coordinates
+        current_tile_x = int(pixel_x // TILE_PIXEL_SIZE)
+        current_tile_y = int(pixel_y // TILE_PIXEL_SIZE)
+        
+        # Account for padding offset
+        data_tile_x = current_tile_x - 1
+        data_tile_y = current_tile_y - 1
+        
+        # Check if we're at the edge of a platform
+        if (0 <= data_tile_y < len(level_data.tiles) and 
+            0 <= data_tile_x < len(level_data.tiles[0])):
+            
+            # Look for a gap pattern: solid ground, then empty space, then solid ground again
+            gap_start = None
+            gap_end = None
+            
+            # Scan horizontally to the right for up to 15 tiles (360 pixels)
+            for offset in range(1, 16):
+                check_x = data_tile_x + offset
+                if check_x >= len(level_data.tiles[0]):
+                    break
+                    
+                tile_value = level_data.tiles[data_tile_y][check_x]
+                
+                if gap_start is None and tile_value == 0:  # Found start of gap
+                    gap_start = offset
+                elif gap_start is not None and tile_value == 1:  # Found end of gap
+                    gap_end = offset
+                    break
+            
+            # If we found a gap that's larger than standard jump distance
+            if gap_start is not None and gap_end is not None:
+                gap_size_pixels = (gap_end - gap_start) * TILE_PIXEL_SIZE
+                if gap_size_pixels > MAX_JUMP_DISTANCE:
+                    return True
+        
+        return False
 
     def _get_fall_neighbors(
         self, level_data, pixel_x: float, pixel_y: float, reachability_state

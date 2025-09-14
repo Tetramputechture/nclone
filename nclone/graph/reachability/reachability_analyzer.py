@@ -205,6 +205,7 @@ class ReachabilityAnalyzer:
         visited_this_iteration = set()
 
         # If this is the first iteration, mark starting position as reachable
+        # but DON'T add to global_visited yet - let the BFS loop process it
         if not state.reachable_positions:
             # For the ninja's starting position, check if the actual ninja position is traversable
             # even if the sub-cell center is not (due to discretization effects)
@@ -219,7 +220,7 @@ class ReachabilityAnalyzer:
                     ninja_position[0], ninja_position[1], level_data.tiles, 10.0
                 ):
                     state.reachable_positions.add((start_sub_row, start_sub_col))
-                    global_visited.add((start_sub_row, start_sub_col))
+                    # DON'T add to global_visited here - let BFS loop process it
                     if self.debug:
                         print(
                             f"DEBUG: Added ninja starting position ({start_sub_row}, {start_sub_col}) "
@@ -232,7 +233,7 @@ class ReachabilityAnalyzer:
                     )
             else:
                 state.reachable_positions.add((start_sub_row, start_sub_col))
-                global_visited.add((start_sub_row, start_sub_col))
+                # DON'T add to global_visited here - let BFS loop process it
 
         # Add safety limit to prevent runaway exploration
         max_positions = 50000  # Reasonable limit for large levels
