@@ -13,7 +13,10 @@ from dataclasses import dataclass
 import numpy as np
 import math
 
-from .enhanced_subgoals import Subgoal, SubgoalType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..subgoal_planner import Subgoal
 from .frontier_detector import Frontier, FrontierType
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 
@@ -27,7 +30,7 @@ class RLState:
     switch_states: Dict[int, bool]
     
     # RL-specific data
-    subgoals: List[Subgoal]
+    subgoals: List
     frontiers: List[Frontier]
     curiosity_map: np.ndarray  # 2D array of curiosity values
     accessibility_map: np.ndarray  # 2D array of accessibility scores
@@ -115,7 +118,7 @@ class RLIntegrationAPI:
         rl_state: RLState,
         max_subgoals: int = 5,
         prioritize_critical_path: bool = True
-    ) -> List[Subgoal]:
+    ) -> List:
         """
         Get prioritized subgoals for hierarchical RL.
         
@@ -127,13 +130,15 @@ class RLIntegrationAPI:
         Returns:
             List of prioritized subgoals
         """
+        # Runtime import to avoid circular dependency
+        from ..subgoal_planner import Subgoal
         subgoals = rl_state.subgoals.copy()
         
         if prioritize_critical_path:
             # Boost priority of critical path subgoals
-            critical_types = {SubgoalType.EXIT_SWITCH, SubgoalType.EXIT_DOOR}
+            critical_types = {'exit_switch', 'exit_door'}
             for subgoal in subgoals:
-                if subgoal.subgoal_type in critical_types:
+                if subgoal.goal_type in critical_types:
                     subgoal.priority -= 10  # Lower number = higher priority
         
         # Sort by priority and return top subgoals
@@ -211,7 +216,7 @@ class RLIntegrationAPI:
         self,
         rl_state: RLState,
         current_position: Tuple[float, float]
-    ) -> List[Subgoal]:
+    ) -> List:
         """
         Plan optimal path for level completion.
         
@@ -225,13 +230,13 @@ class RLIntegrationAPI:
         # Get critical path subgoals
         critical_subgoals = [
             s for s in rl_state.subgoals 
-            if s.subgoal_type in {SubgoalType.EXIT_SWITCH, SubgoalType.EXIT_DOOR}
+            if s.goal_type in {'exit_switch', 'exit_door'}
         ]
         
         # Get supporting subgoals (doors, switches)
         supporting_subgoals = [
             s for s in rl_state.subgoals
-            if s.subgoal_type in {SubgoalType.DOOR_SWITCH, SubgoalType.LOCKED_DOOR}
+            if s.goal_type in {'door_switch', 'locked_door'}
         ]
         
         # Build dependency-aware path
@@ -292,7 +297,7 @@ class RLIntegrationAPI:
         )
         features['num_critical_subgoals'] = float(len([
             s for s in rl_state.subgoals 
-            if s.subgoal_type in {SubgoalType.EXIT_SWITCH, SubgoalType.EXIT_DOOR}
+            if s.goal_type in {'exit_switch', 'exit_door'}
         ]))
         
         # Accessibility features
@@ -403,7 +408,7 @@ class RLIntegrationAPI:
     
     def _distance_to_nearest_subgoal(
         self, 
-        subgoals: List[Subgoal], 
+        subgoals: List, 
         position: Tuple[int, int]
     ) -> float:
         """Calculate distance to nearest subgoal."""

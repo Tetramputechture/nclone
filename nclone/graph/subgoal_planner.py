@@ -52,15 +52,14 @@ class SubgoalPlanner:
     - Navigating to final objectives (exits)
     """
     
-    def __init__(self, navigation_engine: PathfindingEngine, debug: bool = False):
+    def __init__(self, debug: bool = False):
         """
-        Initialize subgoal planner with navigation engine.
+        Initialize subgoal planner.
         
         Args:
-            navigation_engine: Engine for finding paths between nodes
             debug: Enable debug output (default: False)
         """
-        self.navigation_engine = navigation_engine
+        self.navigation_engine = PathfindingEngine(debug=debug)
         self.debug = debug
         
     def create_subgoal_plan(

@@ -14,6 +14,7 @@ from .visualization import GraphVisualizer, VisualizationConfig
 from .navigation import PathfindingEngine, PathfindingAlgorithm
 from .common import NodeType, EdgeType
 from .hierarchical_builder import HierarchicalGraphBuilder
+from .reachability import ReachabilityAnalyzer
 
 
 class OverlayMode(IntEnum):
@@ -22,7 +23,8 @@ class OverlayMode(IntEnum):
     DISABLED = 0
     BASIC_GRAPH = 1
     PATHFINDING = 2
-    FULL_ANALYSIS = 3
+    REACHABILITY = 3
+    FULL_ANALYSIS = 4
 
 
 class EnhancedDebugOverlay:
@@ -50,6 +52,7 @@ class EnhancedDebugOverlay:
         self.visualizer = GraphVisualizer(self.config)
         self.navigation_engine = None  # Will be initialized with level data
         self.graph_builder = HierarchicalGraphBuilder()
+        self.reachability_analyzer = None  # Will be initialized with level data
 
         # State
         self.overlay_mode = OverlayMode.DISABLED
@@ -57,6 +60,7 @@ class EnhancedDebugOverlay:
         self.current_path_result = None
         self.goal_position = None
         self.show_hierarchical = False
+        self.current_reachability_state = None
 
         # Fonts
         self.small_font = pygame.font.Font(None, 16)
@@ -142,6 +146,8 @@ class EnhancedDebugOverlay:
             self._draw_basic_graph_overlay(overlay)
         elif self.overlay_mode == OverlayMode.PATHFINDING:
             self._draw_navigation_overlay(overlay)
+        elif self.overlay_mode == OverlayMode.REACHABILITY:
+            self._draw_reachability_overlay(overlay)
         elif self.overlay_mode == OverlayMode.FULL_ANALYSIS:
             self._draw_full_analysis_overlay(overlay, debug_info)
 
@@ -274,6 +280,20 @@ class EnhancedDebugOverlay:
         # Draw navigation-specific elements
         if self.current_path_result and self.current_path_result.success:
             self._draw_path_details(overlay)
+
+    def _draw_reachability_overlay(self, overlay: pygame.Surface):
+        """Draw reachability analysis overlay."""
+        if not self.current_graph_data:
+            return
+            
+        # Draw basic graph first
+        self._draw_basic_graph_overlay(overlay)
+        
+        # Update reachability analysis
+        self._update_reachability_analysis()
+        
+        if self.current_reachability_state:
+            self._draw_reachability_visualization(overlay)
 
     def _draw_full_analysis_overlay(
         self, overlay: pygame.Surface, debug_info: Optional[Dict[str, Any]]
@@ -577,6 +597,136 @@ class EnhancedDebugOverlay:
             return True
 
         return False
+
+    def _update_reachability_analysis(self):
+        """Update reachability analysis for current state."""
+        if not self.current_graph_data:
+            return
+            
+        # Initialize reachability analyzer if needed
+        if self.reachability_analyzer is None:
+            self.reachability_analyzer = ReachabilityAnalyzer(debug=True)
+            
+        # Get current ninja position
+        ninja_pos = self._get_ninja_position()
+        if ninja_pos is None:
+            return
+            
+        try:
+            # Perform reachability analysis from current position
+            level_data = self._get_level_data()
+            if level_data:
+                self.current_reachability_state = self.reachability_analyzer.analyze_reachability(
+                    level_data, ninja_pos, self.current_graph_data
+                )
+        except Exception as e:
+            if hasattr(self, 'debug') and self.debug:
+                print(f"DEBUG: Reachability analysis failed: {e}")
+            self.current_reachability_state = None
+
+    def _draw_reachability_visualization(self, overlay: pygame.Surface):
+        """Draw reachability analysis visualization."""
+        if not self.current_reachability_state:
+            return
+            
+        # Draw reachable positions
+        if hasattr(self.current_reachability_state, 'reachable_positions'):
+            self._draw_reachable_positions(overlay, self.current_reachability_state.reachable_positions)
+            
+        # Draw subgoals
+        if hasattr(self.current_reachability_state, 'subgoals'):
+            self._draw_subgoals(overlay, self.current_reachability_state.subgoals)
+            
+        # Draw frontiers if available
+        if hasattr(self.current_reachability_state, 'frontiers'):
+            self._draw_frontiers(overlay, self.current_reachability_state.frontiers)
+
+    def _draw_reachable_positions(self, overlay: pygame.Surface, reachable_positions):
+        """Draw reachable positions on the overlay."""
+        reachable_color = (0, 255, 0, 100)  # Green with transparency
+        
+        for row, col in reachable_positions:
+            # Convert sub-grid coordinates to screen coordinates
+            pixel_x = col * 16  # Assuming 16 pixels per sub-cell
+            pixel_y = row * 16
+            
+            screen_x = int(pixel_x * self.adjust + self.tile_x_offset)
+            screen_y = int(pixel_y * self.adjust + self.tile_y_offset)
+            
+            # Draw small rectangle for reachable position
+            rect_size = max(2, int(8 * self.adjust))
+            pygame.draw.rect(
+                overlay, 
+                reachable_color, 
+                (screen_x, screen_y, rect_size, rect_size)
+            )
+
+    def _draw_subgoals(self, overlay: pygame.Surface, subgoals):
+        """Draw subgoals on the overlay."""
+        subgoal_color = (255, 255, 0, 200)  # Yellow with transparency
+        
+        for sub_row, sub_col, goal_type in subgoals:
+            # Convert sub-grid coordinates to screen coordinates
+            pixel_x = sub_col * 16
+            pixel_y = sub_row * 16
+            
+            screen_x = int(pixel_x * self.adjust + self.tile_x_offset)
+            screen_y = int(pixel_y * self.adjust + self.tile_y_offset)
+            
+            # Draw circle for subgoal
+            radius = max(3, int(6 * self.adjust))
+            pygame.draw.circle(overlay, subgoal_color, (screen_x, screen_y), radius)
+            
+            # Draw goal type text if zoom level is sufficient
+            if self.adjust > 0.5:
+                text_surface = self.small_font.render(goal_type, True, (255, 255, 255))
+                overlay.blit(text_surface, (screen_x + radius + 2, screen_y - 8))
+
+    def _draw_frontiers(self, overlay: pygame.Surface, frontiers):
+        """Draw exploration frontiers on the overlay."""
+        frontier_color = (255, 0, 255, 150)  # Magenta with transparency
+        
+        for frontier in frontiers:
+            row, col = frontier.position
+            
+            # Convert sub-grid coordinates to screen coordinates
+            pixel_x = col * 16
+            pixel_y = row * 16
+            
+            screen_x = int(pixel_x * self.adjust + self.tile_x_offset)
+            screen_y = int(pixel_y * self.adjust + self.tile_y_offset)
+            
+            # Draw diamond shape for frontier
+            size = max(4, int(8 * self.adjust))
+            points = [
+                (screen_x, screen_y - size),  # Top
+                (screen_x + size, screen_y),  # Right
+                (screen_x, screen_y + size),  # Bottom
+                (screen_x - size, screen_y)   # Left
+            ]
+            pygame.draw.polygon(overlay, frontier_color, points)
+
+    def _get_ninja_position(self):
+        """Get current ninja position from simulation."""
+        try:
+            if hasattr(self.sim, 'ninja'):
+                return (self.sim.ninja.x, self.sim.ninja.y)
+            elif hasattr(self.sim, 'ninja_position'):
+                return self.sim.ninja_position()
+        except:
+            pass
+        return None
+
+    def _get_level_data(self):
+        """Get level data from simulation."""
+        try:
+            if hasattr(self.sim, 'level_data'):
+                return self.sim.level_data
+            elif hasattr(self.sim, 'get_level_data'):
+                return self.sim.get_level_data()
+        except:
+            pass
+        return None
 
     def _screen_to_world_coords(
         self, screen_pos: Tuple[int, int]
