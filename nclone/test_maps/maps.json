@@ -1,0 +1,92 @@
+[
+  {
+    "name": "simple-walk",
+    "path": "nclone/test_maps/simple-walk",
+    "description": "A horizontal one tile corridor with the player on the left and exit on the right"
+  },
+  {
+    "name": "complex-path-switch-required",
+    "path": "nclone/test_maps/complex-path-switch-required",
+    "description": "A map with many different tile types, as well as one way platforms, that includes two necessary locked doors that need to be opened, as well as a trap door switch that should not be triggered. Triggering this trap door to close will make the exit door unreachable"
+  },
+  {
+    "name": "map-unreachable-areas",
+    "path": "nclone/test_maps/map-unreachable-areas",
+    "description": "A map with a path to the exit but a few areas in it are not reachable, due to hazards, tiles, or locked doors"
+  },
+  {
+    "name": "bounce-block-reachable",
+    "path": "nclone/test_maps/bounce-block-reachable",
+    "description": "A completely empty map (NO TILE DATA) with a bounce block path up to an exit. The exit switch and doors are reachable"
+  },
+  {
+    "name": "wall-jump-required",
+    "path": "nclone/test_maps/wall-jump-required",
+    "description": "A map where a wall jump is required to reach the exit switch and then fall to the exit door"
+  },
+  {
+    "name": "drone-reachable",
+    "path": "nclone/test_maps/drone-reachable",
+    "description": "A map with one drone in which the path to the exit is reachable based on the drone's cycle pattern"
+  },
+  {
+    "name": "drone-unreachable",
+    "path": "nclone/test_maps/drone-unreachable",
+    "description": "A map with two drones that make the path to the exit unreachable based on the two drones' cycle patterns (there is never a valid path to the exit regardless of where the drones are at in their cycle)"
+  },
+  {
+    "name": "fall-required",
+    "path": "nclone/test_maps/fall-required",
+    "description": "A map where the player must fall down to reach the exit, testing vertical movement and fall mechanics"
+  },
+  {
+    "name": "jump-then-fall",
+    "path": "nclone/test_maps/jump-then-fall",
+    "description": "A map requiring the player to jump up first, then fall down to reach the exit, testing combined jump and fall mechanics"
+  },
+  {
+    "name": "long-jump-reachable",
+    "path": "nclone/test_maps/long-jump-reachable",
+    "description": "A map with a long horizontal gap that can be crossed with a single jump, testing maximum jump distance"
+  },
+  {
+    "name": "long-jump-unreachable",
+    "path": "nclone/test_maps/long-jump-unreachable",
+    "description": "A map with a gap too wide to cross with a single jump, making the exit unreachable"
+  },
+  {
+    "name": "long-walk",
+    "path": "nclone/test_maps/long-walk",
+    "description": "A map with a long horizontal path that can be traversed by walking, testing basic movement mechanics"
+  },
+  {
+    "name": "only-jump",
+    "path": "nclone/test_maps/only-jump",
+    "description": "A map where the player can only reach the exit by jumping, with no walking path available"
+  },
+  {
+    "name": "halfaligned-path",
+    "path": "nclone/test_maps/halfaligned-path",
+    "description": "A map where some tiles are misaligned with the main grid but the exit is still reachable"
+  },
+  {
+    "name": "launch-pad-required",
+    "path": "nclone/test_maps/launch-pad-required",
+    "description": "A map where the player must use a launch pad to reach the exit switch and then fall to the exit door"
+  },
+  {
+    "name": "minefield",
+    "path": "nclone/test_maps/minefield",
+    "description": "A map with toggled-on mines that the player must jump through; there is a reachable path from the player to the exit in this map"
+  },
+  {
+    "name": "path-jump-required",
+    "path": "nclone/test_maps/path-jump-required",
+    "description": "A vertical corridor where the player starts at the bottom and must jump up to reach the exit switch and then keep jumping up to reach the exit door. Wall jumps are valid too."
+  },
+  {
+    "name": "thwump-platform-required",
+    "path": "nclone/test_maps/thwump-platform-required",
+    "description": "A map where the player must activate a thwump, wait until it is within distance to jump on, and then stand on the thwump as it climbs back to its origin. The exit switch and door will be reachable as the thwump climbs back to its origin."
+  }
+]
