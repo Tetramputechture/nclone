@@ -5,17 +5,10 @@ This module extends the existing SubgoalPlanner with reachability-specific
 enhancements without duplicating the core planning logic.
 """
 
-from typing import List, Dict, Any, Tuple, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Tuple, Optional
 
-if TYPE_CHECKING:
-    from ..subgoal_planner import SubgoalPlanner, Subgoal, SubgoalPlan
-    from .reachability_state import ReachabilityState
-else:
-    # Import at runtime to avoid circular imports
-    SubgoalPlanner = None
-    Subgoal = None
-    SubgoalPlan = None
-    ReachabilityState = None
+from ..subgoal_planner import SubgoalPlanner, Subgoal, SubgoalPlan
+from .reachability_state import ReachabilityState
 
 
 class ReachabilitySubgoalIntegration:
@@ -59,7 +52,7 @@ class ReachabilitySubgoalIntegration:
         # Start with existing subgoal planning
         existing_subgoals = []
         if hasattr(reachability_state, 'subgoals') and reachability_state.subgoals:
-            # Import Subgoal class at runtime to avoid circular imports
+            # Import at runtime to avoid circular imports
             from ..subgoal_planner import Subgoal
             
             # Convert existing subgoals to Subgoal objects
@@ -111,9 +104,6 @@ class ReachabilitySubgoalIntegration:
             
         reachable_positions = reachability_state.reachable_positions
         height, width = level_data.tiles.shape
-        
-        # Import Subgoal class at runtime
-        from ..subgoal_planner import Subgoal
         
         # Find positions that are at intersections or have multiple paths
         for row, col in reachable_positions:

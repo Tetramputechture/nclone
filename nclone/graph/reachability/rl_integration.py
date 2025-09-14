@@ -13,10 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import math
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ..subgoal_planner import Subgoal
+from ..subgoal_planner import Subgoal
 from .frontier_detector import Frontier, FrontierType
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 

@@ -8,15 +8,13 @@ This module handles all game-specific mechanics including:
 - Entity-based traversability modifications
 """
 
-from typing import List, Tuple, TYPE_CHECKING
+from typing import List, Tuple
 
 from ..common import SUB_CELL_SIZE
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 from ...constants.entity_types import EntityType
 from .subgoal_integration import ReachabilitySubgoalIntegration
-
-if TYPE_CHECKING:
-    from ..subgoal_planner import SubgoalPlanner
+from ..subgoal_planner import SubgoalPlanner
 
 
 class GameMechanics:

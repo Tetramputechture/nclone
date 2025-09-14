@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from collections import deque
 
 from .common import SUB_CELL_SIZE
-from .reachability import ReachabilityState
+from .reachability.reachability_state import ReachabilityState
 from .navigation import PathfindingEngine
 
 
