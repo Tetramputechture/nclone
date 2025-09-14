@@ -109,43 +109,156 @@ class ReachabilityHazardExtension:
     def get_bounce_trajectory_safe(
         self, 
         bounce_block_pos: Tuple[float, float], 
-        ninja_pos: Tuple[float, float]
+        ninja_pos: Tuple[float, float],
+        ninja_velocity: Optional[Tuple[float, float]] = None,
+        entities: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[Tuple[float, float]]:
         """
-        Calculate safe bounce trajectory from a bounce block.
+        Calculate physics-accurate safe bounce trajectory from a bounce block.
+        
+        This method uses the trajectory calculator to compute realistic bounce
+        trajectories based on N++ physics, including proper bounce block mechanics,
+        velocity calculations, and collision detection.
         
         Args:
-            bounce_block_pos: Position of bounce block
-            ninja_pos: Current ninja position
+            bounce_block_pos: Position of bounce block (x, y)
+            ninja_pos: Current ninja position (x, y)
+            ninja_velocity: Current ninja velocity (vx, vy), defaults to zero
+            entities: List of entities for collision detection
             
         Returns:
-            Target position after bounce, or None if unsafe
+            Target position after bounce, or None if unsafe/impossible
         """
-        # Use existing hazard system's bounce block analysis
-        # This is a simplified implementation - in production, this would
-        # integrate with the physics system for accurate trajectory calculation
+        from ..trajectory_calculator import TrajectoryCalculator
+        from ...constants.physics_constants import (
+            BOUNCE_BLOCK_INTERACTION_RADIUS,
+            BOUNCE_BLOCK_BOOST_MIN,
+            BOUNCE_BLOCK_BOOST_MAX,
+            MAX_HOR_SPEED,
+            JUMP_INITIAL_VELOCITY,
+            GRAVITY_FALL,
+            GRAVITY_JUMP
+        )
+        from ...utils.physics_utils import (
+            calculate_bounce_block_boost_multiplier,
+            calculate_distance
+        )
+        import math
         
+        # Check if ninja is within interaction range of bounce block
+        distance_to_block = calculate_distance(ninja_pos, bounce_block_pos)
+        if distance_to_block > BOUNCE_BLOCK_INTERACTION_RADIUS:
+            return None  # Too far to interact
+            
+        # Default velocity if not provided
+        if ninja_velocity is None:
+            ninja_velocity = (0.0, 0.0)
+            
+        # Create bounce block entity for calculations
+        bounce_block_entity = {
+            'type': 'bounce_block',
+            'x': bounce_block_pos[0],
+            'y': bounce_block_pos[1],
+            'state': 0.0,  # Neutral state
+            'active': True
+        }
+        
+        # Calculate approach vector and bounce direction
         dx = ninja_pos[0] - bounce_block_pos[0]
         dy = ninja_pos[1] - bounce_block_pos[1]
         
-        # Simple bounce calculation (could be enhanced with physics integration)
-        bounce_distance = 100.0  # Simplified constant
-        if abs(dx) > abs(dy):
-            # Horizontal bounce
-            target_x = bounce_block_pos[0] + (bounce_distance if dx > 0 else -bounce_distance)
-            target_y = bounce_block_pos[1]
-        else:
-            # Vertical bounce
-            target_x = bounce_block_pos[0]
-            target_y = bounce_block_pos[1] + (bounce_distance if dy > 0 else -bounce_distance)
+        # Normalize approach vector
+        approach_distance = math.sqrt(dx * dx + dy * dy)
+        if approach_distance < 1e-6:
+            return None  # Too close to calculate meaningful trajectory
             
-        target_pos = (target_x, target_y)
+        approach_x = dx / approach_distance
+        approach_y = dy / approach_distance
         
-        # Check if target position is safe
-        if self.is_position_safe_for_reachability(target_pos):
-            return target_pos
-        else:
-            return None
+        # Calculate bounce block boost multiplier
+        boost_multiplier = calculate_bounce_block_boost_multiplier(
+            [bounce_block_entity], ninja_pos
+        )
+        
+        # Calculate initial bounce velocity based on approach and current velocity
+        base_velocity_x = ninja_velocity[0]
+        base_velocity_y = ninja_velocity[1]
+        
+        # If ninja is falling/jumping onto the bounce block, use that velocity
+        if abs(base_velocity_y) < 0.1:  # Minimal vertical velocity
+            base_velocity_y = JUMP_INITIAL_VELOCITY  # Assume jump velocity
+            
+        # Apply bounce block physics
+        # Bounce blocks amplify velocity in the direction away from the block
+        bounce_velocity_x = base_velocity_x + (approach_x * MAX_HOR_SPEED * boost_multiplier)
+        bounce_velocity_y = base_velocity_y - (approach_y * abs(JUMP_INITIAL_VELOCITY) * boost_multiplier)
+        
+        # Clamp velocities to reasonable limits
+        bounce_velocity_x = max(-MAX_HOR_SPEED * 2, min(MAX_HOR_SPEED * 2, bounce_velocity_x))
+        bounce_velocity_y = max(JUMP_INITIAL_VELOCITY * 2, min(-JUMP_INITIAL_VELOCITY * 0.5, bounce_velocity_y))
+        
+        # Calculate multiple potential landing positions using trajectory calculator
+        trajectory_calc = TrajectoryCalculator()
+        
+        # Try different trajectory distances to find optimal landing spot
+        potential_targets = []
+        
+        for distance_multiplier in [1.0, 1.5, 2.0, 2.5]:
+            # Calculate target position based on bounce velocity and physics
+            time_to_peak = abs(bounce_velocity_y) / GRAVITY_JUMP if bounce_velocity_y < 0 else 0
+            time_to_fall = math.sqrt(2 * abs(bounce_velocity_y) / GRAVITY_FALL) if bounce_velocity_y < 0 else 1.0
+            total_flight_time = (time_to_peak + time_to_fall) * distance_multiplier
+            
+            target_x = bounce_block_pos[0] + bounce_velocity_x * total_flight_time
+            target_y = bounce_block_pos[1] + bounce_velocity_y * total_flight_time + 0.5 * GRAVITY_FALL * total_flight_time * total_flight_time
+            
+            target_pos = (target_x, target_y)
+            
+            # Use trajectory calculator to validate the bounce trajectory
+            try:
+                trajectory_result = trajectory_calc.calculate_bounce_block_trajectory(
+                    ninja_pos, target_pos, entities=[bounce_block_entity]
+                )
+                
+                if (trajectory_result.feasible and 
+                    trajectory_result.success_probability > 0.3 and  # Reasonable success chance
+                    self.is_position_safe_for_reachability(target_pos)):
+                    
+                    potential_targets.append({
+                        'position': target_pos,
+                        'probability': trajectory_result.success_probability,
+                        'distance': calculate_distance(ninja_pos, target_pos)
+                    })
+                    
+            except Exception:
+                # If trajectory calculation fails, skip this target
+                continue
+        
+        # Select best target based on success probability and reasonable distance
+        if not potential_targets:
+            # Fallback: simple physics-based calculation without trajectory validation
+            fallback_distance = 60.0 * boost_multiplier  # Base bounce distance
+            
+            # Calculate fallback target in the bounce direction
+            target_x = bounce_block_pos[0] + approach_x * fallback_distance
+            target_y = bounce_block_pos[1] + approach_y * fallback_distance
+            
+            # Adjust for gravity (bounce blocks typically launch upward/forward)
+            if approach_y > 0:  # Approaching from above
+                target_y -= 20.0 * boost_multiplier  # Launch upward
+            
+            fallback_target = (target_x, target_y)
+            
+            if self.is_position_safe_for_reachability(fallback_target):
+                return fallback_target
+            else:
+                return None
+        
+        # Sort by success probability (descending) and select best
+        potential_targets.sort(key=lambda t: t['probability'], reverse=True)
+        best_target = potential_targets[0]
+        
+        return best_target['position']
     
     def update_switch_states(self, switch_states: Dict[int, bool]):
         """
