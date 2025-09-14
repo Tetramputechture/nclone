@@ -23,7 +23,7 @@ from enum import Enum
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
 
 from nclone.nplay_headless import NPlayHeadless
-from nclone.graph.reachability.reachability_analyzer import ReachabilityAnalyzer
+from nclone.graph.reachability.hierarchical_adapter import HierarchicalReachabilityAdapter
 from nclone.graph.trajectory_calculator import TrajectoryCalculator
 from nclone.graph.level_data import LevelData
 from nclone.gym_environment.npp_environment import NppEnvironment
@@ -83,9 +83,9 @@ class ReachabilityTestSuite:
         self.verbose = verbose
         self.nplay_headless = NPlayHeadless()
         
-        # Initialize trajectory calculator and reachability analyzer
+        # Initialize trajectory calculator and hierarchical reachability analyzer
         trajectory_calculator = TrajectoryCalculator()
-        self.reachability_analyzer = ReachabilityAnalyzer(trajectory_calculator, debug=verbose)
+        self.reachability_analyzer = HierarchicalReachabilityAdapter(trajectory_calculator, debug=verbose)
         
         # Load test map definitions
         self.test_maps = self._load_test_map_definitions()
