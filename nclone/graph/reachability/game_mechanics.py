@@ -8,12 +8,15 @@ This module handles all game-specific mechanics including:
 - Entity-based traversability modifications
 """
 
-from typing import List, Tuple
+from typing import List, Tuple, TYPE_CHECKING
 
 from ..common import SUB_CELL_SIZE
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 from ...constants.entity_types import EntityType
-from .enhanced_subgoals import EnhancedSubgoalIdentifier
+from .subgoal_integration import ReachabilitySubgoalIntegration
+
+if TYPE_CHECKING:
+    from ..subgoal_planner import SubgoalPlanner
 
 
 class GameMechanics:
@@ -27,7 +30,10 @@ class GameMechanics:
             debug: Enable debug output
         """
         self.debug = debug
-        self.enhanced_subgoal_identifier = EnhancedSubgoalIdentifier(debug=debug)
+        # Initialize subgoal planning integration
+        from ..subgoal_planner import SubgoalPlanner
+        self.subgoal_planner = SubgoalPlanner(debug=debug)
+        self.subgoal_integration = ReachabilitySubgoalIntegration(self.subgoal_planner, debug=debug)
 
     def check_switch_activation(
         self, level_data, sub_row: int, sub_col: int, reachability_state
@@ -106,7 +112,7 @@ class GameMechanics:
                         return True
         return False
 
-    def identify_subgoals(self, level_data, reachability_state, entity_handler=None, position_validator=None):
+    def identify_subgoals(self, level_data, reachability_state, hazard_extension=None, position_validator=None):
         """
         Identify key subgoals for hierarchical navigation using enhanced system.
 
@@ -121,12 +127,12 @@ class GameMechanics:
         Args:
             level_data: Level data containing entities
             reachability_state: Current reachability state (modified in-place)
-            entity_handler: Optional entity handler for hazard information
+            hazard_extension: Optional hazard extension for hazard information
             position_validator: Optional position validator for coordinate conversion
         """
-        # Use enhanced subgoal identification
-        enhanced_subgoals = self.enhanced_subgoal_identifier.identify_subgoals(
-            level_data, reachability_state, entity_handler, position_validator
+        # Use integrated subgoal identification
+        enhanced_subgoals = self.subgoal_integration.enhance_subgoals_with_reachability(
+            level_data, reachability_state, hazard_extension, position_validator
         )
         
         # Convert enhanced subgoals to legacy format for compatibility

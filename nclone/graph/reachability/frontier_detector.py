@@ -63,7 +63,7 @@ class FrontierDetector:
         self,
         level_data,
         reachability_state,
-        entity_handler=None,
+        hazard_extension=None,
         position_validator=None
     ) -> List[Frontier]:
         """
@@ -72,7 +72,7 @@ class FrontierDetector:
         Args:
             level_data: Level data containing tiles and entities
             reachability_state: Current reachability state
-            entity_handler: Optional entity handler for hazard information
+            hazard_extension: Optional hazard extension for hazard information
             position_validator: Optional position validator
             
         Returns:
@@ -93,7 +93,7 @@ class FrontierDetector:
         for frontier_pos in frontier_candidates:
             frontier = self._classify_frontier(
                 frontier_pos, level_data, reachable_positions,
-                entity_handler, position_validator
+                hazard_extension, position_validator
             )
             
             if frontier:
@@ -144,7 +144,7 @@ class FrontierDetector:
         frontier_pos: Tuple[int, int],
         level_data,
         reachable_positions: Set[Tuple[int, int]],
-        entity_handler=None,
+        hazard_extension=None,
         position_validator=None
     ) -> Optional[Frontier]:
         """Classify a frontier position by type."""
@@ -154,7 +154,7 @@ class FrontierDetector:
         # Analyze what's blocking progress from this frontier
         blocking_reasons = self._analyze_blocking_reasons(
             frontier_pos, level_data, reachable_positions,
-            entity_handler, position_validator
+            hazard_extension, position_validator
         )
         
         # Determine frontier type based on blocking reasons
@@ -179,7 +179,7 @@ class FrontierDetector:
         frontier_pos: Tuple[int, int],
         level_data,
         reachable_positions: Set[Tuple[int, int]],
-        entity_handler=None,
+        hazard_extension=None,
         position_validator=None
     ) -> Dict[str, int]:
         """Analyze what's blocking progress from a frontier position."""
@@ -206,11 +206,11 @@ class FrontierDetector:
                     blocking_reasons['walls'] += 1
                 else:
                     # Check if blocked by hazard
-                    if entity_handler and position_validator:
+                    if hazard_extension and position_validator:
                         pixel_x, pixel_y = position_validator.convert_sub_grid_to_pixel(
                             adj_row, adj_col
                         )
-                        if not entity_handler.is_position_safe((pixel_x, pixel_y)):
+                        if not hazard_extension.is_position_safe_for_reachability((pixel_x, pixel_y)):
                             blocking_reasons['hazards'] += 1
                         else:
                             blocking_reasons['unknown'] += 1

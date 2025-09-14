@@ -16,7 +16,8 @@ from .collision_checker import CollisionChecker
 from .physics_movement import PhysicsMovement
 from .game_mechanics import GameMechanics
 from .reachability_cache import ReachabilityCache
-from .entity_handler import EntityHandler
+from .hazard_integration import ReachabilityHazardExtension
+from ..hazard_system import HazardClassificationSystem
 from .frontier_detector import FrontierDetector
 from .rl_integration import RLIntegrationAPI
 
@@ -63,7 +64,9 @@ class ReachabilityAnalyzer:
         self.collision_checker = CollisionChecker(debug=debug)
         self.physics_movement = PhysicsMovement(self.position_validator, debug=debug)
         self.game_mechanics = GameMechanics(debug=debug)
-        self.entity_handler = EntityHandler(debug=debug)
+        # Initialize hazard system integration
+        self.hazard_system = HazardClassificationSystem()
+        self.hazard_extension = ReachabilityHazardExtension(self.hazard_system, debug=debug)
         self.frontier_detector = FrontierDetector(debug=debug)
         self.rl_api = RLIntegrationAPI(self, debug=debug)
         
@@ -111,10 +114,10 @@ class ReachabilityAnalyzer:
 
         # Initialize collision detector and entity handler for this level
         self.position_validator.initialize_for_level(level_data.tiles)
-        self.entity_handler.initialize_for_level(level_data.entities)
+        self.hazard_extension.initialize_for_reachability(level_data.entities, level_data.tiles)
         
-        # Connect entity handler to physics movement
-        self.physics_movement.entity_handler = self.entity_handler
+        # Connect hazard extension to physics movement
+        self.physics_movement.hazard_extension = self.hazard_extension
 
         # Convert ninja position to sub-grid coordinates
         ninja_sub_row, ninja_sub_col = (
@@ -152,12 +155,12 @@ class ReachabilityAnalyzer:
 
         # Identify subgoals for hierarchical planning
         self.game_mechanics.identify_subgoals(
-            level_data, state, self.entity_handler, self.position_validator
+            level_data, state, self.hazard_extension, self.position_validator
         )
         
         # Detect exploration frontiers for curiosity-driven RL
         frontiers = self.frontier_detector.detect_frontiers(
-            level_data, state, self.entity_handler, self.position_validator
+            level_data, state, self.hazard_extension, self.position_validator
         )
         
         # Store frontiers in reachability state
@@ -256,7 +259,7 @@ class ReachabilityAnalyzer:
             if ninja_pos_override:
                 pixel_x, pixel_y = ninja_pos_override
             
-            if not self.entity_handler.is_position_safe((pixel_x, pixel_y)):
+            if not self.hazard_extension.is_position_safe_for_reachability((pixel_x, pixel_y)):
                 if self.debug:
                     print(f"DEBUG: Position ({sub_row}, {sub_col}) is unsafe due to entities")
                 continue
@@ -272,7 +275,7 @@ class ReachabilityAnalyzer:
             
             # Update entity handler if switch states changed
             if state.switch_states != old_switch_states:
-                self.entity_handler.update_switch_states(state.switch_states)
+                self.hazard_extension.update_switch_states(state.switch_states)
 
             # Explore neighboring positions using physics-based movement
             neighbors = self.physics_movement.get_physics_based_neighbors(

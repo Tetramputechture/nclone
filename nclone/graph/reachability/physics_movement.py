@@ -34,7 +34,7 @@ class PhysicsMovement:
         """
         self.position_validator = position_validator
         self.debug = debug
-        self.entity_handler = None  # Will be set by ReachabilityAnalyzer
+        self.hazard_extension = None  # Will be set by ReachabilityAnalyzer
         self.wall_jump_analyzer = WallJumpAnalyzer(debug=debug)
 
     def get_physics_based_neighbors(
@@ -379,11 +379,11 @@ class PhysicsMovement:
         # Filter out neighbors that are unsafe due to entities
         safe_neighbors = []
         for neighbor_row, neighbor_col, movement_type in wall_jump_neighbors:
-            if self.entity_handler is not None:
+            if self.hazard_extension is not None:
                 pixel_x, pixel_y = self.position_validator.convert_sub_grid_to_pixel(
                     neighbor_row, neighbor_col
                 )
-                if not self.entity_handler.is_position_safe((pixel_x, pixel_y)):
+                if not self.hazard_extension.is_position_safe_for_reachability((pixel_x, pixel_y)):
                     continue
             
             safe_neighbors.append((neighbor_row, neighbor_col, movement_type))
