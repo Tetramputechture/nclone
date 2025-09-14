@@ -96,8 +96,7 @@ class HierarchicalGeometryAnalyzer:
             
             # Check if this region contains traversable areas
             is_traversable = self._is_region_traversable(level_data, region)
-            if self.debug:
-                print(f"DEBUG: Region {region} traversable: {is_traversable}")
+
             
             if is_traversable:
                 reachable_regions.add(region)
@@ -254,12 +253,20 @@ class HierarchicalGeometryAnalyzer:
         region_pixel_x = region[0] * ResolutionLevel.REGION.value
         region_pixel_y = region[1] * ResolutionLevel.REGION.value
         
+        # Sample points across the region more comprehensively
+        region_size = ResolutionLevel.REGION.value  # 96 pixels
         sample_points = [
-            (region_pixel_x + 24, region_pixel_y + 24),
-            (region_pixel_x + 48, region_pixel_y + 48),
-            (region_pixel_x + 72, region_pixel_y + 72),
-            (region_pixel_x + 48, region_pixel_y + 24),
-            (region_pixel_x + 24, region_pixel_y + 48)
+            # Corners
+            (region_pixel_x + 12, region_pixel_y + 12),
+            (region_pixel_x + region_size - 12, region_pixel_y + 12),
+            (region_pixel_x + 12, region_pixel_y + region_size - 12),
+            (region_pixel_x + region_size - 12, region_pixel_y + region_size - 12),
+            # Center and edges
+            (region_pixel_x + region_size // 2, region_pixel_y + region_size // 2),
+            (region_pixel_x + region_size // 2, region_pixel_y + 12),
+            (region_pixel_x + region_size // 2, region_pixel_y + region_size - 12),
+            (region_pixel_x + 12, region_pixel_y + region_size // 2),
+            (region_pixel_x + region_size - 12, region_pixel_y + region_size // 2)
         ]
         
         traversable = False
@@ -284,11 +291,7 @@ class HierarchicalGeometryAnalyzer:
         level_width = len(level_data.tiles[0]) * 24  # columns * tile_size
         level_height = len(level_data.tiles) * 24    # rows * tile_size
         
-        if self.debug:
-            print(f"DEBUG: Level data has width={getattr(level_data, 'width', 'None')}, height={getattr(level_data, 'height', 'None')}")
-            print(f"DEBUG: Tiles array shape: {len(level_data.tiles)} x {len(level_data.tiles[0])}")
-            print(f"DEBUG: Calculated level size: {level_width} x {level_height}")
-            self.debug = False  # Only print once
+
         
         if self.debug:
             print(f"DEBUG: Region {region} at pixel ({region_pixel_x}, {region_pixel_y}), level size ({level_width}, {level_height})")

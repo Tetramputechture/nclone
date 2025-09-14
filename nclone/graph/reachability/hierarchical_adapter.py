@@ -9,6 +9,7 @@ from typing import Set, Tuple, List, Dict, Optional, Any
 from dataclasses import dataclass
 
 from .hierarchical_reachability import HierarchicalReachabilityAnalyzer
+from .hierarchical_constants import ResolutionLevel
 from .reachability_state import ReachabilityState
 from ..trajectory_calculator import TrajectoryCalculator
 
@@ -106,10 +107,25 @@ class HierarchicalReachabilityAdapter:
             initial_switch_states = {}
         
         # Use subcells if available, otherwise use tiles
+        # Convert from (x, y) format to (sub_row, sub_col) format for legacy compatibility
         if hierarchical_result.reachable_subcells:
-            reachable_positions = hierarchical_result.reachable_subcells
+            # Convert (x, y) subcells to (sub_row, sub_col) format
+            reachable_positions = [(y, x) for x, y in hierarchical_result.reachable_subcells]
         else:
-            reachable_positions = hierarchical_result.reachable_tiles
+            # Convert (x, y) tiles to (sub_row, sub_col) format
+            # Each tile contains multiple subcells, so we need to expand
+            reachable_positions = []
+            subcells_per_tile = ResolutionLevel.TILE.value // ResolutionLevel.SUBCELL.value
+            for tile_x, tile_y in hierarchical_result.reachable_tiles:
+                # Convert tile to subcells
+                start_subcell_x = tile_x * subcells_per_tile
+                start_subcell_y = tile_y * subcells_per_tile
+                for dx in range(subcells_per_tile):
+                    for dy in range(subcells_per_tile):
+                        subcell_x = start_subcell_x + dx
+                        subcell_y = start_subcell_y + dy
+                        # Convert to (sub_row, sub_col) format
+                        reachable_positions.append((subcell_y, subcell_x))
         
         # Create legacy state
         legacy_state = ReachabilityState(
