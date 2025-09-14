@@ -256,8 +256,7 @@ class ReachabilityTestSuite:
         """
         Determine if the exit is reachable based on reachability analysis.
         
-        This is a simplified heuristic - in a complete implementation,
-        we would check if the ninja can reach the exit switch and then the exit door.
+        This checks if the ninja can actually reach exit-related entities.
         
         Args:
             level_data: Level data
@@ -266,13 +265,33 @@ class ReachabilityTestSuite:
         Returns:
             True if exit appears to be reachable
         """
-        # Simple heuristic: if we found reachable positions and subgoals,
-        # the exit is likely reachable
-        if len(reachability_state.reachable_positions) > 1:
-            return True
+        # Find exit entities in the level
+        exit_entities = []
+        for entity in level_data.entities:
+            entity_id = entity.get('entity_id', '')
+            if 'exit' in entity_id.lower():
+                exit_entities.append(entity)
         
-        # If we only have the starting position, exit is likely unreachable
-        return len(reachability_state.reachable_positions) > 0
+        if not exit_entities:
+            # No exit entities found, fall back to position count heuristic
+            return len(reachability_state.reachable_positions) > 1
+        
+        # Check if any exit entity position is reachable
+        for exit_entity in exit_entities:
+            exit_x = exit_entity.get('x', 0)
+            exit_y = exit_entity.get('y', 0)
+            
+            # Convert exit position to sub-grid coordinates
+            from nclone.graph.reachability.position_validator import PositionValidator
+            validator = PositionValidator()
+            exit_sub_row, exit_sub_col = validator.convert_pixel_to_sub_grid(exit_x, exit_y)
+            
+            # Check if this position is in our reachable set
+            if (exit_sub_row, exit_sub_col) in reachability_state.reachable_positions:
+                return True
+        
+        # No exit entities are reachable
+        return False
     
     def _validate_outcome(self, expected: ExpectedOutcome, actual_reachable: bool) -> bool:
         """

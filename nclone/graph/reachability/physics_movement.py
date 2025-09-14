@@ -183,7 +183,33 @@ class PhysicsMovement:
                 if self.position_validator.is_valid_sub_grid_position(
                     target_sub_row, target_sub_col
                 ):
-                    # Validate jump trajectory (simplified)
+                    # Calculate jump distance for physics validation
+                    jump_distance = ((target_x - pixel_x)**2 + (target_y - pixel_y)**2)**0.5
+                    
+                    # For very long jumps (>200px), apply stricter physics validation
+                    if jump_distance > 200:  # ~8.3 tiles - beyond reasonable jump range
+                        # Import trajectory calculator for long jump validation
+                        from ...trajectory_calculator import TrajectoryCalculator
+                        trajectory_calc = TrajectoryCalculator()
+                        
+                        # Check if jump is physically possible
+                        start_pos = (pixel_x, pixel_y)
+                        end_pos = (target_x, target_y)
+                        trajectory_result = trajectory_calc.calculate_jump_trajectory(start_pos, end_pos)
+                        
+                        # If basic jump fails, try with momentum
+                        if not trajectory_result.feasible or trajectory_result.success_probability <= 0.1:
+                            from ...constants.physics_constants import MAX_HOR_SPEED, JUMP_FLOOR_Y
+                            initial_velocity = (MAX_HOR_SPEED, JUMP_FLOOR_Y)
+                            trajectory_result = trajectory_calc.calculate_momentum_trajectory(
+                                start_pos, end_pos, initial_velocity
+                            )
+                        
+                        # Only allow if trajectory calculator confirms feasibility
+                        if not (trajectory_result.feasible and trajectory_result.success_probability > 0.1):
+                            continue  # Skip this jump - not physically possible
+                    
+                    # Validate jump trajectory (simplified for shorter jumps, strict for long jumps)
                     if self._is_jump_trajectory_valid(
                         level_data,
                         pixel_x,
