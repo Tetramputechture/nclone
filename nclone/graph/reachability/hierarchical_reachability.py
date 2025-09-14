@@ -129,7 +129,7 @@ class HierarchicalReachabilityAnalyzer:
         
         # Phase 3: Sub-cell analysis (precision areas only)
         reachable_subcells = self.geometry_analyzer.analyze_subcell_reachability(
-            level_data, ninja_subcell, reachable_tiles, initial_switch_states
+            level_data, ninja_subcell, reachable_tiles, initial_switch_states, ninja_position
         )
         
         # Generate RL-optimized subgoals

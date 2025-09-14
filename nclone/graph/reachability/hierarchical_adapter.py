@@ -106,9 +106,21 @@ class HierarchicalReachabilityAdapter:
         if initial_switch_states is None:
             initial_switch_states = {}
         
-        # Use subcells if available, otherwise use tiles
+        # Choose best resolution based on coverage
+        # Use subcells if they provide good coverage, otherwise fall back to tiles
+        expected_subcells_from_tiles = len(hierarchical_result.reachable_tiles) * 16  # 16 subcells per tile
+        subcell_coverage_ratio = len(hierarchical_result.reachable_subcells) / max(expected_subcells_from_tiles, 1)
+        
+        # Use subcells only if they provide at least 50% of expected coverage
+        use_subcells = (hierarchical_result.reachable_subcells and 
+                       subcell_coverage_ratio >= 0.5)
+        
+        if self.debug:
+            print(f"DEBUG: Subcell coverage: {len(hierarchical_result.reachable_subcells)}/{expected_subcells_from_tiles} = {subcell_coverage_ratio:.2f}")
+            print(f"DEBUG: Using {'subcells' if use_subcells else 'tiles'} for legacy conversion")
+        
         # Convert from (x, y) format to (sub_row, sub_col) format for legacy compatibility
-        if hierarchical_result.reachable_subcells:
+        if use_subcells:
             # Convert (x, y) subcells to (sub_row, sub_col) format
             reachable_positions = [(y, x) for x, y in hierarchical_result.reachable_subcells]
         else:

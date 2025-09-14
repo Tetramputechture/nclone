@@ -83,7 +83,7 @@ class HierarchicalGeometryAnalyzer:
         visited = set()
         
         # Limit region exploration for performance
-        max_regions = 50  # Reasonable limit for RL applications
+        max_regions = 100  # Increased limit to debug long-walk
         processed = 0
         
         while queue and processed < max_regions:
@@ -96,7 +96,6 @@ class HierarchicalGeometryAnalyzer:
             
             # Check if this region contains traversable areas
             is_traversable = self._is_region_traversable(level_data, region)
-
             
             if is_traversable:
                 reachable_regions.add(region)
@@ -184,7 +183,8 @@ class HierarchicalGeometryAnalyzer:
         level_data,
         start_subcell: Tuple[int, int],
         reachable_tiles: Set[Tuple[int, int]],
-        switch_states: Dict[str, bool]
+        switch_states: Dict[str, bool],
+        ninja_pixel_pos: Tuple[float, float] = None
     ) -> Set[Tuple[int, int]]:
         """
         Analyze reachability at subcell level (6px resolution).
@@ -220,8 +220,35 @@ class HierarchicalGeometryAnalyzer:
                     break
                 subcells_checked += 1
                 
-                if self._is_subcell_traversable(level_data, subcell):
+                is_traversable = self._is_subcell_traversable(level_data, subcell)
+                if is_traversable:
                     reachable_subcells.add(subcell)
+                
+
+        
+        # Ensure starting subcell is included if ninja position is valid
+        if start_subcell not in reachable_subcells:
+            # Use ninja's actual pixel position if provided, otherwise use subcell center
+            if ninja_pixel_pos:
+                ninja_pixel_x, ninja_pixel_y = ninja_pixel_pos
+            else:
+                ninja_pixel_x = start_subcell[0] * ResolutionLevel.SUBCELL.value + ResolutionLevel.SUBCELL.value // 2
+                ninja_pixel_y = start_subcell[1] * ResolutionLevel.SUBCELL.value + ResolutionLevel.SUBCELL.value // 2
+            
+            if self.debug:
+                print(f"DEBUG: Ninja subcell {start_subcell} not in candidates, checking pixel ({ninja_pixel_x}, {ninja_pixel_y})")
+            
+            is_traversable = self.position_validator.is_position_traversable_with_radius(
+                ninja_pixel_x, ninja_pixel_y, level_data.tiles, 10.0
+            )
+            
+            if self.debug:
+                print(f"DEBUG: Ninja position traversable: {is_traversable}")
+            
+            if is_traversable:
+                reachable_subcells.add(start_subcell)
+                if self.debug:
+                    print(f"DEBUG: Added ninja starting subcell {start_subcell} to candidates")
         
         # Perform detailed connectivity analysis
         connected_subcells = self._analyze_subcell_connectivity(
@@ -395,9 +422,9 @@ class HierarchicalGeometryAnalyzer:
         pixel_x = subcell[0] * ResolutionLevel.SUBCELL.value + ResolutionLevel.SUBCELL.value // 2
         pixel_y = subcell[1] * ResolutionLevel.SUBCELL.value + ResolutionLevel.SUBCELL.value // 2
         
-        # Use position validator
+        # Use position validator with smaller radius for subcell precision
         return self.position_validator.is_position_traversable_with_radius(
-            pixel_x, pixel_y, level_data.tiles, 10.0
+            pixel_x, pixel_y, level_data.tiles, 6.0
         )
     
     def _analyze_subcell_connectivity(
@@ -408,12 +435,20 @@ class HierarchicalGeometryAnalyzer:
         switch_states: Dict[str, bool]
     ) -> Set[Tuple[int, int]]:
         """Analyze connectivity between subcells using BFS."""
+        if self.debug:
+            print(f"DEBUG: Subcell connectivity - start: {start_subcell}, candidates: {len(candidate_subcells)}")
+            
         if start_subcell not in candidate_subcells:
             # Find closest candidate subcell to start from
             if not candidate_subcells:
+                if self.debug:
+                    print(f"DEBUG: No candidate subcells found!")
                 return set()
+            original_start = start_subcell
             start_subcell = min(candidate_subcells, 
                               key=lambda s: abs(s[0] - start_subcell[0]) + abs(s[1] - start_subcell[1]))
+            if self.debug:
+                print(f"DEBUG: Start subcell {original_start} not in candidates, using closest: {start_subcell}")
         
         connected = set()
         queue = deque([start_subcell])
@@ -434,6 +469,7 @@ class HierarchicalGeometryAnalyzer:
             connected.add(subcell)
             
             # Check adjacent subcells
+            adjacent_found = 0
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
                     if dx == 0 and dy == 0:
@@ -443,5 +479,8 @@ class HierarchicalGeometryAnalyzer:
                     if (adjacent_subcell not in visited and 
                         adjacent_subcell in candidate_subcells):
                         queue.append(adjacent_subcell)
+                        adjacent_found += 1
+            
+
         
         return connected
