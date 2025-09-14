@@ -170,12 +170,16 @@ class OptimizedCollisionDetector:
         # Check each tile in range
         for tile_y in range(min_tile_y, max_tile_y + 1):
             for tile_x in range(min_tile_x, max_tile_x + 1):
+                # Account for padding: convert from padded coordinates to unpadded array indices
+                array_x = tile_x - 1
+                array_y = tile_y - 1
+                
                 # Skip out-of-bounds tiles
-                if (tile_x < 0 or tile_x >= tiles.shape[1] or 
-                    tile_y < 0 or tile_y >= tiles.shape[0]):
+                if (array_x < 0 or array_x >= tiles.shape[1] or 
+                    array_y < 0 or array_y >= tiles.shape[0]):
                     continue
                 
-                tile_id = tiles[tile_y, tile_x]
+                tile_id = tiles[array_y, array_x]
                 
                 # Skip empty tiles
                 if tile_id == 0:
