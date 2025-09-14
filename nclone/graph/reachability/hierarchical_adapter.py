@@ -43,8 +43,8 @@ class HierarchicalReachabilityAdapter:
         self.debug = debug
         self.trajectory_calculator = trajectory_calculator
         
-        # Initialize the hierarchical analyzer with entity awareness
-        self.hierarchical_analyzer = HierarchicalReachabilityAnalyzer(debug=debug, entity_aware=True)
+        # Initialize the hierarchical analyzer - entity awareness will be determined per level
+        self.hierarchical_analyzer = HierarchicalReachabilityAnalyzer(debug=debug, entity_aware=False)
         
         # Track compatibility metrics
         self.enable_caching = enable_caching
@@ -74,6 +74,20 @@ class HierarchicalReachabilityAdapter:
         if self.debug:
             print("DEBUG: Using hierarchical reachability adapter")
         
+        # Check if entity-aware analysis is needed
+        needs_entity_aware = self._needs_entity_aware_analysis(level_data)
+        
+        if needs_entity_aware and not self.hierarchical_analyzer.entity_aware:
+            # Switch to entity-aware analyzer for this level
+            if self.debug:
+                print("DEBUG: Switching to entity-aware analysis")
+            self.hierarchical_analyzer = HierarchicalReachabilityAnalyzer(debug=self.debug, entity_aware=True)
+        elif not needs_entity_aware and self.hierarchical_analyzer.entity_aware:
+            # Switch back to basic analyzer for better performance
+            if self.debug:
+                print("DEBUG: Using basic analysis (no entities)")
+            self.hierarchical_analyzer = HierarchicalReachabilityAnalyzer(debug=self.debug, entity_aware=False)
+        
         # Use hierarchical analyzer
         hierarchical_result = self.hierarchical_analyzer.analyze_reachability(
             level_data, ninja_position, initial_switch_states
@@ -87,6 +101,44 @@ class HierarchicalReachabilityAdapter:
             print(f"DEBUG: Legacy state has {len(legacy_state.reachable_positions)} positions")
         
         return legacy_state
+    
+    def _needs_entity_aware_analysis(self, level_data) -> bool:
+        """
+        Determine if entity-aware analysis is needed for this level.
+        
+        Args:
+            level_data: Level data to check
+            
+        Returns:
+            True if entity-aware analysis is needed
+        """
+        if not hasattr(level_data, 'entities') or not level_data.entities:
+            return False
+        
+        # Check for entities that require special handling
+        for entity in level_data.entities:
+            entity_type_name = entity.get('entity_type', {}).get('name', '')
+            entity_id = entity.get('entity_id', '')
+            
+            # Need entity-aware analysis for interactive entities that affect pathfinding
+            # Check both entity_type.name and entity_id for keywords
+            combined_text = f"{entity_type_name} {entity_id}".lower()
+            
+            # Interactive switches and doors that block paths
+            if any(keyword in combined_text for keyword in ['locked', 'trap']):
+                return True
+            
+            # Hazards that block movement
+            if any(keyword in combined_text for keyword in ['drone', 'thwump']):
+                return True
+            
+            # Generic switches and doors (but not exit doors which are just targets)
+            if 'switch' in combined_text and 'exit' not in combined_text:
+                return True
+            if 'door' in combined_text and 'exit' not in combined_text:
+                return True
+        
+        return False
     
     def _convert_to_legacy_state(
         self, 

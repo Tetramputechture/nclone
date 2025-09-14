@@ -658,10 +658,17 @@ class HierarchicalGeometryAnalyzer:
         if self.debug:
             print(f"DEBUG: New switches found: {new_switches_found}, final states: {switch_states}")
         
-        # Phase 3: Re-analyze with expanded switch states if needed
-        if new_switches_found:
+        # Phase 3+: Iterative re-analysis until no new switches are found
+        current_regions = initial_regions
+        current_tiles = initial_tiles
+        current_subcells = initial_subcells
+        iteration = 0
+        max_iterations = 10  # Prevent infinite loops
+        
+        while new_switches_found and iteration < max_iterations:
+            iteration += 1
             if self.debug:
-                print(f"DEBUG: Multi-state analysis Phase 3 - Re-analysis with new switches")
+                print(f"DEBUG: Multi-state analysis Phase {2 + iteration} - Re-analysis iteration {iteration}")
                 
             self.position_validator.update_switch_states(switch_states)
             
@@ -669,14 +676,57 @@ class HierarchicalGeometryAnalyzer:
             self.region_traversability_cache.clear()
             self.tile_traversability_cache.clear()
             
-            final_regions = self.analyze_region_reachability(level_data, start_region, switch_states)
-            final_tiles = self.analyze_tile_reachability(level_data, self._region_to_tile(start_region), final_regions, switch_states)
-            final_subcells = self.analyze_subcell_reachability(level_data, self._region_to_subcell(start_region), final_tiles, switch_states, ninja_pixel_pos)
+            # Re-analyze with new switch states
+            current_regions = self.analyze_region_reachability(level_data, start_region, switch_states)
+            current_tiles = self.analyze_tile_reachability(level_data, self._region_to_tile(start_region), current_regions, switch_states)
+            current_subcells = self.analyze_subcell_reachability(level_data, self._region_to_subcell(start_region), current_tiles, switch_states, ninja_pixel_pos)
             
-            return final_regions, final_tiles, final_subcells, switch_states
-        else:
-            # No new switches found, return initial results
-            return initial_regions, initial_tiles, initial_subcells, switch_states
+            # Look for MORE switches in the newly accessible areas
+            new_reachable_tile_positions = set()
+            for tile_x, tile_y in current_tiles:
+                new_reachable_tile_positions.add((tile_x, tile_y))
+            
+            # Also add tiles from all reachable regions
+            for region in current_regions:
+                region_tiles = self._get_tiles_in_region(region)
+                for tile in region_tiles:
+                    if self._is_tile_traversable(level_data, tile):
+                        new_reachable_tile_positions.add(tile)
+            
+            if self.debug:
+                print(f"DEBUG: Iteration {iteration} - checking {len(new_reachable_tile_positions)} tile positions for more switches")
+            
+            # Find switches in newly accessible areas
+            if hasattr(self.position_validator, 'find_reachable_switches'):
+                new_achievable_switch_states = self.position_validator.find_reachable_switches(new_reachable_tile_positions)
+                if self.debug:
+                    print(f"DEBUG: Iteration {iteration} - found {len(new_achievable_switch_states)} reachable switches: {new_achievable_switch_states}")
+            else:
+                new_achievable_switch_states = {}
+            
+            # Check if any NEW switches can be activated
+            new_switches_found = False
+            for switch_id, can_activate in new_achievable_switch_states.items():
+                current_state = switch_states.get(switch_id, False)
+                if self.debug:
+                    print(f"DEBUG: Iteration {iteration} - Switch {switch_id}: can_activate={can_activate}, current_state={current_state}")
+                
+                if can_activate and not current_state:
+                    switch_states[switch_id] = True
+                    new_switches_found = True
+                    if self.debug:
+                        print(f"DEBUG: Iteration {iteration} - Activated switch {switch_id}")
+            
+            if self.debug:
+                print(f"DEBUG: Iteration {iteration} - New switches found: {new_switches_found}, total states: {switch_states}")
+        
+        if iteration >= max_iterations:
+            if self.debug:
+                print(f"DEBUG: Multi-state analysis stopped after {max_iterations} iterations to prevent infinite loop")
+        elif self.debug:
+            print(f"DEBUG: Multi-state analysis completed after {iteration} iterations")
+        
+        return current_regions, current_tiles, current_subcells, switch_states
     
     def _region_to_tile(self, region: Tuple[int, int]) -> Tuple[int, int]:
         """Convert region coordinates to tile coordinates."""

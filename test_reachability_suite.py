@@ -514,7 +514,7 @@ class ReachabilityTestSuite:
             print(f"{status} {result.map_name}")
             print(f"    Expected: {result.expected_outcome.value}")
             print(
-                f"    Actual: {'reachable' if result.actual_reachable else 'unreachable'}"
+                f"    Actual: {'completable' if result.actual_reachable else 'uncompletable'}"
             )
             print(f"    Time: {result.analysis_time_ms:.2f}ms {perf_status}")
             print(

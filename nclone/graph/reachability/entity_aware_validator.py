@@ -109,11 +109,23 @@ class EntityAwareValidator(PositionValidator):
             entity_type = entity.get('type')
             entity_id = entity.get('entity_id', entity.get('id', 0))
             
+            if self.debug:
+                print(f"DEBUG: Processing entity {entity_id}, type={entity_type}, is_door_part={entity.get('is_door_part', False)}")
+            
             if entity_type == EntityType.EXIT_SWITCH:
                 self.switch_positions[entity_id] = (entity.get('x', 0), entity.get('y', 0))
+                if self.debug:
+                    print(f"DEBUG: Added EXIT_SWITCH {entity_id} at ({entity.get('x', 0)}, {entity.get('y', 0)})")
             elif entity_type == EntityType.LOCKED_DOOR and not entity.get('is_door_part', False):
                 # Locked door switches (non-door parts) can be activated
                 self.switch_positions[entity_id] = (entity.get('x', 0), entity.get('y', 0))
+                if self.debug:
+                    print(f"DEBUG: Added LOCKED_DOOR switch {entity_id} at ({entity.get('x', 0)}, {entity.get('y', 0)})")
+            elif entity_type == EntityType.TRAP_DOOR and not entity.get('is_door_part', False):
+                # Trap door switches (non-door parts) can be activated
+                self.switch_positions[entity_id] = (entity.get('x', 0), entity.get('y', 0))
+                if self.debug:
+                    print(f"DEBUG: Added TRAP_DOOR switch {entity_id} at ({entity.get('x', 0)}, {entity.get('y', 0)})")
     
     def is_position_traversable_with_entities(
         self,
@@ -354,16 +366,25 @@ class EntityAwareValidator(PositionValidator):
         """Find switches that are reachable from current positions."""
         newly_reachable_switches = {}
         
+        if self.debug:
+            print(f"DEBUG: Checking {len(self.switch_positions)} switches against {len(reachable_positions)} reachable positions")
+        
         for switch_id, (switch_x, switch_y) in self.switch_positions.items():
             # Convert switch position to tile coordinates
             switch_tile_x = int(switch_x // TILE_PIXEL_SIZE)
             switch_tile_y = int(switch_y // TILE_PIXEL_SIZE)
+            
+            if self.debug:
+                print(f"DEBUG: Switch {switch_id} at pixel ({switch_x}, {switch_y}) -> tile ({switch_tile_x}, {switch_tile_y})")
             
             # Check if switch tile is reachable
             if (switch_tile_x, switch_tile_y) in reachable_positions:
                 newly_reachable_switches[switch_id] = True
                 if self.debug:
                     print(f"DEBUG: Switch {switch_id} at ({switch_x}, {switch_y}) is reachable")
+            else:
+                if self.debug:
+                    print(f"DEBUG: Switch {switch_id} at tile ({switch_tile_x}, {switch_tile_y}) is NOT reachable")
         
         return newly_reachable_switches
     
