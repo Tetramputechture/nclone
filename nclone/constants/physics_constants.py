@@ -216,7 +216,8 @@ PLATFORM_EDGE_WEIGHT = 0.9  # Weight for platform edges
 
 # Traversability
 MIN_TRAVERSABLE_GAP = 18.0  # Minimum gap size for traversability
-MAX_JUMP_DISTANCE = 200.0  # Increased maximum jump distance for better connectivity
+MAX_JUMP_DISTANCE = 200.0  # Standard maximum jump distance in pixels
+EXTENDED_JUMP_DISTANCE = 300.0  # Extended jump distance for gap crossing
 MAX_FALL_DISTANCE = 400.0  # Increased maximum fall distance for better connectivity
 
 # === ANIMATION CONSTANTS ===

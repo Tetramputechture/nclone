@@ -41,3 +41,6 @@ global_frame.png
 
 # Ruff
 .ruff_cache/
+
+# pytest
+.pytest_cache/

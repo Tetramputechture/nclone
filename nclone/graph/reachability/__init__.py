@@ -12,7 +12,8 @@ The components work together to determine which areas of a level are
 accessible to the player from their starting position.
 """
 
-from .reachability_analyzer import ReachabilityAnalyzer, ReachabilityState
+from .reachability_analyzer import ReachabilityAnalyzer
+from .reachability_state import ReachabilityState
 from .position_validator import PositionValidator
 from .collision_checker import CollisionChecker
 from .physics_movement import PhysicsMovement

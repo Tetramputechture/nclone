@@ -236,6 +236,10 @@ class NppEnvironment(gymnasium.Env):
         self._graph_debug_cache: Optional[GraphData] = None
         self._exploration_debug_enabled: bool = False
         self._grid_debug_enabled: bool = False
+        self._reachability_debug_enabled: bool = False
+        self._reachability_state = None
+        self._reachability_subgoals = []
+        self._reachability_frontiers = []
 
         self.mirror_map = False
         self.random_map_type = None
@@ -507,6 +511,14 @@ class NppEnvironment(gymnasium.Env):
                     "data": graph_data,
                 }
 
+        # Add reachability visualization payload if enabled (independent of general debug overlay)
+        if self._reachability_debug_enabled and self._reachability_state:
+            info["reachability"] = {
+                "state": self._reachability_state,
+                "subgoals": self._reachability_subgoals,
+                "frontiers": self._reachability_frontiers,
+            }
+
         # Add other debug info only if general debug overlay is enabled
         if self._enable_debug_overlay:
             # Basic environment info
@@ -579,6 +591,16 @@ class NppEnvironment(gymnasium.Env):
     def set_grid_debug_enabled(self, enabled: bool):
         """Enable/disable grid outline debug overlay visualization."""
         self._grid_debug_enabled = bool(enabled)
+
+    def set_reachability_debug_enabled(self, enabled: bool):
+        """Enable/disable reachability analysis debug overlay visualization."""
+        self._reachability_debug_enabled = bool(enabled)
+
+    def set_reachability_data(self, reachability_state, subgoals=None, frontiers=None):
+        """Set reachability analysis data for visualization."""
+        self._reachability_state = reachability_state
+        self._reachability_subgoals = subgoals or []
+        self._reachability_frontiers = frontiers or []
 
     def _extract_graph_entities(self) -> list:
         """
