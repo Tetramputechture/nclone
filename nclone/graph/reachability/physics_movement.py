@@ -12,6 +12,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 
 from .position_validator import PositionValidator
+from .wall_jump_analyzer import WallJumpAnalyzer
 from ...constants.physics_constants import (
     MAX_JUMP_DISTANCE,
     MAX_FALL_DISTANCE,
@@ -33,6 +34,8 @@ class PhysicsMovement:
         """
         self.position_validator = position_validator
         self.debug = debug
+        self.entity_handler = None  # Will be set by ReachabilityAnalyzer
+        self.wall_jump_analyzer = WallJumpAnalyzer(debug=debug)
 
     def get_physics_based_neighbors(
         self,
@@ -85,6 +88,12 @@ class PhysicsMovement:
             level_data, pixel_x, pixel_y, reachability_state
         )
         neighbors.extend(fall_neighbors)
+
+        # Wall jump neighbors (advanced physics)
+        wall_jump_neighbors = self._get_wall_jump_neighbors(
+            level_data, sub_row, sub_col
+        )
+        neighbors.extend(wall_jump_neighbors)
 
         return neighbors
 
@@ -339,3 +348,44 @@ class PhysicsMovement:
                     return False
 
         return True
+    
+    def _get_wall_jump_neighbors(
+        self, 
+        level_data, 
+        sub_row: int, 
+        sub_col: int
+    ) -> List[Tuple[int, int, str]]:
+        """
+        Get neighbors reachable via wall jumping.
+        
+        Args:
+            level_data: Level data
+            sub_row: Current sub-grid row
+            sub_col: Current sub-grid column
+            
+        Returns:
+            List of (neighbor_row, neighbor_col, movement_type) tuples
+        """
+        # Initialize wall jump analyzer for this level if not done
+        if not hasattr(self.wall_jump_analyzer, '_initialized') or not self.wall_jump_analyzer._initialized:
+            self.wall_jump_analyzer.initialize_for_level(level_data.tiles)
+            self.wall_jump_analyzer._initialized = True
+        
+        # Find wall jump neighbors
+        wall_jump_neighbors = self.wall_jump_analyzer.find_wall_jump_neighbors(
+            sub_row, sub_col, level_data.tiles, self.position_validator
+        )
+        
+        # Filter out neighbors that are unsafe due to entities
+        safe_neighbors = []
+        for neighbor_row, neighbor_col, movement_type in wall_jump_neighbors:
+            if self.entity_handler is not None:
+                pixel_x, pixel_y = self.position_validator.convert_sub_grid_to_pixel(
+                    neighbor_row, neighbor_col
+                )
+                if not self.entity_handler.is_position_safe((pixel_x, pixel_y)):
+                    continue
+            
+            safe_neighbors.append((neighbor_row, neighbor_col, movement_type))
+        
+        return safe_neighbors

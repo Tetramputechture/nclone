@@ -13,6 +13,7 @@ from typing import List, Tuple
 from ..common import SUB_CELL_SIZE
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 from ...constants.entity_types import EntityType
+from .enhanced_subgoals import EnhancedSubgoalIdentifier
 
 
 class GameMechanics:
@@ -26,6 +27,7 @@ class GameMechanics:
             debug: Enable debug output
         """
         self.debug = debug
+        self.enhanced_subgoal_identifier = EnhancedSubgoalIdentifier(debug=debug)
 
     def check_switch_activation(
         self, level_data, sub_row: int, sub_col: int, reachability_state
@@ -104,51 +106,45 @@ class GameMechanics:
                         return True
         return False
 
-    def identify_subgoals(self, level_data, reachability_state):
+    def identify_subgoals(self, level_data, reachability_state, entity_handler=None, position_validator=None):
         """
-        Identify key subgoals for hierarchical navigation.
+        Identify key subgoals for hierarchical navigation using enhanced system.
 
-        Subgoals are entities that unlock new areas or represent key objectives:
-        - Switches that unlock doors
-        - Exit switches
-        - Exit doors
+        Uses the enhanced subgoal identifier to find strategic subgoals including:
+        - Critical path entities (switches, doors)
+        - Strategic waypoints (junctions, bottlenecks)
+        - Hazard navigation points
+        - Exploration frontiers
 
         Updates the reachability state with identified subgoals.
 
         Args:
             level_data: Level data containing entities
             reachability_state: Current reachability state (modified in-place)
+            entity_handler: Optional entity handler for hazard information
+            position_validator: Optional position validator for coordinate conversion
         """
+        # Use enhanced subgoal identification
+        enhanced_subgoals = self.enhanced_subgoal_identifier.identify_subgoals(
+            level_data, reachability_state, entity_handler, position_validator
+        )
+        
+        # Convert enhanced subgoals to legacy format for compatibility
         reachability_state.subgoals.clear()
-
-        for entity in level_data.entities:
-            entity_type = entity.get("type")
-            entity_x = entity.get("x", 0)
-            entity_y = entity.get("y", 0)
-
-            # Entity positions are already in the correct coordinate system with padding
-            # Convert to sub-grid coordinates using position validator for consistency
-            from .position_validator import PositionValidator
-
-            position_validator = PositionValidator()
-            sub_row, sub_col = position_validator.convert_pixel_to_sub_grid(
-                entity_x, entity_y
-            )
-
-            # Check if entity is in reachable area
-            if (sub_row, sub_col) in reachability_state.reachable_positions:
-                subgoal_type = self._get_subgoal_type(entity_type)
-                if subgoal_type:
-                    reachability_state.subgoals.append((sub_row, sub_col, subgoal_type))
-
-        # Sort subgoals by priority (switches before exits)
-        priority_order = {
-            "locked_door_switch": 1,
-            "trap_door_switch": 2,
-            "exit_switch": 3,
-            "exit": 4,
-        }
-        reachability_state.subgoals.sort(key=lambda x: priority_order.get(x[2], 999))
+        
+        for subgoal in enhanced_subgoals:
+            # Convert SubgoalType enum to string for legacy compatibility
+            subgoal_type_str = subgoal.subgoal_type.value
+            reachability_state.subgoals.append((
+                subgoal.position[0], 
+                subgoal.position[1], 
+                subgoal_type_str
+            ))
+        
+        # Store enhanced subgoals for advanced RL features
+        if not hasattr(reachability_state, 'enhanced_subgoals'):
+            reachability_state.enhanced_subgoals = []
+        reachability_state.enhanced_subgoals = enhanced_subgoals
 
         if self.debug:
             print(
