@@ -4,11 +4,32 @@
 # This script runs every time OpenHands begins working with the repository
 # It installs dependencies and sets up the environment for development
 
+# Check if we're being sourced in a shell with conflicting readonly variables
+# If so, re-execute in a clean subshell
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    # We're being sourced
+    conflicting_vars=()
+    for var in SCRIPT_DIR PROJECT_ROOT LOG_FILE PID_FILE LOCK_FILE PIP_TIMEOUT IMPORT_TIMEOUT CLEANUP_TIMEOUT MIN_DISK_SPACE MIN_MEMORY RED GREEN YELLOW BLUE NC; do
+        if [[ -n "${!var:-}" ]] && [[ "$(declare -p "$var" 2>/dev/null)" =~ declare\ -r ]]; then
+            conflicting_vars+=("$var")
+        fi
+    done
+    
+    if [[ ${#conflicting_vars[@]} -gt 0 ]]; then
+        echo "🔄 Detected readonly variables: ${conflicting_vars[*]}" >&2
+        echo "🚀 Re-executing in clean subshell to avoid conflicts..." >&2
+        exec bash "${BASH_SOURCE[0]}" "$@"
+    fi
+    
+    # Clean up the temporary array
+    unset conflicting_vars var
+fi
+
 set -e  # Exit on any error
 set -u  # Exit on undefined variables
 set -o pipefail  # Exit on pipe failures
 
-# Configuration
+# Configuration - now safe to set readonly variables
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 readonly LOG_FILE="${SCRIPT_DIR}/setup.log"
@@ -30,6 +51,7 @@ readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
 readonly NC='\033[0m' # No Color
+
 
 # Initialize logging
 exec 3>&1 4>&2
