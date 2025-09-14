@@ -726,6 +726,52 @@ class HierarchicalGeometryAnalyzer:
         elif self.debug:
             print(f"DEBUG: Multi-state analysis completed after {iteration} iterations")
         
+        # If no new switches were found and we have entity-aware validation, try subgoal planning
+        if not new_switches_found and hasattr(self.position_validator, 'plan_subgoals'):
+            if self.debug:
+                print(f"DEBUG: No new switches found, attempting subgoal planning")
+                
+            # Convert tiles to position set for subgoal planning
+            reachable_tile_positions = set()
+            for tile_x, tile_y in current_tiles:
+                reachable_tile_positions.add((tile_x, tile_y))
+                
+            # Also add tiles from all reachable regions
+            for region in current_regions:
+                region_tiles = self._get_tiles_in_region(region)
+                for tile in region_tiles:
+                    if self._is_tile_traversable(level_data, tile):
+                        reachable_tile_positions.add(tile)
+            
+            # Find exit positions (only actual exits, not switches)
+            exit_positions = []
+            if hasattr(level_data, 'entities'):
+                for entity in level_data.entities:
+                    entity_type = entity.get('type')
+                    if entity_type == 3:  # EXIT_DOOR only (not EXIT_SWITCH)
+                        exit_x = entity.get('x', 0)
+                        exit_y = entity.get('y', 0)
+                        exit_positions.append((exit_x, exit_y))
+                        if self.debug:
+                            print(f"DEBUG: Found exit door at ({exit_x}, {exit_y})")
+                        
+            if self.debug:
+                print(f"DEBUG: Found {len(exit_positions)} exit positions for subgoal planning")
+                
+            # Plan subgoals
+            subgoals = self.position_validator.plan_subgoals(reachable_tile_positions, exit_positions)
+            
+            if subgoals:
+                if self.debug:
+                    print(f"DEBUG: Subgoal planning generated {len(subgoals)} subgoals: {subgoals}")
+                # Store subgoals for later use by the adapter
+                if not hasattr(self, 'planned_subgoals'):
+                    self.planned_subgoals = []
+                self.planned_subgoals.extend(subgoals)
+            else:
+                if self.debug:
+                    print(f"DEBUG: Subgoal planning found no additional subgoals needed")
+        
         return current_regions, current_tiles, current_subcells, switch_states
     
     def _region_to_tile(self, region: Tuple[int, int]) -> Tuple[int, int]:

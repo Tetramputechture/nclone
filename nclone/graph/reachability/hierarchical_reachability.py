@@ -154,6 +154,16 @@ class HierarchicalReachabilityAnalyzer:
             level_data, reachable_regions, reachable_tiles, initial_switch_states
         )
         
+        # Add planned subgoals from geometry analyzer if available
+        if hasattr(self.geometry_analyzer, 'planned_subgoals'):
+            planned_subgoals = self.geometry_analyzer.planned_subgoals
+            if planned_subgoals:
+                subgoals.extend(planned_subgoals)
+                if self.debug:
+                    print(f"DEBUG: Added {len(planned_subgoals)} planned subgoals: {planned_subgoals}")
+            # Clear planned subgoals after using them
+            self.geometry_analyzer.planned_subgoals = []
+        
         analysis_time_ms = (time.time() - start_time) * 1000
         
         if self.debug:

@@ -17,6 +17,7 @@ from .hazard_integration import ReachabilityHazardExtension
 from ..hazard_system import HazardClassificationSystem
 from ...constants.entity_types import EntityType
 from ...constants.physics_constants import TILE_PIXEL_SIZE
+from .subgoal_planner import SubgoalPlanner
 
 
 class EntityAwareValidator(PositionValidator):
@@ -51,6 +52,10 @@ class EntityAwareValidator(PositionValidator):
         self.hazard_system = HazardClassificationSystem()
         self.hazard_extension = ReachabilityHazardExtension(self.hazard_system, debug=self.debug)
         self.hazard_extension.initialize_for_reachability(level_data)
+        
+        # Initialize subgoal planner
+        self.subgoal_planner = SubgoalPlanner(debug=self.debug)
+        self.subgoal_planner.initialize(level_data.entities)
         
         # Parse entities and their states
         self._parse_entities(level_data.entities)
@@ -400,6 +405,38 @@ class EntityAwareValidator(PositionValidator):
         if hasattr(self, 'region_traversability_cache'):
             self.region_traversability_cache.clear()
     
+    def plan_subgoals(self, reachable_positions: Set[Tuple[int, int]], 
+                     exit_positions: List[Tuple[float, float]]) -> List[str]:
+        """
+        Plan subgoals needed to complete the level.
+        
+        Args:
+            reachable_positions: Set of (tile_x, tile_y) positions currently reachable
+            exit_positions: List of (x, y) exit positions to reach
+            
+        Returns:
+            List of subgoal descriptions
+        """
+        if not hasattr(self, 'subgoal_planner'):
+            return []
+            
+        subgoals = self.subgoal_planner.plan_subgoals(reachable_positions, exit_positions)
+        
+        # Convert subgoals to string descriptions
+        subgoal_descriptions = []
+        for subgoal in subgoals:
+            if subgoal.goal_type == 'activate_switch':
+                subgoal_descriptions.append(f"activate_switch_{subgoal.target_id}")
+            elif subgoal.goal_type == 'open_door':
+                subgoal_descriptions.append(f"open_door_{subgoal.target_id}")
+            elif subgoal.goal_type == 'reach_exit':
+                subgoal_descriptions.append("reach_exit")
+                
+        if self.debug and subgoal_descriptions:
+            print(f"DEBUG: Generated subgoals: {subgoal_descriptions}")
+            
+        return subgoal_descriptions
+
     def get_debug_info(self) -> Dict[str, Any]:
         """Get debug information about entity states."""
         info = {
