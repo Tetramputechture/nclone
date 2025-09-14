@@ -30,13 +30,22 @@ from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability import ReachabilityAnalyzer
 from nclone.graph.trajectory_calculator import TrajectoryCalculator
 from nclone.graph.subgoal_planner import SubgoalPlanner
+from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
 from nclone.graph.reachability.frontier_detector import FrontierDetector
 
 
 def _get_ninja_position(env):
     """Get current ninja position from environment."""
     if hasattr(env, "nplay_headless") and hasattr(env.nplay_headless, "ninja_position"):
-        return env.nplay_headless.ninja_position()
+        pos = env.nplay_headless.ninja_position()
+        # Handle different return formats
+        if isinstance(pos, tuple) and len(pos) == 2:
+            return pos
+        elif isinstance(pos, (list, tuple)) and len(pos) >= 2:
+            return (pos[0], pos[1])
+        else:
+            # If it's a single value or unexpected format, use fallback
+            return (100, 100)
     elif hasattr(env, "sim") and hasattr(env.sim, "ninja"):
         return (env.sim.ninja.x, env.sim.ninja.y)
     else:
@@ -273,8 +282,9 @@ if (
         trajectory_calc = TrajectoryCalculator()
         reachability_analyzer = ReachabilityAnalyzer(trajectory_calc)
         
-        # Initialize subgoal planner
-        subgoal_planner = SubgoalPlanner()
+        # Initialize subgoal planner and integration
+        base_subgoal_planner = SubgoalPlanner()
+        subgoal_planner = ReachabilitySubgoalIntegration(base_subgoal_planner)
         
         # Initialize frontier detector
         frontier_detector = FrontierDetector()
@@ -324,15 +334,20 @@ if args.export_frame:
                         print(
                             f"Warning: Unsupported frame format with {frame.shape[2]} channels"
                         )
+                        image = None
                 elif len(frame.shape) == 2:
                     # Already 2D grayscale
                     image = Image.fromarray(frame.astype(np.uint8), mode="L")
                     print(f"Exporting 2D grayscale frame with shape {frame.shape}")
                 else:
                     print(f"Warning: Unsupported frame shape {frame.shape}")
+                    image = None
 
-                image.save(args.export_frame)
-                print(f"Frame successfully exported to {args.export_frame}")
+                if image is not None:
+                    image.save(args.export_frame)
+                    print(f"Frame successfully exported to {args.export_frame}")
+                else:
+                    print("Could not export frame due to unsupported format")
             else:
                 print(f"Warning: Frame is not a numpy array: {type(frame)}")
         else:
@@ -358,13 +373,13 @@ if args.export_reachability and reachability_analyzer:
             
             # Perform reachability analysis from ninja position
             reachability_state = reachability_analyzer.analyze_reachability(
-                env.level_data, ninja_row, ninja_col
+                env.level_data, ninja_pos
             )
             
             # Get subgoals if requested
             subgoals = []
             if subgoal_planner and args.show_subgoals:
-                subgoals = subgoal_planner.plan_subgoals(env.level_data, reachability_state)
+                subgoals = subgoal_planner.enhance_subgoals_with_reachability(env.level_data, reachability_state)
             
             # Get frontiers if requested
             frontiers = []
@@ -382,7 +397,11 @@ if args.export_reachability and reachability_analyzer:
             frame = env.render()
             if frame is not None and isinstance(frame, np.ndarray):
                 # Convert to PIL Image and save
-                if len(frame.shape) == 3 and frame.shape[2] == 3:
+                if len(frame.shape) == 3 and frame.shape[2] == 1:
+                    # Single channel (grayscale) - squeeze to 2D
+                    frame_2d = np.squeeze(frame, axis=2)
+                    image = Image.fromarray(frame_2d.astype(np.uint8), mode="L")
+                elif len(frame.shape) == 3 and frame.shape[2] == 3:
                     image = Image.fromarray(frame, 'RGB')
                 elif len(frame.shape) == 3 and frame.shape[2] == 4:
                     image = Image.fromarray(frame, 'RGBA')
@@ -474,14 +493,14 @@ while running:
                             if ninja_pos:
                                 ninja_row, ninja_col = ninja_pos
                                 reachability_state = reachability_analyzer.analyze_reachability(
-                                    env.level_data, ninja_row, ninja_col
+                                    env.level_data, ninja_pos
                                 )
                                 
                                 # Get subgoals and frontiers if enabled
                                 subgoals = []
                                 frontiers = []
                                 if subgoal_planner and subgoals_debug_enabled:
-                                    subgoals = subgoal_planner.plan_subgoals(env.level_data, reachability_state)
+                                    subgoals = subgoal_planner.enhance_subgoals_with_reachability(env.level_data, reachability_state)
                                 if frontier_detector and frontiers_debug_enabled:
                                     frontiers = frontier_detector.detect_frontiers(env.level_data, reachability_state)
                                 
@@ -504,9 +523,9 @@ while running:
                                 if ninja_pos:
                                     ninja_row, ninja_col = ninja_pos
                                     reachability_state = reachability_analyzer.analyze_reachability(
-                                        env.level_data, ninja_row, ninja_col
+                                        env.level_data, ninja_pos
                                     )
-                                    subgoals = subgoal_planner.plan_subgoals(env.level_data, reachability_state) if subgoals_debug_enabled else []
+                                    subgoals = subgoal_planner.enhance_subgoals_with_reachability(env.level_data, reachability_state) if subgoals_debug_enabled else []
                                     frontiers = frontier_detector.detect_frontiers(env.level_data, reachability_state) if frontiers_debug_enabled else []
                                     env.set_reachability_data(reachability_state, subgoals, frontiers)
                             except Exception as e:
@@ -525,9 +544,9 @@ while running:
                                 if ninja_pos:
                                     ninja_row, ninja_col = ninja_pos
                                     reachability_state = reachability_analyzer.analyze_reachability(
-                                        env.level_data, ninja_row, ninja_col
+                                        env.level_data, ninja_pos
                                     )
-                                    subgoals = subgoal_planner.plan_subgoals(env.level_data, reachability_state) if subgoals_debug_enabled else []
+                                    subgoals = subgoal_planner.enhance_subgoals_with_reachability(env.level_data, reachability_state) if subgoals_debug_enabled else []
                                     frontiers = frontier_detector.detect_frontiers(env.level_data, reachability_state) if frontiers_debug_enabled else []
                                     env.set_reachability_data(reachability_state, subgoals, frontiers)
                             except Exception as e:

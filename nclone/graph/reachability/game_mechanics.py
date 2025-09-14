@@ -138,7 +138,7 @@ class GameMechanics:
         
         for subgoal in enhanced_subgoals:
             # Convert SubgoalType enum to string for legacy compatibility
-            subgoal_type_str = subgoal.subgoal_type.value
+            subgoal_type_str = subgoal.goal_type
             reachability_state.subgoals.append((
                 subgoal.position[0], 
                 subgoal.position[1], 

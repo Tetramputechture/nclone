@@ -30,22 +30,21 @@ class ReachabilityHazardExtension:
         self.debug = debug
         self.switch_states: Dict[int, bool] = {}
         
-    def initialize_for_reachability(self, entities: List[Dict[str, Any]], tiles):
+    def initialize_for_reachability(self, level_data):
         """
         Initialize hazard system for reachability analysis.
         
         Args:
-            entities: List of entity dictionaries from level data
-            tiles: Tile array for collision detection
+            level_data: LevelData object containing entities and tiles
         """
         # Use existing hazard system initialization
-        self.hazard_system.set_tile_data(tiles)
-        self.hazard_system.build_static_hazard_cache(entities)
+        self.hazard_system.set_tile_data(level_data.tiles)
+        self.hazard_system.build_static_hazard_cache(level_data)
         
         # Initialize switch states
         self.switch_states.clear()
-        for entity in entities:
-            if entity.get('type') in [EntityType.DOOR_SWITCH, EntityType.EXIT_SWITCH]:
+        for entity in level_data.entities:
+            if entity.get('type') in [EntityType.EXIT_SWITCH, EntityType.REGULAR_DOOR]:
                 entity_id = entity.get('id', 0)
                 self.switch_states[entity_id] = entity.get('switch_state', False)
     
@@ -65,7 +64,7 @@ class ReachabilityHazardExtension:
         
         # Get dynamic hazards in range
         dynamic_hazards = self.hazard_system.get_dynamic_hazards_in_range(
-            [{"x": x, "y": y}], x, y, radius=200.0
+            [{"x": x, "y": y}], (x, y), radius=200.0
         )
         
         # Check if position intersects with any hazards

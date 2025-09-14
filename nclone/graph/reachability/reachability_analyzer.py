@@ -114,7 +114,7 @@ class ReachabilityAnalyzer:
 
         # Initialize collision detector and entity handler for this level
         self.position_validator.initialize_for_level(level_data.tiles)
-        self.hazard_extension.initialize_for_reachability(level_data.entities, level_data.tiles)
+        self.hazard_extension.initialize_for_reachability(level_data)
         
         # Connect hazard extension to physics movement
         self.physics_movement.hazard_extension = self.hazard_extension
