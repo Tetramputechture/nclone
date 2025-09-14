@@ -1,7 +1,7 @@
-# Task 003: Enhance Reachability System for RL Integration
+# Task 003: Modify Reachability System for RL Integration
 
 ## Overview
-Enhance the existing reachability analysis system in nclone to better support the RL agent's needs, including performance optimizations, caching improvements, and additional analysis capabilities required for hierarchical RL and curiosity-driven exploration.
+Modify the existing reachability analysis system in nclone to better support the RL agent's needs, including performance optimizations, caching improvements, and additional analysis capabilities required for hierarchical RL and curiosity-driven exploration.
 
 ## Context Reference
 See [npp-rl comprehensive technical roadmap](../../../npp-rl/docs/comprehensive_technical_roadmap.md) Section 1.2: "Physics-Aware Reachability Analysis Strategy" and Section 1.3: "Integration with RL Architecture"
@@ -14,7 +14,7 @@ See [npp-rl comprehensive technical roadmap](../../../npp-rl/docs/comprehensive_
 3. **Add subgoal identification** for hierarchical RL integration
 4. **Implement frontier detection** for curiosity-driven exploration
 5. **Add strategic planning support** for level completion heuristics
-6. **Enhance entity handling** for comprehensive collision and hazard analysis
+6. **Improve entity handling** for comprehensive collision and hazard analysis
 
 ### Current System Analysis
 The existing reachability system is implemented in the `nclone/graph/reachability/` package:
@@ -33,7 +33,7 @@ The existing reachability system is implemented in the `nclone/graph/reachabilit
 - Basic subgoal identification
 - Modular component architecture
 
-### Enhancements Required
+### Modifications Required
 
 #### Entity Integration
 1. **Hazard Entity Handling**
@@ -48,7 +48,7 @@ The existing reachability system is implemented in the `nclone/graph/reachabilit
    - One way platform directional traversal rules (`EntityOneWayPlatform` from `nclone/entity_classes/entity_one_way_platform.py`)
    - Safe side positioning for thwumps (using `EntityThwump` safe zones)
    - Inactive shwump collision detection on all sides (using `EntityShoveThwump` state management)
-   - Bounce block physics integration for trajectory calculation (`EntityBounceBlock` from `nclone/entity_classes/entity_bounce_block.py`)
+   - **Bounce block free reachability**: Bounce blocks (`EntityBounceBlock` from `nclone/entity_classes/entity_bounce_block.py`) enable free reachability in any open direction due to spring mechanics providing substantial velocity gain, allowing the ninja to reach otherwise inaccessible positions
 
 3. **Movement Type Simplifications**
    - Wall slide movement type excluded from reachability analysis (reserved for precise subcell-level agent actions)
@@ -71,7 +71,7 @@ The existing reachability system is implemented in the `nclone/graph/reachabilit
    - Async entity state updates
    - Background precomputation for likely scenarios
 
-#### Enhanced Caching System
+#### Improved Caching System
 1. **Intelligent Cache Management**
    - LRU cache with configurable size limits
    - Cache invalidation based on game state changes
@@ -115,10 +115,10 @@ The existing reachability system is implemented in the `nclone/graph/reachabilit
 
 ### Functional Requirements
 1. **Backward Compatibility**: Existing reachability API continues to work
-2. **Enhanced API**: New methods for RL-specific functionality
+2. **Extended API**: New methods for RL-specific functionality
 3. **Robust Caching**: Cache survives switch state changes and ninja movement
 4. **Accurate Subgoals**: Subgoal identification matches expected strategic goals
-5. **Entity Awareness**: Proper handling of all hazards and collision entities
+5. **Entity Awareness**: Proper handling of all hazards and collision entities, including bounce block free reachability mechanics
 6. **Movement Type Coverage**: Core movement types (walk, jump, fall, wall jump) fully supported
 
 ### Quality Requirements
@@ -147,7 +147,7 @@ The following test maps from `nclone/test_maps/` are available for testing:
 - `halfaligned-path`: Sub-grid positioning and offset path traversability
 
 **Entity Integration Tests:**
-- `bounce-block-reachable`: Bounce block physics integration
+- `bounce-block-reachable`: Bounce block free reachability mechanics (omnidirectional movement enabled)
 - `launch-pad-required`: Launch pad entity mechanics
 - `thwump-platform-required`: Thwump entity safe positioning
 - `drone-reachable`: Drone hazard zones with safe paths
@@ -162,7 +162,7 @@ The following test maps from `nclone/test_maps/` are available for testing:
 ```python
 # Test real-time performance requirements
 def test_real_time_performance():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     level_data = load_map('test_maps/complex-path-switch-required')
     
     # Test multiple queries in sequence (simulating RL training)
@@ -178,7 +178,7 @@ def test_real_time_performance():
 
 # Test cache efficiency
 def test_cache_efficiency():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     level_data = load_map('test_maps/complex-path-switch-required')
     
     # Perform repeated queries with slight variations
@@ -201,7 +201,7 @@ def test_cache_efficiency():
 
 # Test performance with different map complexities
 def test_map_complexity_performance():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     test_maps = [
         ('test_maps/simple-walk', 5),      # <5ms for simple maps
         ('test_maps/long-walk', 8),        # <8ms for medium maps  
@@ -225,7 +225,7 @@ def test_map_complexity_performance():
 ```python
 # Test subgoal identification
 def test_subgoal_identification():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     level_data = load_map('test_maps/complex-path-switch-required')
     ninja_pos = (50, 400)
     
@@ -241,7 +241,7 @@ def test_subgoal_identification():
 
 # Test wall jump reachability
 def test_wall_jump_reachability():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     level_data = load_map('test_maps/wall-jump-required')
     ninja_pos = (50, 400)
     
@@ -260,7 +260,7 @@ def test_wall_jump_reachability():
 
 # Test movement type coverage across different maps
 def test_movement_type_coverage():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     movement_tests = [
         ('test_maps/simple-walk', 'walk'),
         ('test_maps/only-jump', 'jump'),
@@ -287,7 +287,7 @@ def test_movement_type_coverage():
 
 # Test entity integration
 def test_entity_integration():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     entity_tests = [
         ('test_maps/bounce-block-reachable', 'bounce_block'),
         ('test_maps/thwump-platform-required', 'thwump'),
@@ -326,7 +326,7 @@ def test_entity_integration():
 
 # Test frontier detection
 def test_frontier_detection():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     level_data = load_map('test_maps/map-unreachable-areas')
     ninja_pos = (50, 400)
     
@@ -359,7 +359,7 @@ def test_frontier_detection():
 
 # Test physics boundary detection
 def test_physics_boundaries():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     ninja_pos = (50, 400)
     
     # Test long jump boundaries
@@ -385,7 +385,7 @@ def test_physics_boundaries():
 ```python
 # Test RL integration compatibility
 def test_rl_integration():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     level_data = load_map('test_maps/map-unreachable-areas')
     
     # Simulate RL training scenario
@@ -408,12 +408,12 @@ def test_rl_integration():
 
 # Test hierarchical RL integration with multi-level planning
 def test_hierarchical_rl_integration():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     
     # Test with maps requiring hierarchical planning
     hierarchical_test_maps = [
         'test_maps/complex-path-switch-required',  # Multi-step switch sequence
-        'test_maps/bounce-block-reachable',        # Physics-dependent routing
+        'test_maps/bounce-block-reachable',        # Free reachability via bounce mechanics
         'test_maps/wall-jump-required'             # Advanced movement planning
     ]
     
@@ -436,7 +436,7 @@ def test_hierarchical_rl_integration():
 
 # Test curiosity-driven exploration with different map types
 def test_curiosity_exploration():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     ninja_pos = (50, 400)
     
     exploration_scenarios = [
@@ -471,7 +471,7 @@ def test_curiosity_exploration():
 
 # Test real-time RL training compatibility
 def test_realtime_rl_compatibility():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     
     # Simulate rapid queries during RL training
     training_maps = [
@@ -511,7 +511,7 @@ def test_realtime_rl_compatibility():
 
 # Test switch-dependent reachability for RL state representation
 def test_switch_state_rl_integration():
-    analyzer = EnhancedReachabilityAnalyzer()
+    analyzer = ReachabilityAnalyzer()
     level_data = load_map('test_maps/complex-path-switch-required')
     ninja_pos = (50, 400)
     
@@ -578,12 +578,12 @@ def test_switch_state_rl_integration():
 
 2. **Implement Incremental Updates**
    ```python
-   class EnhancedReachabilityAnalyzer(ReachabilityAnalyzer):
-       def __init__(self, *args, **kwargs):
-           super().__init__(*args, **kwargs)
-           self.cache = {}
-           self.last_analysis = None
-           self.dirty_regions = set()
+   # Add to existing ReachabilityAnalyzer class in reachability_analyzer.py
+   def __init__(self, *args, **kwargs):
+       super().__init__(*args, **kwargs)
+       self.cache = {}
+       self.last_analysis = None
+       self.dirty_regions = set()
        
        def analyze_reachability_incremental(self, level_data, ninja_pos, switch_states):
            # Check if we can use cached results
@@ -602,7 +602,7 @@ def test_switch_state_rl_integration():
            return result
    ```
 
-### Phase 2: Enhanced Caching
+### Phase 2: Improved Caching
 1. **Implement Intelligent Cache Management**
    ```python
    from collections import OrderedDict
@@ -723,10 +723,12 @@ def test_switch_state_rl_integration():
        
        for bounce_block in level_data.bounce_blocks:
            if isinstance(bounce_block, EntityBounceBlock):
+               # Bounce blocks enable free reachability in any open direction
+               # due to spring mechanics providing substantial velocity gain
                entity_constraints.append({
-                   'type': 'bounce_surface',
+                   'type': 'free_reachability_enabler',
                    'position': bounce_block.position,
-                   'bounce_vector': bounce_block.bounce_direction,
+                   'enables_omnidirectional_movement': True,
                    'entity': bounce_block
                })
        
@@ -737,7 +739,7 @@ def test_switch_state_rl_integration():
    ```python
    # Add to nclone/graph/reachability/physics_movement.py
    def analyze_wall_jump_opportunities(self, src_pos, level_data, entity_constraints):
-       """Identify wall jump trajectories for enhanced reachability."""
+       """Identify wall jump trajectories for improved reachability."""
        wall_jump_targets = []
        
        # Find nearby walls suitable for wall jumping
@@ -790,7 +792,7 @@ def test_switch_state_rl_integration():
        return trajectories
    ```
 
-3. **Enhanced Subgoal Identification**
+3. **Improved Subgoal Identification**
    ```python
    def identify_strategic_subgoals(self, level_data, reachability_state):
        subgoals = []
@@ -910,11 +912,6 @@ def test_switch_state_rl_integration():
 - Existing reachability analysis system
 - Test maps in `nclone/test_maps/` directory (18 test maps covering movement types, entity interactions, and reachability scenarios)
 - Performance profiling tools
-
-## Estimated Effort
-- **Time**: 1-2 weeks
-- **Complexity**: Medium-High (performance optimization)
-- **Risk**: Medium (changes to core system)
 
 ## Notes
 - Maintain backward compatibility with existing reachability API

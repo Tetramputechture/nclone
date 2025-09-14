@@ -23,7 +23,7 @@ from ..constants.physics_constants import (
 )
 from .common import GraphData, EdgeType
 from .feature_extraction import FeatureExtractor
-from .physics_enhanced_edge_builder import PhysicsEnhancedEdgeBuilder
+from .edge_building import EdgeBuilder
 from .graph_construction import GraphConstructor
 from .level_data import LevelData
 
@@ -142,8 +142,7 @@ class HierarchicalGraphBuilder:
         self.feature_extractor = FeatureExtractor(
             self.tile_type_dim, self.entity_type_dim
         )
-        # Use physics-enhanced edge builder with comprehensive waypoint navigation for accurate multi-hop movement
-        self.edge_builder = PhysicsEnhancedEdgeBuilder(self.feature_extractor)
+        self.edge_builder = EdgeBuilder(self.feature_extractor)
         self.graph_constructor = GraphConstructor(
             self.feature_extractor, self.edge_builder
         )
