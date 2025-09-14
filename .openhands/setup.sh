@@ -9,7 +9,6 @@ set -u  # Exit on undefined variables
 set -o pipefail  # Exit on pipe failures
 
 # Configuration
-readonly SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 readonly LOG_FILE="${SCRIPT_DIR}/setup.log"

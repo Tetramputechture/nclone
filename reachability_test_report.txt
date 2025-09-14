@@ -1,0 +1,390 @@
+/openhands/micromamba/envs/openhands/lib/python3.12/site-packages/pygame/pkgdata.py:25: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream, resource_exists
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+Reachability Analysis Test Suite
+==================================================
+Testing 18 maps...
+
+Testing map: simple-walk
+  Path: nclone/test_maps/simple-walk
+  Expected: reachable
+  Description: A horizontal one tile corridor with the player on the left and exit on the right
+Initializing collision cache for 2 unique tile types...
+Collision cache initialized with 2 tile types
+DEBUG: Added ninja starting position (58, 62) based on actual ninja position (396, 372)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.34ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: complex-path-switch-required
+  Path: nclone/test_maps/complex-path-switch-required
+  Expected: conditional
+  Description: A map with many different tile types, as well as one way platforms, that includes two necessary locked doors that need to be opened, as well as a trap door switch that should not be triggered. Triggering this trap door to close will make the exit door unreachable
+DEBUG: Added ninja starting position (70, 18) based on actual ninja position (132, 444)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.90ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: map-unreachable-areas
+  Path: nclone/test_maps/map-unreachable-areas
+  Expected: conditional
+  Description: A map with a path to the exit but a few areas in it are not reachable, due to hazards, tiles, or locked doors
+DEBUG: Added ninja starting position (54, 46) based on actual ninja position (300, 348)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.44ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: bounce-block-reachable
+  Path: nclone/test_maps/bounce-block-reachable
+  Expected: reachable
+  Description: A completely empty map (NO TILE DATA) with a bounce block path up to an exit. The exit switch and doors are reachable
+DEBUG: Added ninja starting position (90, 2) based on actual ninja position (36, 564)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.22ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: wall-jump-required
+  Path: nclone/test_maps/wall-jump-required
+  Expected: reachable
+  Description: A map where a wall jump is required to reach the exit switch and then fall to the exit door
+DEBUG: Using cached reachability result
+  Analysis time: 0.14ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: drone-reachable
+  Path: nclone/test_maps/drone-reachable
+  Expected: conditional
+  Description: A map with one drone in which the path to the exit is reachable based on the drone's cycle pattern
+DEBUG: Using cached reachability result
+  Analysis time: 0.10ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: drone-unreachable
+  Path: nclone/test_maps/drone-unreachable
+  Expected: unreachable
+  Description: A map with two drones that make the path to the exit unreachable based on the two drones' cycle patterns (there is never a valid path to the exit regardless of where the drones are at in their cycle)
+DEBUG: Using cached reachability result
+  Analysis time: 0.09ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: False
+  Performance passed: True
+
+Testing map: fall-required
+  Path: nclone/test_maps/fall-required
+  Expected: reachable
+  Description: A map where the player must fall down to reach the exit, testing vertical movement and fall mechanics
+DEBUG: Added ninja starting position (30, 54) based on actual ninja position (348, 204)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.21ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: jump-then-fall
+  Path: nclone/test_maps/jump-then-fall
+  Expected: reachable
+  Description: A map requiring the player to jump up first, then fall down to reach the exit, testing combined jump and fall mechanics
+DEBUG: Added ninja starting position (58, 74) based on actual ninja position (468, 372)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.23ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: long-jump-reachable
+  Path: nclone/test_maps/long-jump-reachable
+  Expected: reachable
+  Description: A map with a long horizontal gap that can be crossed with a single jump, testing maximum jump distance
+DEBUG: Added ninja starting position (42, 2) based on actual ninja position (36, 276)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.22ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: long-jump-unreachable
+  Path: nclone/test_maps/long-jump-unreachable
+  Expected: unreachable
+  Description: A map with a gap too wide to cross with a single jump, making the exit unreachable
+DEBUG: Using cached reachability result
+  Analysis time: 0.09ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: False
+  Performance passed: True
+
+Testing map: long-walk
+  Path: nclone/test_maps/long-walk
+  Expected: reachable
+  Description: A map with a long horizontal path that can be traversed by walking, testing basic movement mechanics
+DEBUG: Using cached reachability result
+  Analysis time: 0.09ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: only-jump
+  Path: nclone/test_maps/only-jump
+  Expected: reachable
+  Description: A map where the player can only reach the exit by jumping, with no walking path available
+DEBUG: Added ninja starting position (38, 78) based on actual ninja position (492, 252)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.21ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: halfaligned-path
+  Path: nclone/test_maps/halfaligned-path
+  Expected: reachable
+  Description: A map where some tiles are misaligned with the main grid but the exit is still reachable
+DEBUG: Added ninja starting position (54, 50) based on actual ninja position (324, 348)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.20ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: launch-pad-required
+  Path: nclone/test_maps/launch-pad-required
+  Expected: reachable
+  Description: A map where the player must use a launch pad to reach the exit switch and then fall to the exit door
+DEBUG: Using cached reachability result
+  Analysis time: 0.06ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: minefield
+  Path: nclone/test_maps/minefield
+  Expected: reachable
+  Description: A map with toggled-on mines that the player must jump through; there is a reachable path from the player to the exit in this map
+DEBUG: Using cached reachability result
+  Analysis time: 0.10ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: path-jump-required
+  Path: nclone/test_maps/path-jump-required
+  Expected: reachable
+  Description: A vertical corridor where the player starts at the bottom and must jump up to reach the exit switch and then keep jumping up to reach the exit door. Wall jumps are valid too.
+DEBUG: Added ninja starting position (54, 66) based on actual ninja position (420, 348)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.20ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+Testing map: thwump-platform-required
+  Path: nclone/test_maps/thwump-platform-required
+  Expected: reachable
+  Description: A map where the player must activate a thwump, wait until it is within distance to jump on, and then stand on the thwump as it climbs back to its origin. The exit switch and door will be reachable as the thwump climbs back to its origin.
+DEBUG: Added ninja starting position (90, 10) based on actual ninja position (84, 564)
+DEBUG: Reachability analysis converged after 2 iterations
+DEBUG: Enhanced 0 existing subgoals to 0 total
+DEBUG: Identified 0 subgoals: []
+DEBUG: Detected 0 frontiers
+  Analysis time: 0.21ms
+  Reachable positions: 1
+  Subgoals found: 0
+  Exit reachable: True
+  Test passed: True
+  Performance passed: True
+
+============================================================
+TEST RESULTS SUMMARY
+============================================================
+Total tests: 18
+Passed: 16
+Failed: 2
+Performance failures: 0
+Total time: 601.94ms
+Average analysis time: 0.23ms
+
+DETAILED RESULTS:
+------------------------------------------------------------
+✓ PASS simple-walk
+    Expected: reachable
+    Actual: reachable
+    Time: 0.34ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS complex-path-switch-required
+    Expected: conditional
+    Actual: reachable
+    Time: 0.90ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS map-unreachable-areas
+    Expected: conditional
+    Actual: reachable
+    Time: 0.44ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS bounce-block-reachable
+    Expected: reachable
+    Actual: reachable
+    Time: 0.22ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS wall-jump-required
+    Expected: reachable
+    Actual: reachable
+    Time: 0.14ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS drone-reachable
+    Expected: conditional
+    Actual: reachable
+    Time: 0.10ms ✓
+    Positions: 1, Subgoals: 0
+
+✗ FAIL drone-unreachable
+    Expected: unreachable
+    Actual: reachable
+    Time: 0.09ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS fall-required
+    Expected: reachable
+    Actual: reachable
+    Time: 0.21ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS jump-then-fall
+    Expected: reachable
+    Actual: reachable
+    Time: 0.23ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS long-jump-reachable
+    Expected: reachable
+    Actual: reachable
+    Time: 0.22ms ✓
+    Positions: 1, Subgoals: 0
+
+✗ FAIL long-jump-unreachable
+    Expected: unreachable
+    Actual: reachable
+    Time: 0.09ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS long-walk
+    Expected: reachable
+    Actual: reachable
+    Time: 0.09ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS only-jump
+    Expected: reachable
+    Actual: reachable
+    Time: 0.21ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS halfaligned-path
+    Expected: reachable
+    Actual: reachable
+    Time: 0.20ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS launch-pad-required
+    Expected: reachable
+    Actual: reachable
+    Time: 0.06ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS minefield
+    Expected: reachable
+    Actual: reachable
+    Time: 0.10ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS path-jump-required
+    Expected: reachable
+    Actual: reachable
+    Time: 0.20ms ✓
+    Positions: 1, Subgoals: 0
+
+✓ PASS thwump-platform-required
+    Expected: reachable
+    Actual: reachable
+    Time: 0.21ms ✓
+    Positions: 1, Subgoals: 0
+
+❌ 2 TESTS FAILED
