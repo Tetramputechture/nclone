@@ -137,12 +137,14 @@ class ReachabilityAnalyzer:
         # Perform iterative reachability analysis
         # Each iteration may unlock new areas via switch activation
         max_iterations = 10  # Prevent infinite loops in complex switch dependencies
+        global_visited = set()  # Track positions across all iterations to prevent re-exploration
+        
         for iteration in range(max_iterations):
             initial_size = len(state.reachable_positions)
 
             # Analyze reachability from current state
             self._analyze_reachability_iteration(
-                level_data, ninja_position, ninja_sub_row, ninja_sub_col, state
+                level_data, ninja_position, ninja_sub_row, ninja_sub_col, state, global_visited
             )
 
             # Early termination: if no new areas were discovered, we're done
@@ -186,6 +188,7 @@ class ReachabilityAnalyzer:
         start_sub_row: int,
         start_sub_col: int,
         state: ReachabilityState,
+        global_visited: set,
     ):
         """
         Single iteration of reachability analysis using BFS with physics.
@@ -216,6 +219,7 @@ class ReachabilityAnalyzer:
                     ninja_position[0], ninja_position[1], level_data.tiles, 10.0
                 ):
                     state.reachable_positions.add((start_sub_row, start_sub_col))
+                    global_visited.add((start_sub_row, start_sub_col))
                     if self.debug:
                         print(
                             f"DEBUG: Added ninja starting position ({start_sub_row}, {start_sub_col}) "
@@ -228,14 +232,21 @@ class ReachabilityAnalyzer:
                     )
             else:
                 state.reachable_positions.add((start_sub_row, start_sub_col))
+                global_visited.add((start_sub_row, start_sub_col))
 
-        while queue:
+        # Add safety limit to prevent runaway exploration
+        max_positions = 50000  # Reasonable limit for large levels
+        positions_processed = 0
+        
+        while queue and positions_processed < max_positions:
             sub_row, sub_col, came_from = queue.popleft()
 
-            # Skip if already processed this iteration
-            if (sub_row, sub_col) in visited_this_iteration:
+            # Skip if already processed globally (across all iterations)
+            if (sub_row, sub_col) in global_visited:
                 continue
+            global_visited.add((sub_row, sub_col))
             visited_this_iteration.add((sub_row, sub_col))
+            positions_processed += 1
 
             # Skip if position is out of bounds
             if not self.position_validator.is_valid_sub_grid_position(sub_row, sub_col):
@@ -299,6 +310,12 @@ class ReachabilityAnalyzer:
             for neighbor_row, neighbor_col, movement_type in neighbors:
                 if (neighbor_row, neighbor_col) not in visited_this_iteration:
                     queue.append((neighbor_row, neighbor_col, movement_type))
+        
+        # Warn if we hit the safety limit
+        if positions_processed >= max_positions:
+            if self.debug:
+                print(f"WARNING: Reachability analysis hit safety limit of {max_positions} positions")
+                print(f"This may indicate a performance issue or very large level")
     
     def get_cache_hit_rate(self) -> float:
         """
