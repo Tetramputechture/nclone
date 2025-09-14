@@ -43,8 +43,8 @@ class HierarchicalReachabilityAdapter:
         self.debug = debug
         self.trajectory_calculator = trajectory_calculator
         
-        # Initialize the hierarchical analyzer
-        self.hierarchical_analyzer = HierarchicalReachabilityAnalyzer(debug=debug)
+        # Initialize the hierarchical analyzer with entity awareness
+        self.hierarchical_analyzer = HierarchicalReachabilityAnalyzer(debug=debug, entity_aware=True)
         
         # Track compatibility metrics
         self.enable_caching = enable_caching

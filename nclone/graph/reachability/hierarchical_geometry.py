@@ -10,6 +10,7 @@ import numpy as np
 from collections import deque
 
 from .position_validator import PositionValidator
+from .entity_aware_validator import EntityAwareValidator
 from .collision_checker import CollisionChecker
 from .hierarchical_constants import ResolutionLevel
 from ..common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, SUB_CELL_SIZE
@@ -23,15 +24,22 @@ class HierarchicalGeometryAnalyzer:
     while providing multi-resolution analysis for performance optimization.
     """
     
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, entity_aware: bool = True):
         """
         Initialize hierarchical geometry analyzer.
         
         Args:
             debug: Enable debug output
+            entity_aware: Use entity-aware validation for advanced reachability
         """
         self.debug = debug
-        self.position_validator = PositionValidator(debug=debug)
+        self.entity_aware = entity_aware
+        
+        if entity_aware:
+            self.position_validator = EntityAwareValidator(debug=debug)
+        else:
+            self.position_validator = PositionValidator(debug=debug)
+            
         self.collision_checker = CollisionChecker(debug=debug)
         
         # Cache for geometry analysis at different resolutions
@@ -46,14 +54,19 @@ class HierarchicalGeometryAnalyzer:
             level_data: Level data containing tiles and entities
         """
         # Initialize underlying components
-        self.position_validator.initialize_for_level(level_data.tiles)
+        if self.entity_aware:
+            # Entity-aware validator needs full level data
+            self.position_validator.initialize_for_level(level_data)
+        else:
+            # Basic validator only needs tiles
+            self.position_validator.initialize_for_level(level_data.tiles)
         
         # Clear caches for new level
         self.region_traversability_cache.clear()
         self.tile_traversability_cache.clear()
         
         if self.debug:
-            print(f"DEBUG: Initialized geometry analyzer for level")
+            print(f"DEBUG: Initialized geometry analyzer for level (entity_aware={self.entity_aware})")
     
     def analyze_region_reachability(
         self,
@@ -167,6 +180,8 @@ class HierarchicalGeometryAnalyzer:
                 
                 if self._is_tile_traversable(level_data, tile):
                     reachable_tiles.add(tile)
+                    if self.debug and len(reachable_tiles) <= 10:
+                        print(f"DEBUG: Found traversable tile {tile}")
         
         # Perform connectivity analysis within reachable tiles
         connected_tiles = self._analyze_tile_connectivity(
@@ -352,10 +367,15 @@ class HierarchicalGeometryAnalyzer:
         pixel_x = tile[0] * ResolutionLevel.TILE.value + ResolutionLevel.TILE.value // 2
         pixel_y = tile[1] * ResolutionLevel.TILE.value + ResolutionLevel.TILE.value // 2
         
-        # Check traversability
-        traversable = self.position_validator.is_position_traversable_with_radius(
-            pixel_x, pixel_y, level_data.tiles, 10.0
-        )
+        # Check traversability using entity-aware validation if available
+        if hasattr(self.position_validator, 'is_position_traversable_with_entities'):
+            traversable = self.position_validator.is_position_traversable_with_entities(
+                pixel_x, pixel_y, level_data.tiles, 10.0
+            )
+        else:
+            traversable = self.position_validator.is_position_traversable_with_radius(
+                pixel_x, pixel_y, level_data.tiles, 10.0
+            )
         
         # Cache result
         self.tile_traversability_cache[cache_key] = traversable
@@ -369,12 +389,20 @@ class HierarchicalGeometryAnalyzer:
         switch_states: Dict[str, bool]
     ) -> Set[Tuple[int, int]]:
         """Analyze connectivity between tiles using BFS."""
+        if self.debug:
+            print(f"DEBUG: Tile connectivity analysis - start: {start_tile}, candidates: {len(candidate_tiles)}")
+            if len(candidate_tiles) <= 10:
+                print(f"DEBUG: Candidate tiles: {sorted(candidate_tiles)}")
+        
         if start_tile not in candidate_tiles:
             # Find closest candidate tile to start from
             if not candidate_tiles:
                 return set()
+            original_start = start_tile
             start_tile = min(candidate_tiles, 
                            key=lambda t: abs(t[0] - start_tile[0]) + abs(t[1] - start_tile[1]))
+            if self.debug:
+                print(f"DEBUG: Start tile {original_start} not in candidates, using closest: {start_tile}")
         
         connected = set()
         queue = deque([start_tile])
@@ -389,7 +417,7 @@ class HierarchicalGeometryAnalyzer:
             visited.add(tile)
             connected.add(tile)
             
-            # Check adjacent tiles
+            # Check adjacent tiles and path connectivity
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
                     if dx == 0 and dy == 0:
@@ -397,9 +425,40 @@ class HierarchicalGeometryAnalyzer:
                     
                     adjacent_tile = (tile[0] + dx, tile[1] + dy)
                     if adjacent_tile not in visited and adjacent_tile in candidate_tiles:
-                        queue.append(adjacent_tile)
+                        # Check if there's actually a traversable path between the tiles
+                        if self._can_move_between_tiles(level_data, tile, adjacent_tile):
+                            queue.append(adjacent_tile)
         
         return connected
+    
+    def _can_move_between_tiles(self, level_data, tile1: Tuple[int, int], tile2: Tuple[int, int]) -> bool:
+        """Check if ninja can move between two adjacent tiles."""
+        # Convert tiles to pixel coordinates (center of tiles)
+        x1 = tile1[0] * ResolutionLevel.TILE.value + ResolutionLevel.TILE.value // 2
+        y1 = tile1[1] * ResolutionLevel.TILE.value + ResolutionLevel.TILE.value // 2
+        x2 = tile2[0] * ResolutionLevel.TILE.value + ResolutionLevel.TILE.value // 2
+        y2 = tile2[1] * ResolutionLevel.TILE.value + ResolutionLevel.TILE.value // 2
+        
+        # Check a few points along the path between tiles
+        steps = 3
+        for i in range(steps + 1):
+            t = i / steps
+            x = int(x1 + t * (x2 - x1))
+            y = int(y1 + t * (y2 - y1))
+            
+            # Use entity-aware validation if available
+            if hasattr(self.position_validator, 'is_position_traversable_with_entities'):
+                if not self.position_validator.is_position_traversable_with_entities(
+                    x, y, level_data.tiles, 10.0
+                ):
+                    return False
+            else:
+                if not self.position_validator.is_position_traversable_with_radius(
+                    x, y, level_data.tiles, 10.0
+                ):
+                    return False
+        
+        return True
     
     def _get_subcells_in_tile(self, tile: Tuple[int, int]) -> List[Tuple[int, int]]:
         """Get all subcell coordinates within a tile."""
@@ -422,10 +481,15 @@ class HierarchicalGeometryAnalyzer:
         pixel_x = subcell[0] * ResolutionLevel.SUBCELL.value + ResolutionLevel.SUBCELL.value // 2
         pixel_y = subcell[1] * ResolutionLevel.SUBCELL.value + ResolutionLevel.SUBCELL.value // 2
         
-        # Use position validator with smaller radius for subcell precision
-        return self.position_validator.is_position_traversable_with_radius(
-            pixel_x, pixel_y, level_data.tiles, 6.0
-        )
+        # Use entity-aware validation if available, with smaller radius for subcell precision
+        if hasattr(self.position_validator, 'is_position_traversable_with_entities'):
+            return self.position_validator.is_position_traversable_with_entities(
+                pixel_x, pixel_y, level_data.tiles, 6.0
+            )
+        else:
+            return self.position_validator.is_position_traversable_with_radius(
+                pixel_x, pixel_y, level_data.tiles, 6.0
+            )
     
     def _analyze_subcell_connectivity(
         self,
@@ -484,3 +548,148 @@ class HierarchicalGeometryAnalyzer:
 
         
         return connected
+    
+    def analyze_multi_state_reachability(
+        self,
+        level_data,
+        start_region: Tuple[int, int],
+        ninja_pixel_pos: Tuple[float, float],
+        switch_states: Optional[Dict[str, bool]] = None
+    ) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]], Set[Tuple[int, int]], Dict[int, bool]]:
+        """
+        Analyze reachability considering multiple switch states and entity interactions.
+        
+        This method performs a multi-phase analysis:
+        1. Initial reachability with current switch states
+        2. Find reachable switches and calculate new states
+        3. Re-analyze with expanded switch states
+        4. Return comprehensive reachability information
+        
+        Args:
+            level_data: Level data
+            start_region: Starting region coordinates
+            ninja_pixel_pos: Ninja position in pixels
+            switch_states: Initial switch states
+            
+        Returns:
+            Tuple of (reachable_regions, reachable_tiles, reachable_subcells, final_switch_states)
+        """
+        if not self.entity_aware:
+            # Fall back to basic analysis if not entity-aware
+            regions = self.analyze_region_reachability(level_data, start_region, switch_states)
+            tiles = self.analyze_tile_reachability(level_data, self._region_to_tile(start_region), switch_states)
+            subcells = self.analyze_subcell_reachability(level_data, self._region_to_subcell(start_region), ninja_pixel_pos, switch_states)
+            return regions, tiles, subcells, switch_states or {}
+        
+        if switch_states is None:
+            switch_states = {}
+            
+        # Phase 1: Initial reachability analysis ignoring door states to find potential switches
+        if self.debug:
+            print(f"DEBUG: Multi-state analysis Phase 1 - Initial reachability (ignoring doors)")
+            
+        self.position_validator.update_switch_states(switch_states)
+        
+        # Temporarily enable ignore_doors mode for initial exploration
+        if hasattr(self.position_validator, 'set_ignore_doors_mode'):
+            self.position_validator.set_ignore_doors_mode(True)
+            # Clear caches since door states are now ignored
+            self.region_traversability_cache.clear()
+            self.tile_traversability_cache.clear()
+        
+        initial_regions = self.analyze_region_reachability(level_data, start_region, switch_states)
+        initial_tiles = self.analyze_tile_reachability(level_data, self._region_to_tile(start_region), initial_regions, switch_states)
+        initial_subcells = self.analyze_subcell_reachability(level_data, self._region_to_subcell(start_region), initial_tiles, switch_states, ninja_pixel_pos)
+        
+        # Restore normal mode
+        if hasattr(self.position_validator, 'set_ignore_doors_mode'):
+            self.position_validator.set_ignore_doors_mode(False)
+            # Clear caches again since door states are now considered
+            self.region_traversability_cache.clear()
+            self.tile_traversability_cache.clear()
+        
+        # Phase 2: Find reachable switches and update states
+        if self.debug:
+            print(f"DEBUG: Multi-state analysis Phase 2 - Switch discovery")
+            
+        # Convert tiles to position set for switch reachability check
+        reachable_tile_positions = set()
+        for tile_x, tile_y in initial_tiles:
+            reachable_tile_positions.add((tile_x, tile_y))
+        
+        # Also add tiles from all reachable regions for broader switch search
+        # This allows finding switches in areas that are reachable but not tile-connected
+        for region in initial_regions:
+            region_tiles = self._get_tiles_in_region(region)
+            for tile in region_tiles:
+                if self._is_tile_traversable(level_data, tile):
+                    reachable_tile_positions.add(tile)
+        
+        if self.debug:
+            print(f"DEBUG: Switch discovery - checking {len(reachable_tile_positions)} tile positions (including region tiles)")
+            print(f"DEBUG: Sample positions: {sorted(list(reachable_tile_positions)[:10])}")
+        
+        # Find newly reachable switches
+        if hasattr(self.position_validator, 'find_reachable_switches'):
+            achievable_switch_states = self.position_validator.find_reachable_switches(reachable_tile_positions)
+            if self.debug:
+                print(f"DEBUG: Found {len(achievable_switch_states)} reachable switches: {achievable_switch_states}")
+        else:
+            achievable_switch_states = {}
+            if self.debug:
+                print(f"DEBUG: No find_reachable_switches method available")
+        
+        # Check if any new switches can be activated
+        new_switches_found = False
+        if self.debug:
+            print(f"DEBUG: Checking switch activation - current states: {switch_states}")
+        
+        for switch_id, can_activate in achievable_switch_states.items():
+            current_state = switch_states.get(switch_id, False)
+            if self.debug:
+                print(f"DEBUG: Switch {switch_id}: can_activate={can_activate}, current_state={current_state}")
+            
+            if can_activate and not current_state:
+                switch_states[switch_id] = True
+                new_switches_found = True
+                if self.debug:
+                    print(f"DEBUG: Activated switch {switch_id}")
+        
+        if self.debug:
+            print(f"DEBUG: New switches found: {new_switches_found}, final states: {switch_states}")
+        
+        # Phase 3: Re-analyze with expanded switch states if needed
+        if new_switches_found:
+            if self.debug:
+                print(f"DEBUG: Multi-state analysis Phase 3 - Re-analysis with new switches")
+                
+            self.position_validator.update_switch_states(switch_states)
+            
+            # Clear caches since switch states changed
+            self.region_traversability_cache.clear()
+            self.tile_traversability_cache.clear()
+            
+            final_regions = self.analyze_region_reachability(level_data, start_region, switch_states)
+            final_tiles = self.analyze_tile_reachability(level_data, self._region_to_tile(start_region), final_regions, switch_states)
+            final_subcells = self.analyze_subcell_reachability(level_data, self._region_to_subcell(start_region), final_tiles, switch_states, ninja_pixel_pos)
+            
+            return final_regions, final_tiles, final_subcells, switch_states
+        else:
+            # No new switches found, return initial results
+            return initial_regions, initial_tiles, initial_subcells, switch_states
+    
+    def _region_to_tile(self, region: Tuple[int, int]) -> Tuple[int, int]:
+        """Convert region coordinates to tile coordinates."""
+        region_x, region_y = region
+        # Each region contains 4x4 tiles (96px / 24px = 4)
+        tile_x = region_x * 4
+        tile_y = region_y * 4
+        return (tile_x, tile_y)
+    
+    def _region_to_subcell(self, region: Tuple[int, int]) -> Tuple[int, int]:
+        """Convert region coordinates to subcell coordinates."""
+        region_x, region_y = region
+        # Each region contains 16x16 subcells (96px / 6px = 16)
+        subcell_x = region_x * 16
+        subcell_y = region_y * 16
+        return (subcell_x, subcell_y)

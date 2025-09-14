@@ -63,20 +63,22 @@ class HierarchicalReachabilityAnalyzer:
     time while maintaining accuracy for RL subgoal generation and pathfinding.
     """
     
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, entity_aware: bool = True):
         """
         Initialize hierarchical reachability analyzer.
         
         Args:
             debug: Enable debug output
+            entity_aware: Enable entity-aware reachability analysis
         """
         self.debug = debug
+        self.entity_aware = entity_aware
         self.region_cache = {}  # Cache for region-level connectivity
         self.tile_cache = {}    # Cache for tile-level connectivity
         self.movement_templates = {}  # Cache for common movement patterns
         
-        # Initialize geometry analyzer
-        self.geometry_analyzer = HierarchicalGeometryAnalyzer(debug=debug)
+        # Initialize geometry analyzer with entity awareness
+        self.geometry_analyzer = HierarchicalGeometryAnalyzer(debug=debug, entity_aware=entity_aware)
         
         # Performance tracking
         self.cache_hits = 0
@@ -117,20 +119,35 @@ class HierarchicalReachabilityAnalyzer:
             print(f"DEBUG: Ninja at pixel {ninja_position}")
             print(f"DEBUG: Region {ninja_region}, Tile {ninja_tile}, SubCell {ninja_subcell}")
         
-        # Phase 1: Region-level analysis (strategic planning)
-        reachable_regions = self.geometry_analyzer.analyze_region_reachability(
-            level_data, ninja_region, initial_switch_states
-        )
-        
-        # Phase 2: Tile-level analysis (standard movement)
-        reachable_tiles = self.geometry_analyzer.analyze_tile_reachability(
-            level_data, ninja_tile, reachable_regions, initial_switch_states
-        )
-        
-        # Phase 3: Sub-cell analysis (precision areas only)
-        reachable_subcells = self.geometry_analyzer.analyze_subcell_reachability(
-            level_data, ninja_subcell, reachable_tiles, initial_switch_states, ninja_position
-        )
+        # Use multi-state analysis if entity-aware, otherwise use basic analysis
+        if self.entity_aware:
+            # Multi-state analysis considers switch interactions
+            reachable_regions, reachable_tiles, reachable_subcells, final_switch_states = \
+                self.geometry_analyzer.analyze_multi_state_reachability(
+                    level_data, ninja_region, ninja_position, initial_switch_states
+                )
+            
+            if self.debug:
+                print(f"DEBUG: Multi-state analysis completed")
+                print(f"DEBUG: Switch states: {final_switch_states}")
+        else:
+            # Basic hierarchical analysis without entity awareness
+            # Phase 1: Region-level analysis (strategic planning)
+            reachable_regions = self.geometry_analyzer.analyze_region_reachability(
+                level_data, ninja_region, initial_switch_states
+            )
+            
+            # Phase 2: Tile-level analysis (standard movement)
+            reachable_tiles = self.geometry_analyzer.analyze_tile_reachability(
+                level_data, ninja_tile, reachable_regions, initial_switch_states
+            )
+            
+            # Phase 3: Sub-cell analysis (precision areas only)
+            reachable_subcells = self.geometry_analyzer.analyze_subcell_reachability(
+                level_data, ninja_subcell, reachable_tiles, initial_switch_states, ninja_position
+            )
+            
+            final_switch_states = initial_switch_states
         
         # Generate RL-optimized subgoals
         subgoals = self._generate_subgoals(
