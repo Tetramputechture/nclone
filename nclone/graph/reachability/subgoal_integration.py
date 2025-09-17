@@ -8,7 +8,7 @@ enhancements without duplicating the core planning logic.
 from typing import List, Dict, Any, Tuple, Optional
 
 from ..subgoal_planner import SubgoalPlanner, Subgoal, SubgoalPlan
-from .reachability_state import ReachabilityState
+from .reachability_types import ReachabilityApproximation, ReachabilityResult
 
 
 class ReachabilitySubgoalIntegration:

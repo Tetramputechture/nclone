@@ -11,14 +11,14 @@ from collections import OrderedDict
 from typing import Dict, Any, Optional, Tuple, Set
 from dataclasses import dataclass
 
-from .reachability_state import ReachabilityState
+from .reachability_types import ReachabilityApproximation, ReachabilityResult
 
 
 @dataclass
 class CacheEntry:
     """Represents a cached reachability analysis result."""
     
-    result: ReachabilityState
+    result  # Union[ReachabilityApproximation, ReachabilityResult]
     timestamp: float
     access_count: int
     ninja_position: Tuple[float, float]
@@ -95,7 +95,7 @@ class ReachabilityCache:
         ninja_position: Tuple[float, float], 
         switch_states: Dict[int, bool], 
         level_id: str
-    ) -> Optional[ReachabilityState]:
+    ):  # -> Optional[Union[ReachabilityApproximation, ReachabilityResult]]
         """
         Retrieve cached reachability result if available.
         
@@ -105,7 +105,7 @@ class ReachabilityCache:
             level_id: Level identifier
             
         Returns:
-            Cached ReachabilityState or None if not found/expired
+            Cached reachability result or None if not found/expired
         """
         cache_key = self._generate_cache_key(ninja_position, switch_states, level_id)
         
@@ -133,7 +133,7 @@ class ReachabilityCache:
         ninja_position: Tuple[float, float], 
         switch_states: Dict[int, bool], 
         level_id: str, 
-        result: ReachabilityState
+        result  # Union[ReachabilityApproximation, ReachabilityResult]
     ):
         """
         Store reachability result in cache.

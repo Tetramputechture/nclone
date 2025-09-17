@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from collections import deque
 
 from .common import SUB_CELL_SIZE
-from .reachability.reachability_state import ReachabilityState
+from .reachability.reachability_types import ReachabilityApproximation, ReachabilityResult
 from .navigation import PathfindingEngine
 from .reachability.opencv_flood_fill import OpenCVFloodFill
 
@@ -65,7 +65,7 @@ class SubgoalPlanner:
         
     def create_subgoal_plan(
         self, 
-        reachability_state: ReachabilityState,
+        reachability_state,  # Union[ReachabilityApproximation, ReachabilityResult]
         graph_data,
         ninja_node_idx: int,
         target_goal_type: str = 'exit'
@@ -128,13 +128,18 @@ class SubgoalPlanner:
     
     def _create_subgoal_objects(
         self, 
-        reachability_state: ReachabilityState, 
+        reachability_state,  # Union[ReachabilityApproximation, ReachabilityResult]
         graph_data
     ) -> List[Subgoal]:
         """Convert reachability subgoals to Subgoal objects with node indices."""
         subgoals = []
         
-        for sub_row, sub_col, goal_type in reachability_state.subgoals:
+        # Handle both ReachabilityApproximation and ReachabilityResult
+        subgoals_data = getattr(reachability_state, 'subgoals', set())
+        if not subgoals_data:
+            return []
+            
+        for sub_row, sub_col, goal_type in subgoals_data:
             # Find closest graph node to this subgoal position
             pixel_x = sub_col * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
             pixel_y = sub_row * SUB_CELL_SIZE + SUB_CELL_SIZE // 2
