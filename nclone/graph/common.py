@@ -34,20 +34,21 @@ CELL_SIZE = TILE_PIXEL_SIZE  # 24 pixels
 
 
 class NodeType(IntEnum):
-    """Types of nodes in the graph."""
-    GRID_CELL = 0
-    ENTITY = 1
-    NINJA = 2
+    """Simplified node types for strategic RL representation."""
+    EMPTY = 0        # Traversable space
+    WALL = 1         # Solid obstacle  
+    ENTITY = 2       # Interactive entity (switch, door, gold, etc.)
+    HAZARD = 3       # Dangerous area (mines, drones, etc.)
+    SPAWN = 4        # Player spawn point
+    EXIT = 5         # Level exit
 
 
 class EdgeType(IntEnum):
-    """Types of edges in the graph."""
-    WALK = 0
-    JUMP = 1
-    WALL_SLIDE = 2
-    FALL = 3
-    ONE_WAY = 4
-    FUNCTIONAL = 5  # switch->door, launchpad->target, etc.
+    """Simplified edge types for connectivity-based representation."""
+    ADJACENT = 0     # Simple adjacency (can move between nodes)
+    REACHABLE = 1    # Can reach via movement (jump/fall possible)
+    FUNCTIONAL = 2   # Entity interaction edge
+    BLOCKED = 3      # Currently blocked (door without key)
 
 
 @dataclass

@@ -14,7 +14,8 @@ from ..common import SUB_CELL_SIZE
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 from ...constants.entity_types import EntityType
 from .subgoal_integration import ReachabilitySubgoalIntegration
-from ..subgoal_planner import SubgoalPlanner
+# Lazy import to avoid circular dependency
+# from ..subgoal_planner import SubgoalPlanner
 
 
 class GameMechanics:

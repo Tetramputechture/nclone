@@ -21,7 +21,7 @@ from .hierarchical_builder import (
 )
 from .feature_extraction import FeatureExtractor
 from .edge_building import EdgeBuilder
-from .graph_construction import GraphConstructor
+# from .graph_construction import GraphConstructor  # Disabled for simplified approach
 from .level_data import LevelData, ensure_level_data, create_level_data_dict
 from .common import (
     GraphData,
@@ -40,7 +40,7 @@ __all__ = [
     'ResolutionLevel',
     'FeatureExtractor',
     'EdgeBuilder',
-    'GraphConstructor',
+    # 'GraphConstructor',  # Disabled for simplified approach
     'LevelData',
     'ensure_level_data',
     'create_level_data_dict',

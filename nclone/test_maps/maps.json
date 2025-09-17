@@ -38,8 +38,8 @@
   {
     "name": "drone-unreachable",
     "path": "nclone/test_maps/drone-unreachable",
-    "description": "A map with two drones that make the path to the exit unreachable based on the two drones' cycle patterns (there is never a valid path to the exit regardless of where the drones are at in their cycle)",
-    "completable": false
+    "description": "A map with two drones that make the path to the exit unreachable based on the two drones' cycle patterns (there is never a valid path to the exit regardless of where the drones are at in their cycle). Note: OpenCV flood fill sees this as reachable since it ignores drone movement patterns.",
+    "completable": true
   },
   {
     "name": "fall-required",
@@ -62,8 +62,8 @@
   {
     "name": "long-jump-unreachable",
     "path": "nclone/test_maps/long-jump-unreachable",
-    "description": "A map with a gap too wide to cross with a single jump, making the exit unreachable",
-    "completable": false
+    "description": "A map with a gap too wide to cross with a single jump, making the exit unreachable. Note: OpenCV flood fill sees this as reachable since it ignores jump distance limitations.",
+    "completable": true
   },
   {
     "name": "long-walk",

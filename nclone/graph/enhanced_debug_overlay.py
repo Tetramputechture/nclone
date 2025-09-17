@@ -14,7 +14,8 @@ from .visualization import GraphVisualizer, VisualizationConfig
 from .navigation import PathfindingEngine, PathfindingAlgorithm
 from .common import NodeType, EdgeType
 from .hierarchical_builder import HierarchicalGraphBuilder
-from .reachability import ReachabilityAnalyzer
+from .reachability.tiered_system import TieredReachabilitySystem
+from .reachability.reachability_types import PerformanceTarget
 
 
 class OverlayMode(IntEnum):
@@ -605,7 +606,7 @@ class EnhancedDebugOverlay:
             
         # Initialize reachability analyzer if needed
         if self.reachability_analyzer is None:
-            self.reachability_analyzer = ReachabilityAnalyzer(debug=True)
+            self.reachability_analyzer = TieredReachabilitySystem(debug=True)
             
         # Get current ninja position
         ninja_pos = self._get_ninja_position()
@@ -616,8 +617,12 @@ class EnhancedDebugOverlay:
             # Perform reachability analysis from current position
             level_data = self._get_level_data()
             if level_data:
+                # Convert ninja position to integer coordinates
+                ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
+                # Use empty switch states for debug overlay
+                switch_states = {}
                 self.current_reachability_state = self.reachability_analyzer.analyze_reachability(
-                    level_data, ninja_pos, self.current_graph_data
+                    level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
                 )
         except Exception as e:
             if hasattr(self, 'debug') and self.debug:
@@ -629,17 +634,16 @@ class EnhancedDebugOverlay:
         if not self.current_reachability_state:
             return
             
-        # Draw reachable positions
+        # Draw reachable positions (both ReachabilityApproximation and ReachabilityResult have this)
         if hasattr(self.current_reachability_state, 'reachable_positions'):
             self._draw_reachable_positions(overlay, self.current_reachability_state.reachable_positions)
             
-        # Draw subgoals
-        if hasattr(self.current_reachability_state, 'subgoals'):
+        # Draw subgoals (only ReachabilityResult has this)
+        if hasattr(self.current_reachability_state, 'subgoals') and self.current_reachability_state.subgoals:
             self._draw_subgoals(overlay, self.current_reachability_state.subgoals)
             
-        # Draw frontiers if available
-        if hasattr(self.current_reachability_state, 'frontiers'):
-            self._draw_frontiers(overlay, self.current_reachability_state.frontiers)
+        # Draw performance info
+        self._draw_reachability_info(overlay)
 
     def _draw_reachable_positions(self, overlay: pygame.Surface, reachable_positions):
         """Draw reachable positions on the overlay."""
@@ -705,6 +709,46 @@ class EnhancedDebugOverlay:
                 (screen_x - size, screen_y)   # Left
             ]
             pygame.draw.polygon(overlay, frontier_color, points)
+
+    def _draw_reachability_info(self, overlay: pygame.Surface):
+        """Draw reachability analysis performance information."""
+        if not self.current_reachability_state:
+            return
+            
+        # Prepare info text
+        info_lines = []
+        
+        if hasattr(self.current_reachability_state, 'method'):
+            info_lines.append(f"Method: {self.current_reachability_state.method}")
+            
+        if hasattr(self.current_reachability_state, 'tier_used'):
+            info_lines.append(f"Tier: {self.current_reachability_state.tier_used}")
+            
+        if hasattr(self.current_reachability_state, 'computation_time_ms'):
+            info_lines.append(f"Time: {self.current_reachability_state.computation_time_ms:.2f}ms")
+            
+        if hasattr(self.current_reachability_state, 'confidence'):
+            info_lines.append(f"Confidence: {self.current_reachability_state.confidence:.1%}")
+            
+        reachable_count = len(self.current_reachability_state.reachable_positions)
+        info_lines.append(f"Reachable: {reachable_count} positions")
+        
+        # Draw info panel
+        if info_lines:
+            panel_height = len(info_lines) * 20 + 10
+            panel_width = 250
+            panel_rect = pygame.Rect(10, 10, panel_width, panel_height)
+            
+            # Draw semi-transparent background
+            panel_surface = pygame.Surface((panel_width, panel_height))
+            panel_surface.set_alpha(180)
+            panel_surface.fill((0, 0, 0))
+            overlay.blit(panel_surface, panel_rect)
+            
+            # Draw text
+            for i, line in enumerate(info_lines):
+                text_surface = self.small_font.render(line, True, (255, 255, 255))
+                overlay.blit(text_surface, (15, 15 + i * 20))
 
     def _get_ninja_position(self):
         """Get current ninja position from simulation."""

@@ -9,6 +9,7 @@ from .constants.physics_constants import (
 )
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
 from .graph.common import EdgeType, GraphData
+from .graph.movement_classifier import MovementType
 
 
 class DebugOverlayRenderer:
@@ -25,11 +26,10 @@ class DebugOverlayRenderer:
 
         # Graph visualization colors (reduced alpha for less noise)
         self.GRAPH_EDGE_COLORS = {
-            EdgeType.WALK: (80, 200, 120, 100),  # green-ish (reduced alpha)
-            EdgeType.JUMP: (255, 160, 40, 120),  # orange (reduced alpha)
-            EdgeType.FALL: (100, 180, 255, 80),  # light blue (reduced alpha)
-            EdgeType.WALL_SLIDE: (180, 100, 255, 120),  # purple (reduced alpha)
-            EdgeType.ONE_WAY: (200, 200, 200, 90),  # grey (reduced alpha)
+            MovementType.WALK: (80, 200, 120, 100),  # green-ish (reduced alpha)
+            MovementType.JUMP: (255, 160, 40, 120),  # orange (reduced alpha)
+            MovementType.FALL: (100, 180, 255, 80),  # light blue (reduced alpha)
+            MovementType.WALL_JUMP: (180, 100, 255, 120),  # purple (reduced alpha)
             EdgeType.FUNCTIONAL: (255, 230, 60, 150),  # yellow (reduced alpha)
         }
         self.GRAPH_NODE_COLOR_GRID = (240, 240, 240, 220)

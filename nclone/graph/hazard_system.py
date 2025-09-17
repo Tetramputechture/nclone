@@ -14,7 +14,7 @@ from enum import IntEnum
 
 from ..constants.entity_types import EntityType
 from ..graph.level_data import LevelData
-from ..graph.precise_collision import PreciseTileCollision
+# Removed legacy precise collision - using simplified collision detection
 from ..constants.physics_constants import (
     NINJA_RADIUS,
     TILE_PIXEL_SIZE,
@@ -111,14 +111,12 @@ class HazardClassificationSystem:
         2: TOGGLE_MINE_RADIUS_TOGGLING,  # toggling
     }
 
-    def __init__(self, precise_collision: Optional[PreciseTileCollision] = None):
-        """Initialize hazard classification system."""
+    def __init__(self):
+        """Initialize simplified hazard classification system."""
         # Static hazard cache (never changes during level)
         self._static_hazard_cache: Dict[Tuple[int, int], HazardInfo] = {}
         # Dynamic hazard tracker (updated each frame)
         self._dynamic_hazards: Dict[int, HazardInfo] = {}
-        # Precise collision system for drone movement validation
-        self._precise_collision = precise_collision
         # Current level tiles for collision checking
         self._current_tiles: Optional[np.ndarray] = None
         # Edge hazard metadata
@@ -129,7 +127,6 @@ class HazardClassificationSystem:
     def set_tile_data(self, tiles: np.ndarray):
         """Set current level tiles for collision checking."""
         self._current_tiles = tiles
-        # Note: PreciseTileCollision caches tile data automatically when needed
 
     def build_static_hazard_cache(
         self, level_data: LevelData
