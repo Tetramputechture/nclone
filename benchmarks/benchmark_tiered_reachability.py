@@ -1,44 +1,96 @@
 """
-Performance benchmarks for the tiered reachability system.
+Comprehensive performance benchmark for the tiered reachability system.
 
-This module provides comprehensive performance analysis and benchmarking
-for all three tiers of the reachability system.
+This module provides detailed performance analysis and optimization
+recommendations for all three tiers of the reachability system.
 """
 
 import time
-import json
 import numpy as np
-from typing import Dict, List, Any, Tuple
-import sys
+import json
 import os
+from typing import Dict, List, Tuple, Any
+import sys
 
 # Add the nclone package to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from nclone.graph.reachability.tiered_system import TieredReachabilitySystem, PerformanceTarget
+from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
+from nclone.graph.reachability.reachability_types import PerformanceTarget
+from nclone.graph.reachability.opencv_flood_fill import OpenCVFloodFill
 
 
 class BenchmarkLevelGenerator:
-    """Generate test levels with varying complexity for benchmarking."""
+    """Generate various test levels for comprehensive benchmarking."""
     
     @staticmethod
-    def create_simple_level():
+    def create_simple_level(width: int = 42, height: int = 23) -> np.ndarray:
         """Create a simple open level."""
-        from tests.test_tiered_reachability import MockLevelData
-        return MockLevelData()
+        return np.zeros((width, height), dtype=int)
     
     @staticmethod
-    def create_complex_level():
-        """Create a complex multi-level structure."""
-        from tests.test_tiered_reachability import MockLevelData
-        level = MockLevelData()
+    def create_maze_level(width: int = 42, height: int = 23) -> np.ndarray:
+        """Create a maze-like level with walls."""
+        level = np.zeros((width, height), dtype=int)
         
-        # Ground level
-        level.add_platform(0, 41, 20)
+        # Add some walls to create a maze pattern
+        for i in range(5, width, 8):
+            for j in range(2, height - 2):
+                if j % 4 != 0:  # Leave gaps for navigation
+                    level[i, j] = 1  # Solid wall
         
-        # Multiple elevated platforms
-        for i in range(0, 40, 8):
-            level.add_platform(i, i + 5, 18 - (i // 8))
+        for i in range(2, width - 2):
+            for j in range(5, height, 6):
+                if i % 6 != 0:  # Leave gaps for navigation
+                    level[i, j] = 1  # Solid wall
+        
+        return level
+    
+    @staticmethod
+    def create_complex_level(width: int = 42, height: int = 23) -> np.ndarray:
+        """Create a complex level with various tile types."""
+        level = np.zeros((width, height), dtype=int)
+        
+        # Add platforms
+        for i in range(5, width, 12):
+            for j in range(height // 3, height // 3 + 3):
+                level[i:i+6, j] = 1  # Platform
+        
+        # Add switches
+        level[10, 10] = 10  # Switch
+        level[25, 15] = 10  # Switch
+        
+        # Add doors
+        level[15, 8] = 20   # Door
+        level[30, 18] = 20  # Door
+        
+        # Add some scattered walls
+        np.random.seed(42)  # For reproducible results
+        wall_positions = np.random.choice(width * height, size=50, replace=False)
+        for pos in wall_positions:
+            x, y = pos // height, pos % height
+            if level[x, y] == 0:  # Only place walls in empty spaces
+                level[x, y] = 1
+        
+        return level
+    
+    @staticmethod
+    def create_large_level(width: int = 84, height: int = 46) -> np.ndarray:
+        """Create a large level for stress testing."""
+        level = np.zeros((width, height), dtype=int)
+        
+        # Add a complex pattern
+        for i in range(0, width, 15):
+            for j in range(0, height, 10):
+                # Create rooms with corridors
+                level[i:i+10, j:j+8] = 1  # Room walls
+                level[i+2:i+8, j+2:j+6] = 0  # Room interior
+                
+                # Add corridor connections
+                if i + 15 < width:
+                    level[i+10:i+15, j+4] = 0  # Horizontal corridor
+                if j + 10 < height:
+                    level[i+4, j+8:j+10] = 0  # Vertical corridor
         
         return level
 
