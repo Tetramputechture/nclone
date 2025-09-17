@@ -28,7 +28,7 @@ from PIL import Image
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability import ReachabilityAnalyzer
-from nclone.graph.legacy.trajectory_calculator import TrajectoryCalculator
+# Removed legacy trajectory calculator import
 from nclone.graph.subgoal_planner import SubgoalPlanner
 from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
 from nclone.graph.reachability.frontier_detector import FrontierDetector
@@ -278,9 +278,8 @@ if (
     print("Initializing reachability analysis system...")
     
     try:
-        # Initialize trajectory calculator and reachability analyzer
-        trajectory_calc = TrajectoryCalculator()
-        reachability_analyzer = ReachabilityAnalyzer(trajectory_calc)
+        # Initialize simplified reachability analyzer
+        reachability_analyzer = ReachabilityAnalyzer()
         
         # Initialize subgoal planner and integration
         base_subgoal_planner = SubgoalPlanner()

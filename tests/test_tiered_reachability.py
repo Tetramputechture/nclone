@@ -15,11 +15,11 @@ import os
 # Add the nclone package to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from nclone.graph.reachability.tiered_system import (
-    TieredReachabilitySystem, PerformanceTarget, ReachabilityApproximation, ReachabilityResult
+from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
+from nclone.graph.reachability.reachability_types import (
+    PerformanceTarget, ReachabilityApproximation, ReachabilityResult
 )
-from nclone.graph.reachability.flood_fill_approximator import FloodFillApproximator
-from nclone.graph.reachability.simplified_physics_analyzer import SimplifiedPhysicsAnalyzer
+from nclone.graph.reachability.opencv_flood_fill import OpenCVFloodFill
 
 
 class MockLevelData:

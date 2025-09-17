@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 
 from nclone.nplay_headless import NPlayHeadless
 from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
-from nclone.graph.legacy.trajectory_calculator import TrajectoryCalculator
+# Removed legacy trajectory calculator import
 from nclone.graph.level_data import LevelData
 from nclone.gym_environment.npp_environment import NppEnvironment
 

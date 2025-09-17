@@ -129,7 +129,7 @@ class ReachabilityHazardExtension:
         Returns:
             Target position after bounce, or None if unsafe/impossible
         """
-        from ..trajectory_calculator import TrajectoryCalculator
+        # Simplified bounce calculation without trajectory calculator
         from ...constants.physics_constants import (
             BOUNCE_BLOCK_INTERACTION_RADIUS,
             BOUNCE_BLOCK_BOOST_MIN,
@@ -197,42 +197,26 @@ class ReachabilityHazardExtension:
         bounce_velocity_x = max(-MAX_HOR_SPEED * 2, min(MAX_HOR_SPEED * 2, bounce_velocity_x))
         bounce_velocity_y = max(JUMP_INITIAL_VELOCITY * 2, min(-JUMP_INITIAL_VELOCITY * 0.5, bounce_velocity_y))
         
-        # Calculate multiple potential landing positions using trajectory calculator
-        trajectory_calc = TrajectoryCalculator()
-        
-        # Try different trajectory distances to find optimal landing spot
+        # Calculate simplified bounce landing position
         potential_targets = []
         
-        for distance_multiplier in [1.0, 1.5, 2.0, 2.5]:
-            # Calculate target position based on bounce velocity and physics
-            time_to_peak = abs(bounce_velocity_y) / GRAVITY_JUMP if bounce_velocity_y < 0 else 0
-            time_to_fall = math.sqrt(2 * abs(bounce_velocity_y) / GRAVITY_FALL) if bounce_velocity_y < 0 else 1.0
-            total_flight_time = (time_to_peak + time_to_fall) * distance_multiplier
+        # Simplified bounce calculation - estimate landing position
+        flight_time = 1.0  # Simplified flight time estimate
+        target_x = bounce_block_pos[0] + bounce_velocity_x * flight_time
+        target_y = bounce_block_pos[1] + bounce_velocity_y * flight_time + 0.5 * GRAVITY_FALL * flight_time * flight_time
+        
+        target_pos = (target_x, target_y)
+        
+        # Simple validation: check if target position is safe and reasonable
+        distance_to_target = ((target_x - ninja_pos[0])**2 + (target_y - ninja_pos[1])**2)**0.5
+        if (distance_to_target < 500 and  # Reasonable bounce distance
+            self.is_position_safe_for_reachability(target_pos)):
             
-            target_x = bounce_block_pos[0] + bounce_velocity_x * total_flight_time
-            target_y = bounce_block_pos[1] + bounce_velocity_y * total_flight_time + 0.5 * GRAVITY_FALL * total_flight_time * total_flight_time
-            
-            target_pos = (target_x, target_y)
-            
-            # Use trajectory calculator to validate the bounce trajectory
-            try:
-                trajectory_result = trajectory_calc.calculate_bounce_block_trajectory(
-                    ninja_pos, target_pos, entities=[bounce_block_entity]
-                )
-                
-                if (trajectory_result.feasible and 
-                    trajectory_result.success_probability > 0.3 and  # Reasonable success chance
-                    self.is_position_safe_for_reachability(target_pos)):
-                    
-                    potential_targets.append({
-                        'position': target_pos,
-                        'probability': trajectory_result.success_probability,
-                        'distance': calculate_distance(ninja_pos, target_pos)
-                    })
-                    
-            except Exception:
-                # If trajectory calculation fails, skip this target
-                continue
+            potential_targets.append({
+                'position': target_pos,
+                'probability': 0.8,  # Simplified success probability
+                'distance': distance_to_target
+            })
         
         # Select best target based on success probability and reasonable distance
         if not potential_targets:
