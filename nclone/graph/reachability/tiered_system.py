@@ -21,11 +21,10 @@ import numpy as np
 from .reachability_types import (
     ReachabilityApproximation, 
     ReachabilityResult, 
-    PerformanceTarget,
-    CompletionStrategyInfo
+    PerformanceTarget
 )
 from .opencv_flood_fill import OpenCVFloodFill
-from ..subgoal_planner import SubgoalPlanner
+from ..subgoal_types import SubgoalPlan, CompletionStrategyInfo
 from ..common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT
 
 
@@ -97,6 +96,8 @@ class TieredReachabilitySystem:
         """Lazy initialization of hierarchical subgoal planning system."""
         if not hasattr(self, '_subgoal_planner') or self._subgoal_planner is None:
             # Use enhanced SubgoalPlanner with hierarchical completion algorithm
+            # Lazy import to avoid circular dependency
+            from ..subgoal_planner import SubgoalPlanner
             self._subgoal_planner = SubgoalPlanner(debug=self.debug)
         return self._subgoal_planner
     

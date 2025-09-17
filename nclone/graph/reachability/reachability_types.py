@@ -90,24 +90,7 @@ class ReachabilityResult:
         return len(self.reachable_positions) > 3
 
 
-@dataclass
-class CompletionStrategyInfo:
-    """
-    Enhanced completion strategy information for RL integration.
-    
-    This provides strategic information beyond simple reachability analysis,
-    including switch dependencies and completion sequences for Deep RL agents.
-    """
-    primary_subgoals: List[str]  # Ordered list of primary objectives
-    required_switches: List[Tuple[int, int]]  # Switch positions that must be activated
-    blocking_doors: List[Tuple[int, int]]  # Door positions that block progress
-    completion_sequence: List[str]  # Step-by-step completion plan
-    estimated_difficulty: float  # 0.0 (easy) to 1.0 (very hard)
-    alternative_paths: List[List[str]]  # Alternative completion strategies
-    
-    def get_next_subgoal(self) -> Optional[str]:
-        """Get the next subgoal in the completion sequence."""
-        return self.completion_sequence[0] if self.completion_sequence else None
+# CompletionStrategyInfo moved to subgoal_types.py to avoid circular imports
 
 
 class PerformanceTarget(Enum):

@@ -8,38 +8,13 @@ like switch activation, door unlocking, and sequential dependencies.
 
 import numpy as np
 from typing import List, Tuple, Optional, Dict, Any
-from dataclasses import dataclass
 from collections import deque
 
 from .common import SUB_CELL_SIZE
 from .reachability.reachability_types import ReachabilityApproximation, ReachabilityResult
 from .navigation import PathfindingEngine
 from .reachability.opencv_flood_fill import OpenCVFloodFill
-
-
-@dataclass
-class Subgoal:
-    """Represents a single subgoal in hierarchical planning."""
-    goal_type: str  # 'locked_door_switch', 'trap_door_switch', 'exit_switch', 'exit'
-    position: Tuple[int, int]  # (sub_row, sub_col)
-    node_idx: Optional[int] = None  # Graph node index
-    priority: int = 0  # Lower numbers = higher priority
-    dependencies: List[str] = None  # List of goal_types this depends on
-    unlocks: List[str] = None  # List of goal_types this unlocks
-    
-    def __post_init__(self):
-        if self.dependencies is None:
-            self.dependencies = []
-        if self.unlocks is None:
-            self.unlocks = []
-
-
-@dataclass
-class SubgoalPlan:
-    """Complete hierarchical plan with ordered subgoals."""
-    subgoals: List[Subgoal]
-    execution_order: List[int]  # Indices into subgoals list
-    total_estimated_cost: float = 0.0
+from .subgoal_types import Subgoal, SubgoalPlan, CompletionStrategyInfo
 
 
 class SubgoalPlanner:

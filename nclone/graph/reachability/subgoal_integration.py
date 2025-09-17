@@ -7,7 +7,7 @@ enhancements without duplicating the core planning logic.
 
 from typing import List, Dict, Any, Tuple, Optional
 
-from ..subgoal_planner import SubgoalPlanner, Subgoal, SubgoalPlan
+from ..subgoal_types import Subgoal, SubgoalPlan
 from .reachability_types import ReachabilityApproximation, ReachabilityResult
 
 
@@ -53,7 +53,7 @@ class ReachabilitySubgoalIntegration:
         existing_subgoals = []
         if hasattr(reachability_state, 'subgoals') and reachability_state.subgoals:
             # Import at runtime to avoid circular imports
-            from ..subgoal_planner import Subgoal
+
             
             # Convert existing subgoals to Subgoal objects
             for sub_row, sub_col, goal_type in reachability_state.subgoals:
@@ -106,6 +106,7 @@ class ReachabilitySubgoalIntegration:
         height, width = level_data.tiles.shape
         
         # Find positions that are at intersections or have multiple paths
+        
         for row, col in reachable_positions:
             if self._is_strategic_position(row, col, level_data, reachable_positions):
                 waypoint = Subgoal(
