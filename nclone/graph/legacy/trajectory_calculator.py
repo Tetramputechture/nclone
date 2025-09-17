@@ -66,7 +66,7 @@ from nclone.utils.physics_utils import (
     BounceBlockState,
     calculate_bounce_block_boost_multiplier,
 )
-from nclone.graph.precise_collision import PreciseTileCollision
+from nclone.graph.legacy.precise_collision import PreciseTileCollision
 from nclone.graph.hazard_system import HazardClassificationSystem
 
 # Note: EntityAssociationManager should be moved to nclone if needed

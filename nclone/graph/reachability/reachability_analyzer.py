@@ -10,7 +10,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Set, Tuple, List, Dict, Optional, Any
 
-from ..trajectory_calculator import TrajectoryCalculator
+from ..legacy.trajectory_calculator import TrajectoryCalculator
 from .position_validator import PositionValidator
 from .collision_checker import CollisionChecker
 from .physics_movement import PhysicsMovement

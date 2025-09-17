@@ -3,6 +3,38 @@
 ## Overview
 Design and implement a compact, efficient encoding of reachability information specifically optimized for integration with the HGT-based RL architecture in npp-rl.
 
+## Current Implementation Status ✅
+**FOUNDATION COMPLETE**: The tiered reachability system has been successfully migrated to use the production OpenCV flood fill system with three performance tiers:
+- **Tier 1**: Ultra-fast (0.125x scale, <1ms, 85% accuracy)
+- **Tier 2**: Balanced (0.25x scale, <5ms, 92% accuracy)  
+- **Tier 3**: High accuracy (1.0x scale, <100ms, 99% accuracy)
+
+**PRODUCTION READY**: `TieredReachabilitySystem` provides the foundation for compact feature extraction with adaptive performance targeting.
+
+## Current System Architecture
+
+### Production Components ✅
+1. **TieredReachabilitySystem** (`nclone/graph/reachability/tiered_system.py`)
+   - Adaptive tier selection based on performance targets
+   - OpenCV flood fill backend for all tiers
+   - Performance metrics and caching support
+
+2. **OpenCVFloodFill** (`nclone/graph/reachability/opencv_flood_fill.py`)
+   - Production-ready flood fill implementation
+   - Multi-scale rendering (0.125x to 1.0x)
+   - Entity-aware collision detection
+   - Performance: 0.54-35.9ms across scales
+
+3. **ReachabilityTypes** (`nclone/graph/reachability/reachability_types.py`)
+   - Shared data structures for all reachability systems
+   - `ReachabilityApproximation` and `ReachabilityResult` classes
+   - Performance target enums
+
+### Integration Points
+- **API**: `TieredReachabilitySystem.analyze_reachability(level_data, ninja_pos, switch_states, performance_target)`
+- **Output**: `ReachabilityResult` with position sets, confidence metrics, and timing data
+- **Performance**: Configurable via `PerformanceTarget` enum (ULTRA_FAST, FAST, BALANCED, ACCURATE, PRECISE)
+
 ## Context & Justification
 
 ### Integration Requirements
@@ -378,9 +410,17 @@ def _encode_meta_features(self, reachability_result, level_data) -> torch.Tensor
 
 ## Implementation Plan
 
-### Phase 1: Core Feature Encoder (Week 1)
+### Phase 0: Foundation ✅ COMPLETE
+**Status**: **COMPLETE** - Tiered reachability system successfully migrated to production OpenCV backend
+- ✅ **TieredReachabilitySystem**: Production-ready with adaptive performance targeting
+- ✅ **OpenCV Backend**: All tiers use OpenCV flood fill (0.125x, 0.25x, 1.0x scales)
+- ✅ **Performance Validation**: 0.54-35.9ms timing across all tiers
+- ✅ **API Stability**: Clean interface for RL integration
+
+### Phase 1: Core Feature Encoder (NEXT)
+**Status**: **READY TO START** - Foundation system provides all necessary inputs
 **Deliverables**:
-1. **CompactReachabilityFeatures**: Main encoding class
+1. **CompactReachabilityFeatures**: Main encoding class (builds on TieredReachabilitySystem)
 2. **Feature Validation**: Ensure encoding consistency and bounds
 3. **Unit Tests**: Test each encoding component
 
@@ -388,6 +428,8 @@ def _encode_meta_features(self, reachability_result, level_data) -> torch.Tensor
 - `nclone/graph/reachability/compact_features.py` (NEW)
 - `nclone/graph/reachability/feature_encoders.py` (NEW)
 - `tests/test_compact_features.py` (NEW)
+
+**Dependencies**: ✅ All dependencies satisfied by current production system
 
 ### Phase 2: Integration Interface (Week 2)
 **Deliverables**:

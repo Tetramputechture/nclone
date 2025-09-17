@@ -10,13 +10,13 @@ and entities.py to ensure perfect consistency.
 import math
 import numpy as np
 
-from ..constants.physics_constants import (
+from ...constants.physics_constants import (
     NINJA_RADIUS,
     FULL_MAP_WIDTH,
     FULL_MAP_HEIGHT,
     TILE_PIXEL_SIZE,
 )
-from ..physics import sweep_circle_vs_tiles
+from ...physics import sweep_circle_vs_tiles
 from ..utils.tile_segment_factory import TileSegmentFactory
 
 

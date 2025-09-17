@@ -65,7 +65,7 @@ from nclone.constants.physics_constants import (
 from nclone.constants.entity_types import EntityType
 from nclone.entity_classes.entity_launch_pad import EntityLaunchPad
 from nclone.physics import map_orientation_to_vector
-from nclone.graph.precise_collision import PreciseTileCollision
+from nclone.graph.legacy.precise_collision import PreciseTileCollision
 from nclone.graph.hazard_system import HazardClassificationSystem
 from nclone.graph.level_data import LevelData
 from nclone.utils.physics_utils import BounceBlockState, calculate_distance
@@ -73,7 +73,7 @@ from nclone.utils.collision_utils import (
     find_bounce_blocks_near_trajectory,
     find_chainable_bounce_blocks,
 )
-from nclone.graph.trajectory_calculator import TrajectoryCalculator
+from nclone.graph.legacy.trajectory_calculator import TrajectoryCalculator
 
 
 class MovementType(IntEnum):

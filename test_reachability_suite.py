@@ -23,10 +23,8 @@ from enum import Enum
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 
 from nclone.nplay_headless import NPlayHeadless
-from nclone.graph.reachability.hierarchical_adapter import (
-    HierarchicalReachabilityAdapter,
-)
-from nclone.graph.trajectory_calculator import TrajectoryCalculator
+from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
+from nclone.graph.legacy.trajectory_calculator import TrajectoryCalculator
 from nclone.graph.level_data import LevelData
 from nclone.gym_environment.npp_environment import NppEnvironment
 
@@ -87,11 +85,8 @@ class ReachabilityTestSuite:
         self.verbose = verbose
         self.nplay_headless = NPlayHeadless()
 
-        # Initialize trajectory calculator and hierarchical reachability analyzer
-        trajectory_calculator = TrajectoryCalculator()
-        self.reachability_analyzer = HierarchicalReachabilityAdapter(
-            trajectory_calculator, debug=verbose
-        )
+        # Initialize tiered reachability system
+        self.reachability_analyzer = TieredReachabilitySystem(debug=verbose)
 
         # Load test map definitions
         self.test_maps = self._load_test_map_definitions()
@@ -183,21 +178,19 @@ class ReachabilityTestSuite:
 
             # Run reachability analysis with timing
             start_time = time.perf_counter()
-            reachability_state = self.reachability_analyzer.analyze_reachability(
-                level_data, ninja_position
+            reachability_result = self.reachability_analyzer.analyze_reachability(
+                level_data, ninja_position, switch_states={}, performance_target="balanced"
             )
             end_time = time.perf_counter()
 
             analysis_time_ms = (end_time - start_time) * 1000
 
             # Extract results
-            reachable_positions = len(reachability_state.reachable_positions)
-            subgoals_found = len(reachability_state.subgoals)
+            reachable_positions = len(reachability_result.reachable_positions)
+            subgoals_found = 0  # Subgoals not implemented in tiered system yet
 
-            # Determine if exit is reachable by checking if we can reach exit-related entities
-            actual_reachable = self._determine_exit_reachability(
-                level_data, reachability_state
-            )
+            # Determine if exit is reachable using level completability heuristic
+            actual_reachable = reachability_result.is_level_completable()
 
             # Check if result matches expectation
             passed = self._validate_outcome(expected_outcome, actual_reachable)
@@ -464,7 +457,7 @@ class ReachabilityTestSuite:
 
         for i in range(num_queries):
             start_time = time.perf_counter()
-            self.reachability_analyzer.analyze_reachability(level_data, ninja_position)
+            self.reachability_analyzer.analyze_reachability(level_data, ninja_position, switch_states={}, performance_target="balanced")
             end_time = time.perf_counter()
             total_time += end_time - start_time
 

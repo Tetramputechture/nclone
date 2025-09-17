@@ -28,7 +28,7 @@ from PIL import Image
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability import ReachabilityAnalyzer
-from nclone.graph.trajectory_calculator import TrajectoryCalculator
+from nclone.graph.legacy.trajectory_calculator import TrajectoryCalculator
 from nclone.graph.subgoal_planner import SubgoalPlanner
 from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
 from nclone.graph.reachability.frontier_detector import FrontierDetector

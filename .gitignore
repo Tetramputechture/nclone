@@ -44,3 +44,9 @@ global_frame.png
 
 # pytest
 .pytest_cache/
+
+# Reachability visualization outputs
+nclone/reachability_viz/
+nclone/scale_visualizations/
+nclone/multiscale_analysis/
+nclone/ninja_scaling_test/

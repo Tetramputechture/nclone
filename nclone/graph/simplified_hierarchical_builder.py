@@ -1,13 +1,10 @@
 """
-Hierarchical graph builder for multi-resolution N++ level processing.
+Simplified hierarchical graph builder for strategic RL representation.
 
-This module creates hierarchical graph representations with multiple resolution levels
-optimized for Deep RL. It focuses on strategic information rather than detailed 
-physics calculations, designed to work with heterogeneous graph transformers, 
-3D CNNs, and MLPs.
-
-This is the simplified, production-ready version that replaces the complex
-physics-based approach with connectivity-focused strategic information.
+This module provides a streamlined approach to building multi-resolution graphs
+that focus on strategic information rather than detailed physics calculations.
+It's designed to work with heterogeneous graph transformers, 3D CNNs, and MLPs
+in a Deep RL setting.
 """
 
 import numpy as np
@@ -17,8 +14,8 @@ from enum import Enum
 
 from .common import GraphData, NodeType, EdgeType
 from .level_data import LevelData, ensure_level_data
-from .edge_building import EdgeBuilder, create_simplified_graph_data
-# from .reachability.tiered_system import TieredReachabilitySystem  # Disabled for simplified approach
+from .simplified_edge_building import SimplifiedEdgeBuilder, create_simplified_graph_data
+from .reachability.tiered_system import TieredReachabilitySystem
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 
 
@@ -30,7 +27,7 @@ class ResolutionLevel(Enum):
 
 
 @dataclass
-class HierarchicalGraphData:
+class SimplifiedHierarchicalGraphData:
     """Container for multi-resolution simplified graph data."""
     fine_graph: GraphData
     medium_graph: GraphData
@@ -53,7 +50,7 @@ class HierarchicalGraphData:
                 self.coarse_graph.num_edges)
 
 
-class HierarchicalGraphBuilder:
+class SimplifiedHierarchicalGraphBuilder:
     """
     Simplified hierarchical graph builder for Deep RL.
     
@@ -68,12 +65,11 @@ class HierarchicalGraphBuilder:
     def __init__(self, debug: bool = False):
         """Initialize simplified hierarchical builder."""
         self.debug = debug
-        self.edge_builder = EdgeBuilder(debug=debug)
-        # self.reachability_system = TieredReachabilitySystem(debug=debug)  # Disabled for simplified approach
-        self.reachability_system = None
-        # self.edge_builder.set_reachability_system(self.reachability_system)
+        self.edge_builder = SimplifiedEdgeBuilder(debug=debug)
+        self.reachability_system = TieredReachabilitySystem(debug=debug)
+        self.edge_builder.set_reachability_system(self.reachability_system)
     
-    def build_graph(self, level_data, entities: List, ninja_pos: Tuple[int, int]) -> HierarchicalGraphData:
+    def build_graph(self, level_data, entities: List, ninja_pos: Tuple[int, int]) -> SimplifiedHierarchicalGraphData:
         """
         Build simplified hierarchical graph for strategic RL.
         
@@ -83,7 +79,7 @@ class HierarchicalGraphBuilder:
             ninja_pos: Current ninja position
             
         Returns:
-            HierarchicalGraphData with multi-resolution graphs
+            SimplifiedHierarchicalGraphData with multi-resolution graphs
         """
         # Ensure level_data is in correct format
         level_data = ensure_level_data(level_data)
@@ -105,7 +101,7 @@ class HierarchicalGraphBuilder:
         # Extract strategic features
         strategic_features = self._extract_strategic_features(level_data, entities, ninja_pos)
         
-        result = HierarchicalGraphData(
+        result = SimplifiedHierarchicalGraphData(
             fine_graph=fine_graph,
             medium_graph=medium_graph,
             coarse_graph=coarse_graph,
@@ -298,7 +294,7 @@ class HierarchicalGraphBuilder:
 
 # Convenience function for backward compatibility
 def build_simplified_hierarchical_graph(level_data, entities: List, ninja_pos: Tuple[int, int], 
-                                       debug: bool = False) -> HierarchicalGraphData:
+                                       debug: bool = False) -> SimplifiedHierarchicalGraphData:
     """
     Convenience function to build simplified hierarchical graph.
     

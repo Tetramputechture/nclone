@@ -17,7 +17,7 @@ from .hazard_integration import ReachabilityHazardExtension
 from ..hazard_system import HazardClassificationSystem
 from ...constants.entity_types import EntityType
 from ...constants.physics_constants import TILE_PIXEL_SIZE
-from .subgoal_planner import SubgoalPlanner
+from ..subgoal_planner import SubgoalPlanner
 
 
 class EntityAwareValidator(PositionValidator):

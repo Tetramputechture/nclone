@@ -7,13 +7,14 @@ like switch activation, door unlocking, and sequential dependencies.
 """
 
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 from collections import deque
 
 from .common import SUB_CELL_SIZE
 from .reachability.reachability_state import ReachabilityState
 from .navigation import PathfindingEngine
+from .reachability.opencv_flood_fill import OpenCVFloodFill
 
 
 @dataclass
@@ -374,3 +375,293 @@ class SubgoalPlanner:
                 return (float(x), float(y))
             else:
                 return (0.0, 0.0)
+    
+    def create_hierarchical_completion_plan(
+        self,
+        ninja_position: Tuple[float, float],
+        level_data,
+        entities: List[Any],
+        switch_states: Optional[Dict[str, bool]] = None,
+        reachability_analyzer: Optional[OpenCVFloodFill] = None
+    ) -> Optional[SubgoalPlan]:
+        """
+        Create hierarchical completion plan using recursive switch-door dependency analysis.
+        
+        This implements the hierarchical subgoal planning algorithm from HIERARCHICAL_SUBGOAL_PLANNING.md:
+        1. Check if exit switch is reachable from current position
+        2. If not, find locked doors blocking the path and their required switches
+        3. Recursively analyze switch reachability until all dependencies are resolved
+        4. Return optimal completion sequence with prioritized subgoals
+        
+        Args:
+            ninja_position: Current ninja position (x, y)
+            level_data: Level tile data
+            entities: List of entities in the level
+            switch_states: Current state of switches (activated/not activated)
+            reachability_analyzer: OpenCV flood fill analyzer for reachability queries
+            
+        Returns:
+            SubgoalPlan with hierarchical completion strategy, or None if impossible
+        """
+        if switch_states is None:
+            switch_states = {}
+        
+        if reachability_analyzer is None:
+            reachability_analyzer = OpenCVFloodFill(render_scale=1.0, debug=self.debug)
+        
+        # Step 1: Extract entity positions and relationships
+        entity_info = self._extract_entity_relationships(entities)
+        
+        if not self._has_required_entities(entity_info):
+            if self.debug:
+                print("DEBUG: Level missing required entities (exit switch or exit door)")
+            return None
+        
+        # Step 2: Analyze current reachability
+        reachability_result = reachability_analyzer.quick_check(
+            ninja_position, level_data, entities
+        )
+        
+        # Step 3: Implement recursive completion algorithm
+        completion_subgoals = self._recursive_completion_analysis(
+            ninja_position, entity_info, reachability_result, switch_states, 
+            level_data, entities, reachability_analyzer
+        )
+        
+        if not completion_subgoals:
+            if self.debug:
+                print("DEBUG: No viable completion strategy found")
+            return None
+        
+        # Step 4: Create execution order and estimate costs
+        # Find the final exit subgoal as the target
+        target_subgoal = None
+        for subgoal in completion_subgoals:
+            if subgoal.goal_type == 'exit':
+                target_subgoal = subgoal
+                break
+        
+        if target_subgoal is None:
+            # If no exit subgoal, use the last subgoal as target
+            target_subgoal = completion_subgoals[-1] if completion_subgoals else None
+        
+        if target_subgoal is None:
+            return None
+        
+        execution_order = self._create_execution_order(completion_subgoals, target_subgoal)
+        # For hierarchical completion, use simplified cost estimation
+        total_cost = float(len(completion_subgoals))  # Simple cost based on number of subgoals
+        
+        return SubgoalPlan(
+            subgoals=completion_subgoals,
+            execution_order=execution_order,
+            total_estimated_cost=total_cost
+        )
+    
+    def _extract_entity_relationships(self, entities: List[Any]) -> Dict[str, Any]:
+        """
+        Extract entity positions and switch-door relationships.
+        
+        Args:
+            entities: List of entity objects
+            
+        Returns:
+            Dictionary with entity positions and relationships
+        """
+        entity_info = {
+            'exit_switches': [],      # List of (x, y) positions
+            'exit_doors': [],         # List of (x, y) positions
+            'locked_doors': [],       # List of {'position': (x, y), 'switch': (x, y)}
+            'door_switches': [],      # List of (x, y) positions
+            'gold': [],               # List of (x, y) positions
+            'hazards': []             # List of (x, y) positions
+        }
+        
+        for entity in entities:
+            entity_type = getattr(entity, 'type', None)
+            x_pos = getattr(entity, 'xpos', getattr(entity, 'x', 0))
+            y_pos = getattr(entity, 'ypos', getattr(entity, 'y', 0))
+            position = (float(x_pos), float(y_pos))
+            
+            if entity_type == 4:  # Exit switch
+                entity_info['exit_switches'].append(position)
+            elif entity_type == 3:  # Exit door
+                entity_info['exit_doors'].append(position)
+            elif entity_type == 6:  # Locked door
+                # Extract switch position for this door
+                sw_x = getattr(entity, 'sw_xcoord', 0)
+                sw_y = getattr(entity, 'sw_ycoord', 0)
+                switch_pos = (float(sw_x), float(sw_y))
+                
+                entity_info['locked_doors'].append({
+                    'position': position,
+                    'switch': switch_pos
+                })
+                entity_info['door_switches'].append(switch_pos)
+            elif entity_type == 2:  # Gold
+                entity_info['gold'].append(position)
+            elif entity_type in [1, 14, 20, 25, 26]:  # Various hazards
+                entity_info['hazards'].append(position)
+                
+        return entity_info
+    
+    def _has_required_entities(self, entity_info: Dict[str, Any]) -> bool:
+        """Check if level has minimum required entities for completion."""
+        return (len(entity_info['exit_switches']) > 0 and 
+                len(entity_info['exit_doors']) > 0)
+    
+    def _recursive_completion_analysis(
+        self,
+        ninja_position: Tuple[float, float],
+        entity_info: Dict[str, Any],
+        reachability_result,
+        switch_states: Dict[str, bool],
+        level_data,
+        entities: List[Any],
+        reachability_analyzer: OpenCVFloodFill
+    ) -> List[Subgoal]:
+        """
+        Implement recursive completion algorithm from HIERARCHICAL_SUBGOAL_PLANNING.md.
+        
+        Returns list of Subgoal objects in optimal completion order.
+        """
+        subgoals = []
+        
+        # Get primary objectives
+        exit_switch_pos = entity_info['exit_switches'][0] if entity_info['exit_switches'] else None
+        exit_door_pos = entity_info['exit_doors'][0] if entity_info['exit_doors'] else None
+        
+        if not exit_switch_pos or not exit_door_pos:
+            return []
+        
+        # Step 1: Check exit switch reachability
+        if self._is_position_reachable(exit_switch_pos, reachability_result):
+            # Exit switch is reachable
+            if switch_states.get('exit_switch', False):
+                # Switch already activated, check door reachability
+                if self._is_position_reachable(exit_door_pos, reachability_result):
+                    # Direct path to completion
+                    subgoals.append(Subgoal(
+                        goal_type='exit',
+                        position=self._world_to_sub_coords(exit_door_pos),
+                        priority=1
+                    ))
+                else:
+                    # Need to unlock path to exit door
+                    door_unlock_subgoals = self._find_door_unlock_subgoals(
+                        exit_door_pos, entity_info, reachability_result, switch_states,
+                        level_data, entities, reachability_analyzer
+                    )
+                    subgoals.extend(door_unlock_subgoals)
+                    subgoals.append(Subgoal(
+                        goal_type='exit',
+                        position=self._world_to_sub_coords(exit_door_pos),
+                        priority=len(door_unlock_subgoals) + 1
+                    ))
+            else:
+                # Need to activate exit switch first
+                subgoals.extend([
+                    Subgoal(
+                        goal_type='exit_switch',
+                        position=self._world_to_sub_coords(exit_switch_pos),
+                        priority=1
+                    ),
+                    Subgoal(
+                        goal_type='exit',
+                        position=self._world_to_sub_coords(exit_door_pos),
+                        priority=2
+                    )
+                ])
+        else:
+            # Exit switch not reachable - find blocking doors
+            blocking_door_subgoals = self._find_blocking_door_subgoals(
+                ninja_position, exit_switch_pos, entity_info, reachability_result,
+                switch_states, level_data, entities, reachability_analyzer
+            )
+            
+            subgoals.extend(blocking_door_subgoals)
+            
+            # Add final exit sequence
+            subgoals.extend([
+                Subgoal(
+                    goal_type='exit_switch',
+                    position=self._world_to_sub_coords(exit_switch_pos),
+                    priority=len(blocking_door_subgoals) + 1
+                ),
+                Subgoal(
+                    goal_type='exit',
+                    position=self._world_to_sub_coords(exit_door_pos),
+                    priority=len(blocking_door_subgoals) + 2
+                )
+            ])
+        
+        return subgoals
+    
+    def _is_position_reachable(self, position: Tuple[float, float], reachability_result) -> bool:
+        """Check if a specific position is reachable."""
+        # Convert to pixel position for comparison with reachability result
+        return position in reachability_result.reachable_positions
+    
+    def _find_door_unlock_subgoals(
+        self,
+        target_position: Tuple[float, float],
+        entity_info: Dict[str, Any],
+        reachability_result,
+        switch_states: Dict[str, bool],
+        level_data,
+        entities: List[Any],
+        reachability_analyzer: OpenCVFloodFill
+    ) -> List[Subgoal]:
+        """Find subgoals needed to unlock doors blocking path to target."""
+        unlock_subgoals = []
+        
+        # For each locked door, check if it blocks path to target
+        for door_info in entity_info['locked_doors']:
+            door_pos = door_info['position']
+            switch_pos = door_info['switch']
+            
+            # Simple heuristic: if switch is reachable and door might help, add it
+            if self._is_position_reachable(switch_pos, reachability_result):
+                unlock_subgoals.append(Subgoal(
+                    goal_type='locked_door_switch',
+                    position=self._world_to_sub_coords(switch_pos),
+                    priority=len(unlock_subgoals) + 1
+                ))
+        
+        return unlock_subgoals
+    
+    def _find_blocking_door_subgoals(
+        self,
+        start_position: Tuple[float, float],
+        target_position: Tuple[float, float],
+        entity_info: Dict[str, Any],
+        reachability_result,
+        switch_states: Dict[str, bool],
+        level_data,
+        entities: List[Any],
+        reachability_analyzer: OpenCVFloodFill
+    ) -> List[Subgoal]:
+        """Find subgoals for doors that block path to target."""
+        blocking_subgoals = []
+        
+        # Find switches that need to be activated to reach target
+        for door_info in entity_info['locked_doors']:
+            switch_pos = door_info['switch']
+            
+            # If switch is reachable, it might help unlock path to target
+            if self._is_position_reachable(switch_pos, reachability_result):
+                blocking_subgoals.append(Subgoal(
+                    goal_type='locked_door_switch',
+                    position=self._world_to_sub_coords(switch_pos),
+                    priority=len(blocking_subgoals) + 1
+                ))
+        
+        return blocking_subgoals
+    
+    def _world_to_sub_coords(self, world_pos: Tuple[float, float]) -> Tuple[int, int]:
+        """Convert world coordinates to sub-grid coordinates."""
+        # Simple conversion - in practice would use proper coordinate transformation
+        x, y = world_pos
+        sub_x = int(x // SUB_CELL_SIZE)
+        sub_y = int(y // SUB_CELL_SIZE)
+        return (sub_x, sub_y)
