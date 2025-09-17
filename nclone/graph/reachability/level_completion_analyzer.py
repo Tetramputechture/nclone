@@ -38,7 +38,7 @@ class SubgoalType(Enum):
     NAVIGATE_TO_EXIT_DOOR = "navigate_to_exit_door"
     NAVIGATE_TO_DOOR_SWITCH = "navigate_to_door_switch"
     ACTIVATE_DOOR_SWITCH = "activate_door_switch"
-    COLLECT_GOLD = "collect_gold"
+
     AVOID_HAZARD = "avoid_hazard"
 
 
@@ -170,7 +170,7 @@ class LevelCompletionAnalyzer:
             'exit_door': [],        # Type 3 - Exit doors  
             'locked_door': [],      # Type 6 - Locked doors
             'door_switch': [],      # Switches that control locked doors
-            'gold': [],             # Type 2 - Gold collectibles
+
             'hazards': []           # Various hazard types
         }
         
@@ -191,8 +191,7 @@ class LevelCompletionAnalyzer:
                 sw_y = getattr(entity, 'sw_ycoord', 0)
                 switch_pos = (int(sw_x // 24), int(sw_y // 24))
                 entity_positions['door_switch'].append(switch_pos)
-            elif entity_type == 2:  # Gold
-                entity_positions['gold'].append(position)
+
             elif entity_type in [1, 14, 20, 25, 26]:  # Various hazards
                 entity_positions['hazards'].append(position)
                 
@@ -563,10 +562,7 @@ class LevelCompletionAnalyzer:
         # Simplified implementation - in practice would generate multiple viable paths
         alternatives = []
         
-        # Alternative 1: Gold collection route (if gold exists)
-        if entity_positions['gold']:
-            gold_route = ['collect_gold', 'navigate_to_exit_switch', 'activate_exit_switch', 'navigate_to_exit_door']
-            alternatives.append(gold_route)
+
         
         # Alternative 2: Hazard avoidance route
         if entity_positions['hazards']:
