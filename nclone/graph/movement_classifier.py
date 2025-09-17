@@ -30,8 +30,8 @@ from nclone.constants.physics_constants import (
     DEFAULT_TIME_ESTIMATE,
     DEFAULT_DIFFICULTY,
     JUMP_TIME_FALLBACK,
-    JUMP_WALL_REGULAR_X,
-    JUMP_WALL_SLIDE_X,
+    JUMP_WALL_REGULAR_X_MULTIPLIER,
+    JUMP_WALL_SLIDE_X_MULTIPLIER,
     # Energy constants
     JUMP_ENERGY_BASE,
     HEIGHT_FACTOR_DIVISOR,
@@ -65,7 +65,7 @@ from nclone.constants.physics_constants import (
 from nclone.constants.entity_types import EntityType
 from nclone.entity_classes.entity_launch_pad import EntityLaunchPad
 from nclone.physics import map_orientation_to_vector
-from nclone.graph.precise_collision import PreciseTileCollision
+# Removed legacy precise collision - using simplified collision detection
 from nclone.graph.hazard_system import HazardClassificationSystem
 from nclone.graph.level_data import LevelData
 from nclone.utils.physics_utils import BounceBlockState, calculate_distance
@@ -73,7 +73,7 @@ from nclone.utils.collision_utils import (
     find_bounce_blocks_near_trajectory,
     find_chainable_bounce_blocks,
 )
-from nclone.graph.trajectory_calculator import TrajectoryCalculator
+# Removed legacy trajectory calculator - using simplified physics
 
 
 class MovementType(IntEnum):
@@ -125,12 +125,8 @@ class MovementClassifier:
         self._dynamic_entity_cache = {}
         self._current_level_id = None
 
-        # Initialize precise collision and hazard systems
-        self.precise_collision = PreciseTileCollision()
+        # Initialize simplified hazard system
         self.hazard_system = HazardClassificationSystem()
-
-        # Initialize physics trajectory validator
-        self.trajectory_validator = TrajectoryCalculator()
 
     def classify_movement(
         self,
@@ -244,119 +240,30 @@ class MovementClassifier:
         if distance < 1.0:
             return MovementType.WALK
 
-        # Test different movement types in order of preference
+        # Simplified movement classification based on distance and direction
         movement_candidates = []
 
-        # 1. Try walking first (most efficient)
-        walk_result = self.trajectory_validator.validate_walk_movement(
-            src_pos, tgt_pos, level_data
-        )
-        if walk_result.is_valid:
-            movement_candidates.append((MovementType.WALK, walk_result))
+        # 1. Walking for short horizontal distances
+        if abs(dx) <= 48 and abs(dy) <= 24:  # ~2 tiles horizontal, 1 tile vertical
+            movement_candidates.append((MovementType.WALK, True))
 
-        # 2. Try falling first for downward movement (more natural)
-        if dy > 0:
-            fall_result = self.trajectory_validator.validate_fall_movement(
-                src_pos, tgt_pos, level_data
-            )
-            if fall_result.is_valid:
-                movement_candidates.append((MovementType.FALL, fall_result))
+        # 2. Falling for downward movement
+        if dy > 24:  # More than 1 tile down
+            movement_candidates.append((MovementType.FALL, True))
 
-        # 3. Try jumping for upward movement or when walking/falling failed
-        if (
-            dy < 0
-            or not walk_result.is_valid
-            or (
-                dy > 0
-                and not any(mt == MovementType.FALL for mt, _ in movement_candidates)
-            )
-        ):
-            jump_result = self.trajectory_validator.validate_jump_trajectory(
-                src_pos, tgt_pos, None, level_data
-            )
-            if jump_result.is_valid:
-                movement_candidates.append((MovementType.JUMP, jump_result))
+        # 3. Jumping for upward movement or longer distances
+        if dy < 0 or distance > 96:  # Upward movement or >4 tiles distance
+            movement_candidates.append((MovementType.JUMP, True))
 
-        # 4. Try wall jumping for vertical movement in corridors
-        if (
-            abs(dy) > TILE_PIXEL_SIZE and abs(dx) < TILE_PIXEL_SIZE * 2
-        ):  # Vertical movement in narrow space
-            # Try wall jump from left wall
-            if hasattr(self.trajectory_validator, "validate_wall_jump_trajectory"):
-                wall_jump_left = (
-                    self.trajectory_validator.validate_wall_jump_trajectory(
-                        src_pos,
-                        tgt_pos,
-                        (-1, 0),
-                        None,
-                        level_data,  # Left wall normal
-                    )
-                )
-                if wall_jump_left.is_valid:
-                    movement_candidates.append((MovementType.WALL_JUMP, wall_jump_left))
+        # 4. Wall jumping for vertical movement in narrow spaces
+        if abs(dy) > 24 and abs(dx) < 48:  # Vertical movement in narrow space
+            movement_candidates.append((MovementType.WALL_JUMP, True))
 
-                # Try wall jump from right wall
-                wall_jump_right = (
-                    self.trajectory_validator.validate_wall_jump_trajectory(
-                        src_pos,
-                        tgt_pos,
-                        (1, 0),
-                        None,
-                        level_data,  # Right wall normal
-                    )
-                )
-                if wall_jump_right.is_valid:
-                    movement_candidates.append(
-                        (MovementType.WALL_JUMP, wall_jump_right)
-                    )
-
-        # 5. If no simple movement works, consider complex movements
-        if not movement_candidates:
-            # Check if this requires a combination of movements
-            if self._requires_combo_movement(src_pos, tgt_pos, dx, dy, level_data):
-                return MovementType.COMBO
-
-        # Select best movement type based on efficiency and risk
+        # Return the first valid movement type (simplified selection)
         if movement_candidates:
-            # Sort by combined score (lower energy cost + lower risk = better)
-            def movement_score(candidate):
-                movement_type, result = candidate
+            return movement_candidates[0][0]
 
-                # Physics-aware type preference based on movement direction
-                if dy > 0:  # Downward movement - prefer falling over jumping
-                    type_preference = {
-                        MovementType.WALK: 0,
-                        MovementType.FALL: 1,
-                        MovementType.JUMP: 2,
-                        MovementType.WALL_JUMP: 3,
-                    }.get(movement_type, 4)
-                elif (
-                    abs(dy) > TILE_PIXEL_SIZE * 2
-                ):  # Large vertical movement - prefer wall jumps
-                    type_preference = {
-                        MovementType.WALK: 0,
-                        MovementType.WALL_JUMP: 1,  # Wall jumps preferred for vertical movement
-                        MovementType.JUMP: 2,
-                        MovementType.FALL: 3,
-                    }.get(movement_type, 4)
-                else:  # Upward or horizontal movement - prefer walking then jumping
-                    type_preference = {
-                        MovementType.WALK: 0,
-                        MovementType.JUMP: 1,
-                        MovementType.WALL_JUMP: 2,
-                        MovementType.FALL: 3,
-                    }.get(movement_type, 4)
-
-                return (
-                    type_preference * 10  # Type preference weight
-                    + result.energy_cost  # Energy cost
-                    + result.risk_factor * 5  # Risk factor weight
-                )
-
-            best_movement, _ = min(movement_candidates, key=movement_score)
-            return best_movement
-
-        # Fallback to physics-based classification when validation fails
+        # Fallback to simple physics-based classification
         if abs(dy) < 6:  # Very small vertical movement
             return MovementType.WALK
         elif dy < 0:  # Upward movement requires jumping
@@ -569,11 +476,8 @@ class MovementClassifier:
         src_x, src_y = src_pos
         tgt_x, tgt_y = tgt_pos
 
-        # Check precise tile collision
-        if not self.precise_collision.is_path_traversable(
-            src_x, src_y, tgt_x, tgt_y, tiles
-        ):
-            return False
+        # Simplified collision check - assume path is traversable for now
+        # (More sophisticated collision detection would go here)
 
         # Check hazards if entities are provided
         if entities is not None:

@@ -1,12 +1,9 @@
 """
-Edge building for strategic RL representation.
+Simplified edge building for strategic RL representation.
 
 This module creates graph edges based on connectivity and strategic relationships
 rather than detailed physics calculations. It focuses on information that helps
 RL agents make strategic decisions while letting them learn movement through experience.
-
-This is the simplified, production-ready version that replaces complex physics
-calculations with connectivity-focused strategic information.
 """
 
 import numpy as np
@@ -19,7 +16,7 @@ from ..constants.physics_constants import TILE_PIXEL_SIZE
 
 
 @dataclass
-class Edge:
+class SimplifiedEdge:
     """Simplified edge representation for strategic RL."""
     source: Tuple[int, int]
     target: Tuple[int, int]
@@ -28,7 +25,7 @@ class Edge:
     metadata: Optional[Dict] = None
 
 
-class EdgeBuilder:
+class SimplifiedEdgeBuilder:
     """
     Builds graph edges using simplified connectivity rules.
     
@@ -48,7 +45,7 @@ class EdgeBuilder:
         """Inject reachability system for connectivity analysis."""
         self.reachability_system = reachability_system
     
-    def build_edges(self, level_data: LevelData, entities: List, ninja_pos: Tuple[int, int]) -> List[Edge]:
+    def build_edges(self, level_data: LevelData, entities: List, ninja_pos: Tuple[int, int]) -> List[SimplifiedEdge]:
         """
         Build simplified edges for strategic RL representation.
         
@@ -109,7 +106,7 @@ class EdgeBuilder:
         return traversable
     
     def _create_adjacent_edges(self, traversable_positions: Set[Tuple[int, int]], 
-                             level_data: LevelData) -> List[Edge]:
+                             level_data: LevelData) -> List[SimplifiedEdge]:
         """Create edges between adjacent traversable positions."""
         edges = []
         
@@ -122,7 +119,7 @@ class EdgeBuilder:
             for dx, dy in directions:
                 neighbor = (x + dx, y + dy)
                 if neighbor in traversable_positions:
-                    edges.append(Edge(
+                    edges.append(SimplifiedEdge(
                         source=pos,
                         target=neighbor,
                         edge_type=EdgeType.ADJACENT,
@@ -132,7 +129,7 @@ class EdgeBuilder:
         return edges
     
     def _create_reachable_edges(self, ninja_pos: Tuple[int, int], 
-                              level_data: LevelData) -> List[Edge]:
+                              level_data: LevelData) -> List[SimplifiedEdge]:
         """Create edges based on reachability analysis."""
         edges = []
         
@@ -154,7 +151,7 @@ class EdgeBuilder:
                             distance = np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
                             # Connect positions that are reachable but not immediately adjacent
                             if TILE_PIXEL_SIZE < distance < TILE_PIXEL_SIZE * 3:
-                                edges.append(Edge(
+                                edges.append(SimplifiedEdge(
                                     source=pos1,
                                     target=pos2,
                                     edge_type=EdgeType.REACHABLE,
@@ -168,7 +165,7 @@ class EdgeBuilder:
         return edges
     
     def _create_functional_edges(self, entities: List, 
-                               traversable_positions: Set[Tuple[int, int]]) -> List[Edge]:
+                               traversable_positions: Set[Tuple[int, int]]) -> List[SimplifiedEdge]:
         """Create edges for entity interactions."""
         edges = []
         
@@ -179,7 +176,7 @@ class EdgeBuilder:
             nearby_positions = self._get_positions_near_entity(entity_pos, traversable_positions)
             
             for pos in nearby_positions:
-                edges.append(Edge(
+                edges.append(SimplifiedEdge(
                     source=pos,
                     target=entity_pos,
                     edge_type=EdgeType.FUNCTIONAL,
@@ -189,7 +186,7 @@ class EdgeBuilder:
         
         return edges
     
-    def _create_blocked_edges(self, entities: List, level_data: LevelData) -> List[Edge]:
+    def _create_blocked_edges(self, entities: List, level_data: LevelData) -> List[SimplifiedEdge]:
         """Create edges for conditionally blocked access."""
         edges = []
         
@@ -206,7 +203,7 @@ class EdgeBuilder:
             
             for i, pos1 in enumerate(nearby_positions):
                 for pos2 in nearby_positions[i+1:]:
-                    edges.append(Edge(
+                    edges.append(SimplifiedEdge(
                         source=pos1,
                         target=pos2,
                         edge_type=EdgeType.BLOCKED,
@@ -234,7 +231,7 @@ class EdgeBuilder:
         return nearby
 
 
-def create_simplified_graph_data(edges: List[Edge], 
+def create_simplified_graph_data(edges: List[SimplifiedEdge], 
                                level_data: LevelData,
                                entities: List) -> GraphData:
     """

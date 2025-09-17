@@ -12,16 +12,18 @@ The components work together to determine which areas of a level are
 accessible to the player from their starting position.
 """
 
-from .reachability_analyzer import ReachabilityAnalyzer
-from .reachability_state import ReachabilityState
+from .tiered_system import TieredReachabilitySystem
+from .reachability_types import ReachabilityApproximation, ReachabilityResult, PerformanceTarget
 from .position_validator import PositionValidator
 from .collision_checker import CollisionChecker
 from .physics_movement import PhysicsMovement
 from .game_mechanics import GameMechanics
 
 __all__ = [
-    "ReachabilityAnalyzer",
-    "ReachabilityState",
+    "TieredReachabilitySystem",
+    "ReachabilityApproximation",
+    "ReachabilityResult", 
+    "PerformanceTarget",
     "PositionValidator",
     "CollisionChecker",
     "PhysicsMovement",

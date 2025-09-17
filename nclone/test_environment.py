@@ -27,8 +27,9 @@ import numpy as np
 from PIL import Image
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.reachability import ReachabilityAnalyzer
-from nclone.graph.trajectory_calculator import TrajectoryCalculator
+from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
+from nclone.graph.reachability.reachability_types import PerformanceTarget
+# Removed legacy trajectory calculator import
 from nclone.graph.subgoal_planner import SubgoalPlanner
 from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
 from nclone.graph.reachability.frontier_detector import FrontierDetector
@@ -278,9 +279,8 @@ if (
     print("Initializing reachability analysis system...")
     
     try:
-        # Initialize trajectory calculator and reachability analyzer
-        trajectory_calc = TrajectoryCalculator()
-        reachability_analyzer = ReachabilityAnalyzer(trajectory_calc)
+        # Initialize simplified reachability analyzer
+        reachability_analyzer = TieredReachabilitySystem()
         
         # Initialize subgoal planner and integration
         base_subgoal_planner = SubgoalPlanner()
@@ -372,8 +372,11 @@ if args.export_reachability and reachability_analyzer:
             ninja_row, ninja_col = ninja_pos
             
             # Perform reachability analysis from ninja position
+            # Convert ninja position to integer coordinates and add switch states
+            ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
+            switch_states = {}  # Empty switch states for export
             reachability_state = reachability_analyzer.analyze_reachability(
-                env.level_data, ninja_pos
+                env.level_data, ninja_pos_int, switch_states, PerformanceTarget.BALANCED
             )
             
             # Get subgoals if requested
@@ -492,8 +495,10 @@ while running:
                             ninja_pos = _get_ninja_position(env)
                             if ninja_pos:
                                 ninja_row, ninja_col = ninja_pos
+                                ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
+                                switch_states = {}
                                 reachability_state = reachability_analyzer.analyze_reachability(
-                                    env.level_data, ninja_pos
+                                    env.level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
                                 )
                                 
                                 # Get subgoals and frontiers if enabled
@@ -522,8 +527,10 @@ while running:
                                 ninja_pos = _get_ninja_position(env)
                                 if ninja_pos:
                                     ninja_row, ninja_col = ninja_pos
+                                    ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
+                                    switch_states = {}
                                     reachability_state = reachability_analyzer.analyze_reachability(
-                                        env.level_data, ninja_pos
+                                        env.level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
                                     )
                                     subgoals = subgoal_planner.enhance_subgoals_with_reachability(env.level_data, reachability_state) if subgoals_debug_enabled else []
                                     frontiers = frontier_detector.detect_frontiers(env.level_data, reachability_state) if frontiers_debug_enabled else []
@@ -543,8 +550,10 @@ while running:
                                 ninja_pos = _get_ninja_position(env)
                                 if ninja_pos:
                                     ninja_row, ninja_col = ninja_pos
+                                    ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
+                                    switch_states = {}
                                     reachability_state = reachability_analyzer.analyze_reachability(
-                                        env.level_data, ninja_pos
+                                        env.level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
                                     )
                                     subgoals = subgoal_planner.enhance_subgoals_with_reachability(env.level_data, reachability_state) if subgoals_debug_enabled else []
                                     frontiers = frontier_detector.detect_frontiers(env.level_data, reachability_state) if frontiers_debug_enabled else []
