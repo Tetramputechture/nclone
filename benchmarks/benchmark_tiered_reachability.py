@@ -127,9 +127,9 @@ class ReachabilityBenchmark:
             start_time = time.perf_counter()
             
             if tier_num == 1:
-                result = self.tiered_system.tier1.quick_check(ninja_pos, level_data, switch_states)
+                result = self.tiered_system.tier1.quick_check(ninja_pos, level_data, switch_states, [])
             elif tier_num == 2:
-                result = self.tiered_system.tier2.medium_analysis(ninja_pos, level_data, switch_states)
+                result = self.tiered_system.tier2.quick_check(ninja_pos, level_data, switch_states, [])
             else:
                 raise ValueError(f"Unsupported tier: {tier_num}")
             
