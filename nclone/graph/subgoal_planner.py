@@ -1,9 +1,12 @@
 """
-Hierarchical subgoal planning for complex multi-step objectives.
+Simplified subgoal planning for Phase 1 RL training.
 
-This module implements a hierarchical navigation system that breaks down
-complex objectives into manageable subgoals, considering game mechanics
-like switch activation, door unlocking, and sequential dependencies.
+This module provides a simplified, reactive approach to level completion
+that is optimized for RL learning. It uses the SimplifiedCompletionStrategy
+to provide clear, unambiguous objectives.
+
+For backward compatibility, it maintains the same API as the original
+hierarchical planner while using the simplified approach internally.
 """
 
 import numpy as np
@@ -15,28 +18,34 @@ from .reachability.reachability_types import ReachabilityApproximation, Reachabi
 from .navigation import PathfindingEngine
 from .reachability.opencv_flood_fill import OpenCVFloodFill
 from .subgoal_types import Subgoal, SubgoalPlan, CompletionStrategyInfo
+from .simple_objective_system import SimplifiedCompletionStrategy, SimpleObjective, ObjectiveType
 
 
 class SubgoalPlanner:
     """
-    Hierarchical planner for multi-step objectives.
+    Simplified planner for Phase 1 RL training.
     
-    This class analyzes level structure and creates optimal plans for
-    reaching complex objectives that require multiple steps, such as:
-    - Activating switches to unlock doors
-    - Sequential switch activation
-    - Navigating to final objectives (exits)
+    This class provides a simplified, reactive approach to level completion
+    that is optimized for RL learning. It maintains backward compatibility
+    with the original hierarchical API while using simplified logic internally.
+    
+    The simplified approach:
+    1. Check if exit switch is reachable → if yes, that's the goal
+    2. If not, find nearest reachable locked door switch → that's the goal
+    3. Check if exit door is reachable → if yes, that's the goal
+    4. If not, find nearest reachable switch → that's the goal
     """
     
     def __init__(self, debug: bool = False):
         """
-        Initialize subgoal planner.
+        Initialize simplified subgoal planner.
         
         Args:
             debug: Enable debug output (default: False)
         """
         self.navigation_engine = PathfindingEngine(debug=debug)
         self.debug = debug
+        self.simplified_strategy = SimplifiedCompletionStrategy(debug=debug)
         
     def create_subgoal_plan(
         self, 
@@ -365,78 +374,126 @@ class SubgoalPlanner:
         reachability_analyzer: Optional[OpenCVFloodFill] = None
     ) -> Optional[SubgoalPlan]:
         """
-        Create hierarchical completion plan using recursive switch-door dependency analysis.
+        Create simplified completion plan optimized for RL training.
         
-        This implements the hierarchical subgoal planning algorithm from HIERARCHICAL_SUBGOAL_PLANNING.md:
-        1. Check if exit switch is reachable from current position
-        2. If not, find locked doors blocking the path and their required switches
-        3. Recursively analyze switch reachability until all dependencies are resolved
-        4. Return optimal completion sequence with prioritized subgoals
+        This method now uses the simplified strategy:
+        1. Check if exit switch is reachable → if yes, that's the goal
+        2. If not, find nearest reachable locked door switch → that's the goal
+        3. Check if exit door is reachable → if yes, that's the goal
+        4. If not, find nearest reachable switch → that's the goal
         
         Args:
             ninja_position: Current ninja position (x, y)
             level_data: Level tile data
             entities: List of entities in the level
             switch_states: Current state of switches (activated/not activated)
-            reachability_analyzer: OpenCV flood fill analyzer for reachability queries
+            reachability_analyzer: OpenCV flood fill analyzer (unused in simplified version)
             
         Returns:
-            SubgoalPlan with hierarchical completion strategy, or None if impossible
+            SubgoalPlan with single clear objective, or None if no objective found
         """
         if switch_states is None:
             switch_states = {}
         
-        if reachability_analyzer is None:
-            reachability_analyzer = OpenCVFloodFill(render_scale=1.0, debug=self.debug)
+        # Use simplified strategy to get next objective
+        objective = self.simplified_strategy.get_next_objective(
+            ninja_position, level_data, entities, switch_states
+        )
         
-        # Step 1: Extract entity positions and relationships
-        entity_info = self._extract_entity_relationships(entities)
-        
-        if not self._has_required_entities(entity_info):
+        if objective is None:
             if self.debug:
-                print("DEBUG: Level missing required entities (exit switch or exit door)")
+                print("DEBUG: No reachable objectives found")
             return None
         
-        # Step 2: Analyze current reachability
-        reachability_result = reachability_analyzer.quick_check(
-            ninja_position, level_data, entities
+        # Convert SimpleObjective to Subgoal for backward compatibility
+        subgoal = self._convert_objective_to_subgoal(objective)
+        
+        # Create simple plan with single objective
+        plan = SubgoalPlan(
+            subgoals=[subgoal],
+            execution_order=[0],  # Single objective at index 0
+            total_estimated_cost=objective.distance
         )
         
-        # Step 3: Implement recursive completion algorithm
-        completion_subgoals = self._recursive_completion_analysis(
-            ninja_position, entity_info, reachability_result, switch_states, 
-            level_data, entities, reachability_analyzer
+        if self.debug:
+            print(f"DEBUG: Created simplified plan: {objective.description}")
+        
+        return plan
+    
+    def _convert_objective_to_subgoal(self, objective: SimpleObjective) -> Subgoal:
+        """
+        Convert SimpleObjective to Subgoal for backward compatibility.
+        
+        Args:
+            objective: SimpleObjective from simplified strategy
+            
+        Returns:
+            Subgoal object compatible with existing API
+        """
+        # Map objective types to goal types
+        goal_type_map = {
+            ObjectiveType.REACH_EXIT_SWITCH: 'exit_switch',
+            ObjectiveType.REACH_DOOR_SWITCH: 'locked_door_switch',
+            ObjectiveType.REACH_EXIT_DOOR: 'exit',
+            ObjectiveType.REACH_SWITCH: 'switch',
+        }
+        
+        goal_type = goal_type_map.get(objective.objective_type, 'unknown')
+        
+        # Convert position from pixel coordinates to sub-cell coordinates
+        sub_row = int(objective.position[1] // SUB_CELL_SIZE)
+        sub_col = int(objective.position[0] // SUB_CELL_SIZE)
+        
+        return Subgoal(
+            goal_type=goal_type,
+            position=(sub_row, sub_col),
+            priority=int(objective.priority * 10),  # Convert to integer priority
+            node_idx=None  # Not needed for simplified approach
         )
+    
+    def get_current_objective(self) -> Optional[SimpleObjective]:
+        """
+        Get the current objective from the simplified strategy.
         
-        if not completion_subgoals:
-            if self.debug:
-                print("DEBUG: No viable completion strategy found")
-            return None
+        This method provides direct access to the simplified objective
+        for RL integration and feature encoding.
         
-        # Step 4: Create execution order and estimate costs
-        # Find the final exit subgoal as the target
-        target_subgoal = None
-        for subgoal in completion_subgoals:
-            if subgoal.goal_type == 'exit':
-                target_subgoal = subgoal
-                break
+        Returns:
+            Current SimpleObjective or None
+        """
+        return self.simplified_strategy.get_current_objective()
+    
+    def get_objective_for_rl_features(self, ninja_position: Tuple[float, float]) -> Dict[str, float]:
+        """
+        Get objective information formatted for RL feature encoding.
         
-        if target_subgoal is None:
-            # If no exit subgoal, use the last subgoal as target
-            target_subgoal = completion_subgoals[-1] if completion_subgoals else None
+        This method provides objective data in a format suitable for
+        TASK_003's compact feature encoding.
         
-        if target_subgoal is None:
-            return None
+        Args:
+            ninja_position: Current ninja position
+            
+        Returns:
+            Dictionary with objective features for RL integration
+        """
+        return self.simplified_strategy.get_objective_for_rl_features(ninja_position)
+    
+    def is_objective_reached(self, ninja_position: Tuple[float, float], threshold: float = 24.0) -> bool:
+        """
+        Check if the current objective has been reached.
         
-        execution_order = self._create_execution_order(completion_subgoals, target_subgoal)
-        # For hierarchical completion, use simplified cost estimation
-        total_cost = float(len(completion_subgoals))  # Simple cost based on number of subgoals
-        
-        return SubgoalPlan(
-            subgoals=completion_subgoals,
-            execution_order=execution_order,
-            total_estimated_cost=total_cost
-        )
+        Args:
+            ninja_position: Current ninja position
+            threshold: Distance threshold for "reached" (default: 24 pixels = 1 tile)
+            
+        Returns:
+            True if objective is reached
+        """
+        return self.simplified_strategy.is_objective_reached(ninja_position, threshold)
+    
+    def clear_objective(self):
+        """Clear the current objective (e.g., when objective is reached)."""
+        self.simplified_strategy.clear_objective()
     
     def _extract_entity_relationships(self, entities: List[Any]) -> Dict[str, Any]:
         """
