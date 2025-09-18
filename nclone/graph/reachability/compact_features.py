@@ -556,21 +556,47 @@ class CompactReachabilityFeatures:
     
     def _switch_has_dependencies(self, switch_info: Dict[str, Any]) -> bool:
         """Check if switch has dependencies (controls doors)."""
-        # This would need to be implemented based on level structure
-        # For now, assume door switches have dependencies
         switch_type = switch_info.get('type', '')
-        return 'door' in switch_type
+        
+        # Enhanced dependency detection based on switch type
+        dependency_indicators = [
+            'door', 'exit', 'locked', 'trap', 'gate'
+        ]
+        
+        return any(indicator in switch_type.lower() for indicator in dependency_indicators)
     
     def _count_switch_dependencies(self, switch_info: Dict[str, Any]) -> int:
-        """Count number of dependencies for a switch."""
-        # Simplified implementation - would need level structure analysis
-        switch_type = switch_info.get('type', '')
+        """Count number of dependencies for a switch with enhanced analysis."""
+        switch_type = switch_info.get('type', '').lower()
+        position = switch_info.get('position', (0, 0))
+        
+        # Base dependency count based on switch type
+        base_dependencies = 0
+        
         if 'exit' in switch_type:
-            return 3  # High importance
+            base_dependencies = 3  # Exit switches are critical
+        elif 'locked_door' in switch_type or 'door_locked' in switch_type:
+            base_dependencies = 2  # Locked doors block progress
         elif 'door' in switch_type:
-            return 2  # Medium importance
+            base_dependencies = 2  # Regular doors
+        elif 'trap' in switch_type:
+            base_dependencies = 1  # Trap doors (negative impact)
+        elif 'gate' in switch_type:
+            base_dependencies = 2  # Gates block areas
         else:
-            return 1  # Low importance
+            base_dependencies = 1  # Generic switches
+        
+        # Additional factors that could increase dependency count:
+        # 1. Switch position (central switches likely more important)
+        # 2. Switch accessibility (harder to reach = more important when reached)
+        
+        # Position-based importance (switches in central areas are more critical)
+        # This is a heuristic - in a full implementation, you'd analyze the level graph
+        x, y = position
+        if 200 <= x <= 800 and 200 <= y <= 400:  # Rough center area
+            base_dependencies += 1
+        
+        return min(base_dependencies, 5)  # Cap at 5 dependencies
     
     def _get_hazards_from_entities(self, entities: List[Any], ninja_position: Tuple[float, float]) -> List[Dict[str, Any]]:
         """Extract and prioritize hazard information from entities."""
@@ -668,11 +694,8 @@ class CompactReachabilityFeatures:
         return sectors
     
     def _get_positions_in_sector(self, sector: Dict[str, Any], level_data: Any) -> Set[Tuple[int, int]]:
-        """Get all positions within a directional sector."""
+        """Get all positions within a directional sector using proper angular calculations."""
         positions = set()
-        
-        # This is a simplified implementation
-        # In practice, you'd want to calculate which tiles fall within the sector angle
         
         if hasattr(level_data, 'shape'):
             height, width = level_data.shape
@@ -680,31 +703,70 @@ class CompactReachabilityFeatures:
             width = getattr(level_data, 'width', 100)
             height = getattr(level_data, 'height', 100)
         
-        # For now, divide level into 8 equal rectangular sectors
-        sector_width = width // 4
-        sector_height = height // 4
-        
         sector_name = sector['name']
+        ninja_x = sector.get('center_x', width * 12)
+        ninja_y = sector.get('center_y', height * 12)
         
-        # Map sector names to grid positions
-        sector_map = {
-            'N': (1, 0), 'NE': (2, 0), 'E': (2, 1), 'SE': (2, 2),
-            'S': (1, 2), 'SW': (0, 2), 'W': (0, 1), 'NW': (0, 0)
+        # Define sector angles (in radians, 0 = right, π/2 = up)
+        sector_angles = {
+            'E': (7*math.pi/4, math.pi/4),      # -45° to 45°
+            'NE': (math.pi/4, 3*math.pi/4),     # 45° to 135°
+            'N': (3*math.pi/4, 5*math.pi/4),    # 135° to 225°
+            'NW': (5*math.pi/4, 7*math.pi/4),   # 225° to 315°
+            'W': (7*math.pi/4, math.pi/4),      # 315° to 45° (wraps around)
+            'SW': (math.pi/4, 3*math.pi/4),     # Same as NE but mirrored
+            'S': (3*math.pi/4, 5*math.pi/4),    # Same as N but mirrored
+            'SE': (5*math.pi/4, 7*math.pi/4),   # Same as NW but mirrored
         }
         
-        if sector_name in sector_map:
-            grid_x, grid_y = sector_map[sector_name]
+        # Correct sector angle mapping
+        angle_map = {
+            'E': (0, math.pi/4),                # 0° to 45°
+            'NE': (math.pi/4, 3*math.pi/4),     # 45° to 135°
+            'N': (3*math.pi/4, 5*math.pi/4),    # 135° to 225°
+            'NW': (5*math.pi/4, 7*math.pi/4),   # 225° to 315°
+            'W': (7*math.pi/4, 2*math.pi),      # 315° to 360°
+            'SW': (math.pi, 5*math.pi/4),       # 180° to 225°
+            'S': (3*math.pi/2, 7*math.pi/4),    # 270° to 315°
+            'SE': (7*math.pi/4, 2*math.pi),     # 315° to 360°
+        }
+        
+        # Use proper directional angles
+        if sector_name in angle_map:
+            start_angle, end_angle = angle_map[sector_name]
             
-            start_x = grid_x * sector_width
-            end_x = min((grid_x + 1) * sector_width, width)
-            start_y = grid_y * sector_height
-            end_y = min((grid_y + 1) * sector_height, height)
+            # Calculate maximum distance to consider (level diagonal)
+            max_distance = math.sqrt((width * 24)**2 + (height * 24)**2)
             
-            for x in range(start_x, end_x):
-                for y in range(start_y, end_y):
-                    # Convert to pixel coordinates
-                    pixel_pos = (x * 24 + 12, y * 24 + 12)
-                    positions.add(pixel_pos)
+            # Sample positions in the sector
+            for x in range(0, width):
+                for y in range(0, height):
+                    pixel_x = x * 24 + 12
+                    pixel_y = y * 24 + 12
+                    
+                    # Calculate angle from ninja position to this position
+                    dx = pixel_x - ninja_x
+                    dy = pixel_y - ninja_y
+                    
+                    if dx == 0 and dy == 0:
+                        continue  # Skip ninja's current position
+                    
+                    angle = math.atan2(-dy, dx)  # Negative dy for screen coordinates
+                    if angle < 0:
+                        angle += 2 * math.pi  # Normalize to [0, 2π]
+                    
+                    # Check if angle is within sector
+                    in_sector = False
+                    if start_angle <= end_angle:
+                        in_sector = start_angle <= angle <= end_angle
+                    else:  # Wraps around (e.g., 315° to 45°)
+                        in_sector = angle >= start_angle or angle <= end_angle
+                    
+                    if in_sector:
+                        # Also check distance to avoid including the entire level
+                        distance = math.sqrt(dx*dx + dy*dy)
+                        if distance <= max_distance * 0.7:  # Limit to 70% of level diagonal
+                            positions.add((pixel_x, pixel_y))
         
         return positions
     
@@ -715,34 +777,272 @@ class CompactReachabilityFeatures:
         level_data: Any,
         reachability_result: ReachabilityResult
     ) -> float:
-        """Assess capability for specific movement type."""
-        # Simplified implementation - would need physics simulation
-        
-        # Get nearby reachable positions
-        reachable_positions = reachability_result.reachable_positions
-        nearby_reachable = 0
-        total_nearby = 0
-        
-        # Check positions in movement direction
+        """Assess capability for specific movement type using physics-based calculations."""
         ninja_x, ninja_y = ninja_position
+        reachable_positions = reachability_result.reachable_positions
         
-        if 'left' in movement_type:
-            test_positions = [(ninja_x - 24*i, ninja_y) for i in range(1, 4)]
-        elif 'right' in movement_type:
-            test_positions = [(ninja_x + 24*i, ninja_y) for i in range(1, 4)]
-        elif 'up' in movement_type:
-            test_positions = [(ninja_x, ninja_y - 24*i) for i in range(1, 4)]
-        elif 'jump' in movement_type:
-            test_positions = [(ninja_x + 24*i, ninja_y - 24*j) for i in range(-2, 3) for j in range(1, 4)]
-        else:
-            test_positions = [(ninja_x + 24*i, ninja_y + 24*j) for i in range(-1, 2) for j in range(-1, 2)]
+        # Physics constants (from ninja.py constants)
+        GRAVITY = 0.21  # Approximate gravity constant
+        MAX_HORIZONTAL_SPEED = 4.5
+        JUMP_VELOCITY = -9.0  # Negative for upward movement
+        WALL_JUMP_X = 4.0
+        WALL_JUMP_Y = -7.0
         
-        for pos in test_positions:
-            total_nearby += 1
-            if pos in reachable_positions:
-                nearby_reachable += 1
+        capability_score = 0.0
+        test_count = 0
         
-        return nearby_reachable / total_nearby if total_nearby > 0 else 0.0
+        if movement_type == 'walk_left':
+            # Test horizontal walking capability to the left
+            for distance in [24, 48, 72]:  # 1, 2, 3 tiles
+                test_pos = (ninja_x - distance, ninja_y)
+                if self._is_position_walkable(test_pos, level_data) and test_pos in reachable_positions:
+                    capability_score += 1.0 / (distance / 24)  # Closer positions weighted higher
+                test_count += 1
+                
+        elif movement_type == 'walk_right':
+            # Test horizontal walking capability to the right
+            for distance in [24, 48, 72]:
+                test_pos = (ninja_x + distance, ninja_y)
+                if self._is_position_walkable(test_pos, level_data) and test_pos in reachable_positions:
+                    capability_score += 1.0 / (distance / 24)
+                test_count += 1
+                
+        elif movement_type == 'jump_up':
+            # Test vertical jumping capability
+            for height in [24, 48, 72, 96]:  # Different jump heights
+                test_pos = (ninja_x, ninja_y - height)
+                if self._can_reach_by_jumping(ninja_position, test_pos, level_data):
+                    if test_pos in reachable_positions:
+                        capability_score += 1.0 / (height / 24)
+                test_count += 1
+                
+        elif movement_type == 'jump_left':
+            # Test diagonal jumping to the left
+            for dx, dy in [(-24, -24), (-48, -24), (-24, -48), (-48, -48)]:
+                test_pos = (ninja_x + dx, ninja_y + dy)
+                if self._can_reach_by_jumping(ninja_position, test_pos, level_data):
+                    if test_pos in reachable_positions:
+                        distance = math.sqrt(dx*dx + dy*dy)
+                        capability_score += 1.0 / (distance / 24)
+                test_count += 1
+                
+        elif movement_type == 'jump_right':
+            # Test diagonal jumping to the right
+            for dx, dy in [(24, -24), (48, -24), (24, -48), (48, -48)]:
+                test_pos = (ninja_x + dx, ninja_y + dy)
+                if self._can_reach_by_jumping(ninja_position, test_pos, level_data):
+                    if test_pos in reachable_positions:
+                        distance = math.sqrt(dx*dx + dy*dy)
+                        capability_score += 1.0 / (distance / 24)
+                test_count += 1
+                
+        elif movement_type == 'wall_jump':
+            # Test wall jumping capability
+            wall_jump_positions = [
+                (ninja_x - WALL_JUMP_X * 24, ninja_y + WALL_JUMP_Y * 24),  # Left wall jump
+                (ninja_x + WALL_JUMP_X * 24, ninja_y + WALL_JUMP_Y * 24),  # Right wall jump
+            ]
+            
+            for test_pos in wall_jump_positions:
+                if self._can_wall_jump_to(ninja_position, test_pos, level_data):
+                    if test_pos in reachable_positions:
+                        capability_score += 1.0
+                test_count += 1
+                
+        elif movement_type == 'fall':
+            # Test falling capability
+            for distance in [24, 48, 96, 144]:  # Different fall distances
+                test_pos = (ninja_x, ninja_y + distance)
+                if self._can_fall_to(ninja_position, test_pos, level_data):
+                    if test_pos in reachable_positions:
+                        capability_score += 1.0 / (distance / 48)  # Falling is easier than jumping
+                test_count += 1
+                
+        elif movement_type == 'special':
+            # Test special movement capabilities (launch pads, bounce blocks, etc.)
+            capability_score = self._assess_special_movement_capability(
+                ninja_position, level_data, reachability_result
+            )
+            test_count = 1
+        
+        return capability_score / test_count if test_count > 0 else 0.0
+    
+    def _is_position_walkable(self, position: Tuple[float, float], level_data: Any) -> bool:
+        """Check if a position is walkable (has ground support)."""
+        x, y = position
+        
+        # Convert to tile coordinates
+        tile_x = int(x // 24)
+        tile_y = int(y // 24)
+        
+        # Check if position is within level bounds
+        if hasattr(level_data, 'shape'):
+            height, width = level_data.shape
+            if tile_x < 0 or tile_x >= width or tile_y < 0 or tile_y >= height:
+                return False
+            
+            # Check if current position is not solid
+            if level_data[tile_y, tile_x] != 0:  # 0 = empty space
+                return False
+            
+            # Check if there's ground support below
+            if tile_y + 1 < height:
+                return level_data[tile_y + 1, tile_x] != 0  # Has ground below
+        
+        return True  # Default to walkable if we can't determine
+    
+    def _can_reach_by_jumping(self, start_pos: Tuple[float, float], target_pos: Tuple[float, float], level_data: Any) -> bool:
+        """Check if target position can be reached by jumping using physics simulation."""
+        start_x, start_y = start_pos
+        target_x, target_y = target_pos
+        
+        # Calculate required velocity for jump
+        dx = target_x - start_x
+        dy = target_y - start_y
+        
+        # Simple physics check - can we reach this with a reasonable jump?
+        GRAVITY = 0.21
+        MAX_JUMP_VELOCITY = 9.0
+        MAX_HORIZONTAL_VELOCITY = 4.5
+        
+        # Check if horizontal distance is achievable
+        if abs(dx) > MAX_HORIZONTAL_VELOCITY * 60:  # 60 frames max flight time
+            return False
+        
+        # Check if vertical distance is achievable
+        if dy > 0:  # Jumping down
+            # Can always fall down (with some limits)
+            if dy > 300:  # Max reasonable fall distance
+                return False
+        else:  # Jumping up
+            # Check if we can jump high enough
+            max_jump_height = (MAX_JUMP_VELOCITY * MAX_JUMP_VELOCITY) / (2 * GRAVITY)
+            if abs(dy) > max_jump_height:
+                return False
+        
+        # Simple collision check - ensure path is mostly clear
+        return self._is_jump_path_clear(start_pos, target_pos, level_data)
+    
+    def _can_wall_jump_to(self, start_pos: Tuple[float, float], target_pos: Tuple[float, float], level_data: Any) -> bool:
+        """Check if target position can be reached by wall jumping."""
+        start_x, start_y = start_pos
+        target_x, target_y = target_pos
+        
+        # Check if there's a wall nearby to jump off
+        wall_positions = [
+            (start_x - 24, start_y),  # Left wall
+            (start_x + 24, start_y),  # Right wall
+        ]
+        
+        has_wall = False
+        for wall_pos in wall_positions:
+            if self._is_position_solid(wall_pos, level_data):
+                has_wall = True
+                break
+        
+        if not has_wall:
+            return False
+        
+        # Check if target is within wall jump range
+        dx = abs(target_x - start_x)
+        dy = abs(target_y - start_y)
+        
+        # Wall jump physics constraints
+        if dx > 96 or dy > 168:  # Reasonable wall jump limits
+            return False
+        
+        return self._is_jump_path_clear(start_pos, target_pos, level_data)
+    
+    def _can_fall_to(self, start_pos: Tuple[float, float], target_pos: Tuple[float, float], level_data: Any) -> bool:
+        """Check if target position can be reached by falling."""
+        start_x, start_y = start_pos
+        target_x, target_y = target_pos
+        
+        # Can only fall down
+        if target_y <= start_y:
+            return False
+        
+        # Check if horizontal distance is reasonable for falling
+        dx = abs(target_x - start_x)
+        if dx > 120:  # Max horizontal drift while falling
+            return False
+        
+        # Check if path is clear
+        return self._is_fall_path_clear(start_pos, target_pos, level_data)
+    
+    def _assess_special_movement_capability(
+        self, 
+        ninja_position: Tuple[float, float], 
+        level_data: Any, 
+        reachability_result: ReachabilityResult
+    ) -> float:
+        """Assess special movement capabilities (launch pads, bounce blocks, etc.)."""
+        # This would need entity information to properly assess
+        # For now, return a basic assessment based on reachable positions
+        ninja_x, ninja_y = ninja_position
+        reachable_positions = reachability_result.reachable_positions
+        
+        # Check for positions that would require special movement
+        special_positions = 0
+        total_positions = 0
+        
+        # Look for positions that are far from ninja (indicating special movement)
+        for pos in reachable_positions:
+            distance = math.sqrt((pos[0] - ninja_x)**2 + (pos[1] - ninja_y)**2)
+            if distance > 150:  # Far positions likely need special movement
+                special_positions += 1
+            total_positions += 1
+        
+        return special_positions / total_positions if total_positions > 0 else 0.0
+    
+    def _is_position_solid(self, position: Tuple[float, float], level_data: Any) -> bool:
+        """Check if a position contains solid terrain."""
+        x, y = position
+        tile_x = int(x // 24)
+        tile_y = int(y // 24)
+        
+        if hasattr(level_data, 'shape'):
+            height, width = level_data.shape
+            if 0 <= tile_x < width and 0 <= tile_y < height:
+                return level_data[tile_y, tile_x] != 0
+        
+        return False
+    
+    def _is_jump_path_clear(self, start_pos: Tuple[float, float], target_pos: Tuple[float, float], level_data: Any) -> bool:
+        """Check if jump path is reasonably clear of obstacles."""
+        start_x, start_y = start_pos
+        target_x, target_y = target_pos
+        
+        # Sample points along the jump arc
+        num_samples = 5
+        for i in range(1, num_samples):
+            t = i / num_samples
+            # Simple linear interpolation (could be improved with actual arc)
+            sample_x = start_x + t * (target_x - start_x)
+            sample_y = start_y + t * (target_y - start_y)
+            
+            if self._is_position_solid((sample_x, sample_y), level_data):
+                return False
+        
+        return True
+    
+    def _is_fall_path_clear(self, start_pos: Tuple[float, float], target_pos: Tuple[float, float], level_data: Any) -> bool:
+        """Check if fall path is clear of obstacles."""
+        start_x, start_y = start_pos
+        target_x, target_y = target_pos
+        
+        # Check vertical path with slight horizontal drift
+        steps = int((target_y - start_y) // 12)  # Check every half tile
+        
+        for i in range(1, steps):
+            t = i / steps
+            sample_x = start_x + t * (target_x - start_x)
+            sample_y = start_y + t * (target_y - start_y)
+            
+            if self._is_position_solid((sample_x, sample_y), level_data):
+                return False
+        
+        return True
     
     def _estimate_level_complexity(self, level_data: Any, entities: List[Any]) -> float:
         """Estimate overall level complexity."""
