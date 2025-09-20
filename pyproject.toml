@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "nclone"
 description = "N++ clone with reinforcement learning capabilities"
 readme = "README.md"
-requires-python = ">=3.12.2"
+requires-python = ">=3.11.2"
 license = "MIT"
 authors = [
     {name = "nclone contributors"}
@@ -113,7 +113,7 @@ exclude_lines = [
 
 [tool.black]
 line-length = 100
-target-version = ['py312']
+target-version = ['py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
