@@ -1,5 +1,5 @@
 """
-Graph observation module for BasicLevelNoGold environment.
+Graph observation module for NppEnvironment environment.
 
 This module extends the environment to provide graph-based structural observations
 alongside the existing visual and symbolic observations.
@@ -22,26 +22,22 @@ class GraphObservationMixin:
     graph-based structural observations without modifying the core environment.
     """
 
-    def __init__(self, *args, use_graph_obs: bool = False, **kwargs):
+    def __init__(self, *args, **kwargs):
         """
         Initialize graph observation capabilities.
 
         Args:
-            use_graph_obs: Whether to include graph observations
             *args, **kwargs: Passed to parent class
         """
         super().__init__(*args, **kwargs)
 
-        self.use_graph_obs = use_graph_obs
-        self.graph_builder = HierarchicalGraphBuilder() if use_graph_obs else None
+        self.graph_builder = HierarchicalGraphBuilder()
 
         # Cache for graph data to avoid recomputation
         self._graph_cache = None
         self._last_graph_state = None
 
-        # Extend observation space if using graph observations
-        if self.use_graph_obs:
-            self._extend_observation_space()
+        self._extend_observation_space()
 
     def _extend_observation_space(self):
         """Extend the observation space to include graph observations."""
@@ -87,9 +83,6 @@ class GraphObservationMixin:
         Returns:
             Dictionary containing graph observation components
         """
-        if not self.use_graph_obs:
-            return {}
-
         # Check if we need to recompute graph (state changed)
         current_state = self._get_graph_state_signature()
         if self._graph_cache is None or current_state != self._last_graph_state:
@@ -245,42 +238,32 @@ def add_graph_observation_to_env(env_class):
             base_obs = super()._get_observation()
 
             # Add graph observation if enabled
-            if self.use_graph_obs:
-                graph_obs = self._get_graph_observation()
+            graph_obs = self._get_graph_observation()
 
-                # Merge observations
-                if isinstance(base_obs, dict):
-                    obs = base_obs.copy()
-                    obs.update(graph_obs)
-                    return obs
-                else:
-                    # If base observation is not a dict, we need to restructure
-                    obs = {"base_obs": base_obs}
-                    obs.update(graph_obs)
-                    return obs
-
-            return base_obs
+            obs = base_obs.copy()
+            obs.update(graph_obs)
+            return obs
 
     return GraphObservationEnv
 
 
-# Example usage: Create enhanced BasicLevelNoGold with graph observations
+# Example usage: Create enhanced NppEnvironment with graph observations
 def create_graph_enhanced_env(**kwargs):
     """
-    Create BasicLevelNoGold environment with graph observation capabilities.
+    Create NppEnvironment environment with graph observation capabilities.
 
     Args:
-        **kwargs: Environment configuration including use_graph_obs
+        **kwargs: Environment configuration
 
     Returns:
         Enhanced environment instance
     """
-    from nclone.nclone_environments.basic_level_no_gold.basic_level_no_gold import (
-        BasicLevelNoGold,
+    from nclone.gym_environment.npp_environment import (
+        NppEnvironment,
     )
 
     # Create enhanced environment class
-    GraphEnhancedEnv = add_graph_observation_to_env(BasicLevelNoGold)
+    GraphEnhancedEnv = add_graph_observation_to_env(NppEnvironment)
 
     # Return instance
     return GraphEnhancedEnv(**kwargs)

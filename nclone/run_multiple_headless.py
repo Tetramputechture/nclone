@@ -5,7 +5,7 @@ import time
 import imageio
 import os
 import numpy as np
-from .nclone_environments.npp_environment import NppEnvironment
+from .gym_environment.npp_environment import NppEnvironment
 
 
 def random_action():
