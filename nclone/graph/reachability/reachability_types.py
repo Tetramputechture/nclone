@@ -5,7 +5,7 @@ This module contains common data structures used across different
 reachability analysis implementations to avoid circular imports.
 """
 
-from typing import Set, Tuple, Dict, Optional, Any, List
+from typing import Set, Tuple, Dict
 from dataclasses import dataclass
 from enum import Enum
 

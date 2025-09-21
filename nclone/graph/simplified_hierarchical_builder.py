@@ -8,15 +8,14 @@ in a Deep RL setting.
 """
 
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-from .common import GraphData, NodeType, EdgeType
+from .common import GraphData
 from .level_data import LevelData, ensure_level_data
 from .simplified_edge_building import SimplifiedEdgeBuilder, create_simplified_graph_data
 from .reachability.tiered_system import TieredReachabilitySystem
-from ..constants.physics_constants import TILE_PIXEL_SIZE
 
 
 class ResolutionLevel(Enum):
@@ -85,7 +84,7 @@ class SimplifiedHierarchicalGraphBuilder:
         level_data = ensure_level_data(level_data)
         
         if self.debug:
-            print(f"Building simplified hierarchical graph...")
+            print("Building simplified hierarchical graph...")
             print(f"  Level size: {level_data.width}x{level_data.height}")
             print(f"  Entities: {len(entities)}")
             print(f"  Ninja position: {ninja_pos}")
@@ -110,7 +109,7 @@ class SimplifiedHierarchicalGraphBuilder:
         )
         
         if self.debug:
-            print(f"Built hierarchical graph:")
+            print("Built hierarchical graph:")
             print(f"  Fine: {fine_graph.num_nodes} nodes, {fine_graph.num_edges} edges")
             print(f"  Medium: {medium_graph.num_nodes} nodes, {medium_graph.num_edges} edges")
             print(f"  Coarse: {coarse_graph.num_nodes} nodes, {coarse_graph.num_edges} edges")

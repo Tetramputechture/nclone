@@ -13,9 +13,7 @@ from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 from .constants import (
     ENTITY_TYPE_MAPPING,
-    ENTITY_NAME_MAPPING,
     TILE_TYPE_MAPPING,
-    TILE_NAME_MAPPING,
 )
 from . import map_operations
 

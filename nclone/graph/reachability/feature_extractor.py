@@ -16,13 +16,13 @@ Key features:
 
 import time
 import hashlib
-from typing import Dict, List, Tuple, Optional, Any, Union
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
 
 from .tiered_system import TieredReachabilitySystem
-from .reachability_types import PerformanceTarget, ReachabilityResult
+from .reachability_types import PerformanceTarget
 from .compact_features import CompactReachabilityFeatures, FeatureConfig
 
 

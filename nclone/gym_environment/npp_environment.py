@@ -12,7 +12,6 @@ import random
 import numpy as np
 import os
 import uuid
-import warnings
 from typing import Tuple, Optional, Dict, Any
 
 # Core nclone imports
@@ -43,7 +42,6 @@ from ..entity_classes.entity_door_trap import EntityDoorTrap
 from ..entity_classes.entity_one_way_platform import EntityOneWayPlatform
 
 from .constants import (
-    GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
     GAME_STATE_CHANNELS,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,

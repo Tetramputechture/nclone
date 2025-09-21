@@ -6,7 +6,7 @@ and reachability analysis components, preventing circular imports.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict
 
 
 @dataclass

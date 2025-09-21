@@ -15,7 +15,7 @@ representations outperforms precise pathfinding in complex RL environments.
 """
 
 import time
-from typing import Set, Tuple, List, Dict, Optional, Any, Union
+from typing import Tuple, List, Dict, Optional, Any, Union
 import numpy as np
 
 from .reachability_types import (
@@ -24,8 +24,6 @@ from .reachability_types import (
     PerformanceTarget
 )
 from .opencv_flood_fill import OpenCVFloodFill
-from ..subgoal_types import SubgoalPlan, CompletionStrategyInfo
-from ..common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT
 
 
 

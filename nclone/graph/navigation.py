@@ -4,10 +4,9 @@ Simple pathfinding engine for subgoal planning.
 This module provides basic pathfinding functionality for the subgoal planner.
 """
 
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict
 from collections import deque
 from enum import Enum
-import heapq
 
 
 class PathfindingAlgorithm(Enum):
@@ -56,7 +55,7 @@ class PathfindingEngine:
             
         if graph_data is None and not self.graph_cache:
             if self.debug:
-                print(f"No graph data available for pathfinding")
+                print("No graph data available for pathfinding")
             return None
             
         # Use provided graph_data or cached graph

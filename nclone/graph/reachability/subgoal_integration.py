@@ -5,10 +5,9 @@ This module extends the existing SubgoalPlanner with reachability-specific
 enhancements without duplicating the core planning logic.
 """
 
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any
 
-from ..subgoal_types import Subgoal, SubgoalPlan
-from .reachability_types import ReachabilityApproximation, ReachabilityResult
+from ..subgoal_types import Subgoal
 
 
 class ReachabilitySubgoalIntegration:

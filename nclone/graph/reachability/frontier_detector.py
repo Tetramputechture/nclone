@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 
-from ...constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
 
 
 class FrontierType(Enum):
