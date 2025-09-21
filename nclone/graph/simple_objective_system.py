@@ -13,7 +13,6 @@ This approach is optimized for RL learning with clear, unambiguous objectives.
 from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
-import numpy as np
 import math
 
 from .reachability.tiered_system import TieredReachabilitySystem

@@ -22,7 +22,6 @@ from .feature_extraction import FeatureExtractor
 from ..constants.entity_types import EntityType
 from .edge_building import EdgeBuilder
 from .reachability.tiered_system import TieredReachabilitySystem
-from .reachability.reachability_types import PerformanceTarget
 
 
 class GraphConstructor:

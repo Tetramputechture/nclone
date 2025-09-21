@@ -14,10 +14,9 @@ from typing import List, Tuple, Optional, Dict, Any
 from collections import deque
 
 from .common import SUB_CELL_SIZE
-from .reachability.reachability_types import ReachabilityApproximation, ReachabilityResult
 from .navigation import PathfindingEngine
 from .reachability.opencv_flood_fill import OpenCVFloodFill
-from .subgoal_types import Subgoal, SubgoalPlan, CompletionStrategyInfo
+from .subgoal_types import Subgoal, SubgoalPlan
 from .simple_objective_system import SimplifiedCompletionStrategy, SimpleObjective, ObjectiveType
 
 

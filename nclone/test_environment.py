@@ -663,7 +663,7 @@ while running:
                                     )
                                 else:
                                     print(
-                                        f"Warning: Unsupported frame format for export"
+                                        "Warning: Unsupported frame format for export"
                                     )
                             else:
                                 print("Warning: Could not get frame for export")

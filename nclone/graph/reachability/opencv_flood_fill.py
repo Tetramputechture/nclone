@@ -10,16 +10,13 @@ import time
 import numpy as np
 import cv2
 import pygame
-import cairo
 from typing import Set, Tuple, Dict, Optional, List, Any
-from dataclasses import dataclass
 
 from .reachability_types import ReachabilityApproximation
-from ..common import SUB_GRID_WIDTH, SUB_GRID_HEIGHT, CELL_SIZE, GRID_WIDTH, GRID_HEIGHT
+from ..common import CELL_SIZE, GRID_WIDTH, GRID_HEIGHT
 from ...constants.physics_constants import NINJA_RADIUS
 from ...tile_renderer import TileRenderer
 from ...entity_renderer import EntityRenderer
-from ... import render_utils
 
 
 class OpenCVFloodFill:

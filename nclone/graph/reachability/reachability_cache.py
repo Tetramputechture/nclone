@@ -8,10 +8,9 @@ for efficient repeated reachability queries during RL training.
 import hashlib
 import time
 from collections import OrderedDict
-from typing import Dict, Any, Optional, Tuple, Set
+from typing import Dict, Any, Tuple, Set
 from dataclasses import dataclass
 
-from .reachability_types import ReachabilityApproximation, ReachabilityResult
 
 
 @dataclass

@@ -8,13 +8,12 @@ This module provides RL-specific methods and optimizations for:
 - Performance-optimized state representations
 """
 
-from typing import List, Tuple, Dict, Set, Optional, Any, Union
+from typing import List, Tuple, Dict, Set, Optional, Any
 from dataclasses import dataclass
 import numpy as np
 import math
 
-from ..subgoal_planner import Subgoal
-from .frontier_detector import Frontier, FrontierType
+from .frontier_detector import Frontier
 from ...constants.physics_constants import TILE_PIXEL_SIZE
 
 
@@ -128,7 +127,6 @@ class RLIntegrationAPI:
             List of prioritized subgoals
         """
         # Runtime import to avoid circular dependency
-        from ..subgoal_planner import Subgoal
         subgoals = rl_state.subgoals.copy()
         
         if prioritize_critical_path:

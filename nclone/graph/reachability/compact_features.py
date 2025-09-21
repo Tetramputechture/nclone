@@ -18,7 +18,6 @@ import numpy as np
 import math
 from typing import List, Tuple, Dict, Any, Optional, Set
 from dataclasses import dataclass
-from enum import Enum
 
 try:
     import torch
@@ -38,7 +37,7 @@ except ImportError:
         float32 = np.float32
 
 from .reachability_types import ReachabilityResult
-from ..simple_objective_system import SimplifiedCompletionStrategy, SimpleObjective, ObjectiveType
+from ..simple_objective_system import SimplifiedCompletionStrategy, SimpleObjective
 
 
 @dataclass
