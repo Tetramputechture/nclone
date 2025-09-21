@@ -57,7 +57,7 @@ make fix
   - `graph/visualization.py`: Graph debug overlay rendering
 
 - **Environments** (Gym-compatible):
-  - `nclone_environments/basic_level_no_gold/`: Main RL environment
+  - `gym_environment/`: Main RL environment
   - `test_environment.py`: Interactive testing environment
 
 - **Rendering**:
@@ -123,7 +123,7 @@ python -m nclone.run_multiple_headless --num-simulations 4 --num-steps 50000
 - **Collision Detection**: 10-pixel ninja radius awareness for traversability
 
 ### Environment Integration
-- Gym-compatible environments in `nclone_environments/`
+- Gym-compatible environments in `gym_environment/`
 - Reward systems designed for DRL training
 - Observation processing for RL agents
 - Action space: movement and jumping controls

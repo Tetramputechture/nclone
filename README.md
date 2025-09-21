@@ -8,7 +8,7 @@
 *   **Pygame-based:** Built using the Pygame library for rendering and interaction.
 *   **Deep RL Focus:** Includes a reward system to guide DRL agent learning, and serves as the environment for the RL agent developed in the `npp-rl` subdirectory.
 *   **Headless Mode:** Allows the simulation to run without a graphical interface, significantly speeding up DRL training processes.
-*   **Customizable Environments:** The environment (`nclone_environments/basic_level_no_gold/basic_level_no_gold.py`) can be configured for different experimental setups.
+*   **Customizable Environments:** The environment (`gym_environment/npp_environment.py`) can be configured for different experimental setups.
 *   **Tiered Reachability System:** Multi-tier reachability analysis optimized for Deep RL training with fast approximations for real-time guidance.
 *   **Hierarchical Graph Processing:** Multi-resolution graph system (6px, 24px, 96px) for efficient pathfinding and AI navigation.
 
@@ -67,7 +67,7 @@ To test the environment and see the simulation in action, you can run the `test_
 python -m nclone.test_environment
 ```
 
-This script initializes the `BasicLevelNoGold` environment in human-render mode, allowing you to control the ninja using keyboard inputs:
+This script initializes the `NppEnvironment` environment in human-render mode, allowing you to control the ninja using keyboard inputs:
 *   **Left/Right Arrow Keys (or A/D):** Move left/right.
 *   **Space/Up Arrow Key:** Jump.
 *   **R Key:** Reset the environment.
@@ -81,7 +81,7 @@ To train or run the RL agent, please refer to the instructions in `npp-rl/README
 
 ## Headless Mode (Base Environment)
 
-The environment can be initialized in `rgb_array` mode for headless operation, which is crucial for DRL training. This is configured in the environment's constructor. See `nclone_environments/basic_level_no_gold/basic_level_no_gold.py` for an example of how the `render_mode` is set.
+The environment can be initialized in `rgb_array` mode for headless operation, which is crucial for DRL training. This is configured in the environment's constructor. See `gym_environment/npp_environment.py` for an example of how the `render_mode` is set.
 
 ## Running Multiple Headless Simulations (Base Environment)
 
@@ -188,9 +188,9 @@ Package `nclone/`:
   - `run_multiple_headless.py`: Multi-process headless runner.
 
 - Environments (Gym-compatible)
-  - `nclone_environments/base_environment.py`
-  - `nclone_environments/basic_level_no_gold/`
-    - `basic_level_no_gold.py`, `observation_processor.py`, `constants.py`, `reward_calculation/`
+  - `gym_environment/base_environment.py`
+  - `gym_environment/`
+    - `npp_environment.py`, `observation_processor.py`, `constants.py`, `reward_calculation/`
 
 - Content generation
   - `map_generation/`: Procedural map generators and constants.

@@ -16,7 +16,7 @@ agent: 'CodeActAgent'
 def test_specific_functionality(self):
     """Test description explaining what is being validated."""
     # Setup
-    env = BasicLevelNoGold(render_mode="rgb_array")
+    env = NppEnvironment(render_mode="rgb_array")
     builder = HierarchicalGraphBuilder()
     
     # Execute

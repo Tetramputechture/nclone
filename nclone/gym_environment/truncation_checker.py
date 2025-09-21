@@ -20,7 +20,7 @@ class TruncationChecker:
         """Initialize the truncation checker.
 
         Args:
-            env: The BasicLevelNoGold environment instance
+            env: The NppEnvironment environment instance
         """
         self.env = env
         self.position_history = []  # List of (x, y) tuples
@@ -39,7 +39,10 @@ class TruncationChecker:
         self.position_history.append((x, y))
 
         # Check frame limits
-        if self.enable_short_episode_truncation and len(self.position_history) >= self.SHORT_EPISODE_MAX_FRAMES:
+        if (
+            self.enable_short_episode_truncation
+            and len(self.position_history) >= self.SHORT_EPISODE_MAX_FRAMES
+        ):
             return True, "Max frames reached"
 
         if len(self.position_history) >= self.MAX_FRAMES:
