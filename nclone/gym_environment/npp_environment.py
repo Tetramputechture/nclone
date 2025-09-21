@@ -26,6 +26,17 @@ from ..graph.hierarchical_builder import HierarchicalGraphBuilder
 from ..graph.level_data import LevelData
 from ..graph.common import GraphData
 
+# Reachability system imports (optional)
+try:
+    from ..graph.reachability.tiered_system import TieredReachabilitySystem
+    from ..graph.reachability.feature_extractor import ReachabilityFeatureExtractor, PerformanceMode
+    REACHABILITY_AVAILABLE = True
+except ImportError:
+    TieredReachabilitySystem = None
+    ReachabilityFeatureExtractor = None
+    PerformanceMode = None
+    REACHABILITY_AVAILABLE = False
+
 # Entity classes
 from ..entity_classes.entity_exit_switch import EntityExitSwitch
 from ..entity_classes.entity_exit import EntityExit
@@ -91,6 +102,7 @@ class NppEnvironment(gymnasium.Env):
         pbrs_weights: Optional[dict] = None,
         pbrs_gamma: float = 0.99,
         custom_map_path: Optional[str] = None,
+        enable_reachability_features: bool = False,
     ):
         """
         Initialize the N++ environment.
@@ -110,6 +122,7 @@ class NppEnvironment(gymnasium.Env):
             pbrs_weights: PBRS component weights dictionary
             pbrs_gamma: PBRS discount factor
             custom_map_path: Path to custom map file
+            enable_reachability_features: Enable compact reachability features in observations
         """
         super().__init__()
 
@@ -120,6 +133,7 @@ class NppEnvironment(gymnasium.Env):
         self._enable_debug_overlay = enable_debug_overlay
         self.custom_map_path = custom_map_path
         self.eval_mode = eval_mode
+        self.enable_reachability_features = enable_reachability_features
 
         # Initialize core game interface
         self.nplay_headless = NPlayHeadless(
@@ -174,6 +188,22 @@ class NppEnvironment(gymnasium.Env):
             self, enable_short_episode_truncation=enable_short_episode_truncation
         )
 
+        # Initialize reachability system if enabled and available
+        self._reachability_system = None
+        self._reachability_extractor = None
+        self._reachability_cache = {}
+        self._reachability_cache_ttl = 0.1  # 100ms cache TTL
+        self._last_reachability_time = 0
+        
+        if enable_reachability_features and REACHABILITY_AVAILABLE:
+            try:
+                self._reachability_system = TieredReachabilitySystem()
+                self._reachability_extractor = ReachabilityFeatureExtractor()
+            except Exception as e:
+                if enable_logging:
+                    print(f"Warning: Failed to initialize reachability system: {e}")
+                self.enable_reachability_features = False
+
         # Store all configuration flags for logging and debugging
         self.config_flags = {
             "render_mode": render_mode,
@@ -187,6 +217,7 @@ class NppEnvironment(gymnasium.Env):
             "enable_pbrs": enable_pbrs,
             "pbrs_weights": pbrs_weights,
             "pbrs_gamma": pbrs_gamma,
+            "enable_reachability_features": enable_reachability_features,
         }
 
         # Initialize observation space as a Dict space with player_frame, global_view, and game_state
@@ -203,32 +234,39 @@ class NppEnvironment(gymnasium.Env):
         else:
             game_state_channels = GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
 
-        self.observation_space = SpacesDict(
-            {
-                # Player-centered frame
-                "player_frame": box.Box(
-                    low=0,
-                    high=255,
-                    shape=(
-                        PLAYER_FRAME_HEIGHT,
-                        PLAYER_FRAME_WIDTH,
-                        player_frame_channels,
-                    ),
-                    dtype=np.uint8,
+        # Build observation space
+        obs_spaces = {
+            # Player-centered frame
+            "player_frame": box.Box(
+                low=0,
+                high=255,
+                shape=(
+                    PLAYER_FRAME_HEIGHT,
+                    PLAYER_FRAME_WIDTH,
+                    player_frame_channels,
                 ),
-                # Global view frame
-                "global_view": box.Box(
-                    low=0,
-                    high=255,
-                    shape=(RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1),
-                    dtype=np.uint8,
-                ),
-                # Game state features
-                "game_state": box.Box(
-                    low=-1, high=1, shape=(game_state_channels,), dtype=np.float32
-                ),
-            }
-        )
+                dtype=np.uint8,
+            ),
+            # Global view frame
+            "global_view": box.Box(
+                low=0,
+                high=255,
+                shape=(RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1),
+                dtype=np.uint8,
+            ),
+            # Game state features
+            "game_state": box.Box(
+                low=-1, high=1, shape=(game_state_channels,), dtype=np.float32
+            ),
+        }
+        
+        # Add reachability features if enabled
+        if self.enable_reachability_features and self._reachability_extractor is not None:
+            obs_spaces["reachability_features"] = box.Box(
+                low=-1.0, high=1.0, shape=(64,), dtype=np.float32
+            )
+        
+        self.observation_space = SpacesDict(obs_spaces)
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
@@ -400,7 +438,7 @@ class NppEnvironment(gymnasium.Env):
             use_rich_features=self.use_rich_features,
         )
 
-        return {
+        obs = {
             "screen": self.render(),
             "game_state": game_state,
             "player_dead": self.nplay_headless.ninja_has_died(),
@@ -419,6 +457,14 @@ class NppEnvironment(gymnasium.Env):
             "total_gold_available": self.nplay_headless.get_total_gold_available(),
             "entity_states": entity_states_raw,  # For PBRS hazard detection
         }
+        
+        # Add reachability features if enabled
+        if self.enable_reachability_features:
+            reachability_features = self._get_reachability_features()
+            if reachability_features is not None:
+                obs["reachability_features"] = reachability_features
+        
+        return obs
 
     def _load_map(self):
         """Load the map specified by custom_map_path or follow default logic."""
@@ -824,6 +870,61 @@ class NppEnvironment(gymnasium.Env):
             print("Error extracting graph entities: ", e)
 
         return entities
+
+    def _get_reachability_features(self) -> Optional[np.ndarray]:
+        """
+        Extract compact reachability features from current game state.
+        
+        Returns:
+            64-dimensional feature vector or None if reachability is disabled
+        """
+        if not self.enable_reachability_features or self._reachability_extractor is None:
+            return None
+            
+        import time
+        current_time = time.time()
+        
+        # Check cache
+        cache_key = (
+            self.nplay_headless.ninja_position(),
+            self.nplay_headless.sim.frame
+        )
+        
+        if (cache_key in self._reachability_cache and 
+            current_time - self._last_reachability_time < self._reachability_cache_ttl):
+            return self._reachability_cache[cache_key]
+        
+        try:
+            # Extract current game state
+            ninja_pos = self.nplay_headless.ninja_position()
+            level_data = self.level_data()
+            entities = self.entities()
+            
+            # Extract reachability features
+            features = self._reachability_extractor.extract_features(
+                ninja_position=ninja_pos,
+                level_data=level_data,
+                entities=entities,
+                performance_target=PerformanceMode.TIER_1
+            )
+            
+            # Cache the result
+            self._reachability_cache[cache_key] = features
+            self._last_reachability_time = current_time
+            
+            # Limit cache size
+            if len(self._reachability_cache) > 100:
+                # Remove oldest entries
+                oldest_keys = list(self._reachability_cache.keys())[:-50]
+                for key in oldest_keys:
+                    del self._reachability_cache[key]
+            
+            return features
+            
+        except Exception as e:
+            if self.enable_logging:
+                print(f"Warning: Reachability feature extraction failed: {e}")
+            return np.zeros(64, dtype=np.float32)
 
     def _extract_level_data(self) -> LevelData:
         """
