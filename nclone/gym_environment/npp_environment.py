@@ -27,15 +27,12 @@ from ..graph.level_data import LevelData
 from ..graph.common import GraphData
 
 # Reachability system imports (optional)
-try:
-    from ..graph.reachability.tiered_system import TieredReachabilitySystem
-    from ..graph.reachability.feature_extractor import ReachabilityFeatureExtractor, PerformanceMode
-    REACHABILITY_AVAILABLE = True
-except ImportError:
-    TieredReachabilitySystem = None
-    ReachabilityFeatureExtractor = None
-    PerformanceMode = None
-    REACHABILITY_AVAILABLE = False
+from ..graph.reachability.tiered_system import TieredReachabilitySystem
+from ..graph.reachability.feature_extractor import (
+    ReachabilityFeatureExtractor,
+    PerformanceMode,
+)
+
 
 # Entity classes
 from ..entity_classes.entity_exit_switch import EntityExitSwitch
@@ -47,8 +44,7 @@ from ..entity_classes.entity_one_way_platform import EntityOneWayPlatform
 
 from .constants import (
     GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT,
-    GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH,
-    GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH,
+    GAME_STATE_CHANNELS,
     TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -82,47 +78,36 @@ class NppEnvironment(gymnasium.Env):
     metadata = {"render.modes": ["human", "rgb_array"]}
 
     RANDOM_MAP_CHANCE = 0.5
-    LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH = True
 
     def __init__(
         self,
         render_mode: str = "rgb_array",
-        enable_frame_stack: bool = True,
         enable_animation: bool = False,
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
         enable_short_episode_truncation: bool = False,
         seed: Optional[int] = None,
         eval_mode: bool = False,
-        observation_profile: str = "rich",
-        use_rich_game_state: Optional[
-            bool
-        ] = None,  # Deprecated: use observation_profile
         enable_pbrs: bool = True,
         pbrs_weights: Optional[dict] = None,
         pbrs_gamma: float = 0.99,
         custom_map_path: Optional[str] = None,
-        enable_reachability_features: bool = False,
     ):
         """
         Initialize the N++ environment.
 
         Args:
             render_mode: Rendering mode ("human" or "rgb_array")
-            enable_frame_stack: Enable temporal frame stacking
             enable_animation: Enable animation in rendering
             enable_logging: Enable debug logging
             enable_debug_overlay: Enable debug overlay visualization
             enable_short_episode_truncation: Enable episode truncation on lack of progress
             seed: Random seed for reproducibility
             eval_mode: Use evaluation maps instead of training maps
-            observation_profile: Observation complexity ("minimal" or "rich")
-            use_rich_game_state: Deprecated, use observation_profile instead
             enable_pbrs: Enable potential-based reward shaping
             pbrs_weights: PBRS component weights dictionary
             pbrs_gamma: PBRS discount factor
             custom_map_path: Path to custom map file
-            enable_reachability_features: Enable compact reachability features in observations
         """
         super().__init__()
 
@@ -133,7 +118,6 @@ class NppEnvironment(gymnasium.Env):
         self._enable_debug_overlay = enable_debug_overlay
         self.custom_map_path = custom_map_path
         self.eval_mode = eval_mode
-        self.enable_reachability_features = enable_reachability_features
 
         # Initialize core game interface
         self.nplay_headless = NPlayHeadless(
@@ -153,30 +137,8 @@ class NppEnvironment(gymnasium.Env):
         # Track reward for the current episode
         self.current_ep_reward = 0
 
-        # Handle deprecated use_rich_game_state flag
-        if use_rich_game_state is not None:
-            warnings.warn(
-                "use_rich_game_state is deprecated, use observation_profile instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if use_rich_game_state:
-                observation_profile = "rich"
-            else:
-                observation_profile = "minimal"
-
-        # Store observation profile configuration
-        if observation_profile not in ["minimal", "rich"]:
-            raise ValueError(
-                f"observation_profile must be 'minimal' or 'rich', got {observation_profile}"
-            )
-        self.observation_profile = observation_profile
-        self.use_rich_features = observation_profile == "rich"
-
         # Initialize observation processor
-        self.observation_processor = ObservationProcessor(
-            enable_frame_stack=enable_frame_stack
-        )
+        self.observation_processor = ObservationProcessor()
 
         # Initialize reward calculator with PBRS configuration
         self.reward_calculator = RewardCalculator(
@@ -188,51 +150,28 @@ class NppEnvironment(gymnasium.Env):
             self, enable_short_episode_truncation=enable_short_episode_truncation
         )
 
-        # Initialize reachability system if enabled and available
+        # Initialize reachability system
         self._reachability_system = None
         self._reachability_extractor = None
         self._reachability_cache = {}
         self._reachability_cache_ttl = 0.1  # 100ms cache TTL
         self._last_reachability_time = 0
-        
-        if enable_reachability_features and REACHABILITY_AVAILABLE:
-            try:
-                self._reachability_system = TieredReachabilitySystem()
-                self._reachability_extractor = ReachabilityFeatureExtractor()
-            except Exception as e:
-                if enable_logging:
-                    print(f"Warning: Failed to initialize reachability system: {e}")
-                self.enable_reachability_features = False
+
+        self._reachability_system = TieredReachabilitySystem()
+        self._reachability_extractor = ReachabilityFeatureExtractor()
 
         # Store all configuration flags for logging and debugging
         self.config_flags = {
             "render_mode": render_mode,
-            "enable_frame_stack": enable_frame_stack,
             "enable_animation": enable_animation,
             "enable_logging": enable_logging,
             "enable_debug_overlay": enable_debug_overlay,
             "enable_short_episode_truncation": enable_short_episode_truncation,
             "eval_mode": eval_mode,
-            "observation_profile": observation_profile,
             "enable_pbrs": enable_pbrs,
             "pbrs_weights": pbrs_weights,
             "pbrs_gamma": pbrs_gamma,
-            "enable_reachability_features": enable_reachability_features,
         }
-
-        # Initialize observation space as a Dict space with player_frame, global_view, and game_state
-        player_frame_channels = TEMPORAL_FRAMES if enable_frame_stack else 1
-
-        # Select game state feature count based on profile
-        if self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH:
-            if self.use_rich_features:
-                game_state_channels = (
-                    GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH
-                )
-            else:
-                game_state_channels = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH
-        else:
-            game_state_channels = GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT
 
         # Build observation space
         obs_spaces = {
@@ -243,7 +182,7 @@ class NppEnvironment(gymnasium.Env):
                 shape=(
                     PLAYER_FRAME_HEIGHT,
                     PLAYER_FRAME_WIDTH,
-                    player_frame_channels,
+                    TEMPORAL_FRAMES,
                 ),
                 dtype=np.uint8,
             ),
@@ -256,16 +195,16 @@ class NppEnvironment(gymnasium.Env):
             ),
             # Game state features
             "game_state": box.Box(
-                low=-1, high=1, shape=(game_state_channels,), dtype=np.float32
+                low=-1,
+                high=1,
+                shape=(GAME_STATE_CHANNELS,),
+            ),
+            # Reachability features
+            "reachability_features": box.Box(
+                low=-1.0, high=1.0, shape=(64,), dtype=np.float32
             ),
         }
-        
-        # Add reachability features if enabled
-        if self.enable_reachability_features and self._reachability_extractor is not None:
-            obs_spaces["reachability_features"] = box.Box(
-                low=-1.0, high=1.0, shape=(64,), dtype=np.float32
-            )
-        
+
         self.observation_space = SpacesDict(obs_spaces)
 
         # Graph debug visualization state
@@ -368,7 +307,6 @@ class NppEnvironment(gymnasium.Env):
         info.update(
             {
                 "config_flags": self.config_flags.copy(),
-                "observation_profile": self.observation_profile,
                 "pbrs_enabled": self.config_flags["enable_pbrs"],
             }
         )
@@ -384,17 +322,15 @@ class NppEnvironment(gymnasium.Env):
         # Handle reinitialization after unpickling
         if hasattr(self, "_needs_reinit") and self._needs_reinit:
             # Reinitialize components that may have been affected by pickling
-            if hasattr(self, "observation_processor"):
-                self.observation_processor.reset()
-            if hasattr(self, "reward_calculator"):
-                self.reward_calculator.reset()
+            self.observation_processor.reset()
+            self.reward_calculator.reset()
             self._needs_reinit = False
 
         # Reset observation processor
-        self._reset_observation_processor()
+        self.observation_processor.reset()
 
         # Reset reward calculator
-        self._reset_reward_calculator()
+        self.reward_calculator.reset()
 
         # Reset truncation checker
         self.truncation_checker.reset()
@@ -423,20 +359,12 @@ class NppEnvironment(gymnasium.Env):
             MAX_TIME_IN_FRAMES - self.nplay_headless.sim.frame
         ) / MAX_TIME_IN_FRAMES
 
-        ninja_state = self.nplay_headless.get_ninja_state(
-            use_rich_features=self.use_rich_features
-        )
-        entity_states = self.nplay_headless.get_entity_states(
-            only_one_exit_and_switch=self.LIMIT_GAME_STATE_TO_NINJA_AND_EXIT_AND_SWITCH,
-            use_rich_features=self.use_rich_features,
-        )
+        ninja_state = self.nplay_headless.get_ninja_state()
+        entity_states = self.nplay_headless.get_entity_states()
         game_state = np.concatenate([ninja_state, entity_states])
 
         # Get entity states for PBRS hazard detection
-        entity_states_raw = self.nplay_headless.get_entity_states(
-            only_one_exit_and_switch=False,  # Get all entities for hazard detection
-            use_rich_features=self.use_rich_features,
-        )
+        entity_states_raw = self.nplay_headless.get_entity_states()
 
         obs = {
             "screen": self.render(),
@@ -456,14 +384,9 @@ class NppEnvironment(gymnasium.Env):
             "doors_opened": self.nplay_headless.get_doors_opened(),
             "total_gold_available": self.nplay_headless.get_total_gold_available(),
             "entity_states": entity_states_raw,  # For PBRS hazard detection
+            "reachability_features": self._get_reachability_features(),
         }
-        
-        # Add reachability features if enabled
-        if self.enable_reachability_features:
-            reachability_features = self._get_reachability_features()
-            if reachability_features is not None:
-                obs["reachability_features"] = reachability_features
-        
+
         return obs
 
     def _load_map(self):
@@ -534,10 +457,6 @@ class NppEnvironment(gymnasium.Env):
     def _process_observation(self, obs):
         """Process the observation from the environment."""
         return self.observation_processor.process_observation(obs)
-
-    def _reset_observation_processor(self):
-        """Reset the observation processor."""
-        self.observation_processor.reset()
 
     def _reset_reward_calculator(self):
         """Reset the reward calculator."""
@@ -874,57 +793,52 @@ class NppEnvironment(gymnasium.Env):
     def _get_reachability_features(self) -> Optional[np.ndarray]:
         """
         Extract compact reachability features from current game state.
-        
+
         Returns:
             64-dimensional feature vector or None if reachability is disabled
         """
-        if not self.enable_reachability_features or self._reachability_extractor is None:
-            return None
-            
         import time
+
         current_time = time.time()
-        
+
         # Check cache
         cache_key = (
             self.nplay_headless.ninja_position(),
-            self.nplay_headless.sim.frame
+            self.nplay_headless.sim.frame,
         )
-        
-        if (cache_key in self._reachability_cache and 
-            current_time - self._last_reachability_time < self._reachability_cache_ttl):
+
+        if (
+            cache_key in self._reachability_cache
+            and current_time - self._last_reachability_time
+            < self._reachability_cache_ttl
+        ):
             return self._reachability_cache[cache_key]
-        
-        try:
-            # Extract current game state
-            ninja_pos = self.nplay_headless.ninja_position()
-            level_data = self.level_data()
-            entities = self.entities()
-            
-            # Extract reachability features
-            features = self._reachability_extractor.extract_features(
-                ninja_position=ninja_pos,
-                level_data=level_data,
-                entities=entities,
-                performance_target=PerformanceMode.TIER_1
-            )
-            
-            # Cache the result
-            self._reachability_cache[cache_key] = features
-            self._last_reachability_time = current_time
-            
-            # Limit cache size
-            if len(self._reachability_cache) > 100:
-                # Remove oldest entries
-                oldest_keys = list(self._reachability_cache.keys())[:-50]
-                for key in oldest_keys:
-                    del self._reachability_cache[key]
-            
-            return features
-            
-        except Exception as e:
-            if self.enable_logging:
-                print(f"Warning: Reachability feature extraction failed: {e}")
-            return np.zeros(64, dtype=np.float32)
+
+        # Extract current game state
+        ninja_pos = self.nplay_headless.ninja_position()
+        level_data = self.level_data()
+        entities = self.entities()
+
+        # Extract reachability features
+        features = self._reachability_extractor.extract_features(
+            ninja_position=ninja_pos,
+            level_data=level_data,
+            entities=entities,
+            performance_target=PerformanceMode.TIER_1,
+        )
+
+        # Cache the result
+        self._reachability_cache[cache_key] = features
+        self._last_reachability_time = current_time
+
+        # Limit cache size
+        if len(self._reachability_cache) > 100:
+            # Remove oldest entries
+            oldest_keys = list(self._reachability_cache.keys())[:-50]
+            for key in oldest_keys:
+                del self._reachability_cache[key]
+
+        return features
 
     def _extract_level_data(self) -> LevelData:
         """

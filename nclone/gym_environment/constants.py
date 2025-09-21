@@ -27,20 +27,12 @@ GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT = 2594
 
 # Ninja state size
 NINJA_STATE_SIZE = 10
-NINJA_STATE_SIZE_RICH = 24  # Enhanced with buffers, contacts, normals, impact risk, state flags
+NINJA_STATE_SIZE_RICH = (
+    24  # Enhanced with buffers, contacts, normals, impact risk, state flags
+)
 
-# Only ninja and 1 exit and 1 switch, no tile data (to be used in conjunction with frame stacking) =
-# 10 ninja states (minimal) or 24 ninja states (rich)
-# 2 entity states (exit and switch active)
-# 1 time remaining
-# 4 for vectors to objectives (exit and switch)
-GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH = 17  # Minimal profile
-GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH = 31  # Rich profile (24 + 2 + 1 + 4)
+GAME_STATE_CHANNELS = 31
 
 # LEVEL_WIDTH and LEVEL_HEIGHT
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0
-
-# Observation profile constants for Phase 1
-MINIMAL_GAME_STATE_SIZE = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH  # 17
-RICH_GAME_STATE_SIZE = GAME_STATE_FEATURES_ONLY_NINJA_AND_EXIT_AND_SWITCH_RICH  # 31

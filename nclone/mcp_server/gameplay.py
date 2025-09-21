@@ -111,7 +111,6 @@ def register_gameplay_tools(mcp: FastMCP) -> None:
             render_mode = "rgb_array" if headless else "human"
             current_gameplay_env = NppEnvironment(
                 render_mode=render_mode,
-                enable_frame_stack=False,
                 enable_debug_overlay=enable_debug_overlay and not headless,
                 eval_mode=False,
                 seed=seed,
@@ -454,7 +453,6 @@ def register_gameplay_tools(mcp: FastMCP) -> None:
 
 🎯 Environment:
   Render mode: {render_mode}
-  Frame stack: {getattr(current_gameplay_env, "enable_frame_stack", "unknown")}
   Debug overlay: {getattr(current_gameplay_env, "enable_debug_overlay", "unknown")}"""
 
             # Add additional environment info if available
