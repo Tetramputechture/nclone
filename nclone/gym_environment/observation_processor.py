@@ -269,6 +269,10 @@ class ObservationProcessor:
             "game_state": self.process_game_state(obs),
             "global_view": self.process_rendered_global_view(screen),
         }
+        
+        # Add reachability features if present
+        if "reachability_features" in obs:
+            result["reachability_features"] = obs["reachability_features"]
 
         # Update frame history with cropped player frame instead of full frame
         if self.enable_frame_stack:

@@ -29,7 +29,7 @@ class DebugOverlayRenderer:
             MovementType.WALK: (80, 200, 120, 100),  # green-ish (reduced alpha)
             MovementType.JUMP: (255, 160, 40, 120),  # orange (reduced alpha)
             MovementType.FALL: (100, 180, 255, 80),  # light blue (reduced alpha)
-            MovementType.WALL_JUMP: (180, 100, 255, 120),  # purple (reduced alpha)
+            MovementType.COMBO: (180, 100, 255, 120),  # purple (reduced alpha)
             EdgeType.FUNCTIONAL: (255, 230, 60, 150),  # yellow (reduced alpha)
         }
         self.GRAPH_NODE_COLOR_GRID = (240, 240, 240, 220)
