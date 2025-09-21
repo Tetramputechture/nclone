@@ -133,14 +133,9 @@ def calculate_vector(
 class ObservationProcessor:
     """Processes raw game observations into frame stacks and normalized feature vectors."""
 
-    def __init__(self, enable_frame_stack=True, enable_augmentation=True):
-        # Keep only 3 frames in history: current, last, and second to last
-        self.enable_frame_stack = enable_frame_stack
+    def __init__(self, enable_augmentation=True):
         self.enable_augmentation = enable_augmentation
-        if self.enable_frame_stack:
-            self.frame_history = deque(maxlen=TEMPORAL_FRAMES)
-        else:
-            self.frame_history = None
+        self.frame_history = deque(maxlen=TEMPORAL_FRAMES)
 
     def frame_around_player(
         self, frame: np.ndarray, player_x: float, player_y: float
@@ -268,45 +263,36 @@ class ObservationProcessor:
         result = {
             "game_state": self.process_game_state(obs),
             "global_view": self.process_rendered_global_view(screen),
+            "reachability_features": obs["reachability_features"],
         }
-        
-        # Add reachability features if present
-        if "reachability_features" in obs:
-            result["reachability_features"] = obs["reachability_features"]
 
         # Update frame history with cropped player frame instead of full frame
-        if self.enable_frame_stack:
+        self.frame_history.append(player_frame)
+
+        # Fill frame history if needed
+        while len(self.frame_history) < TEMPORAL_FRAMES:
             self.frame_history.append(player_frame)
 
-            # Fill frame history if needed
-            while len(self.frame_history) < TEMPORAL_FRAMES:
-                self.frame_history.append(player_frame)
+        # Get player frames from history
+        player_frames = []
+        # Reverse to get [current, last, second_to_last]
+        for frame in reversed(self.frame_history):
+            # Ensure each frame has shape (H, W, 1)
+            if len(frame.shape) == 2:
+                frame = frame[..., np.newaxis]
+            player_frames.append(frame)
 
-            # Get player frames from history
-            player_frames = []
-            # Reverse to get [current, last, second_to_last]
-            for frame in reversed(self.frame_history):
-                # Ensure each frame has shape (H, W, 1)
-                if len(frame.shape) == 2:
-                    frame = frame[..., np.newaxis]
-                player_frames.append(frame)
+        # Apply consistent augmentation across all frames if enabled
+        if self.enable_augmentation:
+            player_frames = apply_consistent_augmentation(player_frames)
 
-            # Apply consistent augmentation across all frames if enabled
-            if self.enable_augmentation:
-                player_frames = apply_consistent_augmentation(player_frames)
+        # Stack frames along channel dimension
+        result["player_frame"] = np.concatenate(player_frames, axis=-1)
 
-            # Stack frames along channel dimension
-            result["player_frame"] = np.concatenate(player_frames, axis=-1)
-
-            # Verify we have exactly 3 channels
-            assert result["player_frame"].shape[-1] == TEMPORAL_FRAMES, (
-                f"Expected {TEMPORAL_FRAMES} channels, got {result['player_frame'].shape[-1]}"
-            )
-        else:
-            # Apply augmentation to single frame if enabled
-            if self.enable_augmentation:
-                player_frame = apply_consistent_augmentation([player_frame])[0]
-            result["player_frame"] = player_frame
+        # Verify we have exactly 3 channels
+        assert result["player_frame"].shape[-1] == TEMPORAL_FRAMES, (
+            f"Expected {TEMPORAL_FRAMES} channels, got {result['player_frame'].shape[-1]}"
+        )
 
         return result
 

@@ -338,16 +338,10 @@ class NPlayHeadless:
     def exit(self):
         pygame.quit()
 
-    def get_state_vector(
-        self, only_exit_and_switch: bool = False, use_rich_features: bool = True
-    ):
+    def get_state_vector(self):
         """
         Get a complete state representation of the game environment as a vector of float values.
         This includes ninja state, entity states, and environment geometry.
-
-        Args:
-            only_exit_and_switch: If True, only include exit and switch entities
-            use_rich_features: If True, use enriched ninja state (20-D), else minimal (10-D)
 
         Returns:
             numpy.ndarray: A 1D array containing all state information, with fixed length.
@@ -355,14 +349,12 @@ class NPlayHeadless:
         """
         state = []
 
-        # Add ninja state (10 or 20 values depending on use_rich_features)
-        ninja_state = self.get_ninja_state(use_rich_features=use_rich_features)
+        # Add ninja state
+        ninja_state = self.get_ninja_state()
         state.extend(ninja_state)
 
         # Add entity states with fixed size per entity type
-        entity_states = self.get_entity_states(
-            only_exit_and_switch, use_rich_features=use_rich_features
-        )
+        entity_states = self.get_entity_states()
         state.extend(entity_states)
 
         # Add environment geometry (fixed size)
@@ -384,11 +376,8 @@ class NPlayHeadless:
         """Returns count of all gold (entity type 2) in the map."""
         return sum(1 for entity in self.sim.entity_dic[2])
 
-    def get_ninja_state(self, use_rich_features=True):
+    def get_ninja_state(self):
         """Get ninja state as a list of floats with fixed length, all normalized between 0 and 1.
-
-        Args:
-            use_rich_features: If True, return enriched feature set. If False, return minimal 10-D vector.
 
         Returns:
             List of floats representing ninja state:
@@ -413,10 +402,6 @@ class NPlayHeadless:
             / (FRICTION_GROUND - FRICTION_WALL),
         ]
 
-        if not use_rich_features:
-            return state
-
-        # Extended features for rich observation space
         # Buffer counters (normalized by typical window size of 5 frames)
         buffer_window_size = 5.0
         state.extend(
@@ -467,30 +452,11 @@ class NPlayHeadless:
 
         return state
 
-    def get_entity_states(
-        self, only_one_exit_and_switch: bool = False, use_rich_features: bool = True
-    ):
-        """Get all entity states as a list of floats with fixed length, all normalized between 0 and 1.
-
-        Args:
-            only_exit_and_switch: If True, only include exit and switch entities. This useful for
-            training a model on simple levels without entities. Exit is entity type 3, and switch is
-            entity type 4.
-            use_rich_features: If True, include additional features like distance to ninja, velocity, etc.
-        """
+    def get_entity_states(self):
+        """Get all entity states as a list of floats with fixed length, all normalized between 0 and 1."""
         state = []
-
-        # If we are only interested in the exit and switch, we can reduce the number of attributes
-        # And only return:
-        # [switch_active, exit_active]
-        if only_one_exit_and_switch:
-            return [
-                float(self._sim_exit_switch().active),
-                float(self._sim_exit_door().active),
-            ]
-
         # Maximum number of attributes per entity (padding with zeros if entity has fewer attributes)
-        MAX_ATTRIBUTES = 6 if use_rich_features else 4
+        MAX_ATTRIBUTES = 6
 
         # Entity type to max count mapping based on our own constraints
         MAX_COUNTS = {
@@ -512,14 +478,7 @@ class NPlayHeadless:
             EntityType.SHWUMP: 32,
         }
 
-        exit_entity_type = EntityType.EXIT_DOOR
-        switch_entity_type = EntityType.EXIT_SWITCH
-
-        entity_types = (
-            [exit_entity_type, switch_entity_type]
-            if only_one_exit_and_switch
-            else list(MAX_COUNTS.keys())
-        )
+        entity_types = list(MAX_COUNTS.keys())
 
         # For each entity type in the simulation
         for entity_type in entity_types:
@@ -536,29 +495,27 @@ class NPlayHeadless:
                     entity = entities[entity_idx]
                     entity_state = entity.get_state()
 
-                    # Add rich features if requested
-                    if use_rich_features:
-                        ninja = self.sim.ninja
-                        # Distance to ninja (normalized by screen diagonal)
-                        dx = entity.xpos - ninja.xpos
-                        dy = entity.ypos - ninja.ypos
-                        distance = (dx**2 + dy**2) ** 0.5
-                        screen_diagonal = (
-                            render_utils.SRCWIDTH**2 + render_utils.SRCHEIGHT**2
-                        ) ** 0.5
-                        normalized_distance = min(distance / screen_diagonal, 1.0)
-                        entity_state.append(normalized_distance)
+                    ninja = self.sim.ninja
+                    # Distance to ninja (normalized by screen diagonal)
+                    dx = entity.xpos - ninja.xpos
+                    dy = entity.ypos - ninja.ypos
+                    distance = (dx**2 + dy**2) ** 0.5
+                    screen_diagonal = (
+                        render_utils.SRCWIDTH**2 + render_utils.SRCHEIGHT**2
+                    ) ** 0.5
+                    normalized_distance = min(distance / screen_diagonal, 1.0)
+                    entity_state.append(normalized_distance)
 
-                        # Relative velocity (if entity has velocity attributes)
-                        if hasattr(entity, "xspeed") and hasattr(entity, "yspeed"):
-                            # Relative velocity magnitude normalized by ninja's max speed
-                            rel_vx = entity.xspeed - ninja.xspeed
-                            rel_vy = entity.yspeed - ninja.yspeed
-                            rel_speed = (rel_vx**2 + rel_vy**2) ** 0.5
-                            normalized_rel_speed = min(rel_speed / MAX_HOR_SPEED, 1.0)
-                            entity_state.append(normalized_rel_speed)
-                        else:
-                            entity_state.append(0.0)  # No velocity information
+                    # Relative velocity (if entity has velocity attributes)
+                    if hasattr(entity, "xspeed") and hasattr(entity, "yspeed"):
+                        # Relative velocity magnitude normalized by ninja's max speed
+                        rel_vx = entity.xspeed - ninja.xspeed
+                        rel_vy = entity.yspeed - ninja.yspeed
+                        rel_speed = (rel_vx**2 + rel_vy**2) ** 0.5
+                        normalized_rel_speed = min(rel_speed / MAX_HOR_SPEED, 1.0)
+                        entity_state.append(normalized_rel_speed)
+                    else:
+                        entity_state.append(0.0)  # No velocity information
 
                     # Assert that all entity states are between 0 and 1. If not
                     # print an informative error message containing the entity type,

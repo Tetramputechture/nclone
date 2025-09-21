@@ -13,8 +13,7 @@ from nclone.gym_environment.npp_environment import (
     NppEnvironment,
 )
 from nclone.gym_environment.constants import (
-    MINIMAL_GAME_STATE_SIZE,
-    RICH_GAME_STATE_SIZE,
+    GAME_STATE_CHANNELS,
 )
 
 # Add project root to path
@@ -27,49 +26,18 @@ class TestObservationProfiles(unittest.TestCase):
 
     def setUp(self):
         """Set up test environments."""
-        self.env_minimal = NppEnvironment(
-            render_mode="rgb_array",
-            enable_frame_stack=False,
-            observation_profile="minimal",
-        )
-
         self.env_rich = NppEnvironment(
             render_mode="rgb_array",
-            enable_frame_stack=False,
-            observation_profile="rich",
         )
 
     def test_observation_space_shapes(self):
         """Test that observation spaces have correct shapes."""
-        # Minimal profile
-        minimal_obs_space = self.env_minimal.observation_space
-        self.assertEqual(
-            minimal_obs_space["game_state"].shape, (MINIMAL_GAME_STATE_SIZE,)
-        )
-
         # Rich profile
         rich_obs_space = self.env_rich.observation_space
-        self.assertEqual(rich_obs_space["game_state"].shape, (RICH_GAME_STATE_SIZE,))
-
-        # Both should have same image dimensions
-        self.assertEqual(
-            minimal_obs_space["player_frame"].shape,
-            rich_obs_space["player_frame"].shape,
-        )
-        self.assertEqual(
-            minimal_obs_space["global_view"].shape, rich_obs_space["global_view"].shape
-        )
+        self.assertEqual(rich_obs_space["game_state"].shape, (GAME_STATE_CHANNELS,))
 
     def test_observation_consistency(self):
         """Test that observations are consistent across resets."""
-        # Test minimal profile
-        obs1 = self.env_minimal.reset()[0]
-        obs2 = self.env_minimal.reset()[0]
-
-        self.assertEqual(obs1["game_state"].shape, obs2["game_state"].shape)
-        self.assertEqual(obs1["player_frame"].shape, obs2["player_frame"].shape)
-        self.assertEqual(obs1["global_view"].shape, obs2["global_view"].shape)
-
         # Test rich profile
         obs1 = self.env_rich.reset()[0]
         obs2 = self.env_rich.reset()[0]
@@ -81,24 +49,18 @@ class TestObservationProfiles(unittest.TestCase):
     def test_game_state_features(self):
         """Test game state feature extraction."""
         # Reset environments
-        minimal_obs = self.env_minimal.reset()[0]
         rich_obs = self.env_rich.reset()[0]
 
         # Check feature vector sizes
-        self.assertEqual(len(minimal_obs["game_state"]), MINIMAL_GAME_STATE_SIZE)
-        self.assertEqual(len(rich_obs["game_state"]), RICH_GAME_STATE_SIZE)
+        self.assertEqual(len(rich_obs["game_state"]), GAME_STATE_CHANNELS)
 
         # Check that all features are finite
-        self.assertTrue(np.all(np.isfinite(minimal_obs["game_state"])))
         self.assertTrue(np.all(np.isfinite(rich_obs["game_state"])))
 
         # Check feature ranges (should be normalized)
-        minimal_features = minimal_obs["game_state"]
         rich_features = rich_obs["game_state"]
 
         # Most features should be in reasonable ranges
-        self.assertTrue(np.all(minimal_features >= -10.0))
-        self.assertTrue(np.all(minimal_features <= 10.0))
         self.assertTrue(np.all(rich_features >= -10.0))
         self.assertTrue(np.all(rich_features <= 10.0))
 
@@ -111,7 +73,7 @@ class TestObservationProfiles(unittest.TestCase):
             obs, _, terminated, truncated, _ = self.env_rich.step(0)  # No action
 
             # Check shapes remain consistent
-            self.assertEqual(obs["game_state"].shape, (RICH_GAME_STATE_SIZE,))
+            self.assertEqual(obs["game_state"].shape, (GAME_STATE_CHANNELS,))
             self.assertTrue(np.all(np.isfinite(obs["game_state"])))
 
             # Check image shapes remain consistent
@@ -121,40 +83,6 @@ class TestObservationProfiles(unittest.TestCase):
             if terminated or truncated:
                 break
 
-    def test_deprecated_flag_handling(self):
-        """Test deprecated use_rich_game_state flag."""
-        import warnings
-
-        # Test that deprecated flag triggers warning
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            env = NppEnvironment(
-                render_mode="rgb_array",
-                enable_frame_stack=False,
-                use_rich_game_state=True,
-            )
-
-            # Should trigger deprecation warning
-            self.assertTrue(len(w) > 0)
-            self.assertTrue(any("deprecated" in str(warning.message) for warning in w))
-
-            # Should set observation_profile to 'rich'
-            self.assertEqual(env.observation_profile, "rich")
-
-        # Test False case
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            env = NppEnvironment(
-                render_mode="rgb_array",
-                enable_frame_stack=False,
-                use_rich_game_state=False,
-            )
-
-            # Should set observation_profile to 'minimal'
-            self.assertEqual(env.observation_profile, "minimal")
-
 
 class TestFrameStability(unittest.TestCase):
     """Test frame stability and processing."""
@@ -163,8 +91,6 @@ class TestFrameStability(unittest.TestCase):
         """Set up test environment."""
         self.env = NppEnvironment(
             render_mode="rgb_array",
-            enable_frame_stack=False,
-            observation_profile="rich",
         )
 
     def test_frame_dtype_consistency(self):
@@ -215,8 +141,6 @@ class TestEntityFeatures(unittest.TestCase):
         """Set up test environment."""
         self.env = NppEnvironment(
             render_mode="rgb_array",
-            enable_frame_stack=False,
-            observation_profile="rich",
         )
 
     def test_ninja_physics_features(self):

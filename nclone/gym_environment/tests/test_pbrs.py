@@ -217,16 +217,12 @@ class TestPBRSIntegration(unittest.TestCase):
         """Set up test environments."""
         self.env_pbrs = NppEnvironment(
             render_mode="rgb_array",
-            enable_frame_stack=False,
-            observation_profile="rich",
             enable_pbrs=True,
             pbrs_gamma=0.99,
         )
 
         self.env_no_pbrs = NppEnvironment(
             render_mode="rgb_array",
-            enable_frame_stack=False,
-            observation_profile="rich",
             enable_pbrs=False,
         )
 

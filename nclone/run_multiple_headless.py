@@ -22,7 +22,6 @@ def run_single_simulation(simulation_id, num_steps, video_path_prefix=None):
 
     env = NppEnvironment(
         render_mode="rgb_array",
-        enable_frame_stack=False,
         enable_debug_overlay=False,
         eval_mode=True,
         seed=None,
