@@ -448,20 +448,13 @@ class SubgoalPlanner:
             if entity_type == EntityType.EXIT_SWITCH:
                 position = (entity.get('x', 0), entity.get('y', 0))
                 entity_id = entity.get('entity_id')
-                if entity_id:  # Only consider switches with IDs (intermediate switches)
-                    all_switches.append({
-                        'entity': entity,
-                        'position': position,
-                        'id': entity_id,
-                        'activated': switch_states.get(entity_id, False)
-                    })
-                else:  # Exit switch (no entity_id)
-                    exit_switches.append({
-                        'entity': entity,
-                        'position': position,
-                        'id': None,
-                        'activated': False  # Exit switches are never "activated" in the traditional sense
-                    })
+                # Exit switches are always considered exit switches regardless of entity_id
+                exit_switches.append({
+                    'entity': entity,
+                    'position': position,
+                    'id': entity_id,
+                    'activated': False  # Exit switches are never "activated" in the traditional sense
+                })
             elif entity_type == EntityType.LOCKED_DOOR:
                 position = (entity.get('x', 0), entity.get('y', 0))
                 controlled_by = entity.get('controlled_by')
@@ -499,6 +492,19 @@ class SubgoalPlanner:
         if not required_switches:
             if self.debug:
                 print("DEBUG: No reachable switch sequence found")
+            
+            # For levels without locked doors, create a simple navigation plan
+            # This handles geometry-based puzzles (like one-way platforms)
+            if not locked_doors:
+                if self.debug:
+                    print("DEBUG: No locked doors found - creating simple navigation plan")
+                exit_subgoal = self._create_subgoal_from_position(exit_switch['position'], "exit_switch")
+                return SubgoalPlan(
+                    subgoals=[exit_subgoal],
+                    execution_order=[0],
+                    total_estimated_cost=self._calculate_distance(ninja_position, exit_switch['position'])
+                )
+            
             return None
         
         # Create subgoals for all required switches + exit switch
