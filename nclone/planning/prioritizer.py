@@ -13,7 +13,6 @@ from .subgoals import (
     Subgoal,
     NavigationSubgoal,
     SwitchActivationSubgoal,
-    CollectionSubgoal,
 )
 
 
@@ -44,7 +43,6 @@ class SubgoalPrioritizer:
             "exit_door": 1.0,
             "exit_switch": 0.9,
             "door_switch": 0.7,
-            "collectible": 0.3,
             "exploration": 0.1,
         }
 
@@ -98,8 +96,6 @@ class SubgoalPrioritizer:
             strategic_weight = self.strategic_weights.get(subgoal.target_type, 0.5)
         elif isinstance(subgoal, SwitchActivationSubgoal):
             strategic_weight = self.strategic_weights.get(subgoal.switch_type, 0.7)
-        elif isinstance(subgoal, CollectionSubgoal):
-            strategic_weight = self.strategic_weights.get("collectible", 0.3)
         else:
             strategic_weight = 0.5
 

@@ -20,7 +20,7 @@ class EntityDoorTrap(EntityDoorBase):
         - Initial State:
             * Starts in open position
             * No collision detection when open
-            * Switch is active and collectible
+            * Switch is active and triggerable
         - Switch Activation:
             * Closes permanently when switch is collected
             * Switch becomes inactive after collection
@@ -44,6 +44,7 @@ class EntityDoorTrap(EntityDoorBase):
         - One-time state change on activation
         - Permanent state after closure
     """
+
     RADIUS = 5
     MAX_COUNT_PER_LEVEL = 256
 
@@ -54,7 +55,8 @@ class EntityDoorTrap(EntityDoorBase):
     def logical_collision(self):
         """If the ninja collects the associated close switch, close the door."""
         ninja = self.sim.ninja
-        if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
+        if overlap_circle_vs_circle(
+            self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+        ):
             self.change_state(closed=True)
             self.active = False

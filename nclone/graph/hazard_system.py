@@ -14,6 +14,7 @@ from enum import IntEnum
 
 from ..constants.entity_types import EntityType
 from ..graph.level_data import LevelData
+
 # Removed legacy precise collision - using simplified collision detection
 from ..constants.physics_constants import (
     NINJA_RADIUS,
