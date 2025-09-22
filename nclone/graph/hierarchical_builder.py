@@ -264,39 +264,28 @@ class HierarchicalGraphBuilder:
         self, level_data: LevelData, entities: List, ninja_pos: Tuple[int, int]
     ) -> Dict:
         """Extract reachability information for strategic planning."""
-        try:
-            # Get reachability analysis from tiered system
-            tier1_result = self.reachability_system.tier1_system.quick_check(
-                level_data, entities, ninja_pos
-            )
-            tier2_result = self.reachability_system.tier2_system.quick_check(
-                level_data, entities, ninja_pos
-            )
-            tier3_result = self.reachability_system.tier3_system.quick_check(
-                level_data, entities, ninja_pos
-            )
+        # Get reachability analysis from tiered system
+        tier1_result = self.reachability_system.tier1_system.quick_check(
+            level_data, entities, ninja_pos
+        )
+        tier2_result = self.reachability_system.tier2_system.quick_check(
+            level_data, entities, ninja_pos
+        )
+        tier3_result = self.reachability_system.tier3_system.quick_check(
+            level_data, entities, ninja_pos
+        )
 
-            return {
-                "tier1_reachable_count": getattr(tier1_result, "reachable_count", 0),
-                "tier2_reachable_count": getattr(tier2_result, "reachable_count", 0),
-                "tier3_reachable_count": getattr(tier3_result, "reachable_count", 0),
-                "is_level_completable": getattr(
-                    tier3_result, "is_level_completable", lambda: False
-                )(),
-                "connectivity_score": self._calculate_connectivity_score(
-                    tier1_result, tier2_result, tier3_result
-                ),
-            }
-        except Exception as e:
-            if self.debug:
-                print(f"Warning: Could not extract reachability info: {e}")
-            return {
-                "tier1_reachable_count": 0,
-                "tier2_reachable_count": 0,
-                "tier3_reachable_count": 0,
-                "is_level_completable": False,
-                "connectivity_score": 0.0,
-            }
+        return {
+            "tier1_reachable_count": getattr(tier1_result, "reachable_count", 0),
+            "tier2_reachable_count": getattr(tier2_result, "reachable_count", 0),
+            "tier3_reachable_count": getattr(tier3_result, "reachable_count", 0),
+            "is_level_completable": getattr(
+                tier3_result, "is_level_completable", lambda: False
+            )(),
+            "connectivity_score": self._calculate_connectivity_score(
+                tier1_result, tier2_result, tier3_result
+            ),
+        }
 
     def _extract_strategic_features(
         self, level_data: LevelData, entities: List, ninja_pos: Tuple[int, int]
@@ -342,17 +331,13 @@ class HierarchicalGraphBuilder:
         self, tier1_result, tier2_result, tier3_result
     ) -> float:
         """Calculate overall connectivity score for the level."""
-        try:
-            # Combine reachability counts from all tiers
-            total_reachable = (
-                getattr(tier1_result, "reachable_count", 0)
-                + getattr(tier2_result, "reachable_count", 0)
-                + getattr(tier3_result, "reachable_count", 0)
-            )
+        # Combine reachability counts from all tiers
+        total_reachable = (
+            getattr(tier1_result, "reachable_count", 0)
+            + getattr(tier2_result, "reachable_count", 0)
+            + getattr(tier3_result, "reachable_count", 0)
+        )
 
-            # Normalize by some reasonable maximum
-            max_possible = 1000  # Rough estimate
-            return min(total_reachable / max_possible, 1.0)
-
-        except Exception:
-            return 0.0
+        # Normalize by some reasonable maximum
+        max_possible = 1000  # Rough estimate
+        return min(total_reachable / max_possible, 1.0)
