@@ -378,9 +378,7 @@ class NppEnvironment(gymnasium.Env):
             "exit_door_y": self.nplay_headless.exit_door_position()[1],
             "time_remaining": time_remaining,
             "sim_frame": self.nplay_headless.sim.frame,
-            "gold_collected": self.nplay_headless.get_gold_collected(),
             "doors_opened": self.nplay_headless.get_doors_opened(),
-            "total_gold_available": self.nplay_headless.get_total_gold_available(),
             "entity_states": entity_states_raw,  # For PBRS hazard detection
             "reachability_features": self._get_reachability_features(),
         }
