@@ -227,38 +227,71 @@ class OpenCVFloodFill:
         Returns:
             True if entity should block movement
         """
-        entity_type = getattr(entity, "type", None)
+        from ...constants.entity_types import EntityType
+        
+        # Handle both dict and object entity formats
+        if isinstance(entity, dict):
+            entity_type = entity.get("type")
+            entity_id = entity.get("entity_id", "N/A")
+        else:
+            entity_type = getattr(entity, "type", None)
+            entity_id = getattr(entity, "entity_id", "N/A")
+        
+
 
         # One-way platforms are always rendered (direction handled by renderer)
-        if entity_type == 11:  # ONE_WAY
+        if entity_type == EntityType.ONE_WAY:
             return True
 
         # Doors depend on switch states
-        if entity_type == 5:  # REGULAR_DOOR
-            switch_id = getattr(entity, "switch_id", None)
+        if entity_type == EntityType.REGULAR_DOOR:
+            if isinstance(entity, dict):
+                switch_id = entity.get("switch_id")
+            else:
+                switch_id = getattr(entity, "switch_id", None)
             if switch_id and switch_id in switch_states:
                 # Door is solid when closed (switch inactive)
                 return not switch_states[switch_id]
             return True  # Default to solid
 
-        # Locked doors depend on their activation state
-        if entity_type == 6:  # LOCKED_DOOR
+        # Locked doors depend on their controlling switch state
+        if entity_type == EntityType.LOCKED_DOOR:
             # Only consider door parts (not switch parts) for collision
-            is_door_part = getattr(entity, "is_door_part", True)
+            if isinstance(entity, dict):
+                is_door_part = entity.get("is_door_part", True)
+                controlled_by = entity.get("controlled_by")
+            else:
+                is_door_part = getattr(entity, "is_door_part", True)
+                controlled_by = getattr(entity, "controlled_by", None)
+            
             if is_door_part:
-                # Door is solid when closed
-                return getattr(entity, "closed", True)
+                # Check if controlling switch is activated
+                if controlled_by and controlled_by in switch_states:
+                    # Door is solid when switch is NOT activated (door closed)
+                    return not switch_states[controlled_by]
+                else:
+                    # Default to solid if no controlling switch or switch not found
+                    if isinstance(entity, dict):
+                        return entity.get("closed", True)
+                    else:
+                        return getattr(entity, "closed", True)
             else:
                 # Switch parts don't block movement
                 return False
 
         # Trap doors depend on their activation state
-        if entity_type == 8:  # TRAP_DOOR
+        if entity_type == EntityType.TRAP_DOOR:
             # Only consider door parts (not switch parts) for collision
-            is_door_part = getattr(entity, "is_door_part", True)
+            if isinstance(entity, dict):
+                is_door_part = entity.get("is_door_part", True)
+                closed = entity.get("closed", False)  # Trap doors start open
+            else:
+                is_door_part = getattr(entity, "is_door_part", True)
+                closed = getattr(entity, "closed", False)  # Trap doors start open
+            
             if is_door_part:
                 # Door is solid when closed
-                return getattr(entity, "closed", False)  # Trap doors start open
+                return closed
             else:
                 # Switch parts don't block movement
                 return False

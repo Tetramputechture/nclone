@@ -382,13 +382,10 @@ class SubgoalPlanner:
         reachability_analyzer: Optional[OpenCVFloodFill] = None,
     ) -> Optional[SubgoalPlan]:
         """
-        Create simplified completion plan optimized for RL training.
+        Create completion plan that handles multi-switch dependencies.
 
-        This method now uses the simplified strategy:
-        1. Check if exit switch is reachable → if yes, that's the goal
-        2. If not, find nearest reachable locked door switch → that's the goal
-        3. Check if exit door is reachable → if yes, that's the goal
-        4. If not, find nearest reachable switch → that's the goal
+        This method creates a comprehensive plan that identifies all necessary
+        switches that need to be activated to reach the exit, in the correct order.
 
         Args:
             ninja_position: Current ninja position (x, y)
@@ -398,7 +395,7 @@ class SubgoalPlanner:
             reachability_analyzer: OpenCV flood fill analyzer (unused in simplified version)
 
         Returns:
-            SubgoalPlan with single clear objective, or None if no objective found
+            SubgoalPlan with all necessary objectives in correct order, or None if no plan found
         """
         if switch_states is None:
             switch_states = {}
@@ -406,30 +403,219 @@ class SubgoalPlanner:
         # Handle consolidated LevelData or separate parameters
         consolidated_data = ensure_level_data(level_data, ninja_position, entities)
         
-        # Use simplified strategy to get next objective
-        objective = self.simplified_strategy.get_next_objective(
+        # Create multi-switch plan
+        plan = self._create_multi_switch_plan(
             ninja_position, consolidated_data, consolidated_data.entities, switch_states
         )
 
-        if objective is None:
+        if plan is None:
             if self.debug:
-                print("DEBUG: No reachable objectives found")
+                print("DEBUG: No reachable completion plan found")
             return None
 
-        # Convert SimpleObjective to Subgoal for backward compatibility
-        subgoal = self._convert_objective_to_subgoal(objective)
-
-        # Create simple plan with single objective
-        plan = SubgoalPlan(
-            subgoals=[subgoal],
-            execution_order=[0],  # Single objective at index 0
-            total_estimated_cost=objective.distance,
-        )
-
         if self.debug:
-            print(f"DEBUG: Created simplified plan: {objective.description}")
+            print(f"DEBUG: Created plan with {len(plan.subgoals)} subgoals")
+            for i, subgoal in enumerate(plan.subgoals):
+                print(f"  {i+1}. {subgoal.goal_type} at {subgoal.position}")
 
         return plan
+
+    def _create_multi_switch_plan(
+        self,
+        ninja_position: Tuple[float, float],
+        level_data,
+        entities: List[Any],
+        switch_states: Dict[str, bool],
+    ) -> Optional[SubgoalPlan]:
+        """
+        Create a plan that handles multi-switch dependencies.
+        
+        This method works backwards from the exit to identify all necessary switches:
+        1. Check if exit switch is reachable - if yes, that's the final goal
+        2. If not, find which switches need to be activated to make it reachable
+        3. For each required switch, check if it's reachable, if not find its dependencies
+        4. Build a plan with all switches in the correct activation order
+        """
+        from ..constants.entity_types import EntityType
+        
+        # Find all switches and doors
+        exit_switches = []
+        locked_doors = []
+        all_switches = []
+        
+        for entity in entities:
+            entity_type = entity.get('type') if isinstance(entity, dict) else getattr(entity, 'type', None)
+            if entity_type == EntityType.EXIT_SWITCH:
+                position = (entity.get('x', 0), entity.get('y', 0))
+                entity_id = entity.get('entity_id')
+                if entity_id:  # Only consider switches with IDs (intermediate switches)
+                    all_switches.append({
+                        'entity': entity,
+                        'position': position,
+                        'id': entity_id,
+                        'activated': switch_states.get(entity_id, False)
+                    })
+                else:  # Exit switch (no entity_id)
+                    exit_switches.append({
+                        'entity': entity,
+                        'position': position,
+                        'id': None,
+                        'activated': False  # Exit switches are never "activated" in the traditional sense
+                    })
+            elif entity_type == EntityType.LOCKED_DOOR:
+                position = (entity.get('x', 0), entity.get('y', 0))
+                controlled_by = entity.get('controlled_by')
+                locked_doors.append({
+                    'entity': entity,
+                    'position': position,
+                    'controlled_by': controlled_by,
+                    'is_open': switch_states.get(controlled_by, False) if controlled_by else False
+                })
+        
+        if not exit_switches:
+            if self.debug:
+                print("DEBUG: No exit switch found")
+            return None
+        
+        # Use the first exit switch as the final goal
+        exit_switch = exit_switches[0]
+        
+        # Check if exit switch is directly reachable
+        if self.simplified_strategy._is_reachable(ninja_position, exit_switch['position'], level_data, switch_states):
+            if self.debug:
+                print("DEBUG: Exit switch directly reachable")
+            subgoal = self._create_subgoal_from_position(exit_switch['position'], "exit_switch")
+            return SubgoalPlan(
+                subgoals=[subgoal],
+                execution_order=[0],
+                total_estimated_cost=self._calculate_distance(ninja_position, exit_switch['position'])
+            )
+        
+        # Exit switch not reachable - find required switch sequence
+        required_switches = self._find_required_switch_sequence(
+            ninja_position, exit_switch, all_switches, locked_doors, level_data, switch_states
+        )
+        
+        if not required_switches:
+            if self.debug:
+                print("DEBUG: No reachable switch sequence found")
+            return None
+        
+        # Create subgoals for all required switches + exit switch
+        subgoals = []
+        execution_order = []
+        total_cost = 0.0
+        
+        current_pos = ninja_position
+        for i, switch_info in enumerate(required_switches):
+            subgoal = self._create_subgoal_from_position(switch_info['position'], "switch")
+            subgoals.append(subgoal)
+            execution_order.append(i)
+            total_cost += self._calculate_distance(current_pos, switch_info['position'])
+            current_pos = switch_info['position']
+        
+        # Add exit switch as final goal
+        exit_subgoal = self._create_subgoal_from_position(exit_switch['position'], "exit_switch")
+        subgoals.append(exit_subgoal)
+        execution_order.append(len(subgoals) - 1)
+        total_cost += self._calculate_distance(current_pos, exit_switch['position'])
+        
+        return SubgoalPlan(
+            subgoals=subgoals,
+            execution_order=execution_order,
+            total_estimated_cost=total_cost
+        )
+
+    def _find_required_switch_sequence(
+        self,
+        ninja_position: Tuple[float, float],
+        exit_switch: Dict,
+        all_switches: List[Dict],
+        locked_doors: List[Dict],
+        level_data,
+        switch_states: Dict[str, bool],
+    ) -> List[Dict]:
+        """
+        Find the sequence of switches that need to be activated to reach the exit switch.
+        
+        This uses a breadth-first search approach to find the minimal sequence.
+        """
+        if self.debug:
+            print(f"DEBUG: Finding switch sequence to reach exit at {exit_switch['position']}")
+            print(f"DEBUG: Available switches: {[s['id'] for s in all_switches]}")
+            print(f"DEBUG: Current switch states: {switch_states}")
+        
+        # Try activating switches one by one to see which ones help
+        required_sequence = []
+        current_states = switch_states.copy()
+        current_pos = ninja_position
+        
+        max_iterations = len(all_switches) + 1  # Prevent infinite loops
+        iteration = 0
+        
+        while iteration < max_iterations:
+            iteration += 1
+            
+            # Check if exit switch is now reachable
+            if self.simplified_strategy._is_reachable(current_pos, exit_switch['position'], level_data, current_states):
+                if self.debug:
+                    print(f"DEBUG: Exit switch reachable after {len(required_sequence)} switches")
+                break
+            
+            # Find the next reachable switch that isn't already activated
+            next_switch = None
+            for switch in all_switches:
+                if not current_states.get(switch['id'], False):  # Not activated yet
+                    if self.simplified_strategy._is_reachable(current_pos, switch['position'], level_data, current_states):
+                        next_switch = switch
+                        break
+            
+            if next_switch is None:
+                if self.debug:
+                    print("DEBUG: No more reachable switches found")
+                break
+            
+            # Activate this switch and add to sequence
+            required_sequence.append(next_switch)
+            current_states[next_switch['id']] = True
+            current_pos = next_switch['position']
+            
+            if self.debug:
+                print(f"DEBUG: Added switch {next_switch['id']} at {next_switch['position']} to sequence")
+        
+        # Verify the final sequence actually works
+        if not self.simplified_strategy._is_reachable(current_pos, exit_switch['position'], level_data, current_states):
+            if self.debug:
+                print("DEBUG: Final sequence doesn't make exit switch reachable")
+            return []
+        
+        return required_sequence
+
+    def _is_position_reachable(
+        self,
+        from_pos: Tuple[float, float],
+        to_pos: Tuple[float, float],
+        level_data,
+        switch_states: Dict[str, bool],
+    ) -> bool:
+        """Check if a position is reachable given current switch states."""
+        return self.simplified_strategy._is_reachable(from_pos, to_pos, level_data, switch_states)
+
+    def _create_subgoal_from_position(self, position: Tuple[float, float], goal_type: str) -> Subgoal:
+        """Create a subgoal from a position."""
+        # Convert pixel position to sub-grid position
+        sub_row = int(position[1] // SUB_CELL_SIZE)
+        sub_col = int(position[0] // SUB_CELL_SIZE)
+        
+        return Subgoal(
+            position=(sub_row, sub_col),
+            goal_type=goal_type,
+            priority=0  # Lower numbers = higher priority
+        )
+
+    def _calculate_distance(self, pos1: Tuple[float, float], pos2: Tuple[float, float]) -> float:
+        """Calculate Euclidean distance between two positions."""
+        return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
 
     def _convert_objective_to_subgoal(self, objective: SimpleObjective) -> Subgoal:
         """

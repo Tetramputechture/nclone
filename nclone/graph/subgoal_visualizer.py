@@ -416,9 +416,11 @@ class SubgoalVisualizer:
         reachable_positions: Optional[Set[Tuple[int, int]]] = None,
         current_plan: Optional[SubgoalPlan] = None,
         filename: str = "subgoal_visualization.png",
+        level_data=None,
+        entities=None,
     ) -> bool:
         """
-        Export subgoal visualization to an image file.
+        Export subgoal visualization to an image file with actual level rendering.
 
         Args:
             subgoals: List of subgoals to visualize
@@ -427,20 +429,30 @@ class SubgoalVisualizer:
             reachable_positions: Set of reachable positions
             current_plan: Current subgoal plan
             filename: Output filename
+            level_data: Level data for rendering tiles
+            entities: Entity data for rendering entities
 
         Returns:
             True if export successful, False otherwise
         """
         try:
-            # Calculate image dimensions
+            # Calculate image dimensions - note Y=0 is at top-left
             width = level_dimensions[0] * TILE_PIXEL_SIZE
             height = level_dimensions[1] * TILE_PIXEL_SIZE
 
             # Create surface for export
             export_surface = pygame.Surface((width, height), pygame.SRCALPHA)
-            export_surface.fill((50, 50, 50, 255))  # Dark background
+            export_surface.fill((30, 30, 30, 255))  # Dark background
 
-            # Render subgoals
+            # Render level background if available
+            if level_data is not None:
+                self._render_level_background(export_surface, level_data, level_dimensions)
+
+            # Render entities if available
+            if entities is not None:
+                self._render_entities(export_surface, entities, level_dimensions)
+
+            # Render subgoals overlay
             self.render_subgoals_overlay(
                 export_surface,
                 subgoals,
@@ -458,7 +470,72 @@ class SubgoalVisualizer:
 
         except Exception as e:
             print(f"Error exporting subgoal visualization: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+
+    def _render_level_background(self, surface, level_data, level_dimensions):
+        """Render level tiles as background."""
+        try:
+            from ..constants.entity_types import EntityType
+            
+            # Get tiles array
+            if hasattr(level_data, 'tiles'):
+                tiles = level_data.tiles
+            else:
+                tiles = level_data
+            
+            # Render tiles - Y=0 is at top-left, positive Y goes down
+            for y in range(tiles.shape[0]):
+                for x in range(tiles.shape[1]):
+                    tile_value = tiles[y, x]
+                    if tile_value > 0:  # Non-empty tile
+                        # Convert tile coordinates to pixel coordinates
+                        pixel_x = x * TILE_PIXEL_SIZE
+                        pixel_y = y * TILE_PIXEL_SIZE
+                        
+                        # Draw tile as a rectangle
+                        tile_rect = pygame.Rect(pixel_x, pixel_y, TILE_PIXEL_SIZE, TILE_PIXEL_SIZE)
+                        pygame.draw.rect(surface, (100, 100, 100, 255), tile_rect)
+                        pygame.draw.rect(surface, (150, 150, 150, 255), tile_rect, 1)
+        except Exception as e:
+            print(f"Error rendering level background: {e}")
+
+    def _render_entities(self, surface, entities, level_dimensions):
+        """Render entities on the level."""
+        try:
+            from ..constants.entity_types import EntityType
+            
+            # Entity colors
+            entity_colors = {
+                EntityType.NINJA: (0, 255, 255, 255),  # Cyan
+                EntityType.EXIT_SWITCH: (255, 255, 0, 255),  # Yellow
+                EntityType.EXIT_DOOR: (0, 255, 0, 255),  # Green
+                EntityType.LOCKED_DOOR: (255, 0, 0, 255),  # Red
+                EntityType.REGULAR_DOOR: (0, 200, 0, 255),  # Dark green
+                EntityType.ONE_WAY: (128, 128, 128, 255),  # Gray
+                EntityType.GOLD: (255, 215, 0, 255),  # Gold
+                EntityType.TOGGLE_MINE: (255, 100, 100, 255),  # Light red
+                EntityType.DRONE_ZAP: (255, 0, 255, 255),  # Magenta
+                EntityType.THWUMP: (139, 69, 19, 255),  # Brown
+            }
+            
+            for entity in entities:
+                entity_type = entity.get('type') if isinstance(entity, dict) else getattr(entity, 'type', None)
+                x = entity.get('x') if isinstance(entity, dict) else getattr(entity, 'x', 0)
+                y = entity.get('y') if isinstance(entity, dict) else getattr(entity, 'y', 0)
+                
+                # Get entity color
+                color = entity_colors.get(entity_type, (255, 255, 255, 255))  # Default white
+                
+                # Draw entity as a circle - Y coordinate system matches game (Y=0 top-left)
+                center = (int(x), int(y))
+                radius = 8
+                pygame.draw.circle(surface, color, center, radius)
+                pygame.draw.circle(surface, (255, 255, 255, 255), center, radius, 2)
+                
+        except Exception as e:
+            print(f"Error rendering entities: {e}")
 
     def update_config(self, **kwargs):
         """Update visualization configuration."""

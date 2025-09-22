@@ -404,13 +404,26 @@ class DebugOverlayRenderer:
         # Allow export even with empty subgoals to show basic visualization
         subgoals = self.current_subgoals if self.current_subgoals else []
         
+        # Get level data and entities from sim
+        level_data = None
+        entities = None
+        if hasattr(self.sim, 'level_data'):
+            level_data = self.sim.level_data
+        elif hasattr(self.sim, 'tiles'):
+            level_data = self.sim.tiles
+            
+        if hasattr(self.sim, 'entities'):
+            entities = self.sim.entities
+        
         return self.subgoal_visualizer.export_subgoal_visualization(
             subgoals,
             ninja_pos,
             level_dimensions,
             self.current_reachable_positions,
             self.current_subgoal_plan,
-            filename
+            filename,
+            level_data=level_data,
+            entities=entities
         )
     
     def update_subgoal_visualization_config(self, **kwargs):
