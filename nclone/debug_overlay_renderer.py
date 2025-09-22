@@ -1,7 +1,7 @@
 import pygame
 import numpy as np
 from . import render_utils
-from typing import Optional
+from typing import Optional, List, Set, Tuple
 from .constants.physics_constants import (
     TILE_PIXEL_SIZE,
     FULL_MAP_WIDTH,
@@ -9,6 +9,8 @@ from .constants.physics_constants import (
 )
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
 from .graph.common import EdgeType, GraphData
+from .graph.subgoal_visualizer import SubgoalVisualizer, SubgoalVisualizationConfig
+from .graph.subgoal_types import Subgoal, SubgoalPlan
 
 
 class DebugOverlayRenderer:
@@ -29,6 +31,13 @@ class DebugOverlayRenderer:
         self.GRAPH_NODE_COLOR_NINJA = (60, 220, 255, 255)
         self.GRAPH_BG_DIM = (0, 0, 0, 140)
         self._graph_builder_for_dims = HierarchicalGraphBuilder()
+        
+        # Initialize subgoal visualizer
+        self.subgoal_visualizer = SubgoalVisualizer()
+        self.subgoal_debug_enabled = False
+        self.current_subgoals = []
+        self.current_subgoal_plan = None
+        self.current_reachable_positions = None
 
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         self.adjust = adjust
@@ -267,6 +276,20 @@ class DebugOverlayRenderer:
         if debug_info and "grid_outline" in debug_info:
             grid_surface = self._draw_grid_outline()
             surface.blit(grid_surface, (0, 0))
+        
+        # Draw subgoal visualization if enabled
+        if self.subgoal_debug_enabled and self.current_subgoals:
+            ninja_pos = self._get_ninja_position()
+            surface = self.subgoal_visualizer.render_subgoals_overlay(
+                surface, 
+                self.current_subgoals,
+                ninja_pos,
+                self.current_reachable_positions,
+                self.current_subgoal_plan,
+                self.tile_x_offset,
+                self.tile_y_offset,
+                self.adjust
+            )
 
         # Base font and settings
         try:
@@ -348,3 +371,62 @@ class DebugOverlayRenderer:
             render_dict(debug_info)
 
         return surface
+    
+    def _get_ninja_position(self) -> Tuple[float, float]:
+        """Get current ninja position from simulation."""
+        try:
+            if hasattr(self.sim, 'ninja'):
+                return (self.sim.ninja.x, self.sim.ninja.y)
+            else:
+                return (100.0, 100.0)  # Fallback position
+        except Exception:
+            return (100.0, 100.0)  # Fallback position
+    
+    def set_subgoal_debug_enabled(self, enabled: bool):
+        """Enable or disable subgoal visualization."""
+        self.subgoal_debug_enabled = enabled
+    
+    def set_subgoal_data(
+        self, 
+        subgoals: List[Subgoal], 
+        plan: Optional[SubgoalPlan] = None,
+        reachable_positions: Optional[Set[Tuple[int, int]]] = None
+    ):
+        """Set subgoal data for visualization."""
+        self.current_subgoals = subgoals
+        self.current_subgoal_plan = plan
+        self.current_reachable_positions = reachable_positions
+    
+    def export_subgoal_visualization(self, filename: str = "subgoal_export.png") -> bool:
+        """Export current subgoal visualization to image file."""
+        if not self.current_subgoals:
+            return False
+        
+        ninja_pos = self._get_ninja_position()
+        level_dimensions = (FULL_MAP_WIDTH, FULL_MAP_HEIGHT)
+        
+        return self.subgoal_visualizer.export_subgoal_visualization(
+            self.current_subgoals,
+            ninja_pos,
+            level_dimensions,
+            self.current_reachable_positions,
+            self.current_subgoal_plan,
+            filename
+        )
+    
+    def update_subgoal_visualization_config(self, **kwargs):
+        """Update subgoal visualization configuration."""
+        self.subgoal_visualizer.update_config(**kwargs)
+    
+    def set_subgoal_visualization_mode(self, mode_name: str):
+        """Set subgoal visualization mode by name."""
+        from .graph.subgoal_visualizer import SubgoalVisualizationMode
+        
+        mode_map = {
+            'basic': SubgoalVisualizationMode.BASIC,
+            'detailed': SubgoalVisualizationMode.DETAILED,
+            'reachability': SubgoalVisualizationMode.REACHABILITY,
+        }
+        
+        if mode_name in mode_map:
+            self.subgoal_visualizer.set_mode(mode_map[mode_name])
