@@ -16,12 +16,12 @@ Features:
 
 import pygame
 import numpy as np
-from typing import List, Tuple, Optional, Dict, Any, Set
+from typing import List, Tuple, Optional, Dict, Set
 from dataclasses import dataclass
 from enum import Enum
 
 from .subgoal_types import Subgoal, SubgoalPlan
-from .common import SUB_CELL_SIZE, SUB_GRID_WIDTH, SUB_GRID_HEIGHT
+from .common import SUB_CELL_SIZE
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 
 

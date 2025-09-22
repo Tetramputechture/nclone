@@ -5,10 +5,8 @@ This module provides the LevelCompletionPlanner that implements the production-r
 NPP level completion algorithm using intrinsic curiosity-driven reachability features.
 """
 
-import math
 from typing import Dict, Tuple, List, Optional
 
-import numpy as np
 
 from nclone.constants.entity_types import EntityType
 from .subgoals import CompletionStep, CompletionStrategy

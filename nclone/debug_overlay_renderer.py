@@ -8,8 +8,7 @@ from .constants.physics_constants import (
     FULL_MAP_HEIGHT,
 )
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
-from .graph.common import EdgeType, GraphData
-from .graph.subgoal_visualizer import SubgoalVisualizer, SubgoalVisualizationConfig
+from .graph.subgoal_visualizer import SubgoalVisualizer
 from .graph.subgoal_types import Subgoal, SubgoalPlan
 
 
