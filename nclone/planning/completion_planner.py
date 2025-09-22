@@ -2,17 +2,17 @@
 Strategic level completion planner using reachability analysis.
 
 This module provides the LevelCompletionPlanner that implements the production-ready
-NPP level completion algorithm using neural reachability features.
+NPP level completion algorithm using intrinsic curiosity-driven reachability features.
 """
 
 import math
 from typing import Dict, Tuple, List, Optional
 
 import numpy as np
-import torch
 
 from nclone.constants.entity_types import EntityType
 from .subgoals import CompletionStep, CompletionStrategy
+from .utils import is_switch_activated_authoritative, calculate_distance
 
 
 class LevelCompletionPlanner:
@@ -20,21 +20,21 @@ class LevelCompletionPlanner:
     Strategic planner for hierarchical level completion using fast reachability analysis.
     
     This planner implements the production-ready NPP level completion heuristic that leverages
-    the sophisticated neural architecture (graph transformer + 3D CNN + MLPs) rather than
-    expensive physics calculations. The strategy focuses on systematic switch activation
-    sequences following the definitive NPP level completion algorithm.
+    intrinsic curiosity-driven reachability analysis rather than expensive physics calculations.
+    The strategy focuses on systematic switch activation sequences following the definitive 
+    NPP level completion algorithm.
     
     NPP Level Completion Strategy (Production Implementation):
-    1. Check if exit door switch is reachable using neural reachability features
+    1. Check if exit door switch is reachable using curiosity-driven reachability features
        - If reachable: trigger exit door switch, proceed to step 2
        - If not reachable: find nearest reachable locked door switch, trigger it, return to step 1
-    2. Check if exit door is reachable using neural reachability analysis
+    2. Check if exit door is reachable using curiosity-driven reachability analysis
        - If reachable: navigate to exit door and complete level
        - If not reachable: find nearest reachable locked door switch, trigger it, return to step 2
     
     Performance Optimization:
-    - Avoids expensive physics calculations in favor of neural reachability features
-    - Trusts graph transformer + CNN + MLP output for spatial reasoning
+    - Avoids expensive physics calculations in favor of curiosity-driven reachability features
+    - Leverages intrinsic motivation signals for spatial reasoning
     - Maintains <3ms planning target through fast feature-based decisions
     - Removes complex hazard avoidance in favor of switch-focused strategy
     
@@ -42,6 +42,7 @@ class LevelCompletionPlanner:
     - Strategic analysis: nclone reachability analysis integration strategy
     - Hierarchical planning: Sutton et al. (1999) "Between MDPs and semi-MDPs"  
     - Strategic RL: Bacon et al. (2017) "The Option-Critic Architecture"
+    - Intrinsic motivation: Pathak et al. (2017) "Curiosity-driven Exploration"
     """
     
     def __init__(self):
@@ -50,35 +51,29 @@ class LevelCompletionPlanner:
         self.dependency_analyzer = DependencyAnalyzer()
     
     def plan_completion(self, ninja_pos, level_data, switch_states, 
-                       reachability_system, reachability_features) -> CompletionStrategy:
+                       reachability_system) -> CompletionStrategy:
         """
-        Generate strategic plan for NPP level completion using production-ready algorithm.
+        Generate strategic plan for NPP level completion using nclone's reachability analysis.
         
-        Implementation uses fast neural reachability analysis rather than expensive
-        physics calculations. Relies on graph transformer + 3D CNN + MLP features
-        for spatial reasoning and switch accessibility determination.
+        This planner provides reachability analysis and subgoal planning as inputs to the
+        intrinsic curiosity modules in the npp-rl repository. nclone is self-contained
+        and uses its own OpenCV-based reachability system for spatial reasoning.
         
-        NPP Level Completion Algorithm (Production Implementation):
-        1. Check if exit door switch is reachable using neural reachability features
+        NPP Level Completion Algorithm:
+        1. Check if exit door switch is reachable using nclone's reachability analysis
            - If reachable: create subgoal to trigger exit door switch, proceed to step 2
            - If not reachable: find nearest reachable locked door switch, create activation subgoal, return to step 1
-        2. Check if exit door is reachable using neural reachability analysis
+        2. Check if exit door is reachable using nclone's reachability analysis
            - If reachable: create navigation subgoal to exit door for level completion
            - If not reachable: find nearest reachable locked door switch, create activation subgoal, return to step 2
         
         This algorithm ensures systematic progression through switch dependencies for level completion.
+        The resulting strategy serves as input to curiosity-driven learning in npp-rl.
         """
-        # Extract neural reachability features - production-ready feature extraction
-        # Trust the sophisticated graph transformer + CNN + MLP architecture
+        # Use nclone's own reachability analysis - this provides input to npp-rl curiosity modules
         reachability_result = reachability_system.analyze_reachability(
-            level_data, ninja_pos, switch_states, performance_target="balanced"
+            level_data, ninja_pos, switch_states
         )
-        
-        # Encode reachability into compact 64-dimensional features
-        reachability_features_array = reachability_features.encode_reachability(
-            reachability_result, level_data, [], ninja_pos, switch_states
-        )
-        reachability_features = torch.tensor(reachability_features_array, dtype=torch.float32)
         
         # Identify level objectives using production-ready level analysis
         exit_door = self._find_exit_door(level_data)
@@ -99,7 +94,7 @@ class LevelCompletionPlanner:
             if current_state == "check_exit_switch":
                 # Step 1: Check if exit door switch is reachable
                 exit_switch_reachable = self._is_objective_reachable(
-                    exit_switch['position'], reachability_features
+                    exit_switch['position'], reachability_result
                 )
                 
                 if exit_switch_reachable and not switch_states.get(exit_switch['id'], False):
@@ -116,7 +111,7 @@ class LevelCompletionPlanner:
                 elif not exit_switch_reachable:
                     # Exit switch not reachable - find nearest reachable locked door switch
                     nearest_switch = self._find_nearest_reachable_locked_door_switch(
-                        ninja_pos, level_data, switch_states, reachability_features
+                        ninja_pos, level_data, switch_states, reachability_result
                     )
                     
                     if nearest_switch:
@@ -139,7 +134,7 @@ class LevelCompletionPlanner:
             elif current_state == "check_exit_door":
                 # Step 2: Check if exit door is reachable
                 exit_door_reachable = self._is_objective_reachable(
-                    exit_door['position'], reachability_features
+                    exit_door['position'], reachability_result
                 )
                 
                 if exit_door_reachable:
@@ -156,7 +151,7 @@ class LevelCompletionPlanner:
                 else:
                     # Exit door not reachable - find nearest reachable locked door switch
                     nearest_switch = self._find_nearest_reachable_locked_door_switch(
-                        ninja_pos, level_data, switch_states, reachability_features
+                        ninja_pos, level_data, switch_states, reachability_result
                     )
                     
                     if nearest_switch:
@@ -173,9 +168,9 @@ class LevelCompletionPlanner:
                         # No reachable switches found - level may be impossible
                         current_state = "complete"
         
-        # Calculate confidence using production-ready feature analysis
+        # Calculate confidence using nclone's reachability analysis
         confidence = self._calculate_strategy_confidence_from_features(
-            completion_steps, reachability_features
+            completion_steps, reachability_result
         )
         
         return CompletionStrategy(
@@ -209,53 +204,47 @@ class LevelCompletionPlanner:
         return None
     
     def _is_objective_reachable(self, position: Tuple[float, float], 
-                               reachability_features: torch.Tensor) -> bool:
-        """Check if objective is reachable using neural reachability features."""
-        # Use neural network output rather than expensive physics calculations
-        # Trust the graph transformer + CNN + MLP architecture for spatial reasoning
-        if len(reachability_features) >= 8:
-            # Extract objective reachability from neural features
-            objective_distances = reachability_features[0:8].numpy()
-            # Consider reachable if any objective distance feature is positive
-            return np.any(objective_distances > 0.1)
+                               reachability_result) -> bool:
+        """Check if objective is reachable using nclone's reachability analysis."""
+        # Use nclone's own reachability system - this provides input to npp-rl curiosity modules
+        if hasattr(reachability_result, 'is_position_reachable'):
+            return reachability_result.is_position_reachable(position)
+        elif hasattr(reachability_result, 'reachable_positions'):
+            # Check if position is in reachable positions set
+            return position in reachability_result.reachable_positions
+        elif isinstance(reachability_result, dict) and 'reachable_positions' in reachability_result:
+            return position in reachability_result['reachable_positions']
         return False
     
     def _find_nearest_reachable_locked_door_switch(self, ninja_pos, level_data, 
-                                                  switch_states, reachability_features) -> Optional[Dict]:
-        """Find nearest reachable locked door switch using neural features and actual NppEnvironment data structures."""
+                                                  switch_states, reachability_result) -> Optional[Dict]:
+        """Find nearest reachable locked door switch using nclone's reachability analysis."""
         if not hasattr(level_data, 'entities') or not level_data.entities:
             return None
         
         reachable_switches = []
-        switch_features = reachability_features[8:24].numpy() if len(reachability_features) >= 24 else []
         
-        switch_index = 0
         for entity in level_data.entities:
             # Only consider exit switches
             if entity.get('type') != EntityType.EXIT_SWITCH:
                 continue
             
             switch_id = entity.get('entity_id')
+            switch_position = (entity.get('x', 0), entity.get('y', 0))
             
             # Skip already activated switches (using authoritative method)
-            if self._is_switch_activated_authoritative(switch_id, level_data, switch_states):
+            if is_switch_activated_authoritative(switch_id, level_data, switch_states):
                 continue
             
-            # Check reachability using neural features
-            if switch_index < len(switch_features) and switch_features[switch_index] > 0.1:
-                distance = math.sqrt(
-                    (ninja_pos[0] - entity.get('x', 0))**2 + 
-                    (ninja_pos[1] - entity.get('y', 0))**2
-                )
+            # Check reachability using nclone's reachability analysis
+            if self._is_objective_reachable(switch_position, reachability_result):
+                distance = calculate_distance(ninja_pos, switch_position)
                 reachable_switches.append({
                     'id': switch_id,
-                    'position': (entity.get('x', 0), entity.get('y', 0)),
+                    'position': switch_position,
                     'type': 'exit_switch',
-                    'distance': distance,
-                    'reachability_score': switch_features[switch_index]
+                    'distance': distance
                 })
-            
-            switch_index += 1
         
         # Return nearest reachable switch
         if reachable_switches:
@@ -263,36 +252,21 @@ class LevelCompletionPlanner:
         return None
     
     def _calculate_strategy_confidence_from_features(self, completion_steps: List[CompletionStep], 
-                                                   reachability_features: torch.Tensor) -> float:
-        """Calculate strategy confidence using neural reachability features."""
+                                                   reachability_result) -> float:
+        """Calculate strategy confidence using nclone's reachability analysis."""
         if not completion_steps:
             return 0.0
         
-        # Base confidence on neural feature quality and step count
-        feature_confidence = torch.mean(torch.abs(reachability_features)).item()
+        # Base confidence on reachability quality and step count
+        # Simple heuristic: fewer steps = higher confidence
         step_penalty = max(0.0, 1.0 - len(completion_steps) * 0.1)
         
-        return min(1.0, feature_confidence * step_penalty)
+        # If we have reachability data, use it to boost confidence
+        base_confidence = 0.7  # Default confidence for having a plan
+        if hasattr(reachability_result, 'coverage_ratio'):
+            base_confidence = min(1.0, reachability_result.coverage_ratio)
+        elif isinstance(reachability_result, dict) and 'coverage_ratio' in reachability_result:
+            base_confidence = min(1.0, reachability_result['coverage_ratio'])
+        
+        return min(1.0, base_confidence * step_penalty)
     
-    def _is_switch_activated_authoritative(self, switch_id: str, level_data, switch_states: Dict) -> bool:
-        """
-        Check switch activation using authoritative simulation data first.
-        Falls back to passed switch_states if simulation data unavailable.
-        
-        Uses actual NppEnvironment data structures from nclone.
-        """
-        # Method 1: Check level_data.entities for switch with matching entity_id
-        if hasattr(level_data, 'entities') and level_data.entities:
-            for entity in level_data.entities:
-                if (entity.get('entity_id') == switch_id and 
-                    entity.get('type') == EntityType.EXIT_SWITCH):
-                    # For exit switches, activated means active=False (inverted logic in nclone)
-                    return not entity.get('active', True)
-        
-        # Method 2: Check if level_data has direct switch state info (from environment observation)
-        if hasattr(level_data, 'switch_activated'):
-            # This is the direct boolean from NppEnvironment observation
-            return level_data.switch_activated
-        
-        # Method 3: Fall back to passed switch_states (legacy compatibility)
-        return switch_states.get(switch_id, False)

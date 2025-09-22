@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, List, Optional
 
 from nclone.constants.entity_types import EntityType
+from .utils import is_switch_activated_authoritative, find_switch_id_by_position
 
 
 @dataclass  
@@ -182,18 +183,10 @@ class CollectionSubgoal(Subgoal):
         Check if a functional switch at the given position is activated.
         Uses actual NppEnvironment data structures from nclone.
         """
-        # Method 1: Check level_data.entities for switches near the position
-        if hasattr(level_data, 'entities') and level_data.entities:
-            for entity in level_data.entities:
-                if entity.get('type') == EntityType.EXIT_SWITCH:
-                    entity_x = entity.get('x', 0)
-                    entity_y = entity.get('y', 0)
-                    
-                    # Check if this entity is at the target position (within radius)
-                    if (abs(entity_x - position[0]) < 12.0 and 
-                        abs(entity_y - position[1]) < 12.0):
-                        # For exit switches, activated means active=False (inverted logic)
-                        return not entity.get('active', True)
+        # Find the switch ID at this position and check if it's activated
+        switch_id = find_switch_id_by_position(position, level_data)
+        if switch_id:
+            return is_switch_activated_authoritative(switch_id, level_data, {})
         
         # Method 2: Check if level_data has direct switch state info (from environment observation)
         if hasattr(level_data, 'switch_activated'):
@@ -211,19 +204,7 @@ class CollectionSubgoal(Subgoal):
     
     def _find_switch_id_by_position(self, position: Tuple[float, float], level_data) -> str:
         """Find switch ID by position using actual NppEnvironment data structures."""
-        # Check level_data.entities for switches near the position
-        if hasattr(level_data, 'entities') and level_data.entities:
-            for entity in level_data.entities:
-                if entity.get('type') == EntityType.EXIT_SWITCH:
-                    entity_x = entity.get('x', 0)
-                    entity_y = entity.get('y', 0)
-                    
-                    # Check if this entity is at the target position (within radius)
-                    if (abs(entity_x - position[0]) < 12.0 and 
-                        abs(entity_y - position[1]) < 12.0):
-                        return entity.get('entity_id')
-        
-        return None
+        return find_switch_id_by_position(position, level_data)
 
 
 @dataclass

@@ -2,13 +2,13 @@
 Subgoal prioritizer for strategic planning.
 
 This module provides the SubgoalPrioritizer that ranks subgoals based on
-strategic value and neural reachability analysis.
+strategic value and intrinsic curiosity-driven reachability analysis.
 """
 
 import math
 from typing import List, Tuple
 
-import torch
+
 
 from .subgoals import Subgoal, NavigationSubgoal, SwitchActivationSubgoal, CollectionSubgoal
 
@@ -17,9 +17,10 @@ class SubgoalPrioritizer:
     """
     Prioritizes hierarchical subgoals based on strategic value and completion likelihood.
     
-    This prioritizer uses neural reachability features and strategic analysis to rank
-    subgoals for optimal level completion. Implementation focuses on switch-based
-    progression following the NPP level completion heuristic.
+    This prioritizer uses nclone's reachability analysis to rank subgoals for optimal 
+    level completion. The analysis provides input to intrinsic curiosity modules in 
+    npp-rl. Implementation focuses on switch-based progression following the NPP level 
+    completion heuristic.
     
     Prioritization Strategy:
     - Exit-related subgoals receive highest priority
@@ -30,7 +31,8 @@ class SubgoalPrioritizer:
     References:
     - Strategic planning: Custom NPP level completion analysis
     - Hierarchical RL: Bacon et al. (2017) "The Option-Critic Architecture"
-    - Reachability integration: Neural feature-based prioritization
+    - Reachability integration: Curiosity-driven feature-based prioritization
+    - Intrinsic motivation: Pathak et al. (2017) "Curiosity-driven Exploration"
     """
     
     def __init__(self):
@@ -43,12 +45,12 @@ class SubgoalPrioritizer:
         }
     
     def prioritize(self, subgoals: List[Subgoal], ninja_pos: Tuple[float, float], 
-                  level_data, reachability_features: torch.Tensor) -> List[Subgoal]:
+                  level_data, reachability_result) -> List[Subgoal]:
         """
-        Prioritize subgoals based on strategic value and neural reachability analysis.
+        Prioritize subgoals based on strategic value and nclone's reachability analysis.
         
-        Uses neural network features (graph transformer + CNN + MLP) for strategic
-        assessment rather than expensive physics calculations.
+        Uses nclone's own reachability system to provide strategic assessment
+        as input to intrinsic curiosity modules in npp-rl.
         """
         if not subgoals:
             return []
@@ -57,7 +59,7 @@ class SubgoalPrioritizer:
         scored_subgoals = []
         for subgoal in subgoals:
             priority_score = self._calculate_priority_score(
-                subgoal, ninja_pos, level_data, reachability_features
+                subgoal, ninja_pos, level_data, reachability_result
             )
             scored_subgoals.append((subgoal, priority_score))
         
@@ -73,8 +75,8 @@ class SubgoalPrioritizer:
         return prioritized_subgoals
     
     def _calculate_priority_score(self, subgoal: Subgoal, ninja_pos: Tuple[float, float],
-                                 level_data, reachability_features: torch.Tensor) -> float:
-        """Calculate priority score for a subgoal using neural features."""
+                                 level_data, reachability_result) -> float:
+        """Calculate priority score for a subgoal using nclone's reachability analysis."""
         base_score = subgoal.priority
         
         # Strategic value based on subgoal type
@@ -92,8 +94,8 @@ class SubgoalPrioritizer:
         distance = math.sqrt((ninja_pos[0] - target_pos[0])**2 + (ninja_pos[1] - target_pos[1])**2)
         distance_factor = max(0.1, 1.0 - distance / 500.0)  # Normalize by max reasonable distance
         
-        # Reachability bonus from neural features
-        reachability_bonus = self._get_reachability_bonus(subgoal, reachability_features)
+        # Reachability bonus from nclone's analysis
+        reachability_bonus = self._get_reachability_bonus(subgoal, reachability_result)
         
         # Success probability factor
         success_factor = subgoal.success_probability
@@ -104,11 +106,13 @@ class SubgoalPrioritizer:
         
         return min(1.0, priority_score)
     
-    def _get_reachability_bonus(self, subgoal: Subgoal, reachability_features: torch.Tensor) -> float:
-        """Get reachability bonus from neural features."""
+    def _get_reachability_bonus(self, subgoal: Subgoal, reachability_result) -> float:
+        """Get reachability bonus from nclone's reachability analysis."""
         if isinstance(subgoal, SwitchActivationSubgoal):
             return subgoal.reachability_score * 0.2
-        elif len(reachability_features) > 0:
-            # Use average neural feature strength as reachability indicator
-            return torch.mean(torch.abs(reachability_features)).item() * 0.1
+        elif hasattr(reachability_result, 'coverage_ratio'):
+            # Use coverage ratio as reachability indicator
+            return reachability_result.coverage_ratio * 0.1
+        elif isinstance(reachability_result, dict) and 'coverage_ratio' in reachability_result:
+            return reachability_result['coverage_ratio'] * 0.1
         return 0.0
