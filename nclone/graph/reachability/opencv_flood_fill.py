@@ -241,17 +241,27 @@ class OpenCVFloodFill:
                 return not switch_states[switch_id]
             return True  # Default to solid
 
-        # Locked doors are always solid (cannot be opened)
+        # Locked doors depend on their activation state
         if entity_type == 6:  # LOCKED_DOOR
-            return True
+            # Only consider door parts (not switch parts) for collision
+            is_door_part = getattr(entity, "is_door_part", True)
+            if is_door_part:
+                # Door is solid when closed
+                return getattr(entity, "closed", True)
+            else:
+                # Switch parts don't block movement
+                return False
 
-        # Trap doors depend on switch states
+        # Trap doors depend on their activation state
         if entity_type == 8:  # TRAP_DOOR
-            switch_id = getattr(entity, "switch_id", None)
-            if switch_id and switch_id in switch_states:
-                # Trap door is solid when closed (switch inactive)
-                return not switch_states[switch_id]
-            return True  # Default to solid
+            # Only consider door parts (not switch parts) for collision
+            is_door_part = getattr(entity, "is_door_part", True)
+            if is_door_part:
+                # Door is solid when closed
+                return getattr(entity, "closed", False)  # Trap doors start open
+            else:
+                # Switch parts don't block movement
+                return False
 
         # Other entities generally don't block movement for reachability
         return False
