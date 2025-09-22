@@ -159,55 +159,50 @@ class EnhancedDebugOverlay:
 
     def _update_graph_data(self):
         """Update graph data from current simulation state."""
-        try:
-            # Get current simulation state
-            ninja_position = (self.sim.ninja.x, self.sim.ninja.y)
-            ninja_velocity = (self.sim.ninja.vx, self.sim.ninja.vy)
-            ninja_state = getattr(self.sim.ninja, "movement_state", 0)
+        # Get current simulation state
+        ninja_position = (self.sim.ninja.x, self.sim.ninja.y)
+        ninja_velocity = (self.sim.ninja.vx, self.sim.ninja.vy)
+        ninja_state = getattr(self.sim.ninja, "movement_state", 0)
 
-            # Get level data
-            level_data = self.sim.level_data if hasattr(self.sim, "level_data") else {}
-            entities = self._extract_entities_from_sim()
+        # Get level data
+        level_data = self.sim.level_data if hasattr(self.sim, "level_data") else {}
+        entities = self._extract_entities_from_sim()
 
-            # Build graph
-            if self.show_hierarchical:
-                # Build hierarchical graph
-                hierarchical_data = self.graph_builder.build_graph(
-                    level_data,
-                    ninja_position,
-                    entities,
-                    ninja_velocity,
-                    ninja_state,
-                    node_feature_dim=16,
-                    edge_feature_dim=8,
-                )
-                self.current_graph_data = hierarchical_data.sub_cell_graph
-            else:
-                # Build single-resolution graph
-                from .graph_construction import GraphConstructor
-                from .feature_extraction import FeatureExtractor
-                from .edge_building import EdgeBuilder
+        # Build graph
+        if self.show_hierarchical:
+            # Build hierarchical graph
+            hierarchical_data = self.graph_builder.build_graph(
+                level_data,
+                ninja_position,
+                entities,
+                ninja_velocity,
+                ninja_state,
+                node_feature_dim=16,
+                edge_feature_dim=8,
+            )
+            self.current_graph_data = hierarchical_data.sub_cell_graph
+        else:
+            # Build single-resolution graph
+            from .graph_construction import GraphConstructor
+            from .feature_extraction import FeatureExtractor
+            from .edge_building import EdgeBuilder
 
-                feature_extractor = FeatureExtractor()
-                edge_builder = EdgeBuilder()
-                graph_constructor = GraphConstructor(feature_extractor, edge_builder)
+            feature_extractor = FeatureExtractor()
+            edge_builder = EdgeBuilder()
+            graph_constructor = GraphConstructor(feature_extractor, edge_builder)
 
-                self.current_graph_data = graph_constructor.build_sub_cell_graph(
-                    level_data,
-                    ninja_position,
-                    ninja_velocity,
-                    ninja_state,
-                    node_feature_dim=16,
-                    edge_feature_dim=8,
-                )
+            self.current_graph_data = graph_constructor.build_sub_cell_graph(
+                level_data,
+                ninja_position,
+                ninja_velocity,
+                ninja_state,
+                node_feature_dim=16,
+                edge_feature_dim=8,
+            )
 
-            # Update navigation if goal is set
-            if self.goal_position:
-                self._update_navigation()
-
-        except Exception as e:
-            print(f"Error updating graph data: {e}")
-            self.current_graph_data = None
+        # Update navigation if goal is set
+        if self.goal_position:
+            self._update_navigation()
 
     def _update_navigation(self):
         """Update navigation results."""
@@ -286,13 +281,13 @@ class EnhancedDebugOverlay:
         """Draw reachability analysis overlay."""
         if not self.current_graph_data:
             return
-            
+
         # Draw basic graph first
         self._draw_basic_graph_overlay(overlay)
-        
+
         # Update reachability analysis
         self._update_reachability_analysis()
-        
+
         if self.current_reachability_state:
             self._draw_reachability_visualization(overlay)
 
@@ -603,16 +598,16 @@ class EnhancedDebugOverlay:
         """Update reachability analysis for current state."""
         if not self.current_graph_data:
             return
-            
+
         # Initialize reachability analyzer if needed
         if self.reachability_analyzer is None:
             self.reachability_analyzer = TieredReachabilitySystem(debug=True)
-            
+
         # Get current ninja position
         ninja_pos = self._get_ninja_position()
         if ninja_pos is None:
             return
-            
+
         try:
             # Perform reachability analysis from current position
             level_data = self._get_level_data()
@@ -621,11 +616,13 @@ class EnhancedDebugOverlay:
                 ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
                 # Use empty switch states for debug overlay
                 switch_states = {}
-                self.current_reachability_state = self.reachability_analyzer.analyze_reachability(
-                    level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
+                self.current_reachability_state = (
+                    self.reachability_analyzer.analyze_reachability(
+                        level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
+                    )
                 )
         except Exception as e:
-            if hasattr(self, 'debug') and self.debug:
+            if hasattr(self, "debug") and self.debug:
                 print(f"DEBUG: Reachability analysis failed: {e}")
             self.current_reachability_state = None
 
@@ -633,54 +630,57 @@ class EnhancedDebugOverlay:
         """Draw reachability analysis visualization."""
         if not self.current_reachability_state:
             return
-            
+
         # Draw reachable positions (both ReachabilityApproximation and ReachabilityResult have this)
-        if hasattr(self.current_reachability_state, 'reachable_positions'):
-            self._draw_reachable_positions(overlay, self.current_reachability_state.reachable_positions)
-            
+        if hasattr(self.current_reachability_state, "reachable_positions"):
+            self._draw_reachable_positions(
+                overlay, self.current_reachability_state.reachable_positions
+            )
+
         # Draw subgoals (only ReachabilityResult has this)
-        if hasattr(self.current_reachability_state, 'subgoals') and self.current_reachability_state.subgoals:
+        if (
+            hasattr(self.current_reachability_state, "subgoals")
+            and self.current_reachability_state.subgoals
+        ):
             self._draw_subgoals(overlay, self.current_reachability_state.subgoals)
-            
+
         # Draw performance info
         self._draw_reachability_info(overlay)
 
     def _draw_reachable_positions(self, overlay: pygame.Surface, reachable_positions):
         """Draw reachable positions on the overlay."""
         reachable_color = (0, 255, 0, 100)  # Green with transparency
-        
+
         for row, col in reachable_positions:
             # Convert sub-grid coordinates to screen coordinates
             pixel_x = col * 16  # Assuming 16 pixels per sub-cell
             pixel_y = row * 16
-            
+
             screen_x = int(pixel_x * self.adjust + self.tile_x_offset)
             screen_y = int(pixel_y * self.adjust + self.tile_y_offset)
-            
+
             # Draw small rectangle for reachable position
             rect_size = max(2, int(8 * self.adjust))
             pygame.draw.rect(
-                overlay, 
-                reachable_color, 
-                (screen_x, screen_y, rect_size, rect_size)
+                overlay, reachable_color, (screen_x, screen_y, rect_size, rect_size)
             )
 
     def _draw_subgoals(self, overlay: pygame.Surface, subgoals):
         """Draw subgoals on the overlay."""
         subgoal_color = (255, 255, 0, 200)  # Yellow with transparency
-        
+
         for sub_row, sub_col, goal_type in subgoals:
             # Convert sub-grid coordinates to screen coordinates
             pixel_x = sub_col * 16
             pixel_y = sub_row * 16
-            
+
             screen_x = int(pixel_x * self.adjust + self.tile_x_offset)
             screen_y = int(pixel_y * self.adjust + self.tile_y_offset)
-            
+
             # Draw circle for subgoal
             radius = max(3, int(6 * self.adjust))
             pygame.draw.circle(overlay, subgoal_color, (screen_x, screen_y), radius)
-            
+
             # Draw goal type text if zoom level is sufficient
             if self.adjust > 0.5:
                 text_surface = self.small_font.render(goal_type, True, (255, 255, 255))
@@ -689,24 +689,24 @@ class EnhancedDebugOverlay:
     def _draw_frontiers(self, overlay: pygame.Surface, frontiers):
         """Draw exploration frontiers on the overlay."""
         frontier_color = (255, 0, 255, 150)  # Magenta with transparency
-        
+
         for frontier in frontiers:
             row, col = frontier.position
-            
+
             # Convert sub-grid coordinates to screen coordinates
             pixel_x = col * 16
             pixel_y = row * 16
-            
+
             screen_x = int(pixel_x * self.adjust + self.tile_x_offset)
             screen_y = int(pixel_y * self.adjust + self.tile_y_offset)
-            
+
             # Draw diamond shape for frontier
             size = max(4, int(8 * self.adjust))
             points = [
                 (screen_x, screen_y - size),  # Top
                 (screen_x + size, screen_y),  # Right
                 (screen_x, screen_y + size),  # Bottom
-                (screen_x - size, screen_y)   # Left
+                (screen_x - size, screen_y),  # Left
             ]
             pygame.draw.polygon(overlay, frontier_color, points)
 
@@ -714,37 +714,41 @@ class EnhancedDebugOverlay:
         """Draw reachability analysis performance information."""
         if not self.current_reachability_state:
             return
-            
+
         # Prepare info text
         info_lines = []
-        
-        if hasattr(self.current_reachability_state, 'method'):
+
+        if hasattr(self.current_reachability_state, "method"):
             info_lines.append(f"Method: {self.current_reachability_state.method}")
-            
-        if hasattr(self.current_reachability_state, 'tier_used'):
+
+        if hasattr(self.current_reachability_state, "tier_used"):
             info_lines.append(f"Tier: {self.current_reachability_state.tier_used}")
-            
-        if hasattr(self.current_reachability_state, 'computation_time_ms'):
-            info_lines.append(f"Time: {self.current_reachability_state.computation_time_ms:.2f}ms")
-            
-        if hasattr(self.current_reachability_state, 'confidence'):
-            info_lines.append(f"Confidence: {self.current_reachability_state.confidence:.1%}")
-            
+
+        if hasattr(self.current_reachability_state, "computation_time_ms"):
+            info_lines.append(
+                f"Time: {self.current_reachability_state.computation_time_ms:.2f}ms"
+            )
+
+        if hasattr(self.current_reachability_state, "confidence"):
+            info_lines.append(
+                f"Confidence: {self.current_reachability_state.confidence:.1%}"
+            )
+
         reachable_count = len(self.current_reachability_state.reachable_positions)
         info_lines.append(f"Reachable: {reachable_count} positions")
-        
+
         # Draw info panel
         if info_lines:
             panel_height = len(info_lines) * 20 + 10
             panel_width = 250
             panel_rect = pygame.Rect(10, 10, panel_width, panel_height)
-            
+
             # Draw semi-transparent background
             panel_surface = pygame.Surface((panel_width, panel_height))
             panel_surface.set_alpha(180)
             panel_surface.fill((0, 0, 0))
             overlay.blit(panel_surface, panel_rect)
-            
+
             # Draw text
             for i, line in enumerate(info_lines):
                 text_surface = self.small_font.render(line, True, (255, 255, 255))
@@ -753,9 +757,9 @@ class EnhancedDebugOverlay:
     def _get_ninja_position(self):
         """Get current ninja position from simulation."""
         try:
-            if hasattr(self.sim, 'ninja'):
+            if hasattr(self.sim, "ninja"):
                 return (self.sim.ninja.x, self.sim.ninja.y)
-            elif hasattr(self.sim, 'ninja_position'):
+            elif hasattr(self.sim, "ninja_position"):
                 return self.sim.ninja_position()
         except:
             pass
@@ -764,9 +768,9 @@ class EnhancedDebugOverlay:
     def _get_level_data(self):
         """Get level data from simulation."""
         try:
-            if hasattr(self.sim, 'level_data'):
+            if hasattr(self.sim, "level_data"):
                 return self.sim.level_data
-            elif hasattr(self.sim, 'get_level_data'):
+            elif hasattr(self.sim, "get_level_data"):
                 return self.sim.get_level_data()
         except:
             pass

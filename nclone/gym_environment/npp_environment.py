@@ -598,191 +598,185 @@ class NppEnvironment(gymnasium.Env):
             }
         )
 
-        # Exit doors and switches using direct entity relationships
-        try:
-            # Get exit entities from entity_dic key 3 (contains both EntityExit and EntityExitSwitch)
-            if hasattr(self.nplay_headless.sim, "entity_dic"):
-                exit_entities = self.nplay_headless.sim.entity_dic.get(3, [])
+        # Exit doors and switches using direct entity relationships            # Get exit entities from entity_dic key 3 (contains both EntityExit and EntityExitSwitch)
+        if hasattr(self.nplay_headless.sim, "entity_dic"):
+            exit_entities = self.nplay_headless.sim.entity_dic.get(3, [])
 
-                # Find exit switch and door pairs
-                exit_switches = [
-                    e for e in exit_entities if type(e).__name__ == "EntityExitSwitch"
-                ]
-                exit_doors = [
-                    e for e in exit_entities if type(e).__name__ == "EntityExit"
-                ]
+            # Find exit switch and door pairs
+            exit_switches = [
+                e for e in exit_entities if type(e).__name__ == "EntityExitSwitch"
+            ]
+            exit_doors = [e for e in exit_entities if type(e).__name__ == "EntityExit"]
 
-                # Create switch-door pairs with matching entity IDs
-                for i, switch in enumerate(exit_switches):
-                    switch_id = f"exit_pair_{i}"
+            # Create switch-door pairs with matching entity IDs
+            for i, switch in enumerate(exit_switches):
+                switch_id = f"exit_pair_{i}"
 
-                    # Add exit switch entity
+                # Add exit switch entity
+                entities.append(
+                    {
+                        "type": EntityType.EXIT_SWITCH,
+                        "radius": EntityExitSwitch.RADIUS,
+                        "x": switch.xpos,
+                        "y": switch.ypos,
+                        "active": getattr(switch, "active", True),
+                        "state": 1.0 if getattr(switch, "active", True) else 0.0,
+                        "entity_id": switch_id,
+                        "entity_ref": switch,
+                    }
+                )
+
+                # Find corresponding door (usually there's one door per switch)
+                if i < len(exit_doors):
+                    door = exit_doors[i]
                     entities.append(
                         {
-                            "type": EntityType.EXIT_SWITCH,
-                            "radius": EntityExitSwitch.RADIUS,
-                            "x": switch.xpos,
-                            "y": switch.ypos,
-                            "active": getattr(switch, "active", True),
-                            "state": 1.0 if getattr(switch, "active", True) else 0.0,
-                            "entity_id": switch_id,
-                            "entity_ref": switch,
+                            "type": EntityType.EXIT_DOOR,
+                            "radius": EntityExit.RADIUS,
+                            "x": door.xpos,
+                            "y": door.ypos,
+                            "active": getattr(door, "active", True),
+                            "state": 1.0 if getattr(door, "active", True) else 0.0,
+                            "entity_id": f"exit_door_{i}",
+                            "switch_entity_id": switch_id,  # Link to switch
+                            "entity_ref": door,
                         }
                     )
 
-                    # Find corresponding door (usually there's one door per switch)
-                    if i < len(exit_doors):
-                        door = exit_doors[i]
-                        entities.append(
-                            {
-                                "type": EntityType.EXIT_DOOR,
-                                "radius": EntityExit.RADIUS,
-                                "x": door.xpos,
-                                "y": door.ypos,
-                                "active": getattr(door, "active", True),
-                                "state": 1.0 if getattr(door, "active", True) else 0.0,
-                                "entity_id": f"exit_door_{i}",
-                                "switch_entity_id": switch_id,  # Link to switch
-                                "entity_ref": door,
-                            }
-                        )
+        # Regular doors (proximity activated)
+        for d in self.nplay_headless.regular_doors():
+            segment = getattr(d, "segment", None)
+            if segment:
+                door_x = (segment.x1 + segment.x2) * 0.5
+                door_y = (segment.y1 + segment.y2) * 0.5
+            else:
+                door_x, door_y = d.xpos, d.ypos
 
-            # Regular doors (proximity activated)
-            for d in self.nplay_headless.regular_doors():
-                segment = getattr(d, "segment", None)
-                if segment:
-                    door_x = (segment.x1 + segment.x2) * 0.5
-                    door_y = (segment.y1 + segment.y2) * 0.5
-                else:
-                    door_x, door_y = d.xpos, d.ypos
+            entities.append(
+                {
+                    "type": EntityType.REGULAR_DOOR,
+                    "radius": EntityDoorRegular.RADIUS,
+                    "x": door_x,  # Regular doors use door center as entity position
+                    "y": door_y,
+                    "active": getattr(d, "active", True),
+                    "closed": getattr(d, "closed", True),
+                    "state": 0.0,
+                }
+            )
 
+        # Locked doors using direct entity access
+        for i, locked_door in enumerate(self.nplay_headless.locked_doors()):
+            segment = getattr(locked_door, "segment", None)
+            if segment:
+                door_x = (segment.x1 + segment.x2) * 0.5
+                door_y = (segment.y1 + segment.y2) * 0.5
+            else:
+                door_x, door_y = 0.0, 0.0
+
+            entity_id = f"locked_{i}"
+
+            # Add locked door switch part
+            entities.append(
+                {
+                    "type": EntityType.LOCKED_DOOR,
+                    "x": locked_door.xpos,  # Switch position (where entity is positioned)
+                    "y": locked_door.ypos,  # Switch position
+                    "door_x": door_x,  # Door segment position
+                    "door_y": door_y,  # Door segment position
+                    "active": getattr(locked_door, "active", True),
+                    "closed": getattr(locked_door, "closed", True),
+                    "radius": EntityDoorRegular.RADIUS,
+                    "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
+                    "entity_id": entity_id,
+                    "is_door_part": False,  # This is the switch part
+                    "entity_ref": locked_door,
+                }
+            )
+
+            # Add locked door door part (at door segment position)
+            entities.append(
+                {
+                    "type": EntityType.LOCKED_DOOR,
+                    "radius": EntityDoorLocked.RADIUS,
+                    "x": door_x,  # Door segment position
+                    "y": door_y,  # Door segment position
+                    "door_x": door_x,  # Door segment position
+                    "door_y": door_y,  # Door segment position
+                    "active": getattr(locked_door, "active", True),
+                    "closed": getattr(locked_door, "closed", True),
+                    "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
+                    "entity_id": entity_id,
+                    "is_door_part": True,  # This is the door part
+                    "entity_ref": locked_door,
+                }
+            )
+
+        # Trap doors using direct entity access
+        for i, trap_door in enumerate(self.nplay_headless.trap_doors()):
+            segment = getattr(trap_door, "segment", None)
+            if segment:
+                door_x = (segment.x1 + segment.x2) * 0.5
+                door_y = (segment.y1 + segment.y2) * 0.5
+            else:
+                door_x, door_y = 0.0, 0.0
+
+            entity_id = f"trap_{i}"
+
+            # Add trap door switch part
+            entities.append(
+                {
+                    "type": EntityType.TRAP_DOOR,
+                    "radius": EntityDoorTrap.RADIUS,
+                    "x": trap_door.xpos,  # Switch position (where entity is positioned)
+                    "y": trap_door.ypos,  # Switch position
+                    "door_x": door_x,  # Door segment position
+                    "door_y": door_y,  # Door segment position
+                    "active": getattr(trap_door, "active", True),
+                    "closed": getattr(
+                        trap_door, "closed", False
+                    ),  # Trap doors start open
+                    "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
+                    "entity_id": entity_id,
+                    "is_door_part": False,  # This is the switch part
+                    "entity_ref": trap_door,
+                }
+            )
+
+            # Add trap door door part (at door segment position)
+            entities.append(
+                {
+                    "type": EntityType.TRAP_DOOR,
+                    "radius": EntityDoorTrap.RADIUS,
+                    "x": door_x,  # Door segment position
+                    "y": door_y,  # Door segment position
+                    "door_x": door_x,  # Door segment position
+                    "door_y": door_y,  # Door segment position
+                    "active": getattr(trap_door, "active", True),
+                    "closed": getattr(
+                        trap_door, "closed", False
+                    ),  # Trap doors start open
+                    "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
+                    "entity_id": entity_id,
+                    "is_door_part": True,  # This is the door part
+                    "entity_ref": trap_door,
+                }
+            )
+
+        # One-way platforms
+        if hasattr(self.nplay_headless.sim, "entity_dic"):
+            one_ways = self.nplay_headless.sim.entity_dic.get(11, [])
+            for ow in one_ways:
                 entities.append(
                     {
-                        "type": EntityType.REGULAR_DOOR,
-                        "radius": EntityDoorRegular.RADIUS,
-                        "x": door_x,  # Regular doors use door center as entity position
-                        "y": door_y,
-                        "active": getattr(d, "active", True),
-                        "closed": getattr(d, "closed", True),
+                        "type": EntityType.ONE_WAY,
+                        "radius": EntityOneWayPlatform.SEMI_SIDE,
+                        "x": getattr(ow, "xpos", 0.0),
+                        "y": getattr(ow, "ypos", 0.0),
+                        "orientation": getattr(ow, "orientation", 0),
+                        "active": getattr(ow, "active", True),
                         "state": 0.0,
                     }
                 )
-
-            # Locked doors using direct entity access
-            for i, locked_door in enumerate(self.nplay_headless.locked_doors()):
-                segment = getattr(locked_door, "segment", None)
-                if segment:
-                    door_x = (segment.x1 + segment.x2) * 0.5
-                    door_y = (segment.y1 + segment.y2) * 0.5
-                else:
-                    door_x, door_y = 0.0, 0.0
-
-                entity_id = f"locked_{i}"
-
-                # Add locked door switch part
-                entities.append(
-                    {
-                        "type": EntityType.LOCKED_DOOR,
-                        "x": locked_door.xpos,  # Switch position (where entity is positioned)
-                        "y": locked_door.ypos,  # Switch position
-                        "door_x": door_x,  # Door segment position
-                        "door_y": door_y,  # Door segment position
-                        "active": getattr(locked_door, "active", True),
-                        "closed": getattr(locked_door, "closed", True),
-                        "radius": EntityDoorRegular.RADIUS,
-                        "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
-                        "entity_id": entity_id,
-                        "is_door_part": False,  # This is the switch part
-                        "entity_ref": locked_door,
-                    }
-                )
-
-                # Add locked door door part (at door segment position)
-                entities.append(
-                    {
-                        "type": EntityType.LOCKED_DOOR,
-                        "radius": EntityDoorLocked.RADIUS,
-                        "x": door_x,  # Door segment position
-                        "y": door_y,  # Door segment position
-                        "door_x": door_x,  # Door segment position
-                        "door_y": door_y,  # Door segment position
-                        "active": getattr(locked_door, "active", True),
-                        "closed": getattr(locked_door, "closed", True),
-                        "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
-                        "entity_id": entity_id,
-                        "is_door_part": True,  # This is the door part
-                        "entity_ref": locked_door,
-                    }
-                )
-
-            # Trap doors using direct entity access
-            for i, trap_door in enumerate(self.nplay_headless.trap_doors()):
-                segment = getattr(trap_door, "segment", None)
-                if segment:
-                    door_x = (segment.x1 + segment.x2) * 0.5
-                    door_y = (segment.y1 + segment.y2) * 0.5
-                else:
-                    door_x, door_y = 0.0, 0.0
-
-                entity_id = f"trap_{i}"
-
-                # Add trap door switch part
-                entities.append(
-                    {
-                        "type": EntityType.TRAP_DOOR,
-                        "radius": EntityDoorTrap.RADIUS,
-                        "x": trap_door.xpos,  # Switch position (where entity is positioned)
-                        "y": trap_door.ypos,  # Switch position
-                        "door_x": door_x,  # Door segment position
-                        "door_y": door_y,  # Door segment position
-                        "active": getattr(trap_door, "active", True),
-                        "closed": getattr(
-                            trap_door, "closed", False
-                        ),  # Trap doors start open
-                        "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
-                        "entity_id": entity_id,
-                        "is_door_part": False,  # This is the switch part
-                        "entity_ref": trap_door,
-                    }
-                )
-
-                # Add trap door door part (at door segment position)
-                entities.append(
-                    {
-                        "type": EntityType.TRAP_DOOR,
-                        "radius": EntityDoorTrap.RADIUS,
-                        "x": door_x,  # Door segment position
-                        "y": door_y,  # Door segment position
-                        "door_x": door_x,  # Door segment position
-                        "door_y": door_y,  # Door segment position
-                        "active": getattr(trap_door, "active", True),
-                        "closed": getattr(
-                            trap_door, "closed", False
-                        ),  # Trap doors start open
-                        "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
-                        "entity_id": entity_id,
-                        "is_door_part": True,  # This is the door part
-                        "entity_ref": trap_door,
-                    }
-                )
-
-            # One-way platforms
-            if hasattr(self.nplay_headless.sim, "entity_dic"):
-                one_ways = self.nplay_headless.sim.entity_dic.get(11, [])
-                for ow in one_ways:
-                    entities.append(
-                        {
-                            "type": EntityType.ONE_WAY,
-                            "radius": EntityOneWayPlatform.SEMI_SIDE,
-                            "x": getattr(ow, "xpos", 0.0),
-                            "y": getattr(ow, "ypos", 0.0),
-                            "orientation": getattr(ow, "orientation", 0),
-                            "active": getattr(ow, "active", True),
-                            "state": 0.0,
-                        }
-                    )
-        except Exception as e:
-            print("Error extracting graph entities: ", e)
 
         return entities
 
@@ -936,36 +930,29 @@ class NppEnvironment(gymnasium.Env):
         Returns:
             Tuple representing current door states
         """
-        try:
-            # Extract door-related entities and their states
-            entities = self._extract_graph_entities()
-            door_states = []
+        # Extract door-related entities and their states
+        entities = self._extract_graph_entities()
+        door_states = []
 
-            for entity in entities:
-                entity_type = entity.get("type", "")
+        for entity in entities:
+            entity_type = entity.get("type", "")
 
-                # Check for door entities
-                if (
-                    isinstance(entity_type, int) and entity_type in {3, 5, 6, 8}
-                ) or any(
-                    door_type in str(entity_type).lower()
-                    for door_type in ["door", "switch"]
-                ):
-                    # Include position and state for doors/switches
-                    state_tuple = (
-                        entity.get("type", ""),
-                        entity.get("x", 0),
-                        entity.get("y", 0),
-                        entity.get("active", True),
-                        entity.get("closed", False),
-                    )
-                    door_states.append(state_tuple)
+            # Check for door entities
+            if (isinstance(entity_type, int) and entity_type in {3, 5, 6, 8}) or any(
+                door_type in str(entity_type).lower()
+                for door_type in ["door", "switch"]
+            ):
+                # Include position and state for doors/switches
+                state_tuple = (
+                    entity.get("type", ""),
+                    entity.get("x", 0),
+                    entity.get("y", 0),
+                    entity.get("active", True),
+                    entity.get("closed", False),
+                )
+                door_states.append(state_tuple)
 
-            return tuple(sorted(door_states))
-
-        except Exception:
-            # If door state extraction fails, use frame number as fallback
-            return (getattr(self.nplay_headless.sim, "frame", 0),)
+        return tuple(sorted(door_states))
 
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects."""
