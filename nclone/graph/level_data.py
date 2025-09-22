@@ -1,35 +1,76 @@
 """
 Level data structure for N++ graph processing.
 
-This module provides a unified data structure for representing level information
-including tiles and entities, used across both nclone and npp-rl projects.
+This module provides a unified data structure for representing complete game state
+including tiles, entities, and player information. This eliminates the need for
+separate parameter passing and defensive programming patterns throughout the system.
 """
 
 import numpy as np
-from typing import List, Dict, Any, Optional, Union
-from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Union, Tuple
+from dataclasses import dataclass, field
+from ..constants.entity_types import EntityType
+
+
+@dataclass
+class PlayerState:
+    """
+    Complete player state information.
+    
+    This encapsulates all player-related data that affects game logic
+    and pathfinding calculations.
+    """
+    position: Tuple[float, float]
+    velocity: Tuple[float, float] = (0.0, 0.0)
+    on_ground: bool = True
+    facing_right: bool = True
+    health: int = 1
+    frame: int = 0
+    
+    @property
+    def x(self) -> float:
+        """Get x-coordinate of player position."""
+        return self.position[0]
+    
+    @property
+    def y(self) -> float:
+        """Get y-coordinate of player position."""
+        return self.position[1]
+    
+    @property
+    def tile_position(self) -> Tuple[int, int]:
+        """Get player position in tile coordinates (col, row)."""
+        from ..constants import TILE_PIXEL_SIZE
+        return (
+            int(self.x // TILE_PIXEL_SIZE),
+            int(self.y // TILE_PIXEL_SIZE)
+        )
 
 
 @dataclass
 class LevelData:
     """
-    Unified data structure for level information.
-
-    This class encapsulates both tile data and entity information in a clean,
-    type-safe way that can be used consistently across the graph processing
-    pipeline and machine learning components.
+    Complete game state including level data and player state.
+    
+    This is the primary data structure that should be passed through
+    the system, eliminating the need for separate parameters and
+    defensive programming patterns.
 
     Attributes:
         tiles: 2D NumPy array representing the tile layout [height, width]
         entities: List of entity dictionaries with position and state information
+        player: Current player state information (optional for backward compatibility)
         level_id: Optional unique identifier for caching purposes
         metadata: Optional dictionary for additional level information
+        switch_states: Current state of all switches in the level
     """
 
     tiles: np.ndarray
     entities: List[Dict[str, Any]]
+    player: Optional[PlayerState] = None
     level_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    switch_states: Dict[str, bool] = field(default_factory=dict)
 
     def __post_init__(self):
         """Validate the data structure after initialization."""
@@ -92,12 +133,49 @@ class LevelData:
         Get all entities of a specific type.
 
         Args:
-            entity_type: The entity type to filter by
+            entity_type: The entity type to filter by (can use EntityType constants)
 
         Returns:
             List of entity dictionaries matching the type
         """
         return [entity for entity in self.entities if entity.get("type") == entity_type]
+    
+    def get_active_entities(self) -> List[Dict[str, Any]]:
+        """Get all currently active entities."""
+        return [entity for entity in self.entities if entity.get("active", True)]
+    
+    def get_exits(self) -> List[Dict[str, Any]]:
+        """Get all exit entities (doors and switches)."""
+        return (self.get_entities_by_type(EntityType.EXIT_DOOR) + 
+                self.get_entities_by_type(EntityType.EXIT_SWITCH))
+    
+    def get_switches(self) -> List[Dict[str, Any]]:
+        """Get all switch entities."""
+        return self.get_entities_by_type(EntityType.EXIT_SWITCH)
+    
+    def get_doors(self) -> List[Dict[str, Any]]:
+        """Get all door entities (regular, locked, trap)."""
+        return (self.get_entities_by_type(EntityType.REGULAR_DOOR) +
+                self.get_entities_by_type(EntityType.LOCKED_DOOR) +
+                self.get_entities_by_type(EntityType.TRAP_DOOR))
+    
+    def get_enemies(self) -> List[Dict[str, Any]]:
+        """Get all enemy entities."""
+        return (self.get_entities_by_type(EntityType.DRONE_ZAP) +
+                self.get_entities_by_type(EntityType.MINI_DRONE) +
+                self.get_entities_by_type(EntityType.THWUMP) +
+                self.get_entities_by_type(EntityType.SHWUMP) +
+                self.get_entities_by_type(EntityType.DEATH_BALL))
+    
+    def update_switch_state(self, switch_id: str, active: bool) -> None:
+        """
+        Update the state of a switch and related entities.
+        
+        Args:
+            switch_id: Identifier for the switch
+            active: New active state
+        """
+        self.switch_states[switch_id] = active
 
     def get_entities_in_region(
         self, x_min: float, y_min: float, x_max: float, y_max: float
@@ -204,33 +282,87 @@ class LevelData:
         )
 
 
-def ensure_level_data(data: Union[LevelData, Dict[str, Any], np.ndarray]) -> LevelData:
+def ensure_level_data(
+    data: Union[LevelData, Dict[str, Any], np.ndarray], 
+    player_position: Optional[Tuple[float, float]] = None,
+    entities: Optional[List[Dict[str, Any]]] = None
+) -> LevelData:
     """
     Ensure the input is a LevelData object, converting if necessary.
 
     This utility function provides backward compatibility by converting
-    various input formats to LevelData.
+    various input formats to LevelData. It can also add player state
+    and entities if they're provided separately.
 
     Args:
         data: Input data in various formats:
-            - LevelData: Returned as-is
+            - LevelData: Returned as-is (unless player_position is provided)
             - Dict: Converted using from_dict()
             - np.ndarray: Treated as tiles with empty entities
+        player_position: Optional player position to add/update
+        entities: Optional entities list to add/update
 
     Returns:
-        LevelData object
+        LevelData object with consolidated information
 
     Raises:
         TypeError: If input format is not supported
     """
     if isinstance(data, LevelData):
-        return data
+        level_data = data
     elif isinstance(data, dict):
-        return LevelData.from_dict(data)
+        level_data = LevelData.from_dict(data)
     elif isinstance(data, np.ndarray):
-        return LevelData(tiles=data, entities=[])
+        level_data = LevelData(tiles=data, entities=entities or [])
     else:
         raise TypeError(f"Unsupported level data format: {type(data)}")
+    
+    # Update player state if provided
+    if player_position is not None:
+        if level_data.player is None:
+            level_data.player = PlayerState(position=player_position)
+        else:
+            level_data.player.position = player_position
+    
+    # Update entities if provided
+    if entities is not None:
+        level_data.entities = entities
+    
+    return level_data
+
+
+def create_level_data_with_player(
+    tiles: np.ndarray,
+    entities: List[Dict[str, Any]],
+    player_position: Tuple[float, float],
+    level_id: Optional[str] = None,
+    **kwargs
+) -> LevelData:
+    """
+    Create LevelData with complete game state information.
+    
+    This is the preferred way to create LevelData objects with all
+    necessary information in one call.
+    
+    Args:
+        tiles: 2D tile array
+        entities: List of entity dictionaries
+        player_position: Player position tuple
+        level_id: Optional level identifier
+        **kwargs: Additional metadata
+    
+    Returns:
+        Complete LevelData object
+    """
+    player_state = PlayerState(position=player_position)
+    
+    return LevelData(
+        tiles=tiles,
+        entities=entities,
+        player=player_state,
+        level_id=level_id,
+        metadata=kwargs
+    )
 
 
 def create_level_data_dict(level_data: LevelData) -> Dict[str, Any]:

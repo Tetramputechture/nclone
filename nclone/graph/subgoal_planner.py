@@ -17,6 +17,7 @@ from .common import SUB_CELL_SIZE
 from .navigation import PathfindingEngine
 from .reachability.opencv_flood_fill import OpenCVFloodFill
 from .subgoal_types import Subgoal, SubgoalPlan
+from .level_data import LevelData, ensure_level_data
 from .simple_objective_system import (
     SimplifiedCompletionStrategy,
     SimpleObjective,
@@ -376,7 +377,7 @@ class SubgoalPlanner:
         self,
         ninja_position: Tuple[float, float],
         level_data,
-        entities: List[Any],
+        entities: List[Any] = None,
         switch_states: Optional[Dict[str, bool]] = None,
         reachability_analyzer: Optional[OpenCVFloodFill] = None,
     ) -> Optional[SubgoalPlan]:
@@ -391,8 +392,8 @@ class SubgoalPlanner:
 
         Args:
             ninja_position: Current ninja position (x, y)
-            level_data: Level tile data
-            entities: List of entities in the level
+            level_data: Level tile data or consolidated LevelData object
+            entities: List of entities in the level (optional if using LevelData)
             switch_states: Current state of switches (activated/not activated)
             reachability_analyzer: OpenCV flood fill analyzer (unused in simplified version)
 
@@ -402,9 +403,12 @@ class SubgoalPlanner:
         if switch_states is None:
             switch_states = {}
 
+        # Handle consolidated LevelData or separate parameters
+        consolidated_data = ensure_level_data(level_data, ninja_position, entities)
+        
         # Use simplified strategy to get next objective
         objective = self.simplified_strategy.get_next_objective(
-            ninja_position, level_data, entities, switch_states
+            ninja_position, consolidated_data, consolidated_data.entities, switch_states
         )
 
         if objective is None:
