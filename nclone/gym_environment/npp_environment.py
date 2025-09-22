@@ -806,15 +806,15 @@ class NppEnvironment(gymnasium.Env):
 
         # Extract current game state
         ninja_pos = self.nplay_headless.ninja_position()
-        level_data = self.level_data()
-        entities = self.entities()
+        level_data = self.level_data
+        entities = self.entities
 
         # Extract reachability features
         features = self._reachability_extractor.extract_features(
             ninja_position=ninja_pos,
             level_data=level_data,
             entities=entities,
-            performance_target=PerformanceMode.TIER_1,
+            performance_mode=PerformanceMode.ULTRA_FAST,
         )
 
         # Cache the result

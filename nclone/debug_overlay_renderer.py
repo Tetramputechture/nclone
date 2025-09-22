@@ -398,14 +398,14 @@ class DebugOverlayRenderer:
     
     def export_subgoal_visualization(self, filename: str = "subgoal_export.png") -> bool:
         """Export current subgoal visualization to image file."""
-        if not self.current_subgoals:
-            return False
-        
         ninja_pos = self._get_ninja_position()
         level_dimensions = (FULL_MAP_WIDTH, FULL_MAP_HEIGHT)
         
+        # Allow export even with empty subgoals to show basic visualization
+        subgoals = self.current_subgoals if self.current_subgoals else []
+        
         return self.subgoal_visualizer.export_subgoal_visualization(
-            self.current_subgoals,
+            subgoals,
             ninja_pos,
             level_dimensions,
             self.current_reachable_positions,
