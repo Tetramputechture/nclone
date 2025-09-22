@@ -1,14 +1,12 @@
 import pygame
 import numpy as np
 from . import render_utils
-from typing import Optional
 from .constants.physics_constants import (
     TILE_PIXEL_SIZE,
     FULL_MAP_WIDTH,
     FULL_MAP_HEIGHT,
 )
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
-from .graph.common import EdgeType, GraphData
 
 
 class DebugOverlayRenderer:
