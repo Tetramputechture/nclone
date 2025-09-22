@@ -408,8 +408,8 @@ class NppEnvironment(gymnasium.Env):
 
         # Load the test map 'doortest' for training
         # TODO: This is hardcoded for testing, should be made configurable
-        self.current_map_name = "doortest"
-        self.nplay_headless.load_map("nclone/test_maps/doortest")
+        self.current_map_name = "complex-path-switch-required"
+        self.nplay_headless.load_map("nclone/test_maps/complex-path-switch-required")
 
     def _check_termination(self) -> Tuple[bool, bool, bool]:
         """
