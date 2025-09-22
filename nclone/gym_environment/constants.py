@@ -1,4 +1,4 @@
-"""Constants for the basic level no gold environment."""
+"""Constants for the gym environment."""
 
 # Max time in frames per level before episode truncation
 MAX_TIME_IN_FRAMES = 20000
