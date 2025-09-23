@@ -239,8 +239,19 @@ class SimplifiedCompletionStrategy:
 
     def _find_exit_switch(self, entities: List[Any]) -> Optional[Dict[str, Any]]:
         """Find the exit switch entity."""
+        from ..constants.entity_types import EntityType
+        
         for entity in entities:
-            if hasattr(entity, "entity_type") and entity.entity_type == "exit_switch":
+            # Handle both dictionary and object entities
+            if isinstance(entity, dict):
+                entity_type = entity.get("type", 0)
+                if entity_type == EntityType.EXIT_SWITCH:
+                    return {
+                        "position": (entity.get("x", 0), entity.get("y", 0)),
+                        "id": entity.get("entity_id"),
+                        "entity": entity,
+                    }
+            elif hasattr(entity, "entity_type") and entity.entity_type == "exit_switch":
                 return {
                     "position": (entity.x, entity.y),
                     "id": getattr(entity, "id", None),
@@ -250,8 +261,19 @@ class SimplifiedCompletionStrategy:
 
     def _find_exit_door(self, entities: List[Any]) -> Optional[Dict[str, Any]]:
         """Find the exit door entity."""
+        from ..constants.entity_types import EntityType
+        
         for entity in entities:
-            if hasattr(entity, "entity_type") and entity.entity_type == "exit_door":
+            # Handle both dictionary and object entities
+            if isinstance(entity, dict):
+                entity_type = entity.get("type", 0)
+                if entity_type == EntityType.EXIT_DOOR:
+                    return {
+                        "position": (entity.get("x", 0), entity.get("y", 0)),
+                        "id": entity.get("entity_id"),
+                        "entity": entity,
+                    }
+            elif hasattr(entity, "entity_type") and entity.entity_type == "exit_door":
                 return {
                     "position": (entity.x, entity.y),
                     "id": getattr(entity, "id", None),
@@ -267,10 +289,33 @@ class SimplifiedCompletionStrategy:
         switch_states: Dict[str, bool],
     ) -> Optional[Dict[str, Any]]:
         """Find the nearest reachable locked door switch."""
+        from ..constants.entity_types import EntityType
+        
         door_switches = []
 
         for entity in entities:
-            if hasattr(entity, "entity_type") and "door_switch" in entity.entity_type:
+            # Handle both dictionary and object entities
+            if isinstance(entity, dict):
+                entity_type = entity.get("type", 0)
+                if entity_type == EntityType.EXIT_SWITCH:
+                    entity_id = entity.get("entity_id")
+                    if entity_id and switch_states.get(entity_id, False):
+                        continue  # Skip if already activated
+
+                    position = (entity.get("x", 0), entity.get("y", 0))
+                    if self._is_reachable(
+                        ninja_position, position, level_data, switch_states
+                    ):
+                        distance = self._calculate_distance(ninja_position, position)
+                        door_switches.append(
+                            {
+                                "position": position,
+                                "distance": distance,
+                                "id": entity_id,
+                                "entity": entity,
+                            }
+                        )
+            elif hasattr(entity, "entity_type") and "door_switch" in entity.entity_type:
                 # Skip if already activated
                 entity_id = getattr(entity, "id", None)
                 if entity_id and switch_states.get(entity_id, False):
@@ -305,10 +350,34 @@ class SimplifiedCompletionStrategy:
         switch_states: Dict[str, bool],
     ) -> Optional[Dict[str, Any]]:
         """Find the nearest reachable switch of any type."""
+        from ..constants.entity_types import EntityType
+        
         switches = []
 
         for entity in entities:
-            if hasattr(entity, "entity_type") and "switch" in entity.entity_type:
+            # Handle both dictionary and object entities
+            if isinstance(entity, dict):
+                entity_type = entity.get("type", 0)
+                # Check if it's any type of switch
+                if entity_type == EntityType.EXIT_SWITCH:
+                    entity_id = entity.get("entity_id")
+                    if entity_id and switch_states.get(entity_id, False):
+                        continue  # Skip if already activated
+
+                    position = (entity.get("x", 0), entity.get("y", 0))
+                    if self._is_reachable(
+                        ninja_position, position, level_data, switch_states
+                    ):
+                        distance = self._calculate_distance(ninja_position, position)
+                        switches.append(
+                            {
+                                "position": position,
+                                "distance": distance,
+                                "id": entity_id,
+                                "entity": entity,
+                            }
+                        )
+            elif hasattr(entity, "entity_type") and "switch" in entity.entity_type:
                 # Skip if already activated
                 entity_id = getattr(entity, "id", None)
                 if entity_id and switch_states.get(entity_id, False):
