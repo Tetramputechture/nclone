@@ -324,11 +324,8 @@ class SubgoalVisualizer:
         # Use actual entity position if available (more accurate)
         if hasattr(subgoal, 'entity_position') and subgoal.entity_position is not None:
             x = subgoal.entity_position[0] * adjust + tile_x_offset
-            # Use same Y-coordinate system as ninja position for consistency
-            if surface_height is not None:
-                y = surface_height - (subgoal.entity_position[1] * adjust + tile_y_offset)
-            else:
-                y = subgoal.entity_position[1] * adjust + tile_y_offset
+            # Use same coordinate system as entities and ninja (no Y-flipping)
+            y = subgoal.entity_position[1] * adjust + tile_y_offset
         else:
             # Fallback to sub-grid position
             sub_row, sub_col = subgoal.position
@@ -337,16 +334,12 @@ class SubgoalVisualizer:
                 + SUB_CELL_SIZE * adjust // 2
                 + tile_x_offset
             )
-            y_raw = (
+            # Use same coordinate system as entities and ninja (no Y-flipping)
+            y = (
                 sub_row * SUB_CELL_SIZE * adjust
                 + SUB_CELL_SIZE * adjust // 2
                 + tile_y_offset
             )
-            # Apply same Y-coordinate system as ninja position
-            if surface_height is not None:
-                y = surface_height - y_raw
-            else:
-                y = y_raw
             
         return (int(x), int(y))
 
