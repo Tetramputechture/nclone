@@ -9,7 +9,7 @@ from .constants.physics_constants import (
 )
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
 from .graph.subgoal_visualizer import SubgoalVisualizer
-from .graph.subgoal_types import Subgoal, SubgoalPlan
+from .planning import Subgoal, SubgoalPlan
 
 
 class DebugOverlayRenderer:

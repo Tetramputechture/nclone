@@ -20,8 +20,7 @@ from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
 from nclone.graph.reachability.reachability_types import (
     PerformanceTarget, ReachabilityApproximation, ReachabilityResult
 )
-from nclone.graph.subgoal_planner import SubgoalPlanner
-from nclone.graph.subgoal_types import Subgoal, SubgoalPlan
+from nclone.planning import LevelCompletionPlanner, Subgoal, SubgoalPlan, CompletionStrategy
 
 
 class TestLevelData:
@@ -174,27 +173,26 @@ class TestReachabilityIntegration(unittest.TestCase):
         self.assertLess(accurate_p95, 200.0, f"Accurate 95th percentile too slow: {accurate_p95:.2f}ms")
     
     def test_subgoal_planner_integration(self):
-        """Test integration with SubgoalPlanner."""
-        print("\n=== Testing SubgoalPlanner Integration ===")
+        """Test integration with LevelCompletionPlanner."""
+        print("\n=== Testing LevelCompletionPlanner Integration ===")
         
-        # Test that SubgoalPlanner can work with tiered reachability
-        planner = SubgoalPlanner(debug=False)
+        # Test that LevelCompletionPlanner can work with tiered reachability
+        planner = LevelCompletionPlanner()
         
         for test_map in self.test_maps[:3]:  # Test first 3 maps to keep test time reasonable
             with self.subTest(level=test_map.name):
-                # Test hierarchical completion plan
-                plan = planner.create_hierarchical_completion_plan(
-                    ninja_position=test_map.ninja_pos,
+                # Test completion plan
+                strategy = planner.plan_completion(
+                    ninja_pos=test_map.ninja_pos,
                     level_data=test_map.tiles,
-                    entities=[]
+                    switch_states={},
+                    reachability_system=self.reachability_system
                 )
                 
-                # Plan can be None for simple levels without switches/doors
-                if plan is not None:
-                    self.assertIsInstance(plan, SubgoalPlan)
-                    self.assertIsInstance(plan.subgoals, list)
-                    self.assertIsInstance(plan.execution_order, list)
-                    self.assertIsInstance(plan.total_estimated_cost, float)
+                # Strategy can be None for simple levels without switches/doors
+                if strategy is not None:
+                    self.assertIsInstance(strategy, CompletionStrategy)
+                    self.assertIsInstance(strategy.steps, list)
                     
                 print(f"  ✅ {test_map.name}: Plan created successfully")
     

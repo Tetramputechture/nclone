@@ -15,7 +15,7 @@ from typing import Dict, List, Any, Tuple
 # Add the nclone package to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from nclone.graph.subgoal_planner import SubgoalPlanner, Subgoal, SubgoalPlan
+from nclone.planning import LevelCompletionPlanner, Subgoal, SubgoalPlan
 from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
 from nclone.graph.reachability.opencv_flood_fill import OpenCVFloodFill
 
@@ -37,7 +37,7 @@ class TestHierarchicalSubgoalSystem(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.subgoal_planner = SubgoalPlanner(debug=True)
+        self.subgoal_planner = LevelCompletionPlanner()
         self.tiered_system = TieredReachabilitySystem(debug=True)
         
         # Create simple level data for testing

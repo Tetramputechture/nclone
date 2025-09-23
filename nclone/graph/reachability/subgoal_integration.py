@@ -7,7 +7,7 @@ enhancements without duplicating the core planning logic.
 
 from typing import List, Dict, Any
 
-from ..subgoal_types import Subgoal
+from ...planning import Subgoal
 
 
 class ReachabilitySubgoalIntegration:
