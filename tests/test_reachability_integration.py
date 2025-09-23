@@ -186,7 +186,7 @@ class TestReachabilityIntegration(unittest.TestCase):
                     ninja_pos=test_map.ninja_pos,
                     level_data=test_map.tiles,
                     switch_states={},
-                    reachability_system=self.reachability_system
+                    reachability_system=self.tiered_system
                 )
                 
                 # Strategy can be None for simple levels without switches/doors
