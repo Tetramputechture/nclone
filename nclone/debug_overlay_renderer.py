@@ -9,7 +9,6 @@ from .constants.physics_constants import (
 )
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
 from .graph.subgoal_visualizer import SubgoalVisualizer
-from .shared_tile_renderer import SharedTileRenderer
 from .graph.subgoal_types import Subgoal, SubgoalPlan
 
 
@@ -448,7 +447,6 @@ class DebugOverlayRenderer:
         """Convert simulator's tile_dic to numpy array for visualization."""
         try:
             import numpy as np
-            from .constants.physics_constants import TILE_PIXEL_SIZE
             
             # The simulator uses a 44x25 tile grid (including borders)
             width_tiles = 44

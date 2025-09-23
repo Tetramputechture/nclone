@@ -17,7 +17,7 @@ from .common import SUB_CELL_SIZE
 from .navigation import PathfindingEngine
 from .reachability.opencv_flood_fill import OpenCVFloodFill
 from .subgoal_types import Subgoal, SubgoalPlan
-from .level_data import LevelData, ensure_level_data
+from .level_data import ensure_level_data
 from .simple_objective_system import (
     SimplifiedCompletionStrategy,
     SimpleObjective,

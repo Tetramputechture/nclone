@@ -954,6 +954,41 @@ class NppEnvironment(gymnasium.Env):
 
         return tuple(sorted(door_states))
 
+    # Debug overlay renderer convenience methods
+    @property
+    def debug_overlay_renderer(self):
+        """Access the debug overlay renderer."""
+        if hasattr(self.nplay_headless, "sim_renderer") and hasattr(
+            self.nplay_headless.sim_renderer, "debug_overlay_renderer"
+        ):
+            return self.nplay_headless.sim_renderer.debug_overlay_renderer
+        return None
+
+    def set_subgoal_debug_enabled(self, enabled: bool):
+        """Enable or disable subgoal visualization."""
+        renderer = self.debug_overlay_renderer
+        if renderer:
+            renderer.set_subgoal_debug_enabled(enabled)
+
+    def set_subgoal_visualization_mode(self, mode: str):
+        """Set subgoal visualization mode."""
+        renderer = self.debug_overlay_renderer
+        if renderer:
+            renderer.set_subgoal_visualization_mode(mode)
+
+    def set_subgoal_data(self, subgoals, plan=None, reachable_positions=None):
+        """Set subgoal data for visualization."""
+        renderer = self.debug_overlay_renderer
+        if renderer:
+            renderer.set_subgoal_data(subgoals, plan, reachable_positions)
+
+    def export_subgoal_visualization(self, filename: str) -> bool:
+        """Export subgoal visualization to image file."""
+        renderer = self.debug_overlay_renderer
+        if renderer:
+            return renderer.export_subgoal_visualization(filename)
+        return False
+
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects."""
         state = self.__dict__.copy()

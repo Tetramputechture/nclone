@@ -40,7 +40,6 @@ class OpenCVFloodFill:
         """
         self.debug = debug
         self.render_scale = render_scale
-        self.ninja_radius = NINJA_RADIUS
 
         # Rendering components
         self.tile_renderer = None
@@ -228,7 +227,7 @@ class OpenCVFloodFill:
             True if entity should block movement
         """
         from ...constants.entity_types import EntityType
-        
+
         # Handle both dict and object entity formats
         if isinstance(entity, dict):
             entity_type = entity.get("type")
@@ -236,8 +235,6 @@ class OpenCVFloodFill:
         else:
             entity_type = getattr(entity, "type", None)
             entity_id = getattr(entity, "entity_id", "N/A")
-        
-
 
         # One-way platforms are always rendered (direction handled by renderer)
         if entity_type == EntityType.ONE_WAY:
@@ -263,7 +260,7 @@ class OpenCVFloodFill:
             else:
                 is_door_part = getattr(entity, "is_door_part", True)
                 controlled_by = getattr(entity, "controlled_by", None)
-            
+
             if is_door_part:
                 # Check if controlling switch is activated
                 if controlled_by and controlled_by in switch_states:
@@ -288,7 +285,7 @@ class OpenCVFloodFill:
             else:
                 is_door_part = getattr(entity, "is_door_part", True)
                 closed = getattr(entity, "closed", False)  # Trap doors start open
-            
+
             if is_door_part:
                 # Door is solid when closed
                 return closed
@@ -480,11 +477,11 @@ class OpenCVFloodFill:
             Circular kernel for ninja radius
         """
         # Create circular kernel with ninja radius
-        kernel_size = int(self.ninja_radius * 2 * self.render_scale) + 1
+        kernel_size = int(NINJA_RADIUS * 2 * self.render_scale) + 1
         kernel = np.zeros((kernel_size, kernel_size), dtype=np.uint8)
 
         center = kernel_size // 2
-        radius = self.ninja_radius * self.render_scale
+        radius = NINJA_RADIUS * self.render_scale
 
         for y in range(kernel_size):
             for x in range(kernel_size):

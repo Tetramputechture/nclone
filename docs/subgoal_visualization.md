@@ -96,8 +96,6 @@ visualizer = SubgoalVisualizer()
 
 # Create with custom configuration
 config = SubgoalVisualizationConfig(
-    subgoal_radius=8,
-    ninja_radius=12,
     connection_width=3,
     show_labels=True,
     show_reachability=True
@@ -111,8 +109,6 @@ visualizer = SubgoalVisualizer(config)
 @dataclass
 class SubgoalVisualizationConfig:
     # Visual appearance
-    subgoal_radius: int = 6
-    ninja_radius: int = 10
     connection_width: int = 2
     
     # Colors (RGBA tuples)

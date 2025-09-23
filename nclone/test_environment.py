@@ -356,23 +356,68 @@ current_subgoal_plan = None
 
 if args.visualize_subgoals or args.export_subgoals:
     print("Initializing subgoal visualization system...")
-    
+
     try:
         # Enable subgoal visualization
         subgoal_debug_enabled = args.visualize_subgoals
-        
+
         # Set visualization mode
-        if hasattr(env, 'debug_overlay_renderer'):
-            env.debug_overlay_renderer.set_subgoal_visualization_mode(args.subgoal_mode)
-            env.debug_overlay_renderer.set_subgoal_debug_enabled(subgoal_debug_enabled)
-        
+        env.set_subgoal_visualization_mode(args.subgoal_mode)
+        env.set_subgoal_debug_enabled(subgoal_debug_enabled)
+
+        # If visualization is enabled, initialize some basic subgoal data
+        if subgoal_debug_enabled and subgoal_planner:
+            ninja_pos = _get_ninja_position(env)
+            if ninja_pos:
+                print(
+                    f"   - Initializing subgoal data from ninja position: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})"
+                )
+
+                # Create initial completion plan
+                completion_plan = (
+                    subgoal_planner.subgoal_planner.create_hierarchical_completion_plan(
+                        ninja_pos,
+                        env.level_data,
+                        env.entities if hasattr(env, "entities") else [],
+                    )
+                )
+
+                if completion_plan:
+                    current_subgoals = completion_plan.subgoals
+                    current_subgoal_plan = completion_plan
+
+                    # Get reachable positions if available
+                    reachable_positions = None
+                    if reachability_analyzer:
+                        ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
+                        switch_states = {}
+                        reachability_state = reachability_analyzer.analyze_reachability(
+                            env.level_data,
+                            ninja_pos_int,
+                            switch_states,
+                            PerformanceTarget.BALANCED,
+                        )
+                        reachable_positions = reachability_state.reachable_positions
+
+                    # Set the data in the debug overlay renderer
+                    env.set_subgoal_data(
+                        current_subgoals, current_subgoal_plan, reachable_positions
+                    )
+
+                    print(f"   - Initial subgoals identified: {len(current_subgoals)}")
+                    if reachable_positions:
+                        print(f"   - Reachable positions: {len(reachable_positions)}")
+                else:
+                    print("   - No initial completion plan could be created")
+
         print("✅ Subgoal visualization system initialized successfully")
         print(f"   - Mode: {args.subgoal_mode}")
         print(f"   - Overlay enabled: {subgoal_debug_enabled}")
-        
+
     except Exception as e:
         print(f"Warning: Could not initialize subgoal visualization system: {e}")
         import traceback
+
         traceback.print_exc()
 
 # Handle frame export if requested
@@ -527,7 +572,7 @@ if args.export_reachability and reachability_analyzer:
 # Handle subgoal export if requested
 if args.export_subgoals:
     print(f"Exporting subgoal visualization to {args.export_subgoals}...")
-    
+
     try:
         # Get current ninja position
         ninja_pos = _get_ninja_position(env)
@@ -535,82 +580,87 @@ if args.export_subgoals:
             # Generate subgoals using the subgoal planner
             if subgoal_planner:
                 # Create hierarchical completion plan
-                completion_plan = subgoal_planner.subgoal_planner.create_hierarchical_completion_plan(
-                    ninja_pos, env.level_data, env.entities if hasattr(env, 'entities') else []
+                completion_plan = (
+                    subgoal_planner.subgoal_planner.create_hierarchical_completion_plan(
+                        ninja_pos,
+                        env.level_data,
+                        env.entities if hasattr(env, "entities") else [],
+                    )
                 )
-                
+
                 # Initialize default values
                 current_subgoals = []
                 current_subgoal_plan = None
                 reachable_positions = None
-                
+
                 if completion_plan:
                     current_subgoals = completion_plan.subgoals
                     current_subgoal_plan = completion_plan
-                    print(f"✅ Subgoal completion plan created with {len(current_subgoals)} subgoals")
+                    print(
+                        f"✅ Subgoal completion plan created with {len(current_subgoals)} subgoals"
+                    )
                 else:
-                    print("⚠️  No subgoal completion plan created, exporting basic visualization")
-                
+                    print(
+                        "⚠️  No subgoal completion plan created, exporting basic visualization"
+                    )
+
                 # Get reachable positions if reachability analyzer is available
                 if reachability_analyzer:
                     ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
                     switch_states = {}
                     reachability_state = reachability_analyzer.analyze_reachability(
-                        env.level_data, ninja_pos_int, switch_states, PerformanceTarget.BALANCED
+                        env.level_data,
+                        ninja_pos_int,
+                        switch_states,
+                        PerformanceTarget.BALANCED,
                     )
                     reachable_positions = reachability_state.reachable_positions
-                
+
                 # Set subgoal data in debug overlay renderer
-                debug_renderer = None
-                if hasattr(env, 'debug_overlay_renderer'):
-                    debug_renderer = env.debug_overlay_renderer
-                elif hasattr(env, 'nplay_headless') and hasattr(env.nplay_headless, 'sim_renderer') and hasattr(env.nplay_headless.sim_renderer, 'debug_overlay_renderer'):
-                    debug_renderer = env.nplay_headless.sim_renderer.debug_overlay_renderer
-                
-                if debug_renderer:
-                    debug_renderer.set_subgoal_data(
-                        current_subgoals, current_subgoal_plan, reachable_positions
-                    )
-                    debug_renderer.set_subgoal_debug_enabled(True)
-                
+                env.set_subgoal_data(
+                    current_subgoals, current_subgoal_plan, reachable_positions
+                )
+                env.set_subgoal_debug_enabled(True)
+
                 # Step the environment once to get a proper frame with subgoal overlay
-                observation, reward, terminated, truncated, info = env.step(0)  # NOOP action
-                
+                observation, reward, terminated, truncated, info = env.step(
+                    0
+                )  # NOOP action
+
                 # Export using debug overlay renderer
-                debug_renderer = None
-                if hasattr(env, 'debug_overlay_renderer'):
-                    debug_renderer = env.debug_overlay_renderer
-                elif hasattr(env, 'nplay_headless') and hasattr(env.nplay_headless, 'sim_renderer') and hasattr(env.nplay_headless.sim_renderer, 'debug_overlay_renderer'):
-                    debug_renderer = env.nplay_headless.sim_renderer.debug_overlay_renderer
-                
-                if debug_renderer:
-                    try:
-                        success = debug_renderer.export_subgoal_visualization(args.export_subgoals)
-                        if success:
-                            print(f"✅ Subgoal visualization exported to {args.export_subgoals}")
-                            print(f"   - Subgoals identified: {len(current_subgoals)}")
-                            if current_subgoal_plan:
-                                print(f"   - Execution order: {len(current_subgoal_plan.execution_order)} steps")
-                            if reachable_positions:
-                                print(f"   - Reachable positions: {len(reachable_positions)}")
-                        else:
-                            print("❌ Failed to export subgoal visualization")
-                    except Exception as e:
-                        print(f"❌ Error during subgoal visualization export: {e}")
-                        import traceback
-                        traceback.print_exc()
-                else:
-                    print("Warning: Debug overlay renderer not available for export")
+                try:
+                    success = env.export_subgoal_visualization(args.export_subgoals)
+                    if success:
+                        print(
+                            f"✅ Subgoal visualization exported to {args.export_subgoals}"
+                        )
+                        print(f"   - Subgoals identified: {len(current_subgoals)}")
+                        if current_subgoal_plan:
+                            print(
+                                f"   - Execution order: {len(current_subgoal_plan.execution_order)} steps"
+                            )
+                        if reachable_positions:
+                            print(
+                                f"   - Reachable positions: {len(reachable_positions)}"
+                            )
+                    else:
+                        print("❌ Failed to export subgoal visualization")
+                except Exception as e:
+                    print(f"❌ Error during subgoal visualization export: {e}")
+                    import traceback
+
+                    traceback.print_exc()
             else:
                 print("Warning: Subgoal planner not initialized")
         else:
             print("Warning: Could not determine ninja position for subgoal analysis")
-    
+
     except Exception as e:
         print(f"Error during subgoal export: {e}")
         import traceback
+
         traceback.print_exc()
-    
+
     # Clean up and exit
     pygame.quit()
     env.close()
@@ -834,21 +884,21 @@ while running:
                 if event.key == pygame.K_s:
                     # Toggle subgoal visualization overlay
                     subgoal_debug_enabled = not subgoal_debug_enabled
-                    if hasattr(env, 'debug_overlay_renderer'):
-                        env.debug_overlay_renderer.set_subgoal_debug_enabled(subgoal_debug_enabled)
-                    print(f"Subgoal visualization: {'ON' if subgoal_debug_enabled else 'OFF'}")
+                    env.set_subgoal_debug_enabled(subgoal_debug_enabled)
+                    print(
+                        f"Subgoal visualization: {'ON' if subgoal_debug_enabled else 'OFF'}"
+                    )
 
                 if event.key == pygame.K_m:
                     # Cycle through visualization modes
                     modes = ["basic", "detailed", "reachability"]
-                    current_mode = getattr(args, 'subgoal_mode', 'detailed')
+                    current_mode = getattr(args, "subgoal_mode", "detailed")
                     try:
                         current_index = modes.index(current_mode)
                         next_index = (current_index + 1) % len(modes)
                         args.subgoal_mode = modes[next_index]
-                        
-                        if hasattr(env, 'debug_overlay_renderer'):
-                            env.debug_overlay_renderer.set_subgoal_visualization_mode(args.subgoal_mode)
+
+                        env.set_subgoal_visualization_mode(args.subgoal_mode)
                         print(f"Subgoal visualization mode: {args.subgoal_mode}")
                     except ValueError:
                         args.subgoal_mode = "detailed"
@@ -862,32 +912,51 @@ while running:
                             if ninja_pos:
                                 # Create new completion plan
                                 completion_plan = subgoal_planner.subgoal_planner.create_hierarchical_completion_plan(
-                                    ninja_pos, env.level_data, env.entities if hasattr(env, 'entities') else []
+                                    ninja_pos,
+                                    env.level_data,
+                                    env.entities if hasattr(env, "entities") else [],
                                 )
-                                
+
                                 if completion_plan:
                                     current_subgoals = completion_plan.subgoals
                                     current_subgoal_plan = completion_plan
-                                    
+
                                     # Get reachable positions if available
                                     reachable_positions = None
                                     if reachability_analyzer:
-                                        ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
+                                        ninja_pos_int = (
+                                            int(ninja_pos[0]),
+                                            int(ninja_pos[1]),
+                                        )
                                         switch_states = {}
-                                        reachability_state = reachability_analyzer.analyze_reachability(
-                                            env.level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
+                                        reachability_state = (
+                                            reachability_analyzer.analyze_reachability(
+                                                env.level_data,
+                                                ninja_pos_int,
+                                                switch_states,
+                                                PerformanceTarget.FAST,
+                                            )
                                         )
-                                        reachable_positions = reachability_state.reachable_positions
-                                    
+                                        reachable_positions = (
+                                            reachability_state.reachable_positions
+                                        )
+
                                     # Update debug overlay renderer
-                                    if hasattr(env, 'debug_overlay_renderer'):
-                                        env.debug_overlay_renderer.set_subgoal_data(
-                                            current_subgoals, current_subgoal_plan, reachable_positions
-                                        )
-                                    
-                                    print(f"Updated subgoal plan from ninja position ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})")
-                                    print(f"  - Subgoals identified: {len(current_subgoals)}")
-                                    print(f"  - Execution steps: {len(current_subgoal_plan.execution_order)}")
+                                    env.set_subgoal_data(
+                                        current_subgoals,
+                                        current_subgoal_plan,
+                                        reachable_positions,
+                                    )
+
+                                    print(
+                                        f"Updated subgoal plan from ninja position ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})"
+                                    )
+                                    print(
+                                        f"  - Subgoals identified: {len(current_subgoals)}"
+                                    )
+                                    print(
+                                        f"  - Execution steps: {len(current_subgoal_plan.execution_order)}"
+                                    )
                                 else:
                                     print("Could not create subgoal completion plan")
                         except Exception as e:
@@ -895,15 +964,19 @@ while running:
 
                 if event.key == pygame.K_o:
                     # Export subgoal visualization screenshot
-                    if subgoal_debug_enabled and hasattr(env, 'debug_overlay_renderer'):
+                    if subgoal_debug_enabled:
                         try:
                             timestamp = int(time.time())
                             filename = f"subgoal_export_{timestamp}.png"
-                            success = env.debug_overlay_renderer.export_subgoal_visualization(filename)
+                            success = env.export_subgoal_visualization(filename)
                             if success:
-                                print(f"✅ Subgoal visualization screenshot saved to {filename}")
+                                print(
+                                    f"✅ Subgoal visualization screenshot saved to {filename}"
+                                )
                             else:
-                                print("❌ Failed to export subgoal visualization screenshot")
+                                print(
+                                    "❌ Failed to export subgoal visualization screenshot"
+                                )
                         except Exception as e:
                             print(f"Could not export subgoal screenshot: {e}")
 

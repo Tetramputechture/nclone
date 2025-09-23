@@ -16,14 +16,16 @@ Features:
 
 import pygame
 import numpy as np
+import math
 from typing import List, Tuple, Optional, Dict, Set
 from dataclasses import dataclass
 from enum import Enum
 
 from .subgoal_types import Subgoal, SubgoalPlan
 from .common import SUB_CELL_SIZE
-from ..constants.physics_constants import TILE_PIXEL_SIZE
+from ..constants.physics_constants import TILE_PIXEL_SIZE, NINJA_RADIUS
 from ..shared_tile_renderer import SharedTileRenderer
+from .. import render_utils
 
 
 class SubgoalVisualizationMode(Enum):
@@ -52,8 +54,6 @@ class SubgoalVisualizationConfig:
     path_color: Tuple[int, int, int, int] = (255, 255, 0, 150)
     connection_color: Tuple[int, int, int, int] = (255, 255, 255, 100)
 
-    # Sizes
-    subgoal_radius: int = 12
     path_width: int = 3
     connection_width: int = 2
     font_size: int = 14
@@ -192,7 +192,7 @@ class SubgoalVisualizer:
         for row, col in reachable_positions:
             x = col * cell_size + tile_x_offset
             y = row * cell_size + tile_y_offset
-            
+
             # Fix Y-axis inversion for reachability areas
             y = surface.get_height() - y - cell_size
 
@@ -222,10 +222,18 @@ class SubgoalVisualizer:
                 next_subgoal = subgoals[next_idx]
 
                 start_pos = self._subgoal_to_screen_pos(
-                    current_subgoal, tile_x_offset, tile_y_offset, adjust, surface.get_height()
+                    current_subgoal,
+                    tile_x_offset,
+                    tile_y_offset,
+                    adjust,
+                    surface.get_height(),
                 )
                 end_pos = self._subgoal_to_screen_pos(
-                    next_subgoal, tile_x_offset, tile_y_offset, adjust, surface.get_height()
+                    next_subgoal,
+                    tile_x_offset,
+                    tile_y_offset,
+                    adjust,
+                    surface.get_height(),
                 )
 
                 # Draw connection line with arrow
@@ -264,7 +272,17 @@ class SubgoalVisualizer:
         )
 
         # Apply animation if enabled
-        radius = self.config.subgoal_radius
+        # Use radius based on entity class from subgoal goal_type
+        radius = 12
+        if subgoal.goal_type == "exit":
+            radius = 12
+        elif subgoal.goal_type == "exit_switch":
+            radius = 6
+        elif subgoal.goal_type == "locked_door_switch":
+            radius = 5
+        elif subgoal.goal_type == "trap_door_switch":
+            radius = 5
+
         if self.config.animate_subgoals:
             pulse = 1.0 + 0.2 * np.sin(
                 self.animation_time * self.config.pulse_speed + index
@@ -296,15 +314,23 @@ class SubgoalVisualizer:
         adjust: float,
     ):
         """Render ninja position marker."""
-        x = ninja_position[0] * adjust + tile_x_offset
-        # Use same coordinate system as normal entity renderer (no Y-flipping)
-        # Ninja coordinates are already in pygame/screen coordinate system
-        y = ninja_position[1] * adjust + tile_y_offset
+        # Use properly scaled ninja radius like entity_renderer does
+        ninja_radius = int(NINJA_RADIUS * adjust)
+
+        x = ninja_position[0] * adjust + tile_x_offset + 24 + ninja_radius
+        y = (
+            surface.get_height()
+            - (ninja_position[1] * adjust + tile_y_offset)
+            - 48
+            - ninja_radius
+        )
 
         # Draw ninja marker
         ninja_color = (0, 255, 255, 255)  # Cyan
-        pygame.draw.circle(surface, ninja_color, (int(x), int(y)), 8)
-        pygame.draw.circle(surface, (255, 255, 255, 255), (int(x), int(y)), 8, 2)
+        pygame.draw.circle(surface, ninja_color, (int(x), int(y)), ninja_radius)
+        pygame.draw.circle(
+            surface, (255, 255, 255, 255), (int(x), int(y)), ninja_radius, 2
+        )
 
         # Draw ninja label
         if self.font:
@@ -322,7 +348,7 @@ class SubgoalVisualizer:
     ) -> Tuple[int, int]:
         """Convert subgoal position to screen coordinates."""
         # Use actual entity position if available (more accurate)
-        if hasattr(subgoal, 'entity_position') and subgoal.entity_position is not None:
+        if hasattr(subgoal, "entity_position") and subgoal.entity_position is not None:
             x = subgoal.entity_position[0] * adjust + tile_x_offset
             # Use same coordinate system as entities and ninja (no Y-flipping)
             y = subgoal.entity_position[1] * adjust + tile_y_offset
@@ -340,7 +366,7 @@ class SubgoalVisualizer:
                 + SUB_CELL_SIZE * adjust // 2
                 + tile_y_offset
             )
-            
+
         return (int(x), int(y))
 
     def _draw_arrow(
@@ -462,12 +488,20 @@ class SubgoalVisualizer:
 
             # Render level background if available
             if level_data is not None:
-                self._render_level_background(export_surface, level_data, level_dimensions)
+                self._render_level_background(
+                    export_surface, level_data, level_dimensions
+                )
 
             # Render entities if available
             if entities is not None:
-                self._render_entities(export_surface, entities, level_dimensions, 
-                                    tile_x_offset=0, tile_y_offset=0, adjust=1.0)
+                self._render_entities(
+                    export_surface,
+                    entities,
+                    level_dimensions,
+                    tile_x_offset=0,
+                    tile_y_offset=0,
+                    adjust=1.0,
+                )
 
             # Render subgoals overlay
             self.render_subgoals_overlay(
@@ -488,6 +522,7 @@ class SubgoalVisualizer:
         except Exception as e:
             print(f"Error exporting subgoal visualization: {e}")
             import traceback
+
             traceback.print_exc()
             return False
 
@@ -498,15 +533,18 @@ class SubgoalVisualizer:
             if isinstance(level_data, dict):
                 # level_data is tile_dic - use shared tile renderer for pixel-perfect rendering
                 tile_surface = SharedTileRenderer.render_tiles_to_pygame_surface(
-                    level_data, surface.get_width(), surface.get_height(), tile_size=TILE_PIXEL_SIZE
+                    level_data,
+                    surface.get_width(),
+                    surface.get_height(),
+                    tile_size=TILE_PIXEL_SIZE,
                 )
                 surface.blit(tile_surface, (0, 0))
-                
-            elif hasattr(level_data, 'shape'):
+
+            elif hasattr(level_data, "shape"):
                 # level_data is numpy array - fallback to simple rendering
                 tiles = level_data
                 tile_count = 0
-                
+
                 # Render tiles - Fix Y-axis inversion
                 for y in range(tiles.shape[0]):
                     for x in range(tiles.shape[1]):
@@ -517,22 +555,86 @@ class SubgoalVisualizer:
                             pixel_x = x * TILE_PIXEL_SIZE
                             # Fix Y-axis inversion: flip Y coordinate
                             pixel_y = surface.get_height() - (y + 1) * TILE_PIXEL_SIZE
-                            
+
                             # Draw tile as a rectangle
-                            tile_rect = pygame.Rect(pixel_x, pixel_y, TILE_PIXEL_SIZE, TILE_PIXEL_SIZE)
+                            tile_rect = pygame.Rect(
+                                pixel_x, pixel_y, TILE_PIXEL_SIZE, TILE_PIXEL_SIZE
+                            )
                             pygame.draw.rect(surface, (100, 100, 100, 255), tile_rect)
-                            pygame.draw.rect(surface, (150, 150, 150, 255), tile_rect, 1)
-            
+                            pygame.draw.rect(
+                                surface, (150, 150, 150, 255), tile_rect, 1
+                            )
+
         except Exception as e:
             print(f"Error rendering level background: {e}")
             import traceback
+
             traceback.print_exc()
 
-    def _render_entities(self, surface, entities, level_dimensions, tile_x_offset=0, tile_y_offset=0, adjust=1.0):
+    def _draw_oriented_entity(
+        self,
+        surface: pygame.Surface,
+        entity,
+        x: float,
+        y: float,
+        color: Tuple[int, int, int, int],
+        adjust: float = 1.0,
+    ):
+        """Helper method to draw oriented entities using proper radius from entity_renderer logic."""
+        radius = 5
+        if hasattr(entity, "RADIUS"):
+            radius = entity.RADIUS * adjust
+        if hasattr(entity, "SEMI_SIDE"):
+            radius = entity.SEMI_SIDE * adjust
+
+        angle = math.atan2(entity.normal_x, entity.normal_y) + render_utils.PI_DIV_2
+        start_x = int(x + math.sin(angle) * radius)
+        start_y = int(y + math.cos(angle) * radius)
+        end_x = int(x - math.sin(angle) * radius)
+        end_y = int(y - math.cos(angle) * radius)
+
+        pygame.draw.line(surface, color[:3], (start_x, start_y), (end_x, end_y), 2)
+
+    def _draw_physical_entity(
+        self,
+        surface: pygame.Surface,
+        entity,
+        x: float,
+        y: float,
+        color: Tuple[int, int, int, int],
+        adjust: float = 1.0,
+    ):
+        """Helper method to draw physical entities using proper radius from entity_renderer logic."""
+        center = (int(x), int(y))
+
+        if hasattr(entity, "RADIUS"):
+            radius = int(entity.RADIUS * adjust)
+            pygame.draw.circle(surface, color[:3], center, radius)
+            pygame.draw.circle(surface, (255, 255, 255, 255), center, radius, 2)
+        elif hasattr(entity, "SEMI_SIDE"):
+            radius = int(entity.SEMI_SIDE * adjust)
+            rect = pygame.Rect(int(x - radius), int(y - radius), radius * 2, radius * 2)
+            pygame.draw.rect(surface, color[:3], rect)
+            pygame.draw.rect(surface, (255, 255, 255, 255), rect, 2)
+        else:
+            # Fallback to default radius
+            radius = 8
+            pygame.draw.circle(surface, color[:3], center, radius)
+            pygame.draw.circle(surface, (255, 255, 255, 255), center, radius, 2)
+
+    def _render_entities(
+        self,
+        surface,
+        entities,
+        level_dimensions,
+        tile_x_offset=0,
+        tile_y_offset=0,
+        adjust=1.0,
+    ):
         """Render entities on the level."""
         try:
             from ..constants.entity_types import EntityType
-            
+
             # Entity colors
             entity_colors = {
                 EntityType.NINJA: (0, 255, 255, 255),  # Cyan
@@ -546,54 +648,63 @@ class SubgoalVisualizer:
                 EntityType.DRONE_ZAP: (255, 0, 255, 255),  # Magenta
                 EntityType.THWUMP: (139, 69, 19, 255),  # Brown
             }
-            
+
             entity_count = 0
             for entity in entities:
                 # Try different ways to get entity data
                 if isinstance(entity, dict):
-                    entity_type = entity.get('type')
-                    x = entity.get('x', 0)
-                    y = entity.get('y', 0)
+                    entity_type = entity.get("type")
+                    x = entity.get("x", 0)
+                    y = entity.get("y", 0)
                 else:
-                    entity_type = getattr(entity, 'type', None)
+                    entity_type = getattr(entity, "type", None)
                     # Use the same position attributes as entity_renderer.py
-                    if hasattr(entity, 'xpos') and hasattr(entity, 'ypos'):
+                    if hasattr(entity, "xpos") and hasattr(entity, "ypos"):
                         x = entity.xpos
                         y = entity.ypos
-                    elif hasattr(entity, 'position'):
+                    elif hasattr(entity, "position"):
                         pos = entity.position
                         x, y = pos[0], pos[1] if len(pos) > 1 else (pos, 0)
-                    elif hasattr(entity, 'x') and hasattr(entity, 'y'):
+                    elif hasattr(entity, "x") and hasattr(entity, "y"):
                         x = entity.x
                         y = entity.y
-                    elif hasattr(entity, 'pos_x') and hasattr(entity, 'pos_y'):
+                    elif hasattr(entity, "pos_x") and hasattr(entity, "pos_y"):
                         x = entity.pos_x
                         y = entity.pos_y
                     else:
                         x, y = 0, 0
-                
+
                 # Skip entities at origin (likely uninitialized)
                 if x == 0 and y == 0:
                     entity_count += 1
                     continue
-                
+
                 # Get entity color
-                color = entity_colors.get(entity_type, (255, 255, 255, 255))  # Default white
-                
+                color = entity_colors.get(
+                    entity_type, (255, 255, 255, 255)
+                )  # Default white
+
                 # Use same coordinate system as normal entity renderer (no Y-flipping)
                 # Entity coordinates are already in pygame/screen coordinate system
-                screen_x = int(x * adjust + tile_x_offset)
-                screen_y = int(y * adjust + tile_y_offset)
-                center = (screen_x, screen_y)
-                radius = 8
-                pygame.draw.circle(surface, color, center, radius)
-                pygame.draw.circle(surface, (255, 255, 255, 255), center, radius, 2)
-                
+                screen_x = x * adjust + tile_x_offset
+                screen_y = y * adjust + tile_y_offset
+
+                # Draw entity based on its properties/type, using proper radius logic from entity_renderer
+                if hasattr(entity, "normal_x") and hasattr(entity, "normal_y"):
+                    self._draw_oriented_entity(
+                        surface, entity, screen_x, screen_y, color, adjust
+                    )
+                else:
+                    self._draw_physical_entity(
+                        surface, entity, screen_x, screen_y, color, adjust
+                    )
+
                 entity_count += 1
-                
+
         except Exception as e:
             print(f"Error rendering entities: {e}")
             import traceback
+
             traceback.print_exc()
 
     def update_config(self, **kwargs):

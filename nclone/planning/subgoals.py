@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, List, Optional
 
 from nclone.constants.entity_types import EntityType
-from .utils import is_switch_activated_authoritative, find_switch_id_by_position
 
 
 @dataclass
