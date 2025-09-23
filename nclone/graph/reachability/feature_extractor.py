@@ -343,7 +343,9 @@ class ReachabilityFeatureExtractor:
         state_str = f"{ninja_position}_{sorted(switch_states.items())}"
 
         # Add level data hash (simplified)
-        if hasattr(level_data, "shape"):
+        if hasattr(level_data, "tiles") and hasattr(level_data.tiles, "shape"):
+            level_hash = f"{level_data.tiles.shape}_{hash(level_data.tiles.tobytes()) % 10000}"
+        elif hasattr(level_data, "shape"):
             level_hash = f"{level_data.shape}_{hash(level_data.tobytes()) % 10000}"
         else:
             level_hash = (

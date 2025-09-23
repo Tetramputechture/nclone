@@ -49,16 +49,12 @@ class EdgeBuilder:
         """Inject reachability system for connectivity analysis."""
         self.reachability_system = reachability_system
 
-    def build_edges(
-        self, level_data: LevelData, entities: List, ninja_pos: Tuple[int, int]
-    ) -> List[Edge]:
+    def build_edges(self, level_data: LevelData) -> List[Edge]:
         """
-        Build simplified edges for strategic RL representation.
+        Build simplified edges for strategic RL representation using consolidated data.
 
         Args:
-            level_data: Level tile data
-            entities: List of game entities
-            ninja_pos: Current ninja position
+            level_data: Complete level data including tiles, entities, and player state
 
         Returns:
             List of simplified edges
@@ -73,18 +69,18 @@ class EdgeBuilder:
         edges.extend(adjacent_edges)
 
         # 2. Create reachable edges (using flood fill results)
-        if self.reachability_system:
-            reachable_edges = self._create_reachable_edges(ninja_pos, level_data)
+        if self.reachability_system and level_data.player:
+            reachable_edges = self._create_reachable_edges(level_data.player.position, level_data)
             edges.extend(reachable_edges)
 
         # 3. Create functional edges (entity interactions)
         functional_edges = self._create_functional_edges(
-            entities, traversable_positions
+            level_data.entities, traversable_positions
         )
         edges.extend(functional_edges)
 
         # 4. Create blocked edges (conditional access)
-        blocked_edges = self._create_blocked_edges(entities, level_data)
+        blocked_edges = self._create_blocked_edges(level_data.entities, level_data)
         edges.extend(blocked_edges)
 
         if self.debug:
@@ -258,9 +254,7 @@ class EdgeBuilder:
         return nearby
 
 
-def create_simplified_graph_data(
-    edges: List[Edge], level_data: LevelData, entities: List
-) -> GraphData:
+def create_simplified_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     """
     Create GraphData from simplified edges.
 
@@ -304,14 +298,15 @@ def create_simplified_graph_data(
         node_type = NodeType.EMPTY  # Default
 
         # Check if position corresponds to an entity
-        for entity in entities:
-            if (entity.x, entity.y) == pos:
-                if (
-                    "hazard" in type(entity).__name__.lower()
-                    or "mine" in type(entity).__name__.lower()
-                ):
+        for entity in level_data.entities:
+            entity_x = entity.get("x", 0)
+            entity_y = entity.get("y", 0)
+            if (entity_x, entity_y) == pos:
+                entity_type = entity.get("type", 0)
+                from ..constants.entity_types import EntityType
+                if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
                     node_type = NodeType.HAZARD
-                elif "exit" in type(entity).__name__.lower():
+                elif entity_type in [EntityType.EXIT_DOOR, EntityType.EXIT_SWITCH]:
                     node_type = NodeType.EXIT
                 else:
                     node_type = NodeType.ENTITY

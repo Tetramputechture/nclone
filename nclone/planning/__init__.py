@@ -7,11 +7,10 @@ the nclone physics simulation and reachability analysis systems.
 
 from .subgoals import (
     Subgoal,
-    NavigationSubgoal, 
+    NavigationSubgoal,
     SwitchActivationSubgoal,
-    CollectionSubgoal,
     CompletionStep,
-    CompletionStrategy
+    CompletionStrategy,
 )
 
 from .completion_planner import LevelCompletionPlanner
@@ -19,14 +18,13 @@ from .analyzers import PathAnalyzer, DependencyAnalyzer
 from .prioritizer import SubgoalPrioritizer
 
 __all__ = [
-    'Subgoal',
-    'NavigationSubgoal',
-    'SwitchActivationSubgoal', 
-    'CollectionSubgoal',
-    'CompletionStep',
-    'CompletionStrategy',
-    'LevelCompletionPlanner',
-    'PathAnalyzer',
-    'DependencyAnalyzer',
-    'SubgoalPrioritizer'
+    "Subgoal",
+    "NavigationSubgoal",
+    "SwitchActivationSubgoal",
+    "CompletionStep",
+    "CompletionStrategy",
+    "LevelCompletionPlanner",
+    "PathAnalyzer",
+    "DependencyAnalyzer",
+    "SubgoalPrioritizer",
 ]

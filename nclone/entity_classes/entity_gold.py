@@ -1,4 +1,3 @@
-
 from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
@@ -7,9 +6,7 @@ from ..ninja import NINJA_RADIUS
 class EntityGold(Entity):
     """Gold Entity (Type 2)
 
-    Optional collectible items that add challenge and reward exploration. While not required
-    for basic level completion, gold pieces can be used to create alternate paths, encourage
-    risky maneuvers, and track player performance.
+    Optional entities not used by our RL agent.
 
     Physical Properties:
         - Radius: 6 pixels
@@ -50,6 +47,7 @@ class EntityGold(Entity):
         - Supports collection logging
         - No complex physics interactions
     """
+
     RADIUS = 6
     MAX_COUNT_PER_LEVEL = 8192
 
@@ -61,8 +59,9 @@ class EntityGold(Entity):
         """The gold is collected if touches by a ninja that is not in winning state."""
         ninja = self.sim.ninja
         if ninja.state != 8:
-            if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
+            if overlap_circle_vs_circle(
+                self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+            ):
                 ninja.gold_collected += 1
                 self.active = False
                 self.log_collision()
