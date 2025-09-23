@@ -6,7 +6,7 @@ to avoid code duplication and improve maintainability.
 """
 
 from typing import Dict, Tuple, Optional
-from ..entity_classes.entity_types import EntityType
+from ..constants.entity_types import EntityType
 
 
 def is_switch_activated_authoritative(switch_id: str, level_data, switch_states: Dict) -> bool:

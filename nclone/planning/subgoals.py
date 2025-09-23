@@ -7,7 +7,7 @@ reachability analysis systems for strategic level completion planning.
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Tuple, List, Optional
 
 from nclone.constants.entity_types import EntityType
@@ -34,6 +34,13 @@ class Subgoal(ABC):
     priority: float  # Strategic priority for subgoal selection (0.0-1.0)
     estimated_time: float  # Estimated completion time in seconds
     success_probability: float  # Likelihood of successful completion (0.0-1.0)
+    
+    # Enhanced fields from graph/subgoal_types.py for better integration
+    goal_type: str = ""  # 'locked_door_switch', 'trap_door_switch', 'exit_switch', 'exit'
+    position: Optional[Tuple[int, int]] = None  # (sub_row, sub_col) for graph integration
+    node_idx: Optional[int] = None  # Graph node index for pathfinding
+    dependencies: List[str] = field(default_factory=list)  # List of goal_types this depends on
+    unlocks: List[str] = field(default_factory=list)  # List of goal_types this unlocks
 
     @abstractmethod
     def get_target_position(self) -> Tuple[float, float]:
@@ -57,9 +64,9 @@ class Subgoal(ABC):
 class NavigationSubgoal(Subgoal):
     """Navigate to a specific position."""
 
-    target_position: Tuple[float, float]
-    target_type: str  # 'exit_door', 'exit_switch', 'door_switch', etc.
-    distance: float
+    target_position: Tuple[float, float] = (0.0, 0.0)
+    target_type: str = "navigation"  # 'exit_door', 'exit_switch', 'door_switch', etc.
+    distance: float = 0.0
 
     def get_target_position(self) -> Tuple[float, float]:
         return self.target_position
@@ -88,10 +95,10 @@ class NavigationSubgoal(Subgoal):
 class SwitchActivationSubgoal(Subgoal):
     """Activate a specific switch."""
 
-    switch_id: str
-    switch_position: Tuple[float, float]
-    switch_type: str
-    reachability_score: float
+    switch_id: str = ""
+    switch_position: Tuple[float, float] = (0.0, 0.0)
+    switch_type: str = "switch"
+    reachability_score: float = 0.0
 
     def get_target_position(self) -> Tuple[float, float]:
         return self.switch_position
@@ -194,3 +201,37 @@ class CompletionStrategy:
             )
 
         return None
+
+
+@dataclass
+class SubgoalPlan:
+    """
+    Complete plan with ordered subgoals and execution strategy.
+    
+    Unified class combining features from both planning and graph approaches
+    for comprehensive subgoal planning with execution tracking.
+    """
+    subgoals: List[Subgoal]
+    execution_order: List[int]  # Indices into subgoals list
+    total_estimated_cost: float
+    description: str = ""
+    confidence: float = 0.0
+    
+    def get_next_subgoal(self) -> Optional[Subgoal]:
+        """Get the next subgoal to execute."""
+        if self.execution_order:
+            next_idx = self.execution_order[0]
+            return self.subgoals[next_idx] if 0 <= next_idx < len(self.subgoals) else None
+        return None
+    
+    def mark_completed(self, subgoal_idx: int):
+        """Mark a subgoal as completed and remove from execution order."""
+        if subgoal_idx in self.execution_order:
+            self.execution_order.remove(subgoal_idx)
+    
+    def get_progress(self) -> float:
+        """Get completion progress as a percentage (0.0 to 1.0)."""
+        if not self.subgoals:
+            return 1.0
+        completed = len(self.subgoals) - len(self.execution_order)
+        return completed / len(self.subgoals)

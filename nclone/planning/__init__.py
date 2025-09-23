@@ -11,6 +11,7 @@ from .subgoals import (
     SwitchActivationSubgoal,
     CompletionStep,
     CompletionStrategy,
+    SubgoalPlan,
 )
 
 from .completion_planner import LevelCompletionPlanner
@@ -23,6 +24,7 @@ __all__ = [
     "SwitchActivationSubgoal",
     "CompletionStep",
     "CompletionStrategy",
+    "SubgoalPlan",
     "LevelCompletionPlanner",
     "PathAnalyzer",
     "DependencyAnalyzer",
