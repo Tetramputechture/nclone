@@ -61,61 +61,57 @@ class Subgoal(ABC):
 
 
 @dataclass
-class NavigationSubgoal(Subgoal):
-    """Navigate to a specific position."""
+class EntityInteractionSubgoal(Subgoal):
+    """Unified subgoal for all NPP entity interactions.
+    
+    This replaces both NavigationSubgoal and SwitchActivationSubgoal with a single
+    unified approach that handles all NPP objectives as entity interactions.
+    
+    Core NPP objectives:
+    - exit_switch: Activate switch that opens exit door
+    - exit_door: Touch exit door to complete level  
+    - locked_switch: Activate switch that opens locked doors
+    """
 
-    target_position: Tuple[float, float] = (0.0, 0.0)
-    target_type: str = "navigation"  # 'exit_door', 'exit_switch', 'door_switch', etc.
+    # Entity-specific fields
+    entity_id: str = ""
+    entity_position: Tuple[float, float] = (0.0, 0.0)
+    entity_type: str = ""  # "exit_switch", "exit_door", "locked_switch"
+    interaction_type: str = ""  # "activate", "complete"
+    reachability_score: float = 0.0
     distance: float = 0.0
 
     def get_target_position(self) -> Tuple[float, float]:
-        return self.target_position
+        return self.entity_position
 
     def is_completed(
         self, ninja_pos: Tuple[float, float], level_data, switch_states: Dict
     ) -> bool:
-        # Check if ninja is within interaction range of target
-        distance = math.sqrt(
-            (ninja_pos[0] - self.target_position[0]) ** 2
-            + (ninja_pos[1] - self.target_position[1]) ** 2
-        )
-        return distance <= 24.0  # One tile distance
+        if self.interaction_type == "activate":
+            # For switches, check if they are activated
+            return self._is_switch_activated_authoritative(
+                self.entity_id, level_data, switch_states
+            )
+        elif self.interaction_type == "complete":
+            # For exit doors, check if ninja is within interaction range
+            distance = math.sqrt(
+                (ninja_pos[0] - self.entity_position[0]) ** 2
+                + (ninja_pos[1] - self.entity_position[1]) ** 2
+            )
+            return distance <= 24.0  # One tile distance
+        else:
+            # Default proximity check for other interaction types
+            distance = math.sqrt(
+                (ninja_pos[0] - self.entity_position[0]) ** 2
+                + (ninja_pos[1] - self.entity_position[1]) ** 2
+            )
+            return distance <= 24.0
 
     def get_reward_shaping(self, ninja_pos: Tuple[float, float]) -> float:
-        # Reward for getting closer to target
+        # Base proximity reward
         distance = math.sqrt(
-            (ninja_pos[0] - self.target_position[0]) ** 2
-            + (ninja_pos[1] - self.target_position[1]) ** 2
-        )
-        max_distance = 500.0  # Normalize by reasonable max distance
-        return (max_distance - distance) / max_distance
-
-
-@dataclass
-class SwitchActivationSubgoal(Subgoal):
-    """Activate a specific switch."""
-
-    switch_id: str = ""
-    switch_position: Tuple[float, float] = (0.0, 0.0)
-    switch_type: str = "switch"
-    reachability_score: float = 0.0
-
-    def get_target_position(self) -> Tuple[float, float]:
-        return self.switch_position
-
-    def is_completed(
-        self, ninja_pos: Tuple[float, float], level_data, switch_states: Dict
-    ) -> bool:
-        # Use authoritative simulation data first, fall back to passed states
-        return self._is_switch_activated_authoritative(
-            self.switch_id, level_data, switch_states
-        )
-
-    def get_reward_shaping(self, ninja_pos: Tuple[float, float]) -> float:
-        # Reward for getting closer to switch
-        distance = math.sqrt(
-            (ninja_pos[0] - self.switch_position[0]) ** 2
-            + (ninja_pos[1] - self.switch_position[1]) ** 2
+            (ninja_pos[0] - self.entity_position[0]) ** 2
+            + (ninja_pos[1] - self.entity_position[1]) ** 2
         )
         max_distance = 500.0
         proximity_reward = (max_distance - distance) / max_distance
@@ -123,7 +119,16 @@ class SwitchActivationSubgoal(Subgoal):
         # Bonus for high reachability score
         reachability_bonus = self.reachability_score * 0.5
 
-        return proximity_reward + reachability_bonus
+        # Entity type specific bonuses
+        type_bonus = 0.0
+        if self.entity_type == "exit_door":
+            type_bonus = 0.3  # Higher reward for exit doors
+        elif self.entity_type == "exit_switch":
+            type_bonus = 0.2  # Medium reward for exit switches
+        elif self.entity_type == "locked_switch":
+            type_bonus = 0.1  # Lower reward for locked switches
+
+        return min(1.0, proximity_reward + reachability_bonus + type_bonus)
 
     def _is_switch_activated_authoritative(
         self, switch_id: str, level_data, switch_states: Dict
@@ -235,3 +240,52 @@ class SubgoalPlan:
             return 1.0
         completed = len(self.subgoals) - len(self.execution_order)
         return completed / len(self.subgoals)
+
+
+# Backward compatibility classes for deprecated subgoal types
+# These will be removed in a future version
+
+@dataclass
+class NavigationSubgoal(EntityInteractionSubgoal):
+    """Backward compatibility wrapper for NavigationSubgoal."""
+    
+    def __init__(self, priority: float, estimated_time: float, success_probability: float,
+                 target_position: Tuple[float, float] = (0.0, 0.0),
+                 target_type: str = "navigation", distance: float = 0.0, **kwargs):
+        super().__init__(
+            priority=priority,
+            estimated_time=estimated_time,
+            success_probability=success_probability,
+            entity_position=target_position,
+            entity_type=target_type,
+            interaction_type="complete" if target_type == "exit_door" else "activate",
+            distance=distance,
+            **kwargs
+        )
+        # Store original attributes for backward compatibility
+        self.target_position = target_position
+        self.target_type = target_type
+
+
+@dataclass  
+class SwitchActivationSubgoal(EntityInteractionSubgoal):
+    """Backward compatibility wrapper for SwitchActivationSubgoal."""
+    
+    def __init__(self, priority: float, estimated_time: float, success_probability: float,
+                 switch_id: str = "", switch_position: Tuple[float, float] = (0.0, 0.0),
+                 switch_type: str = "switch", reachability_score: float = 0.0, **kwargs):
+        super().__init__(
+            priority=priority,
+            estimated_time=estimated_time,
+            success_probability=success_probability,
+            entity_id=switch_id,
+            entity_position=switch_position,
+            entity_type=switch_type,
+            interaction_type="activate",
+            reachability_score=reachability_score,
+            **kwargs
+        )
+        # Store original attributes for backward compatibility
+        self.switch_id = switch_id
+        self.switch_position = switch_position
+        self.switch_type = switch_type

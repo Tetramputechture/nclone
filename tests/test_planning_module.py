@@ -17,8 +17,9 @@ import torch
 # Import the planning components
 from nclone.planning import (
     Subgoal,
-    NavigationSubgoal,
-    SwitchActivationSubgoal,
+    EntityInteractionSubgoal,
+    NavigationSubgoal,  # Backward compatibility alias
+    SwitchActivationSubgoal,  # Backward compatibility alias
     CompletionStrategy,
     CompletionStep,
     LevelCompletionPlanner,
@@ -205,23 +206,20 @@ class TestLevelCompletionPlanner(unittest.TestCase):
 
     def test_objective_reachability_check(self):
         """Test objective reachability using neural features."""
-        # Mock reachability features with positive values
-        reachability_features = torch.tensor(
-            [0.5, 0.3, 0.7, 0.2, 0.1, 0.0, 0.0, 0.0] + [0.0] * 56
-        )
+        # Mock reachability result with reachable positions
+        mock_reachability_result = {
+            "reachable_positions": {(200, 200), (150, 150), (100, 100)}
+        }
 
         # Test reachability check
         is_reachable = self.planner._is_objective_reachable(
-            (200, 200), reachability_features
+            (200, 200), mock_reachability_result
         )
         self.assertTrue(is_reachable)
 
-        # Test with low reachability features
-        low_features = torch.tensor(
-            [0.05, 0.02, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * 56
-        )
+        # Test with unreachable position
         is_not_reachable = self.planner._is_objective_reachable(
-            (200, 200), low_features
+            (999, 999), mock_reachability_result
         )
         self.assertFalse(is_not_reachable)
 

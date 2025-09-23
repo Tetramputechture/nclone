@@ -7,8 +7,9 @@ the nclone physics simulation and reachability analysis systems.
 
 from .subgoals import (
     Subgoal,
-    NavigationSubgoal,
-    SwitchActivationSubgoal,
+    EntityInteractionSubgoal,
+    NavigationSubgoal,  # Backward compatibility alias
+    SwitchActivationSubgoal,  # Backward compatibility alias
     CompletionStep,
     CompletionStrategy,
     SubgoalPlan,
@@ -20,8 +21,9 @@ from .prioritizer import SubgoalPrioritizer
 
 __all__ = [
     "Subgoal",
-    "NavigationSubgoal",
-    "SwitchActivationSubgoal",
+    "EntityInteractionSubgoal",
+    "NavigationSubgoal",  # Backward compatibility alias
+    "SwitchActivationSubgoal",  # Backward compatibility alias
     "CompletionStep",
     "CompletionStrategy",
     "SubgoalPlan",
