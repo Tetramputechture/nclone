@@ -277,13 +277,15 @@ class DebugOverlayRenderer:
             surface.blit(grid_surface, (0, 0))
         
         # Draw subgoal visualization if enabled
-        if self.subgoal_debug_enabled and self.current_subgoals:
+        if self.subgoal_debug_enabled:
             ninja_pos = self._get_ninja_position()
+            
+            # Render even if no subgoals to show reachability areas
             surface = self.subgoal_visualizer.render_subgoals_overlay(
                 surface, 
-                self.current_subgoals,
+                self.current_subgoals if self.current_subgoals else [],
                 ninja_pos,
-                self.current_reachable_positions,
+                self.current_reachable_positions if self.current_reachable_positions else set(),
                 self.current_subgoal_plan,
                 self.tile_x_offset,
                 self.tile_y_offset,
@@ -407,13 +409,28 @@ class DebugOverlayRenderer:
         # Get level data and entities from sim
         level_data = None
         entities = None
+        
+        # Try to get tile data from simulator
         if hasattr(self.sim, 'level_data'):
             level_data = self.sim.level_data
         elif hasattr(self.sim, 'tiles'):
             level_data = self.sim.tiles
+        elif hasattr(self.sim, 'tile_dic'):
+            # Convert tile_dic to numpy array for visualization
+            level_data = self._convert_tile_dic_to_array()
             
+        # Try to get entities from simulator
         if hasattr(self.sim, 'entities'):
             entities = self.sim.entities
+        elif hasattr(self.sim, 'entity_list'):
+            entities = self.sim.entity_list
+        elif hasattr(self.sim, 'entity_dic'):
+            # Flatten entity_dic to list of entities
+            entities = []
+            for entity_list in self.sim.entity_dic.values():
+                entities.extend(entity_list)
+            
+
         
         return self.subgoal_visualizer.export_subgoal_visualization(
             subgoals,
@@ -426,6 +443,29 @@ class DebugOverlayRenderer:
             entities=entities
         )
     
+    def _convert_tile_dic_to_array(self):
+        """Convert simulator's tile_dic to numpy array for visualization."""
+        try:
+            import numpy as np
+            from .constants.physics_constants import TILE_PIXEL_SIZE
+            
+            # The simulator uses a 44x25 tile grid (including borders)
+            width_tiles = 44
+            height_tiles = 25
+            
+            tiles = np.zeros((height_tiles, width_tiles), dtype=int)
+            
+            # Fill array from tile_dic
+            for (x, y), tile_value in self.sim.tile_dic.items():
+                if 0 <= x < width_tiles and 0 <= y < height_tiles:
+                    tiles[y, x] = tile_value
+            return tiles
+        except Exception as e:
+            print(f"Error converting tile_dic to array: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def update_subgoal_visualization_config(self, **kwargs):
         """Update subgoal visualization configuration."""
         self.subgoal_visualizer.update_config(**kwargs)
