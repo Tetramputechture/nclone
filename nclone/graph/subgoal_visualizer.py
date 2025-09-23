@@ -324,7 +324,11 @@ class SubgoalVisualizer:
         # Use actual entity position if available (more accurate)
         if hasattr(subgoal, 'entity_position') and subgoal.entity_position is not None:
             x = subgoal.entity_position[0] * adjust + tile_x_offset
-            y = subgoal.entity_position[1] * adjust + tile_y_offset
+            # Use same Y-coordinate system as ninja position for consistency
+            if surface_height is not None:
+                y = surface_height - (subgoal.entity_position[1] * adjust + tile_y_offset)
+            else:
+                y = subgoal.entity_position[1] * adjust + tile_y_offset
         else:
             # Fallback to sub-grid position
             sub_row, sub_col = subgoal.position
@@ -333,15 +337,16 @@ class SubgoalVisualizer:
                 + SUB_CELL_SIZE * adjust // 2
                 + tile_x_offset
             )
-            y = (
+            y_raw = (
                 sub_row * SUB_CELL_SIZE * adjust
                 + SUB_CELL_SIZE * adjust // 2
                 + tile_y_offset
             )
-        
-        # Fix Y-axis inversion if surface height is provided
-        if surface_height is not None:
-            y = surface_height - y
+            # Apply same Y-coordinate system as ninja position
+            if surface_height is not None:
+                y = surface_height - y_raw
+            else:
+                y = y_raw
             
         return (int(x), int(y))
 
@@ -468,7 +473,8 @@ class SubgoalVisualizer:
 
             # Render entities if available
             if entities is not None:
-                self._render_entities(export_surface, entities, level_dimensions)
+                self._render_entities(export_surface, entities, level_dimensions, 
+                                    tile_x_offset=0, tile_y_offset=0, adjust=1.0)
 
             # Render subgoals overlay
             self.render_subgoals_overlay(
@@ -529,7 +535,7 @@ class SubgoalVisualizer:
             import traceback
             traceback.print_exc()
 
-    def _render_entities(self, surface, entities, level_dimensions):
+    def _render_entities(self, surface, entities, level_dimensions, tile_x_offset=0, tile_y_offset=0, adjust=1.0):
         """Render entities on the level."""
         try:
             from ..constants.entity_types import EntityType
@@ -581,10 +587,10 @@ class SubgoalVisualizer:
                 # Get entity color
                 color = entity_colors.get(entity_type, (255, 255, 255, 255))  # Default white
                 
-                # Apply Y-axis correction for entities (same as ninja position)
+                # Apply same coordinate system as ninja position for consistency
                 # Game coordinates have Y=0 at bottom, pygame has Y=0 at top
-                screen_x = int(x)
-                screen_y = int(level_dimensions[1] * 24 - y)  # Flip Y coordinate
+                screen_x = int(x * adjust + tile_x_offset)
+                screen_y = int(surface.get_height() - (y * adjust + tile_y_offset))
                 center = (screen_x, screen_y)
                 radius = 8
                 pygame.draw.circle(surface, color, center, radius)
