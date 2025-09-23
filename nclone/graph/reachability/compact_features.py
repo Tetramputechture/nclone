@@ -412,8 +412,9 @@ class CompactReachabilityFeatures:
         meta_features[2] = self._estimate_level_complexity(level_data, entities)
 
         # Reachable area ratio
-        if hasattr(level_data, "shape"):
-            total_positions = level_data.shape[0] * level_data.shape[1]
+        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        if hasattr(tiles, "shape"):
+            total_positions = tiles.shape[0] * tiles.shape[1]
         else:
             total_positions = getattr(level_data, "width", 100) * getattr(
                 level_data, "height", 100
@@ -448,8 +449,9 @@ class CompactReachabilityFeatures:
 
     def _get_level_diagonal(self, level_data: Any) -> float:
         """Get level diagonal for distance normalization."""
-        if hasattr(level_data, "shape"):
-            height, width = level_data.shape
+        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        if hasattr(tiles, "shape"):
+            height, width = tiles.shape
         else:
             width = getattr(level_data, "width", 100)
             height = getattr(level_data, "height", 100)
@@ -656,8 +658,9 @@ class CompactReachabilityFeatures:
         self, level_data: Any, ninja_position: Tuple[float, float]
     ) -> List[Dict[str, Any]]:
         """Define 8 directional sectors around ninja position."""
-        if hasattr(level_data, "shape"):
-            height, width = level_data.shape
+        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        if hasattr(tiles, "shape"):
+            height, width = tiles.shape
         else:
             width = getattr(level_data, "width", 100)
             height = getattr(level_data, "height", 100)
@@ -696,8 +699,9 @@ class CompactReachabilityFeatures:
         """Get all positions within a directional sector using proper angular calculations."""
         positions = set()
 
-        if hasattr(level_data, "shape"):
-            height, width = level_data.shape
+        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        if hasattr(tiles, "shape"):
+            height, width = tiles.shape
         else:
             width = getattr(level_data, "width", 100)
             height = getattr(level_data, "height", 100)
@@ -901,12 +905,13 @@ class CompactReachabilityFeatures:
                 return False
 
             # Check if current position is not solid
-            if level_data[tile_y, tile_x] != 0:  # 0 = empty space
+            tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+            if tiles[tile_y, tile_x] != 0:  # 0 = empty space
                 return False
 
             # Check if there's ground support below
             if tile_y + 1 < height:
-                return level_data[tile_y + 1, tile_x] != 0  # Has ground below
+                return tiles[tile_y + 1, tile_x] != 0  # Has ground below
 
         return True  # Default to walkable if we can't determine
 
@@ -1037,10 +1042,11 @@ class CompactReachabilityFeatures:
         tile_x = int(x // 24)
         tile_y = int(y // 24)
 
-        if hasattr(level_data, "shape"):
-            height, width = level_data.shape
+        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        if hasattr(tiles, "shape"):
+            height, width = tiles.shape
             if 0 <= tile_x < width and 0 <= tile_y < height:
-                return level_data[tile_y, tile_x] != 0
+                return tiles[tile_y, tile_x] != 0
 
         return False
 
@@ -1119,8 +1125,9 @@ class CompactReachabilityFeatures:
         complexity += min(hazard_count / 15.0, 0.2)  # Max 0.2 from hazards
 
         # Factor 4: Level size
-        if hasattr(level_data, "shape"):
-            level_size = level_data.shape[0] * level_data.shape[1]
+        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        if hasattr(tiles, "shape"):
+            level_size = tiles.shape[0] * tiles.shape[1]
         else:
             level_size = getattr(level_data, "width", 100) * getattr(
                 level_data, "height", 100
@@ -1160,8 +1167,9 @@ class CompactReachabilityFeatures:
             ]
         )
 
-        if hasattr(level_data, "shape"):
-            level_area = level_data.shape[0] * level_data.shape[1]
+        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        if hasattr(tiles, "shape"):
+            level_area = tiles.shape[0] * tiles.shape[1]
         else:
             level_area = getattr(level_data, "width", 100) * getattr(
                 level_data, "height", 100

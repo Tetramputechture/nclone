@@ -1,7 +1,7 @@
 import cairo
 import pygame
-import math
 from . import render_utils
+from .shared_tile_renderer import group_tiles_by_type, render_tile_group_to_cairo
 
 class TileRenderer:
     def __init__(self, sim, screen, adjust):
@@ -59,31 +59,11 @@ class TileRenderer:
             else:
                 self.render_context.set_source_rgb(*render_utils.hex2float(tile_color))
 
-            tile_groups = {}
-            for coords, tile_val in self.sim.tile_dic.items():
-                if tile_val != 0:
-                    if tile_val not in tile_groups:
-                        tile_groups[tile_val] = []
-                    tile_groups[tile_val].append(coords)
+            # Use shared tile rendering logic
+            tile_groups = group_tiles_by_type(self.sim.tile_dic)
             
             for tile_type, coords_list in tile_groups.items():
-                if tile_type == 1 or tile_type > 33:
-                    for x, y in coords_list:
-                        self.render_context.rectangle(x * tilesize, y * tilesize,
-                                                      tilesize, tilesize)
-                    self.render_context.fill()
-                elif tile_type < 6:
-                    dx = tilesize / 2 if tile_type == 3 else 0
-                    dy = tilesize / 2 if tile_type == 4 else 0
-                    w = tilesize if tile_type % 2 == 0 else tilesize / 2
-                    h = tilesize / 2 if tile_type % 2 == 0 else tilesize
-                    for x, y in coords_list:
-                        self.render_context.rectangle(x * tilesize + dx,
-                                                      y * tilesize + dy, w, h)
-                    self.render_context.fill() # Fill per group
-                else:
-                    for x, y in coords_list: # Complex tiles fill individually
-                        self._draw_complex_tile(tile_type, x, y, tilesize)
+                render_tile_group_to_cairo(self.render_context, tile_type, coords_list, tilesize)
 
             buffer = self.render_surface.get_data()
             self.cached_tile_pygame_surface = pygame.image.frombuffer(
@@ -95,94 +75,3 @@ class TileRenderer:
 
         return self.cached_tile_pygame_surface
 
-    def _draw_complex_tile(self, tile_type, x, y, tilesize):
-        """Draw a complex tile shape."""
-        if tile_type < 10:
-            dx1 = 0
-            dy1 = tilesize if tile_type == 8 else 0
-            dx2 = 0 if tile_type == 9 else tilesize
-            dy2 = tilesize if tile_type == 9 else 0
-            dx3 = 0 if tile_type == 6 else tilesize
-            dy3 = tilesize
-            self.render_context.move_to(x * tilesize + dx1, y * tilesize + dy1)
-            self.render_context.line_to(x * tilesize + dx2, y * tilesize + dy2)
-            self.render_context.line_to(x * tilesize + dx3, y * tilesize + dy3)
-            self.render_context.close_path()
-            self.render_context.fill()
-        elif tile_type < 14:
-            dx = tilesize if (tile_type == 11 or tile_type == 12) else 0
-            dy = tilesize if (tile_type == 12 or tile_type == 13) else 0
-            a1 = (math.pi / 2) * (tile_type - 10)
-            a2 = (math.pi / 2) * (tile_type - 9)
-            self.render_context.move_to(x * tilesize + dx, y * tilesize + dy)
-            self.render_context.arc(
-                x * tilesize + dx, y * tilesize + dy, tilesize, a1, a2)
-            self.render_context.close_path()
-            self.render_context.fill()
-        elif tile_type < 18:
-            dx1 = tilesize if (tile_type == 15 or tile_type == 16) else 0
-            dy1 = tilesize if (tile_type == 16 or tile_type == 17) else 0
-            dx2 = tilesize if (tile_type == 14 or tile_type == 17) else 0
-            dy2 = tilesize if (tile_type == 14 or tile_type == 15) else 0
-            a1 = math.pi + (math.pi / 2) * (tile_type - 10)
-            a2 = math.pi + (math.pi / 2) * (tile_type - 9)
-            self.render_context.move_to(x * tilesize + dx1, y * tilesize + dy1)
-            self.render_context.arc(
-                x * tilesize + dx2, y * tilesize + dy2, tilesize, a1, a2)
-            self.render_context.close_path()
-            self.render_context.fill()
-        elif tile_type < 22:
-            dx1 = 0
-            dy1 = tilesize if (tile_type == 20 or tile_type == 21) else 0
-            dx2 = tilesize
-            dy2 = tilesize if (tile_type == 20 or tile_type == 21) else 0
-            dx3 = tilesize if (tile_type == 19 or tile_type == 20) else 0
-            dy3 = tilesize / 2
-            self.render_context.move_to(x * tilesize + dx1, y * tilesize + dy1)
-            self.render_context.line_to(x * tilesize + dx2, y * tilesize + dy2)
-            self.render_context.line_to(x * tilesize + dx3, y * tilesize + dy3)
-            self.render_context.close_path()
-            self.render_context.fill()
-        elif tile_type < 26:
-            dx1 = 0
-            dy1 = tilesize / 2 if (tile_type == 23 or tile_type == 24) else 0
-            dx2 = 0 if tile_type == 23 else tilesize
-            dy2 = tilesize / 2 if tile_type == 25 else 0
-            dx3 = tilesize
-            dy3 = (tilesize / 2 if tile_type ==
-                   22 else 0) if tile_type < 24 else tilesize
-            dx4 = tilesize if tile_type == 23 else 0
-            dy4 = tilesize
-            self.render_context.move_to(x * tilesize + dx1, y * tilesize + dy1)
-            self.render_context.line_to(x * tilesize + dx2, y * tilesize + dy2)
-            self.render_context.line_to(x * tilesize + dx3, y * tilesize + dy3)
-            self.render_context.line_to(x * tilesize + dx4, y * tilesize + dy4)
-            self.render_context.close_path()
-            self.render_context.fill()
-        elif tile_type < 30:
-            dx1 = tilesize / 2
-            dy1 = tilesize if (tile_type == 28 or tile_type == 29) else 0
-            dx2 = tilesize if (tile_type == 27 or tile_type == 28) else 0
-            dy2 = 0
-            dx3 = tilesize if (tile_type == 27 or tile_type == 28) else 0
-            dy3 = tilesize
-            self.render_context.move_to(x * tilesize + dx1, y * tilesize + dy1)
-            self.render_context.line_to(x * tilesize + dx2, y * tilesize + dy2)
-            self.render_context.line_to(x * tilesize + dx3, y * tilesize + dy3)
-            self.render_context.close_path()
-            self.render_context.fill()
-        elif tile_type < 34:
-            dx1 = tilesize / 2
-            dy1 = tilesize if (tile_type == 30 or tile_type == 31) else 0
-            dx2 = tilesize if (tile_type == 31 or tile_type == 33) else 0
-            dy2 = tilesize
-            dx3 = tilesize if (tile_type == 31 or tile_type == 32) else 0
-            dy3 = tilesize if (tile_type == 32 or tile_type == 33) else 0
-            dx4 = tilesize if (tile_type == 30 or tile_type == 32) else 0
-            dy4 = 0
-            self.render_context.move_to(x * tilesize + dx1, y * tilesize + dy1)
-            self.render_context.line_to(x * tilesize + dx2, y * tilesize + dy2)
-            self.render_context.line_to(x * tilesize + dx3, y * tilesize + dy3)
-            self.render_context.line_to(x * tilesize + dx4, y * tilesize + dy4)
-            self.render_context.close_path()
-            self.render_context.fill() 

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .common import GraphData
-from .level_data import LevelData, ensure_level_data
+from .level_data import LevelData, PlayerState, ensure_level_data
 from .edge_building import EdgeBuilder, create_simplified_graph_data
 # from .reachability.tiered_system import TieredReachabilitySystem  # Disabled for simplified approach
 
@@ -79,48 +79,39 @@ class HierarchicalGraphBuilder:
         # self.edge_builder.set_reachability_system(self.reachability_system)
 
     def build_graph(
-        self, level_data, entities: List, ninja_pos: Tuple[int, int]
+        self, level_data, entities: List = None, ninja_pos: Tuple[int, int] = None
     ) -> HierarchicalGraphData:
         """
         Build simplified hierarchical graph for strategic RL.
 
         Args:
-            level_data: Level tile data (dict or LevelData)
-            entities: List of game entities
-            ninja_pos: Current ninja position
+            level_data: Complete level data (LevelData object preferred)
+            entities: Optional entities list (for backward compatibility)
+            ninja_pos: Optional ninja position (for backward compatibility)
 
         Returns:
             HierarchicalGraphData with multi-resolution graphs
         """
-        # Ensure level_data is in correct format
-        level_data = ensure_level_data(level_data)
+        # Consolidate all data into LevelData object
+        level_data = ensure_level_data(level_data, ninja_pos, entities)
 
         if self.debug:
             print("Building simplified hierarchical graph...")
             print(f"  Level size: {level_data.width}x{level_data.height}")
-            print(f"  Entities: {len(entities)}")
-            print(f"  Ninja position: {ninja_pos}")
+            print(f"  Entities: {len(level_data.entities)}")
+            if level_data.player:
+                print(f"  Player position: ({level_data.player.x:.1f}, {level_data.player.y:.1f})")
 
-        # Build graphs at different resolutions
-        fine_graph = self._build_resolution_graph(
-            level_data, entities, ninja_pos, ResolutionLevel.FINE
-        )
-        medium_graph = self._build_resolution_graph(
-            level_data, entities, ninja_pos, ResolutionLevel.MEDIUM
-        )
-        coarse_graph = self._build_resolution_graph(
-            level_data, entities, ninja_pos, ResolutionLevel.COARSE
-        )
+        # Build graphs at different resolutions using consolidated data
+        fine_graph = self._build_resolution_graph(level_data, ResolutionLevel.FINE)
+        medium_graph = self._build_resolution_graph(level_data, ResolutionLevel.MEDIUM)
+        coarse_graph = self._build_resolution_graph(level_data, ResolutionLevel.COARSE)
 
-        # Extract reachability information
-        reachability_info = self._extract_reachability_info(
-            level_data, entities, ninja_pos
-        )
+        # Extract reachability information using consolidated data
+        reachability_info = self._extract_reachability_info(level_data)
 
-        # Extract strategic features
-        strategic_features = self._extract_strategic_features(
-            level_data, entities, ninja_pos
-        )
+        # Extract strategic features using consolidated data
+        strategic_features = self._extract_strategic_features(level_data)
 
         result = HierarchicalGraphData(
             fine_graph=fine_graph,
@@ -144,55 +135,67 @@ class HierarchicalGraphBuilder:
         return result
 
     def _build_resolution_graph(
-        self,
-        level_data: LevelData,
-        entities: List,
-        ninja_pos: Tuple[int, int],
-        resolution: ResolutionLevel,
+        self, level_data: LevelData, resolution: ResolutionLevel
     ) -> GraphData:
-        """Build graph at specific resolution level."""
+        """Build graph at specific resolution level using consolidated data."""
 
-        # Downsample level data based on resolution
+        # Downsample level data based on resolution (includes player position)
         downsampled_level = self._downsample_level_data(level_data, resolution)
 
-        # Filter entities based on resolution
-        filtered_entities = self._filter_entities_for_resolution(entities, resolution)
-
-        # Adjust ninja position for resolution
-        adjusted_ninja_pos = self._adjust_position_for_resolution(ninja_pos, resolution)
-
-        # Build edges using simplified approach
-        edges = self.edge_builder.build_edges(
-            downsampled_level, filtered_entities, adjusted_ninja_pos
-        )
+        # Build edges using consolidated data approach
+        edges = self.edge_builder.build_edges(downsampled_level)
 
         # Convert to GraphData
-        graph_data = create_simplified_graph_data(
-            edges, downsampled_level, filtered_entities
-        )
+        graph_data = create_simplified_graph_data(edges, downsampled_level)
 
         return graph_data
 
     def _downsample_level_data(
         self, level_data: LevelData, resolution: ResolutionLevel
     ) -> LevelData:
-        """Downsample level data to target resolution."""
+        """Downsample level data to target resolution, preserving player state."""
+        
+        # Filter entities based on resolution
+        filtered_entities = self._filter_entities_for_resolution(level_data.entities, resolution)
+        
+        # Adjust player position for resolution
+        adjusted_player = None
+        if level_data.player:
+            adjusted_pos = self._adjust_position_for_resolution(level_data.player.position, resolution)
+            adjusted_player = PlayerState(
+                position=adjusted_pos,
+                velocity=level_data.player.velocity,
+                on_ground=level_data.player.on_ground,
+                facing_right=level_data.player.facing_right,
+                health=level_data.player.health,
+                frame=level_data.player.frame
+            )
+        
         if resolution == ResolutionLevel.FINE:
             # 6px resolution - higher detail than tile level
             scale_factor = 4  # 24px / 6px = 4
-            new_width = level_data.width * scale_factor
-            new_height = level_data.height * scale_factor
-
-            # Upsample tiles array
             upsampled_tiles = np.repeat(
                 np.repeat(level_data.tiles, scale_factor, axis=0), scale_factor, axis=1
             )
-
-            return LevelData(tiles=upsampled_tiles, entities=[])
+            return LevelData(
+                tiles=upsampled_tiles, 
+                entities=filtered_entities,
+                player=adjusted_player,
+                level_id=level_data.level_id,
+                metadata=level_data.metadata,
+                switch_states=level_data.switch_states
+            )
 
         elif resolution == ResolutionLevel.MEDIUM:
-            # 24px resolution - tile level (no change)
-            return level_data
+            # 24px resolution - tile level (no change needed for tiles)
+            return LevelData(
+                tiles=level_data.tiles,
+                entities=filtered_entities,
+                player=adjusted_player,
+                level_id=level_data.level_id,
+                metadata=level_data.metadata,
+                switch_states=level_data.switch_states
+            )
 
         elif resolution == ResolutionLevel.COARSE:
             # 96px resolution - 4x4 tile blocks
@@ -214,7 +217,14 @@ class HierarchicalGraphBuilder:
                     # Take max value (wall takes precedence over empty)
                     downsampled_tiles[row, col] = np.max(block)
 
-            return LevelData(tiles=downsampled_tiles, entities=[])
+            return LevelData(
+                tiles=downsampled_tiles,
+                entities=filtered_entities,
+                player=adjusted_player,
+                level_id=level_data.level_id,
+                metadata=level_data.metadata,
+                switch_states=level_data.switch_states
+            )
 
     def _filter_entities_for_resolution(
         self, entities: List, resolution: ResolutionLevel
@@ -243,8 +253,8 @@ class HierarchicalGraphBuilder:
             ]
 
     def _adjust_position_for_resolution(
-        self, pos: Tuple[int, int], resolution: ResolutionLevel
-    ) -> Tuple[int, int]:
+        self, pos: Tuple[float, float], resolution: ResolutionLevel
+    ) -> Tuple[float, float]:
         """Adjust position coordinates for target resolution."""
         x, y = pos
 
@@ -258,21 +268,30 @@ class HierarchicalGraphBuilder:
 
         elif resolution == ResolutionLevel.COARSE:
             # 96px resolution - decrease precision
-            return (x // 4, y // 4)  # 24px -> 96px
+            return (x / 4, y / 4)  # 24px -> 96px
 
-    def _extract_reachability_info(
-        self, level_data: LevelData, entities: List, ninja_pos: Tuple[int, int]
-    ) -> Dict:
+    def _extract_reachability_info(self, level_data: LevelData) -> Dict:
         """Extract reachability information for strategic planning."""
-        # Get reachability analysis from tiered system
+        # Simplified reachability info since tiered system is disabled
+        if self.reachability_system is None:
+            return {
+                "tier1_reachable_count": 0,
+                "tier2_reachable_count": 0,
+                "tier3_reachable_count": 0,
+                "total_reachable_area": 0.0,
+                "connectivity_score": 0.0,
+            }
+        
+        # Get reachability analysis from tiered system (if enabled)
+        ninja_pos = level_data.player.position if level_data.player else (0, 0)
         tier1_result = self.reachability_system.tier1_system.quick_check(
-            level_data, entities, ninja_pos
+            level_data, level_data.entities, ninja_pos
         )
         tier2_result = self.reachability_system.tier2_system.quick_check(
-            level_data, entities, ninja_pos
+            level_data, level_data.entities, ninja_pos
         )
         tier3_result = self.reachability_system.tier3_system.quick_check(
-            level_data, entities, ninja_pos
+            level_data, level_data.entities, ninja_pos
         )
 
         return {
@@ -287,27 +306,33 @@ class HierarchicalGraphBuilder:
             ),
         }
 
-    def _extract_strategic_features(
-        self, level_data: LevelData, entities: List, ninja_pos: Tuple[int, int]
-    ) -> Dict:
-        """Extract strategic features for RL decision making."""
+    def _extract_strategic_features(self, level_data: LevelData) -> Dict:
+        """Extract strategic features for RL decision making using consolidated data."""
         features = {}
+        
+        # Get player position
+        player_pos = level_data.player.position if level_data.player else (0, 0)
 
-        # Entity counts by type
+        # Entity counts by type using EntityType constants
+        from ..constants.entity_types import EntityType
         entity_counts = {}
-        for entity in entities:
-            entity_type = type(entity).__name__.lower()
+        for entity in level_data.entities:
+            entity_type = entity.get("type", 0)
             entity_counts[entity_type] = entity_counts.get(entity_type, 0) + 1
 
         features["entity_counts"] = entity_counts
 
         # Distance to key entities
         distances = {}
-        for entity in entities:
-            entity_type = type(entity).__name__.lower()
-            if entity_type in ["exit", "switch"]:
+        key_entity_types = [EntityType.EXIT_DOOR, EntityType.EXIT_SWITCH, EntityType.GOLD]
+        
+        for entity in level_data.entities:
+            entity_type = entity.get("type", 0)
+            if entity_type in key_entity_types:
+                entity_x = entity.get("x", 0)
+                entity_y = entity.get("y", 0)
                 dist = np.sqrt(
-                    (entity.x - ninja_pos[0]) ** 2 + (entity.y - ninja_pos[1]) ** 2
+                    (entity_x - player_pos[0]) ** 2 + (entity_y - player_pos[1]) ** 2
                 )
                 if entity_type not in distances:
                     distances[entity_type] = []
@@ -315,14 +340,14 @@ class HierarchicalGraphBuilder:
 
         # Take minimum distance for each type
         for entity_type, dist_list in distances.items():
-            features[f"min_distance_to_{entity_type}"] = (
+            features[f"min_distance_to_type_{entity_type}"] = (
                 min(dist_list) if dist_list else float("inf")
             )
 
         # Level complexity metrics
         features["level_width"] = level_data.width
         features["level_height"] = level_data.height
-        features["total_entities"] = len(entities)
+        features["total_entities"] = len(level_data.entities)
         features["wall_density"] = np.mean(level_data.tiles > 0)  # Assuming 0 is empty
 
         return features
