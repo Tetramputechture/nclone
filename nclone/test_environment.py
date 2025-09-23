@@ -49,7 +49,7 @@ def _get_ninja_position(env):
             # If it's a single value or unexpected format, use fallback
             return (100, 100)
     elif hasattr(env, "sim") and hasattr(env.sim, "ninja"):
-        return (env.sim.ninja.x, env.sim.ninja.y)
+        return (env.sim.ninja.xpos, env.sim.ninja.ypos)
     else:
         return (100, 100)  # Fallback
 

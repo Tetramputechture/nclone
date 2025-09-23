@@ -297,9 +297,9 @@ class SubgoalVisualizer:
     ):
         """Render ninja position marker."""
         x = ninja_position[0] * adjust + tile_x_offset
-        # Fix Y-axis inversion: game coordinates have Y=0 at bottom, pygame has Y=0 at top
-        # Flip Y coordinate by subtracting from surface height
-        y = surface.get_height() - (ninja_position[1] * adjust + tile_y_offset)
+        # Use same coordinate system as normal entity renderer (no Y-flipping)
+        # Ninja coordinates are already in pygame/screen coordinate system
+        y = ninja_position[1] * adjust + tile_y_offset
 
         # Draw ninja marker
         ninja_color = (0, 255, 255, 255)  # Cyan
@@ -587,10 +587,10 @@ class SubgoalVisualizer:
                 # Get entity color
                 color = entity_colors.get(entity_type, (255, 255, 255, 255))  # Default white
                 
-                # Apply same coordinate system as ninja position for consistency
-                # Game coordinates have Y=0 at bottom, pygame has Y=0 at top
+                # Use same coordinate system as normal entity renderer (no Y-flipping)
+                # Entity coordinates are already in pygame/screen coordinate system
                 screen_x = int(x * adjust + tile_x_offset)
-                screen_y = int(surface.get_height() - (y * adjust + tile_y_offset))
+                screen_y = int(y * adjust + tile_y_offset)
                 center = (screen_x, screen_y)
                 radius = 8
                 pygame.draw.circle(surface, color, center, radius)
