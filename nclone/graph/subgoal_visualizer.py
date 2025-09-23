@@ -23,6 +23,7 @@ from enum import Enum
 from .subgoal_types import Subgoal, SubgoalPlan
 from .common import SUB_CELL_SIZE
 from ..constants.physics_constants import TILE_PIXEL_SIZE
+from ..shared_tile_renderer import SharedTileRenderer
 
 
 class SubgoalVisualizationMode(Enum):
@@ -486,40 +487,36 @@ class SubgoalVisualizer:
             return False
 
     def _render_level_background(self, surface, level_data, level_dimensions):
-        """Render level tiles as background."""
+        """Render level tiles as background using proper tile rendering."""
         try:
-            from ..constants.entity_types import EntityType
-            
-            # Get tiles array
-            if hasattr(level_data, 'tiles'):
-                tiles = level_data.tiles
-            else:
-                tiles = level_data
-            
-            # Check if tiles is valid
-            if tiles is None:
-                return
+            # Handle different level_data formats
+            if isinstance(level_data, dict):
+                # level_data is tile_dic - use shared tile renderer for pixel-perfect rendering
+                tile_surface = SharedTileRenderer.render_tiles_to_pygame_surface(
+                    level_data, surface.get_width(), surface.get_height(), tile_size=TILE_PIXEL_SIZE
+                )
+                surface.blit(tile_surface, (0, 0))
                 
-            if not hasattr(tiles, 'shape'):
-                return
-            
-            tile_count = 0
-            
-            # Render tiles - Fix Y-axis inversion
-            for y in range(tiles.shape[0]):
-                for x in range(tiles.shape[1]):
-                    tile_value = tiles[y, x]
-                    if tile_value > 0:  # Non-empty tile
-                        tile_count += 1
-                        # Convert tile coordinates to pixel coordinates
-                        pixel_x = x * TILE_PIXEL_SIZE
-                        # Fix Y-axis inversion: flip Y coordinate
-                        pixel_y = surface.get_height() - (y + 1) * TILE_PIXEL_SIZE
-                        
-                        # Draw tile as a rectangle
-                        tile_rect = pygame.Rect(pixel_x, pixel_y, TILE_PIXEL_SIZE, TILE_PIXEL_SIZE)
-                        pygame.draw.rect(surface, (100, 100, 100, 255), tile_rect)
-                        pygame.draw.rect(surface, (150, 150, 150, 255), tile_rect, 1)
+            elif hasattr(level_data, 'shape'):
+                # level_data is numpy array - fallback to simple rendering
+                tiles = level_data
+                tile_count = 0
+                
+                # Render tiles - Fix Y-axis inversion
+                for y in range(tiles.shape[0]):
+                    for x in range(tiles.shape[1]):
+                        tile_value = tiles[y, x]
+                        if tile_value > 0:  # Non-empty tile
+                            tile_count += 1
+                            # Convert tile coordinates to pixel coordinates
+                            pixel_x = x * TILE_PIXEL_SIZE
+                            # Fix Y-axis inversion: flip Y coordinate
+                            pixel_y = surface.get_height() - (y + 1) * TILE_PIXEL_SIZE
+                            
+                            # Draw tile as a rectangle
+                            tile_rect = pygame.Rect(pixel_x, pixel_y, TILE_PIXEL_SIZE, TILE_PIXEL_SIZE)
+                            pygame.draw.rect(surface, (100, 100, 100, 255), tile_rect)
+                            pygame.draw.rect(surface, (150, 150, 150, 255), tile_rect, 1)
             
         except Exception as e:
             print(f"Error rendering level background: {e}")
@@ -554,8 +551,11 @@ class SubgoalVisualizer:
                     y = entity.get('y', 0)
                 else:
                     entity_type = getattr(entity, 'type', None)
-                    # Try different position attributes
-                    if hasattr(entity, 'position'):
+                    # Use the same position attributes as entity_renderer.py
+                    if hasattr(entity, 'xpos') and hasattr(entity, 'ypos'):
+                        x = entity.xpos
+                        y = entity.ypos
+                    elif hasattr(entity, 'position'):
                         pos = entity.position
                         x, y = pos[0], pos[1] if len(pos) > 1 else (pos, 0)
                     elif hasattr(entity, 'x') and hasattr(entity, 'y'):
@@ -575,9 +575,8 @@ class SubgoalVisualizer:
                 # Get entity color
                 color = entity_colors.get(entity_type, (255, 255, 255, 255))  # Default white
                 
-                # Draw entity as a circle - Fix Y-axis inversion
-                # Game coordinates have Y=0 at bottom, pygame has Y=0 at top
-                center = (int(x), int(surface.get_height() - y))
+                # Draw entity as a circle - entities use pygame coordinates (no Y-axis flip needed)
+                center = (int(x), int(y))
                 radius = 8
                 pygame.draw.circle(surface, color, center, radius)
                 pygame.draw.circle(surface, (255, 255, 255, 255), center, radius, 2)

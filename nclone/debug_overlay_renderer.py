@@ -9,6 +9,7 @@ from .constants.physics_constants import (
 )
 from .graph.hierarchical_builder import HierarchicalGraphBuilder
 from .graph.subgoal_visualizer import SubgoalVisualizer
+from .shared_tile_renderer import SharedTileRenderer
 from .graph.subgoal_types import Subgoal, SubgoalPlan
 
 
@@ -416,8 +417,8 @@ class DebugOverlayRenderer:
         elif hasattr(self.sim, 'tiles'):
             level_data = self.sim.tiles
         elif hasattr(self.sim, 'tile_dic'):
-            # Convert tile_dic to numpy array for visualization
-            level_data = self._convert_tile_dic_to_array()
+            # Pass tile_dic directly for proper tile rendering
+            level_data = self.sim.tile_dic
             
         # Try to get entities from simulator
         if hasattr(self.sim, 'entities'):
