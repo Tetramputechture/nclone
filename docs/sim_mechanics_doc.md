@@ -189,7 +189,7 @@ fixed 44*25 map size and small query regions used by the player physics.
 
 #### Gold (Type 2)
 - **Radius**: 6 pixels
-- **Function**: Collectible items (optional in most modes)
+- **Function**: Collectible items (not used in by our RL agent)
 - **Behavior**: Disappears when collected, increments `ninja.gold_collected`
 
 ### Hazards and Interactive Elements

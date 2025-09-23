@@ -212,9 +212,10 @@ class TieredReachabilitySystem:
         """Analyze using Tier 1 ultra-fast OpenCV flood fill."""
         start_time = time.perf_counter()
 
-        # Use OpenCV flood fill with entities (empty list for basic analysis)
+        # Use OpenCV flood fill with entities from level data
+        entities = getattr(level_data, 'entities', [])
         result = self.tier1.quick_check(
-            ninja_position, level_data, switch_states, entities=[]
+            ninja_position, level_data, switch_states, entities=entities
         )
 
         # The quick_check method already returns a ReachabilityApproximation
@@ -231,9 +232,10 @@ class TieredReachabilitySystem:
         """Analyze using Tier 2 medium accuracy OpenCV flood fill."""
         start_time = time.perf_counter()
 
-        # Use OpenCV flood fill with entities (empty list for basic analysis)
+        # Use OpenCV flood fill with entities from level data
+        entities = getattr(level_data, 'entities', [])
         result = self.tier2.quick_check(
-            ninja_position, level_data, switch_states, entities=[]
+            ninja_position, level_data, switch_states, entities=entities
         )
 
         # Convert ReachabilityApproximation to ReachabilityResult
@@ -255,8 +257,9 @@ class TieredReachabilitySystem:
         start_time = time.perf_counter()
 
         # Use OpenCV flood fill with full resolution for highest accuracy
+        entities = getattr(level_data, 'entities', [])
         result = self.tier3.quick_check(
-            ninja_position, level_data, switch_states, entities=[]
+            ninja_position, level_data, switch_states, entities=entities
         )
 
         # Update the tier_used field

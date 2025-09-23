@@ -1,4 +1,3 @@
-
 from ..entities import Entity
 from ..physics import *
 from ..ninja import NINJA_RADIUS
@@ -19,7 +18,7 @@ class EntityExitSwitch(Entity):
 
     Behavior:
         - Initial State:
-            * Active and collectible
+            * Active and triggerable
             * Visible in entity grid
             * Parent exit door inactive
         - On Collection:
@@ -52,6 +51,7 @@ class EntityExitSwitch(Entity):
         - Updates parent door state
         - Manages collection logging
     """
+
     RADIUS = 6
 
     def __init__(self, type, sim, xcoord, ycoord, parent):
@@ -64,10 +64,13 @@ class EntityExitSwitch(Entity):
         by adding the parent door entity to the entity grid.
         """
         ninja = self.sim.ninja
-        if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
+        if overlap_circle_vs_circle(
+            self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+        ):
             self.active = False
             # Add door to the entity grid so the ninja can touch it
             self.sim.grid_entity[self.parent.cell].append(self.parent)
-            self.parent.switch_hit = True  # Mark the switch as hit on the parent Exit door
+            self.parent.switch_hit = (
+                True  # Mark the switch as hit on the parent Exit door
+            )
             self.log_collision()
