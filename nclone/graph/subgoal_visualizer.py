@@ -321,17 +321,23 @@ class SubgoalVisualizer:
         surface_height: Optional[int] = None,
     ) -> Tuple[int, int]:
         """Convert subgoal position to screen coordinates."""
-        sub_row, sub_col = subgoal.position
-        x = (
-            sub_col * SUB_CELL_SIZE * adjust
-            + SUB_CELL_SIZE * adjust // 2
-            + tile_x_offset
-        )
-        y = (
-            sub_row * SUB_CELL_SIZE * adjust
-            + SUB_CELL_SIZE * adjust // 2
-            + tile_y_offset
-        )
+        # Use actual entity position if available (more accurate)
+        if hasattr(subgoal, 'entity_position') and subgoal.entity_position is not None:
+            x = subgoal.entity_position[0] * adjust + tile_x_offset
+            y = subgoal.entity_position[1] * adjust + tile_y_offset
+        else:
+            # Fallback to sub-grid position
+            sub_row, sub_col = subgoal.position
+            x = (
+                sub_col * SUB_CELL_SIZE * adjust
+                + SUB_CELL_SIZE * adjust // 2
+                + tile_x_offset
+            )
+            y = (
+                sub_row * SUB_CELL_SIZE * adjust
+                + SUB_CELL_SIZE * adjust // 2
+                + tile_y_offset
+            )
         
         # Fix Y-axis inversion if surface height is provided
         if surface_height is not None:
@@ -575,8 +581,11 @@ class SubgoalVisualizer:
                 # Get entity color
                 color = entity_colors.get(entity_type, (255, 255, 255, 255))  # Default white
                 
-                # Draw entity as a circle - entities use pygame coordinates (no Y-axis flip needed)
-                center = (int(x), int(y))
+                # Apply Y-axis correction for entities (same as ninja position)
+                # Game coordinates have Y=0 at bottom, pygame has Y=0 at top
+                screen_x = int(x)
+                screen_y = int(level_dimensions[1] * 24 - y)  # Flip Y coordinate
+                center = (screen_x, screen_y)
                 radius = 8
                 pygame.draw.circle(surface, color, center, radius)
                 pygame.draw.circle(surface, (255, 255, 255, 255), center, radius, 2)

@@ -14,6 +14,7 @@ class Subgoal:
     """Represents a single subgoal in hierarchical planning."""
     goal_type: str  # 'locked_door_switch', 'trap_door_switch', 'exit_switch', 'exit'
     position: Tuple[int, int]  # (sub_row, sub_col)
+    entity_position: Optional[Tuple[float, float]] = None  # Actual entity pixel position (x, y)
     node_idx: Optional[int] = None  # Graph node index
     priority: int = 0  # Lower numbers = higher priority
     dependencies: List[str] = field(default_factory=list)  # List of goal_types this depends on

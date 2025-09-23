@@ -644,6 +644,7 @@ class SubgoalPlanner:
         
         return Subgoal(
             position=(sub_row, sub_col),
+            entity_position=position,  # Store actual entity pixel position
             goal_type=goal_type,
             priority=0  # Lower numbers = higher priority
         )
