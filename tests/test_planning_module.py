@@ -18,8 +18,6 @@ import torch
 from nclone.planning import (
     Subgoal,
     EntityInteractionSubgoal,
-    NavigationSubgoal,  # Backward compatibility alias
-    SwitchActivationSubgoal,  # Backward compatibility alias
     CompletionStrategy,
     CompletionStep,
     LevelCompletionPlanner,
@@ -110,18 +108,19 @@ class TestSubgoalFramework(unittest.TestCase):
         self.switch_states = {"switch_1": False, "switch_2": False, "switch_3": False}
 
     def test_navigation_subgoal_creation(self):
-        """Test NavigationSubgoal creation and basic functionality."""
-        subgoal = NavigationSubgoal(
-            target_position=(200, 200),
-            target_type="exit_door",
-            distance=70.7,
+        """Test EntityInteractionSubgoal creation and basic functionality for navigation."""
+        subgoal = EntityInteractionSubgoal(
             priority=0.8,
             estimated_time=5.0,
             success_probability=0.9,
+            entity_position=(200, 200),
+            entity_type="exit_door",
+            interaction_type="complete",
+            distance=70.7,
         )
 
         self.assertEqual(subgoal.get_target_position(), (200, 200))
-        self.assertEqual(subgoal.target_type, "exit_door")
+        self.assertEqual(subgoal.entity_type, "exit_door")
         self.assertAlmostEqual(subgoal.distance, 70.7, places=1)
 
         # Test completion check
@@ -136,19 +135,20 @@ class TestSubgoalFramework(unittest.TestCase):
         )
 
     def test_switch_activation_subgoal_creation(self):
-        """Test SwitchActivationSubgoal creation and completion checking."""
-        subgoal = SwitchActivationSubgoal(
-            switch_id="switch_1",
-            switch_position=(100, 100),
-            switch_type="exit_switch",
-            reachability_score=0.8,
+        """Test EntityInteractionSubgoal creation and completion checking for switch activation."""
+        subgoal = EntityInteractionSubgoal(
             priority=0.9,
             estimated_time=3.0,
             success_probability=0.85,
+            entity_id="switch_1",
+            entity_position=(100, 100),
+            entity_type="exit_switch",
+            interaction_type="activate",
+            reachability_score=0.8,
         )
 
         self.assertEqual(subgoal.get_target_position(), (100, 100))
-        self.assertEqual(subgoal.switch_id, "switch_1")
+        self.assertEqual(subgoal.entity_id, "switch_1")
         self.assertAlmostEqual(subgoal.reachability_score, 0.8)
 
         # Test completion - should be False initially (switch not activated)
@@ -236,22 +236,24 @@ class TestSubgoalPrioritizer(unittest.TestCase):
     def test_subgoal_prioritization(self):
         """Test subgoal prioritization with mixed subgoal types."""
         subgoals = [
-            NavigationSubgoal(
-                target_position=(400, 300),
-                target_type="exit_door",
-                distance=300.0,
+            EntityInteractionSubgoal(
                 priority=0.5,
                 estimated_time=8.0,
                 success_probability=0.9,
+                entity_position=(400, 300),
+                entity_type="exit_door",
+                interaction_type="complete",
+                distance=300.0,
             ),
-            SwitchActivationSubgoal(
-                switch_id="switch_1",
-                switch_position=(100, 100),
-                switch_type="exit_switch",
-                reachability_score=0.8,
+            EntityInteractionSubgoal(
                 priority=0.7,
                 estimated_time=3.0,
                 success_probability=0.85,
+                entity_id="switch_1",
+                entity_position=(100, 100),
+                entity_type="exit_switch",
+                interaction_type="activate",
+                reachability_score=0.8,
             ),
         ]
 
@@ -264,7 +266,7 @@ class TestSubgoalPrioritizer(unittest.TestCase):
         # The actual order depends on distance and other factors, so just verify structure
         self.assertIsInstance(
             prioritized[0],
-            (NavigationSubgoal, SwitchActivationSubgoal),
+            EntityInteractionSubgoal,
         )
 
         # Verify priorities were updated
@@ -274,14 +276,15 @@ class TestSubgoalPrioritizer(unittest.TestCase):
 
     def test_priority_score_calculation(self):
         """Test priority score calculation factors."""
-        subgoal = SwitchActivationSubgoal(
-            switch_id="switch_1",
-            switch_position=(100, 100),
-            switch_type="exit_switch",
-            reachability_score=0.8,
+        subgoal = EntityInteractionSubgoal(
             priority=0.7,
             estimated_time=3.0,
             success_probability=0.9,
+            entity_id="switch_1",
+            entity_position=(100, 100),
+            entity_type="exit_switch",
+            interaction_type="activate",
+            reachability_score=0.8,
         )
 
         score = self.prioritizer._calculate_priority_score(
@@ -293,14 +296,15 @@ class TestSubgoalPrioritizer(unittest.TestCase):
 
     def test_reachability_bonus_calculation(self):
         """Test reachability bonus from neural features."""
-        switch_subgoal = SwitchActivationSubgoal(
-            switch_id="switch_1",
-            switch_position=(100, 100),
-            switch_type="exit_switch",
-            reachability_score=0.8,
+        switch_subgoal = EntityInteractionSubgoal(
             priority=0.7,
             estimated_time=3.0,
             success_probability=0.9,
+            entity_id="switch_1",
+            entity_position=(100, 100),
+            entity_type="exit_switch",
+            interaction_type="activate",
+            reachability_score=0.8,
         )
 
         bonus = self.prioritizer._get_reachability_bonus(

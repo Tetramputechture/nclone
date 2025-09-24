@@ -8,7 +8,7 @@ set -e  # Exit on any error
 
 echo "🚀 Setting up nclone development environment..."
 echo "📁 Project root: $(dirname "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")"
-echo "📝 Log file: $(dirname "${BASH_SOURCE[0]}")/setup.log"
+echo "📝 Log file: $(dirname "${BASH_SOURCE[0]}")/.setup.log"
 echo "⏰ Started at: $(date)"
 echo ""
 

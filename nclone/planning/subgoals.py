@@ -34,12 +34,18 @@ class Subgoal(ABC):
     priority: float  # Strategic priority for subgoal selection (0.0-1.0)
     estimated_time: float  # Estimated completion time in seconds
     success_probability: float  # Likelihood of successful completion (0.0-1.0)
-    
+
     # Enhanced fields from graph/subgoal_types.py for better integration
-    goal_type: str = ""  # 'locked_door_switch', 'trap_door_switch', 'exit_switch', 'exit'
-    position: Optional[Tuple[int, int]] = None  # (sub_row, sub_col) for graph integration
+    goal_type: str = (
+        ""  # 'locked_door_switch', 'trap_door_switch', 'exit_switch', 'exit'
+    )
+    position: Optional[Tuple[int, int]] = (
+        None  # (sub_row, sub_col) for graph integration
+    )
     node_idx: Optional[int] = None  # Graph node index for pathfinding
-    dependencies: List[str] = field(default_factory=list)  # List of goal_types this depends on
+    dependencies: List[str] = field(
+        default_factory=list
+    )  # List of goal_types this depends on
     unlocks: List[str] = field(default_factory=list)  # List of goal_types this unlocks
 
     @abstractmethod
@@ -62,14 +68,11 @@ class Subgoal(ABC):
 
 @dataclass
 class EntityInteractionSubgoal(Subgoal):
-    """Unified subgoal for all NPP entity interactions.
-    
-    This replaces both NavigationSubgoal and SwitchActivationSubgoal with a single
-    unified approach that handles all NPP objectives as entity interactions.
-    
+    """Subgoal for all NPP entity interactions.
+
     Core NPP objectives:
     - exit_switch: Activate switch that opens exit door
-    - exit_door: Touch exit door to complete level  
+    - exit_door: Touch exit door to complete level
     - locked_switch: Activate switch that opens locked doors
     """
 
@@ -186,23 +189,25 @@ class CompletionStrategy:
         step = self.steps[0]
 
         if step.action_type == "navigate_and_activate":
-            return SwitchActivationSubgoal(
-                switch_id=step.target_id,
-                switch_position=step.target_position,
-                switch_type="exit_switch",
-                reachability_score=0.8,
+            return EntityInteractionSubgoal(
                 priority=step.priority,
                 estimated_time=5.0,
                 success_probability=0.9,
+                entity_id=step.target_id,
+                entity_position=step.target_position,
+                entity_type="exit_switch",
+                interaction_type="activate",
+                reachability_score=0.8,
             )
         elif step.action_type == "navigate_to_exit":
-            return NavigationSubgoal(
-                target_position=step.target_position,
-                target_type="exit_door",
-                distance=0.0,
+            return EntityInteractionSubgoal(
                 priority=step.priority,
                 estimated_time=3.0,
                 success_probability=0.95,
+                entity_position=step.target_position,
+                entity_type="exit_door",
+                interaction_type="complete",
+                distance=0.0,
             )
 
         return None
@@ -212,80 +217,34 @@ class CompletionStrategy:
 class SubgoalPlan:
     """
     Complete plan with ordered subgoals and execution strategy.
-    
+
     Unified class combining features from both planning and graph approaches
     for comprehensive subgoal planning with execution tracking.
     """
+
     subgoals: List[Subgoal]
     execution_order: List[int]  # Indices into subgoals list
     total_estimated_cost: float
     description: str = ""
     confidence: float = 0.0
-    
+
     def get_next_subgoal(self) -> Optional[Subgoal]:
         """Get the next subgoal to execute."""
         if self.execution_order:
             next_idx = self.execution_order[0]
-            return self.subgoals[next_idx] if 0 <= next_idx < len(self.subgoals) else None
+            return (
+                self.subgoals[next_idx] if 0 <= next_idx < len(self.subgoals) else None
+            )
         return None
-    
+
     def mark_completed(self, subgoal_idx: int):
         """Mark a subgoal as completed and remove from execution order."""
         if subgoal_idx in self.execution_order:
             self.execution_order.remove(subgoal_idx)
-    
+
     def get_progress(self) -> float:
         """Get completion progress as a percentage (0.0 to 1.0)."""
         if not self.subgoals:
             return 1.0
         completed = len(self.subgoals) - len(self.execution_order)
         return completed / len(self.subgoals)
-
-
-# Backward compatibility classes for deprecated subgoal types
-# These will be removed in a future version
-
-@dataclass
-class NavigationSubgoal(EntityInteractionSubgoal):
-    """Backward compatibility wrapper for NavigationSubgoal."""
-    
-    def __init__(self, priority: float, estimated_time: float, success_probability: float,
-                 target_position: Tuple[float, float] = (0.0, 0.0),
-                 target_type: str = "navigation", distance: float = 0.0, **kwargs):
-        super().__init__(
-            priority=priority,
-            estimated_time=estimated_time,
-            success_probability=success_probability,
-            entity_position=target_position,
-            entity_type=target_type,
-            interaction_type="complete" if target_type == "exit_door" else "activate",
-            distance=distance,
-            **kwargs
-        )
-        # Store original attributes for backward compatibility
-        self.target_position = target_position
-        self.target_type = target_type
-
-
-@dataclass  
-class SwitchActivationSubgoal(EntityInteractionSubgoal):
-    """Backward compatibility wrapper for SwitchActivationSubgoal."""
-    
-    def __init__(self, priority: float, estimated_time: float, success_probability: float,
-                 switch_id: str = "", switch_position: Tuple[float, float] = (0.0, 0.0),
-                 switch_type: str = "switch", reachability_score: float = 0.0, **kwargs):
-        super().__init__(
-            priority=priority,
-            estimated_time=estimated_time,
-            success_probability=success_probability,
-            entity_id=switch_id,
-            entity_position=switch_position,
-            entity_type=switch_type,
-            interaction_type="activate",
-            reachability_score=reachability_score,
-            **kwargs
-        )
-        # Store original attributes for backward compatibility
-        self.switch_id = switch_id
-        self.switch_position = switch_position
-        self.switch_type = switch_type
