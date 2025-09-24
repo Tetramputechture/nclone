@@ -31,7 +31,8 @@ from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
 from nclone.graph.reachability.reachability_types import PerformanceTarget
 
 # Removed legacy trajectory calculator import
-from nclone.graph.subgoal_planner import SubgoalPlanner
+# SubgoalPlanner deprecated - using nclone.planning instead
+from nclone.planning import LevelCompletionPlanner
 from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
 from nclone.graph.reachability.frontier_detector import FrontierDetector
 
@@ -329,9 +330,9 @@ if (
         # Initialize simplified reachability analyzer
         reachability_analyzer = TieredReachabilitySystem()
 
-        # Initialize subgoal planner and integration
-        base_subgoal_planner = SubgoalPlanner()
-        subgoal_planner = ReachabilitySubgoalIntegration(base_subgoal_planner)
+        # Initialize level completion planner (replaces deprecated SubgoalPlanner)
+        level_completion_planner = LevelCompletionPlanner()
+        subgoal_planner = ReachabilitySubgoalIntegration(level_completion_planner)
 
         # Initialize frontier detector
         frontier_detector = FrontierDetector()

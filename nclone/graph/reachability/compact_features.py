@@ -20,7 +20,8 @@ from typing import List, Tuple, Dict, Any, Optional, Set
 from dataclasses import dataclass
 
 from .reachability_types import ReachabilityResult
-from ..simple_objective_system import SimplifiedCompletionStrategy, SimpleObjective
+# Deprecated simple_objective_system replaced with planning module
+from ...planning import LevelCompletionPlanner, CompletionStep
 
 
 @dataclass
@@ -74,7 +75,7 @@ class CompactReachabilityFeatures:
         """
         self.config = config or FeatureConfig()
         self.debug = debug
-        self.completion_strategy = SimplifiedCompletionStrategy(debug=debug)
+        self.completion_planner = LevelCompletionPlanner()
 
         # Feature dimension validation
         if self.config.total_features != 64:
@@ -486,7 +487,7 @@ class CompactReachabilityFeatures:
         return tile_center in reachability_result.reachable_positions
 
     def _identify_other_objectives(
-        self, entities: List[Any], current_objective: Optional[SimpleObjective]
+        self, entities: List[Any], current_objective: Optional[CompletionStep]
     ) -> List[Dict[str, Any]]:
         """Identify other objectives beyond the current one."""
         objectives = []

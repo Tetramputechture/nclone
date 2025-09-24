@@ -92,11 +92,11 @@ class TieredReachabilitySystem:
     def subgoal_planner(self):
         """Lazy initialization of hierarchical subgoal planning system."""
         if not hasattr(self, "_subgoal_planner") or self._subgoal_planner is None:
-            # Use enhanced SubgoalPlanner with hierarchical completion algorithm
+            # Use LevelCompletionPlanner with hierarchical completion algorithm
             # Lazy import to avoid circular dependency
-            from ..subgoal_planner import SubgoalPlanner
+            from ...planning import LevelCompletionPlanner
 
-            self._subgoal_planner = SubgoalPlanner(debug=self.debug)
+            self._subgoal_planner = LevelCompletionPlanner()
         return self._subgoal_planner
 
     def analyze_reachability(
