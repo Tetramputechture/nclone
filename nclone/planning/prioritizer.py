@@ -11,8 +11,7 @@ from typing import List, Tuple
 
 from .subgoals import (
     Subgoal,
-    NavigationSubgoal,
-    SwitchActivationSubgoal,
+    EntityInteractionSubgoal,
 )
 
 
@@ -54,7 +53,7 @@ class SubgoalPrioritizer:
         reachability_result,
     ) -> List[Subgoal]:
         """
-        Prioritize subgoals based on stra btegic value and nclone's reachability analysis.
+        Prioritize subgoals based on strategic value and nclone's reachability analysis.
 
         Uses nclone's own reachability system to provide strategic assessment
         as input to intrinsic curiosity modules in npp-rl.
@@ -92,10 +91,8 @@ class SubgoalPrioritizer:
         base_score = subgoal.priority
 
         # Strategic value based on subgoal type
-        if isinstance(subgoal, NavigationSubgoal):
-            strategic_weight = self.strategic_weights.get(subgoal.target_type, 0.5)
-        elif isinstance(subgoal, SwitchActivationSubgoal):
-            strategic_weight = self.strategic_weights.get(subgoal.switch_type, 0.7)
+        if isinstance(subgoal, EntityInteractionSubgoal):
+            strategic_weight = self.strategic_weights.get(subgoal.entity_type, 0.7)
         else:
             strategic_weight = 0.5
 
@@ -124,7 +121,7 @@ class SubgoalPrioritizer:
 
     def _get_reachability_bonus(self, subgoal: Subgoal, reachability_result) -> float:
         """Get reachability bonus from nclone's reachability analysis."""
-        if isinstance(subgoal, SwitchActivationSubgoal):
+        if isinstance(subgoal, EntityInteractionSubgoal):
             return subgoal.reachability_score * 0.2
         elif hasattr(reachability_result, "coverage_ratio"):
             # Use coverage ratio as reachability indicator

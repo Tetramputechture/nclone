@@ -37,7 +37,7 @@ global_frame.png
 
 # Openhands tasks and logs
 .openhands/TASKS.md
-.openhands/setup.log
+.openhands/.setup.log
 
 # Ruff
 .ruff_cache/

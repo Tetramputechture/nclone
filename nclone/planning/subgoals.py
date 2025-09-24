@@ -7,7 +7,7 @@ reachability analysis systems for strategic level completion planning.
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Tuple, List, Optional
 
 from nclone.constants.entity_types import EntityType
@@ -35,6 +35,19 @@ class Subgoal(ABC):
     estimated_time: float  # Estimated completion time in seconds
     success_probability: float  # Likelihood of successful completion (0.0-1.0)
 
+    # Enhanced fields from graph/subgoal_types.py for better integration
+    goal_type: str = (
+        ""  # 'locked_door_switch', 'trap_door_switch', 'exit_switch', 'exit'
+    )
+    position: Optional[Tuple[int, int]] = (
+        None  # (sub_row, sub_col) for graph integration
+    )
+    node_idx: Optional[int] = None  # Graph node index for pathfinding
+    dependencies: List[str] = field(
+        default_factory=list
+    )  # List of goal_types this depends on
+    unlocks: List[str] = field(default_factory=list)  # List of goal_types this unlocks
+
     @abstractmethod
     def get_target_position(self) -> Tuple[float, float]:
         """Get the target position for this subgoal."""
@@ -54,61 +67,54 @@ class Subgoal(ABC):
 
 
 @dataclass
-class NavigationSubgoal(Subgoal):
-    """Navigate to a specific position."""
+class EntityInteractionSubgoal(Subgoal):
+    """Subgoal for all NPP entity interactions.
 
-    target_position: Tuple[float, float]
-    target_type: str  # 'exit_door', 'exit_switch', 'door_switch', etc.
-    distance: float
+    Core NPP objectives:
+    - exit_switch: Activate switch that opens exit door
+    - exit_door: Touch exit door to complete level
+    - locked_switch: Activate switch that opens locked doors
+    """
+
+    # Entity-specific fields
+    entity_id: str = ""
+    entity_position: Tuple[float, float] = (0.0, 0.0)
+    entity_type: str = ""  # "exit_switch", "exit_door", "locked_switch"
+    interaction_type: str = ""  # "activate", "complete"
+    reachability_score: float = 0.0
+    distance: float = 0.0
 
     def get_target_position(self) -> Tuple[float, float]:
-        return self.target_position
+        return self.entity_position
 
     def is_completed(
         self, ninja_pos: Tuple[float, float], level_data, switch_states: Dict
     ) -> bool:
-        # Check if ninja is within interaction range of target
-        distance = math.sqrt(
-            (ninja_pos[0] - self.target_position[0]) ** 2
-            + (ninja_pos[1] - self.target_position[1]) ** 2
-        )
-        return distance <= 24.0  # One tile distance
+        if self.interaction_type == "activate":
+            # For switches, check if they are activated
+            return self._is_switch_activated_authoritative(
+                self.entity_id, level_data, switch_states
+            )
+        elif self.interaction_type == "complete":
+            # For exit doors, check if ninja is within interaction range
+            distance = math.sqrt(
+                (ninja_pos[0] - self.entity_position[0]) ** 2
+                + (ninja_pos[1] - self.entity_position[1]) ** 2
+            )
+            return distance <= 24.0  # One tile distance
+        else:
+            # Default proximity check for other interaction types
+            distance = math.sqrt(
+                (ninja_pos[0] - self.entity_position[0]) ** 2
+                + (ninja_pos[1] - self.entity_position[1]) ** 2
+            )
+            return distance <= 24.0
 
     def get_reward_shaping(self, ninja_pos: Tuple[float, float]) -> float:
-        # Reward for getting closer to target
+        # Base proximity reward
         distance = math.sqrt(
-            (ninja_pos[0] - self.target_position[0]) ** 2
-            + (ninja_pos[1] - self.target_position[1]) ** 2
-        )
-        max_distance = 500.0  # Normalize by reasonable max distance
-        return (max_distance - distance) / max_distance
-
-
-@dataclass
-class SwitchActivationSubgoal(Subgoal):
-    """Activate a specific switch."""
-
-    switch_id: str
-    switch_position: Tuple[float, float]
-    switch_type: str
-    reachability_score: float
-
-    def get_target_position(self) -> Tuple[float, float]:
-        return self.switch_position
-
-    def is_completed(
-        self, ninja_pos: Tuple[float, float], level_data, switch_states: Dict
-    ) -> bool:
-        # Use authoritative simulation data first, fall back to passed states
-        return self._is_switch_activated_authoritative(
-            self.switch_id, level_data, switch_states
-        )
-
-    def get_reward_shaping(self, ninja_pos: Tuple[float, float]) -> float:
-        # Reward for getting closer to switch
-        distance = math.sqrt(
-            (ninja_pos[0] - self.switch_position[0]) ** 2
-            + (ninja_pos[1] - self.switch_position[1]) ** 2
+            (ninja_pos[0] - self.entity_position[0]) ** 2
+            + (ninja_pos[1] - self.entity_position[1]) ** 2
         )
         max_distance = 500.0
         proximity_reward = (max_distance - distance) / max_distance
@@ -116,7 +122,16 @@ class SwitchActivationSubgoal(Subgoal):
         # Bonus for high reachability score
         reachability_bonus = self.reachability_score * 0.5
 
-        return proximity_reward + reachability_bonus
+        # Entity type specific bonuses
+        type_bonus = 0.0
+        if self.entity_type == "exit_door":
+            type_bonus = 0.3  # Higher reward for exit doors
+        elif self.entity_type == "exit_switch":
+            type_bonus = 0.2  # Medium reward for exit switches
+        elif self.entity_type == "locked_switch":
+            type_bonus = 0.1  # Lower reward for locked switches
+
+        return min(1.0, proximity_reward + reachability_bonus + type_bonus)
 
     def _is_switch_activated_authoritative(
         self, switch_id: str, level_data, switch_states: Dict
@@ -174,23 +189,62 @@ class CompletionStrategy:
         step = self.steps[0]
 
         if step.action_type == "navigate_and_activate":
-            return SwitchActivationSubgoal(
-                switch_id=step.target_id,
-                switch_position=step.target_position,
-                switch_type="exit_switch",
-                reachability_score=0.8,
+            return EntityInteractionSubgoal(
                 priority=step.priority,
                 estimated_time=5.0,
                 success_probability=0.9,
+                entity_id=step.target_id,
+                entity_position=step.target_position,
+                entity_type="exit_switch",
+                interaction_type="activate",
+                reachability_score=0.8,
             )
         elif step.action_type == "navigate_to_exit":
-            return NavigationSubgoal(
-                target_position=step.target_position,
-                target_type="exit_door",
-                distance=0.0,
+            return EntityInteractionSubgoal(
                 priority=step.priority,
                 estimated_time=3.0,
                 success_probability=0.95,
+                entity_position=step.target_position,
+                entity_type="exit_door",
+                interaction_type="complete",
+                distance=0.0,
             )
 
         return None
+
+
+@dataclass
+class SubgoalPlan:
+    """
+    Complete plan with ordered subgoals and execution strategy.
+
+    Unified class combining features from both planning and graph approaches
+    for comprehensive subgoal planning with execution tracking.
+    """
+
+    subgoals: List[Subgoal]
+    execution_order: List[int]  # Indices into subgoals list
+    total_estimated_cost: float
+    description: str = ""
+    confidence: float = 0.0
+
+    def get_next_subgoal(self) -> Optional[Subgoal]:
+        """Get the next subgoal to execute."""
+        if self.execution_order:
+            next_idx = self.execution_order[0]
+            return (
+                self.subgoals[next_idx] if 0 <= next_idx < len(self.subgoals) else None
+            )
+        return None
+
+    def mark_completed(self, subgoal_idx: int):
+        """Mark a subgoal as completed and remove from execution order."""
+        if subgoal_idx in self.execution_order:
+            self.execution_order.remove(subgoal_idx)
+
+    def get_progress(self) -> float:
+        """Get completion progress as a percentage (0.0 to 1.0)."""
+        if not self.subgoals:
+            return 1.0
+        completed = len(self.subgoals) - len(self.execution_order)
+        return completed / len(self.subgoals)
