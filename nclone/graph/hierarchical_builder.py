@@ -18,7 +18,7 @@ from enum import Enum
 from .common import GraphData
 from .level_data import LevelData, PlayerState, ensure_level_data
 from .edge_building import EdgeBuilder, create_simplified_graph_data
-# from .reachability.tiered_system import TieredReachabilitySystem  # Disabled for simplified approach
+from .reachability.reachability_system import ReachabilitySystem
 
 
 class ResolutionLevel(Enum):
@@ -74,8 +74,7 @@ class HierarchicalGraphBuilder:
         """Initialize simplified hierarchical builder."""
         self.debug = debug
         self.edge_builder = EdgeBuilder(debug=debug)
-        # self.reachability_system = TieredReachabilitySystem(debug=debug)  # Disabled for simplified approach
-        self.reachability_system = None
+        self.reachability_system = ReachabilitySystem(debug=debug)
         # self.edge_builder.set_reachability_system(self.reachability_system)
 
     def build_graph(
@@ -100,7 +99,9 @@ class HierarchicalGraphBuilder:
             print(f"  Level size: {level_data.width}x{level_data.height}")
             print(f"  Entities: {len(level_data.entities)}")
             if level_data.player:
-                print(f"  Player position: ({level_data.player.x:.1f}, {level_data.player.y:.1f})")
+                print(
+                    f"  Player position: ({level_data.player.x:.1f}, {level_data.player.y:.1f})"
+                )
 
         # Build graphs at different resolutions using consolidated data
         fine_graph = self._build_resolution_graph(level_data, ResolutionLevel.FINE)
@@ -154,23 +155,27 @@ class HierarchicalGraphBuilder:
         self, level_data: LevelData, resolution: ResolutionLevel
     ) -> LevelData:
         """Downsample level data to target resolution, preserving player state."""
-        
+
         # Filter entities based on resolution
-        filtered_entities = self._filter_entities_for_resolution(level_data.entities, resolution)
-        
+        filtered_entities = self._filter_entities_for_resolution(
+            level_data.entities, resolution
+        )
+
         # Adjust player position for resolution
         adjusted_player = None
         if level_data.player:
-            adjusted_pos = self._adjust_position_for_resolution(level_data.player.position, resolution)
+            adjusted_pos = self._adjust_position_for_resolution(
+                level_data.player.position, resolution
+            )
             adjusted_player = PlayerState(
                 position=adjusted_pos,
                 velocity=level_data.player.velocity,
                 on_ground=level_data.player.on_ground,
                 facing_right=level_data.player.facing_right,
                 health=level_data.player.health,
-                frame=level_data.player.frame
+                frame=level_data.player.frame,
             )
-        
+
         if resolution == ResolutionLevel.FINE:
             # 6px resolution - higher detail than tile level
             scale_factor = 4  # 24px / 6px = 4
@@ -178,12 +183,12 @@ class HierarchicalGraphBuilder:
                 np.repeat(level_data.tiles, scale_factor, axis=0), scale_factor, axis=1
             )
             return LevelData(
-                tiles=upsampled_tiles, 
+                tiles=upsampled_tiles,
                 entities=filtered_entities,
                 player=adjusted_player,
                 level_id=level_data.level_id,
                 metadata=level_data.metadata,
-                switch_states=level_data.switch_states
+                switch_states=level_data.switch_states,
             )
 
         elif resolution == ResolutionLevel.MEDIUM:
@@ -194,7 +199,7 @@ class HierarchicalGraphBuilder:
                 player=adjusted_player,
                 level_id=level_data.level_id,
                 metadata=level_data.metadata,
-                switch_states=level_data.switch_states
+                switch_states=level_data.switch_states,
             )
 
         elif resolution == ResolutionLevel.COARSE:
@@ -223,7 +228,7 @@ class HierarchicalGraphBuilder:
                 player=adjusted_player,
                 level_id=level_data.level_id,
                 metadata=level_data.metadata,
-                switch_states=level_data.switch_states
+                switch_states=level_data.switch_states,
             )
 
     def _filter_entities_for_resolution(
@@ -272,49 +277,51 @@ class HierarchicalGraphBuilder:
 
     def _extract_reachability_info(self, level_data: LevelData) -> Dict:
         """Extract reachability information for strategic planning."""
-        # Simplified reachability info since tiered system is disabled
-        if self.reachability_system is None:
-            return {
-                "tier1_reachable_count": 0,
-                "tier2_reachable_count": 0,
-                "tier3_reachable_count": 0,
-                "total_reachable_area": 0.0,
-                "connectivity_score": 0.0,
-            }
-        
-        # Get reachability analysis from tiered system (if enabled)
-        ninja_pos = level_data.player.position if level_data.player else (0, 0)
-        tier1_result = self.reachability_system.tier1_system.quick_check(
-            level_data, level_data.entities, ninja_pos
-        )
-        tier2_result = self.reachability_system.tier2_system.quick_check(
-            level_data, level_data.entities, ninja_pos
-        )
-        tier3_result = self.reachability_system.tier3_system.quick_check(
-            level_data, level_data.entities, ninja_pos
-        )
 
-        return {
-            "tier1_reachable_count": getattr(tier1_result, "reachable_count", 0),
-            "tier2_reachable_count": getattr(tier2_result, "reachable_count", 0),
-            "tier3_reachable_count": getattr(tier3_result, "reachable_count", 0),
-            "is_level_completable": getattr(
-                tier3_result, "is_level_completable", lambda: False
-            )(),
-            "connectivity_score": self._calculate_connectivity_score(
-                tier1_result, tier2_result, tier3_result
-            ),
-        }
+        # Get reachability analysis from the simplified ultra-fast system
+        ninja_pos = level_data.player.position if level_data.player else (0, 0)
+        switch_states = level_data.switch_states if level_data.switch_states else {}
+
+        try:
+            result = self.reachability_system.analyze_reachability(
+                level_data, ninja_pos, switch_states
+            )
+
+            reachable_count = result.get_reachable_count()
+            is_completable = result.is_level_completable()
+
+            return {
+                "reachable_count": reachable_count,
+                "total_reachable_area": float(reachable_count),
+                "is_level_completable": is_completable,
+                "connectivity_score": min(reachable_count / 1000.0, 1.0),  # Normalize
+                "computation_time_ms": result.computation_time_ms,
+                "confidence": result.confidence,
+                "method": result.method,
+            }
+        except Exception as e:
+            if self.debug:
+                print(f"DEBUG: Reachability analysis failed: {e}")
+            return {
+                "reachable_count": 0,
+                "total_reachable_area": 0.0,
+                "is_level_completable": False,
+                "connectivity_score": 0.0,
+                "computation_time_ms": 0.0,
+                "confidence": 0.0,
+                "method": "failed",
+            }
 
     def _extract_strategic_features(self, level_data: LevelData) -> Dict:
         """Extract strategic features for RL decision making using consolidated data."""
         features = {}
-        
+
         # Get player position
         player_pos = level_data.player.position if level_data.player else (0, 0)
 
         # Entity counts by type using EntityType constants
-        from ..constants.entity_types import EntityType
+        from nclone.constants.entity_types import EntityType
+
         entity_counts = {}
         for entity in level_data.entities:
             entity_type = entity.get("type", 0)
@@ -322,15 +329,30 @@ class HierarchicalGraphBuilder:
 
         features["entity_counts"] = entity_counts
 
-        # Distance to key entities
+        # Distance to key entities with switch proximity logic
         distances = {}
-        key_entity_types = [EntityType.EXIT_DOOR, EntityType.EXIT_SWITCH, EntityType.GOLD]
-        
+        key_entity_types = [
+            EntityType.EXIT_DOOR,
+            EntityType.EXIT_SWITCH,
+            EntityType.LOCKED_DOOR,
+        ]
+
+        # Check if locked doors are present for switch proximity logic
+        locked_doors_present = any(
+            entity.get("type", 0) == EntityType.LOCKED_DOOR
+            for entity in level_data.entities
+        )
+
+        # Always initialize switch_distances for safety
+        switch_distances = []
+
         for entity in level_data.entities:
             entity_type = entity.get("type", 0)
+            entity_x = entity.get("x", 0)
+            entity_y = entity.get("y", 0)
+
+            # Calculate distance for key entity types
             if entity_type in key_entity_types:
-                entity_x = entity.get("x", 0)
-                entity_y = entity.get("y", 0)
                 dist = np.sqrt(
                     (entity_x - player_pos[0]) ** 2 + (entity_y - player_pos[1]) ** 2
                 )
@@ -338,11 +360,41 @@ class HierarchicalGraphBuilder:
                     distances[entity_type] = []
                 distances[entity_type].append(dist)
 
+                # For locked doors, also check if this is the switch part
+                if entity_type == EntityType.LOCKED_DOOR and not entity.get(
+                    "is_door_part", False
+                ):
+                    # This is the switch part of a locked door
+                    switch_distances.append(dist)
+
+            # Track other switch types when locked doors are present
+            elif locked_doors_present and entity_type in [
+                EntityType.EXIT_SWITCH,
+                EntityType.TRAP_DOOR,
+            ]:
+                # Include exit switches and trap door switches in switch proximity
+                if not entity.get(
+                    "is_door_part", False
+                ):  # Only switch parts, not door parts
+                    dist = np.sqrt(
+                        (entity_x - player_pos[0]) ** 2
+                        + (entity_y - player_pos[1]) ** 2
+                    )
+                    switch_distances.append(dist)
+
         # Take minimum distance for each type
         for entity_type, dist_list in distances.items():
             features[f"min_distance_to_type_{entity_type}"] = (
                 min(dist_list) if dist_list else float("inf")
             )
+
+        # Add switch proximity features when locked doors are present
+        if locked_doors_present and switch_distances:
+            features["min_distance_to_nearest_switch"] = min(switch_distances)
+            features["switch_count_near_locked_doors"] = len(switch_distances)
+        else:
+            features["min_distance_to_nearest_switch"] = float("inf")
+            features["switch_count_near_locked_doors"] = 0
 
         # Level complexity metrics
         features["level_width"] = level_data.width
@@ -351,18 +403,3 @@ class HierarchicalGraphBuilder:
         features["wall_density"] = np.mean(level_data.tiles > 0)  # Assuming 0 is empty
 
         return features
-
-    def _calculate_connectivity_score(
-        self, tier1_result, tier2_result, tier3_result
-    ) -> float:
-        """Calculate overall connectivity score for the level."""
-        # Combine reachability counts from all tiers
-        total_reachable = (
-            getattr(tier1_result, "reachable_count", 0)
-            + getattr(tier2_result, "reachable_count", 0)
-            + getattr(tier3_result, "reachable_count", 0)
-        )
-
-        # Normalize by some reasonable maximum
-        max_possible = 1000  # Rough estimate
-        return min(total_reachable / max_possible, 1.0)

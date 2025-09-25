@@ -93,7 +93,6 @@ When the visualization overlay is active, use these keyboard controls:
 #### Reachability System Integration
 - **OpenCV Flood Fill**: Fast reachability analysis with entity collision detection
 - **Locked Door Logic**: Proper state handling based on switch activation
-- **Tiered Analysis**: Multi-resolution reachability computation for performance
 
 ### Coordinate System
 
@@ -192,7 +191,7 @@ nclone/
 ├── graph/
 │   ├── subgoal_planner.py            # Multi-switch logic and planning
 │   └── reachability/
-│       ├── tiered_system.py          # Reachability analysis coordinator
+│       ├── reachability_system.py          # Reachability analysis coordinator
 │       └── opencv_flood_fill.py      # Fast collision detection with door logic
 └── test_environment.py               # CLI interface with visualization options
 ```
