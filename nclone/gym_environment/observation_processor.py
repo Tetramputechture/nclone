@@ -52,7 +52,7 @@ from .constants import (
     RENDERED_VIEW_HEIGHT,
 )
 from ..constants.physics_constants import MAX_HOR_SPEED
-from .frame_augmentation import apply_consistent_augmentation
+from .frame_augmentation import apply_consistent_augmentation, get_recommended_config
 
 
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -133,9 +133,19 @@ def calculate_vector(
 class ObservationProcessor:
     """Processes raw game observations into frame stacks and normalized feature vectors."""
 
-    def __init__(self, enable_augmentation=True):
+    def __init__(
+        self, 
+        enable_augmentation: bool = True,
+        augmentation_config: Dict[str, Any] = None
+    ):
         self.enable_augmentation = enable_augmentation
         self.frame_history = deque(maxlen=TEMPORAL_FRAMES)
+        
+        # Set augmentation configuration
+        if augmentation_config is None:
+            self.augmentation_config = get_recommended_config("mid")
+        else:
+            self.augmentation_config = augmentation_config
 
     def frame_around_player(
         self, frame: np.ndarray, player_x: float, player_y: float
@@ -284,7 +294,12 @@ class ObservationProcessor:
 
         # Apply consistent augmentation across all frames if enabled
         if self.enable_augmentation:
-            player_frames = apply_consistent_augmentation(player_frames)
+            player_frames = apply_consistent_augmentation(
+                player_frames,
+                p=self.augmentation_config.get("p", 0.5),
+                intensity=self.augmentation_config.get("intensity", "medium"),
+                enable_advanced=self.augmentation_config.get("enable_advanced", False)
+            )
 
         # Stack frames along channel dimension
         result["player_frame"] = np.concatenate(player_frames, axis=-1)
@@ -296,6 +311,18 @@ class ObservationProcessor:
 
         return result
 
+    def update_augmentation_config(self, training_stage: str = None, config: Dict[str, Any] = None) -> None:
+        """Update augmentation configuration during training.
+        
+        Args:
+            training_stage: One of "early", "mid", "late" for recommended configs
+            config: Custom configuration dictionary
+        """
+        if config is not None:
+            self.augmentation_config = config
+        elif training_stage is not None:
+            self.augmentation_config = get_recommended_config(training_stage)
+    
     def reset(self) -> None:
         """Reset processor state."""
         if self.frame_history is not None:
