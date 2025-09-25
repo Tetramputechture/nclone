@@ -27,7 +27,7 @@ import numpy as np
 from PIL import Image
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
-from nclone.graph.reachability.tiered_system import TieredReachabilitySystem
+from nclone.graph.reachability.reachability_system import ReachabilitySystem
 from nclone.graph.reachability.reachability_types import PerformanceTarget
 
 # Removed legacy trajectory calculator import
@@ -328,7 +328,7 @@ if (
 
     try:
         # Initialize simplified reachability analyzer
-        reachability_analyzer = TieredReachabilitySystem()
+        reachability_analyzer = ReachabilitySystem()
 
         # Initialize level completion planner (replaces deprecated SubgoalPlanner)
         level_completion_planner = LevelCompletionPlanner()
@@ -396,7 +396,6 @@ if args.visualize_subgoals or args.export_subgoals:
                             env.level_data,
                             ninja_pos_int,
                             switch_states,
-                            PerformanceTarget.BALANCED,
                         )
                         reachable_positions = reachability_state.reachable_positions
 
@@ -613,7 +612,6 @@ if args.export_subgoals:
                         env.level_data,
                         ninja_pos_int,
                         switch_states,
-                        PerformanceTarget.BALANCED,
                     )
                     reachable_positions = reachability_state.reachable_positions
 
@@ -736,7 +734,6 @@ while running:
                                         env.level_data,
                                         ninja_pos_int,
                                         switch_states,
-                                        PerformanceTarget.FAST,
                                     )
                                 )
 
@@ -788,7 +785,6 @@ while running:
                                             env.level_data,
                                             ninja_pos_int,
                                             switch_states,
-                                            PerformanceTarget.FAST,
                                         )
                                     )
                                     subgoals = (
@@ -835,7 +831,6 @@ while running:
                                             env.level_data,
                                             ninja_pos_int,
                                             switch_states,
-                                            PerformanceTarget.FAST,
                                         )
                                     )
                                     subgoals = (
@@ -935,7 +930,6 @@ while running:
                                                 env.level_data,
                                                 ninja_pos_int,
                                                 switch_states,
-                                                PerformanceTarget.FAST,
                                             )
                                         )
                                         reachable_positions = (

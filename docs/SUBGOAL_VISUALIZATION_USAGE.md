@@ -209,8 +209,7 @@ done
 ## Related Documentation
 
 - [Subgoal Visualization Technical Guide](subgoal_visualization.md)
-- [Graph System Architecture](FILE_INDEX.md)
-- [Reachability Analysis Implementation](TIERED_REACHABILITY_IMPLEMENTATION.md)
+- [System Architecture](FILE_INDEX.md)
 - [Test Environment Documentation](../nclone/test_environment.py)
 
 ## Version History

@@ -184,7 +184,11 @@ class EdgeBuilder:
         edges = []
 
         for entity in entities:
-            entity_pos = (entity.x, entity.y)
+            # Handle both dictionary and object entities
+            if isinstance(entity, dict):
+                entity_pos = (entity["x"], entity["y"])
+            else:
+                entity_pos = (entity.x, entity.y)
 
             # Find nearby traversable positions
             nearby_positions = self._get_positions_near_entity(
