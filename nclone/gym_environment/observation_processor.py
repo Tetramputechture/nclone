@@ -297,9 +297,7 @@ class ObservationProcessor:
             player_frames = apply_consistent_augmentation(
                 player_frames,
                 p=self.augmentation_config.get("p", 0.5),
-                intensity=self.augmentation_config.get("intensity", "medium"),
-                enable_advanced=self.augmentation_config.get("enable_advanced", False),
-                game_symmetric=self.augmentation_config.get("game_symmetric", True)
+                intensity=self.augmentation_config.get("intensity", "medium")
             )
 
         # Stack frames along channel dimension
@@ -312,18 +310,17 @@ class ObservationProcessor:
 
         return result
 
-    def update_augmentation_config(self, training_stage: str = None, config: Dict[str, Any] = None, game_type: str = "platformer") -> None:
+    def update_augmentation_config(self, training_stage: str = None, config: Dict[str, Any] = None) -> None:
         """Update augmentation configuration during training.
         
         Args:
             training_stage: One of "early", "mid", "late" for recommended configs
             config: Custom configuration dictionary
-            game_type: Type of game ("platformer", "puzzle", "action")
         """
         if config is not None:
             self.augmentation_config = config
         elif training_stage is not None:
-            self.augmentation_config = get_recommended_config(training_stage, game_type)
+            self.augmentation_config = get_recommended_config(training_stage)
     
     def reset(self) -> None:
         """Reset processor state."""

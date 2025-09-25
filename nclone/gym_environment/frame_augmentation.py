@@ -31,17 +31,16 @@ import functools
 @functools.lru_cache(maxsize=None)
 def get_augmentation_pipeline(
     p: float = 0.5, 
-    intensity: str = "medium",
-    enable_advanced: bool = False,
-    game_symmetric: bool = True
+    intensity: str = "medium"
 ) -> A.ReplayCompose:
-    """Creates an augmentation pipeline optimized for visual game environments.
+    """Creates an augmentation pipeline optimized for N++ platformer game.
+
+    N++ is assumed to be horizontally symmetric, so horizontal flipping is always enabled.
+    Only core augmentations are included for stable training.
 
     Args:
         p: Probability of applying each augmentation.
         intensity: Augmentation intensity level ("light", "medium", "strong")
-        enable_advanced: Whether to include advanced augmentations
-        game_symmetric: Whether the game has horizontal symmetry (enables flipping)
 
     Returns:
         ReplayCompose pipeline that can record and replay exact transformations
@@ -70,12 +69,11 @@ def get_augmentation_pipeline(
         )
     )
     
-    # 2. Horizontal Flip - For games with symmetric mechanics (like N++)
+    # 2. Horizontal Flip - N++ has symmetric mechanics
     # N++ levels can often be approached from either direction
-    if game_symmetric:
-        augmentations.append(
-            A.HorizontalFlip(p=p * 0.4)  # Moderate probability
-        )
+    augmentations.append(
+        A.HorizontalFlip(p=p * 0.4)  # Moderate probability
+    )
     
     # 3. Cutout - Encourages global context learning (DeVries & Taylor, 2017)
     # Particularly effective for games where local features can be misleading
@@ -98,23 +96,7 @@ def get_augmentation_pipeline(
         )
     )
     
-    # 5. Advanced augmentations (optional, use with caution for games)
-    if enable_advanced:
-        # Color jitter for RGB games (limited effect on grayscale)
-        augmentations.append(
-            A.ColorJitter(
-                brightness=0.05 * scale,  # Very subtle for games
-                contrast=0.05 * scale,
-                saturation=0.02 * scale,  # Minimal saturation change
-                hue=0.01 * scale,         # Minimal hue change
-                p=p * 0.2
-            )
-        )
-        
-        # Random grayscale conversion (for RGB inputs)
-        augmentations.append(
-            A.ToGray(p=p * 0.1)  # Very low probability
-        )
+
     
     return A.ReplayCompose(augmentations)
 
@@ -124,11 +106,9 @@ def apply_augmentation(
     seed: Optional[int] = None,
     saved_params: Optional[Dict[str, Any]] = None,
     p: float = 0.5,
-    intensity: str = "medium",
-    enable_advanced: bool = False,
-    game_symmetric: bool = True
+    intensity: str = "medium"
 ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-    """Applies random augmentations to the input frame for game environments.
+    """Applies random augmentations to the input frame for N++ game.
 
     Args:
         frame: Input frame of shape (H, W, C)
@@ -136,8 +116,6 @@ def apply_augmentation(
         saved_params: Optional parameters from a previous transform to replay
         p: Probability of applying each augmentation
         intensity: Augmentation intensity level ("light", "medium", "strong")
-        enable_advanced: Whether to include advanced augmentations
-        game_symmetric: Whether the game has horizontal symmetry (enables flipping)
 
     Returns:
         Tuple of (augmented frame, saved parameters for replay)
@@ -151,9 +129,7 @@ def apply_augmentation(
     # Get augmentation pipeline with specified parameters
     transform = get_augmentation_pipeline(
         p=p, 
-        intensity=intensity, 
-        enable_advanced=enable_advanced,
-        game_symmetric=game_symmetric
+        intensity=intensity
     )
 
     # Apply augmentations
@@ -171,9 +147,7 @@ def apply_consistent_augmentation(
     frames: List[np.ndarray],
     seed: Optional[int] = None,
     p: float = 0.5,
-    intensity: str = "medium",
-    enable_advanced: bool = False,
-    game_symmetric: bool = True
+    intensity: str = "medium"
 ) -> List[np.ndarray]:
     """Applies the same random augmentations to all frames in a stack.
 
@@ -186,8 +160,6 @@ def apply_consistent_augmentation(
         seed: Optional random seed for reproducibility
         p: Probability of applying each augmentation
         intensity: Augmentation intensity level ("light", "medium", "strong")
-        enable_advanced: Whether to include advanced augmentations
-        game_symmetric: Whether the game has horizontal symmetry (enables flipping)
 
     Returns:
         List of augmented frames with same shapes as inputs
@@ -204,9 +176,7 @@ def apply_consistent_augmentation(
     # Get augmentation pipeline with specified parameters
     transform = get_augmentation_pipeline(
         p=p, 
-        intensity=intensity, 
-        enable_advanced=enable_advanced,
-        game_symmetric=game_symmetric
+        intensity=intensity
     )
 
     # Apply augmentation to the first frame and get parameters
@@ -223,57 +193,35 @@ def apply_consistent_augmentation(
     return augmented_frames
 
 
-def get_recommended_config(training_stage: str = "early", game_type: str = "platformer") -> Dict[str, Any]:
-    """Get recommended augmentation configuration for different training stages and game types.
+def get_recommended_config(training_stage: str = "early") -> Dict[str, Any]:
+    """Get recommended augmentation configuration for different training stages.
     
-    Based on visual RL research and game-specific considerations, different augmentation 
-    intensities work better at different stages of training.
+    Based on visual RL research, different augmentation intensities work better 
+    at different stages of training. Optimized for N++ platformer game.
     
     Args:
         training_stage: One of "early", "mid", "late"
-        game_type: Type of game ("platformer", "puzzle", "action")
         
     Returns:
         Dictionary with recommended augmentation parameters
     """
-    # Base configurations for different stages
-    base_configs = {
+    # Configurations for different training stages (optimized for N++)
+    configs = {
         "early": {
             "p": 0.3,
             "intensity": "light",
-            "enable_advanced": False,
-            "game_symmetric": True,
             "description": "Conservative augmentation for stable early training"
         },
         "mid": {
             "p": 0.5,
             "intensity": "medium", 
-            "enable_advanced": False,
-            "game_symmetric": True,
             "description": "Standard augmentation for main training phase"
         },
         "late": {
-            "p": 0.6,  # Slightly lower than sensor data
+            "p": 0.6,  # Moderate for games (less than sensor data)
             "intensity": "strong",
-            "enable_advanced": True,
-            "game_symmetric": True,
-            "description": "Moderate augmentation for final generalization (games need less than sensor data)"
+            "description": "Moderate augmentation for final generalization"
         }
     }
     
-    config = base_configs.get(training_stage, base_configs["mid"]).copy()
-    
-    # Game-specific adjustments
-    if game_type == "platformer":
-        # Platformers like N++ benefit from horizontal flipping
-        config["game_symmetric"] = True
-    elif game_type == "puzzle":
-        # Puzzle games may not benefit from flipping
-        config["game_symmetric"] = False
-        config["p"] *= 0.8  # Reduce overall augmentation
-    elif game_type == "action":
-        # Action games need careful augmentation to preserve reaction timing
-        config["p"] *= 0.9
-        config["game_symmetric"] = False
-    
-    return config
+    return configs.get(training_stage, configs["mid"]).copy()
