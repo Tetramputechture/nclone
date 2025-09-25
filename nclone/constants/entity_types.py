@@ -15,6 +15,7 @@ class EntityType:
     LAUNCH_PAD = 10
     ONE_WAY = 11
     DRONE_ZAP = 14
+    DRONE_CHASER = 15
     BOUNCE_BLOCK = 17
     THWUMP = 20
     TOGGLE_MINE_TOGGLED = 21

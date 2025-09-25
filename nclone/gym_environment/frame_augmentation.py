@@ -1,7 +1,25 @@
 """Frame augmentation utilities for preprocessing observation frames.
 
 This module implements various image augmentation techniques using the albumentations library.
-The augmentations are applied randomly to input frames to increase training diversity.
+The augmentations are applied randomly to input frames to increase training diversity and
+generalization for visual game environments.
+
+Based on research from RAD, DrQ-v2, and game-specific RL studies, this pipeline includes
+the most effective augmentations for game environments like N++:
+- Random crop/translate: Most stable and effective for RL, helps with position invariance
+- Color jitter: Improves generalization across visual variations (limited for grayscale games)
+- Cutout: Encourages focus on global context rather than local features
+- Random flip: Horizontal flipping for symmetric game mechanics
+- Grayscale variations: Subtle contrast/brightness changes for visual robustness
+
+Note: Gaussian noise is NOT included as it's inappropriate for clean game visuals.
+Game environments have crisp, deterministic graphics unlike sensor data.
+
+References:
+- Laskin et al. (2020): Reinforcement Learning with Augmented Data (RAD)
+- Kostrikov et al. (2020): Image Augmentation Is All You Need: Regularizing Deep Reinforcement Learning from Pixels (DrQ)
+- Yarats et al. (2021): Mastering Visual Continuous Control: Improved Data-Augmented Reinforcement Learning (DrQ-v2)
+- Raileanu et al. (2021): Automatic Data Augmentation for Generalization in Reinforcement Learning (Procgen study)
 """
 
 import numpy as np
@@ -11,37 +29,93 @@ import functools
 
 
 @functools.lru_cache(maxsize=None)
-def get_augmentation_pipeline(p: float = 0.5) -> A.ReplayCompose:
-    """Creates an augmentation pipeline with all supported transformations.
+def get_augmentation_pipeline(
+    p: float = 0.5, 
+    intensity: str = "medium"
+) -> A.ReplayCompose:
+    """Creates an augmentation pipeline optimized for N++ platformer game.
+
+    N++ is assumed to be horizontally symmetric, so horizontal flipping is always enabled.
+    Only core augmentations are included for stable training.
 
     Args:
         p: Probability of applying each augmentation.
+        intensity: Augmentation intensity level ("light", "medium", "strong")
 
     Returns:
         ReplayCompose pipeline that can record and replay exact transformations
     """
-    return A.ReplayCompose([
-        # Cutout - Apply random rectangular masks
+    # Intensity-based parameter scaling
+    intensity_scales = {
+        "light": 0.7,
+        "medium": 1.0,
+        "strong": 1.3
+    }
+    scale = intensity_scales.get(intensity, 1.0)
+    
+    augmentations = []
+    
+    # 1. Random Crop/Translate - Most effective for RL (RAD, DrQ-v2)
+    # Small translations help with position invariance in games
+    # For 84x84 frames, 4 pixels = ~0.05 normalized shift
+    shift_limit_normalized = (4 * scale) / 84.0  # Normalize to image size
+    augmentations.append(
+        A.Affine(
+            translate_percent={"x": (-shift_limit_normalized, shift_limit_normalized), 
+                             "y": (-shift_limit_normalized, shift_limit_normalized)},
+            scale=1.0,  # No scaling to maintain spatial relationships
+            rotate=0,   # No rotation to avoid training instability
+            p=p * 0.8   # Higher probability for most effective augmentation
+        )
+    )
+    
+    # 2. Horizontal Flip - N++ has symmetric mechanics
+    # N++ levels can often be approached from either direction
+    augmentations.append(
+        A.HorizontalFlip(p=p * 0.4)  # Moderate probability
+    )
+    
+    # 3. Cutout - Encourages global context learning (DeVries & Taylor, 2017)
+    # Particularly effective for games where local features can be misleading
+    augmentations.append(
         A.CoarseDropout(
-            num_holes_range=(1, 1),
-            hole_height_range=(10, 20),
-            hole_width_range=(10, 20),
-            p=p
-        ),
-    ])
+            num_holes_range=(1, 2),
+            hole_height_range=(int(6 * scale), int(12 * scale)),  # Smaller for games
+            hole_width_range=(int(6 * scale), int(12 * scale)),
+            p=p * 0.5
+        )
+    )
+    
+    # 4. Brightness/Contrast - Subtle variations for visual robustness
+    # Games have consistent lighting, so only subtle changes
+    augmentations.append(
+        A.RandomBrightnessContrast(
+            brightness_limit=0.1 * scale,  # Subtle brightness changes
+            contrast_limit=0.1 * scale,    # Subtle contrast changes
+            p=p * 0.4
+        )
+    )
+    
+
+    
+    return A.ReplayCompose(augmentations)
 
 
 def apply_augmentation(
     frame: np.ndarray,
     seed: Optional[int] = None,
-    saved_params: Optional[Dict[str, Any]] = None
+    saved_params: Optional[Dict[str, Any]] = None,
+    p: float = 0.5,
+    intensity: str = "medium"
 ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-    """Applies random augmentations to the input frame.
+    """Applies random augmentations to the input frame for N++ game.
 
     Args:
         frame: Input frame of shape (H, W, C)
         seed: Optional random seed for reproducibility
         saved_params: Optional parameters from a previous transform to replay
+        p: Probability of applying each augmentation
+        intensity: Augmentation intensity level ("light", "medium", "strong")
 
     Returns:
         Tuple of (augmented frame, saved parameters for replay)
@@ -52,8 +126,11 @@ def apply_augmentation(
     # Ensure frame is in uint8 format for albumentations
     frame = frame.astype(np.uint8)
 
-    # Get augmentation pipeline
-    transform = get_augmentation_pipeline()
+    # Get augmentation pipeline with specified parameters
+    transform = get_augmentation_pipeline(
+        p=p, 
+        intensity=intensity
+    )
 
     # Apply augmentations
     if saved_params is not None:
@@ -68,13 +145,21 @@ def apply_augmentation(
 
 def apply_consistent_augmentation(
     frames: List[np.ndarray],
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    p: float = 0.5,
+    intensity: str = "medium"
 ) -> List[np.ndarray]:
     """Applies the same random augmentations to all frames in a stack.
+
+    This is crucial for temporal consistency in RL where frame stacks represent
+    consecutive time steps. All frames in the stack must receive identical
+    augmentations to preserve temporal relationships.
 
     Args:
         frames: List of frames to augment, each of shape (H, W, C)
         seed: Optional random seed for reproducibility
+        p: Probability of applying each augmentation
+        intensity: Augmentation intensity level ("light", "medium", "strong")
 
     Returns:
         List of augmented frames with same shapes as inputs
@@ -86,18 +171,13 @@ def apply_consistent_augmentation(
         np.random.seed(seed)
 
     # Ensure frames are in uint8 format for albumentations
-    # (assuming all frames have the same dtype, apply to first for check,
-    # but albumentations will handle individual frame types if needed,
-    # though it's better if they are consistent)
     first_frame_uint8 = frames[0].astype(np.uint8)
 
-    # Get augmentation pipeline (it will be cached after the first call with a given 'p')
-    # Assuming the 'p' value used in apply_augmentation is consistent,
-    # or that get_augmentation_pipeline is called with a default 'p'
-    # that matches the implicit 'p' in the original apply_augmentation.
-    # For simplicity, we'll assume the default p=0.5 is used.
-    # If 'p' needs to be configurable here, it should be passed to this function.
-    transform = get_augmentation_pipeline() # Default p will be used
+    # Get augmentation pipeline with specified parameters
+    transform = get_augmentation_pipeline(
+        p=p, 
+        intensity=intensity
+    )
 
     # Apply augmentation to the first frame and get parameters
     data = transform(image=first_frame_uint8)
@@ -111,3 +191,37 @@ def apply_consistent_augmentation(
         augmented_frames.append(aug_frame)
 
     return augmented_frames
+
+
+def get_recommended_config(training_stage: str = "early") -> Dict[str, Any]:
+    """Get recommended augmentation configuration for different training stages.
+    
+    Based on visual RL research, different augmentation intensities work better 
+    at different stages of training. Optimized for N++ platformer game.
+    
+    Args:
+        training_stage: One of "early", "mid", "late"
+        
+    Returns:
+        Dictionary with recommended augmentation parameters
+    """
+    # Configurations for different training stages (optimized for N++)
+    configs = {
+        "early": {
+            "p": 0.3,
+            "intensity": "light",
+            "description": "Conservative augmentation for stable early training"
+        },
+        "mid": {
+            "p": 0.5,
+            "intensity": "medium", 
+            "description": "Standard augmentation for main training phase"
+        },
+        "late": {
+            "p": 0.6,  # Moderate for games (less than sensor data)
+            "intensity": "strong",
+            "description": "Moderate augmentation for final generalization"
+        }
+    }
+    
+    return configs.get(training_stage, configs["mid"]).copy()

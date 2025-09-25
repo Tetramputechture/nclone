@@ -18,11 +18,9 @@ import time
 import hashlib
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
-from enum import Enum
 import numpy as np
 
-from .tiered_system import TieredReachabilitySystem
-from .reachability_types import PerformanceTarget
+from .reachability_system import ReachabilitySystem
 from .compact_features import CompactReachabilityFeatures, FeatureConfig
 
 
@@ -33,40 +31,27 @@ class CacheEntry:
     features: np.ndarray
     timestamp: float
     computation_time_ms: float
-    performance_target: str
     cache_hits: int = 0
-
-
-class PerformanceMode(Enum):
-    """Performance modes for feature extraction."""
-
-    ULTRA_FAST = "ultra_fast"  # Tier 1: <1ms, 85% accuracy
-    FAST = "fast"  # Tier 2: <5ms, 92% accuracy
-    BALANCED = "balanced"  # Tier 2: <5ms, 92% accuracy
-    ACCURATE = "accurate"  # Tier 3: <100ms, 99% accuracy
-    PRECISE = "precise"  # Tier 3: <100ms, 99% accuracy
 
 
 class ReachabilityFeatureExtractor:
     """
     High-level interface for extracting compact reachability features.
 
-    This class provides the main API for RL integration, combining the tiered
-    reachability system with compact feature encoding. It includes intelligent
-    caching, performance monitoring, and automatic tier selection to meet
-    real-time RL training requirements.
+    This class provides the main API for RL integration, combining ultra-fast
+    reachability analysis with compact feature encoding. It includes intelligent
+    caching and performance monitoring for real-time RL training requirements.
 
     Example usage:
         extractor = ReachabilityFeatureExtractor()
         features = extractor.extract_features(
-            ninja_pos, level_data, entities, switch_states,
-            performance_mode=PerformanceMode.FAST
+            ninja_pos, level_data, entities, switch_states
         )
     """
 
     def __init__(
         self,
-        tiered_system: Optional[TieredReachabilitySystem] = None,
+        reachability_system: Optional[ReachabilitySystem] = None,
         feature_config: Optional[FeatureConfig] = None,
         cache_ttl_ms: float = 100.0,
         max_cache_size: int = 1000,
@@ -76,13 +61,15 @@ class ReachabilityFeatureExtractor:
         Initialize feature extractor.
 
         Args:
-            tiered_system: Tiered reachability system (creates default if None)
+            reachability_system: Ultra-fast reachability system (creates default if None)
             feature_config: Feature configuration (uses default if None)
             cache_ttl_ms: Cache time-to-live in milliseconds
             max_cache_size: Maximum number of cached entries
             debug: Enable debug output
         """
-        self.tiered_system = tiered_system or TieredReachabilitySystem(debug=debug)
+        self.reachability_system = reachability_system or ReachabilitySystem(
+            debug=debug
+        )
         self.feature_encoder = CompactReachabilityFeatures(
             config=feature_config, debug=debug
         )
@@ -98,36 +85,25 @@ class ReachabilityFeatureExtractor:
         self.cache_hits = 0
         self.cache_misses = 0
 
-        # Performance target mapping
-        self.performance_target_map = {
-            PerformanceMode.ULTRA_FAST: PerformanceTarget.ULTRA_FAST,
-            PerformanceMode.FAST: PerformanceTarget.FAST,
-            PerformanceMode.BALANCED: PerformanceTarget.BALANCED,
-            PerformanceMode.ACCURATE: PerformanceTarget.ACCURATE,
-            PerformanceMode.PRECISE: PerformanceTarget.PRECISE,
-        }
-
     def extract_features(
         self,
         ninja_position: Tuple[float, float],
         level_data: Any,
         entities: List[Any],
         switch_states: Optional[Dict[str, bool]] = None,
-        performance_mode: PerformanceMode = PerformanceMode.FAST,
     ) -> np.ndarray:
         """
         Extract compact reachability features for RL integration.
 
         This is the main entry point for feature extraction. It automatically
-        handles caching, performance tier selection, and error recovery to
-        provide reliable feature vectors for RL training.
+        handles caching and provides reliable feature vectors for RL training
+        using ultra-fast flood fill analysis.
 
         Args:
             ninja_position: Current ninja position (x, y)
             level_data: Level data structure
             entities: List of game entities
             switch_states: Current switch activation states
-            performance_mode: Performance/accuracy tradeoff
 
         Returns:
             64-dimensional numpy array with encoded features
@@ -155,13 +131,11 @@ class ReachabilityFeatureExtractor:
         # Cache miss - compute features
         self.cache_misses += 1
 
-        # Get reachability analysis using appropriate tier
-        performance_target = self.performance_target_map[performance_mode]
-        reachability_result = self.tiered_system.analyze_reachability(
+        # Get reachability analysis using ultra-fast system
+        reachability_result = self.reachability_system.analyze_reachability(
             level_data=level_data,
             ninja_position=ninja_position,
             switch_states=switch_states,
-            performance_target=performance_target,
         )
 
         # Encode features
@@ -178,29 +152,22 @@ class ReachabilityFeatureExtractor:
         self.extraction_times.append(computation_time_ms)
 
         # Cache result
-        self._cache_features(
-            cache_key, features, computation_time_ms, performance_mode.value
-        )
+        self._cache_features(cache_key, features, computation_time_ms)
 
         if self.debug:
-            print(
-                f"DEBUG: Feature extraction completed in {computation_time_ms:.2f}ms "
-                f"using {performance_mode.value} mode"
-            )
+            print(f"DEBUG: Feature extraction completed in {computation_time_ms:.2f}ms")
 
         return features
 
     def extract_features_batch(
         self,
         batch_data: List[Dict[str, Any]],
-        performance_mode: PerformanceMode = PerformanceMode.FAST,
     ) -> np.ndarray:
         """
         Extract features for a batch of states (for batch RL training).
 
         Args:
             batch_data: List of dicts with keys: ninja_position, level_data, entities, switch_states
-            performance_mode: Performance/accuracy tradeoff
 
         Returns:
             Array of shape (batch_size, 64) with encoded features
@@ -214,7 +181,6 @@ class ReachabilityFeatureExtractor:
                 level_data=data["level_data"],
                 entities=data["entities"],
                 switch_states=data.get("switch_states"),
-                performance_mode=performance_mode,
             )
 
         return batch_features
@@ -344,7 +310,9 @@ class ReachabilityFeatureExtractor:
 
         # Add level data hash (simplified)
         if hasattr(level_data, "tiles") and hasattr(level_data.tiles, "shape"):
-            level_hash = f"{level_data.tiles.shape}_{hash(level_data.tiles.tobytes()) % 10000}"
+            level_hash = (
+                f"{level_data.tiles.shape}_{hash(level_data.tiles.tobytes()) % 10000}"
+            )
         elif hasattr(level_data, "shape"):
             level_hash = f"{level_data.shape}_{hash(level_data.tobytes()) % 10000}"
         else:
@@ -382,7 +350,6 @@ class ReachabilityFeatureExtractor:
         cache_key: str,
         features: np.ndarray,
         computation_time_ms: float,
-        performance_target: str,
     ):
         """Cache computed features."""
         current_time = time.time() * 1000  # Convert to milliseconds
@@ -391,7 +358,6 @@ class ReachabilityFeatureExtractor:
             features=features.copy(),
             timestamp=current_time,
             computation_time_ms=computation_time_ms,
-            performance_target=performance_target,
         )
 
         self.feature_cache[cache_key] = entry
@@ -434,14 +400,12 @@ class FeatureAnalyzer:
     def analyze_feature_distribution(
         self,
         test_states: List[Dict[str, Any]],
-        performance_mode: PerformanceMode = PerformanceMode.FAST,
     ) -> Dict[str, Any]:
         """
         Analyze feature distribution across multiple states.
 
         Args:
             test_states: List of test states to analyze
-            performance_mode: Performance mode for extraction
 
         Returns:
             Dictionary with distribution analysis
@@ -450,9 +414,7 @@ class FeatureAnalyzer:
             return {}
 
         # Extract features for all test states
-        features_batch = self.extractor.extract_features_batch(
-            test_states, performance_mode
-        )
+        features_batch = self.extractor.extract_features_batch(test_states)
 
         analysis = {
             "num_states": len(test_states),
@@ -508,69 +470,6 @@ class FeatureAnalyzer:
             }
 
         return analysis
-
-    def compare_performance_modes(
-        self, test_states: List[Dict[str, Any]], modes: List[PerformanceMode] = None
-    ) -> Dict[str, Any]:
-        """
-        Compare feature extraction across different performance modes.
-
-        Args:
-            test_states: List of test states
-            modes: Performance modes to compare (uses all if None)
-
-        Returns:
-            Dictionary with comparison results
-        """
-        if modes is None:
-            modes = list(PerformanceMode)
-
-        comparison = {
-            "modes": [mode.value for mode in modes],
-            "timing_comparison": {},
-            "feature_similarity": {},
-            "accuracy_analysis": {},
-        }
-
-        mode_features = {}
-        mode_timings = {}
-
-        # Extract features using each mode
-        for mode in modes:
-            start_time = time.perf_counter()
-            features = self.extractor.extract_features_batch(test_states, mode)
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-
-            mode_features[mode.value] = features
-            mode_timings[mode.value] = elapsed_ms / len(
-                test_states
-            )  # Average per state
-
-        comparison["timing_comparison"] = mode_timings
-
-        # Compare feature similarity between modes
-        if len(modes) > 1:
-            base_mode = modes[0].value
-            base_features = mode_features[base_mode]
-
-            for mode in modes[1:]:
-                mode_name = mode.value
-                mode_feat = mode_features[mode_name]
-
-                # Calculate similarity metrics
-                mse = np.mean((base_features - mode_feat) ** 2)
-                mae = np.mean(np.abs(base_features - mode_feat))
-                correlation = np.corrcoef(base_features.flatten(), mode_feat.flatten())[
-                    0, 1
-                ]
-
-                comparison["feature_similarity"][f"{base_mode}_vs_{mode_name}"] = {
-                    "mse": float(mse),
-                    "mae": float(mae),
-                    "correlation": float(correlation),
-                }
-
-        return comparison
 
     def generate_feature_report(
         self, test_states: List[Dict[str, Any]], output_file: Optional[str] = None
@@ -662,24 +561,23 @@ class FeatureAnalyzer:
 
                     report_lines.append("")
 
-        # Performance mode comparison
+        # Performance summary (single ultra-fast mode)
         if len(test_states) > 0:
-            comparison = self.compare_performance_modes(
+            start_time = time.perf_counter()
+            self.extractor.extract_features_batch(
                 test_states[:5]
-            )  # Use subset for speed
+            )  # Use subset for timing
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            avg_time_per_state = elapsed_ms / min(5, len(test_states))
 
             report_lines.extend(
                 [
-                    "## Performance Mode Comparison",
-                    "| Mode | Avg Time (ms) |",
-                    "|------|---------------|",
+                    "## Performance Summary",
+                    f"- Average extraction time per state: {avg_time_per_state:.2f}ms",
+                    "- Ultra-fast mode (flood fill approximation)",
+                    "",
                 ]
             )
-
-            for mode, timing in comparison["timing_comparison"].items():
-                report_lines.append(f"| {mode} | {timing:.2f} |")
-
-            report_lines.append("")
 
         report = "\n".join(report_lines)
 

@@ -14,8 +14,7 @@ from .visualization import GraphVisualizer, VisualizationConfig
 from .navigation import PathfindingEngine, PathfindingAlgorithm
 from .common import NodeType, EdgeType
 from .hierarchical_builder import HierarchicalGraphBuilder
-from .reachability.tiered_system import TieredReachabilitySystem
-from .reachability.reachability_types import PerformanceTarget
+from .reachability.reachability_system import ReachabilitySystem
 
 
 class OverlayMode(IntEnum):
@@ -601,7 +600,7 @@ class EnhancedDebugOverlay:
 
         # Initialize reachability analyzer if needed
         if self.reachability_analyzer is None:
-            self.reachability_analyzer = TieredReachabilitySystem(debug=True)
+            self.reachability_analyzer = ReachabilitySystem(debug=True)
 
         # Get current ninja position
         ninja_pos = self._get_ninja_position()
@@ -618,7 +617,9 @@ class EnhancedDebugOverlay:
                 switch_states = {}
                 self.current_reachability_state = (
                     self.reachability_analyzer.analyze_reachability(
-                        level_data, ninja_pos_int, switch_states, PerformanceTarget.FAST
+                        level_data,
+                        ninja_pos_int,
+                        switch_states,
                     )
                 )
         except Exception as e:
@@ -631,7 +632,7 @@ class EnhancedDebugOverlay:
         if not self.current_reachability_state:
             return
 
-        # Draw reachable positions (both ReachabilityApproximation and ReachabilityResult have this)
+        # Draw reachable positions
         if hasattr(self.current_reachability_state, "reachable_positions"):
             self._draw_reachable_positions(
                 overlay, self.current_reachability_state.reachable_positions

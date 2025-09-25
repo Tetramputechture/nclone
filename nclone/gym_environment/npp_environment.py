@@ -26,7 +26,7 @@ from ..graph.level_data import LevelData
 from ..graph.common import GraphData
 
 # Reachability system imports (optional)
-from ..graph.reachability.tiered_system import TieredReachabilitySystem
+from ..graph.reachability.reachability_system import ReachabilitySystem
 from ..graph.reachability.feature_extractor import (
     ReachabilityFeatureExtractor,
     PerformanceMode,
@@ -155,7 +155,7 @@ class NppEnvironment(gymnasium.Env):
         self._reachability_cache_ttl = 0.1  # 100ms cache TTL
         self._last_reachability_time = 0
 
-        self._reachability_system = TieredReachabilitySystem()
+        self._reachability_system = ReachabilitySystem()
         self._reachability_extractor = ReachabilityFeatureExtractor()
 
         # Store all configuration flags for logging and debugging

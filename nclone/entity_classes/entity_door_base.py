@@ -28,17 +28,13 @@ class EntityDoorBase(Entity):
             * Entity position: Switch/trigger location
             * Supports both vertical and horizontal orientations
         - Collision System:
-            * Integrates with grid-based collision detection
-            * Updates grid edges for proper wall detection
             * Maintains separate collision segments per cell
 
     Technical Implementation:
         - Grid Integration:
             * Creates and manages grid segments for collision
-            * Updates grid edge dictionaries for navigation
             * Handles cell-based positioning and updates
         - State Tracking:
-            * Supports state queries for AI decision making
             * Maintains orientation and switch position data
             * Handles state change propagation to physics system
 
@@ -61,34 +57,35 @@ class EntityDoorBase(Entity):
         self.is_vertical = orientation in (0, 4)
         vec = map_orientation_to_vector(orientation)
         # Find the cell that the door is in for the grid segment.
-        door_xcell = math.floor((self.xpos - 12*vec[0]) / 24)
-        door_ycell = math.floor((self.ypos - 12*vec[1]) / 24)
+        door_xcell = math.floor((self.xpos - 12 * vec[0]) / 24)
+        door_ycell = math.floor((self.ypos - 12 * vec[1]) / 24)
         door_cell = clamp_cell(door_xcell, door_ycell)
         # Find the half cell of the door for the grid edges.
-        door_half_xcell = 2*(door_cell[0] + 1)
-        door_half_ycell = 2*(door_cell[1] + 1)
+        door_half_xcell = 2 * (door_cell[0] + 1)
+        door_half_ycell = 2 * (door_cell[1] + 1)
         # Create the grid segment and grid edges.
         self.grid_edges = []
         if self.is_vertical:
-            self.segment = GridSegmentLinear((self.xpos, self.ypos-12), (self.xpos, self.ypos+12),
-                                             oriented=False)
-            self.grid_edges.append((door_half_xcell, door_half_ycell-2))
-            self.grid_edges.append((door_half_xcell, door_half_ycell-1))
+            self.segment = GridSegmentLinear(
+                (self.xpos, self.ypos - 12), (self.xpos, self.ypos + 12), oriented=False
+            )
+            self.grid_edges.append((door_half_xcell, door_half_ycell - 2))
+            self.grid_edges.append((door_half_xcell, door_half_ycell - 1))
             for grid_edge in self.grid_edges:
                 sim.ver_grid_edge_dic[grid_edge] += 1
         else:
-            self.segment = GridSegmentLinear((self.xpos-12, self.ypos), (self.xpos+12, self.ypos),
-                                             oriented=False)
-            self.grid_edges.append((door_half_xcell-2, door_half_ycell))
-            self.grid_edges.append((door_half_xcell-1, door_half_ycell))
+            self.segment = GridSegmentLinear(
+                (self.xpos - 12, self.ypos), (self.xpos + 12, self.ypos), oriented=False
+            )
+            self.grid_edges.append((door_half_xcell - 2, door_half_ycell))
+            self.grid_edges.append((door_half_xcell - 1, door_half_ycell))
             for grid_edge in self.grid_edges:
                 sim.hor_grid_edge_dic[grid_edge] += 1
         sim.segment_dic[door_cell].append(self.segment)
         # Update position and cell so it corresponds to the switch and not the door.
         self.xpos = self.sw_xpos
         self.ypos = self.sw_ypos
-        self.cell = clamp_cell(math.floor(self.xpos / 24),
-                               math.floor(self.ypos / 24))
+        self.cell = clamp_cell(math.floor(self.xpos / 24), math.floor(self.ypos / 24))
 
     def change_state(self, closed):
         """Change the state of the door from closed to open or from open to closed."""

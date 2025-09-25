@@ -21,7 +21,7 @@ from .level_data import LevelData
 from .feature_extraction import FeatureExtractor
 from ..constants.entity_types import EntityType
 from .edge_building import EdgeBuilder
-from .reachability.tiered_system import TieredReachabilitySystem
+from .reachability.reachability_system import ReachabilitySystem
 
 
 class GraphConstructor:
@@ -45,7 +45,7 @@ class GraphConstructor:
         """
         self.feature_extractor = feature_extractor
         self.edge_builder = edge_builder
-        self.reachability_analyzer = TieredReachabilitySystem(debug=debug)
+        self.reachability_analyzer = ReachabilitySystem(debug=debug)
         self.debug = debug
 
     def build_sub_cell_graph(
