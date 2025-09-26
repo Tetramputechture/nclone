@@ -143,7 +143,7 @@ class ObservationProcessor:
         
         # Set augmentation configuration optimized for platformer games
         if augmentation_config is None:
-            self.augmentation_config = get_recommended_config("mid", "platformer")
+            self.augmentation_config = get_recommended_config("mid")
         else:
             self.augmentation_config = augmentation_config
 
@@ -211,27 +211,80 @@ class ObservationProcessor:
         return player_frame
 
     def process_game_state(self, obs: Dict[str, Any]) -> np.ndarray:
-        """Process game state into normalized feature vector."""
-        # Calculate normalized vectors to objectives
-        to_switch = calculate_vector(
-            obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
-        )
-        to_exit = calculate_vector(
-            obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
-        )
-
-        # Extract the original game state which contains ninja state and entity states
-        game_state = obs["game_state"]
-
-        # Combine all features
-        processed_state = np.concatenate(
-            [
-                game_state,  # Original ninja and entity states
-                [obs["time_remaining"]],  # Time remaining
-                [*to_switch, *to_exit],  # Vectors to objectives
-            ]
-        ).astype(np.float32)
-
+        """Process game state into enhanced normalized feature vector."""
+        # Extract the ninja state (now 30 features)
+        ninja_state = obs["game_state"][:30] if len(obs["game_state"]) >= 30 else obs["game_state"]
+        ninja_state = list(ninja_state)  # Convert to list for modification
+        
+        # Calculate entity proximity features (features 24-27 in ninja state)
+        ninja_x, ninja_y = obs["player_x"], obs["player_y"]
+        
+        # Calculate nearest hazard distance (normalized by screen diagonal)
+        screen_diagonal = (LEVEL_WIDTH**2 + LEVEL_HEIGHT**2) ** 0.5
+        nearest_hazard_dist = screen_diagonal  # Start with max distance
+        hazard_threat = 0.0
+        
+        # Check entity states for hazards (mines, drones, thwumps, etc.)
+        if "entity_states" in obs and len(obs["entity_states"]) > 0:
+            entity_states = obs["entity_states"]
+            # This is a simplified approach - in a full implementation, 
+            # we'd parse the entity states to find hazard positions
+            # For now, use a placeholder calculation
+            nearest_hazard_dist = min(nearest_hazard_dist, screen_diagonal * 0.5)
+            hazard_threat = 0.1  # Low threat level as placeholder
+        
+        # Normalize hazard distance to [-1, 1]
+        nearest_hazard_norm = (nearest_hazard_dist / screen_diagonal) * 2 - 1
+        
+        # Calculate nearest collectible distance
+        switch_dist = ((ninja_x - obs["switch_x"])**2 + (ninja_y - obs["switch_y"])**2) ** 0.5
+        nearest_collectible_norm = (switch_dist / screen_diagonal) * 2 - 1
+        
+        # Update ninja state with computed proximity features
+        if len(ninja_state) >= 30:
+            ninja_state[23] = nearest_hazard_norm  # Feature 24: nearest hazard distance
+            ninja_state[24] = nearest_collectible_norm  # Feature 25: nearest collectible distance  
+            ninja_state[25] = hazard_threat * 2 - 1  # Feature 26: hazard threat level (normalized to [-1,1])
+            # Feature 27 (interaction cooldown) is already computed in get_ninja_state
+        
+        # Calculate level progress features (features 28-30 in ninja state)
+        # Switch activation progress
+        if obs.get("switch_activated", False):
+            switch_progress = 1.0  # Switch is activated
+        else:
+            # Progress based on distance to switch (closer = higher progress)
+            max_switch_dist = screen_diagonal
+            switch_progress = 1.0 - (switch_dist / max_switch_dist)
+            switch_progress = switch_progress * 2 - 1  # Normalize to [-1, 1]
+        
+        # Exit accessibility
+        exit_accessibility = 1.0 if obs.get("switch_activated", False) else -1.0
+        
+        # Level completion progress (combination of switch and exit progress)
+        if obs.get("switch_activated", False):
+            exit_dist = ((ninja_x - obs["exit_door_x"])**2 + (ninja_y - obs["exit_door_y"])**2) ** 0.5
+            exit_progress = 1.0 - (exit_dist / screen_diagonal)
+            completion_progress = (switch_progress + exit_progress) / 2
+        else:
+            completion_progress = switch_progress * 0.5  # Only switch progress matters
+        
+        # Update ninja state with computed progress features
+        if len(ninja_state) >= 30:
+            ninja_state[27] = switch_progress  # Feature 28: switch activation progress
+            ninja_state[28] = exit_accessibility  # Feature 29: exit accessibility
+            ninja_state[29] = completion_progress  # Feature 30: level completion progress
+        
+        # Convert back to numpy array
+        ninja_state = np.array(ninja_state, dtype=np.float32)
+        
+        # For backward compatibility, if we have entity states, include them
+        # but the new design focuses on the enhanced ninja state
+        if len(obs["game_state"]) > 30:
+            entity_states = obs["game_state"][30:]
+            processed_state = np.concatenate([ninja_state, entity_states])
+        else:
+            processed_state = ninja_state
+        
         return processed_state
 
     def process_rendered_global_view(self, screen: np.ndarray) -> np.ndarray:

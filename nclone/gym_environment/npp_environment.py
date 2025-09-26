@@ -29,7 +29,6 @@ from ..graph.common import GraphData
 from ..graph.reachability.reachability_system import ReachabilitySystem
 from ..graph.reachability.feature_extractor import (
     ReachabilityFeatureExtractor,
-    PerformanceMode,
 )
 
 
@@ -191,11 +190,12 @@ class NppEnvironment(gymnasium.Env):
                 shape=(RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1),
                 dtype=np.uint8,
             ),
-            # Game state features
+            # Game state features (enhanced ninja state + entity states)
             "game_state": box.Box(
                 low=-1,
                 high=1,
                 shape=(GAME_STATE_CHANNELS,),
+                dtype=np.float32,
             ),
             # Reachability features
             "reachability_features": box.Box(
@@ -380,7 +380,8 @@ class NppEnvironment(gymnasium.Env):
             "sim_frame": self.nplay_headless.sim.frame,
             "doors_opened": self.nplay_headless.get_doors_opened(),
             "entity_states": entity_states_raw,  # For PBRS hazard detection
-            "reachability_features": self._get_reachability_features(),
+            # "reachability_features": self._get_reachability_features(),  # Temporarily disabled for testing
+            "reachability_features": np.zeros(64, dtype=np.float32),  # Placeholder
         }
 
         return obs
@@ -814,7 +815,6 @@ class NppEnvironment(gymnasium.Env):
             ninja_position=ninja_pos,
             level_data=level_data,
             entities=entities,
-            performance_mode=PerformanceMode.ULTRA_FAST,
         )
 
         # Cache the result
