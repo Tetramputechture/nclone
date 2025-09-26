@@ -17,6 +17,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import zlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
@@ -496,8 +497,173 @@ class BinaryReplayParser:
 
         return type_mapping.get(entity_type, f"unknown_{entity_type}")
 
+    def get_comprehensive_ninja_state(self, sim: Simulator) -> Dict[str, Any]:
+        """
+        Extract comprehensive ninja state matching npp-rl expectations.
+        
+        Args:
+            sim: Simulator instance
+            
+        Returns:
+            Dictionary with comprehensive ninja state information
+        """
+        ninja = sim.ninja
+        
+        # Calculate velocity magnitude for normalization
+        velocity_magnitude = (ninja.xspeed**2 + ninja.yspeed**2) ** 0.5
+        max_velocity = 3.333 * 2  # MAX_HOR_SPEED * 2 for vertical velocity
+        
+        # === Core Movement State (8 features) ===
+        velocity_mag_norm = min(velocity_magnitude / max_velocity, 1.0) * 2 - 1  # [-1, 1]
+        
+        # Velocity direction (normalized, handling zero velocity)
+        if velocity_magnitude > 1e-6:
+            velocity_dir_x = ninja.xspeed / velocity_magnitude
+            velocity_dir_y = ninja.yspeed / velocity_magnitude
+        else:
+            velocity_dir_x = 0.0
+            velocity_dir_y = 0.0
+            
+        # Movement state categories
+        ground_movement = 1.0 if ninja.state in [0, 1, 2] else -1.0
+        air_movement = 1.0 if ninja.state in [3, 4] else -1.0
+        wall_interaction = 1.0 if ninja.state == 5 else -1.0
+        special_states = 1.0 if ninja.state in [6, 7, 8, 9] else -1.0
+        airborne_status = 1.0 if ninja.airborn else -1.0
+        
+        # === Input and Buffer State (5 features) ===
+        horizontal_input = float(ninja.hor_input)  # Already -1, 0, or 1
+        jump_input = 1.0 if ninja.jump_input else -1.0
+        
+        # Buffer states (normalized to [-1, 1])
+        buffer_window_size = 5.0
+        jump_buffer_norm = (max(ninja.jump_buffer, 0) / buffer_window_size) * 2 - 1
+        floor_buffer_norm = (max(ninja.floor_buffer, 0) / buffer_window_size) * 2 - 1
+        wall_buffer_norm = (max(ninja.wall_buffer, 0) / buffer_window_size) * 2 - 1
+        
+        # === Surface Contact Information (6 features) ===
+        floor_contact = (min(ninja.floor_count, 1) * 2) - 1
+        wall_contact = (min(ninja.wall_count, 1) * 2) - 1
+        ceiling_contact = (min(ninja.ceiling_count, 1) * 2) - 1
+        
+        floor_normal_strength = (ninja.floor_normalized_x**2 + ninja.floor_normalized_y**2) ** 0.5
+        floor_normal_strength = (floor_normal_strength * 2) - 1
+        
+        # Wall normal direction
+        if ninja.wall_count > 0 and hasattr(ninja, 'wall_normal'):
+            wall_direction = float(ninja.wall_normal)
+        else:
+            wall_direction = 0.0
+            
+        surface_slope = ninja.floor_normalized_y  # Already [-1, 1]
+        
+        # === Momentum and Physics (4 features) ===
+        accel_x = (ninja.xspeed - ninja.xspeed_old) / 3.333  # Normalize by MAX_HOR_SPEED
+        accel_y = (ninja.yspeed - ninja.yspeed_old) / 3.333
+        accel_x = max(-1.0, min(1.0, accel_x))
+        accel_y = max(-1.0, min(1.0, accel_y))
+        
+        # Momentum preservation
+        prev_velocity_mag = (ninja.xspeed_old**2 + ninja.yspeed_old**2) ** 0.5
+        if prev_velocity_mag > 1e-6 and velocity_magnitude > 1e-6:
+            momentum_preservation = (ninja.xspeed * ninja.xspeed_old + ninja.yspeed * ninja.yspeed_old) / (velocity_magnitude * prev_velocity_mag)
+        else:
+            momentum_preservation = 0.0
+            
+        impact_risk = velocity_mag_norm if (ninja.floor_count > 0 or ninja.ceiling_count > 0) else 0.0
+        
+        # === Entity Proximity and Hazards (4 features) ===
+        # These will be placeholders for now, could be enhanced with actual entity analysis
+        nearest_hazard_distance = 0.0
+        nearest_collectible_distance = 0.0
+        hazard_threat_level = 0.0
+        interaction_cooldown = (ninja.jump_duration / 45.0) * 2 - 1  # MAX_JUMP_DURATION = 45
+        
+        # === Level Progress and Objectives (3 features) ===
+        # These are placeholders that would normally be calculated from game state
+        switch_progress = 0.0
+        exit_accessibility = -1.0
+        completion_progress = -1.0
+        
+        # Construct the 30-feature game state array
+        game_state = [
+            velocity_mag_norm, velocity_dir_x, velocity_dir_y,
+            ground_movement, air_movement, wall_interaction, special_states, airborne_status,
+            horizontal_input, jump_input, jump_buffer_norm, floor_buffer_norm, wall_buffer_norm,
+            floor_contact, wall_contact, ceiling_contact, floor_normal_strength, wall_direction, surface_slope,
+            accel_x, accel_y, momentum_preservation, impact_risk,
+            nearest_hazard_distance, nearest_collectible_distance, hazard_threat_level, interaction_cooldown,
+            switch_progress, exit_accessibility, completion_progress
+        ]
+        
+        return {
+            "position": {"x": float(ninja.xpos), "y": float(ninja.ypos)},
+            "velocity": {"x": float(ninja.xspeed), "y": float(ninja.yspeed)},
+            "state": int(ninja.state),
+            "airborne": bool(ninja.airborn),
+            "walled": bool(ninja.walled),
+            "jump_duration": int(ninja.jump_duration),
+            "applied_gravity": float(ninja.applied_gravity),
+            "applied_drag": float(ninja.applied_drag),
+            "applied_friction": float(ninja.applied_friction),
+            "floor_normal": {"x": float(ninja.floor_normalized_x), "y": float(ninja.floor_normalized_y)},
+            "ceiling_normal": {"x": float(ninja.ceiling_normalized_x), "y": float(ninja.ceiling_normalized_y)},
+            "buffers": {
+                "jump": int(ninja.jump_buffer),
+                "floor": int(ninja.floor_buffer),
+                "wall": int(ninja.wall_buffer),
+                "launch_pad": int(ninja.launch_pad_buffer)
+            },
+            "contact_counts": {
+                "floor": int(ninja.floor_count),
+                "wall": int(ninja.wall_count),
+                "ceiling": int(ninja.ceiling_count)
+            },
+            "game_state": game_state,  # 30-feature array for npp-rl compatibility
+            "gold_collected": int(ninja.gold_collected),
+            "doors_opened": int(ninja.doors_opened)
+        }
+
+    def save_map_data(self, map_data: List[int], output_path: str) -> str:
+        """
+        Save map data to a separate file alongside the JSONL.
+        
+        Args:
+            map_data: Map data bytes
+            output_path: Base output path for JSONL file
+            
+        Returns:
+            Path to the saved map data file
+        """
+        # Create map data filename based on JSONL filename
+        base_path = os.path.splitext(output_path)[0]
+        map_data_path = f"{base_path}_map.dat"
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(map_data_path), exist_ok=True)
+        
+        # Save map data as binary file
+        with open(map_data_path, 'wb') as f:
+            # Convert to bytes if needed
+            if isinstance(map_data, list) and len(map_data) > 0:
+                # Ensure all values are in valid byte range (0-255)
+                byte_data = []
+                for val in map_data:
+                    if isinstance(val, int):
+                        # Clamp to byte range
+                        byte_data.append(max(0, min(255, val)))
+                    else:
+                        byte_data.append(0)
+                map_bytes = bytes(byte_data)
+            else:
+                map_bytes = bytes(map_data) if isinstance(map_data, (list, tuple)) else map_data
+            f.write(map_bytes)
+            
+        logger.info(f"Saved map data to {map_data_path} ({len(map_data)} bytes)")
+        return map_data_path
+
     def simulate_replay(
-        self, inputs: List[int], map_data: List[int], level_id: str, session_id: str
+        self, inputs: List[int], map_data: List[int], level_id: str, session_id: str, output_path: str = ""
     ) -> List[Dict[str, Any]]:
         """
         Simulate a replay and extract frame-by-frame data.
@@ -507,11 +673,17 @@ class BinaryReplayParser:
             map_data: Map data
             level_id: Level identifier
             session_id: Session identifier
+            output_path: Output path for JSONL file (used to determine map data path)
 
         Returns:
             List of frame dictionaries in JSONL format
         """
         frames = []
+        
+        # Save map data to separate file if output path provided
+        map_data_path = None
+        if output_path:
+            map_data_path = self.save_map_data(map_data, output_path)
 
         # Decode inputs
         hor_inputs, jump_inputs = self.decode_inputs(inputs)
@@ -531,26 +703,15 @@ class BinaryReplayParser:
             hor_input = hor_inputs[sim.frame]
             jump_input = jump_inputs[sim.frame]
 
+            # Get comprehensive ninja state
+            ninja_state = self.get_comprehensive_ninja_state(sim)
+
             # Create frame data before simulation step
             frame_data = {
                 "timestamp": start_time + (sim.frame * (1.0 / 60.0)),  # 60 FPS
                 "level_id": level_id,
                 "frame_number": sim.frame,
-                "player_state": {
-                    "position": {
-                        "x": float(sim.ninja.xpos),
-                        "y": float(sim.ninja.ypos),
-                    },
-                    "velocity": {
-                        "x": float(sim.ninja.xspeed),
-                        "y": float(sim.ninja.yspeed),
-                    },
-                    "on_ground": sim.ninja.state in [0, 1, 2],  # Ground states
-                    "wall_sliding": sim.ninja.state == 5,  # Wall sliding state
-                    "jump_time_remaining": max(0.0, (45 - sim.ninja.jump_timer) / 45.0)
-                    if hasattr(sim.ninja, "jump_timer")
-                    else 0.0,
-                },
+                "player_state": ninja_state,
                 "player_inputs": {
                     "left": hor_input == -1,
                     "right": hor_input == 1,
@@ -569,6 +730,10 @@ class BinaryReplayParser:
                     "completion_status": "in_progress",
                 },
             }
+            
+            # Add map data path if available
+            if map_data_path and output_path:
+                frame_data["map_data_path"] = os.path.relpath(map_data_path, os.path.dirname(output_path))
 
             frames.append(frame_data)
 
@@ -633,14 +798,15 @@ class BinaryReplayParser:
                 )
 
                 try:
+                    # Save to JSONL file
+                    output_file = output_dir / f"{session_id}.jsonl"
+                    
                     # Simulate and extract frames
                     frames = self.simulate_replay(
-                        inputs, map_data, level_id, session_id
+                        inputs, map_data, level_id, session_id, str(output_file)
                     )
 
                     if frames:
-                        # Save to JSONL file
-                        output_file = output_dir / f"{session_id}.jsonl"
                         self.save_frames_to_jsonl(frames, output_file)
 
                         self.stats["frames_generated"] += len(frames)
@@ -697,12 +863,13 @@ class BinaryReplayParser:
 
             logger.info(f"Processing single replay file: {replay_file.name}")
 
+            # Create output file path
+            output_file = output_dir / f"{session_id}.jsonl"
+            
             # Simulate and extract frames
-            frames = self.simulate_replay(inputs, map_data, level_id, session_id)
+            frames = self.simulate_replay(inputs, map_data, level_id, session_id, str(output_file))
 
             if frames:
-                # Save to JSONL file
-                output_file = output_dir / f"{session_id}.jsonl"
                 self.save_frames_to_jsonl(frames, output_file)
 
                 self.stats["frames_generated"] += len(frames)
