@@ -73,9 +73,10 @@ class HierarchicalGraphBuilder:
     def __init__(self, debug: bool = False):
         """Initialize simplified hierarchical builder."""
         self.debug = debug
-        self.edge_builder = EdgeBuilder(debug=debug)
         self.reachability_system = ReachabilitySystem(debug=debug)
-        # self.edge_builder.set_reachability_system(self.reachability_system)
+        self.edge_builder = EdgeBuilder(
+            debug=debug, reachability_system=self.reachability_system
+        )
 
     def build_graph(
         self, level_data, entities: List = None, ninja_pos: Tuple[int, int] = None
