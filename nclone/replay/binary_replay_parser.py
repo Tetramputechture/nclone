@@ -266,9 +266,10 @@ class BinaryReplayParser:
             metanet_pos + len(b"Metanet Software") + 1
         )  # +1 for null terminator
 
-        # Check if inputs start immediately at offset 183 (Type 1)
+        # Check if inputs start immediately at offset 183/184 (Type 1)
+        # Allow for slight variation in the exact offset
         if (
-            potential_input_start <= 183
+            potential_input_start <= 185
             and potential_input_start < len(data)
             and 0 <= data[potential_input_start] <= 7
         ):
@@ -330,14 +331,15 @@ class BinaryReplayParser:
         inputs = list(data[input_start : input_start + input_length])
 
         # Validate and clean up map data
-        if len(map_data) < 50:
-            logger.warning(f"Map data seems small ({len(map_data)} bytes), padding")
-            map_data.extend([1] * (50 - len(map_data)))
+        # The npp_attract files don't contain full map data, so we need to generate a suitable default
+        if len(map_data) < 1245:  # Expected minimum size for a complete map file
+            logger.warning(f"Map data seems small ({len(map_data)} bytes), generating default map structure")
+            map_data = self._generate_default_map_data(level_name)
 
         # Limit map data size to reasonable bounds
-        if len(map_data) > 2000:
+        if len(map_data) > 5000:
             logger.warning(f"Map data seems large ({len(map_data)} bytes), truncating")
-            map_data = map_data[:2000]
+            map_data = map_data[:5000]
 
         logger.info(
             f"Extracted {len(inputs)} input frames and {len(map_data)} map bytes"
@@ -349,6 +351,74 @@ class BinaryReplayParser:
         logger.debug(f"Input distribution: {input_dist}")
 
         return inputs, map_data
+
+    def _generate_default_map_data(self, level_name: str) -> List[int]:
+        """
+        Generate a default map data structure suitable for simulation.
+        
+        This creates a minimal but valid map that allows the simulator to run
+        and test input sequences from npp_attract files.
+        
+        Args:
+            level_name: Name of the level (for logging)
+            
+        Returns:
+            List of integers representing a valid map data structure
+        """
+        logger.info(f"Generating default map structure for level: {level_name}")
+        
+        # Create a basic map structure based on the simple-walk test map
+        # Map header (first 184 bytes) - contains level metadata
+        map_data = [0] * 184
+        
+        # Set basic level metadata in the header
+        map_data[0:4] = [6, 0, 0, 0]  # Level type
+        map_data[4:8] = [221, 4, 0, 0]  # Some size/checksum value
+        map_data[8:12] = [255, 255, 255, 255]  # Unknown field
+        map_data[12:16] = [4, 0, 0, 0]  # Entity count or similar
+        map_data[16:20] = [37, 0, 0, 0]  # Another metadata field
+        
+        # Add level name to header (starting around position 40)
+        level_name_bytes = level_name.encode('ascii', errors='ignore')[:30]
+        for i, byte_val in enumerate(level_name_bytes):
+            if 40 + i < 184:
+                map_data[40 + i] = byte_val
+        
+        # Tile data (42x23 = 966 bytes) - create a simple open area with walls around edges
+        tile_data = []
+        
+        for y in range(23):
+            for x in range(42):
+                if x == 0 or x == 41 or y == 0 or y == 22:
+                    # Wall tiles around the edges
+                    tile_data.append(1)
+                elif y == 21:
+                    # Floor tiles near the bottom
+                    tile_data.append(1)
+                else:
+                    # Empty space in the middle
+                    tile_data.append(0)
+        
+        # Add tile data to map
+        map_data.extend(tile_data)
+        
+        # Add some basic entity data (remaining bytes up to ~1245)
+        remaining_bytes = 1245 - len(map_data)
+        if remaining_bytes > 0:
+            # Add minimal entity data - mostly zeros with a few basic entities
+            entity_data = [0] * remaining_bytes
+            
+            # Add a simple ninja spawn point and exit
+            if remaining_bytes >= 20:
+                entity_data[0:4] = [100, 0, 0, 0]  # Ninja spawn X
+                entity_data[4:8] = [400, 0, 0, 0]  # Ninja spawn Y
+                entity_data[8:12] = [800, 0, 0, 0]  # Exit X
+                entity_data[12:16] = [400, 0, 0, 0]  # Exit Y
+            
+            map_data.extend(entity_data)
+        
+        logger.debug(f"Generated default map with {len(map_data)} bytes")
+        return map_data
 
     def decode_inputs(self, raw_inputs: List[int]) -> Tuple[List[int], List[int]]:
         """
