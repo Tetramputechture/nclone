@@ -7,23 +7,11 @@ and focuses on simple adjacency and reachability relationships.
 """
 
 import numpy as np
-from typing import List, Tuple, Set, Dict, Optional
-from dataclasses import dataclass
+from typing import List, Tuple, Set
 from .reachability.reachability_system import ReachabilitySystem
-from .common import EdgeType, NodeType, GraphData
+from .common import EdgeType, NodeType, GraphData, Edge
 from .level_data import LevelData
 from ..constants.physics_constants import TILE_PIXEL_SIZE
-
-
-@dataclass
-class Edge:
-    """edge representation for strategic RL."""
-
-    source: Tuple[int, int]
-    target: Tuple[int, int]
-    edge_type: EdgeType
-    weight: float = 1.0
-    metadata: Optional[Dict] = None
 
 
 class EdgeBuilder:
@@ -115,7 +103,7 @@ class EdgeBuilder:
                         Edge(
                             source=pos,
                             target=neighbor,
-                            edge_type=EdgeType.WALK,  # Use WALK instead of ADJACENT
+                            edge_type=EdgeType.ADJACENT,  # Direct adjacency between nodes
                             weight=1.0,
                         )
                     )
@@ -123,13 +111,16 @@ class EdgeBuilder:
         return edges
 
     def _create_reachable_edges(
-        self, ninja_pos: Tuple[int, int], level_data: LevelData, traversable_positions: Set[Tuple[int, int]]
+        self,
+        ninja_pos: Tuple[int, int],
+        level_data: LevelData,
+        traversable_positions: Set[Tuple[int, int]],
     ) -> List[Edge]:
         """Create simplified edges based on reachability analysis."""
         edges = []
 
         # Get reachable positions from flood fill
-        switch_states = getattr(level_data, 'switch_states', {})
+        switch_states = getattr(level_data, "switch_states", {})
         result = self.reachability_system.analyze_reachability(
             level_data=level_data,
             ninja_position=ninja_pos,
@@ -152,7 +143,7 @@ class EdgeBuilder:
                             Edge(
                                 source=ninja_pos,
                                 target=pos,
-                                edge_type=EdgeType.JUMP,  # Use JUMP to indicate reachability
+                                edge_type=EdgeType.REACHABLE,  # Can reach via movement
                                 weight=distance / TILE_PIXEL_SIZE,
                             )
                         )
@@ -232,4 +223,3 @@ def create_simplified_graph_data(edges: List[Edge], level_data: LevelData) -> Gr
         num_nodes=num_nodes,
         num_edges=num_edges,
     )
-
