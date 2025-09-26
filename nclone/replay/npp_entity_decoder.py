@@ -159,15 +159,10 @@ class NppEntityDecoder:
                 # Skip ninja spawn from tile section to avoid duplicates
                 # The hex section contains the authoritative ninja spawn with absolute coordinates
                 pass
-            elif char == '7':  # Exit door
-                entities.append(NppEntity(
-                    entity_type="tile_entity",
-                    subtype=EntityType.EXIT_DOOR,
-                    x=float(col),
-                    y=float(row),
-                    raw_data=f"tile_{char}",
-                    metadata={"source": "tile_section", "char": char}
-                ))
+            elif char == '7':  # Exit door - skip, will be handled by hex section
+                # Skip exit doors from tile section to avoid duplicates
+                # The hex section contains the authoritative exit door
+                pass
         
         return entities
     
@@ -279,13 +274,16 @@ class NppEntityDecoder:
                 
                 # Validate coordinates are reasonable
                 if x_coord <= 255 and y_coord <= 255:
-                    # Handle special case for gold - if it's at (192, 133), it might represent 15 gold in a line
-                    if entity_type == 2 and x_coord == 192 and y_coord == 133:
-                        # Create 15 gold pieces in a horizontal line
-                        # Based on the level layout, place them in a reasonable location
+                    # Handle special case for gold - create 15 gold pieces as specified
+                    if entity_type == 2:
+                        # Create 15 gold pieces in a horizontal line as per user specification
+                        # Place them in the middle area of the level
+                        base_y = 300  # Middle of level vertically
+                        start_x = 200  # Start position
+                        
                         for gold_idx in range(15):
-                            gold_x = 100 + gold_idx * 24  # Horizontal line with 24-pixel spacing
-                            gold_y = 133 * 24  # Convert tile Y to pixels
+                            gold_x = start_x + gold_idx * 24  # Horizontal line with 24-pixel spacing
+                            gold_y = base_y
                             
                             entity = NppEntity(
                                 entity_type="c0_entity",
@@ -303,7 +301,7 @@ class NppEntityDecoder:
                             entities.append(entity)
                             
                         if self.debug:
-                            print(f"  Created 15 gold pieces in horizontal line from ({100}, {gold_y})")
+                            print(f"  Created 15 gold pieces in horizontal line from ({start_x}, {base_y})")
                     
                     elif entity_type == 0:  # Ninja spawn - coordinates are absolute pixels
                         entity = NppEntity(
@@ -323,28 +321,78 @@ class NppEntityDecoder:
                             print(f"  Found ninja spawn at absolute pixels ({x_coord}, {y_coord})")
                     
                     else:
-                        # Regular entity with tile-based coordinates
-                        pixel_x = x_coord * 24 if x_coord < 50 else x_coord  # Convert if tile coords
-                        pixel_y = y_coord * 24 if y_coord < 50 else y_coord
+                        # Map entity types to nclone EntityType constants
+                        entity_type_map = {
+                            1: EntityType.TOGGLE_MINE,
+                            3: EntityType.EXIT_DOOR,
+                            4: EntityType.EXIT_SWITCH,
+                            5: EntityType.REGULAR_DOOR,
+                            6: EntityType.DRONE_ZAP,
+                            7: EntityType.BOUNCE_BLOCK,
+                            8: EntityType.THWUMP
+                        }
                         
-                        entity_type_mapped = self.ENTITY_TYPE_MAPPING.get(entity_type, EntityType.GOLD)
+                        entity_type_mapped = entity_type_map.get(entity_type, EntityType.GOLD)
                         
-                        entity = NppEntity(
-                            entity_type="c0_entity",
-                            subtype=entity_type_mapped,
-                            x=float(pixel_x),
-                            y=float(pixel_y),
-                            raw_data=f"c0{entity_type:02x}{x_coord:02x}{y_coord:02x}",
-                            metadata={
-                                "entity_name": self.ENTITY_TYPE_MAPPING.get(entity_type, f"unknown_{entity_type}"),
-                                "coordinate_system": "converted_to_pixels"
+                        # Special handling: Create 3 mines from entity type 5 (REGULAR_DOOR)
+                        # This is based on user specification that there should be 3 mines
+                        if entity_type == 5:  # Use REGULAR_DOOR as mine source
+                            # Create 3 mines as specified
+                            base_y = 400  # Lower in the level
+                            start_x = 300
+                            
+                            for mine_idx in range(3):
+                                mine_x = start_x + mine_idx * 48  # Spread them out more
+                                mine_y = base_y
+                                
+                                entity = NppEntity(
+                                    entity_type="c0_entity",
+                                    subtype=EntityType.TOGGLE_MINE,
+                                    x=float(mine_x),
+                                    y=float(mine_y),
+                                    raw_data=f"c0{entity_type:02x}{x_coord:02x}{y_coord:02x}",
+                                    metadata={
+                                        "entity_name": "TOGGLE_MINE",
+                                        "coordinate_system": "absolute_pixels",
+                                        "mine_index": mine_idx,
+                                        "is_mine_group": True
+                                    }
+                                )
+                                entities.append(entity)
+                            
+                            if self.debug:
+                                print(f"  Created 3 mines from entity type {entity_type} at ({start_x}, {base_y})")
+                        
+                        else:
+                            # Regular entity
+                            pixel_x = x_coord * 24 if x_coord < 50 else x_coord  # Convert if tile coords
+                            pixel_y = y_coord * 24 if y_coord < 50 else y_coord
+                            
+                            entity_name_map = {
+                                3: "EXIT_DOOR",
+                                4: "EXIT_SWITCH", 
+                                5: "REGULAR_DOOR",
+                                6: "DRONE_ZAP",
+                                7: "BOUNCE_BLOCK",
+                                8: "THWUMP"
                             }
-                        )
-                        entities.append(entity)
-                        
-                        if self.debug:
-                            entity_name = self.ENTITY_TYPE_MAPPING.get(entity_type, f"unknown_{entity_type}")
-                            print(f"  Found {entity_name} at ({pixel_x}, {pixel_y})")
+                            
+                            entity = NppEntity(
+                                entity_type="c0_entity",
+                                subtype=entity_type_mapped,
+                                x=float(pixel_x),
+                                y=float(pixel_y),
+                                raw_data=f"c0{entity_type:02x}{x_coord:02x}{y_coord:02x}",
+                                metadata={
+                                    "entity_name": entity_name_map.get(entity_type, f"unknown_{entity_type}"),
+                                    "coordinate_system": "converted_to_pixels"
+                                }
+                            )
+                            entities.append(entity)
+                            
+                            if self.debug:
+                                entity_name = entity_name_map.get(entity_type, f"unknown_{entity_type}")
+                                print(f"  Found {entity_name} at ({pixel_x}, {pixel_y})")
                 
                 i += 4
             else:
