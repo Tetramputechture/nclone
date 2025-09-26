@@ -9,7 +9,7 @@
 *   **Deep RL Focus:** Includes a reward system to guide DRL agent learning, and serves as the environment for the RL agent developed in the `npp-rl` subdirectory.
 *   **Headless Mode:** Allows the simulation to run without a graphical interface, significantly speeding up DRL training processes.
 *   **Customizable Environments:** The environment (`gym_environment/npp_environment.py`) can be configured for different experimental setups.
-*   **Reachability System:** Reachability analysis optimized for Deep RL training with flood-fill based fast approximations for real-time guidance.
+*   **Simplified Reachability System:** Ultra-fast OpenCV flood fill reachability analysis (<1ms) with 8-dimensional strategic features optimized for RL training.
 *   **Hierarchical Graph Processing:** Multi-resolution graph system (6px, 24px, 96px) for efficient pathfinding and AI navigation.
 
 ## Deep Reinforcement Learning Agent
@@ -98,34 +98,66 @@ This command will launch 4 independent headless simulations, each running for 50
 
 Each simulation runs in its own process, allowing for parallel execution.
 
- **Reachability System** (<1ms, ~85% accuracy): OpenCV-based flood fill for real-time RL guidance
+## Simplified Reachability System
+
+The reachability system has been simplified to reduce overengineering while maintaining optimal performance for RL training.
 
 ### Key Components
 
 #### ReachabilitySystem (`nclone/graph/reachability/reachability_system.py`)
-- Provides unified interface for RL integration
-- Handles caching and optimization for repeated queries
+- Ultra-fast OpenCV flood fill implementation (<1ms performance)
+- Tile-aware and door/switch state-aware analysis
+- Clean interface for RL integration
 
-#### OpenCV Flood Fill (`nclone/graph/reachability/opencv_flood_fill.py`)
-- Ultra-fast reachability approximation using computer vision techniques
-- Achieves 55x speedup over traditional physics-based analysis
+#### Simplified Feature Extraction (`nclone/graph/reachability/compact_features.py`)
+- **8-dimensional strategic features** (reduced from 64)
+- Focus on connectivity and strategic information
+- Lets RL system learn movement patterns through experience
 
-### Performance Benefits
+#### Streamlined Edge Building (`nclone/graph/edge_building.py`)
+- Basic connectivity using WALK and JUMP edge types
+- Direct use of flood fill results
+- Simplified from complex physics calculations
 
-- **Real-Time Compatible**: Reachability analysis runs in <1ms for immediate RL feedback
-- **Memory Efficient**: Optimized data structures and caching strategies
-- **RL-Optimized**: 64-dimensional feature vectors for neural network integration
+### 8-Dimensional Feature Set
+
+1. **Reachable Area Ratio** - Proportion of level currently accessible
+2. **Objective Distance** - Normalized distance to current objective  
+3. **Switch Accessibility** - Fraction of important switches reachable
+4. **Exit Accessibility** - Whether exit is currently reachable
+5. **Hazard Proximity** - Distance to nearest reachable hazard
+6. **Connectivity Score** - Overall connectivity measure
+7. **Analysis Confidence** - Confidence in reachability analysis
+8. **Computation Time** - Performance metric (normalized)
+
+### Performance Characteristics
+
+- **Reachability Analysis**: <1ms (OpenCV flood fill)
+- **Feature Extraction**: <5ms (8D features)
+- **Total Pipeline**: <10ms (meets RL training requirements)
+- **Memory Usage**: 32 bytes per feature vector (vs 256 bytes previously)
 
 ### Usage
 
-The system is automatically integrated into the gym environment. For manual testing:
-
 ```python
-from nclone.graph.reachability import ReachabilitySystem
+from nclone.graph.reachability.feature_extractor import ReachabilityFeatureExtractor
 
-system = ReachabilitySystem()
-features = system.analyze_reachability(level_data, entities, ninja_pos)
+# Initialize simplified extractor
+extractor = ReachabilityFeatureExtractor(debug=True)
+
+# Extract 8-dimensional strategic features
+features = extractor.extract_features(
+    ninja_position=(120, 120),
+    level_data=level_data,
+    entities=entities,
+    switch_states=switch_states
+)
+
+print(f"Features shape: {features.shape}")  # (8,)
+print(f"Feature names: {extractor.get_feature_names()}")
 ```
+
+For detailed information, see [SIMPLIFIED_REACHABILITY_SYSTEM.md](SIMPLIFIED_REACHABILITY_SYSTEM.md).
 
 ## Troubleshooting
 
