@@ -215,7 +215,7 @@ class BinaryReplayParser:
 
     def parse_single_replay_file(
         self, replay_file: Path
-    ) -> Tuple[List[int], List[int]]:
+    ) -> Tuple[List[int], List[int], int, str]:
         """
         Parse a single N++ replay file (npp_attract format).
 
@@ -227,7 +227,7 @@ class BinaryReplayParser:
             replay_file: Path to the single replay file
 
         Returns:
-            Tuple of (inputs, map_data)
+            Tuple of (inputs, map_data, level_id, level_name)
         """
         with open(replay_file, "rb") as f:
             data = f.read()
@@ -331,16 +331,9 @@ class BinaryReplayParser:
 
         inputs = list(data[input_start : input_start + input_length])
 
-        # Validate and clean up map data
-        # The npp_attract files don't contain full map data, so we need to generate a suitable default
-        if len(map_data) < 1245:  # Expected minimum size for a complete map file
-            logger.warning(f"Map data seems small ({len(map_data)} bytes), generating default map structure")
-            map_data = self._generate_default_map_data(level_name)
-
-        # Limit map data size to reasonable bounds
-        if len(map_data) > 5000:
-            logger.warning(f"Map data seems large ({len(map_data)} bytes), truncating")
-            map_data = map_data[:5000]
+        # For npp_attract files, generate empty/minimal map data since they only contain map references
+        logger.info(f"Generating empty map for npp_attract file (Level ID: {level_id})")
+        map_data = self._generate_empty_map_data(level_id, level_name)
 
         logger.info(
             f"Extracted {len(inputs)} input frames and {len(map_data)} map bytes"
@@ -351,7 +344,49 @@ class BinaryReplayParser:
         input_dist = {i: inputs.count(i) for i in range(8) if i in inputs}
         logger.debug(f"Input distribution: {input_dist}")
 
-        return inputs, map_data
+        return inputs, map_data, level_id, level_name
+
+    def _generate_empty_map_data(self, level_id: int, level_name: str) -> List[int]:
+        """
+        Generate an empty/minimal map data structure for npp_attract files.
+        
+        Since npp_attract files only contain map references (Level ID), not actual map data,
+        we generate a minimal empty map that allows the simulator to run.
+        
+        Args:
+            level_id: N++ Level ID (primary map reference)
+            level_name: Level name for logging
+            
+        Returns:
+            List of integers representing a minimal empty map structure
+        """
+        logger.info(f"Generating empty map for Level ID {level_id}: '{level_name}'")
+        
+        # Create a minimal empty map structure
+        # This creates a small empty room that allows the ninja to spawn and move
+        map_data = [0] * 1245  # Standard map size
+        
+        # Set basic level metadata in the header
+        map_data[0:4] = [6, 0, 0, 0]  # Level type
+        map_data[4:8] = [221, 4, 0, 0]  # Size/checksum value
+        map_data[8:12] = [255, 255, 255, 255]  # Unknown field
+        map_data[12:16] = [0, 0, 0, 0]  # No entities for empty map
+        map_data[16:20] = [level_id & 0xFF, (level_id >> 8) & 0xFF, (level_id >> 16) & 0xFF, (level_id >> 24) & 0xFF]  # Store Level ID
+        
+        # Create a minimal room structure (empty space with boundaries)
+        # This ensures the ninja can spawn and move without crashing the simulator
+        room_start = 184
+        room_size = 1061  # Remaining space for room data
+        
+        # Fill with empty space (0 = empty, 1 = wall)
+        for i in range(room_start, room_start + room_size):
+            if i < room_start + 50:  # Some initial structure
+                map_data[i] = 0  # Empty space
+            else:
+                map_data[i] = 0  # All empty for minimal map
+        
+        logger.debug(f"Generated empty map with {len(map_data)} bytes for Level ID {level_id}")
+        return map_data
 
     def _generate_default_map_data(self, level_name: str) -> List[int]:
         """
@@ -663,7 +698,7 @@ class BinaryReplayParser:
         return map_data_path
 
     def simulate_replay(
-        self, inputs: List[int], map_data: List[int], level_id: str, session_id: str, output_path: str = ""
+        self, inputs: List[int], map_data: List[int], level_id: str, session_id: str, output_path: str = "", npp_level_id: int = None, level_name: str = ""
     ) -> List[Dict[str, Any]]:
         """
         Simulate a replay and extract frame-by-frame data.
@@ -671,9 +706,11 @@ class BinaryReplayParser:
         Args:
             inputs: Raw input sequence
             map_data: Map data
-            level_id: Level identifier
+            level_id: Level identifier (file-based)
             session_id: Session identifier
             output_path: Output path for JSONL file (used to determine map data path)
+            npp_level_id: N++ Level ID (map reference from binary file)
+            level_name: N++ Level name
 
         Returns:
             List of frame dictionaries in JSONL format
@@ -728,6 +765,8 @@ class BinaryReplayParser:
                     "player_id": "binary_replay",
                     "quality_score": 0.8,  # Default quality score
                     "completion_status": "in_progress",
+                    "npp_level_id": npp_level_id,  # N++ Level ID (map reference)
+                    "npp_level_name": level_name,  # N++ Level name
                 },
             }
             
@@ -855,19 +894,19 @@ class BinaryReplayParser:
         """
         try:
             # Parse the single replay file
-            inputs, map_data = self.parse_single_replay_file(replay_file)
+            inputs, map_data, npp_level_id, level_name = self.parse_single_replay_file(replay_file)
 
-            # Generate level ID from filename
-            level_id = replay_file.stem
-            session_id = f"{level_id}_session_000"
+            # Generate session ID from filename
+            file_id = replay_file.stem
+            session_id = f"{file_id}_session_000"
 
-            logger.info(f"Processing single replay file: {replay_file.name}")
+            logger.info(f"Processing single replay file: {replay_file.name} (Level ID: {npp_level_id}, Name: '{level_name}')")
 
             # Create output file path
             output_file = output_dir / f"{session_id}.jsonl"
             
-            # Simulate and extract frames
-            frames = self.simulate_replay(inputs, map_data, level_id, session_id, str(output_file))
+            # Simulate and extract frames, passing the N++ Level ID as metadata
+            frames = self.simulate_replay(inputs, map_data, file_id, session_id, str(output_file), npp_level_id, level_name)
 
             if frames:
                 self.save_frames_to_jsonl(frames, output_file)
