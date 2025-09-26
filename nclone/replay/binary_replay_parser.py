@@ -26,6 +26,7 @@ import hashlib
 
 from ..nsim import Simulator
 from ..sim_config import SimConfig
+from .map_loader import MapLoader
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +51,20 @@ class BinaryReplayParser:
     LEVEL_WIDTH = 1056
     LEVEL_HEIGHT = 600
 
-    def __init__(self):
-        """Initialize the parser."""
+    def __init__(self, map_file_path: Optional[str] = None):
+        """
+        Initialize the parser.
+        
+        Args:
+            map_file_path: Optional path to N++ map definition file for real map data
+        """
         self.stats = {
             "files_processed": 0,
             "frames_generated": 0,
             "replays_processed": 0,
             "replays_failed": 0,
         }
+        self.map_loader = MapLoader(Path(map_file_path) if map_file_path else None)
 
     def _is_compressed_data(self, data: bytes) -> bool:
         """
@@ -348,18 +355,34 @@ class BinaryReplayParser:
 
     def _generate_empty_map_data(self, level_id: int, level_name: str) -> List[int]:
         """
-        Generate an empty/minimal map data structure for npp_attract files.
+        Generate map data for npp_attract files.
         
-        Since npp_attract files only contain map references (Level ID), not actual map data,
-        we generate a minimal empty map that allows the simulator to run.
+        First tries to load real map data using the map loader, then falls back
+        to generating empty map data if no real map is found.
         
         Args:
             level_id: N++ Level ID (primary map reference)
             level_name: Level name for logging
             
         Returns:
-            List of integers representing a minimal empty map structure
+            List of integers representing map structure
         """
+        # Try to find real map data first using enhanced correlation
+        real_map = self.map_loader.find_map_by_name(level_name, level_id)
+        if not real_map:
+            real_map = self.map_loader.find_map_by_id(level_id)
+        
+        if real_map:
+            map_name, map_data_str, source_file = real_map
+            logger.info(f"Found real map data for '{level_name}' (ID: {level_id}) -> '{map_name}' from {source_file}")
+            try:
+                # Convert N++ map format to nclone format
+                map_bytes = self.map_loader.convert_map_data_to_nclone_format(map_data_str)
+                return list(map_bytes)
+            except Exception as e:
+                logger.warning(f"Failed to convert real map data: {e}, falling back to empty map")
+        
+        # Fall back to empty map generation
         logger.info(f"Generating empty map for Level ID {level_id}: '{level_name}'")
         
         # Create a minimal empty map structure

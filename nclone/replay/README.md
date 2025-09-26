@@ -38,14 +38,141 @@ npp_attract/
 ├── 0               # Binary file: Type 1 format with embedded input sequence
 ├── 1               # Binary file: Type 1 format with embedded input sequence
 ├── 2               # Binary file: Type 1 format with embedded input sequence
-└── ...             # Additional attract mode replays
+└── ...             # Additional attract mode replays (typically 0-10)
 ```
 
 **npp_attract Format Structure:**
-- **Type 1 Format**: Input data starts at offset 184-185 bytes
-- **Type 2 Format**: Different structure (auto-detected when encountered)
+
+The npp_attract format contains N++ intro/tutorial level replays with embedded level references and input sequences. These files have been reverse-engineered to support two distinct binary formats:
+
+###### Binary Format Specification
+
+**Common Header (First 20 bytes):**
+```
+Offset  Size  Type     Description
+0-3     4     uint32   Level ID (primary map reference, e.g., 1292-1687)
+4-7     4     uint32   Size/Checksum value
+8-11    4     uint32   Unknown field (often 0xFFFFFFFF)
+12-15   4     uint32   Entity count or flags
+16      1     uint8    Format type flag (determines Type 1 vs Type 2)
+17-19   3     bytes    Additional header data
+```
+
+**Type 1 Format (Most Common):**
+- **Detection**: Format flag and size patterns indicate Type 1
+- **Input Data Location**: Starts at offset 184 bytes
+- **Structure**: `[Header][Padding/Metadata][Input Sequence]`
+- **Input Length**: Determined by file size minus header offset
+- **Map Data**: Level ID references external map definitions
+
+**Type 2 Format (Less Common):**
+- **Detection**: Different format flag and size patterns
+- **Input Data Location**: Variable offset (auto-detected)
+- **Structure**: `[Header][Map Data Section][Input Sequence]`
+- **Input Length**: Calculated based on embedded map data size
+- **Map Data**: May contain embedded map information
+
+###### Level ID Mapping
+
+The Level ID field (bytes 0-3) serves as the primary map reference:
+
+| Level ID Range | Description | Example Names |
+|----------------|-------------|---------------|
+| 1292-1327 | Basic Tutorial Levels | "he basics", "alljumptroduction" |
+| 1328-1400 | Movement Tutorials | "wall-to-wall", "accepting your limitations" |
+| 1401-1500 | Advanced Mechanics | "jump mechanics", "wall jumping" |
+| 1501-1687 | Complex Scenarios | "complex navigation", "precision timing" |
+
+**Level Name Extraction:**
+Level names are extracted from the binary data using pattern matching and are often truncated or contain artifacts (e.g., "he basics" instead of "the basics").
+
+###### Map Data Correlation
+
+Since npp_attract files contain level references rather than complete map data, the system supports multiple correlation strategies:
+
+**1. Official Levels Directory Support:**
+```bash
+# Use official_levels/ directory containing multiple .txt files
+python -m nclone.replay.video_generator \
+  --input npp_attract/0 \
+  --output video.mp4 \
+  --binary-replay \
+  --official-levels official_levels/
+```
+
+**2. Single Map File Support:**
+```bash
+# Use single map definition file
+python -m nclone.replay.video_generator \
+  --input npp_attract/0 \
+  --output video.mp4 \
+  --binary-replay \
+  --map-file levels.txt
+```
+
+**3. Correlation Strategies:**
+- **Exact Name Match**: Direct match between attract level name and map file level name
+- **Fuzzy Matching**: Similarity-based matching using n-gram analysis
+- **Level ID Correlation**: Match by extracted Level ID if available in map files
+- **Cleaned Name Matching**: Remove common prefixes/suffixes for better matching
+- **Fallback to Empty Maps**: Generate minimal playable maps when no match found
+
+###### Map Definition File Format
+
+Official level files use the N++ standard format:
+```
+$level_name#map_data#
+$another_level#map_data#
+...
+```
+
+**Example:**
+```
+$the basics#0000000000000000000000000000000000000000000000000000000000000000#
+$wall jumping tutorial#1111111111111111111111111111111111111111111111111111111111111111#
+```
+
+###### Automatic Format Detection
+
+The parser automatically detects the format type using multiple heuristics:
+
+```python
+def detect_format_type(data: bytes) -> str:
+    """
+    Detect npp_attract format type based on binary patterns.
+    
+    Type 1 Indicators:
+    - Format flag at offset 16
+    - Specific size/checksum patterns
+    - Input data starts at offset 184
+    
+    Type 2 Indicators:
+    - Different format flag patterns
+    - Variable input data offset
+    - Embedded map data sections
+    """
+```
+
+###### Input Sequence Processing
+
+Input sequences use the same encoding as trace mode files:
+
+| Byte Value | Horizontal Movement | Jump | Combined Action |
+|------------|-------------------|------|-----------------|
+| 0 | 0 (none) | 0 (no) | No input |
+| 1 | 0 (none) | 1 (yes) | Jump only |
+| 2 | 1 (right) | 0 (no) | Right only |
+| 3 | 1 (right) | 1 (yes) | Right + Jump |
+| 4 | -1 (left) | 0 (no) | Left only |
+| 5 | -1 (left) | 1 (yes) | Left + Jump |
+| 6 | -1 (left) | 0 (no) | Left only (alternate) |
+| 7 | -1 (left) | 1 (yes) | Left + Jump (alternate) |
+
+**Processing Features:**
 - **Automatic Format Detection**: Parser identifies format type and processes accordingly
 - **Map Data Generation**: Creates valid map structure when insufficient data is available
+- **Enhanced Correlation**: Smart matching between attract files and official level definitions
+- **Fallback Support**: Generates empty maps when no official level match is found
 
 #### Input Encoding
 
@@ -168,6 +295,12 @@ python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 
 # Generate video with custom map data
 python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 --custom-map map.dat
 
+# Generate video from binary replay with official levels directory
+python -m nclone.replay.video_generator --input npp_attract/0 --output video.mp4 --binary-replay --official-levels official_levels/
+
+# Generate video from binary replay with single map file
+python -m nclone.replay.video_generator --input npp_attract/0 --output video.mp4 --binary-replay --map-file levels.txt
+
 # Enable verbose logging
 python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 --verbose
 ```
@@ -181,6 +314,8 @@ python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 
 | `--binary-replay` | Input is binary replay file (not JSONL) | False |
 | `--fps` | Video framerate | 60 |
 | `--custom-map` | Custom map file for rendering | Auto-detect |
+| `--map-file` | Single N++ map definition file | None |
+| `--official-levels` | Directory containing official N++ level .txt files | None |
 | `--verbose` | Enable detailed logging | False |
 
 #### Video Output Specifications

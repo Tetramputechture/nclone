@@ -310,7 +310,7 @@ class VideoGenerator:
             return False
 
     def generate_video_from_binary_replay(
-        self, binary_replay_file: Path, output_video: Path
+        self, binary_replay_file: Path, output_video: Path, map_file: Optional[str] = None
     ) -> bool:
         """
         Generate video from binary replay file.
@@ -318,13 +318,14 @@ class VideoGenerator:
         Args:
             binary_replay_file: Path to binary replay file
             output_video: Output video file path
+            map_file: Optional path to N++ map definition file
 
         Returns:
             True if video generation succeeded
         """
         try:
             # Parse binary replay to get frames
-            parser = BinaryReplayParser()
+            parser = BinaryReplayParser(map_file_path=map_file)
             
             # Create temporary JSONL file
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -551,6 +552,12 @@ Examples:
         "--custom-map", type=str, help="Custom map file to use for video generation"
     )
     parser.add_argument(
+        "--map-file", type=str, help="N++ map definition file for real map data (format: $name#mapdata#)"
+    )
+    parser.add_argument(
+        "--official-levels", type=str, help="Directory containing official N++ level .txt files"
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
@@ -569,10 +576,13 @@ Examples:
     # Initialize video generator
     video_generator = VideoGenerator(fps=args.fps)
 
+    # Determine map source (prioritize official_levels over single map_file)
+    map_source = args.official_levels if args.official_levels else args.map_file
+    
     # Generate video
     if args.binary_replay:
         success = video_generator.generate_video_from_binary_replay(
-            args.input, args.output
+            args.input, args.output, map_source
         )
     else:
         success = video_generator.generate_video_from_jsonl(
