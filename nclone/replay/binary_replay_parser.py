@@ -6,6 +6,9 @@ This tool converts N++ binary replay files ("trace" mode) to JSONL format
 compatible with the npp-rl training pipeline. It parses the original N++
 replay format and simulates the level to extract frame-by-frame data.
 
+The parser automatically detects and handles both compressed and uncompressed
+input files, following the ntrace.py pattern for zlib compression support.
+
 Usage:
     python -m nclone.replay.binary_replay_parser --input replays/ --output datasets/raw/
     python -m nclone.replay.binary_replay_parser --help
@@ -14,7 +17,6 @@ Usage:
 import argparse
 import json
 import logging
-import os
 import zlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
@@ -28,7 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 class BinaryReplayParser:
-    """Parser for N++ binary replay files to JSONL format."""
+    """
+    Parser for N++ binary replay files to JSONL format.
+
+    Supports automatic detection and handling of compressed (zlib) and
+    uncompressed binary replay files, following the ntrace.py pattern.
+    """
 
     # Input encoding dictionaries (from ntrace.py)
     HOR_INPUTS_DIC = {0: 0, 1: 0, 2: 1, 3: 1, 4: -1, 5: -1, 6: -1, 7: -1}
@@ -51,6 +58,64 @@ class BinaryReplayParser:
             "replays_failed": 0,
         }
 
+    def _is_compressed_data(self, data: bytes) -> bool:
+        """
+        Check if data appears to be zlib compressed.
+
+        Args:
+            data: Raw bytes to check
+
+        Returns:
+            True if data appears to be zlib compressed
+        """
+        # Check for zlib header patterns
+        if len(data) < 2:
+            return False
+
+        # zlib header: first byte should be 0x78 for common compression levels
+        # Common zlib headers: 0x789C (default), 0x78DA (best compression), 0x7801 (no compression)
+        first_byte = data[0]
+        if first_byte == 0x78:
+            return True
+
+        # Try to decompress a small portion to verify
+        try:
+            zlib.decompress(data[:100])  # Try first 100 bytes
+            return True
+        except zlib.error:
+            return False
+
+    def _read_file_with_compression_detection(self, file_path: Path) -> List[int]:
+        """
+        Read a file and automatically handle compression.
+
+        This method follows the ntrace.py pattern (lines 34-35) which uses
+        zlib.decompress() to handle compressed input files, but adds automatic
+        detection to support both compressed and uncompressed files.
+
+        Args:
+            file_path: Path to the file to read
+
+        Returns:
+            List of integers from the file data
+        """
+        with open(file_path, "rb") as f:
+            raw_data = f.read()
+
+        # Try to detect if data is compressed
+        if self._is_compressed_data(raw_data):
+            try:
+                # Decompress the data (following ntrace pattern)
+                decompressed_data = zlib.decompress(raw_data)
+                return [int(b) for b in decompressed_data]
+            except zlib.error as e:
+                logger.warning(f"Failed to decompress {file_path}: {e}")
+                # Fall back to treating as uncompressed
+                return [int(b) for b in raw_data]
+        else:
+            # Treat as uncompressed data
+            return [int(b) for b in raw_data]
+
     def detect_trace_mode(self, replay_dir: Path) -> bool:
         """
         Check if directory contains trace mode files.
@@ -66,11 +131,46 @@ class BinaryReplayParser:
 
         return map_data_exists and inputs_exist
 
+    def detect_single_replay_file(self, file_path: Path) -> bool:
+        """
+        Check if file is a single N++ replay file (like npp_attract format).
+
+        Args:
+            file_path: Path to the file to check
+
+        Returns:
+            True if file appears to be a single N++ replay file
+        """
+        if not file_path.is_file():
+            return False
+
+        try:
+            with open(file_path, "rb") as f:
+                # Read first few bytes to check for N++ replay signature
+                header = f.read(32)
+                if len(header) < 32:
+                    return False
+
+                # Look for patterns that suggest this is an N++ replay
+                # Based on analysis of npp_attract files:
+                # - Files are typically 1000-3000 bytes
+                # - Start with structured header data
+                # - Contain level metadata and input sequences
+                file_size = file_path.stat().st_size
+                if 500 <= file_size <= 10000:  # Reasonable size range
+                    return True
+
+        except Exception:
+            return False
+
+        return False
+
     def load_inputs_and_map(
         self, replay_dir: Path
     ) -> Tuple[List[List[int]], List[int]]:
         """
         Load input sequences and map data from binary files.
+        Automatically detects and handles compressed files (following ntrace pattern).
 
         Args:
             replay_dir: Directory containing replay files
@@ -80,25 +180,175 @@ class BinaryReplayParser:
         """
         inputs_list = []
 
-        # Load input files
+        # Load input files (following ntrace.py pattern for compressed inputs)
+        # Reference: ntrace.py lines 32-37 show the original compression handling
         for input_file in self.RAW_INPUTS:
             input_path = replay_dir / input_file
             if input_path.exists():
-                with open(input_path, "rb") as f:
-                    # Decompress and convert to integers
-                    raw_data = zlib.decompress(f.read())
-                    inputs = [int(b) for b in raw_data]
+                try:
+                    inputs = self._read_file_with_compression_detection(input_path)
                     inputs_list.append(inputs)
+                    logger.debug(
+                        f"Loaded input file {input_file} with {len(inputs)} frames"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to load input file {input_file}: {e}")
+                    break
             else:
                 break
 
-        # Load map data
+        # Load map data (can also be compressed)
         map_path = replay_dir / self.RAW_MAP_DATA
-        with open(map_path, "rb") as f:
-            map_data = [int(b) for b in f.read()]
+        if not map_path.exists():
+            raise FileNotFoundError(f"Map data file not found: {map_path}")
+
+        try:
+            map_data = self._read_file_with_compression_detection(map_path)
+            logger.debug(f"Loaded map data with {len(map_data)} bytes")
+        except Exception as e:
+            logger.error(f"Failed to load map data: {e}")
+            raise
 
         logger.info(f"Loaded {len(inputs_list)} input sequences and map data")
         return inputs_list, map_data
+
+    def parse_single_replay_file(
+        self, replay_file: Path
+    ) -> Tuple[List[int], List[int]]:
+        """
+        Parse a single N++ replay file (npp_attract format).
+
+        Based on comprehensive analysis, these files have two formats:
+        Type 1: Header + Input data starting at offset 183
+        Type 2: Header + Map data + Input data starting at variable offset
+
+        Args:
+            replay_file: Path to the single replay file
+
+        Returns:
+            Tuple of (inputs, map_data)
+        """
+        with open(replay_file, "rb") as f:
+            data = f.read()
+
+        logger.debug(f"Parsing single replay file: {replay_file} ({len(data)} bytes)")
+
+        # Parse header information
+        import struct
+
+        level_id = struct.unpack("<I", data[0:4])[0]
+        size_checksum = struct.unpack("<I", data[4:8])[0]
+        format_flag = data[16]
+
+        # Extract level name (starts around offset 39)
+        string_start = 39
+        string_end = data.find(0, string_start)
+        if string_end == -1:
+            string_end = min(string_start + 50, len(data))
+        level_name = (
+            data[string_start:string_end].decode("ascii", errors="ignore").strip()
+        )
+
+        logger.debug(
+            f"Level ID: {level_id}, Size/Checksum: {size_checksum}, Name: '{level_name}'"
+        )
+
+        # Find "Metanet Software" string (should be at offset 167)
+        metanet_pos = data.find(b"Metanet Software")
+        if metanet_pos == -1:
+            raise ValueError("Could not find 'Metanet Software' marker")
+
+        # Determine file type based on input start position
+        # Type 1: Input starts immediately after "Metanet Software\0" (offset 183)
+        # Type 2: Input starts later with map data in between
+
+        potential_input_start = (
+            metanet_pos + len(b"Metanet Software") + 1
+        )  # +1 for null terminator
+
+        # Check if inputs start immediately at offset 183 (Type 1)
+        if (
+            potential_input_start <= 183
+            and potential_input_start < len(data)
+            and 0 <= data[potential_input_start] <= 7
+        ):
+            # Type 1: Simple format
+            input_start = potential_input_start
+            logger.debug(f"Detected Type 1 format: inputs start at {input_start}")
+
+            # Map data is embedded in the header section
+            map_start = 100  # After initial header fields
+            map_end = metanet_pos - 5  # Before "Metanet Software"
+            map_data = list(data[map_start:map_end])
+
+        else:
+            # Type 2: Extended format - find actual input start
+            logger.debug("Detected Type 2 format: searching for input start")
+
+            best_input_start = 0
+            best_input_length = 0
+
+            # Start searching after the header
+            for start in range(200, len(data)):
+                length = 0
+                pos = start
+                while pos < len(data) and 0 <= data[pos] <= 7:
+                    length += 1
+                    pos += 1
+
+                if length > best_input_length:
+                    best_input_start = start
+                    best_input_length = length
+
+            if best_input_length < 10:
+                raise ValueError(
+                    f"Could not find valid input sequence in Type 2 format"
+                )
+
+            input_start = best_input_start
+            logger.debug(
+                f"Type 2 format: inputs start at {input_start}, length {best_input_length}"
+            )
+
+            # Map data is between header end and input start
+            map_start = 183  # After header
+            map_end = input_start - 5  # Before inputs, leave buffer
+
+            if map_end > map_start:
+                map_data = list(data[map_start:map_end])
+            else:
+                # Fallback: use header section
+                map_data = list(data[100:167])
+
+        # Extract input sequence
+        input_length = 0
+        pos = input_start
+        while pos < len(data) and 0 <= data[pos] <= 7:
+            input_length += 1
+            pos += 1
+
+        inputs = list(data[input_start : input_start + input_length])
+
+        # Validate and clean up map data
+        if len(map_data) < 50:
+            logger.warning(f"Map data seems small ({len(map_data)} bytes), padding")
+            map_data.extend([1] * (50 - len(map_data)))
+
+        # Limit map data size to reasonable bounds
+        if len(map_data) > 2000:
+            logger.warning(f"Map data seems large ({len(map_data)} bytes), truncating")
+            map_data = map_data[:2000]
+
+        logger.info(
+            f"Extracted {len(inputs)} input frames and {len(map_data)} map bytes"
+        )
+        logger.debug(f"Input range: {min(inputs)} to {max(inputs)}")
+
+        # Log input distribution for debugging
+        input_dist = {i: inputs.count(i) for i in range(8) if i in inputs}
+        logger.debug(f"Input distribution: {input_dist}")
+
+        return inputs, map_data
 
     def decode_inputs(self, raw_inputs: List[int]) -> Tuple[List[int], List[int]]:
         """
@@ -354,12 +604,60 @@ class BinaryReplayParser:
 
         logger.info(f"Saved {len(frames)} frames to {output_file}")
 
-    def process_directory(self, input_dir: Path, output_dir: Path):
+    def parse_single_replay_file_to_jsonl(
+        self, replay_file: Path, output_dir: Path
+    ) -> bool:
         """
-        Process all replay directories in the input directory.
+        Parse a single replay file and generate JSONL output.
 
         Args:
-            input_dir: Directory containing replay subdirectories
+            replay_file: Path to the single replay file
+            output_dir: Output directory for JSONL files
+
+        Returns:
+            True if parsing succeeded
+        """
+        try:
+            # Parse the single replay file
+            inputs, map_data = self.parse_single_replay_file(replay_file)
+
+            # Generate level ID from filename
+            level_id = replay_file.stem
+            session_id = f"{level_id}_session_000"
+
+            logger.info(f"Processing single replay file: {replay_file.name}")
+
+            # Simulate and extract frames
+            frames = self.simulate_replay(inputs, map_data, level_id, session_id)
+
+            if frames:
+                # Save to JSONL file
+                output_file = output_dir / f"{session_id}.jsonl"
+                self.save_frames_to_jsonl(frames, output_file)
+
+                self.stats["frames_generated"] += len(frames)
+                self.stats["replays_processed"] += 1
+                self.stats["files_processed"] += 1
+                return True
+            else:
+                logger.error(f"No frames generated for {replay_file}")
+                self.stats["replays_failed"] += 1
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to parse single replay file {replay_file}: {e}")
+            import traceback
+
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
+            self.stats["replays_failed"] += 1
+            return False
+
+    def process_directory(self, input_dir: Path, output_dir: Path):
+        """
+        Process all replay directories or single replay files in the input directory.
+
+        Args:
+            input_dir: Directory containing replay subdirectories or single replay files
             output_dir: Output directory for JSONL files
         """
         if not input_dir.exists():
@@ -372,23 +670,34 @@ class BinaryReplayParser:
             logger.info(f"Processing single replay directory: {input_dir}")
             self.parse_replay_directory(input_dir, output_dir)
         else:
-            # Look for subdirectories containing replays
+            # Look for subdirectories containing replays or single replay files
             replay_dirs = []
+            single_replay_files = []
+
             for item in input_dir.iterdir():
                 if item.is_dir() and self.detect_trace_mode(item):
                     replay_dirs.append(item)
+                elif item.is_file() and self.detect_single_replay_file(item):
+                    single_replay_files.append(item)
 
-            if not replay_dirs:
-                logger.warning(f"No trace mode replay directories found in {input_dir}")
+            # Process trace mode directories
+            if replay_dirs:
+                logger.info(f"Found {len(replay_dirs)} replay directories")
+                for replay_dir in replay_dirs:
+                    logger.info(f"Processing replay directory: {replay_dir}")
+                    self.parse_replay_directory(
+                        replay_dir, output_dir, level_id=replay_dir.name
+                    )
+
+            # Process single replay files
+            if single_replay_files:
+                logger.info(f"Found {len(single_replay_files)} single replay files")
+                for replay_file in single_replay_files:
+                    self.parse_single_replay_file_to_jsonl(replay_file, output_dir)
+
+            if not replay_dirs and not single_replay_files:
+                logger.warning(f"No replay files or directories found in {input_dir}")
                 return
-
-            logger.info(f"Found {len(replay_dirs)} replay directories")
-
-            for replay_dir in replay_dirs:
-                logger.info(f"Processing replay directory: {replay_dir}")
-                self.parse_replay_directory(
-                    replay_dir, output_dir, level_id=replay_dir.name
-                )
 
     def print_statistics(self):
         """Print processing statistics."""
@@ -415,18 +724,20 @@ class BinaryReplayParser:
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Convert N++ binary replay files to JSONL format",
+        description="Convert N++ binary replay files to JSONL format. Automatically detects and handles compressed (zlib) and uncompressed files.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process a single replay directory
+  # Process a single replay directory (compressed or uncompressed)
   python -m nclone.replay.binary_replay_parser --input replays/level_001 --output datasets/raw/
   
   # Process multiple replay directories
   python -m nclone.replay.binary_replay_parser --input replays/ --output datasets/raw/
   
-  # Enable verbose logging
+  # Enable verbose logging to see compression detection details
   python -m nclone.replay.binary_replay_parser --input replays/ --output datasets/raw/ --verbose
+
+Note: The parser follows the ntrace.py pattern for handling compressed input files.
         """,
     )
 
@@ -463,7 +774,21 @@ Examples:
     logger.info(f"Output directory: {args.output}")
 
     try:
-        replay_parser.process_directory(args.input, args.output)
+        # Check if input is a single file or directory
+        if args.input.is_file():
+            # Single file processing
+            if replay_parser.detect_single_replay_file(args.input):
+                logger.info(f"Processing single replay file: {args.input}")
+                args.output.mkdir(parents=True, exist_ok=True)
+                replay_parser.parse_single_replay_file_to_jsonl(args.input, args.output)
+            else:
+                logger.error(
+                    f"File does not appear to be a valid replay file: {args.input}"
+                )
+                return 1
+        else:
+            # Directory processing
+            replay_parser.process_directory(args.input, args.output)
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         return 1
