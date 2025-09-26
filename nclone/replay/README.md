@@ -1,6 +1,6 @@
 # N++ Replay Processing Module
 
-This module contains tools for processing N++ replay data including binary replay parsing, format conversion, and data validation.
+This module contains tools for processing N++ replay data including binary replay parsing, format conversion, data validation, and video generation.
 
 ## Components
 
@@ -140,11 +140,80 @@ python -m nclone.replay.convert_actions --input symbols.txt --output indices.txt
 python -m nclone.replay.convert_actions --input "NOOP,Jump,Right" --output-format symbol --separator ","
 ```
 
+### Video Generator (`video_generator.py`)
+
+Generates MP4 videos from N++ replay data using the nclone simulation environment for accurate visual representation.
+
+#### Features
+
+- **JSONL Support**: Generate videos from JSONL replay files
+- **Binary Replay Support**: Generate videos directly from binary replay files
+- **Automatic Map Detection**: Uses map_data_path from JSONL files when available
+- **Custom Map Support**: Override with custom map files
+- **High Quality Output**: H.264 encoded MP4 with configurable framerate
+- **Frame Validation**: Validates replay data before processing
+
+#### Usage
+
+```bash
+# Generate video from JSONL replay file
+python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4
+
+# Generate video from binary replay file
+python -m nclone.replay.video_generator --input npp_attract/1 --output video.mp4 --binary-replay
+
+# Generate video with custom framerate
+python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 --fps 30
+
+# Generate video with custom map data
+python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 --custom-map map.dat
+
+# Enable verbose logging
+python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 --verbose
+```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--input` | Input JSONL or binary replay file | Required |
+| `--output` | Output MP4 file path | Required |
+| `--binary-replay` | Input is binary replay file (not JSONL) | False |
+| `--fps` | Video framerate | 60 |
+| `--custom-map` | Custom map file for rendering | Auto-detect |
+| `--verbose` | Enable detailed logging | False |
+
+#### Video Output Specifications
+
+- **Format**: MP4 (H.264 codec)
+- **Resolution**: 1056x600 pixels (N++ native resolution)
+- **Quality**: High quality (CRF 18)
+- **Pixel Format**: YUV420P (compatible with most players)
+
 ## Video Export from Replays
 
-The replay system supports exporting videos from both binary replay files and JSONL files using the npp-rl video generation tools.
+The replay system supports exporting videos from both binary replay files and JSONL files using two methods:
 
-### Prerequisites
+1. **nclone Video Generator** (Recommended): Built-in video generation using `video_generator.py`
+2. **npp-rl Integration**: External video generation using npp-rl tools
+
+### Method 1: nclone Video Generator (Recommended)
+
+Use the built-in video generator for the simplest workflow:
+
+```bash
+# Generate video from JSONL file (with automatic map detection)
+python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4
+
+# Generate video from binary replay file
+python -m nclone.replay.video_generator --input npp_attract/1 --output video.mp4 --binary-replay
+```
+
+### Method 2: npp-rl Integration
+
+For advanced features or integration with the npp-rl training pipeline:
+
+#### Prerequisites
 
 1. **npp-rl Repository**: Clone the npp-rl repository alongside nclone:
    ```bash
@@ -156,9 +225,9 @@ The replay system supports exporting videos from both binary replay files and JS
    export XDG_RUNTIME_DIR=/tmp
    ```
 
-### Video Export Methods
+#### Video Export Methods
 
-#### Method 1: Direct from Binary Replays
+##### Method 1: Direct from Binary Replays
 
 Generate videos directly from N++ binary replay files (npp_attract format):
 
@@ -175,7 +244,7 @@ python tools/replay_ingest.py \
   --custom-map ../nclone/nclone/test_maps/simple-walk
 ```
 
-#### Method 2: Batch Processing Multiple Files
+##### Method 2: Batch Processing Multiple Files
 
 Process multiple npp_attract files and generate videos:
 
@@ -198,7 +267,7 @@ for i in {0..4}; do
 done
 ```
 
-#### Method 3: From Existing JSONL Files
+##### Method 3: From Existing JSONL Files
 
 If you already have JSONL replay files:
 
