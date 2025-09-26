@@ -390,50 +390,28 @@ class MapLoader:
         tiles = [0] * (42 * 23)
         
         try:
-            # N++ map data appears to be encoded as characters
-            # Common patterns observed: '0' = empty, '1' = wall, '6' = special
-            
-            # Process the map data string
-            data_index = 0
-            for tile_index in range(len(tiles)):
-                if data_index < len(map_data):
-                    char = map_data[data_index]
-                    
-                    # Convert character to tile value
-                    if char.isdigit():
-                        tile_value = int(char)
-                        # Map N++ tile values to nclone tile values
-                        if tile_value == 0:
-                            tiles[tile_index] = 0  # Empty space
-                        elif tile_value == 1:
-                            tiles[tile_index] = 1  # Wall/solid tile
-                        elif tile_value == 6:
-                            tiles[tile_index] = 6  # Special tile (spawn/exit)
-                        else:
-                            tiles[tile_index] = min(tile_value, 255)  # Other tile types
-                    else:
-                        # Non-digit characters might represent special elements
-                        tiles[tile_index] = 0  # Default to empty
-                    
-                    data_index += 1
-                else:
-                    # Fill remaining tiles with empty space
-                    tiles[tile_index] = 0
-            
-            logger.debug(f"Parsed {len(tiles)} tiles from N++ map data")
+            # Use the enhanced entity decoder for proper tile parsing
+            from nclone.replay.npp_entity_decoder import NppEntityDecoder
+            decoder = NppEntityDecoder()
+            tiles = decoder.parse_npp_tile_data(map_data)
+            logger.debug(f"Parsed {len(tiles)} tiles using enhanced decoder")
             return tiles
-            
         except Exception as e:
-            logger.error(f"Error parsing N++ tile data: {e}")
-            # Return empty tile grid on error
-            return [0] * (42 * 23)
+            logger.warning(f"Error parsing tile data with enhanced decoder: {e}")
+            # Fallback to basic parsing
+            for i, char in enumerate(map_data):
+                if i >= len(tiles):
+                    break
+                if char.isdigit():
+                    tiles[i] = int(char)
+                else:
+                    tiles[i] = 0
+            logger.debug(f"Used fallback parsing for {len(tiles)} tiles")
+            return tiles
     
     def _parse_npp_entity_data(self, map_data: str) -> List[int]:
         """
-        Parse N++ map data to extract entity information.
-        
-        This is a simplified implementation that creates basic entity data.
-        A full implementation would need to parse N++ entity encoding.
+        Parse N++ map data to extract entity information using the enhanced decoder.
         
         Args:
             map_data: N++ map data string
@@ -441,30 +419,61 @@ class MapLoader:
         Returns:
             List of entity data bytes
         """
-        # For now, create minimal entity data
-        # This would need to be enhanced to parse actual N++ entity format
-        entity_data = []
-        
-        # Add basic ninja spawn point (required for simulation)
-        # Entity format: [type, x, y, additional_data...]
-        entity_data.extend([
-            0, 0, 0, 0,  # Ninja spawn entity
-            100, 0, 0, 0,  # X position (low bytes first)
-            100, 0, 0, 0,  # Y position (low bytes first)
-        ])
-        
-        # Add exit door (required for level completion)
-        entity_data.extend([
-            3, 0, 0, 0,  # Exit door entity type
-            200, 0, 0, 0,  # X position
-            100, 0, 0, 0,  # Y position
-        ])
-        
-        # Pad to fill remaining space
-        remaining_space = 95 - len(entity_data)  # 95 bytes available for entities
-        entity_data.extend([0] * max(0, remaining_space))
-        
-        return entity_data[:95]  # Ensure we don't exceed available space
+        try:
+            # Use the enhanced entity decoder for proper entity parsing
+            from nclone.replay.npp_entity_decoder import NppEntityDecoder
+            decoder = NppEntityDecoder()
+            
+            # Decode entities from the hex section
+            level_name, entities = decoder.decode_level_entities(f"$level#{map_data}#")
+            
+            # Convert entities to nclone format
+            entity_data = decoder.convert_entities_to_nclone_format(entities)
+            
+            # Ensure we have at least ninja spawn and exit
+            if not any(e.entity_type == "c0_entity" and e.subtype == 0 for e in entities):
+                # Add ninja spawn if missing
+                entity_data.extend([
+                    0, 0, 0, 0,  # Ninja spawn entity
+                    100, 0, 0, 0,  # X position
+                    100, 0, 0, 0,  # Y position
+                ])
+            
+            if not any(e.entity_type == "c0_entity" and e.subtype == 3 for e in entities):
+                # Add exit door if missing
+                entity_data.extend([
+                    3, 0, 0, 0,  # Exit door entity type
+                    200, 0, 0, 0,  # X position
+                    100, 0, 0, 0,  # Y position
+                ])
+            
+            # Pad to fill remaining space
+            remaining_space = 95 - len(entity_data)  # 95 bytes available for entities
+            entity_data.extend([0] * max(0, remaining_space))
+            
+            logger.debug(f"Parsed {len([e for e in entities if e.entity_type == 'c0_entity'])} entities using enhanced decoder")
+            return entity_data[:95]  # Ensure we don't exceed available space
+            
+        except Exception as e:
+            logger.warning(f"Error parsing entity data with enhanced decoder: {e}")
+            # Fallback to basic entity data
+            entity_data = []
+            
+            # Add basic ninja spawn and exit
+            entity_data.extend([
+                0, 0, 0, 0,  # Ninja spawn entity
+                100, 0, 0, 0,  # X position
+                100, 0, 0, 0,  # Y position
+                3, 0, 0, 0,  # Exit door entity type
+                200, 0, 0, 0,  # X position
+                100, 0, 0, 0,  # Y position
+            ])
+            
+            # Pad remaining space
+            remaining_space = 95 - len(entity_data)
+            entity_data.extend([0] * max(0, remaining_space))
+            
+            return entity_data[:95]
     
     def _generate_empty_map_data(self) -> bytes:
         """Generate empty map data for fallback."""
