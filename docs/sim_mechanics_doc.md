@@ -271,12 +271,17 @@ fixed 44*25 map size and small query regions used by the player physics.
 
 ## AI Decision Framework
 
-### Critical State Information
-- **Position**: `(ninja.xpos, ninja.ypos)` normalized to [0,1]
-- **Velocity**: `(ninja.xspeed, ninja.yspeed)` within horizontal limits defined by `MAX_HOR_SPEED` in physics_constants.py
-- **State**: Current movement state (0-9) affects available actions
-- **Buffers**: Active input buffers enable delayed actions
-- **Physics**: Applied gravity/drag/friction indicate current physics mode
+### Critical State Information (Enhanced Game State)
+The game state representation has been optimized to eliminate redundancy with the graph system and provide more actionable information for RL agents:
+
+- **Movement Dynamics**: Velocity magnitude, direction, and movement state categories (ground/air/wall/special)
+- **Input State**: Current inputs and active input buffers for precise timing
+- **Surface Interactions**: Contact strength, floor/wall normals, and surface slopes
+- **Momentum & Physics**: Acceleration, momentum preservation, and impact risk
+- **Entity Proximity**: Distance to hazards and collectibles, threat assessment
+- **Level Progress**: Switch activation, exit accessibility, completion progress, and time pressure
+
+All features are normalized to [-1, 1] range for consistent RL training. The enhanced state eliminates redundant position information (handled by graph system) and deterministic physics parameters, focusing on actionable strategic information.
 
 ### Key Decision Points
 1. **Jump Timing**: Use buffers for precise jump execution

@@ -19,7 +19,7 @@ import math
 from typing import List, Tuple, Dict, Any, Optional, Set
 from dataclasses import dataclass
 
-from .reachability_types import ReachabilityResult
+from .reachability_types import ReachabilityApproximation
 # Deprecated simple_objective_system replaced with planning module
 from ...planning import LevelCompletionPlanner, CompletionStep
 
@@ -87,7 +87,7 @@ class CompactReachabilityFeatures:
 
     def encode_reachability(
         self,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
         level_data: Any,
         entities: List[Any],
         ninja_position: Tuple[float, float],
@@ -158,7 +158,7 @@ class CompactReachabilityFeatures:
 
     def _encode_objective_distances(
         self,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
         level_data: Any,
         entities: List[Any],
         ninja_position: Tuple[float, float],
@@ -184,7 +184,7 @@ class CompactReachabilityFeatures:
         )  # Default: unreachable
 
         # Get current objective from simplified completion strategy
-        current_objective = self.completion_strategy.get_next_objective(
+        current_objective = self.completion_planner.get_next_objective(
             ninja_position, level_data, entities, switch_states
         )
 
@@ -223,7 +223,7 @@ class CompactReachabilityFeatures:
 
     def _encode_switch_states(
         self,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
         entities: List[Any],
         switch_states: Dict[str, bool],
     ) -> np.ndarray:
@@ -267,7 +267,7 @@ class CompactReachabilityFeatures:
 
     def _encode_hazard_proximities(
         self,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
         entities: List[Any],
         ninja_position: Tuple[float, float],
     ) -> np.ndarray:
@@ -313,7 +313,7 @@ class CompactReachabilityFeatures:
 
     def _encode_area_connectivity(
         self,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
         level_data: Any,
         ninja_position: Tuple[float, float],
     ) -> np.ndarray:
@@ -348,7 +348,7 @@ class CompactReachabilityFeatures:
 
     def _encode_movement_capabilities(
         self,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
         level_data: Any,
         ninja_position: Tuple[float, float],
     ) -> np.ndarray:
@@ -383,7 +383,7 @@ class CompactReachabilityFeatures:
 
     def _encode_meta_features(
         self,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
         level_data: Any,
         entities: List[Any],
     ) -> np.ndarray:
@@ -476,7 +476,7 @@ class CompactReachabilityFeatures:
         return math.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
 
     def _is_position_reachable(
-        self, position: Tuple[float, float], reachability_result: ReachabilityResult
+        self, position: Tuple[float, float], reachability_result: ReachabilityApproximation
     ) -> bool:
         """Check if a position is reachable according to reachability analysis."""
         # Convert position to tile coordinates for comparison
@@ -781,7 +781,7 @@ class CompactReachabilityFeatures:
         ninja_position: Tuple[float, float],
         movement_type: str,
         level_data: Any,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
     ) -> float:
         """Assess capability for specific movement type using physics-based calculations."""
         ninja_x, ninja_y = ninja_position
@@ -1014,7 +1014,7 @@ class CompactReachabilityFeatures:
         self,
         ninja_position: Tuple[float, float],
         level_data: Any,
-        reachability_result: ReachabilityResult,
+        reachability_result: ReachabilityApproximation,
     ) -> float:
         """Assess special movement capabilities (launch pads, bounce blocks, etc.)."""
         # This would need entity information to properly assess
