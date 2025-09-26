@@ -333,7 +333,7 @@ class VideoGenerator:
                 
                 # Parse binary replay to JSONL
                 success = parser.parse_single_replay_file_to_jsonl(
-                    binary_replay_file, temp_jsonl.parent
+                    Path(binary_replay_file), temp_jsonl.parent
                 )
                 
                 if not success:

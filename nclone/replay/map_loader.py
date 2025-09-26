@@ -26,6 +26,10 @@ class MapLoader:
             map_path: Path to N++ map definition file or directory containing .txt files
                      (format: $name#mapdata#)
         """
+        # Convert string path to Path object if needed
+        if isinstance(map_path, str):
+            map_path = Path(map_path)
+        
         self.map_path = map_path
         self.level_cache: Dict[str, Tuple[str, int, str, str]] = {}  # name -> (file, line_num, name, map_data)
         self.level_id_cache: Dict[int, Tuple[str, int, str, str]] = {}  # level_id -> (file, line_num, name, map_data)
