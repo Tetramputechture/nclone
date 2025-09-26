@@ -12,9 +12,13 @@ Converts N++ binary replay files ("trace" mode) to JSONL format compatible with 
 
 The N++ Binary Replay Parser processes original N++ replay files and converts them to the JSONL format expected by the `replay_ingest.py` tool. It simulates the game frame-by-frame to extract complete state information.
 
-#### Input Format
+#### Input Formats
 
-The parser expects N++ "trace" mode replay files with the following structure:
+The parser supports multiple N++ replay formats:
+
+##### Trace Mode Format
+
+Standard N++ "trace" mode replay files with the following structure:
 
 ```
 replay_directory/
@@ -24,6 +28,24 @@ replay_directory/
 ├── inputs_3        # Binary file: zlib-compressed input sequence for replay 4
 └── map_data        # Binary file: Raw map geometry data
 ```
+
+##### npp_attract Format
+
+Single-file N++ attract mode replay files (e.g., `npp_attract/0`, `npp_attract/1`):
+
+```
+npp_attract/
+├── 0               # Binary file: Type 1 format with embedded input sequence
+├── 1               # Binary file: Type 1 format with embedded input sequence
+├── 2               # Binary file: Type 1 format with embedded input sequence
+└── ...             # Additional attract mode replays
+```
+
+**npp_attract Format Structure:**
+- **Type 1 Format**: Input data starts at offset 184-185 bytes
+- **Type 2 Format**: Different structure (auto-detected when encountered)
+- **Automatic Format Detection**: Parser identifies format type and processes accordingly
+- **Map Data Generation**: Creates valid map structure when insufficient data is available
 
 #### Input Encoding
 
@@ -116,6 +138,160 @@ python -m nclone.replay.convert_actions --input symbols.txt --output indices.txt
 
 # Convert comma-separated actions
 python -m nclone.replay.convert_actions --input "NOOP,Jump,Right" --output-format symbol --separator ","
+```
+
+## Video Export from Replays
+
+The replay system supports exporting videos from both binary replay files and JSONL files using the npp-rl video generation tools.
+
+### Prerequisites
+
+1. **npp-rl Repository**: Clone the npp-rl repository alongside nclone:
+   ```bash
+   git clone https://github.com/Tetramputechture/npp-rl.git
+   ```
+
+2. **Environment Setup**: Set up the environment for headless video generation:
+   ```bash
+   export XDG_RUNTIME_DIR=/tmp
+   ```
+
+### Video Export Methods
+
+#### Method 1: Direct from Binary Replays
+
+Generate videos directly from N++ binary replay files (npp_attract format):
+
+```bash
+# Convert binary replay to JSONL first
+python -m nclone.replay.binary_replay_parser --input nclone/example_replays/npp_attract/1 --output replay_1.jsonl
+
+# Generate video from JSONL using npp-rl tools
+cd npp-rl
+python tools/replay_ingest.py \
+  --input ../nclone/replay_1.jsonl \
+  --output-video ../nclone/replay_video_1.mp4 \
+  --generate-video \
+  --custom-map ../nclone/nclone/test_maps/simple-walk
+```
+
+#### Method 2: Batch Processing Multiple Files
+
+Process multiple npp_attract files and generate videos:
+
+```bash
+# Process multiple binary replays
+for i in {0..4}; do
+  python -m nclone.replay.binary_replay_parser \
+    --input nclone/example_replays/npp_attract/$i \
+    --output replay_${i}.jsonl
+done
+
+# Generate videos for each replay
+cd npp-rl
+for i in {0..4}; do
+  python tools/replay_ingest.py \
+    --input ../nclone/replay_${i}.jsonl \
+    --output-video ../nclone/replay_video_${i}.mp4 \
+    --generate-video \
+    --custom-map ../nclone/nclone/test_maps/simple-walk
+done
+```
+
+#### Method 3: From Existing JSONL Files
+
+If you already have JSONL replay files:
+
+```bash
+cd npp-rl
+python tools/replay_ingest.py \
+  --input path/to/replay.jsonl \
+  --output-video output_video.mp4 \
+  --generate-video \
+  --custom-map ../nclone/nclone/test_maps/simple-walk \
+  --fps 60
+```
+
+### Video Generation Options
+
+The `replay_ingest.py` tool supports several options for video generation:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--generate-video` | Enable video generation mode | Required |
+| `--output-video` | Output MP4 file path | Required |
+| `--custom-map` | Map file to use for rendering | Auto-detect |
+| `--fps` | Video framerate | 60 |
+| `--verbose` | Enable detailed logging | False |
+
+### Available Test Maps
+
+The following test maps are available for video generation:
+
+- `simple-walk` - Basic walking level
+- `complex-path-switch-required` - Complex navigation
+- `jump-then-fall` - Jump mechanics
+- `wall-jump-required` - Wall jumping
+- `long-jump-reachable` - Long jump mechanics
+- `minefield` - Mine navigation
+- `drone-reachable` - Drone interactions
+
+### Video Output Format
+
+Generated videos have the following characteristics:
+
+- **Format**: MP4 (H.264 codec)
+- **Resolution**: 1056x600 pixels (N++ native resolution)
+- **Framerate**: 60 FPS (configurable)
+- **Quality**: High quality (CRF 18)
+- **Duration**: Matches replay length
+
+### Example Output
+
+A successful video generation will show:
+
+```
+2025-09-26 16:27:01,267 - INFO - Generating 518 frames...
+2025-09-26 16:27:13,122 - INFO - Running ffmpeg: ffmpeg -y -framerate 60 -i /tmp/tmp3i923uyj/frame_%06d.png -c:v libx264 -pix_fmt yuv420p -crf 18 replay_video_1.mp4
+2025-09-26 16:27:14,092 - INFO - Video generated successfully: replay_video_1.mp4
+```
+
+### Troubleshooting Video Export
+
+#### Common Issues
+
+1. **XDG_RUNTIME_DIR Error**:
+   ```bash
+   export XDG_RUNTIME_DIR=/tmp
+   ```
+
+2. **Map File Not Found**:
+   - Use `--custom-map` with full path to a test map
+   - Available maps are in `nclone/test_maps/`
+
+3. **FFmpeg Not Found**:
+   ```bash
+   # Install FFmpeg (Ubuntu/Debian)
+   sudo apt-get install ffmpeg
+   
+   # Install FFmpeg (macOS)
+   brew install ffmpeg
+   ```
+
+4. **Memory Issues with Large Replays**:
+   - Process replays in smaller batches
+   - Use lower FPS settings for very long replays
+
+#### Validation
+
+Verify video generation success:
+
+```bash
+# Check video file exists and has content
+ls -la replay_video_1.mp4
+
+# Check video properties with ffprobe
+ffprobe -v quiet -print_format json -show_format -show_streams replay_video_1.mp4
 ```
 
 ## Integration with ML Pipeline
