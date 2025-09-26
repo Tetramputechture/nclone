@@ -925,11 +925,34 @@ class BinaryReplayParser:
 
             logger.info(f"Processing single replay file: {replay_file.name} (Level ID: {npp_level_id}, Name: '{level_name}')")
 
+            # Try to get enhanced map data from official levels
+            enhanced_map_data = map_data  # Default to parsed data
+            if self.map_loader and level_name:
+                try:
+                    result = self.map_loader.find_map_by_name(level_name)
+                    if result:
+                        official_name, official_data, source_file = result
+                        logger.info(f"Found official level '{official_name}' from {source_file}")
+                        
+                        # Convert official data to binary format with enhanced decoder
+                        enhanced_map_data_bytes = self.map_loader.convert_map_data_to_nclone_format(official_data)
+                        # Convert bytes to list of integers for simulator compatibility
+                        enhanced_map_data = [int(b) for b in enhanced_map_data_bytes]
+                        
+                        # Log the improvement
+                        original_tiles = len([v for v in map_data if v != 0])
+                        enhanced_tiles = len([v for v in enhanced_map_data if v != 0])
+                        logger.info(f"Enhanced map data: {original_tiles} → {enhanced_tiles} non-zero tiles")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to load enhanced map data for '{level_name}': {e}")
+                    # Continue with original map data
+
             # Create output file path
             output_file = output_dir / f"{session_id}.jsonl"
             
-            # Simulate and extract frames, passing the N++ Level ID as metadata
-            frames = self.simulate_replay(inputs, map_data, file_id, session_id, str(output_file), npp_level_id, level_name)
+            # Simulate and extract frames using enhanced map data
+            frames = self.simulate_replay(inputs, enhanced_map_data, file_id, session_id, str(output_file), npp_level_id, level_name)
 
             if frames:
                 self.save_frames_to_jsonl(frames, output_file)
