@@ -2,6 +2,22 @@
 
 This module contains tools for processing N++ replay data including binary replay parsing, format conversion, data validation, and video generation.
 
+## ⚠️ CRITICAL: Format Compatibility Issue
+
+**IMPORTANT DISCOVERY**: N++ official level data and nclone official maps represent **fundamentally different level designs** and are **NOT convertible**. 
+
+### Key Findings
+- **N++ "the basics"**: 360 solid tiles (37.3%), alternating pattern, 50% solid bottom
+- **nclone "000 the basics"**: 847 solid tiles (87.7%), mostly solid, 100% solid bottom
+- **Result**: Completely different level layouts and gameplay experiences
+
+### Solution Implemented
+- ✅ **Use nclone official maps** from `nclone/maps/official/` when available
+- ✅ **Graceful fallback** to reasonable defaults for unmapped levels  
+- ❌ **Do NOT convert** N++ format to nclone format (produces wrong maps)
+
+See [FORMAT_ANALYSIS.md](FORMAT_ANALYSIS.md) for detailed technical analysis.
+
 ## Components
 
 ### Binary Replay Parser (`binary_replay_parser.py`)

@@ -925,27 +925,43 @@ class BinaryReplayParser:
 
             logger.info(f"Processing single replay file: {replay_file.name} (Level ID: {npp_level_id}, Name: '{level_name}')")
 
-            # Try to get enhanced map data from official levels
+            # Try to get correct map data from nclone official maps
             enhanced_map_data = map_data  # Default to parsed data
-            if self.map_loader and level_name:
+            if level_name:
                 try:
-                    result = self.map_loader.find_map_by_name(level_name)
-                    if result:
-                        official_name, official_data, source_file = result
-                        logger.info(f"Found official level '{official_name}' from {source_file}")
+                    # First, try to load from nclone official maps directory
+                    official_maps_dir = Path("nclone/maps/official")
+                    if official_maps_dir.exists():
+                        # Look for exact match or fuzzy match
+                        potential_files = []
+                        for map_file in official_maps_dir.iterdir():
+                            if map_file.is_file():
+                                # Check for exact match or fuzzy match
+                                if level_name.lower() in map_file.name.lower() or map_file.name.lower() in level_name.lower():
+                                    potential_files.append(map_file)
                         
-                        # Convert official data to binary format with enhanced decoder
-                        enhanced_map_data_bytes = self.map_loader.convert_map_data_to_nclone_format(official_data)
-                        # Convert bytes to list of integers for simulator compatibility
-                        enhanced_map_data = [int(b) for b in enhanced_map_data_bytes]
-                        
-                        # Log the improvement
-                        original_tiles = len([v for v in map_data if v != 0])
-                        enhanced_tiles = len([v for v in enhanced_map_data if v != 0])
-                        logger.info(f"Enhanced map data: {original_tiles} → {enhanced_tiles} non-zero tiles")
-                        
+                        if potential_files:
+                            # Use the best match (shortest name difference)
+                            best_match = min(potential_files, key=lambda f: abs(len(f.name) - len(level_name)))
+                            
+                            with open(best_match, 'rb') as f:
+                                official_data = f.read()
+                            
+                            if len(official_data) >= 1245:  # Valid nclone format
+                                enhanced_map_data = [int(b) for b in official_data[:1245]]
+                                
+                                # Log the improvement
+                                original_tiles = len([v for v in map_data if v != 0])
+                                enhanced_tiles = len([v for v in enhanced_map_data[184:1150] if v != 0])
+                                logger.info(f"Found nclone official map '{best_match.name}' for '{level_name}'")
+                                logger.info(f"Enhanced map data: {original_tiles} → {enhanced_tiles} non-zero tiles")
+                            else:
+                                logger.warning(f"Invalid nclone map format in {best_match.name}")
+                        else:
+                            logger.info(f"No nclone official map found for '{level_name}', using parsed data")
+                    
                 except Exception as e:
-                    logger.warning(f"Failed to load enhanced map data for '{level_name}': {e}")
+                    logger.warning(f"Failed to load nclone official map for '{level_name}': {e}")
                     # Continue with original map data
 
             # Create output file path
