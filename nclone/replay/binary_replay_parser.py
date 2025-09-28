@@ -55,7 +55,7 @@ class BinaryReplayParser:
     def __init__(self, map_file_path: Optional[str] = None):
         """
         Initialize the parser.
-        
+
         Args:
             map_file_path: Optional path to N++ map definition file for real map data
         """
@@ -341,13 +341,21 @@ class BinaryReplayParser:
         inputs = list(data[input_start : input_start + input_length])
 
         # Use perfect npp_attract decoder to extract real map data
-        logger.info(f"Using perfect decoder for npp_attract file (Level ID: {level_id})")
+        logger.info(
+            f"Using perfect decoder for npp_attract file (Level ID: {level_id})"
+        )
         try:
-            decoded_data = self.npp_attract_decoder.decode_npp_attract_file(str(replay_file))
+            decoded_data = self.npp_attract_decoder.decode_npp_attract_file(
+                str(replay_file)
+            )
             # Create complete nclone-compatible map data
-            nclone_map_bytes = self.npp_attract_decoder.create_nclone_map(str(replay_file))
+            nclone_map_bytes = self.npp_attract_decoder.create_nclone_map(
+                str(replay_file)
+            )
             map_data = list(nclone_map_bytes)
-            logger.info(f"Perfect decoder extracted {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}")
+            logger.info(
+                f"Perfect decoder extracted {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}"
+            )
         except Exception as e:
             logger.warning(f"Perfect decoder failed, falling back to empty map: {e}")
             map_data = self._generate_empty_map_data(level_id, level_name)
@@ -362,132 +370,6 @@ class BinaryReplayParser:
         logger.debug(f"Input distribution: {input_dist}")
 
         return inputs, map_data, level_id, level_name
-
-    def _generate_empty_map_data(self, level_id: int, level_name: str) -> List[int]:
-        """
-        Generate map data for npp_attract files.
-        
-        First tries to load real map data using the map loader, then falls back
-        to generating empty map data if no real map is found.
-        
-        Args:
-            level_id: N++ Level ID (primary map reference)
-            level_name: Level name for logging
-            
-        Returns:
-            List of integers representing map structure
-        """
-        # Try to find real map data first using enhanced correlation
-        real_map = self.map_loader.find_map_by_name(level_name, level_id)
-        if not real_map:
-            real_map = self.map_loader.find_map_by_id(level_id)
-        
-        if real_map:
-            map_name, map_data_str, source_file = real_map
-            logger.info(f"Found real map data for '{level_name}' (ID: {level_id}) -> '{map_name}' from {source_file}")
-            try:
-                # Convert N++ map format to nclone format
-                map_bytes = self.map_loader.convert_map_data_to_nclone_format(map_data_str)
-                return list(map_bytes)
-            except Exception as e:
-                logger.warning(f"Failed to convert real map data: {e}, falling back to empty map")
-        
-        # Fall back to empty map generation
-        logger.info(f"Generating empty map for Level ID {level_id}: '{level_name}'")
-        
-        # Create a minimal empty map structure
-        # This creates a small empty room that allows the ninja to spawn and move
-        map_data = [0] * 1245  # Standard map size
-        
-        # Set basic level metadata in the header
-        map_data[0:4] = [6, 0, 0, 0]  # Level type
-        map_data[4:8] = [221, 4, 0, 0]  # Size/checksum value
-        map_data[8:12] = [255, 255, 255, 255]  # Unknown field
-        map_data[12:16] = [0, 0, 0, 0]  # No entities for empty map
-        map_data[16:20] = [level_id & 0xFF, (level_id >> 8) & 0xFF, (level_id >> 16) & 0xFF, (level_id >> 24) & 0xFF]  # Store Level ID
-        
-        # Create a minimal room structure (empty space with boundaries)
-        # This ensures the ninja can spawn and move without crashing the simulator
-        room_start = 184
-        room_size = 1061  # Remaining space for room data
-        
-        # Fill with empty space (0 = empty, 1 = wall)
-        for i in range(room_start, room_start + room_size):
-            if i < room_start + 50:  # Some initial structure
-                map_data[i] = 0  # Empty space
-            else:
-                map_data[i] = 0  # All empty for minimal map
-        
-        logger.debug(f"Generated empty map with {len(map_data)} bytes for Level ID {level_id}")
-        return map_data
-
-    def _generate_default_map_data(self, level_name: str) -> List[int]:
-        """
-        Generate a default map data structure suitable for simulation.
-        
-        This creates a minimal but valid map that allows the simulator to run
-        and test input sequences from npp_attract files.
-        
-        Args:
-            level_name: Name of the level (for logging)
-            
-        Returns:
-            List of integers representing a valid map data structure
-        """
-        logger.info(f"Generating default map structure for level: {level_name}")
-        
-        # Create a basic map structure based on the simple-walk test map
-        # Map header (first 184 bytes) - contains level metadata
-        map_data = [0] * 184
-        
-        # Set basic level metadata in the header
-        map_data[0:4] = [6, 0, 0, 0]  # Level type
-        map_data[4:8] = [221, 4, 0, 0]  # Some size/checksum value
-        map_data[8:12] = [255, 255, 255, 255]  # Unknown field
-        map_data[12:16] = [4, 0, 0, 0]  # Entity count or similar
-        map_data[16:20] = [37, 0, 0, 0]  # Another metadata field
-        
-        # Add level name to header (starting around position 40)
-        level_name_bytes = level_name.encode('ascii', errors='ignore')[:30]
-        for i, byte_val in enumerate(level_name_bytes):
-            if 40 + i < 184:
-                map_data[40 + i] = byte_val
-        
-        # Tile data (42x23 = 966 bytes) - create a simple open area with walls around edges
-        tile_data = []
-        
-        for y in range(23):
-            for x in range(42):
-                if x == 0 or x == 41 or y == 0 or y == 22:
-                    # Wall tiles around the edges
-                    tile_data.append(1)
-                elif y == 21:
-                    # Floor tiles near the bottom
-                    tile_data.append(1)
-                else:
-                    # Empty space in the middle
-                    tile_data.append(0)
-        
-        # Add tile data to map
-        map_data.extend(tile_data)
-        
-        # Add some basic entity data (remaining bytes up to ~1245)
-        remaining_bytes = 1245 - len(map_data)
-        if remaining_bytes > 0:
-            # Add minimal entity data - mostly zeros with a few basic entities
-            entity_data = [0] * remaining_bytes
-            
-            # Add a simple ninja spawn point and exit
-            if remaining_bytes >= 20:
-                entity_data[0:4] = [100, 0, 0, 0]  # Ninja spawn X
-                entity_data[4:8] = [400, 0, 0, 0]  # Ninja spawn Y
-                entity_data[8:12] = [800, 0, 0, 0]  # Exit X
-                entity_data[12:16] = [400, 0, 0, 0]  # Exit Y
-            
-            map_data.extend(entity_data)
-        
-        logger.debug(f"Generated default map with {len(map_data)} bytes")
-        return map_data
 
     def decode_inputs(self, raw_inputs: List[int]) -> Tuple[List[int], List[int]]:
         """
@@ -568,22 +450,24 @@ class BinaryReplayParser:
     def get_comprehensive_ninja_state(self, sim: Simulator) -> Dict[str, Any]:
         """
         Extract comprehensive ninja state matching npp-rl expectations.
-        
+
         Args:
             sim: Simulator instance
-            
+
         Returns:
             Dictionary with comprehensive ninja state information
         """
         ninja = sim.ninja
-        
+
         # Calculate velocity magnitude for normalization
         velocity_magnitude = (ninja.xspeed**2 + ninja.yspeed**2) ** 0.5
         max_velocity = 3.333 * 2  # MAX_HOR_SPEED * 2 for vertical velocity
-        
+
         # === Core Movement State (8 features) ===
-        velocity_mag_norm = min(velocity_magnitude / max_velocity, 1.0) * 2 - 1  # [-1, 1]
-        
+        velocity_mag_norm = (
+            min(velocity_magnitude / max_velocity, 1.0) * 2 - 1
+        )  # [-1, 1]
+
         # Velocity direction (normalized, handling zero velocity)
         if velocity_magnitude > 1e-6:
             velocity_dir_x = ninja.xspeed / velocity_magnitude
@@ -591,79 +475,114 @@ class BinaryReplayParser:
         else:
             velocity_dir_x = 0.0
             velocity_dir_y = 0.0
-            
+
         # Movement state categories
         ground_movement = 1.0 if ninja.state in [0, 1, 2] else -1.0
         air_movement = 1.0 if ninja.state in [3, 4] else -1.0
         wall_interaction = 1.0 if ninja.state == 5 else -1.0
         special_states = 1.0 if ninja.state in [6, 7, 8, 9] else -1.0
         airborne_status = 1.0 if ninja.airborn else -1.0
-        
+
         # === Input and Buffer State (5 features) ===
         horizontal_input = float(ninja.hor_input)  # Already -1, 0, or 1
         jump_input = 1.0 if ninja.jump_input else -1.0
-        
+
         # Buffer states (normalized to [-1, 1])
         buffer_window_size = 5.0
         jump_buffer_norm = (max(ninja.jump_buffer, 0) / buffer_window_size) * 2 - 1
         floor_buffer_norm = (max(ninja.floor_buffer, 0) / buffer_window_size) * 2 - 1
         wall_buffer_norm = (max(ninja.wall_buffer, 0) / buffer_window_size) * 2 - 1
-        
+
         # === Surface Contact Information (6 features) ===
         floor_contact = (min(ninja.floor_count, 1) * 2) - 1
         wall_contact = (min(ninja.wall_count, 1) * 2) - 1
         ceiling_contact = (min(ninja.ceiling_count, 1) * 2) - 1
-        
-        floor_normal_strength = (ninja.floor_normalized_x**2 + ninja.floor_normalized_y**2) ** 0.5
+
+        floor_normal_strength = (
+            ninja.floor_normalized_x**2 + ninja.floor_normalized_y**2
+        ) ** 0.5
         floor_normal_strength = (floor_normal_strength * 2) - 1
-        
+
         # Wall normal direction
-        if ninja.wall_count > 0 and hasattr(ninja, 'wall_normal'):
+        if ninja.wall_count > 0 and hasattr(ninja, "wall_normal"):
             wall_direction = float(ninja.wall_normal)
         else:
             wall_direction = 0.0
-            
+
         surface_slope = ninja.floor_normalized_y  # Already [-1, 1]
-        
+
         # === Momentum and Physics (4 features) ===
-        accel_x = (ninja.xspeed - ninja.xspeed_old) / 3.333  # Normalize by MAX_HOR_SPEED
+        accel_x = (
+            ninja.xspeed - ninja.xspeed_old
+        ) / 3.333  # Normalize by MAX_HOR_SPEED
         accel_y = (ninja.yspeed - ninja.yspeed_old) / 3.333
         accel_x = max(-1.0, min(1.0, accel_x))
         accel_y = max(-1.0, min(1.0, accel_y))
-        
+
         # Momentum preservation
         prev_velocity_mag = (ninja.xspeed_old**2 + ninja.yspeed_old**2) ** 0.5
         if prev_velocity_mag > 1e-6 and velocity_magnitude > 1e-6:
-            momentum_preservation = (ninja.xspeed * ninja.xspeed_old + ninja.yspeed * ninja.yspeed_old) / (velocity_magnitude * prev_velocity_mag)
+            momentum_preservation = (
+                ninja.xspeed * ninja.xspeed_old + ninja.yspeed * ninja.yspeed_old
+            ) / (velocity_magnitude * prev_velocity_mag)
         else:
             momentum_preservation = 0.0
-            
-        impact_risk = velocity_mag_norm if (ninja.floor_count > 0 or ninja.ceiling_count > 0) else 0.0
-        
+
+        impact_risk = (
+            velocity_mag_norm
+            if (ninja.floor_count > 0 or ninja.ceiling_count > 0)
+            else 0.0
+        )
+
         # === Entity Proximity and Hazards (4 features) ===
         # These will be placeholders for now, could be enhanced with actual entity analysis
         nearest_hazard_distance = 0.0
         nearest_collectible_distance = 0.0
         hazard_threat_level = 0.0
-        interaction_cooldown = (ninja.jump_duration / 45.0) * 2 - 1  # MAX_JUMP_DURATION = 45
-        
+        interaction_cooldown = (
+            ninja.jump_duration / 45.0
+        ) * 2 - 1  # MAX_JUMP_DURATION = 45
+
         # === Level Progress and Objectives (3 features) ===
         # These are placeholders that would normally be calculated from game state
         switch_progress = 0.0
         exit_accessibility = -1.0
         completion_progress = -1.0
-        
+
         # Construct the 30-feature game state array
         game_state = [
-            velocity_mag_norm, velocity_dir_x, velocity_dir_y,
-            ground_movement, air_movement, wall_interaction, special_states, airborne_status,
-            horizontal_input, jump_input, jump_buffer_norm, floor_buffer_norm, wall_buffer_norm,
-            floor_contact, wall_contact, ceiling_contact, floor_normal_strength, wall_direction, surface_slope,
-            accel_x, accel_y, momentum_preservation, impact_risk,
-            nearest_hazard_distance, nearest_collectible_distance, hazard_threat_level, interaction_cooldown,
-            switch_progress, exit_accessibility, completion_progress
+            velocity_mag_norm,
+            velocity_dir_x,
+            velocity_dir_y,
+            ground_movement,
+            air_movement,
+            wall_interaction,
+            special_states,
+            airborne_status,
+            horizontal_input,
+            jump_input,
+            jump_buffer_norm,
+            floor_buffer_norm,
+            wall_buffer_norm,
+            floor_contact,
+            wall_contact,
+            ceiling_contact,
+            floor_normal_strength,
+            wall_direction,
+            surface_slope,
+            accel_x,
+            accel_y,
+            momentum_preservation,
+            impact_risk,
+            nearest_hazard_distance,
+            nearest_collectible_distance,
+            hazard_threat_level,
+            interaction_cooldown,
+            switch_progress,
+            exit_accessibility,
+            completion_progress,
         ]
-        
+
         return {
             "position": {"x": float(ninja.xpos), "y": float(ninja.ypos)},
             "velocity": {"x": float(ninja.xspeed), "y": float(ninja.yspeed)},
@@ -674,44 +593,50 @@ class BinaryReplayParser:
             "applied_gravity": float(ninja.applied_gravity),
             "applied_drag": float(ninja.applied_drag),
             "applied_friction": float(ninja.applied_friction),
-            "floor_normal": {"x": float(ninja.floor_normalized_x), "y": float(ninja.floor_normalized_y)},
-            "ceiling_normal": {"x": float(ninja.ceiling_normalized_x), "y": float(ninja.ceiling_normalized_y)},
+            "floor_normal": {
+                "x": float(ninja.floor_normalized_x),
+                "y": float(ninja.floor_normalized_y),
+            },
+            "ceiling_normal": {
+                "x": float(ninja.ceiling_normalized_x),
+                "y": float(ninja.ceiling_normalized_y),
+            },
             "buffers": {
                 "jump": int(ninja.jump_buffer),
                 "floor": int(ninja.floor_buffer),
                 "wall": int(ninja.wall_buffer),
-                "launch_pad": int(ninja.launch_pad_buffer)
+                "launch_pad": int(ninja.launch_pad_buffer),
             },
             "contact_counts": {
                 "floor": int(ninja.floor_count),
                 "wall": int(ninja.wall_count),
-                "ceiling": int(ninja.ceiling_count)
+                "ceiling": int(ninja.ceiling_count),
             },
             "game_state": game_state,  # 30-feature array for npp-rl compatibility
             "gold_collected": int(ninja.gold_collected),
-            "doors_opened": int(ninja.doors_opened)
+            "doors_opened": int(ninja.doors_opened),
         }
 
     def save_map_data(self, map_data: List[int], output_path: str) -> str:
         """
         Save map data to a separate file alongside the JSONL.
-        
+
         Args:
             map_data: Map data bytes
             output_path: Base output path for JSONL file
-            
+
         Returns:
             Path to the saved map data file
         """
         # Create map data filename based on JSONL filename
         base_path = os.path.splitext(output_path)[0]
         map_data_path = f"{base_path}_map.dat"
-        
+
         # Ensure directory exists
         os.makedirs(os.path.dirname(map_data_path), exist_ok=True)
-        
+
         # Save map data as binary file
-        with open(map_data_path, 'wb') as f:
+        with open(map_data_path, "wb") as f:
             # Convert to bytes if needed
             if isinstance(map_data, list) and len(map_data) > 0:
                 # Ensure all values are in valid byte range (0-255)
@@ -724,14 +649,23 @@ class BinaryReplayParser:
                         byte_data.append(0)
                 map_bytes = bytes(byte_data)
             else:
-                map_bytes = bytes(map_data) if isinstance(map_data, (list, tuple)) else map_data
+                map_bytes = (
+                    bytes(map_data) if isinstance(map_data, (list, tuple)) else map_data
+                )
             f.write(map_bytes)
-            
+
         logger.info(f"Saved map data to {map_data_path} ({len(map_data)} bytes)")
         return map_data_path
 
     def simulate_replay(
-        self, inputs: List[int], map_data: List[int], level_id: str, session_id: str, output_path: str = "", npp_level_id: int = None, level_name: str = ""
+        self,
+        inputs: List[int],
+        map_data: List[int],
+        level_id: str,
+        session_id: str,
+        output_path: str = "",
+        npp_level_id: int = None,
+        level_name: str = "",
     ) -> List[Dict[str, Any]]:
         """
         Simulate a replay and extract frame-by-frame data.
@@ -749,7 +683,7 @@ class BinaryReplayParser:
             List of frame dictionaries in JSONL format
         """
         frames = []
-        
+
         # Save map data to separate file if output path provided
         map_data_path = None
         if output_path:
@@ -802,10 +736,12 @@ class BinaryReplayParser:
                     "npp_level_name": level_name,  # N++ Level name
                 },
             }
-            
+
             # Add map data path if available
             if map_data_path and output_path:
-                frame_data["map_data_path"] = os.path.relpath(map_data_path, os.path.dirname(output_path))
+                frame_data["map_data_path"] = os.path.relpath(
+                    map_data_path, os.path.dirname(output_path)
+                )
 
             frames.append(frame_data)
 
@@ -872,7 +808,7 @@ class BinaryReplayParser:
                 try:
                     # Save to JSONL file
                     output_file = output_dir / f"{session_id}.jsonl"
-                    
+
                     # Simulate and extract frames
                     frames = self.simulate_replay(
                         inputs, map_data, level_id, session_id, str(output_file)
@@ -927,58 +863,31 @@ class BinaryReplayParser:
         """
         try:
             # Parse the single replay file
-            inputs, map_data, npp_level_id, level_name = self.parse_single_replay_file(replay_file)
+            inputs, map_data, npp_level_id, level_name = self.parse_single_replay_file(
+                replay_file
+            )
 
             # Generate session ID from filename
             file_id = replay_file.stem
             session_id = f"{file_id}_session_000"
 
-            logger.info(f"Processing single replay file: {replay_file.name} (Level ID: {npp_level_id}, Name: '{level_name}')")
-
-            # Try to get correct map data using multiple strategies
-            enhanced_map_data = map_data  # Default to parsed data
-            if level_name:
-                try:
-                    # Strategy 1: Try to load from nclone official maps directory
-                    official_maps_dir = Path("nclone/maps/official")
-                    if official_maps_dir.exists():
-                        # Look for exact match or fuzzy match
-                        potential_files = []
-                        for map_file in official_maps_dir.iterdir():
-                            if map_file.is_file():
-                                # Check for exact match or fuzzy match
-                                if level_name.lower() in map_file.name.lower() or map_file.name.lower() in level_name.lower():
-                                    potential_files.append(map_file)
-                        
-                        if potential_files:
-                            # Use the best match (shortest name difference)
-                            best_match = min(potential_files, key=lambda f: abs(len(f.name) - len(level_name)))
-                            
-                            with open(best_match, 'rb') as f:
-                                official_data = f.read()
-                            
-                            if len(official_data) >= 1245:  # Valid nclone format
-                                enhanced_map_data = [int(b) for b in official_data[:1245]]
-                                
-                                # Log the improvement
-                                original_tiles = len([v for v in map_data if v != 0])
-                                enhanced_tiles = len([v for v in enhanced_map_data[184:1150] if v != 0])
-                                logger.info(f"Found nclone official map '{best_match.name}' for '{level_name}'")
-                                logger.info(f"Enhanced map data: {original_tiles} → {enhanced_tiles} non-zero tiles")
-                            else:
-                                logger.warning(f"Invalid nclone map format in {best_match.name}")
-                        else:
-                            logger.info(f"No nclone official map found for '{level_name}', using parsed data")
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to load enhanced map data for '{level_name}': {e}")
-                    # Continue with original map data
+            logger.info(
+                f"Processing single replay file: {replay_file.name} (Level ID: {npp_level_id}, Name: '{level_name}')"
+            )
 
             # Create output file path
             output_file = output_dir / f"{session_id}.jsonl"
-            
+
             # Simulate and extract frames using enhanced map data
-            frames = self.simulate_replay(inputs, enhanced_map_data, file_id, session_id, str(output_file), npp_level_id, level_name)
+            frames = self.simulate_replay(
+                inputs,
+                map_data,
+                file_id,
+                session_id,
+                str(output_file),
+                npp_level_id,
+                level_name,
+            )
 
             if frames:
                 self.save_frames_to_jsonl(frames, output_file)

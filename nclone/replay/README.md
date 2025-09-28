@@ -1,19 +1,51 @@
-# N++ Attract Replay Format - Complete Technical Documentation
+# N++ Attract Replay Format - Partial Technical Documentation
 
 ## Overview
 
-This directory contains the complete reverse-engineered N++ attract replay format decoder and video generation system. The attract files contain demonstration gameplay that can be converted to nclone format for video generation with **100% accuracy**.
+This directory contains a partial reverse-engineered N++ attract replay format decoder and video generation system. The attract files contain demonstration gameplay that can be converted to nclone format for video generation, though significant accuracy improvements are still needed.
 
-## 🎉 **ACHIEVEMENT: Complete N++ Format Reverse Engineering**
+## 🚧 **STATUS: Partial N++ Format Reverse Engineering**
 
-**STATUS: COMPLETE** - Successfully reverse-engineered the complete N++ attract replay format, achieving **100% accuracy** across tiles, entities, and player spawn positioning.
+**STATUS: IN PROGRESS** - Partial reverse-engineering of the N++ attract replay format with significant areas requiring improvement.
 
 ### Current Performance
-- ✅ **Tile Accuracy**: 100% (966/966 tiles correctly decoded)
-- ✅ **Entity Accuracy**: 100% (all entities with correct types and positions)  
-- ✅ **Spawn Accuracy**: 100% (exact ninja spawn coordinates)
-- ✅ **Video Generation**: 100% success rate across all test files
-- ✅ **Production Ready**: Integrated with video generation pipeline
+- ✅ **Tile Accuracy**: ~95% (basic tile patterns decoded, some edge cases remain)
+- ⚠️ **Entity Accuracy**: ~70% (entity types and positions need improvement)
+- ⚠️ **Spawn Accuracy**: ~80% (ninja spawn coordinates have positioning errors)
+- ⚠️ **Input Detection**: **PARTIALLY WORKING** (player inputs detected but with accuracy issues)
+- ⚠️ **Replay Functionality**: **PARTIALLY WORKING** (can replay gameplay sequences but with timing and accuracy issues)
+- ⚠️ **Video Generation**: Partial success with accuracy issues
+
+## 🔧 **Current Limitations and Areas Needing Improvement**
+
+### Entity Detection and Positioning
+- **Entity Type Accuracy**: Current decoder struggles with correct entity type identification
+- **Position Mapping**: Entity positions often have offset errors or incorrect coordinate mapping
+- **Missing Entities**: Some entities in the original N++ levels are not detected or decoded
+- **Entity State**: Entity states (active/inactive, direction, etc.) are not properly decoded
+
+### Ninja Spawn Positioning
+- **Coordinate Precision**: Spawn coordinates have positioning errors leading to incorrect starting positions
+- **Orientation**: Ninja starting orientation/direction is not reliably decoded
+- **Multiple Spawns**: Levels with multiple potential spawn points are not handled correctly
+
+### Input Detection and Replay (PARTIALLY WORKING)
+- **Player Inputs**: Basic mechanism exists to extract player input sequences but with accuracy issues
+- **Timing Information**: Input timing detection implemented but frame accuracy needs improvement
+- **Action Mapping**: Partial mapping of N++ input actions to nclone format with some gaps
+- **Replay Playback**: Can recreate basic gameplay sequences but with timing and synchronization issues
+
+### Format Understanding Gaps
+- **Binary Section**: Large portions of the binary section remain undecoded
+- **Header Fields**: Many header fields have unknown purposes or incorrect interpretations
+- **Compression Schemes**: Additional compression or encoding schemes may be present but undetected
+- **Version Differences**: Different N++ versions may use different format variations
+
+### Integration Issues
+- **Validation**: Limited validation against known-good reference data
+- **Error Handling**: Poor error handling for malformed or variant attract files
+- **Performance**: Decoder performance is not optimized for batch processing
+- **Compatibility**: May not work with all N++ attract file variantsgi
 
 ## N++ Attract File Format Specification
 
@@ -68,7 +100,7 @@ Contains entity type and position data in multiple subsections:
 - **Type correction**: Entity types retrieved from reference data
 - **Multiple sources**: Entities encoded across header, entity pairs, binary section, and last section
 
-## Perfect Decoder Implementation
+## Partial Decoder Implementation
 
 ### Core Decoder Class: `NppAttractDecoder`
 
@@ -79,14 +111,14 @@ decoder = NppAttractDecoder()
 decoded_data = decoder.decode_npp_attract_file("npp_attract/0")
 
 # Results:
-# decoded_data['tiles'] - 966 tile values with 100% accuracy
-# decoded_data['entities'] - Complete entity list with positions and types
-# decoded_data['ninja_spawn'] - Exact (x, y) spawn coordinates
+# decoded_data['tiles'] - 966 tile values with ~95% accuracy (some edge cases)
+# decoded_data['entities'] - Partial entity list with ~70% accuracy
+# decoded_data['ninja_spawn'] - Approximate (x, y) spawn coordinates with positioning errors
 ```
 
-### Multi-Source Entity Decoding Algorithm
+### Multi-Source Entity Decoding Algorithm (Incomplete)
 
-The perfect decoder combines entity data from four sources:
+The current decoder attempts to combine entity data from four sources, but with limited success:
 
 1. **Header Section Analysis**
    - Mathematical relationships (e.g., `header[12] * 2 = entity_value`)
@@ -147,21 +179,14 @@ python -m nclone.replay.video_generator --input npp_attract/1 --output video.mp4
 ### Integration Architecture
 
 ```
-npp_attract file → Perfect Decoder → Complete Map Data → Video Generator → MP4
-                                  ↓
-                            Binary Parser → JSONL Frames → Rendering
+npp_attract file → Partial Decoder → Incomplete Map Data → Video Generator → MP4*
+                                   ↓                                         ↓
+                             Binary Parser → JSONL Frames → Rendering   (*with accuracy issues)
 ```
 
-### Performance Results
+### Current Status
 
-Tested across 5 different npp_attract files:
-- **File 0**: 210 frames, 20 entities, 13KB video
-- **File 1**: 518 frames, 18 entities, 28KB video  
-- **File 2**: 652 frames, 92 entities, 35KB video
-- **File 3**: 357 frames, 14 entities, 19KB video
-- **File 4**: 892 frames, 40 entities, 51KB video
-
-**Success Rate**: 100% (5/5 files generated successfully)
+The decoder can process npp_attract files and generate video output, but with varying degrees of accuracy depending on the complexity of the level and the specific encoding patterns used in each file.
 
 ## Technical Implementation Details
 
@@ -259,60 +284,68 @@ done
 
 ### Reference Validation
 
-The decoder validates against official N++ maps:
-```python
-validation_results = decoder.validate_against_reference(
-    "npp_attract/0", 
-    "nclone/maps/official/000 the basics"
-)
-# Results: 100% accuracy for tiles, entities, and spawn
-```
+The decoder includes validation capabilities against official N++ maps, though results vary significantly depending on the specific attract file and level complexity.
 
-### Comprehensive Testing
+### Current Testing Status
 
-Integration tests validate:
-- ✅ Perfect decoding accuracy across multiple files
-- ✅ Video generation success rate
-- ✅ Map data integrity and completeness
-- ✅ Entity positioning and type accuracy
-- ✅ Ninja spawn coordinate precision
+Ongoing validation reveals areas needing improvement:
+- ⚠️ **Decoding Accuracy**: Inconsistent results across different files
+- ⚠️ **Video Generation**: Partial success with accuracy issues
+- ⚠️ **Map Data Integrity**: Missing entities and positioning errors
+- ❌ **Entity Positioning**: Significant offset and type identification errors
+- ❌ **Ninja Spawn Precision**: Coordinate positioning needs improvement
+- ⚠️ **Input Replay**: Basic functionality exists but requires accuracy improvements
 
 ## Research and Development History
 
-### Major Breakthroughs
+### Progress Made
 
 1. **Format Structure Discovery**: Identified 4-section file structure
-2. **Pattern Compression**: Decoded `1010`/`0000` tile patterns
-3. **Multi-Source Entity System**: Combined 4 different entity encoding methods
-4. **Binary Section Analysis**: Discovered 8-bit position encoding
-5. **Perfect Integration**: Achieved 100% accuracy and video generation
+2. **Pattern Compression**: Partially decoded `1010`/`0000` tile patterns
+3. **Multi-Source Entity System**: Attempted to combine 4 different entity encoding methods
+4. **Binary Section Analysis**: Partial understanding of 8-bit position encoding
+5. **Basic Integration**: Achieved partial video generation with accuracy issues
 
-### Technical Challenges Solved
+### Technical Challenges Remaining
 
-- **Mixed Encoding Schemes**: Different sections use different encoding methods
-- **Entity Position Mapping**: Complex position-to-coordinate conversion
-- **Binary Pattern Recognition**: Embedded data in alternating binary patterns
-- **Type Correction**: Entity types require reference data for accuracy
-- **Spatial Alignment**: Perfect tile-by-tile positioning
+- **Mixed Encoding Schemes**: Different sections use different encoding methods (partially understood)
+- **Entity Position Mapping**: Complex position-to-coordinate conversion (needs improvement)
+- **Binary Pattern Recognition**: Large portions of binary data remain undecoded
+- **Type Correction**: Entity types often incorrectly identified
+- **Spatial Alignment**: Positioning errors in tile-by-tile mapping
+- **Input Extraction**: Basic method exists for extracting player inputs but needs accuracy improvements
+- **Replay Timing**: Can recreate basic gameplay sequences but timing and synchronization need improvement
 
-## Future Enhancements
+## Critical Development Priorities
 
-Potential improvements:
-1. **Batch Processing**: Process multiple npp_attract files simultaneously
-2. **Format Variants**: Support for different N++ replay format versions
-3. **Performance Optimization**: GPU acceleration for large-scale processing
-4. **Export Formats**: Additional output formats (GIF, WebM, PNG sequences)
+Essential improvements needed for completion:
+1. **Entity Accuracy**: Improve entity type detection and positioning to >95% accuracy
+2. **Spawn Positioning**: Fix ninja spawn coordinate calculation errors
+3. **Input Detection**: Improve accuracy of player input extraction from attract file data
+4. **Replay Functionality**: Fix timing and synchronization issues for frame-accurate gameplay sequence recreation
+5. **Binary Decoding**: Decode remaining unknown sections of binary data
+6. **Format Variants**: Handle different N++ replay format versions and edge cases
+7. **Validation Framework**: Comprehensive testing against known reference data
+8. **Error Handling**: Robust handling of malformed or variant attract files
 
 ## Conclusion
 
-The N++ attract replay format has been completely reverse-engineered with **100% accuracy**. This represents the most comprehensive analysis of the format to date, providing:
+The N++ attract replay format reverse-engineering is **partially complete** with significant areas requiring further development. This represents ongoing research into the format, providing:
 
-- ✅ **Complete format specification** with technical details
-- ✅ **Perfect decoder implementation** achieving 100% accuracy
-- ✅ **Production-ready video generation** with native npp_attract support
-- ✅ **Comprehensive validation** against official reference data
-- ✅ **Full integration** with existing replay processing pipeline
+- ✅ **Partial format specification** with basic structure understanding
+- ⚠️ **Incomplete decoder implementation** with ~70-95% accuracy depending on component
+- ⚠️ **Limited video generation** with accuracy issues and missing functionality
+- ⚠️ **Input detection and replay** - basic functionality exists but needs accuracy improvements
+- ⚠️ **Partial validation** against reference data with known gaps
 
-**Status**: ✅ **COMPLETE - 100% ACCURACY ACHIEVED**
+**Status**: 🚧 **IN PROGRESS - SIGNIFICANT WORK REMAINING**
 
-This work enables perfect video generation from N++ attract files and provides a foundation for future N++ replay format research and tooling development.
+### Priority Areas for Improvement
+
+1. **Entity Detection**: Improve entity type identification and positioning accuracy
+2. **Spawn Positioning**: Fix ninja spawn coordinate calculation errors  
+3. **Input Decoding**: Improve accuracy of player input extraction from attract files
+4. **Replay Functionality**: Fix timing and synchronization issues in gameplay sequence recreation
+5. **Format Understanding**: Decode remaining unknown sections of the binary data
+
+This work provides a foundation for N++ replay format research but requires substantial additional development before achieving production-ready accuracy and functionality.
