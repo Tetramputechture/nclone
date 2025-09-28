@@ -76,11 +76,11 @@ def validate_gold_collection():
             
             obs = env.reset()
             
-            # Count initial gold
+            # Count initial gold (only active gold)
             initial_gold_count = 0
             for entity_list in env.nplay_headless.sim.entity_dic.values():
                 for entity in entity_list:
-                    if type(entity).__name__ == 'EntityGold':
+                    if type(entity).__name__ == 'EntityGold' and entity.active:
                         initial_gold_count += 1
             
             print(f"Initial gold count: {initial_gold_count}")
@@ -90,8 +90,8 @@ def validate_gold_collection():
             
             print(f"Running full replay to validate gold collection...")
             
-            # Track gold collection
-            gold_collected = 0
+            # Track gold collection using ninja's gold_collected counter
+            previous_gold_collected = 0
             gold_collection_frames = []
             
             # Run full replay
@@ -102,29 +102,29 @@ def validate_gold_collection():
                 # Step environment
                 obs, reward, terminated, truncated, info = env.step(action_int)
                 
-                # Count current gold
-                current_gold_count = 0
-                for entity_list in env.nplay_headless.sim.entity_dic.values():
-                    for entity in entity_list:
-                        if type(entity).__name__ == 'EntityGold':
-                            current_gold_count += 1
+                # Check ninja's gold collection counter (more reliable than counting entities)
+                current_gold_collected = env.nplay_headless.sim.ninja.gold_collected
                 
-                # Check if gold was collected
-                if current_gold_count < initial_gold_count - gold_collected:
-                    new_gold_collected = initial_gold_count - current_gold_count
-                    for _ in range(gold_collected, new_gold_collected):
+                # Check if gold was collected this frame
+                if current_gold_collected > previous_gold_collected:
+                    new_collections = current_gold_collected - previous_gold_collected
+                    for _ in range(new_collections):
                         gold_collection_frames.append(frame_idx)
-                    gold_collected = new_gold_collected
                     
                     ninja_pos = (env.nplay_headless.sim.ninja.xpos, env.nplay_headless.sim.ninja.ypos)
-                    print(f"  🎉 Frame {frame_idx}: Gold collected! Total: {gold_collected}/{initial_gold_count}")
+                    print(f"  🎉 Frame {frame_idx}: Gold collected! Total: {current_gold_collected}/{initial_gold_count}")
                     print(f"     Ninja position: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})")
                     print(f"     Time: {frame_idx/60.0:.1f}s")
+                    
+                    previous_gold_collected = current_gold_collected
                 
                 # Check for level completion
                 if terminated or truncated:
                     print(f"  🏁 Level completed at frame {frame_idx} ({frame_idx/60.0:.1f}s)")
                     break
+            
+            # Final gold count from ninja's counter
+            gold_collected = env.nplay_headless.sim.ninja.gold_collected
             
             # Final validation
             print(f"\n" + "=" * 80)
