@@ -4,7 +4,8 @@ Map loader for N++ replay files.
 This module provides functionality to load actual map data from N++ map definition files
 when available, with fallback to empty maps for attract replay files.
 
-Supports both single map files and directories containing multiple .txt map definition files.
+Note: npp_attract files contain complete map data and use the perfect decoder.
+This loader provides enhanced map data from official sources when available.
 """
 
 import logging
@@ -23,7 +24,7 @@ class MapLoader:
         Initialize the map loader.
         
         Args:
-            map_path: Path to N++ map definition file or directory containing .txt files
+            map_path: Path to N++ map definition file or directory containing map files
                      (format: $name#mapdata#)
         """
         # Convert string path to Path object if needed
@@ -42,16 +43,17 @@ class MapLoader:
                 self._load_map_directory(map_path)
     
     def _load_map_directory(self, directory: Path) -> None:
-        """Load and parse all .txt map definition files in a directory."""
-        txt_files = list(directory.glob("*.txt"))
-        if not txt_files:
-            logger.warning(f"No .txt files found in directory: {directory}")
+        """Load and parse all map definition files in a directory."""
+        map_files = list(directory.glob("*"))
+        map_files = [f for f in map_files if f.is_file()]
+        if not map_files:
+            logger.warning(f"No map files found in directory: {directory}")
             return
             
-        logger.info(f"Loading map definitions from {len(txt_files)} files in {directory}")
+        logger.info(f"Loading map definitions from {len(map_files)} files in {directory}")
         
-        for txt_file in txt_files:
-            self._load_map_file(txt_file)
+        for map_file in map_files:
+            self._load_map_file(map_file)
     
     def _load_map_file(self, map_file: Path) -> None:
         """Load and parse a single map definition file."""
@@ -389,91 +391,49 @@ class MapLoader:
         # Initialize 42x23 tile grid (966 tiles total)
         tiles = [0] * (42 * 23)
         
-        try:
-            # Use the enhanced entity decoder for proper tile parsing
-            from nclone.replay.npp_entity_decoder import NppEntityDecoder
-            decoder = NppEntityDecoder()
-            tiles = decoder.parse_npp_tile_data(map_data)
-            logger.debug(f"Parsed {len(tiles)} tiles using enhanced decoder")
-            return tiles
-        except Exception as e:
-            logger.warning(f"Error parsing tile data with enhanced decoder: {e}")
-            # Fallback to basic parsing
-            for i, char in enumerate(map_data):
-                if i >= len(tiles):
-                    break
-                if char.isdigit():
-                    tiles[i] = int(char)
-                else:
-                    tiles[i] = 0
-            logger.debug(f"Used fallback parsing for {len(tiles)} tiles")
-            return tiles
+        # Basic tile parsing - npp_attract files contain complete map data
+        for i, char in enumerate(map_data):
+            if i >= len(tiles):
+                break
+            if char.isdigit():
+                tiles[i] = int(char)
+            else:
+                tiles[i] = 0
+        logger.debug(f"Parsed {len(tiles)} tiles from map data")
+        return tiles
     
     def _parse_npp_entity_data(self, map_data: str) -> List[int]:
         """
-        Parse N++ map data to extract entity information using the enhanced decoder.
+        Parse N++ map data to extract entity information.
+        
+        Note: npp_attract files contain complete entity data that is handled
+        by the perfect npp_attract decoder. This method provides fallback
+        basic entity data for other use cases.
         
         Args:
             map_data: N++ map data string
             
         Returns:
-            List of entity data bytes
+            List of entity data bytes (basic fallback)
         """
-        try:
-            # Use the enhanced entity decoder for proper entity parsing
-            from nclone.replay.npp_entity_decoder import NppEntityDecoder
-            decoder = NppEntityDecoder()
-            
-            # Decode entities from the hex section
-            level_name, entities = decoder.decode_level_entities(f"$level#{map_data}#")
-            
-            # Convert entities to nclone format
-            entity_data = decoder.convert_entities_to_nclone_format(entities)
-            
-            # Ensure we have at least ninja spawn and exit
-            if not any(e.entity_type == "c0_entity" and e.subtype == 0 for e in entities):
-                # Add ninja spawn if missing
-                entity_data.extend([
-                    0, 0, 0, 0,  # Ninja spawn entity
-                    100, 0, 0, 0,  # X position
-                    100, 0, 0, 0,  # Y position
-                ])
-            
-            if not any(e.entity_type == "c0_entity" and e.subtype == 3 for e in entities):
-                # Add exit door if missing
-                entity_data.extend([
-                    3, 0, 0, 0,  # Exit door entity type
-                    200, 0, 0, 0,  # X position
-                    100, 0, 0, 0,  # Y position
-                ])
-            
-            # Pad to fill remaining space
-            remaining_space = 95 - len(entity_data)  # 95 bytes available for entities
-            entity_data.extend([0] * max(0, remaining_space))
-            
-            logger.debug(f"Parsed {len([e for e in entities if e.entity_type == 'c0_entity'])} entities using enhanced decoder")
-            return entity_data[:95]  # Ensure we don't exceed available space
-            
-        except Exception as e:
-            logger.warning(f"Error parsing entity data with enhanced decoder: {e}")
-            # Fallback to basic entity data
-            entity_data = []
-            
-            # Add basic ninja spawn and exit
-            entity_data.extend([
-                0, 0, 0, 0,  # Ninja spawn entity
-                100, 0, 0, 0,  # X position
-                100, 0, 0, 0,  # Y position
-                3, 0, 0, 0,  # Exit door entity type
-                200, 0, 0, 0,  # X position
-                100, 0, 0, 0,  # Y position
-            ])
-            
-            # Pad remaining space
-            remaining_space = 95 - len(entity_data)
-            entity_data.extend([0] * max(0, remaining_space))
-            
-            return entity_data[:95]
+        # Basic fallback entity data - npp_attract files use perfect decoder
+        entity_data = []
+        
+        # Add basic ninja spawn and exit
+        entity_data.extend([
+            0, 0, 0, 0,  # Ninja spawn entity
+            100, 0, 0, 0,  # X position
+            100, 0, 0, 0,  # Y position
+            3, 0, 0, 0,  # Exit door entity type
+            200, 0, 0, 0,  # X position
+            100, 0, 0, 0,  # Y position
+        ])
+        
+        # Pad remaining space
+        remaining_space = 95 - len(entity_data)
+        entity_data.extend([0] * max(0, remaining_space))
+        
+        return entity_data[:95]
     
     def _generate_empty_map_data(self) -> bytes:
         """Generate empty map data for fallback."""
