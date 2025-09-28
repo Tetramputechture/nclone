@@ -1,46 +1,25 @@
 """
-High-level interface for extracting compact reachability features.
+Simplified interface for extracting compact reachability features.
 
-This module provides the ReachabilityFeatureExtractor class, which serves as the
-main interface for RL integration. It combines the tiered reachability system
-with the compact feature encoder to provide efficient, cached feature extraction
-suitable for real-time RL training.
-
-Key features:
-- Automatic performance tier selection
-- Intelligent caching with TTL
-- Graceful error handling
-- Performance monitoring
-- RL-friendly API design
+This module provides a simplified ReachabilityFeatureExtractor that uses the
+fast OpenCV flood fill reachability system with minimal caching and overhead.
+Designed for real-time RL training with <1ms performance targets.
 """
 
 import time
-import hashlib
 from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass
 import numpy as np
 
 from .reachability_system import ReachabilitySystem
 from .compact_features import CompactReachabilityFeatures, FeatureConfig
 
 
-@dataclass
-class CacheEntry:
-    """Cache entry for feature extraction results."""
-
-    features: np.ndarray
-    timestamp: float
-    computation_time_ms: float
-    cache_hits: int = 0
-
-
 class ReachabilityFeatureExtractor:
     """
-    High-level interface for extracting compact reachability features.
+    Simplified interface for extracting compact reachability features.
 
-    This class provides the main API for RL integration, combining ultra-fast
-    reachability analysis with compact feature encoding. It includes intelligent
-    caching and performance monitoring for real-time RL training requirements.
+    This class provides a streamlined API for RL integration, using ultra-fast
+    reachability analysis with minimal overhead. Designed for <1ms performance.
 
     Example usage:
         extractor = ReachabilityFeatureExtractor()
@@ -53,18 +32,14 @@ class ReachabilityFeatureExtractor:
         self,
         reachability_system: Optional[ReachabilitySystem] = None,
         feature_config: Optional[FeatureConfig] = None,
-        cache_ttl_ms: float = 100.0,
-        max_cache_size: int = 1000,
         debug: bool = False,
     ):
         """
-        Initialize feature extractor.
+        Initialize simplified feature extractor.
 
         Args:
             reachability_system: Ultra-fast reachability system (creates default if None)
             feature_config: Feature configuration (uses default if None)
-            cache_ttl_ms: Cache time-to-live in milliseconds
-            max_cache_size: Maximum number of cached entries
             debug: Enable debug output
         """
         self.reachability_system = reachability_system or ReachabilitySystem(
@@ -75,15 +50,8 @@ class ReachabilityFeatureExtractor:
         )
         self.debug = debug
 
-        # Caching configuration
-        self.cache_ttl_ms = cache_ttl_ms
-        self.max_cache_size = max_cache_size
-        self.feature_cache: Dict[str, CacheEntry] = {}
-
-        # Performance monitoring
+        # Minimal performance tracking
         self.extraction_times = []
-        self.cache_hits = 0
-        self.cache_misses = 0
 
     def extract_features(
         self,
@@ -93,11 +61,10 @@ class ReachabilityFeatureExtractor:
         switch_states: Optional[Dict[str, bool]] = None,
     ) -> np.ndarray:
         """
-        Extract compact reachability features for RL integration.
+        Extract simplified reachability features for RL integration.
 
-        This is the main entry point for feature extraction. It automatically
-        handles caching and provides reliable feature vectors for RL training
-        using ultra-fast flood fill analysis.
+        This is the main entry point for feature extraction using ultra-fast
+        flood fill analysis with minimal overhead.
 
         Args:
             ninja_position: Current ninja position (x, y)
@@ -106,30 +73,12 @@ class ReachabilityFeatureExtractor:
             switch_states: Current switch activation states
 
         Returns:
-            64-dimensional numpy array with encoded features
+            8-dimensional numpy array with encoded features
         """
         start_time = time.perf_counter()
 
         if switch_states is None:
             switch_states = {}
-
-        # Check cache first
-        cache_key = self._generate_cache_key(
-            ninja_position, switch_states, level_data, entities
-        )
-        cached_entry = self._get_cached_features(cache_key)
-
-        if cached_entry is not None:
-            self.cache_hits += 1
-            cached_entry.cache_hits += 1
-
-            if self.debug:
-                print(f"DEBUG: Cache hit for key {cache_key[:16]}...")
-
-            return cached_entry.features
-
-        # Cache miss - compute features
-        self.cache_misses += 1
 
         # Get reachability analysis using ultra-fast system
         reachability_result = self.reachability_system.analyze_reachability(
@@ -150,9 +99,10 @@ class ReachabilityFeatureExtractor:
         # Record timing
         computation_time_ms = (time.perf_counter() - start_time) * 1000
         self.extraction_times.append(computation_time_ms)
-
-        # Cache result
-        self._cache_features(cache_key, features, computation_time_ms)
+        
+        # Keep only recent timing history
+        if len(self.extraction_times) > 100:
+            self.extraction_times = self.extraction_times[-100:]
 
         if self.debug:
             print(f"DEBUG: Feature extraction completed in {computation_time_ms:.2f}ms")
@@ -170,10 +120,10 @@ class ReachabilityFeatureExtractor:
             batch_data: List of dicts with keys: ninja_position, level_data, entities, switch_states
 
         Returns:
-            Array of shape (batch_size, 64) with encoded features
+            Array of shape (batch_size, 8) with encoded features
         """
         batch_size = len(batch_data)
-        batch_features = np.zeros((batch_size, 64), dtype=np.float32)
+        batch_features = np.zeros((batch_size, 8), dtype=np.float32)
 
         for i, data in enumerate(batch_data):
             batch_features[i] = self.extract_features(
@@ -190,94 +140,44 @@ class ReachabilityFeatureExtractor:
         Get human-readable names for each feature dimension.
 
         Returns:
-            List of 64 feature names for debugging and analysis
+            List of 8 feature names for debugging and analysis
         """
         return self.feature_encoder.get_feature_names()
 
     def get_performance_stats(self) -> Dict[str, Any]:
         """
-        Get performance statistics for monitoring and optimization.
+        Get simplified performance statistics.
 
         Returns:
-            Dictionary with performance metrics
+            Dictionary with basic performance metrics
         """
         if not self.extraction_times:
             return {
                 "total_extractions": 0,
-                "cache_hits": 0,
-                "cache_misses": 0,
-                "cache_hit_rate": 0.0,
                 "avg_extraction_time_ms": 0.0,
                 "max_extraction_time_ms": 0.0,
                 "min_extraction_time_ms": 0.0,
-                "cache_size": len(self.feature_cache),
-                "cache_memory_mb": self._estimate_cache_memory_mb(),
             }
-
-        total_requests = self.cache_hits + self.cache_misses
-        cache_hit_rate = self.cache_hits / total_requests if total_requests > 0 else 0.0
 
         return {
             "total_extractions": len(self.extraction_times),
-            "cache_hits": self.cache_hits,
-            "cache_misses": self.cache_misses,
-            "cache_hit_rate": cache_hit_rate,
-            "avg_extraction_time_ms": np.mean(self.extraction_times),
-            "max_extraction_time_ms": np.max(self.extraction_times),
-            "min_extraction_time_ms": np.min(self.extraction_times),
-            "cache_size": len(self.feature_cache),
-            "cache_memory_mb": self._estimate_cache_memory_mb(),
+            "avg_extraction_time_ms": float(np.mean(self.extraction_times)),
+            "max_extraction_time_ms": float(np.max(self.extraction_times)),
+            "min_extraction_time_ms": float(np.min(self.extraction_times)),
         }
-
-    def clear_cache(self):
-        """Clear the feature cache."""
-        self.feature_cache.clear()
-        self.cache_hits = 0
-        self.cache_misses = 0
-
-        if self.debug:
-            print("DEBUG: Feature cache cleared")
-
-    def optimize_cache(self):
-        """Optimize cache by removing old entries."""
-        current_time = time.time() * 1000  # Convert to milliseconds
-
-        # Remove expired entries
-        expired_keys = []
-        for key, entry in self.feature_cache.items():
-            if current_time - entry.timestamp > self.cache_ttl_ms:
-                expired_keys.append(key)
-
-        for key in expired_keys:
-            del self.feature_cache[key]
-
-        # Remove least recently used entries if cache is too large
-        if len(self.feature_cache) > self.max_cache_size:
-            # Sort by cache hits (keep most used entries)
-            sorted_entries = sorted(
-                self.feature_cache.items(), key=lambda x: x[1].cache_hits, reverse=True
-            )
-
-            # Keep only the most used entries
-            self.feature_cache = dict(sorted_entries[: self.max_cache_size])
-
-        if self.debug:
-            print(
-                f"DEBUG: Cache optimized, {len(self.feature_cache)} entries remaining"
-            )
 
     def validate_features(self, features: np.ndarray) -> Dict[str, Any]:
         """
         Validate feature vector for debugging and quality assurance.
 
         Args:
-            features: 64-dimensional feature vector
+            features: 8-dimensional feature vector
 
         Returns:
             Dictionary with validation results
         """
         validation = {
-            "shape_valid": features.shape == (64,),
+            "shape_valid": features.shape == (8,),
             "dtype_valid": features.dtype == np.float32,
             "has_nan": np.isnan(features).any(),
             "has_inf": np.isinf(features).any(),
@@ -290,299 +190,9 @@ class ReachabilityFeatureExtractor:
         }
 
         # Check for reasonable value ranges
-        validation["values_in_range"] = np.all((features >= -2.0) & (features <= 2.0))
+        validation["values_in_range"] = np.all((features >= 0.0) & (features <= 1.0))
 
         # Check for sufficient variance
         validation["sufficient_variance"] = validation["std_value"] > 0.01
 
         return validation
-
-    def _generate_cache_key(
-        self,
-        ninja_position: Tuple[float, float],
-        switch_states: Dict[str, bool],
-        level_data: Any,
-        entities: List[Any],
-    ) -> str:
-        """Generate cache key for current state."""
-        # Create a hash of the current state
-        state_str = f"{ninja_position}_{sorted(switch_states.items())}"
-
-        # Add level data hash (simplified)
-        if hasattr(level_data, "tiles") and hasattr(level_data.tiles, "shape"):
-            level_hash = (
-                f"{level_data.tiles.shape}_{hash(level_data.tiles.tobytes()) % 10000}"
-            )
-        elif hasattr(level_data, "shape"):
-            level_hash = f"{level_data.shape}_{hash(level_data.tobytes()) % 10000}"
-        else:
-            level_hash = (
-                f"{getattr(level_data, 'width', 0)}_{getattr(level_data, 'height', 0)}"
-            )
-
-        # Add entity count (simplified entity hash)
-        entity_hash = (
-            f"{len(entities)}_{len([e for e in entities if hasattr(e, 'entity_type')])}"
-        )
-
-        full_state = f"{state_str}_{level_hash}_{entity_hash}"
-
-        # Generate SHA256 hash
-        return hashlib.sha256(full_state.encode()).hexdigest()
-
-    def _get_cached_features(self, cache_key: str) -> Optional[CacheEntry]:
-        """Get cached features if valid."""
-        if cache_key not in self.feature_cache:
-            return None
-
-        entry = self.feature_cache[cache_key]
-        current_time = time.time() * 1000  # Convert to milliseconds
-
-        # Check if cache entry is still valid
-        if current_time - entry.timestamp > self.cache_ttl_ms:
-            del self.feature_cache[cache_key]
-            return None
-
-        return entry
-
-    def _cache_features(
-        self,
-        cache_key: str,
-        features: np.ndarray,
-        computation_time_ms: float,
-    ):
-        """Cache computed features."""
-        current_time = time.time() * 1000  # Convert to milliseconds
-
-        entry = CacheEntry(
-            features=features.copy(),
-            timestamp=current_time,
-            computation_time_ms=computation_time_ms,
-        )
-
-        self.feature_cache[cache_key] = entry
-
-        # Optimize cache if it's getting too large
-        if len(self.feature_cache) > self.max_cache_size * 1.2:
-            self.optimize_cache()
-
-    def _estimate_cache_memory_mb(self) -> float:
-        """Estimate cache memory usage in MB."""
-        if not self.feature_cache:
-            return 0.0
-
-        # Each feature vector is 64 float32 values = 256 bytes
-        # Plus overhead for cache entry structure
-        bytes_per_entry = 256 + 100  # Approximate overhead
-        total_bytes = len(self.feature_cache) * bytes_per_entry
-
-        return total_bytes / (1024 * 1024)  # Convert to MB
-
-
-class FeatureAnalyzer:
-    """
-    Utility class for analyzing and visualizing compact features.
-
-    This class provides tools for understanding feature behavior,
-    debugging encoding issues, and validating feature quality.
-    """
-
-    def __init__(self, extractor: ReachabilityFeatureExtractor):
-        """
-        Initialize feature analyzer.
-
-        Args:
-            extractor: Feature extractor to analyze
-        """
-        self.extractor = extractor
-        self.feature_names = extractor.get_feature_names()
-
-    def analyze_feature_distribution(
-        self,
-        test_states: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Analyze feature distribution across multiple states.
-
-        Args:
-            test_states: List of test states to analyze
-
-        Returns:
-            Dictionary with distribution analysis
-        """
-        if not test_states:
-            return {}
-
-        # Extract features for all test states
-        features_batch = self.extractor.extract_features_batch(test_states)
-
-        analysis = {
-            "num_states": len(test_states),
-            "feature_stats": {},
-            "correlation_analysis": {},
-            "outlier_analysis": {},
-        }
-
-        # Analyze each feature dimension
-        for i, feature_name in enumerate(self.feature_names):
-            feature_values = features_batch[:, i]
-
-            analysis["feature_stats"][feature_name] = {
-                "mean": float(np.mean(feature_values)),
-                "std": float(np.std(feature_values)),
-                "min": float(np.min(feature_values)),
-                "max": float(np.max(feature_values)),
-                "median": float(np.median(feature_values)),
-                "zero_ratio": float(
-                    np.sum(feature_values == 0.0) / len(feature_values)
-                ),
-                "variance": float(np.var(feature_values)),
-            }
-
-        # Correlation analysis
-        if len(test_states) > 1:
-            correlation_matrix = np.corrcoef(features_batch.T)
-
-            # Find highly correlated features
-            high_correlations = []
-            for i in range(len(self.feature_names)):
-                for j in range(i + 1, len(self.feature_names)):
-                    corr = correlation_matrix[i, j]
-                    if abs(corr) > 0.8:  # High correlation threshold
-                        high_correlations.append(
-                            {
-                                "feature1": self.feature_names[i],
-                                "feature2": self.feature_names[j],
-                                "correlation": float(corr),
-                            }
-                        )
-
-            analysis["correlation_analysis"] = {
-                "high_correlations": high_correlations,
-                "max_correlation": float(
-                    np.max(np.abs(correlation_matrix - np.eye(len(self.feature_names))))
-                ),
-                "mean_abs_correlation": float(
-                    np.mean(
-                        np.abs(correlation_matrix - np.eye(len(self.feature_names)))
-                    )
-                ),
-            }
-
-        return analysis
-
-    def generate_feature_report(
-        self, test_states: List[Dict[str, Any]], output_file: Optional[str] = None
-    ) -> str:
-        """
-        Generate comprehensive feature analysis report.
-
-        Args:
-            test_states: List of test states to analyze
-            output_file: Optional file to save report to
-
-        Returns:
-            Report as string
-        """
-        report_lines = [
-            "# Compact Reachability Features Analysis Report",
-            f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Test states: {len(test_states)}",
-            "",
-        ]
-
-        # Performance statistics
-        perf_stats = self.extractor.get_performance_stats()
-        report_lines.extend(
-            [
-                "## Performance Statistics",
-                f"- Total extractions: {perf_stats['total_extractions']}",
-                f"- Cache hit rate: {perf_stats['cache_hit_rate']:.1%}",
-                f"- Average extraction time: {perf_stats['avg_extraction_time_ms']:.2f}ms",
-                f"- Max extraction time: {perf_stats['max_extraction_time_ms']:.2f}ms",
-                f"- Cache size: {perf_stats['cache_size']} entries",
-                f"- Cache memory: {perf_stats['cache_memory_mb']:.2f}MB",
-                "",
-            ]
-        )
-
-        # Feature distribution analysis
-        if test_states:
-            distribution = self.analyze_feature_distribution(test_states)
-
-            report_lines.extend(
-                [
-                    "## Feature Distribution Analysis",
-                    f"- States analyzed: {distribution['num_states']}",
-                    "",
-                ]
-            )
-
-            # Top features by variance
-            feature_stats = distribution["feature_stats"]
-            sorted_features = sorted(
-                feature_stats.items(), key=lambda x: x[1]["variance"], reverse=True
-            )
-
-            report_lines.extend(
-                [
-                    "### Top Features by Variance",
-                    "| Feature | Mean | Std | Min | Max | Zero% |",
-                    "|---------|------|-----|-----|-----|-------|",
-                ]
-            )
-
-            for feature_name, stats in sorted_features[:10]:
-                report_lines.append(
-                    f"| {feature_name} | {stats['mean']:.3f} | {stats['std']:.3f} | "
-                    f"{stats['min']:.3f} | {stats['max']:.3f} | {stats['zero_ratio']:.1%} |"
-                )
-
-            report_lines.append("")
-
-            # Correlation analysis
-            if "correlation_analysis" in distribution:
-                corr_analysis = distribution["correlation_analysis"]
-                high_corrs = corr_analysis["high_correlations"]
-
-                if high_corrs:
-                    report_lines.extend(
-                        [
-                            "### High Correlations (>0.8)",
-                            "| Feature 1 | Feature 2 | Correlation |",
-                            "|-----------|-----------|-------------|",
-                        ]
-                    )
-
-                    for corr in high_corrs[:5]:  # Top 5
-                        report_lines.append(
-                            f"| {corr['feature1']} | {corr['feature2']} | {corr['correlation']:.3f} |"
-                        )
-
-                    report_lines.append("")
-
-        # Performance summary (single ultra-fast mode)
-        if len(test_states) > 0:
-            start_time = time.perf_counter()
-            self.extractor.extract_features_batch(
-                test_states[:5]
-            )  # Use subset for timing
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            avg_time_per_state = elapsed_ms / min(5, len(test_states))
-
-            report_lines.extend(
-                [
-                    "## Performance Summary",
-                    f"- Average extraction time per state: {avg_time_per_state:.2f}ms",
-                    "- Ultra-fast mode (flood fill approximation)",
-                    "",
-                ]
-            )
-
-        report = "\n".join(report_lines)
-
-        if output_file:
-            with open(output_file, "w") as f:
-                f.write(report)
-
-        return report

@@ -8,6 +8,7 @@ both the standard and hierarchical graph builders.
 import numpy as np
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Tuple, Optional, Dict
 
 # Use shared constants from the simulator - FIXED DIMENSIONS
 from ..constants import TILE_PIXEL_SIZE
@@ -53,6 +54,17 @@ class EdgeType(IntEnum):
     REACHABLE = 1  # Can reach via movement (jump/fall possible)
     FUNCTIONAL = 2  # Entity interaction edge
     BLOCKED = 3  # Currently blocked (door without key)
+
+
+@dataclass
+class Edge:
+    """edge representation for strategic RL."""
+
+    source: Tuple[int, int]
+    target: Tuple[int, int]
+    edge_type: EdgeType
+    weight: float = 1.0
+    metadata: Optional[Dict] = None
 
 
 @dataclass
