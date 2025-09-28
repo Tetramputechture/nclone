@@ -276,10 +276,16 @@ class NPlayHeadless:
         return self.sim.entity_dic[3][-1]
 
     def exit_switch_activated(self):
-        return not self._sim_exit_switch().active
+        exit_switch = self._sim_exit_switch()
+        if exit_switch is None:
+            return True  # No exit switch means it's "activated" (for empty maps)
+        return not exit_switch.active
 
     def exit_switch_position(self):
-        return self._sim_exit_switch().xpos, self._sim_exit_switch().ypos
+        exit_switch = self._sim_exit_switch()
+        if exit_switch is None:
+            return (0, 0)  # Default position for empty maps
+        return exit_switch.xpos, exit_switch.ypos
 
     def _sim_exit_door(self):
         # We want to get the .parent attribute of the exit switch.
@@ -289,7 +295,10 @@ class NPlayHeadless:
         return exit_switch.parent
 
     def exit_door_position(self):
-        return self._sim_exit_door().xpos, self._sim_exit_door().ypos
+        exit_door = self._sim_exit_door()
+        if exit_door is None:
+            return (0, 0)  # Default position for empty maps
+        return exit_door.xpos, exit_door.ypos
 
     def mines(self):
         # We want to return a list of all mines in the simulation with state == 0 (toggled)

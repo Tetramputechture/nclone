@@ -1,55 +1,38 @@
 """
-Edge building for strategic RL representation.
+Simplified edge building for strategic RL representation.
 
-This module creates graph edges based on connectivity and strategic relationships
-rather than detailed physics calculations. It focuses on information that helps
-RL agents make strategic decisions while letting them learn movement through experience.
-
-This is the simplified, production-ready version that replaces complex physics
-calculations with connectivity-focused strategic information.
+This module creates basic graph edges using only connectivity information from
+the fast flood fill reachability system. It removes complex physics calculations
+and focuses on simple adjacency and reachability relationships.
 """
 
 import numpy as np
-from typing import List, Tuple, Set, Dict, Optional
-from dataclasses import dataclass
+from typing import List, Tuple, Set
 from .reachability.reachability_system import ReachabilitySystem
-from .common import EdgeType, NodeType, GraphData
+from .common import EdgeType, NodeType, GraphData, Edge
 from .level_data import LevelData
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 
 
-@dataclass
-class Edge:
-    """edge representation for strategic RL."""
-
-    source: Tuple[int, int]
-    target: Tuple[int, int]
-    edge_type: EdgeType
-    weight: float = 1.0
-    metadata: Optional[Dict] = None
-
-
 class EdgeBuilder:
     """
-    Builds graph edges using connectivity rules.
+    Simplified edge builder using basic connectivity.
 
-    This approach focuses on strategic information rather than detailed physics:
+    This approach focuses on simple connectivity information:
     - Adjacent edges for direct movement possibilities
-    - Reachable edges based on flood fill analysis
-    - Functional edges for entity interactions
-    - Blocked edges for conditional access
+    - Basic reachability edges from flood fill analysis
     """
 
     def __init__(
         self, debug: bool = False, reachability_system: ReachabilitySystem = None
     ):
-        """Initialize edge builder."""
+        """Initialize simplified edge builder."""
         self.debug = debug
-        self.reachability_system = reachability_system
+        self.reachability_system = reachability_system or ReachabilitySystem()
 
     def build_edges(self, level_data: LevelData) -> List[Edge]:
         """
-        Build edges for strategic RL representation using consolidated data.
+        Build simplified edges using basic connectivity.
 
         Args:
             level_data: Complete level data including tiles, entities, and player state
@@ -63,32 +46,20 @@ class EdgeBuilder:
         traversable_positions = self._get_traversable_positions(level_data)
 
         # 1. Create adjacent edges (basic connectivity)
-        adjacent_edges = self._create_adjacent_edges(traversable_positions, level_data)
+        adjacent_edges = self._create_adjacent_edges(traversable_positions)
         edges.extend(adjacent_edges)
 
         # 2. Create reachable edges (using flood fill results)
         if level_data.player and level_data.player.position:
             reachable_edges = self._create_reachable_edges(
-                level_data.player.position, level_data
+                level_data.player.position, level_data, traversable_positions
             )
             edges.extend(reachable_edges)
 
-        # 3. Create functional edges (entity interactions)
-        functional_edges = self._create_functional_edges(
-            level_data.entities, traversable_positions
-        )
-        edges.extend(functional_edges)
-
-        # 4. Create blocked edges (conditional access)
-        blocked_edges = self._create_blocked_edges(level_data.entities, level_data)
-        edges.extend(blocked_edges)
-
         if self.debug:
-            print(f"Created {len(edges)}  edges:")
+            print(f"Created {len(edges)} simplified edges:")
             print(f"  Adjacent: {len(adjacent_edges)}")
             print(f"  Reachable: {len(reachable_edges)}")
-            print(f"  Functional: {len(functional_edges)}")
-            print(f"  Blocked: {len(blocked_edges)}")
 
         return edges
 
@@ -110,7 +81,7 @@ class EdgeBuilder:
         return traversable
 
     def _create_adjacent_edges(
-        self, traversable_positions: Set[Tuple[int, int]], level_data: LevelData
+        self, traversable_positions: Set[Tuple[int, int]]
     ) -> List[Edge]:
         """Create edges between adjacent traversable positions."""
         edges = []
@@ -132,7 +103,7 @@ class EdgeBuilder:
                         Edge(
                             source=pos,
                             target=neighbor,
-                            edge_type=EdgeType.ADJACENT,
+                            edge_type=EdgeType.ADJACENT,  # Direct adjacency between nodes
                             weight=1.0,
                         )
                     )
@@ -140,122 +111,49 @@ class EdgeBuilder:
         return edges
 
     def _create_reachable_edges(
-        self, ninja_pos: Tuple[int, int], level_data: LevelData
+        self,
+        ninja_pos: Tuple[int, int],
+        level_data: LevelData,
+        traversable_positions: Set[Tuple[int, int]],
     ) -> List[Edge]:
-        """Create edges based on reachability analysis."""
+        """Create simplified edges based on reachability analysis."""
         edges = []
 
         # Get reachable positions from flood fill
-        result = self.reachability_system.quick_check(level_data, [], ninja_pos)
+        switch_states = getattr(level_data, "switch_states", {})
+        result = self.reachability_system.analyze_reachability(
+            level_data=level_data,
+            ninja_position=ninja_pos,
+            switch_states=switch_states,
+        )
 
         if hasattr(result, "reachable_positions"):
             reachable_positions = result.reachable_positions
 
-            # Create reachable edges between positions that are connected
-            # but not necessarily adjacent
-            for pos1 in reachable_positions:
-                for pos2 in reachable_positions:
-                    if pos1 != pos2:
-                        distance = np.sqrt(
-                            (pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2
-                        )
-                        # Connect positions that are reachable but not immediately adjacent
-                        if TILE_PIXEL_SIZE < distance < TILE_PIXEL_SIZE * 3:
-                            edges.append(
-                                Edge(
-                                    source=pos1,
-                                    target=pos2,
-                                    edge_type=EdgeType.REACHABLE,
-                                    weight=distance / TILE_PIXEL_SIZE,
-                                )
+            # Create simple reachable edges from ninja position to all reachable positions
+            # This provides strategic information about what's accessible
+            for pos in reachable_positions:
+                if pos != ninja_pos and pos in traversable_positions:
+                    distance = np.sqrt(
+                        (ninja_pos[0] - pos[0]) ** 2 + (ninja_pos[1] - pos[1]) ** 2
+                    )
+                    # Only create edges for positions that are reasonably close
+                    if distance < TILE_PIXEL_SIZE * 10:  # Within 10 tiles
+                        edges.append(
+                            Edge(
+                                source=ninja_pos,
+                                target=pos,
+                                edge_type=EdgeType.REACHABLE,  # Can reach via movement
+                                weight=distance / TILE_PIXEL_SIZE,
                             )
-
-        return edges
-
-    def _create_functional_edges(
-        self, entities: List, traversable_positions: Set[Tuple[int, int]]
-    ) -> List[Edge]:
-        """Create edges for entity interactions."""
-        edges = []
-
-        for entity in entities:
-            # Handle both dictionary and object entities
-            if isinstance(entity, dict):
-                entity_pos = (entity["x"], entity["y"])
-            else:
-                entity_pos = (entity.x, entity.y)
-
-            # Find nearby traversable positions
-            nearby_positions = self._get_positions_near_entity(
-                entity_pos, traversable_positions
-            )
-
-            for pos in nearby_positions:
-                edges.append(
-                    Edge(
-                        source=pos,
-                        target=entity_pos,
-                        edge_type=EdgeType.FUNCTIONAL,
-                        weight=1.0,
-                        metadata={"entity_type": type(entity).__name__},
-                    )
-                )
-
-        return edges
-
-    def _create_blocked_edges(
-        self, entities: List, level_data: LevelData
-    ) -> List[Edge]:
-        """Create edges for conditionally blocked access."""
-        edges = []
-
-        # Find door-switch relationships
-        doors = [e for e in entities if "door" in type(e).__name__.lower()]
-        switches = [e for e in entities if "switch" in type(e).__name__.lower()]
-
-        for door in doors:
-            door_pos = (door.x, door.y)
-
-            # Create blocked edges around doors
-            # This is a simplification - in reality we'd check door state
-            nearby_positions = self._get_positions_near_entity(door_pos, set())
-
-            for i, pos1 in enumerate(nearby_positions):
-                for pos2 in nearby_positions[i + 1 :]:
-                    edges.append(
-                        Edge(
-                            source=pos1,
-                            target=pos2,
-                            edge_type=EdgeType.BLOCKED,
-                            weight=float("inf"),  # Infinite weight when blocked
-                            metadata={"door_id": getattr(door, "id", 0)},
                         )
-                    )
 
         return edges
-
-    def _get_positions_near_entity(
-        self, entity_pos: Tuple[int, int], traversable_positions: Set[Tuple[int, int]]
-    ) -> List[Tuple[int, int]]:
-        """Get traversable positions near an entity."""
-        nearby = []
-        x, y = entity_pos
-
-        # Check positions in a small radius around the entity
-        for dx in [-TILE_PIXEL_SIZE, 0, TILE_PIXEL_SIZE]:
-            for dy in [-TILE_PIXEL_SIZE, 0, TILE_PIXEL_SIZE]:
-                if dx == 0 and dy == 0:
-                    continue
-                pos = (x + dx, y + dy)
-                if pos in traversable_positions:
-                    nearby.append(pos)
-
-        return nearby
 
 
 def create_simplified_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     """
-    Create GraphData from edges.
+    Create simplified GraphData from edges.
 
     This function converts the edge representation into the
     standard GraphData format expected by the rest of the system.
@@ -284,7 +182,7 @@ def create_simplified_graph_data(edges: List[Edge], level_data: LevelData) -> Gr
     node_mask = np.zeros(N_MAX_NODES, dtype=np.int32)
 
     edge_index = np.zeros((2, E_MAX_EDGES), dtype=np.int32)
-    edge_features = np.zeros((E_MAX_EDGES, 1), dtype=np.float32)  # Just weight for now
+    edge_features = np.zeros((E_MAX_EDGES, 1), dtype=np.float32)  # Just weight
     edge_types = np.zeros(E_MAX_EDGES, dtype=np.int32)
     edge_mask = np.zeros(E_MAX_EDGES, dtype=np.int32)
 
@@ -293,27 +191,8 @@ def create_simplified_graph_data(edges: List[Edge], level_data: LevelData) -> Gr
         if i >= N_MAX_NODES:
             break
 
-        # Determine node type based on position and entities
-        node_type = NodeType.EMPTY  # Default
-
-        # Check if position corresponds to an entity
-        for entity in level_data.entities:
-            entity_x = entity.get("x", 0)
-            entity_y = entity.get("y", 0)
-            if (entity_x, entity_y) == pos:
-                entity_type = entity.get("type", 0)
-                from ..constants.entity_types import EntityType
-
-                if entity_type in [
-                    EntityType.TOGGLE_MINE,
-                    EntityType.TOGGLE_MINE_TOGGLED,
-                ]:
-                    node_type = NodeType.HAZARD
-                elif entity_type in [EntityType.EXIT_DOOR, EntityType.EXIT_SWITCH]:
-                    node_type = NodeType.EXIT
-                else:
-                    node_type = NodeType.ENTITY
-                break
+        # Simple node type assignment
+        node_type = NodeType.EMPTY  # Default to empty space
 
         node_features[i] = [pos[0], pos[1], float(node_type)]
         node_types[i] = node_type
