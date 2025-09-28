@@ -367,14 +367,31 @@ class BinaryReplayParser:
                 # Fallback: use header section
                 map_data = list(data[100:167])
 
-        # Extract input sequence
-        input_length = 0
-        pos = input_start
-        while pos < len(data) and 0 <= data[pos] <= 7:
-            input_length += 1
-            pos += 1
-
-        inputs = list(data[input_start : input_start + input_length])
+        # Extract input sequence with RLE decompression
+        # Based on analysis, the input data is RLE compressed starting around offset 1100
+        rle_input_start = 1100
+        if rle_input_start < len(data):
+            logger.debug(f"Attempting RLE decompression from offset {rle_input_start}")
+            inputs = self._decode_rle_inputs(data[rle_input_start:])
+            if len(inputs) > 300:  # At least 5 seconds at 60 FPS
+                logger.info(f"RLE decompression successful: {len(inputs)} inputs = {len(inputs)/60.0:.1f}s")
+            else:
+                logger.warning(f"RLE decompression gave short sequence: {len(inputs)} inputs")
+                # Fallback to original method
+                input_length = 0
+                pos = input_start
+                while pos < len(data) and 0 <= data[pos] <= 7:
+                    input_length += 1
+                    pos += 1
+                inputs = list(data[input_start : input_start + input_length])
+        else:
+            # Fallback to original method
+            input_length = 0
+            pos = input_start
+            while pos < len(data) and 0 <= data[pos] <= 7:
+                input_length += 1
+                pos += 1
+            inputs = list(data[input_start : input_start + input_length])
 
         # Use perfect npp_attract decoder to extract real map data
         logger.info(
@@ -406,6 +423,51 @@ class BinaryReplayParser:
         logger.debug(f"Input distribution: {input_dist}")
 
         return inputs, map_data, level_id, level_name
+
+    def _decode_rle_inputs(self, data: bytes) -> List[int]:
+        """
+        Decode RLE compressed input data.
+        
+        Based on analysis, the input data uses a form of RLE encoding where:
+        - Values 0-7 are direct input values
+        - Values 8+ are counts for the next value
+        
+        Args:
+            data: Raw RLE compressed input data
+            
+        Returns:
+            List of decoded input values (0-7)
+        """
+        decoded = []
+        i = 0
+        
+        while i < len(data):
+            byte = data[i]
+            
+            # If byte is 0-7, it's a direct input value
+            if 0 <= byte <= 7:
+                decoded.append(byte)
+                i += 1
+            # If byte is larger, it might be a count for the next value
+            elif i + 1 < len(data) and 8 <= byte <= 200:
+                count = byte
+                if i + 1 < len(data):
+                    value = data[i + 1]
+                    if 0 <= value <= 7:
+                        decoded.extend([value] * count)
+                        i += 2
+                    else:
+                        i += 1
+                else:
+                    i += 1
+            else:
+                i += 1
+            
+            # Safety limit to prevent infinite loops
+            if len(decoded) > 50000:
+                break
+        
+        return decoded
 
     def decode_inputs(self, raw_inputs: List[int]) -> Tuple[List[int], List[int]]:
         """
