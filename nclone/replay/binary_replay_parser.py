@@ -40,8 +40,9 @@ class BinaryReplayParser:
     uncompressed binary replay files, following the ntrace.py pattern.
     """
 
-    # Input encoding dictionaries - CORRECTED for N++ attract format
-    # Based on analysis: 0=none, 1=right, 2=left, 3=right+jump, 4=left+jump, 5=jump
+    # Input encoding dictionaries - TESTING ORIGINAL MAPPING with corrected offset
+    # Original: 0=none, 1=right, 2=left, 3=right+jump, 4=left+jump, 5=jump
+    # Testing if the issue was the offset, not the mapping
     HOR_INPUTS_DIC = {0: 0, 1: 1, 2: -1, 3: 1, 4: -1, 5: 0, 6: 0, 7: 0}
     JUMP_INPUTS_DIC = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1, 6: 0, 7: 0}
 
@@ -368,9 +369,9 @@ class BinaryReplayParser:
                 # Fallback: use header section
                 map_data = list(data[100:167])
 
-        # Extract input sequence - BREAKTHROUGH: Use direct interpretation, not RLE!
-        # Analysis shows direct interpretation at offset 1250 gives best gameplay patterns
-        direct_input_start = 1250
+        # Extract input sequence - CORRECTED: Real input data starts at offset 1382!
+        # Previous offset 1250 was extracting metadata, not actual gameplay inputs
+        direct_input_start = 1382
         if direct_input_start < len(data):
             logger.debug(f"Using direct input interpretation from offset {direct_input_start}")
             
