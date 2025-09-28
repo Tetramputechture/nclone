@@ -112,11 +112,13 @@ class MapLoader:
     
     def find_map_by_name(self, level_name: str, level_id: Optional[int] = None) -> Optional[Tuple[str, str, str]]:
         """
-        Find map data by level name with enhanced correlation logic.
+        Find map data by level name with exact matching only.
+        
+        Note: Pattern matching removed as npp_attract files contain complete data.
         
         Args:
             level_name: Name of the level to find
-            level_id: Optional level ID for additional correlation
+            level_id: Optional level ID for additional matching
             
         Returns:
             Tuple of (level_name, map_data, source_file) if found, None otherwise
@@ -126,163 +128,23 @@ class MapLoader:
             
         logger.debug(f"Searching for level: '{level_name}' (ID: {level_id})")
         
-        # Strategy 1: Try exact match first
+        # Try exact match
         level_key = level_name.lower()
         if level_key in self.level_cache:
             file_name, _, name, map_data = self.level_cache[level_key]
             logger.info(f"Found exact match: '{level_name}' -> '{name}' in {file_name}")
             return (name, map_data, file_name)
         
-        # Strategy 2: Try fuzzy matching with common N++ level name patterns
-        best_match = self._find_fuzzy_match(level_name, level_id)
-        if best_match:
-            return best_match
+        # Try level ID match if available
+        if level_id is not None and level_id in self.level_id_cache:
+            file_name, _, name, map_data = self.level_id_cache[level_id]
+            logger.info(f"Found ID match: {level_id} -> '{name}' in {file_name}")
+            return (name, map_data, file_name)
         
-        # Strategy 3: If we have a level ID, try to find levels with similar IDs
-        if level_id is not None:
-            id_match = self._find_by_similar_id(level_id)
-            if id_match:
-                return id_match
-        
-        logger.debug(f"No match found for level: '{level_name}' (ID: {level_id})")
+        logger.debug(f"No exact match found for level: '{level_name}' (ID: {level_id})")
         return None
     
-    def _find_fuzzy_match(self, level_name: str, level_id: Optional[int] = None) -> Optional[Tuple[str, str, str]]:
-        """Find level using fuzzy matching strategies with scoring."""
-        level_key = level_name.lower()
-        cleaned_name = self._clean_level_name(level_name)
-        
-        # Collect all potential matches with scores
-        candidates = []
-        
-        for cached_name, (file_name, line_num, name, map_data) in self.level_cache.items():
-            score = self._calculate_match_score(level_name, cleaned_name, cached_name, name, file_name)
-            if score > 0:
-                candidates.append((score, name, map_data, file_name, line_num))
-        
-        if candidates:
-            # Sort by score (highest first) and return the best match
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            best_score, best_name, best_map_data, best_file, best_line = candidates[0]
-            
-            logger.info(f"Found fuzzy match: '{level_name}' -> '{best_name}' in {best_file} (line {best_line}, score: {best_score:.3f})")
-            return (best_name, best_map_data, best_file)
-        
-        return None
-    
-    def _calculate_match_score(self, original_name: str, cleaned_name: str, cached_name: str, full_name: str, file_name: str) -> float:
-        """Calculate a match score between level names."""
-        score = 0.0
-        
-        # Bonus for intro files (SI.txt, CI.txt, RI.txt) since attract files are intro levels
-        if file_name.startswith(('SI.txt', 'CI.txt', 'RI.txt')):
-            score += 0.3
-        
-        # Check for exact word matches
-        original_words = set(original_name.lower().split())
-        cached_words = set(full_name.lower().split())
-        
-        if original_words == cached_words:
-            score += 1.0  # Perfect match
-        elif original_words.issubset(cached_words) or cached_words.issubset(original_words):
-            score += 0.8  # Subset match
-        else:
-            # Calculate word overlap
-            common_words = original_words.intersection(cached_words)
-            if common_words:
-                word_score = len(common_words) / max(len(original_words), len(cached_words))
-                score += word_score * 0.6
-        
-        # Check for substring matches
-        if cleaned_name in cached_name or cached_name in cleaned_name:
-            score += 0.4
-        
-        # Use similarity score for character-level matching
-        similarity = self._similarity_score(cached_name, cleaned_name)
-        score += similarity * 0.3
-        
-        # Special handling for common attract level patterns
-        if self._is_attract_level_pattern_match(original_name, full_name):
-            score += 0.5
-        
-        return score
-    
-    def _is_attract_level_pattern_match(self, attract_name: str, level_name: str) -> bool:
-        """Check for specific attract level patterns."""
-        attract_lower = attract_name.lower()
-        level_lower = level_name.lower()
-        
-        # Handle common truncations in attract files
-        patterns = [
-            ('he basics', 'the basics'),
-            ('alljumptroduction', 'walljumptroduction'),
-            ('ntro to accepting', 'intro to accepting'),
-            ('all-to-wall', 'wall-to-wall'),
-            ('ump mechanics', 'jump mechanics'),
-            ('all jumping', 'wall jumping'),
-        ]
-        
-        for attract_pattern, level_pattern in patterns:
-            if attract_pattern in attract_lower and level_pattern in level_lower:
-                return True
-        
-        return False
-    
-    def _find_by_similar_id(self, level_id: int) -> Optional[Tuple[str, str, str]]:
-        """Find level by similar ID (within a range)."""
-        # Look for levels with IDs within ±50 of the target ID
-        id_range = 50
-        for candidate_id in range(level_id - id_range, level_id + id_range + 1):
-            if candidate_id in self.level_id_cache:
-                file_name, line_num, name, map_data = self.level_id_cache[candidate_id]
-                logger.info(f"Found similar ID match: {level_id} -> {candidate_id} ('{name}') in {file_name}")
-                return (name, map_data, file_name)
-        
-        return None
-    
-    def _clean_level_name(self, level_name: str) -> str:
-        """Clean level name for better matching."""
-        # Remove common artifacts and normalize
-        cleaned = level_name.lower()
-        
-        # Remove common N++ prefixes/suffixes
-        prefixes_to_remove = ['intro to ', 'the ', 'a ', 'an ']
-        suffixes_to_remove = [' intro', ' tutorial', ' basics']
-        
-        for prefix in prefixes_to_remove:
-            if cleaned.startswith(prefix):
-                cleaned = cleaned[len(prefix):]
-                break
-                
-        for suffix in suffixes_to_remove:
-            if cleaned.endswith(suffix):
-                cleaned = cleaned[:-len(suffix)]
-                break
-        
-        # Remove punctuation and extra spaces
-        cleaned = re.sub(r'[^\w\s]', ' ', cleaned)
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        
-        return cleaned
-    
-    def _similarity_score(self, str1: str, str2: str) -> float:
-        """Calculate similarity score between two strings."""
-        # Simple Jaccard similarity based on character n-grams
-        def get_ngrams(s: str, n: int = 2) -> set:
-            return set(s[i:i+n] for i in range(len(s) - n + 1))
-        
-        ngrams1 = get_ngrams(str1)
-        ngrams2 = get_ngrams(str2)
-        
-        if not ngrams1 and not ngrams2:
-            return 1.0
-        if not ngrams1 or not ngrams2:
-            return 0.0
-            
-        intersection = len(ngrams1.intersection(ngrams2))
-        union = len(ngrams1.union(ngrams2))
-        
-        return intersection / union if union > 0 else 0.0
+
     
     def find_map_by_id(self, level_id: int) -> Optional[Tuple[str, str, str]]:
         """
