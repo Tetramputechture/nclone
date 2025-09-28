@@ -17,7 +17,7 @@ from enum import Enum
 
 from .common import GraphData
 from .level_data import LevelData, PlayerState, ensure_level_data
-from .edge_building import EdgeBuilder, create_simplified_graph_data
+from .edge_building import EdgeBuilder, create_graph_data
 from .reachability.reachability_system import ReachabilitySystem
 
 
@@ -148,7 +148,7 @@ class HierarchicalGraphBuilder:
         edges = self.edge_builder.build_edges(downsampled_level)
 
         # Convert to GraphData
-        graph_data = create_simplified_graph_data(edges, downsampled_level)
+        graph_data = create_graph_data(edges, downsampled_level)
 
         return graph_data
 

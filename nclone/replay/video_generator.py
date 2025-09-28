@@ -263,7 +263,9 @@ class VideoGenerator:
                 first_frame_data = self._load_first_frame_raw(replay_file)
                 if first_frame_data and "map_data_path" in first_frame_data:
                     # Resolve relative path to map data file
-                    map_data_path = replay_file.parent / first_frame_data["map_data_path"]
+                    map_data_path = (
+                        replay_file.parent / first_frame_data["map_data_path"]
+                    )
                     if map_data_path.exists():
                         custom_map_path = str(map_data_path)
                         logger.info(f"Using map data from: {custom_map_path}")
@@ -310,7 +312,10 @@ class VideoGenerator:
             return False
 
     def generate_video_from_binary_replay(
-        self, binary_replay_file: Path, output_video: Path, map_file: Optional[str] = None
+        self,
+        binary_replay_file: Path,
+        output_video: Path,
+        map_file: Optional[str] = None,
     ) -> bool:
         """
         Generate video from binary replay file.
@@ -326,33 +331,47 @@ class VideoGenerator:
         try:
             # Parse binary replay to get frames
             parser = BinaryReplayParser(map_file_path=map_file)
-            
+
             # Create temporary JSONL file
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_jsonl = Path(temp_dir) / "temp_replay.jsonl"
-                
+
                 # Parse binary replay to JSONL
                 success = parser.parse_single_replay_file_to_jsonl(
                     Path(binary_replay_file), temp_jsonl.parent
                 )
-                
+
                 if not success:
                     logger.error("Failed to parse binary replay file")
                     return False
-                
+
                 # Find the generated JSONL file
                 jsonl_files = list(temp_jsonl.parent.glob("*.jsonl"))
                 if not jsonl_files:
                     logger.error("No JSONL file generated from binary replay")
                     return False
-                
+
                 # Use the first JSONL file found
                 jsonl_file = jsonl_files[0]
-                
-                # Find corresponding map data file
+
+                # Persist the generated JSONL to a non-temporary file in the same directory as the output video
+                output_jsonl = output_video.with_suffix(".jsonl")
+                jsonl_files = list(temp_jsonl.parent.glob("*.jsonl"))
+                if not jsonl_files:
+                    logger.error("No JSONL file generated from binary replay")
+                    return False
+                # Copy the first JSONL file to the output location
+                import shutil
+
+                shutil.copy(jsonl_files[0], output_jsonl)
+
+                # Find corresponding map data file and persist if present
                 map_files = list(temp_jsonl.parent.glob("*_map.dat"))
-                custom_map_path = str(map_files[0]) if map_files else None
-                
+                custom_map_path = None
+                if map_files:
+                    output_map = output_video.with_name(output_video.stem + "_map.dat")
+                    shutil.copy(map_files[0], output_map)
+                    custom_map_path = str(output_map)
                 # Generate video from the JSONL file
                 return self.generate_video_from_jsonl(
                     jsonl_file, output_video, custom_map_path
@@ -552,10 +571,14 @@ Examples:
         "--custom-map", type=str, help="Custom map file to use for video generation"
     )
     parser.add_argument(
-        "--map-file", type=str, help="N++ map definition file for real map data (format: $name#mapdata#)"
+        "--map-file",
+        type=str,
+        help="N++ map definition file for real map data (format: $name#mapdata#)",
     )
     parser.add_argument(
-        "--official-levels", type=str, help="Directory containing official N++ level .txt files"
+        "--official-levels",
+        type=str,
+        help="Directory containing official N++ level .txt files",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
@@ -578,7 +601,7 @@ Examples:
 
     # Determine map source (prioritize official_levels over single map_file)
     map_source = args.official_levels if args.official_levels else args.map_file
-    
+
     # Generate video
     if args.binary_replay:
         success = video_generator.generate_video_from_binary_replay(

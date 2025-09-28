@@ -98,6 +98,15 @@ if [[ "$verification_failed" == "true" ]]; then
     exit 1
 fi
 
+# Clone the npp-rl repository in the parent directory
+echo -e "\033[0;34mℹ️  Cloning npp-rl repository...\033[0m"
+if git clone https://github.com/tetramputechture/npp-rl.git ../npp-rl; then
+    echo -e "\033[0;32m✅ npp-rl repository cloned successfully\033[0m"
+else
+    echo -e "\033[0;31m❌ Failed to clone npp-rl repository\033[0m"
+    exit 1
+fi
+
 # Success message
 echo ""
 echo "🎉 nclone development environment setup complete!"
