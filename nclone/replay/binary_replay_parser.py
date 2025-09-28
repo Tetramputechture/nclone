@@ -27,6 +27,7 @@ import hashlib
 from ..nsim import Simulator
 from ..sim_config import SimConfig
 from .map_loader import MapLoader
+from .npp_attract_decoder import NppAttractDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class BinaryReplayParser:
             "replays_failed": 0,
         }
         self.map_loader = MapLoader(Path(map_file_path) if map_file_path else None)
+        self.npp_attract_decoder = NppAttractDecoder()
 
     def _is_compressed_data(self, data: bytes) -> bool:
         """
@@ -338,9 +340,17 @@ class BinaryReplayParser:
 
         inputs = list(data[input_start : input_start + input_length])
 
-        # For npp_attract files, generate empty/minimal map data since they only contain map references
-        logger.info(f"Generating empty map for npp_attract file (Level ID: {level_id})")
-        map_data = self._generate_empty_map_data(level_id, level_name)
+        # Use perfect npp_attract decoder to extract real map data
+        logger.info(f"Using perfect decoder for npp_attract file (Level ID: {level_id})")
+        try:
+            decoded_data = self.npp_attract_decoder.decode_npp_attract_file(str(replay_file))
+            # Create complete nclone-compatible map data
+            nclone_map_bytes = self.npp_attract_decoder.create_nclone_map(str(replay_file))
+            map_data = list(nclone_map_bytes)
+            logger.info(f"Perfect decoder extracted {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}")
+        except Exception as e:
+            logger.warning(f"Perfect decoder failed, falling back to empty map: {e}")
+            map_data = self._generate_empty_map_data(level_id, level_name)
 
         logger.info(
             f"Extracted {len(inputs)} input frames and {len(map_data)} map bytes"

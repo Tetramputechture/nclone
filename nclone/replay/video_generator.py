@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from ..gym_environment.npp_environment import NppEnvironment
 from .binary_replay_parser import BinaryReplayParser
+from .npp_attract_decoder import NppAttractDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +382,48 @@ class VideoGenerator:
             logger.error(f"Failed to generate video from binary replay: {e}")
             return False
 
+    def generate_video_from_npp_attract(
+        self,
+        npp_attract_file: Path,
+        output_video: Path,
+    ) -> bool:
+        """
+        Generate video directly from npp_attract file using perfect decoder.
+
+        Args:
+            npp_attract_file: Path to npp_attract file
+            output_video: Output video file path
+
+        Returns:
+            True if video generation succeeded
+        """
+        try:
+            logger.info(f"Generating video from npp_attract file: {npp_attract_file}")
+            
+            # Use perfect decoder to extract map data
+            npp_decoder = NppAttractDecoder()
+            decoded_data = npp_decoder.decode_npp_attract_file(str(npp_attract_file))
+            
+            # Create temporary map file
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_map_file = Path(temp_dir) / "perfect_map.dat"
+                
+                # Create nclone-compatible map
+                nclone_map_bytes = npp_decoder.create_nclone_map(str(npp_attract_file))
+                with open(temp_map_file, 'wb') as f:
+                    f.write(nclone_map_bytes)
+                
+                logger.info(f"Created perfect map: {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}")
+                
+                # Use binary replay parser to generate JSONL with perfect map
+                return self.generate_video_from_binary_replay(
+                    npp_attract_file, output_video, str(temp_map_file)
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to generate video from npp_attract file: {e}")
+            return False
+
     def _load_first_frame_raw(self, replay_file: Path) -> Optional[Dict[str, Any]]:
         """Load the first frame from JSONL file as raw data."""
         try:
@@ -538,6 +581,9 @@ Examples:
 
   # Generate video from binary replay file
   python -m nclone.replay.video_generator --input npp_attract/1 --output video.mp4 --binary-replay
+  
+  # Generate video from npp_attract file (perfect decoder)
+  python -m nclone.replay.video_generator --input npp_attract/0 --output video.mp4 --npp-attract
 
   # Generate video with custom framerate
   python -m nclone.replay.video_generator --input replay.jsonl --output video.mp4 --fps 30
@@ -563,6 +609,11 @@ Examples:
         "--binary-replay",
         action="store_true",
         help="Input is binary replay file (not JSONL)",
+    )
+    parser.add_argument(
+        "--npp-attract",
+        action="store_true",
+        help="Input is npp_attract file (uses perfect decoder)",
     )
     parser.add_argument(
         "--fps", type=int, default=60, help="Video framerate (default: 60)"
@@ -603,14 +654,25 @@ Examples:
     map_source = args.official_levels if args.official_levels else args.map_file
 
     # Generate video
-    if args.binary_replay:
+    if args.npp_attract:
+        success = video_generator.generate_video_from_npp_attract(
+            args.input, args.output
+        )
+    elif args.binary_replay:
         success = video_generator.generate_video_from_binary_replay(
             args.input, args.output, map_source
         )
     else:
-        success = video_generator.generate_video_from_jsonl(
-            args.input, args.output, args.custom_map
-        )
+        # Auto-detect npp_attract files if they're in the npp_attract directory
+        if "npp_attract" in str(args.input) and args.input.is_file():
+            logger.info("Auto-detected npp_attract file, using perfect decoder")
+            success = video_generator.generate_video_from_npp_attract(
+                args.input, args.output
+            )
+        else:
+            success = video_generator.generate_video_from_jsonl(
+                args.input, args.output, args.custom_map
+            )
 
     if success:
         logger.info(f"Video generation completed: {args.output}")
