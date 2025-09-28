@@ -68,6 +68,42 @@ class BinaryReplayParser:
         self.map_loader = MapLoader(Path(map_file_path) if map_file_path else None)
         self.npp_attract_decoder = NppAttractDecoder()
 
+    
+    def validate_replay_file(self, file_path: Path) -> Tuple[bool, List[str]]:
+        """
+        Validate a replay file before processing.
+        
+        Returns:
+            Tuple of (is_valid, error_messages)
+        """
+        errors = []
+        
+        if not file_path.exists():
+            errors.append(f"File does not exist: {file_path}")
+            return False, errors
+        
+        try:
+            file_size = file_path.stat().st_size
+            
+            # Check minimum file size
+            if file_size < 1000:
+                errors.append(f"File too small: {file_size} bytes")
+            
+            # Check maximum reasonable file size
+            if file_size > 10000:
+                errors.append(f"File too large: {file_size} bytes")
+            
+            # Try to read first few bytes
+            with open(file_path, 'rb') as f:
+                header = f.read(10)
+                if len(header) < 10:
+                    errors.append("Cannot read file header")
+            
+        except Exception as e:
+            errors.append(f"File access error: {e}")
+        
+        return len(errors) == 0, errors
+    
     def _is_compressed_data(self, data: bytes) -> bool:
         """
         Check if data appears to be zlib compressed.

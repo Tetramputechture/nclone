@@ -157,13 +157,28 @@ class NppAttractDecoder:
             # The entity section should be 185 bytes (1335 - 184 - 966 = 185)
             entity_section = bytearray(185)
 
-            # Set ninja spawn at positions 1231-1232 (relative to start of entity section)
-            ninja_spawn = decoded_data["ninja_spawn"]
-            entity_section[1] = ninja_spawn[0]  # Position 1231 - 1230 = 1
-            entity_section[2] = ninja_spawn[1]  # Position 1232 - 1230 = 2
+            # Count entities by type for the nclone format
+            entity_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+            for entity in decoded_data["entities"]:
+                entity_type = entity["type"]
+                if entity_type in entity_counts:
+                    entity_counts[entity_type] += 1
 
-            # Add entities starting at position 1235 (relative position 5)
-            entity_index = 5  # Start at relative position 5 (1235 - 1230)
+            # Set entity counts at the beginning of the section
+            # Based on official format analysis:
+            entity_section[0] = entity_counts[1]   # Type 1 (mines) count
+            entity_section[2] = entity_counts[3]   # Type 3 (exits) count  
+            entity_section[4] = entity_counts[2]   # Type 2 (gold) count
+            entity_section[6] = entity_counts[4]   # Type 4 (exit switches) count
+            entity_section[8] = 1                  # Unknown field (always 1 in official)
+
+            # Set ninja spawn at positions 81-82 (based on official format)
+            ninja_spawn = decoded_data["ninja_spawn"]
+            entity_section[81] = ninja_spawn[0]
+            entity_section[82] = ninja_spawn[1]
+
+            # Add entities starting at position 85 (based on official format)
+            entity_index = 85
             for entity in decoded_data["entities"]:
                 if entity_index + 4 < len(entity_section):
                     entity_section[entity_index] = entity["type"]
