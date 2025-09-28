@@ -2,8 +2,7 @@
 Simplified edge building for strategic RL representation.
 
 This module creates basic graph edges using only connectivity information from
-the fast flood fill reachability system. It removes complex physics calculations
-and focuses on simple adjacency and reachability relationships.
+the fast flood fill reachability system. It focuses on simple adjacency and reachability relationships.
 """
 
 import numpy as np
@@ -12,11 +11,12 @@ from .reachability.reachability_system import ReachabilitySystem
 from .common import EdgeType, NodeType, GraphData, Edge
 from .level_data import LevelData
 from ..constants.physics_constants import TILE_PIXEL_SIZE
+from ..constants.entity_types import EntityType
 
 
 class EdgeBuilder:
     """
-    Simplified edge builder using basic connectivity.
+    Edge builder using basic connectivity.
 
     This approach focuses on simple connectivity information:
     - Adjacent edges for direct movement possibilities
@@ -57,7 +57,7 @@ class EdgeBuilder:
             edges.extend(reachable_edges)
 
         if self.debug:
-            print(f"Created {len(edges)} simplified edges:")
+            print(f"Created {len(edges)} edges:")
             print(f"  Adjacent: {len(adjacent_edges)}")
             print(f"  Reachable: {len(reachable_edges)}")
 
@@ -70,10 +70,12 @@ class EdgeBuilder:
         for row in range(level_data.height):
             for col in range(level_data.width):
                 tile_id = level_data.tiles[row, col]
-                # Assume tile_id 0 is empty space (traversable)
-                # This is a simplification - in reality we'd check tile properties
-                if tile_id == 0:
-                    # Convert to pixel coordinates
+                # Check if tile is traversable based on comprehensive tile analysis
+                # Tile 0: Empty space (fully traversable)
+                # Tiles 2-33: Complex geometry but generally traversable
+                # Tile 1 and 34+: Solid walls or glitched (not traversable)
+                if tile_id == 0 or (2 <= tile_id <= 33):
+                    # Convert to pixel coordinates (center of tile)
                     pixel_x = col * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
                     pixel_y = row * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
                     traversable.add((pixel_x, pixel_y))
@@ -151,9 +153,104 @@ class EdgeBuilder:
         return edges
 
 
-def create_simplified_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
+def _determine_node_type(pos: Tuple[int, int], level_data: LevelData) -> NodeType:
     """
-    Create simplified GraphData from edges.
+    Determine the node type for a position based on tiles and entities.
+
+    Args:
+        pos: Position in pixel coordinates (x, y)
+        level_data: Complete level data including tiles and entities
+
+    Returns:
+        NodeType enum value representing the type of node at this position
+    """
+    x, y = pos
+
+    # Convert pixel coordinates to tile coordinates
+    from ..constants.physics_constants import TILE_PIXEL_SIZE
+
+    tile_col = int(x // TILE_PIXEL_SIZE)
+    tile_row = int(y // TILE_PIXEL_SIZE)
+
+    # Check if position is within level bounds
+    if not (0 <= tile_row < level_data.height and 0 <= tile_col < level_data.width):
+        return NodeType.WALL  # Out of bounds treated as wall
+
+    # Get tile type at this position
+    tile_id = level_data.tiles[tile_row, tile_col]
+
+    # Check for player spawn point
+    if level_data.player and level_data.player.position:
+        player_x, player_y = level_data.player.position
+        # Check if this position is close to player spawn (within one tile)
+        if abs(x - player_x) < TILE_PIXEL_SIZE and abs(y - player_y) < TILE_PIXEL_SIZE:
+            return NodeType.SPAWN
+
+    # Check for entities at this position (entities take priority over tiles)
+    entities_here = level_data.get_entities_in_region(
+        x - TILE_PIXEL_SIZE // 2,
+        y - TILE_PIXEL_SIZE // 2,
+        x + TILE_PIXEL_SIZE // 2,
+        y + TILE_PIXEL_SIZE // 2,
+    )
+
+    if entities_here:
+        # Determine node type based on entity types present
+        for entity in entities_here:
+            entity_type = entity.get("type", 0)
+
+            # Exit entities (doors and switches)
+            if entity_type in [EntityType.EXIT_DOOR, EntityType.EXIT_SWITCH]:
+                return NodeType.EXIT
+
+            # Hazardous entities
+            if entity_type in [
+                EntityType.TOGGLE_MINE,
+                EntityType.TOGGLE_MINE_TOGGLED,
+                EntityType.DRONE_ZAP,
+                EntityType.DRONE_CHASER,
+                EntityType.MINI_DRONE,
+                EntityType.THWUMP,
+                EntityType.SHWUMP,
+                EntityType.DEATH_BALL,
+            ]:
+                return NodeType.HAZARD
+
+            # Interactive entities (doors, switches, etc.)
+            if entity_type in [
+                EntityType.REGULAR_DOOR,
+                EntityType.LOCKED_DOOR,
+                EntityType.TRAP_DOOR,
+                EntityType.GOLD,
+                EntityType.LAUNCH_PAD,
+                EntityType.ONE_WAY,
+                EntityType.BOUNCE_BLOCK,
+                EntityType.BOOST_PAD,
+            ]:
+                return NodeType.ENTITY
+
+    # Determine node type based on tile
+    if tile_id == 0:
+        return NodeType.EMPTY  # Empty/traversable space
+    elif tile_id == 1:
+        return NodeType.WALL  # Solid wall
+    else:
+        # For complex tile types, determine if they're generally traversable
+        # Based on tile definitions, most tiles are some form of geometry that can be navigated
+        # Only fully solid tiles (type 1) are completely impassable
+        # Half-tiles (2-5), slopes (6-9), quarter circles/pipes (10-17), and mild/steep slopes (18-33)
+        # are all partially or fully traversable depending on ninja position and movement
+        # For strategic RL purposes, we'll treat them as EMPTY since they allow some form of traversal
+        if 2 <= tile_id <= 33:
+            return NodeType.EMPTY  # Complex geometry but traversable
+        else:
+            # Glitched tiles (34-37) or unknown tiles - treat as walls for safety
+            return NodeType.WALL
+
+
+def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
+    """
+    Create GraphData from edges.
 
     This function converts the edge representation into the
     standard GraphData format expected by the rest of the system.
@@ -191,8 +288,8 @@ def create_simplified_graph_data(edges: List[Edge], level_data: LevelData) -> Gr
         if i >= N_MAX_NODES:
             break
 
-        # Simple node type assignment
-        node_type = NodeType.EMPTY  # Default to empty space
+        # Comprehensive node type assignment
+        node_type = _determine_node_type(pos, level_data)
 
         node_features[i] = [pos[0], pos[1], float(node_type)]
         node_types[i] = node_type

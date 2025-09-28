@@ -28,7 +28,6 @@ from PIL import Image
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability.reachability_system import ReachabilitySystem
-from nclone.graph.reachability.reachability_types import PerformanceTarget
 
 # Removed legacy trajectory calculator import
 # SubgoalPlanner deprecated - using nclone.planning instead
@@ -495,7 +494,7 @@ if args.export_reachability and reachability_analyzer:
             ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
             switch_states = {}  # Empty switch states for export
             reachability_state = reachability_analyzer.analyze_reachability(
-                env.level_data, ninja_pos_int, switch_states, PerformanceTarget.BALANCED
+                env.level_data, ninja_pos_int, switch_states
             )
 
             # Get subgoals if requested
