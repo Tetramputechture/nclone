@@ -154,8 +154,11 @@ class NppAttractDecoder:
             tiles = bytes(decoded_data["tiles"])
 
             # Create entity section (starting at position 1230)
-            # The entity section should be 185 bytes (1335 - 184 - 966 = 185)
-            entity_section = bytearray(185)
+            # Calculate required size based on number of entities
+            num_entities = len(decoded_data["entities"])
+            entity_data_size = num_entities * 5  # 5 bytes per entity
+            entity_section_size = max(185, 85 + entity_data_size)  # At least 185 bytes, or more if needed
+            entity_section = bytearray(entity_section_size)
 
             # Count entities by type for the nclone format
             entity_counts = {1: 0, 2: 0, 3: 0, 4: 0}
@@ -191,17 +194,9 @@ class NppAttractDecoder:
             # Combine all sections
             complete_map = header + tiles + bytes(entity_section)
 
-            # Ensure correct size (should be 1335 bytes like official maps)
-            expected_size = 184 + 966 + 185  # header + tiles + entities
-            if len(complete_map) != expected_size:
-                logger.warning(
-                    f"Map size mismatch: {len(complete_map)} != {expected_size}"
-                )
-                # Pad or truncate to correct size
-                if len(complete_map) < expected_size:
-                    complete_map += b"\x00" * (expected_size - len(complete_map))
-                else:
-                    complete_map = complete_map[:expected_size]
+            # Log the map size (no longer enforcing 1335 bytes for files with more entities)
+            logger.info(f"Map sections: header={len(header)}, tiles={len(tiles)}, entities={len(entity_section)}")
+            logger.info(f"Total entities included: {num_entities}")
 
             logger.info(f"Created nclone map: {len(complete_map)} bytes")
             return complete_map

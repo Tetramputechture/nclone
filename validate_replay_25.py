@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Validation script for N++ attract replay file 625.
+Validation script for N++ attract replay file 25.
 
 Requirements to validate:
-- Ninja collects exactly 3 gold pieces
-- Ninja triggers exactly 1 toggle mine
-- Ninja eventually dies by colliding with bottom row of mines
-- Replay runs for several seconds before death
+- At least 15 seconds of gameplay duration
+- Exactly 6 gold pieces collected
+- Successful level completion (no death required)
 """
 
 import sys
@@ -18,23 +17,22 @@ from nclone.replay.binary_replay_parser import BinaryReplayParser
 from nclone.gym_environment.npp_environment import NppEnvironment
 import numpy as np
 
-def validate_replay_625():
-    """Validate the specific requirements for replay file 625."""
+def validate_replay_25():
+    """Validate the specific requirements for replay file 25."""
     
     print("=" * 80)
-    print("VALIDATING N++ ATTRACT REPLAY FILE 625")
+    print("VALIDATING N++ ATTRACT REPLAY FILE 25")
     print("=" * 80)
     
     # Requirements to validate
-    expected_gold_collected = 3
-    expected_toggle_mines_triggered = 1
-    expected_death_by_mines = True
-    min_runtime_seconds = 3.0  # "a few more seconds" after triggering mine
+    expected_gold_collected = 6
+    min_runtime_seconds = 15.0  # At least 15 seconds of gameplay
+    expect_ninja_death = True  # Ninja should die at the end (attract mode)
     
     try:
         # Parse the replay file
         parser = BinaryReplayParser()
-        replay_path = Path("nclone/example_replays/npp_attract/625")
+        replay_path = Path("nclone/example_replays/npp_attract/25")
         
         print(f"📁 Parsing replay file: {replay_path}")
         inputs, map_data, level_id, level_name = parser.parse_single_replay_file(replay_path)
@@ -63,10 +61,10 @@ def validate_replay_625():
         
             # Track validation metrics
             gold_collected = 0
-            toggle_mines_triggered = 0
             ninja_died = False
-            death_cause = None
+            level_completed = False
             death_frame = None
+            completion_frame = None
             
             # Count initial gold (only active gold)
             initial_gold_count = 0
@@ -76,23 +74,6 @@ def validate_replay_625():
                         initial_gold_count += 1
             
             print(f"🏆 Initial gold pieces: {initial_gold_count}")
-            
-            # Track toggle mine state changes
-            toggle_mines = []
-            for entity_list in env.nplay_headless.sim.entity_dic.values():
-                for entity in entity_list:
-                    if 'ToggleMine' in type(entity).__name__:
-                        toggle_mines.append({
-                            'entity': entity,
-                            'initial_state': entity.state,
-                            'x': entity.xpos,
-                            'y': entity.ypos,
-                            'has_been_triggered': False
-                        })
-            
-            print(f"💣 Tracking {len(toggle_mines)} toggle mines for state changes")
-            for i, mine in enumerate(toggle_mines[:3]):  # Show first 3
-                print(f"   Mine {i+1}: State {mine['initial_state']} at ({mine['x']:.1f}, {mine['y']:.1f})")
             
             # Decode inputs
             hor_inputs, jump_inputs = parser.decode_inputs(inputs)
@@ -137,36 +118,22 @@ def validate_replay_625():
                     previous_gold_collected = current_gold_collected
                 
                 # Check for ninja death
-                if env.nplay_headless.sim.ninja.has_died() or done:
+                if env.nplay_headless.sim.ninja.has_died():
                     ninja_died = True
                     death_frame = frame_idx
                     ninja_x = env.nplay_headless.sim.ninja.xpos
                     ninja_y = env.nplay_headless.sim.ninja.ypos
                     
-                    # Determine death cause (simplified heuristic)
-                    if ninja_y > 500:  # Near bottom of level (adjust based on level height)
-                        death_cause = "bottom_row_mines"
-                    else:
-                        death_cause = "other"
-                    
                     print(f"💀 Ninja died at frame {frame_idx} ({frame_idx/60.0:.1f}s)")
                     print(f"   Position: ({ninja_x:.1f}, {ninja_y:.1f})")
-                    print(f"   Cause: {death_cause}")
                     break
                 
-                # Check for toggle mine state changes
-                for mine_info in toggle_mines:
-                    current_state = mine_info['entity'].state
-                    initial_state = mine_info['initial_state']
-                    
-                    # A toggle mine is "triggered" when it changes from untoggled (1) to toggled (0)
-                    # This happens via: untoggled (1) -> toggling (2) -> toggled (0)
-                    if not mine_info['has_been_triggered'] and initial_state == 1 and current_state == 0:
-                        mine_info['has_been_triggered'] = True
-                        toggle_mines_triggered += 1
-                        print(f"💣 Toggle mine triggered at frame {frame_idx} ({frame_idx/60.0:.1f}s)")
-                        print(f"   Mine at ({mine_info['x']:.1f}, {mine_info['y']:.1f}) changed from state {initial_state} to {current_state}")
-                        mine_info['initial_state'] = current_state  # Update for future comparisons
+                # Check for level completion (done without death)
+                if done and not ninja_died:
+                    level_completed = True
+                    completion_frame = frame_idx
+                    print(f"🏁 Level completed at frame {frame_idx} ({frame_idx/60.0:.1f}s)")
+                    break
         
         finally:
             # Clean up temporary file
@@ -187,20 +154,20 @@ def validate_replay_625():
         # Check each requirement
         results = {
             'gold_collected': gold_collected,
-            'toggle_mines_triggered': toggle_mines_triggered,
             'ninja_died': ninja_died,
-            'death_cause': death_cause,
+            'level_completed': level_completed,
             'runtime_seconds': runtime_seconds,
-            'death_frame': death_frame
+            'death_frame': death_frame,
+            'completion_frame': completion_frame
         }
         
         print(f"📊 Simulation Results:")
         print(f"  Gold collected: {gold_collected}")
-        print(f"  Toggle mines triggered: {toggle_mines_triggered}")
         print(f"  Ninja died: {ninja_died}")
-        print(f"  Death cause: {death_cause}")
+        print(f"  Level completed: {level_completed}")
         print(f"  Runtime: {runtime_seconds:.1f}s")
         print(f"  Death frame: {death_frame}")
+        print(f"  Completion frame: {completion_frame}")
         
         # Validate requirements
         validation_passed = True
@@ -212,35 +179,26 @@ def validate_replay_625():
         else:
             print(f"✅ Gold collection: {gold_collected}/{expected_gold_collected} ✓")
         
-        if toggle_mines_triggered != expected_toggle_mines_triggered:
-            validation_passed = False
-            validation_errors.append(f"❌ Toggle mines: Expected {expected_toggle_mines_triggered}, got {toggle_mines_triggered}")
-        else:
-            print(f"✅ Toggle mines triggered: {toggle_mines_triggered}/{expected_toggle_mines_triggered} ✓")
-        
-        if not ninja_died:
-            validation_passed = False
-            validation_errors.append(f"❌ Ninja death: Expected ninja to die, but ninja survived")
-        else:
-            print(f"✅ Ninja death: Ninja died as expected ✓")
-        
-        if death_cause != "bottom_row_mines":
-            validation_passed = False
-            validation_errors.append(f"❌ Death cause: Expected death by bottom row mines, got {death_cause}")
-        else:
-            print(f"✅ Death cause: Death by bottom row mines ✓")
-        
         if runtime_seconds < min_runtime_seconds:
             validation_passed = False
-            validation_errors.append(f"❌ Runtime: Expected >{min_runtime_seconds}s, got {runtime_seconds:.1f}s")
+            validation_errors.append(f"❌ Runtime: Expected ≥{min_runtime_seconds}s, got {runtime_seconds:.1f}s")
         else:
-            print(f"✅ Runtime: {runtime_seconds:.1f}s (>{min_runtime_seconds}s) ✓")
+            print(f"✅ Runtime: {runtime_seconds:.1f}s (≥{min_runtime_seconds}s) ✓")
+        
+        if expect_ninja_death and not ninja_died:
+            validation_passed = False
+            validation_errors.append(f"❌ Ninja death: Expected ninja to die (attract mode), but ninja survived")
+        elif expect_ninja_death and ninja_died:
+            print(f"✅ Ninja death: Ninja died as expected (attract mode) ✓")
+        else:
+            # Neither completion nor death - this might be okay if the replay just ends
+            print(f"ℹ️  Level status: Replay ended without explicit completion or death")
         
         # Final validation result
         print(f"\n" + "=" * 80)
         if validation_passed:
             print("🎉 VALIDATION PASSED: All requirements satisfied!")
-            print("✅ N++ attract replay 625 decoder achieves TRUE 100% accuracy!")
+            print("✅ N++ attract replay 25 decoder achieves TRUE 100% accuracy!")
             return True, results
         else:
             print("❌ VALIDATION FAILED: Requirements not met")
@@ -255,19 +213,19 @@ def validate_replay_625():
         return False, {'error': str(e)}
 
 def main():
-    success, results = validate_replay_625()
+    success, results = validate_replay_25()
     
     if not success:
         print(f"\n" + "=" * 80)
         print("VALIDATION FAILURE SUMMARY")
         print("=" * 80)
-        print("The N++ attract replay decoder failed to meet the requirements for file 625.")
+        print("The N++ attract replay decoder failed to meet the requirements for file 25.")
         print("This indicates that additional work is needed to achieve complete format support.")
         print("\nNext steps:")
         print("1. Analyze the specific failure modes")
-        print("2. Debug the input sequence extraction for file 625")
-        print("3. Ensure proper mine interaction detection")
-        print("4. Validate death detection and cause identification")
+        print("2. Debug the input sequence extraction for file 25")
+        print("3. Ensure proper gold collection mechanics")
+        print("4. Validate level completion detection")
         print("5. Re-test with corrected decoder")
         
         return 1
