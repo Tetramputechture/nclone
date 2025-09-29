@@ -2,7 +2,7 @@
 
 ## 🎯 **CURRENT STATUS: 95% COMPLETE - NEEDS ADAPTIVE SEQUENCE SELECTION**
 
-The N++ attract replay decoder has been successfully reverse-engineered and works perfectly for the original dataset (files 0-19), but requires extension to handle new format variants like file 625.
+The N++ attract replay decoder has been successfully reverse-engineered and works perfectly for the original dataset (files 0-19), but requires extension to handle new format variants like files 625 and 25. Both new replay files need validation to ensure complete format coverage.
 
 ## ✅ **MAJOR ACHIEVEMENTS COMPLETED**
 
@@ -24,13 +24,19 @@ The N++ attract replay decoder has been successfully reverse-engineered and work
 - **Documentation**: Comprehensive format specification in `replay/README.md`
 - **Analysis Tools**: `analyze_all_replays.py` for format pattern analysis
 
-## ❌ **CRITICAL ISSUE: File 625 Validation Failure**
+## ❌ **CRITICAL ISSUES: Files 625 & 25 Validation Failures**
 
-### Problem Description
+### Problem Description - File 625
 New replay file `npp_attract/625` ("brief history of amazing letdowns") fails validation:
 - **Expected**: 3 gold collected, 1 toggle mine triggered, death by bottom row mines
 - **Actual**: 0 gold collected, 0 mines triggered, death at wrong location
 - **Root Cause**: Decoder uses hardcoded offset that doesn't work for new file format
+
+### Problem Description - File 25
+New replay file `npp_attract/25` needs validation implementation:
+- **Expected**: At least 15 seconds gameplay duration, 6 gold pieces collected
+- **Status**: Validation script needs to be created
+- **Root Cause**: Same hardcoded offset issue as file 625
 
 ### Technical Analysis
 ```
@@ -108,6 +114,7 @@ inputs = optimal_sequence if optimal_sequence else fallback_extraction(data)
 
 **Update Required Files**:
 - `validate_replay_625.py`: Fix ninja death detection and mine interaction logic
+- `validate_replay_25.py`: Create new validation script for level 25 (AGENT MUST CREATE THIS)
 - Add comprehensive validation that works across all file types
 - Implement specific validation for different level behaviors
 
@@ -117,20 +124,28 @@ inputs = optimal_sequence if optimal_sequence else fallback_extraction(data)
 - Ninja dies by colliding with bottom row mines
 - Runtime > 3 seconds before death
 
+**Key Validation Requirements for File 25**:
+- At least 15 seconds of gameplay duration
+- Exactly 6 gold pieces collected
+- Successful level completion (no death required)
+- Agent must create validation script following same pattern as other validators
+
 ### Priority 4: Testing and Regression Prevention
 
 **Testing Strategy**:
 1. Ensure all existing files (0-19) still work perfectly
-2. Validate file 625 meets all requirements
-3. Test edge cases and format variations
-4. Add automated regression testing
+2. Validate file 625 meets all requirements (3 gold, 1 mine, death)
+3. Validate file 25 meets all requirements (15+ seconds, 6 gold)
+4. Test edge cases and format variations
+5. Add automated regression testing for all validated files
 
 ## 📁 **KEY FILES AND LOCATIONS**
 
 ### Core Implementation
 - `nclone/replay/binary_replay_parser.py` - Main decoder logic (NEEDS UPDATE)
 - `nclone/replay/README.md` - Complete format documentation
-- `validate_replay_625.py` - Validation script for new file (NEEDS FIXES)
+- `validate_replay_625.py` - Validation script for level 625 (NEEDS FIXES)
+- `validate_replay_25.py` - Validation script for level 25 (NEEDS CREATION)
 
 ### Analysis and Testing Tools
 - `analyze_all_replays.py` - Comprehensive format analysis tool
@@ -139,19 +154,22 @@ inputs = optimal_sequence if optimal_sequence else fallback_extraction(data)
 
 ### Test Data
 - `nclone/example_replays/npp_attract/0-19` - Original working files
-- `nclone/example_replays/npp_attract/625` - New failing file
+- `nclone/example_replays/npp_attract/625` - New failing file (3 gold, 1 mine, death)
+- `nclone/example_replays/npp_attract/25` - New file requiring validation (15+ sec, 6 gold)
 
 ## 🚀 **IMPLEMENTATION ROADMAP**
 
 ### Phase 1: Quick Fix (2-4 hours)
 1. **Test Sequence 6**: Manually test offset 2060-2756 for file 625
-2. **Validate Results**: Check if this produces expected 3 gold, 1 mine, death pattern
-3. **Implement Fallback**: Add file-specific logic as temporary solution
+2. **Test File 25**: Identify correct sequence for level 25 replay
+3. **Validate Results**: Check if sequences produce expected behaviors (625: 3 gold, 1 mine, death; 25: 15+ sec, 6 gold)
+4. **Create Level 25 Script**: Agent must implement validate_replay_25.py following existing patterns
+5. **Implement Fallback**: Add file-specific logic as temporary solution
 
 ### Phase 2: Proper Solution (4-8 hours)  
 1. **Implement Adaptive Selection**: Replace hardcoded offsets with intelligent detection
 2. **Add Sequence Quality Metrics**: Heuristics to identify real gameplay vs. metadata
-3. **Comprehensive Testing**: Validate against all files (0-19, 625)
+3. **Comprehensive Testing**: Validate against all files (0-19, 625, 25)
 4. **Update Documentation**: Reflect new adaptive approach
 
 ### Phase 3: Robustness (2-4 hours)
@@ -181,9 +199,11 @@ The decoder is fundamentally sound - it just needs to be made adaptive rather th
 The task will be **COMPLETE** when:
 1. ✅ All original files (0-19) still work perfectly
 2. ✅ File 625 validation passes with exactly 3 gold, 1 mine, correct death
-3. ✅ Decoder automatically selects optimal sequence for any file
-4. ✅ No hardcoded offsets remain in the implementation
-5. ✅ Comprehensive testing validates the solution
+3. ✅ File 25 validation passes with 15+ seconds gameplay and 6 gold collected
+4. ✅ Agent creates validate_replay_25.py script following established patterns
+5. ✅ Decoder automatically selects optimal sequence for any file
+6. ✅ No hardcoded offsets remain in the implementation
+7. ✅ Comprehensive testing validates the solution across all three file types
 
 ## 📞 **HANDOFF NOTES**
 
