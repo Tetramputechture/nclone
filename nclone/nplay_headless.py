@@ -12,12 +12,6 @@ from .constants.entity_types import EntityType
 from .constants.physics_constants import (
     MAX_HOR_SPEED,
     MAX_JUMP_DURATION,
-    GRAVITY_JUMP,
-    GRAVITY_FALL,
-    DRAG_SLOW,
-    DRAG_REGULAR,
-    FRICTION_WALL,
-    FRICTION_GROUND,
 )
 from . import render_utils
 

@@ -268,6 +268,55 @@ class LevelCompletionPlanner:
             return min(reachable_switches, key=lambda s: s["distance"])
         return None
 
+    def get_next_objective(
+        self,
+        ninja_position: Tuple[float, float],
+        level_data,
+        entities: List,
+        switch_states: Dict[str, bool],
+    ) -> Optional[Dict]:
+        """
+        Get the next objective for the ninja to pursue.
+
+        This method implements the NPP Level Completion Algorithm to determine
+        the immediate next objective based on current game state.
+
+        Args:
+            ninja_position: Current ninja position (x, y)
+            level_data: Level data structure
+            entities: List of entities in the level
+            switch_states: Current state of switches
+
+        Returns:
+            Dictionary with objective information or None if no objective found
+        """
+        # Find level objectives
+        exit_door = self._find_exit_door(level_data)
+        exit_switch = self._find_exit_switch(level_data)
+
+        if not exit_door or not exit_switch:
+            return None
+
+        # Step 1: Check if exit door switch needs to be activated
+        exit_switch_activated = switch_states.get(exit_switch["id"], False)
+        if not exit_switch_activated:
+            return {
+                "type": "exit_switch",
+                "position": exit_switch["position"],
+                "id": exit_switch["id"],
+                "action": "activate",
+                "description": f"Activate exit door switch at {exit_switch['position']}",
+            }
+
+        # Step 2: Exit switch is activated, go to exit door
+        return {
+            "type": "exit_door",
+            "position": exit_door["position"],
+            "id": exit_door["id"],
+            "action": "navigate",
+            "description": f"Navigate to exit door at {exit_door['position']}",
+        }
+
     def _calculate_strategy_confidence_from_features(
         self, completion_steps: List[CompletionStep], reachability_result
     ) -> float:

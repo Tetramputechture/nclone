@@ -43,6 +43,7 @@ class NppAttractDecoder:
             - 'entities': List of entity dictionaries
             - 'ninja_spawn': Tuple of (x, y) coordinates
             - 'header': Raw header bytes for compatibility
+            - 'demo_data': List of input values (if available)
         """
         try:
             with open(npp_attract_path, "rb") as f:
@@ -66,6 +67,9 @@ class NppAttractDecoder:
             # Extract entities (starting at byte 1230, 5 bytes each)
             entities = self._parse_entities(npp_data, start_pos=1230)
 
+            # Extract demo data (input sequence) according to attract file format
+            demo_data = self._extract_demo_data(npp_data)
+
             # Update statistics
             self.decode_stats["files_processed"] += 1
 
@@ -74,10 +78,11 @@ class NppAttractDecoder:
                 "entities": entities,
                 "ninja_spawn": ninja_spawn,
                 "header": header,
+                "demo_data": demo_data,
             }
 
             logger.info(
-                f"Successfully decoded: {len(tiles)} tiles, {len(entities)} entities, spawn {ninja_spawn}"
+                f"Successfully decoded: {len(tiles)} tiles, {len(entities)} entities, spawn {ninja_spawn}, {len(demo_data)} demo inputs"
             )
             return result
 
@@ -88,6 +93,7 @@ class NppAttractDecoder:
                 "entities": [],
                 "ninja_spawn": (0, 0),
                 "header": b"\x00" * 184,
+                "demo_data": [],
             }
 
     def _parse_entities(self, npp_data: bytes, start_pos: int) -> List[Dict]:
@@ -157,7 +163,9 @@ class NppAttractDecoder:
             # Calculate required size based on number of entities
             num_entities = len(decoded_data["entities"])
             entity_data_size = num_entities * 5  # 5 bytes per entity
-            entity_section_size = max(185, 85 + entity_data_size)  # At least 185 bytes, or more if needed
+            entity_section_size = max(
+                185, 85 + entity_data_size
+            )  # At least 185 bytes, or more if needed
             entity_section = bytearray(entity_section_size)
 
             # Count entities by type for the nclone format
@@ -169,11 +177,11 @@ class NppAttractDecoder:
 
             # Set entity counts at the beginning of the section
             # Based on official format analysis:
-            entity_section[0] = entity_counts[1]   # Type 1 (mines) count
-            entity_section[2] = entity_counts[3]   # Type 3 (exits) count  
-            entity_section[4] = entity_counts[2]   # Type 2 (gold) count
-            entity_section[6] = entity_counts[4]   # Type 4 (exit switches) count
-            entity_section[8] = 1                  # Unknown field (always 1 in official)
+            entity_section[0] = entity_counts[1]  # Type 1 (mines) count
+            entity_section[2] = entity_counts[3]  # Type 3 (exits) count
+            entity_section[4] = entity_counts[2]  # Type 2 (gold) count
+            entity_section[6] = entity_counts[4]  # Type 4 (exit switches) count
+            entity_section[8] = 1  # Unknown field (always 1 in official)
 
             # Set ninja spawn at positions 81-82 (based on official format)
             ninja_spawn = decoded_data["ninja_spawn"]
@@ -195,7 +203,9 @@ class NppAttractDecoder:
             complete_map = header + tiles + bytes(entity_section)
 
             # Log the map size (no longer enforcing 1335 bytes for files with more entities)
-            logger.info(f"Map sections: header={len(header)}, tiles={len(tiles)}, entities={len(entity_section)}")
+            logger.info(
+                f"Map sections: header={len(header)}, tiles={len(tiles)}, entities={len(entity_section)}"
+            )
             logger.info(f"Total entities included: {num_entities}")
 
             logger.info(f"Created nclone map: {len(complete_map)} bytes")
@@ -328,3 +338,100 @@ class NppAttractDecoder:
                 matches += 1
 
         return matches / len(ref_entities)
+
+    def _extract_demo_data(self, npp_data: bytes) -> List[int]:
+        """
+        Extract demo data (input sequence) from npp_attract file according to attract file format.
+
+        Based on the attract file structure:
+        - ATTRACT FILE HEADER: Contains length of map data and demo data (bytes 0-7)
+        - MAP DATA: Level info, tiles, entities
+        - DEMO DATA: Contains the actual input sequence (1 byte per frame)
+
+        Args:
+            npp_data: Raw npp_attract file bytes
+
+        Returns:
+            List of input values (0-7) representing the demo sequence
+        """
+        try:
+            import struct
+
+            # Read header to get lengths
+            # Bytes 0-3: Length of map data
+            # Bytes 4-7: Length of demo data
+            if len(npp_data) < 8:
+                logger.warning("File too short to contain attract file header")
+                return []
+
+            map_data_length = struct.unpack("<I", npp_data[0:4])[0]
+            demo_data_length = struct.unpack("<I", npp_data[4:8])[0]
+
+            logger.debug(
+                f"Header indicates: map_data_length={map_data_length}, demo_data_length={demo_data_length}"
+            )
+
+            # Calculate demo data start position
+            # Header (8 bytes) + Map data section
+            demo_data_start = 8 + map_data_length
+
+            # Validate demo data section exists
+            if demo_data_start >= len(npp_data):
+                logger.warning(
+                    f"Demo data start position {demo_data_start} exceeds file length {len(npp_data)}"
+                )
+                return []
+
+            # The demo data section has its own header before the actual input data
+            # Based on the image: it contains metadata like frame count, level ID, etc.
+            # The actual demo data (1 byte/frame) starts after this demo header
+
+            if demo_data_start + 16 >= len(npp_data):
+                logger.warning("Demo data section too short for header")
+                return []
+
+            # Read demo data section header
+            demo_header_start = demo_data_start
+
+            # Skip the initial demo header fields (typically ~20-30 bytes)
+            # This includes: ?, length of data, ?, frame count, level ID, game mode, etc.
+            demo_inputs_start = demo_header_start + 20  # Conservative estimate
+
+            # Look for the actual input sequence by finding the longest sequence of valid inputs (0-7)
+            best_start = demo_inputs_start
+            best_length = 0
+
+            # Search within the demo data section for valid input sequences
+            search_end = min(demo_data_start + demo_data_length, len(npp_data))
+
+            for start_pos in range(demo_inputs_start, search_end - 10):
+                length = 0
+                pos = start_pos
+
+                # Count consecutive valid inputs (0-7)
+                while pos < search_end and 0 <= npp_data[pos] <= 7:
+                    length += 1
+                    pos += 1
+
+                if length > best_length:
+                    best_start = start_pos
+                    best_length = length
+
+            # Extract the demo input sequence
+            if best_length > 0:
+                demo_inputs = []
+                for i in range(best_start, best_start + best_length):
+                    if i < len(npp_data):
+                        demo_inputs.append(npp_data[i])
+
+                logger.info(
+                    f"Extracted demo data: {len(demo_inputs)} inputs from offset {best_start}"
+                )
+                return demo_inputs
+            else:
+                logger.warning("No valid demo input sequence found")
+                return []
+
+        except Exception as e:
+            logger.error(f"Error extracting demo data: {e}")
+            return []
