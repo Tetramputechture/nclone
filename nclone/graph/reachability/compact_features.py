@@ -18,11 +18,11 @@ Feature Vector Layout (8 dimensions):
 
 import numpy as np
 import math
-from typing import List, Tuple, Dict, Any, Optional, Set
+from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 
 from .reachability_types import ReachabilityApproximation
-from ...planning import LevelCompletionPlanner, CompletionStep
+from ...planning import LevelCompletionPlanner
 
 
 @dataclass

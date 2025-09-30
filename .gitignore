@@ -48,3 +48,8 @@ global_frame.png
 official_levels/
 
 test_output/
+
+# testing data
+*.dat
+*.jsonl
+*.mp4
