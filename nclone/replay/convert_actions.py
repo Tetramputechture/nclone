@@ -11,7 +11,7 @@ Usage:
 
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List
 
 
 class ActionConverter:
@@ -42,6 +42,29 @@ class ActionConverter:
 
     # Reverse mapping from indices to text
     INDEX_TO_TEXT = {v: k for k, v in TEXT_TO_INDEX.items()}
+
+    # Binary input mapping from attract file format (0-7) to text actions
+    # Based on the N++ attract file demo data format
+    BINARY_TO_TEXT = {
+        0: "NOOP",  # No input
+        1: "Jump",  # Jump only
+        2: "Right",  # Right only
+        3: "Jump + Right",  # Right + Jump
+        4: "Left",  # Left only
+        5: "Jump + Left",  # Left + Jump
+        6: "Left",  # Left only (duplicate mapping)
+        7: "Jump + Left",  # Left + Jump (duplicate mapping)
+    }
+
+    # Reverse mapping from text to binary format
+    TEXT_TO_BINARY = {
+        "NOOP": 0,
+        "Jump": 1,
+        "Right": 2,
+        "Jump + Right": 3,
+        "Left": 4,
+        "Jump + Left": 5,
+    }
 
     @classmethod
     def convert_text_to_symbol(cls, action: str) -> str:
@@ -75,6 +98,28 @@ class ActionConverter:
         text = cls.convert_index_to_text(index)
         return cls.convert_text_to_symbol(text)
 
+    @classmethod
+    def convert_binary_to_text(cls, binary_value: int) -> str:
+        """Convert from binary format (0-7) to text format."""
+        return cls.BINARY_TO_TEXT.get(binary_value, "NOOP")
+
+    @classmethod
+    def convert_text_to_binary(cls, action: str) -> int:
+        """Convert from text format to binary format (0-7)."""
+        return cls.TEXT_TO_BINARY.get(action.strip(), 0)
+
+    @classmethod
+    def convert_binary_to_symbol(cls, binary_value: int) -> str:
+        """Convert from binary format (0-7) to symbol format."""
+        text = cls.convert_binary_to_text(binary_value)
+        return cls.convert_text_to_symbol(text)
+
+    @classmethod
+    def convert_binary_to_index(cls, binary_value: int) -> int:
+        """Convert from binary format (0-7) to discrete index."""
+        text = cls.convert_binary_to_text(binary_value)
+        return cls.convert_text_to_index(text)
+
 
 def convert_action_sequence(
     actions: List[str], input_format: str, output_format: str
@@ -84,8 +129,8 @@ def convert_action_sequence(
 
     Args:
         actions: List of actions in input format
-        input_format: Input format ('text', 'symbol', 'index')
-        output_format: Output format ('text', 'symbol', 'index')
+        input_format: Input format ('text', 'symbol', 'index', 'binary')
+        output_format: Output format ('text', 'symbol', 'index', 'binary')
 
     Returns:
         List of actions in output format
@@ -106,6 +151,14 @@ def convert_action_sequence(
             converted.append(str(converter.convert_symbol_to_index(action)))
         elif input_format == "index" and output_format == "symbol":
             converted.append(converter.convert_index_to_symbol(int(action)))
+        elif input_format == "binary" and output_format == "text":
+            converted.append(converter.convert_binary_to_text(int(action)))
+        elif input_format == "text" and output_format == "binary":
+            converted.append(str(converter.convert_text_to_binary(action)))
+        elif input_format == "binary" and output_format == "symbol":
+            converted.append(converter.convert_binary_to_symbol(int(action)))
+        elif input_format == "binary" and output_format == "index":
+            converted.append(str(converter.convert_binary_to_index(int(action))))
         else:
             # No conversion needed or unsupported format combination
             converted.append(action)
@@ -141,13 +194,13 @@ Examples:
     )
     parser.add_argument(
         "--input-format",
-        choices=["text", "symbol", "index"],
+        choices=["text", "symbol", "index", "binary"],
         default="text",
         help="Input format (default: text)",
     )
     parser.add_argument(
         "--output-format",
-        choices=["text", "symbol", "index"],
+        choices=["text", "symbol", "index", "binary"],
         default="symbol",
         help="Output format (default: symbol)",
     )
