@@ -10,6 +10,7 @@ import logging
 import numpy as np
 from gymnasium.spaces import box, Dict as SpacesDict
 from typing import Optional, Dict, Any
+import time
 
 from ..graph.common import N_MAX_NODES, E_MAX_EDGES
 
@@ -163,8 +164,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Update graph if needed
         if self.enable_graph_updates and self._should_update_graph():
-            import time
-
             start_time = time.time()
             self._update_graph_from_env_state()
             update_time = (time.time() - start_time) * 1000  # Convert to ms

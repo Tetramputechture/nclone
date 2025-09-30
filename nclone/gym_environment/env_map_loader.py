@@ -9,7 +9,7 @@ import uuid
 from typing import Optional
 
 
-class MapLoader:
+class EnvMapLoader:
     """
     Handles map loading functionality for the N++ environment.
 

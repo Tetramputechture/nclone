@@ -69,10 +69,9 @@ class ReachabilityMixin:
 
     def _get_reachability_features(self) -> np.ndarray:
         """Get 8-dimensional reachability features."""
-        # Extract ninja position - required for reachability analysis
-        ninja_pos = self.nplay_headless.ninja_position()
-
-        reachability_features = self._compute_reachability(ninja_pos)
+        reachability_features = self._compute_reachability(
+            self.nplay_headless.ninja_position()
+        )
 
         return reachability_features
 
