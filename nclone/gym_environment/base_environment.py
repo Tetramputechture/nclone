@@ -31,7 +31,7 @@ from .reward_calculation.main_reward_calculator import RewardCalculator
 from .observation_processor import ObservationProcessor
 from .truncation_checker import TruncationChecker
 from .entity_extractor import EntityExtractor
-from .map_loader import MapLoader
+from .env_map_loader import EnvMapLoader
 
 
 class BaseNppEnvironment(gymnasium.Env):
@@ -113,7 +113,7 @@ class BaseNppEnvironment(gymnasium.Env):
         self.entity_extractor = EntityExtractor(self.nplay_headless)
 
         # Initialize map loader
-        self.map_loader = MapLoader(
+        self.map_loader = EnvMapLoader(
             self.nplay_headless, self.rng, eval_mode, custom_map_path
         )
 
@@ -172,7 +172,7 @@ class BaseNppEnvironment(gymnasium.Env):
                 shape=(RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1),
                 dtype=np.uint8,
             ),
-            # Game state features (enhanced ninja state + entity states)
+            # Game state features (ninja state + entity states)
             "game_state": box.Box(
                 low=-1,
                 high=1,
@@ -482,7 +482,7 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Recreate map loader
         if not hasattr(self, "map_loader"):
-            self.map_loader = MapLoader(
+            self.map_loader = EnvMapLoader(
                 self.nplay_headless,
                 getattr(self, "rng", None),
                 getattr(self, "eval_mode", False),
