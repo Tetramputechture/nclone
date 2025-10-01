@@ -155,62 +155,57 @@ class PBRSPotentials:
 
 
 class PBRSCalculator:
-    """Calculator for combining multiple potential functions."""
+    """Calculator for completion-focused potential functions."""
+
+    # Completion-focused PBRS scaling
+    PBRS_SWITCH_DISTANCE = 0.05  # Distance-based shaping to switches
+    PBRS_EXIT_DISTANCE = 0.05    # Distance-based shaping to exit
 
     def __init__(
         self,
         objective_weight: float = 1.0,
-        hazard_weight: float = 0.5,
-        impact_weight: float = 0.3,
-        exploration_weight: float = 0.2,
+        hazard_weight: float = 0.0,  # Disabled for completion focus
+        impact_weight: float = 0.0,  # Disabled for completion focus
+        exploration_weight: float = 0.0,  # Disabled for completion focus
     ):
-        """Initialize PBRS calculator with configurable weights.
+        """Initialize PBRS calculator for completion-focused training.
 
         Args:
-            objective_weight: Weight for objective distance potential
-            hazard_weight: Weight for hazard proximity potential
-            impact_weight: Weight for impact risk potential
-            exploration_weight: Weight for exploration potential
+            objective_weight: Weight for objective distance potential (switch/exit)
+            hazard_weight: Disabled for completion focus
+            impact_weight: Disabled for completion focus
+            exploration_weight: Disabled for completion focus
         """
         self.objective_weight = objective_weight
         self.hazard_weight = hazard_weight
         self.impact_weight = impact_weight
         self.exploration_weight = exploration_weight
 
-        # Track visited positions for exploration potential
+        # Track visited positions for exploration potential (minimal usage)
         self.visited_positions: List[Tuple[float, float]] = []
         self.visit_threshold = (
             25.0  # Distance threshold for considering a position "new"
         )
 
     def calculate_combined_potential(self, state: Dict[str, Any]) -> float:
-        """Calculate combined potential from all components.
+        """Calculate completion-focused potential from switch/exit distance only.
 
         Args:
             state: Game state dictionary
 
         Returns:
-            float: Combined potential value
+            float: Combined potential value focused on completion objectives
         """
-        # Update visited positions
-        player_x, player_y = state["player_x"], state["player_y"]
-        self._update_visited_positions(player_x, player_y)
-
-        # Calculate individual potentials
+        # Calculate only objective distance potential (switch/exit focus)
         objective_pot = PBRSPotentials.objective_distance_potential(state)
-        hazard_pot = PBRSPotentials.hazard_proximity_potential(state)
-        impact_pot = PBRSPotentials.impact_risk_potential(state)
-        exploration_pot = PBRSPotentials.exploration_potential(
-            state, self.visited_positions
-        )
-
-        # Combine with weights
-        combined_potential = (
-            self.objective_weight * objective_pot
-            + self.hazard_weight * hazard_pot
-            + self.impact_weight * impact_pot
-            + self.exploration_weight * exploration_pot
-        )
+        
+        # Apply completion-focused scaling
+        if not state.get("switch_activated", False):
+            # Focus on switch distance
+            combined_potential = self.PBRS_SWITCH_DISTANCE * objective_pot
+        else:
+            # Focus on exit distance
+            combined_potential = self.PBRS_EXIT_DISTANCE * objective_pot
 
         return combined_potential
 
@@ -236,15 +231,16 @@ class PBRSCalculator:
             state: Game state dictionary
 
         Returns:
-            dict: Dictionary of potential component values
+            dict: Dictionary of potential component values (completion-focused)
         """
+        objective_pot = PBRSPotentials.objective_distance_potential(state)
         return {
-            "objective": PBRSPotentials.objective_distance_potential(state),
-            "hazard": PBRSPotentials.hazard_proximity_potential(state),
-            "impact": PBRSPotentials.impact_risk_potential(state),
-            "exploration": PBRSPotentials.exploration_potential(
-                state, self.visited_positions
-            ),
+            "objective": objective_pot,
+            "switch_distance_potential": self.PBRS_SWITCH_DISTANCE * objective_pot if not state.get("switch_activated", False) else 0.0,
+            "exit_distance_potential": self.PBRS_EXIT_DISTANCE * objective_pot if state.get("switch_activated", False) else 0.0,
+            "hazard": 0.0,  # Disabled for completion focus
+            "impact": 0.0,  # Disabled for completion focus
+            "exploration": 0.0,  # Disabled for completion focus
         }
 
     def reset(self) -> None:
