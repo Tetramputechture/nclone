@@ -50,6 +50,7 @@ class EdgeBuilder:
         edges.extend(adjacent_edges)
 
         # 2. Create reachable edges (using flood fill results)
+        reachable_edges = []
         if level_data.player and level_data.player.position:
             reachable_edges = self._create_reachable_edges(
                 level_data.player.position, level_data, traversable_positions

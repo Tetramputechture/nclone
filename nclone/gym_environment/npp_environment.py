@@ -15,10 +15,11 @@ import time
 from ..graph.common import N_MAX_NODES, E_MAX_EDGES
 
 from .base_environment import BaseNppEnvironment
-from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
+from .mixins import GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin
+from .config import EnvironmentConfig
 
 
-class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin):
+class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin):
     """
     Consolidated N++ environment class using mixins.
 
@@ -36,82 +37,63 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     - Debug overlays and visualization
     """
 
-    def __init__(
-        self,
-        render_mode: str = "rgb_array",
-        enable_animation: bool = False,
-        enable_logging: bool = False,
-        enable_debug_overlay: bool = False,
-        enable_short_episode_truncation: bool = False,
-        seed: Optional[int] = None,
-        eval_mode: bool = False,
-        enable_pbrs: bool = True,
-        pbrs_weights: Optional[dict] = None,
-        pbrs_gamma: float = 0.99,
-        custom_map_path: Optional[str] = None,
-        enable_graph_updates: bool = True,
-        enable_reachability: bool = True,
-        debug: bool = False,
-    ):
+    def __init__(self, config: EnvironmentConfig):
         """
         Initialize the N++ environment.
 
         Args:
-            render_mode: Rendering mode ("human" or "rgb_array")
-            enable_animation: Enable animation in rendering
-            enable_logging: Enable debug logging
-            enable_debug_overlay: Enable debug overlay visualization
-            enable_short_episode_truncation: Enable episode truncation on lack of progress
-            seed: Random seed for reproducibility
-            eval_mode: Use evaluation maps instead of training maps
-            enable_pbrs: Enable potential-based reward shaping
-            pbrs_weights: PBRS component weights dictionary
-            pbrs_gamma: PBRS discount factor
-            custom_map_path: Path to custom map file
-            enable_graph_updates: Enable dynamic graph updates
-            enable_reachability: Enable reachability analysis
-            debug: Enable debug logging for graph operations
+            config: Environment configuration object
         """
-        # Initialize base environment
+        self.config = config
+        
+        # Validate configuration
+        from .config import validate_config
+        validate_config(config)
+        
+        # Initialize base environment using config
         super().__init__(
-            render_mode=render_mode,
-            enable_animation=enable_animation,
-            enable_logging=enable_logging,
-            enable_debug_overlay=enable_debug_overlay,
-            enable_short_episode_truncation=enable_short_episode_truncation,
-            seed=seed,
-            eval_mode=eval_mode,
-            enable_pbrs=enable_pbrs,
-            pbrs_weights=pbrs_weights,
-            pbrs_gamma=pbrs_gamma,
-            custom_map_path=custom_map_path,
+            render_mode=self.config.render.render_mode,
+            enable_animation=self.config.render.enable_animation,
+            enable_logging=self.config.enable_logging,
+            enable_debug_overlay=self.config.render.enable_debug_overlay,
+            enable_short_episode_truncation=self.config.enable_short_episode_truncation,
+            seed=self.config.seed,
+            eval_mode=self.config.eval_mode,
+            enable_pbrs=self.config.pbrs.enable_pbrs,
+            pbrs_weights=self.config.pbrs.pbrs_weights,
+            pbrs_gamma=self.config.pbrs.pbrs_gamma,
+            custom_map_path=self.config.custom_map_path,
         )
 
-        # Initialize mixin systems
-        self._init_graph_system(enable_graph_updates, debug)
-        self._init_reachability_system(enable_reachability, debug)
-        self._init_debug_system(enable_debug_overlay)
+        # Initialize mixin systems using config
+        self._init_graph_system(self.config.graph.enable_graph_updates, self.config.graph.debug)
+        self._init_reachability_system(self.config.reachability.enable_reachability, self.config.reachability.debug)
+        self._init_debug_system(self.config.render.enable_debug_overlay)
+        self._init_hierarchical_system(self.config.hierarchical)
 
         # Update configuration flags with new options
         self.config_flags.update(
             {
-                "enable_graph_updates": enable_graph_updates,
-                "enable_reachability": enable_reachability,
-                "debug": debug,
+                "enable_graph_updates": self.config.graph.enable_graph_updates,
+                "enable_reachability": self.config.reachability.enable_reachability,
+                "enable_hierarchical": self.config.hierarchical.enable_hierarchical,
+                "debug": self.config.graph.debug or self.config.reachability.debug or self.config.hierarchical.debug,
             }
         )
 
-        # Extend observation space with graph and reachability features
+        # Extend observation space with graph, reachability, and hierarchical features
         self.observation_space = self._build_extended_observation_space(
-            enable_graph_updates, enable_reachability
+            self.config.graph.enable_graph_updates, 
+            self.config.reachability.enable_reachability, 
+            self.config.hierarchical.enable_hierarchical
         )
 
         # Initialize graph state if enabled
-        if enable_graph_updates:
+        if self.config.graph.enable_graph_updates:
             self._update_graph_from_env_state()
 
     def _build_extended_observation_space(
-        self, enable_graph_updates: bool, enable_reachability: bool
+        self, enable_graph_updates: bool, enable_reachability: bool, enable_hierarchical: bool
     ) -> SpacesDict:
         """Build the extended observation space with graph and reachability features."""
         obs_spaces = dict(self.observation_space.spaces)
@@ -120,6 +102,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if enable_reachability:
             obs_spaces["reachability_features"] = box.Box(
                 low=0.0, high=1.0, shape=(8,), dtype=np.float32
+            )
+        
+        # Add hierarchical features
+        if enable_hierarchical:
+            obs_spaces["subtask_features"] = box.Box(
+                low=0.0, high=1.0, shape=(4,), dtype=np.float32
             )
 
         # Add graph observation spaces if graph updates are enabled
@@ -178,15 +166,29 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         curr_obs = self._get_observation()
         terminated, truncated, player_won = self._check_termination()
 
+        # Build initial episode info
+        info = {"is_success": player_won}
+
+        # Update hierarchical state and get current subtask
+        current_subtask = None
+        if self.enable_hierarchical:
+            current_subtask = self._get_current_subtask(curr_obs, info)
+            self._update_hierarchical_state(curr_obs, info)
+        
         # Calculate reward
         reward = self._calculate_reward(curr_obs, prev_obs)
+        
+        # Add hierarchical reward shaping if enabled
+        if self.enable_hierarchical and current_subtask is not None:
+            hierarchical_reward = self._calculate_subtask_reward(
+                current_subtask, curr_obs, info, terminated
+            )
+            reward += hierarchical_reward * self.config.hierarchical.subtask_reward_scale
+        
         self.current_ep_reward += reward
 
         # Process observation for training
         processed_obs = self._process_observation(curr_obs)
-
-        # Build episode info
-        info = {"is_success": player_won}
 
         # Add configuration flags to episode info
         info.update(
@@ -204,6 +206,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if self.enable_reachability and self.reachability_times:
             avg_time = np.mean(self.reachability_times[-10:])  # Last 10 samples
             info["reachability_time_ms"] = avg_time * 1000
+        
+        # Add hierarchical info if enabled
+        if self.enable_hierarchical:
+            info["hierarchical"] = self._get_hierarchical_info()
 
         return processed_obs, reward, terminated, truncated, info
 
@@ -215,6 +221,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Reset mixin states
         self._reset_graph_state()
         self._reset_reachability_state()
+        if self.enable_hierarchical:
+            self._reset_hierarchical_state()
 
         # Build initial graph if enabled
         if self.enable_graph_updates:
@@ -236,6 +244,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Add graph observations if enabled
         if self.enable_graph_updates:
             obs.update(self._get_graph_observations())
+        
+        # Add hierarchical features if enabled
+        if self.enable_hierarchical:
+            obs["subtask_features"] = self._get_subtask_features()
 
         return obs
 

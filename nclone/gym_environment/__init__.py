@@ -11,6 +11,7 @@ from .environment_factory import (
     create_minimal_env,
     make_vectorizable_env,
     create_vectorized_training_envs,
+    create_hierarchical_env,
     benchmark_environment_performance,
     validate_environment,
     # Backward compatibility aliases
@@ -32,6 +33,7 @@ __all__ = [
     "create_minimal_env",
     "make_vectorizable_env",
     "create_vectorized_training_envs",
+    "create_hierarchical_env",
     "benchmark_environment_performance",
     "validate_environment",
     # Backward compatibility
