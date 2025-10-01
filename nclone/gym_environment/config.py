@@ -87,6 +87,8 @@ class HierarchicalConfig:
     SUBTASK_TIMEOUT_PENALTY: float = 0.1
     SUBTASK_TIMEOUT_THRESHOLD: int = 500
     SIGNIFICANT_MOVEMENT_THRESHOLD: float = 5.0
+    DISTANCE_REWARD_SCALE: float = 0.01
+    MINE_AVOIDANCE_REWARD_SCALE: float = 0.005
     
     def __post_init__(self):
         """Validate hierarchical configuration."""

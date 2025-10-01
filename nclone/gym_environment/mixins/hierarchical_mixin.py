@@ -178,6 +178,12 @@ class HierarchicalMixin:
         Returns:
             Next subtask to execute
         """
+        # Validate inputs before proceeding
+        if not ninja_pos or len(ninja_pos) != 2:
+            if self.debug:
+                logging.warning(f"Invalid ninja position: {ninja_pos}")
+            return self._fallback_subtask_selection(switch_states, reachability_features)
+        
         try:
             # Use completion planner to get strategic plan
             reachability_system = self._create_reachability_system(reachability_features)
@@ -186,7 +192,7 @@ class HierarchicalMixin:
                 ninja_pos, level_data, switch_states, reachability_system
             )
             
-            if completion_strategy.steps:
+            if completion_strategy and hasattr(completion_strategy, 'steps') and completion_strategy.steps:
                 # Map completion step to subtask
                 first_step = completion_strategy.steps[0]
                 return self._map_completion_step_to_subtask(first_step)
@@ -200,18 +206,24 @@ class HierarchicalMixin:
     
     def _map_completion_step_to_subtask(self, completion_step) -> Subtask:
         """Map completion planner step to subtask enum."""
-        action_type = completion_step.action_type
-        
-        if action_type == "navigate_and_activate":
-            # Determine if it's exit switch or locked door switch
-            if "exit" in completion_step.description.lower():
-                return Subtask.NAVIGATE_TO_EXIT_SWITCH
+        try:
+            action_type = getattr(completion_step, 'action_type', None)
+            
+            if action_type == "navigate_and_activate":
+                # Determine if it's exit switch or locked door switch
+                description = getattr(completion_step, 'description', '').lower()
+                if "exit" in description:
+                    return Subtask.NAVIGATE_TO_EXIT_SWITCH
+                else:
+                    return Subtask.NAVIGATE_TO_LOCKED_DOOR_SWITCH
+            elif action_type == "navigate_to_exit":
+                return Subtask.NAVIGATE_TO_EXIT_DOOR
             else:
-                return Subtask.NAVIGATE_TO_LOCKED_DOOR_SWITCH
-        elif action_type == "navigate_to_exit":
-            return Subtask.NAVIGATE_TO_EXIT_DOOR
-        else:
-            # Default to exit switch navigation
+                # Default to exit switch navigation
+                return Subtask.NAVIGATE_TO_EXIT_SWITCH
+        except Exception as e:
+            if self.debug:
+                logging.warning(f"Failed to map completion step to subtask: {e}")
             return Subtask.NAVIGATE_TO_EXIT_SWITCH
     
     def _fallback_subtask_selection(
@@ -277,22 +289,22 @@ class HierarchicalMixin:
             # Reward getting closer to exit switch
             if 'switch_distance' in info:
                 # Negative distance as reward (closer = higher reward)
-                reward += -info['switch_distance'] * 0.01
+                reward += -info['switch_distance'] * self.hierarchical_config.DISTANCE_REWARD_SCALE
                 
         elif current_subtask == Subtask.NAVIGATE_TO_LOCKED_DOOR_SWITCH:
             # Reward getting closer to locked door switches
             if 'locked_door_distance' in info:
-                reward += -info['locked_door_distance'] * 0.01
+                reward += -info['locked_door_distance'] * self.hierarchical_config.DISTANCE_REWARD_SCALE
                 
         elif current_subtask == Subtask.NAVIGATE_TO_EXIT_DOOR:
             # Reward getting closer to exit door
             if 'exit_distance' in info:
-                reward += -info['exit_distance'] * 0.01
+                reward += -info['exit_distance'] * self.hierarchical_config.DISTANCE_REWARD_SCALE
                 
         elif current_subtask == Subtask.AVOID_MINE:
             # Reward staying away from mines
             if 'mine_distance' in info:
-                reward += info['mine_distance'] * 0.005  # Positive distance reward
+                reward += info['mine_distance'] * self.hierarchical_config.MINE_AVOIDANCE_REWARD_SCALE
         
         # Bonus for subtask completion
         if 'subtask_transition' in info:

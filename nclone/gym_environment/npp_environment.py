@@ -37,97 +37,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     - Debug overlays and visualization
     """
 
-    def __init__(
-        self,
-        config: Optional[EnvironmentConfig] = None,
-        # Backward compatibility parameters
-        render_mode: str = "rgb_array",
-        enable_animation: bool = False,
-        enable_logging: bool = False,
-        enable_debug_overlay: bool = False,
-        enable_short_episode_truncation: bool = False,
-        seed: Optional[int] = None,
-        eval_mode: bool = False,
-        enable_pbrs: bool = True,
-        pbrs_weights: Optional[dict] = None,
-        pbrs_gamma: float = 0.99,
-        custom_map_path: Optional[str] = None,
-        enable_graph_updates: bool = True,
-        enable_reachability: bool = True,
-        enable_hierarchical: bool = False,
-        completion_planner: Optional[Any] = None,
-        enable_subtask_rewards: bool = True,
-        subtask_reward_scale: float = 0.1,
-        max_subtask_steps: int = 1000,
-        debug: bool = False,
-    ):
+    def __init__(self, config: EnvironmentConfig):
         """
         Initialize the N++ environment.
 
         Args:
-            config: Environment configuration object (preferred method)
-            
-            # Backward compatibility parameters (deprecated - use config instead):
-            render_mode: Rendering mode ("human" or "rgb_array")
-            enable_animation: Enable animation in rendering
-            enable_logging: Enable debug logging
-            enable_debug_overlay: Enable debug overlay visualization
-            enable_short_episode_truncation: Enable episode truncation on lack of progress
-            seed: Random seed for reproducibility
-            eval_mode: Use evaluation maps instead of training maps
-            enable_pbrs: Enable potential-based reward shaping
-            pbrs_weights: PBRS component weights dictionary
-            pbrs_gamma: PBRS discount factor
-            custom_map_path: Path to custom map file
-            enable_graph_updates: Enable dynamic graph updates
-            enable_reachability: Enable reachability analysis
-            enable_hierarchical: Enable hierarchical RL with completion planner
-            completion_planner: Optional completion planner instance
-            enable_subtask_rewards: Enable subtask-specific reward shaping
-            subtask_reward_scale: Scale factor for subtask rewards
-            max_subtask_steps: Maximum steps per subtask before forced transition
-            debug: Enable debug logging for graph operations
+            config: Environment configuration object
         """
-        # Handle configuration - either from config object or individual parameters
-        if config is not None:
-            self.config = config
-        else:
-            # Create config from individual parameters for backward compatibility
-            from .config import RenderConfig, PBRSConfig, GraphConfig, ReachabilityConfig, HierarchicalConfig
-            
-            self.config = EnvironmentConfig(
-                seed=seed,
-                eval_mode=eval_mode,
-                custom_map_path=custom_map_path,
-                enable_logging=enable_logging,
-                enable_short_episode_truncation=enable_short_episode_truncation,
-                render=RenderConfig(
-                    render_mode=render_mode,
-                    enable_animation=enable_animation,
-                    enable_debug_overlay=enable_debug_overlay
-                ),
-                pbrs=PBRSConfig(
-                    enable_pbrs=enable_pbrs,
-                    pbrs_weights=pbrs_weights or {},
-                    pbrs_gamma=pbrs_gamma
-                ),
-                graph=GraphConfig(
-                    enable_graph_updates=enable_graph_updates,
-                    debug=debug
-                ),
-                reachability=ReachabilityConfig(
-                    enable_reachability=enable_reachability,
-                    debug=debug
-                ),
-                hierarchical=HierarchicalConfig(
-                    enable_hierarchical=enable_hierarchical,
-                    completion_planner=completion_planner,
-                    enable_subtask_rewards=enable_subtask_rewards,
-                    subtask_reward_scale=subtask_reward_scale,
-                    max_subtask_steps=max_subtask_steps,
-                    debug=debug
-                )
-            )
+        self.config = config
         # Initialize base environment using config
         super().__init__(
             render_mode=self.config.render.render_mode,
@@ -244,7 +161,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         curr_obs = self._get_observation()
         terminated, truncated, player_won = self._check_termination()
 
+        # Build initial episode info
+        info = {"is_success": player_won}
+
         # Update hierarchical state and get current subtask
+        current_subtask = None
         if self.enable_hierarchical:
             current_subtask = self._get_current_subtask(curr_obs, info)
             self._update_hierarchical_state(curr_obs, info)
@@ -253,19 +174,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         reward = self._calculate_reward(curr_obs, prev_obs)
         
         # Add hierarchical reward shaping if enabled
-        if self.enable_hierarchical:
+        if self.enable_hierarchical and current_subtask is not None:
             hierarchical_reward = self._calculate_subtask_reward(
                 current_subtask, curr_obs, info, terminated
             )
-            reward += hierarchical_reward * self.subtask_reward_scale
+            reward += hierarchical_reward * self.config.hierarchical.subtask_reward_scale
         
         self.current_ep_reward += reward
 
         # Process observation for training
         processed_obs = self._process_observation(curr_obs)
-
-        # Build episode info
-        info = {"is_success": player_won}
 
         # Add configuration flags to episode info
         info.update(

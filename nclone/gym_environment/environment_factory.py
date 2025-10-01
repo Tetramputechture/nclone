@@ -5,179 +5,37 @@ This module provides convenient factory functions to create NppEnvironment insta
 with common configurations for training, evaluation, and research.
 """
 
-from typing import Dict, Any, Optional, Callable
+from typing import Optional, Callable
 from .npp_environment import NppEnvironment
 from .config import EnvironmentConfig
 
 
-def create_training_env(
-    config: Optional[EnvironmentConfig] = None,
-    env_kwargs: Optional[Dict[str, Any]] = None,
-    enable_graph_updates: bool = True,
-    enable_reachability: bool = True,
-    debug: bool = False,
-) -> NppEnvironment:
-    """
-    Create an environment optimized for training.
-
-    Args:
-        config: Environment configuration object (preferred method)
-        env_kwargs: Environment configuration parameters (deprecated - use config)
-        enable_graph_updates: Whether to enable dynamic graph updates (deprecated)
-        enable_reachability: Whether to enable reachability analysis (deprecated)
-        debug: Enable debug logging for graph operations (deprecated)
-
-    Returns:
-        NppEnvironment: Environment configured for training
-    """
-    if config is not None:
-        return NppEnvironment(config=config)
-    
-    # Backward compatibility path
-    if env_kwargs is None:
+def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
+    """Create an environment optimized for training."""
+    if config is None:
         config = EnvironmentConfig.for_training()
-        # Override with any provided parameters
-        if not enable_graph_updates:
-            config.graph.enable_graph_updates = False
-        if not enable_reachability:
-            config.reachability.enable_reachability = False
-        if debug:
-            config.graph.debug = True
-            config.reachability.debug = True
-        
-        return NppEnvironment(config=config)
-    
-    # Legacy parameter handling
-    env_kwargs.update({
-        "enable_graph_updates": enable_graph_updates,
-        "enable_reachability": enable_reachability,
-        "debug": debug,
-    })
-    
-    return NppEnvironment(**env_kwargs)
+    return NppEnvironment(config)
 
 
-def create_evaluation_env(
-    env_kwargs: Optional[Dict[str, Any]] = None,
-    enable_graph_updates: bool = True,
-    enable_reachability: bool = True,
-    debug: bool = False,
-) -> NppEnvironment:
-    """
-    Create an environment optimized for evaluation.
-
-    Args:
-        env_kwargs: Environment configuration parameters
-        enable_graph_updates: Whether to enable dynamic graph updates
-        enable_reachability: Whether to enable reachability analysis
-        debug: Enable debug logging for graph operations
-
-    Returns:
-        NppEnvironment: Environment configured for evaluation
-    """
-    # Set default environment kwargs optimized for evaluation
-    if env_kwargs is None:
-        env_kwargs = {
-            "render_mode": "rgb_array",
-            "enable_pbrs": False,  # Disable PBRS for clean evaluation
-            "eval_mode": True,
-            "enable_short_episode_truncation": False,  # Let episodes run to completion
-        }
-
-    # Add integrated functionality flags
-    env_kwargs.update(
-        {
-            "enable_graph_updates": enable_graph_updates,
-            "enable_reachability": enable_reachability,
-            "debug": debug,
-        }
-    )
-
-    return NppEnvironment(**env_kwargs)
+def create_evaluation_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
+    """Create an environment optimized for evaluation."""
+    if config is None:
+        config = EnvironmentConfig.for_evaluation()
+    return NppEnvironment(config)
 
 
-def create_research_env(
-    env_kwargs: Optional[Dict[str, Any]] = None,
-    enable_graph_updates: bool = True,
-    enable_reachability: bool = True,
-    debug: bool = True,
-    enable_debug_overlay: bool = True,
-) -> NppEnvironment:
-    """
-    Create an environment optimized for research and debugging.
-
-    Args:
-        env_kwargs: Environment configuration parameters
-        enable_graph_updates: Whether to enable dynamic graph updates
-        enable_reachability: Whether to enable reachability analysis
-        debug: Enable debug logging for graph operations
-        enable_debug_overlay: Enable visual debug overlay
-
-    Returns:
-        NppEnvironment: Environment configured for research
-    """
-    # Set default environment kwargs optimized for research
-    if env_kwargs is None:
-        env_kwargs = {
-            "render_mode": "human",  # Visual rendering for research
-            "enable_animation": True,
-            "enable_logging": True,
-            "enable_debug_overlay": enable_debug_overlay,
-            "enable_pbrs": True,
-            "pbrs_weights": {
-                "objective_weight": 1.0,
-                "hazard_weight": 0.5,
-                "impact_weight": 0.3,
-                "exploration_weight": 0.2,
-            },
-            "pbrs_gamma": 0.99,
-            "eval_mode": False,
-        }
-
-    # Add integrated functionality flags
-    env_kwargs.update(
-        {
-            "enable_graph_updates": enable_graph_updates,
-            "enable_reachability": enable_reachability,
-            "debug": debug,
-        }
-    )
-
-    return NppEnvironment(**env_kwargs)
+def create_research_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
+    """Create an environment optimized for research and debugging."""
+    if config is None:
+        config = EnvironmentConfig.for_research()
+    return NppEnvironment(config)
 
 
-def create_minimal_env(
-    env_kwargs: Optional[Dict[str, Any]] = None,
-) -> NppEnvironment:
-    """
-    Create a minimal environment with all advanced features disabled.
-
-    Useful for baseline comparisons or when you need maximum performance.
-
-    Args:
-        env_kwargs: Environment configuration parameters
-
-    Returns:
-        NppEnvironment: Minimal environment configuration
-    """
-    # Set default environment kwargs for minimal configuration
-    if env_kwargs is None:
-        env_kwargs = {
-            "render_mode": "rgb_array",
-            "enable_pbrs": False,
-            "eval_mode": False,
-        }
-
-    # Disable advanced features
-    env_kwargs.update(
-        {
-            "enable_graph_updates": False,
-            "enable_reachability": False,
-            "debug": False,
-        }
-    )
-
-    return NppEnvironment(**env_kwargs)
+def create_minimal_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
+    """Create a minimal environment with all advanced features disabled."""
+    if config is None:
+        config = EnvironmentConfig.minimal()
+    return NppEnvironment(config)
 
 
 def make_vectorizable_env(
@@ -255,75 +113,13 @@ create_reachability_aware_env = create_training_env
 def create_hierarchical_env(
     config: Optional[EnvironmentConfig] = None,
     completion_planner: Optional[Any] = None,
-    # Backward compatibility parameters (deprecated)
-    env_kwargs: Optional[Dict[str, Any]] = None,
-    enable_graph_updates: bool = True,
-    enable_reachability: bool = True,
-    enable_subtask_rewards: bool = True,
-    subtask_reward_scale: float = 0.1,
-    max_subtask_steps: int = 1000,
-    debug: bool = False,
 ) -> NppEnvironment:
-    """
-    Create an environment optimized for hierarchical RL training.
-    
-    Args:
-        config: Environment configuration object (preferred method)
-        completion_planner: Optional completion planner instance
-        
-        # Deprecated parameters - use config instead:
-        env_kwargs: Environment configuration parameters
-        enable_graph_updates: Whether to enable dynamic graph updates
-        enable_reachability: Whether to enable reachability analysis
-        enable_subtask_rewards: Enable subtask-specific reward shaping
-        subtask_reward_scale: Scale factor for subtask rewards
-        max_subtask_steps: Maximum steps per subtask before forced transition
-        debug: Enable debug logging for hierarchical operations
-        
-    Returns:
-        NppEnvironment: Environment configured for hierarchical RL training
-    """
-    if config is not None:
-        # Override completion planner if provided
-        if completion_planner is not None:
-            config.hierarchical.completion_planner = completion_planner
-        return NppEnvironment(config=config)
-    
-    # Use config-based approach for clean implementation
-    if env_kwargs is None:
+    """Create an environment optimized for hierarchical RL training."""
+    if config is None:
         config = EnvironmentConfig.for_hierarchical_training(completion_planner=completion_planner)
-        
-        # Override with any provided parameters
-        if not enable_graph_updates:
-            config.graph.enable_graph_updates = False
-        if not enable_reachability:
-            config.reachability.enable_reachability = False
-        if not enable_subtask_rewards:
-            config.hierarchical.enable_subtask_rewards = False
-        if subtask_reward_scale != 0.1:
-            config.hierarchical.subtask_reward_scale = subtask_reward_scale
-        if max_subtask_steps != 1000:
-            config.hierarchical.max_subtask_steps = max_subtask_steps
-        if debug:
-            config.hierarchical.debug = True
-            config.graph.debug = True
-            config.reachability.debug = True
-        
-        return NppEnvironment(config=config)
-    
-    # Legacy parameter handling
-    env_kwargs.update({
-        "enable_graph_updates": enable_graph_updates,
-        "enable_reachability": enable_reachability,
-        "enable_hierarchical": True,
-        "completion_planner": completion_planner,
-        "enable_subtask_rewards": enable_subtask_rewards,
-        "subtask_reward_scale": subtask_reward_scale,
-        "max_subtask_steps": max_subtask_steps,
-        "debug": debug,
-    })
-    
-    return NppEnvironment(**env_kwargs)
+    elif completion_planner is not None:
+        config.hierarchical.completion_planner = completion_planner
+    return NppEnvironment(config)
 
 
 def benchmark_environment_performance(
