@@ -224,7 +224,7 @@ class ObservationProcessor:
         nearest_hazard_dist = screen_diagonal  # Start with max distance
         hazard_threat = 0.0
         
-        # Check entity states for hazards (mines, drones, thwumps, etc.)
+        # Check entity states for hazards (mines only in simplified system)
         if "entity_states" in obs and len(obs["entity_states"]) > 0:
             entity_states = obs["entity_states"]
             # This is a simplified approach - in a full implementation, 
