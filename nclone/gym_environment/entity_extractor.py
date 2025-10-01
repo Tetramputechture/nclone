@@ -12,10 +12,9 @@ from ..constants.physics_constants import NINJA_RADIUS
 # Entity classes
 from ..entity_classes.entity_exit_switch import EntityExitSwitch
 from ..entity_classes.entity_exit import EntityExit
-from ..entity_classes.entity_door_regular import EntityDoorRegular
 from ..entity_classes.entity_door_locked import EntityDoorLocked
-from ..entity_classes.entity_door_trap import EntityDoorTrap
-from ..entity_classes.entity_one_way_platform import EntityOneWayPlatform
+from ..entity_classes.entity_door_base import EntityDoorBase
+from ..entity_classes.entity_toggle_mine import EntityToggleMine
 
 
 class EntityExtractor:
@@ -73,17 +72,11 @@ class EntityExtractor:
         # Exit doors and switches using direct entity relationships
         entities.extend(self._extract_exit_entities())
 
-        # Regular doors (proximity activated)
-        entities.extend(self._extract_regular_doors())
-
         # Locked doors using direct entity access
         entities.extend(self._extract_locked_doors())
 
-        # Trap doors using direct entity access
-        entities.extend(self._extract_trap_doors())
-
-        # One-way platforms
-        entities.extend(self._extract_one_way_platforms())
+        # Mines (toggle mines and regular mines)
+        entities.extend(self._extract_mines())
 
         return entities
 
@@ -138,32 +131,6 @@ class EntityExtractor:
 
         return entities
 
-    def _extract_regular_doors(self) -> List[Dict[str, Any]]:
-        """Extract regular doors (proximity activated)."""
-        entities = []
-
-        for d in self.nplay_headless.regular_doors():
-            segment = getattr(d, "segment", None)
-            if segment:
-                door_x = (segment.x1 + segment.x2) * 0.5
-                door_y = (segment.y1 + segment.y2) * 0.5
-            else:
-                door_x, door_y = d.xpos, d.ypos
-
-            entities.append(
-                {
-                    "type": EntityType.REGULAR_DOOR,
-                    "radius": EntityDoorRegular.RADIUS,
-                    "x": door_x,  # Regular doors use door center as entity position
-                    "y": door_y,
-                    "active": getattr(d, "active", True),
-                    "closed": getattr(d, "closed", True),
-                    "state": 0.0,
-                }
-            )
-
-        return entities
-
     def _extract_locked_doors(self) -> List[Dict[str, Any]]:
         """Extract locked doors using direct entity access."""
         entities = []
@@ -184,11 +151,13 @@ class EntityExtractor:
                     "type": EntityType.LOCKED_DOOR,
                     "x": locked_door.xpos,  # Switch position (where entity is positioned)
                     "y": locked_door.ypos,  # Switch position
+                    "sw_xcoord": locked_door.xpos,  # Switch coordinates for reachability
+                    "sw_ycoord": locked_door.ypos,  # Switch coordinates for reachability
                     "door_x": door_x,  # Door segment position
                     "door_y": door_y,  # Door segment position
                     "active": getattr(locked_door, "active", True),
                     "closed": getattr(locked_door, "closed", True),
-                    "radius": EntityDoorRegular.RADIUS,
+                    "radius": EntityDoorLocked.RADIUS,  # Switch radius
                     "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
                     "entity_id": entity_id,
                     "is_door_part": False,  # This is the switch part
@@ -200,9 +169,11 @@ class EntityExtractor:
             entities.append(
                 {
                     "type": EntityType.LOCKED_DOOR,
-                    "radius": EntityDoorLocked.RADIUS,
+                    "radius": EntityDoorBase.DOOR_RADIUS,  # Door radius
                     "x": door_x,  # Door segment position
                     "y": door_y,  # Door segment position
+                    "sw_xcoord": locked_door.xpos,  # Switch coordinates for reachability
+                    "sw_ycoord": locked_door.ypos,  # Switch coordinates for reachability
                     "door_x": door_x,  # Door segment position
                     "door_y": door_y,  # Door segment position
                     "active": getattr(locked_door, "active", True),
@@ -216,78 +187,26 @@ class EntityExtractor:
 
         return entities
 
-    def _extract_trap_doors(self) -> List[Dict[str, Any]]:
-        """Extract trap doors using direct entity access."""
+    def _extract_mines(self) -> List[Dict[str, Any]]:
+        """Extract mines (toggle mines and regular mines)."""
         entities = []
 
-        for i, trap_door in enumerate(self.nplay_headless.trap_doors()):
-            segment = getattr(trap_door, "segment", None)
-            if segment:
-                door_x = (segment.x1 + segment.x2) * 0.5
-                door_y = (segment.y1 + segment.y2) * 0.5
-            else:
-                door_x, door_y = 0.0, 0.0
-
-            entity_id = f"trap_{i}"
-
-            # Add trap door switch part
-            entities.append(
-                {
-                    "type": EntityType.TRAP_DOOR,
-                    "radius": EntityDoorTrap.RADIUS,
-                    "x": trap_door.xpos,  # Switch position (where entity is positioned)
-                    "y": trap_door.ypos,  # Switch position
-                    "door_x": door_x,  # Door segment position
-                    "door_y": door_y,  # Door segment position
-                    "active": getattr(trap_door, "active", True),
-                    "closed": getattr(
-                        trap_door, "closed", False
-                    ),  # Trap doors start open
-                    "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
-                    "entity_id": entity_id,
-                    "is_door_part": False,  # This is the switch part
-                    "entity_ref": trap_door,
-                }
-            )
-
-            # Add trap door door part (at door segment position)
-            entities.append(
-                {
-                    "type": EntityType.TRAP_DOOR,
-                    "radius": EntityDoorTrap.RADIUS,
-                    "x": door_x,  # Door segment position
-                    "y": door_y,  # Door segment position
-                    "door_x": door_x,  # Door segment position
-                    "door_y": door_y,  # Door segment position
-                    "active": getattr(trap_door, "active", True),
-                    "closed": getattr(
-                        trap_door, "closed", False
-                    ),  # Trap doors start open
-                    "state": 0.0 if getattr(trap_door, "active", True) else 1.0,
-                    "entity_id": entity_id,
-                    "is_door_part": True,  # This is the door part
-                    "entity_ref": trap_door,
-                }
-            )
-
-        return entities
-
-    def _extract_one_way_platforms(self) -> List[Dict[str, Any]]:
-        """Extract one-way platforms."""
-        entities = []
-
+        # Extract toggle mines (type 1)
         if hasattr(self.nplay_headless.sim, "entity_dic"):
-            one_ways = self.nplay_headless.sim.entity_dic.get(11, [])
-            for ow in one_ways:
+            toggle_mines = self.nplay_headless.sim.entity_dic.get(1, [])
+            for i, mine in enumerate(toggle_mines):
+                mine_state = getattr(mine, "state", 0)
+                mine_radius = EntityToggleMine.RADII[mine_state]
                 entities.append(
                     {
-                        "type": EntityType.ONE_WAY,
-                        "radius": EntityOneWayPlatform.SEMI_SIDE,
-                        "x": getattr(ow, "xpos", 0.0),
-                        "y": getattr(ow, "ypos", 0.0),
-                        "orientation": getattr(ow, "orientation", 0),
-                        "active": getattr(ow, "active", True),
-                        "state": 0.0,
+                        "type": EntityType.TOGGLE_MINE,
+                        "radius": mine_radius,  # Standard mine radius
+                        "x": getattr(mine, "xpos", 0.0),
+                        "y": getattr(mine, "ypos", 0.0),
+                        "active": getattr(mine, "active", True),
+                        "state": 1.0 if getattr(mine, "active", True) else 0.0,
+                        "entity_id": f"mine_{i}",
+                        "entity_ref": mine,
                     }
                 )
 

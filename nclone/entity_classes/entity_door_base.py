@@ -1,7 +1,7 @@
 import math
 
 from ..entities import Entity, GridSegmentLinear
-from ..physics import *
+from ..physics import map_orientation_to_vector, clamp_cell
 
 
 class EntityDoorBase(Entity):
@@ -47,6 +47,8 @@ class EntityDoorBase(Entity):
     Use one of the derived door types instead.
     """
 
+    DOOR_RADIUS = 12
+
     def __init__(self, type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord):
         super().__init__(type, sim, xcoord, ycoord)
         self.is_logical_collidable = True
@@ -57,8 +59,8 @@ class EntityDoorBase(Entity):
         self.is_vertical = orientation in (0, 4)
         vec = map_orientation_to_vector(orientation)
         # Find the cell that the door is in for the grid segment.
-        door_xcell = math.floor((self.xpos - 12 * vec[0]) / 24)
-        door_ycell = math.floor((self.ypos - 12 * vec[1]) / 24)
+        door_xcell = math.floor((self.xpos - self.DOOR_RADIUS * vec[0]) / 24)
+        door_ycell = math.floor((self.ypos - self.DOOR_RADIUS * vec[1]) / 24)
         door_cell = clamp_cell(door_xcell, door_ycell)
         # Find the half cell of the door for the grid edges.
         door_half_xcell = 2 * (door_cell[0] + 1)
@@ -67,7 +69,9 @@ class EntityDoorBase(Entity):
         self.grid_edges = []
         if self.is_vertical:
             self.segment = GridSegmentLinear(
-                (self.xpos, self.ypos - 12), (self.xpos, self.ypos + 12), oriented=False
+                (self.xpos, self.ypos - self.DOOR_RADIUS),
+                (self.xpos, self.ypos + self.DOOR_RADIUS),
+                oriented=False,
             )
             self.grid_edges.append((door_half_xcell, door_half_ycell - 2))
             self.grid_edges.append((door_half_xcell, door_half_ycell - 1))
@@ -75,7 +79,9 @@ class EntityDoorBase(Entity):
                 sim.ver_grid_edge_dic[grid_edge] += 1
         else:
             self.segment = GridSegmentLinear(
-                (self.xpos - 12, self.ypos), (self.xpos + 12, self.ypos), oriented=False
+                (self.xpos - self.DOOR_RADIUS, self.ypos),
+                (self.xpos + self.DOOR_RADIUS, self.ypos),
+                oriented=False,
             )
             self.grid_edges.append((door_half_xcell - 2, door_half_ycell))
             self.grid_edges.append((door_half_xcell - 1, door_half_ycell))
