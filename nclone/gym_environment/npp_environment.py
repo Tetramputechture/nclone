@@ -45,6 +45,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             config: Environment configuration object
         """
         self.config = config
+        
+        # Validate configuration
+        from .config import validate_config
+        validate_config(config)
+        
         # Initialize base environment using config
         super().__init__(
             render_mode=self.config.render.render_mode,

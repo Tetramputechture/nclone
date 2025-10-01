@@ -5,7 +5,7 @@ This module provides convenient factory functions to create NppEnvironment insta
 with common configurations for training, evaluation, and research.
 """
 
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict, Any
 from .npp_environment import NppEnvironment
 from .config import EnvironmentConfig
 

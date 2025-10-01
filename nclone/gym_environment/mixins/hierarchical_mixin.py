@@ -43,6 +43,14 @@ class HierarchicalMixin:
         self.max_subtask_steps = config.max_subtask_steps
         self.debug = config.debug
         
+        # Validate dependencies
+        if self.enable_hierarchical:
+            if not hasattr(self, 'enable_reachability') or not self.enable_reachability:
+                raise ValueError(
+                    "Hierarchical RL requires reachability analysis to be enabled. "
+                    "Set enable_reachability=True in your environment configuration."
+                )
+        
         # Initialize completion planner
         self.completion_planner = config.completion_planner or LevelCompletionPlanner()
         
@@ -61,7 +69,7 @@ class HierarchicalMixin:
         self.max_time_samples = 100
         
         if self.debug:
-            logging.info("Hierarchical system initialized")
+            logging.info("Hierarchical system initialized with reachability dependency")
     
     def _get_current_subtask(self, obs: Dict[str, Any], info: Dict[str, Any]) -> Subtask:
         """
@@ -185,11 +193,13 @@ class HierarchicalMixin:
             return self._fallback_subtask_selection(switch_states, reachability_features)
         
         try:
-            # Use completion planner to get strategic plan
-            reachability_system = self._create_reachability_system(reachability_features)
+            # Use actual reachability system from ReachabilityMixin
+            reachability_analysis = self._get_reachability_analysis_for_planner(
+                ninja_pos, level_data, reachability_features
+            )
             
             completion_strategy = self.completion_planner.plan_completion(
-                ninja_pos, level_data, switch_states, reachability_system
+                ninja_pos, level_data, switch_states, reachability_analysis
             )
             
             if completion_strategy and hasattr(completion_strategy, 'steps') and completion_strategy.steps:
@@ -437,7 +447,17 @@ class HierarchicalMixin:
         if 'reachability_features' in obs:
             return obs['reachability_features']
         
+        # Try to compute using ReachabilityMixin if available
+        if hasattr(self, '_get_reachability_features') and self.enable_reachability:
+            try:
+                return self._get_reachability_features()
+            except Exception as e:
+                if self.debug:
+                    logging.warning(f"Failed to compute reachability features: {e}")
+        
         # Fallback: return zeros as placeholder
+        if self.debug:
+            logging.warning("Using zero reachability features as fallback")
         return np.zeros(8, dtype=np.float32)
     
     def _find_exit_switch_id(self, obs: Dict[str, Any], info: Dict[str, Any]) -> Optional[str]:
@@ -460,12 +480,66 @@ class HierarchicalMixin:
             logging.warning("Could not find exit switch ID")
         return None
     
-    def _create_reachability_system(self, reachability_features: np.ndarray):
-        """Create a mock reachability system for the completion planner."""
-        # This would create a reachability system compatible with the planner
-        # For now, return a simple mock
-        class MockReachabilitySystem:
+    def _get_reachability_analysis_for_planner(
+        self, 
+        ninja_pos: Tuple[int, int], 
+        level_data: Dict[str, Any], 
+        reachability_features: np.ndarray
+    ):
+        """Get reachability analysis using the actual ReachabilityMixin system."""
+        try:
+            # Use the actual reachability system from ReachabilityMixin
+            if hasattr(self, '_reachability_system') and self._reachability_system:
+                # Get reachable positions using the real flood fill analysis
+                reachable_positions = self._flood_fill_reachability(ninja_pos, level_data)
+                
+                # Create analysis result compatible with completion planner
+                analysis_result = {
+                    'reachable_positions': reachable_positions,
+                    'features': reachability_features,
+                    'ninja_pos': ninja_pos,
+                    'level_data': level_data
+                }
+                
+                # Add reachability system methods for planner compatibility
+                class ReachabilityAnalysis:
+                    def __init__(self, result):
+                        self.result = result
+                    
+                    def analyze_reachability(self, level_data, ninja_pos, switch_states):
+                        return self.result
+                    
+                    def get_reachable_positions(self):
+                        return self.result['reachable_positions']
+                    
+                    def get_features(self):
+                        return self.result['features']
+                
+                return ReachabilityAnalysis(analysis_result)
+            else:
+                # Fallback if reachability system not available
+                if self.debug:
+                    logging.warning("Reachability system not available, using fallback")
+                return self._create_fallback_reachability_analysis(reachability_features)
+                
+        except Exception as e:
+            if self.debug:
+                logging.warning(f"Failed to get reachability analysis: {e}")
+            return self._create_fallback_reachability_analysis(reachability_features)
+    
+    def _create_fallback_reachability_analysis(self, reachability_features: np.ndarray):
+        """Create fallback reachability analysis when real system unavailable."""
+        class FallbackReachabilityAnalysis:
+            def __init__(self, features):
+                self.features = features
+            
             def analyze_reachability(self, level_data, ninja_pos, switch_states):
-                return {'reachable_positions': set(), 'features': reachability_features}
+                return {'reachable_positions': set(), 'features': self.features}
+            
+            def get_reachable_positions(self):
+                return set()
+            
+            def get_features(self):
+                return self.features
         
-        return MockReachabilitySystem()
+        return FallbackReachabilityAnalysis(reachability_features)

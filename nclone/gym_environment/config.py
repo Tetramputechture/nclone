@@ -251,7 +251,10 @@ def validate_config(config: EnvironmentConfig) -> bool:
     try:
         # Check for conflicting settings
         if config.hierarchical.enable_hierarchical and not config.reachability.enable_reachability:
-            logging.warning("Hierarchical RL enabled without reachability analysis - this may cause issues")
+            raise ValueError(
+                "Hierarchical RL requires reachability analysis to be enabled. "
+                "Set reachability.enable_reachability=True in your configuration."
+            )
         
         if config.render.render_mode == "human" and not config.render.enable_animation:
             logging.info("Human render mode without animation - consider enabling animation for better visualization")
