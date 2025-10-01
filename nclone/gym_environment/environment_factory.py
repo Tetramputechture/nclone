@@ -254,6 +254,66 @@ create_dynamic_graph_env = create_training_env
 create_reachability_aware_env = create_training_env
 
 
+def create_hierarchical_env(
+    env_kwargs: Optional[Dict[str, Any]] = None,
+    enable_graph_updates: bool = True,
+    enable_reachability: bool = True,
+    completion_planner: Optional[Any] = None,
+    enable_subtask_rewards: bool = True,
+    subtask_reward_scale: float = 0.1,
+    max_subtask_steps: int = 1000,
+    debug: bool = False,
+) -> NppEnvironment:
+    """
+    Create an environment optimized for hierarchical RL training.
+    
+    This function creates an environment with hierarchical RL capabilities,
+    including completion planner integration and subtask-specific reward shaping.
+    
+    Args:
+        env_kwargs: Environment configuration parameters
+        enable_graph_updates: Whether to enable dynamic graph updates
+        enable_reachability: Whether to enable reachability analysis
+        completion_planner: Optional completion planner instance
+        enable_subtask_rewards: Enable subtask-specific reward shaping
+        subtask_reward_scale: Scale factor for subtask rewards
+        max_subtask_steps: Maximum steps per subtask before forced transition
+        debug: Enable debug logging for hierarchical operations
+        
+    Returns:
+        NppEnvironment: Environment configured for hierarchical RL training
+    """
+    # Set default environment kwargs optimized for hierarchical training
+    if env_kwargs is None:
+        env_kwargs = {
+            "render_mode": "rgb_array",
+            "enable_pbrs": True,
+            "pbrs_weights": {
+                "objective_weight": 1.0,
+                "hazard_weight": 0.5,
+                "impact_weight": 0.3,
+                "exploration_weight": 0.2,
+            },
+            "pbrs_gamma": 0.99,
+            "eval_mode": False,
+            "enable_short_episode_truncation": True,
+        }
+    
+    # Add hierarchical functionality flags
+    env_kwargs.update({
+        "enable_graph_updates": enable_graph_updates,
+        "enable_reachability": enable_reachability,
+        "enable_hierarchical": True,
+        "completion_planner": completion_planner,
+        "enable_subtask_rewards": enable_subtask_rewards,
+        "subtask_reward_scale": subtask_reward_scale,
+        "max_subtask_steps": max_subtask_steps,
+        "debug": debug,
+    })
+    
+    return NppEnvironment(**env_kwargs)
+
+
 def benchmark_environment_performance(
     env: NppEnvironment, num_steps: int = 1000, target_fps: float = 60.0
 ) -> Dict[str, Any]:

@@ -15,10 +15,10 @@ import time
 from ..graph.common import N_MAX_NODES, E_MAX_EDGES
 
 from .base_environment import BaseNppEnvironment
-from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
+from .mixins import GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin
 
 
-class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin):
+class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin):
     """
     Consolidated N++ environment class using mixins.
 
@@ -51,6 +51,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         custom_map_path: Optional[str] = None,
         enable_graph_updates: bool = True,
         enable_reachability: bool = True,
+        enable_hierarchical: bool = False,
+        completion_planner: Optional[Any] = None,
+        enable_subtask_rewards: bool = True,
+        subtask_reward_scale: float = 0.1,
+        max_subtask_steps: int = 1000,
         debug: bool = False,
     ):
         """
@@ -70,6 +75,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             custom_map_path: Path to custom map file
             enable_graph_updates: Enable dynamic graph updates
             enable_reachability: Enable reachability analysis
+            enable_hierarchical: Enable hierarchical RL with completion planner
+            completion_planner: Optional completion planner instance
+            enable_subtask_rewards: Enable subtask-specific reward shaping
+            subtask_reward_scale: Scale factor for subtask rewards
+            max_subtask_steps: Maximum steps per subtask before forced transition
             debug: Enable debug logging for graph operations
         """
         # Initialize base environment
@@ -91,19 +101,24 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._init_graph_system(enable_graph_updates, debug)
         self._init_reachability_system(enable_reachability, debug)
         self._init_debug_system(enable_debug_overlay)
+        self._init_hierarchical_system(
+            enable_hierarchical, completion_planner, enable_subtask_rewards,
+            subtask_reward_scale, max_subtask_steps, debug
+        )
 
         # Update configuration flags with new options
         self.config_flags.update(
             {
                 "enable_graph_updates": enable_graph_updates,
                 "enable_reachability": enable_reachability,
+                "enable_hierarchical": enable_hierarchical,
                 "debug": debug,
             }
         )
 
-        # Extend observation space with graph and reachability features
+        # Extend observation space with graph, reachability, and hierarchical features
         self.observation_space = self._build_extended_observation_space(
-            enable_graph_updates, enable_reachability
+            enable_graph_updates, enable_reachability, enable_hierarchical
         )
 
         # Initialize graph state if enabled
@@ -111,7 +126,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._update_graph_from_env_state()
 
     def _build_extended_observation_space(
-        self, enable_graph_updates: bool, enable_reachability: bool
+        self, enable_graph_updates: bool, enable_reachability: bool, enable_hierarchical: bool
     ) -> SpacesDict:
         """Build the extended observation space with graph and reachability features."""
         obs_spaces = dict(self.observation_space.spaces)
@@ -120,6 +135,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if enable_reachability:
             obs_spaces["reachability_features"] = box.Box(
                 low=0.0, high=1.0, shape=(8,), dtype=np.float32
+            )
+        
+        # Add hierarchical features
+        if enable_hierarchical:
+            obs_spaces["subtask_features"] = box.Box(
+                low=0.0, high=1.0, shape=(4,), dtype=np.float32
             )
 
         # Add graph observation spaces if graph updates are enabled
@@ -178,8 +199,21 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         curr_obs = self._get_observation()
         terminated, truncated, player_won = self._check_termination()
 
+        # Update hierarchical state and get current subtask
+        if self.enable_hierarchical:
+            current_subtask = self._get_current_subtask(curr_obs, info)
+            self._update_hierarchical_state(curr_obs, info)
+        
         # Calculate reward
         reward = self._calculate_reward(curr_obs, prev_obs)
+        
+        # Add hierarchical reward shaping if enabled
+        if self.enable_hierarchical:
+            hierarchical_reward = self._calculate_subtask_reward(
+                current_subtask, curr_obs, info, terminated
+            )
+            reward += hierarchical_reward * self.subtask_reward_scale
+        
         self.current_ep_reward += reward
 
         # Process observation for training
@@ -204,6 +238,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if self.enable_reachability and self.reachability_times:
             avg_time = np.mean(self.reachability_times[-10:])  # Last 10 samples
             info["reachability_time_ms"] = avg_time * 1000
+        
+        # Add hierarchical info if enabled
+        if self.enable_hierarchical:
+            info["hierarchical"] = self._get_hierarchical_info()
 
         return processed_obs, reward, terminated, truncated, info
 
@@ -215,6 +253,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Reset mixin states
         self._reset_graph_state()
         self._reset_reachability_state()
+        if self.enable_hierarchical:
+            self._reset_hierarchical_state()
 
         # Build initial graph if enabled
         if self.enable_graph_updates:
@@ -236,6 +276,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Add graph observations if enabled
         if self.enable_graph_updates:
             obs.update(self._get_graph_observations())
+        
+        # Add hierarchical features if enabled
+        if self.enable_hierarchical:
+            obs["subtask_features"] = self._get_subtask_features()
 
         return obs
 
