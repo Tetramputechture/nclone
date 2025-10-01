@@ -157,7 +157,6 @@ print(f"Features shape: {features.shape}")  # (8,)
 print(f"Feature names: {extractor.get_feature_names()}")
 ```
 
-For detailed information, see [SIMPLIFIED_REACHABILITY_SYSTEM.md](SIMPLIFIED_REACHABILITY_SYSTEM.md).
 
 ## Troubleshooting
 
