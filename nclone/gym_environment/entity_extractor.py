@@ -13,6 +13,8 @@ from ..constants.physics_constants import NINJA_RADIUS
 from ..entity_classes.entity_exit_switch import EntityExitSwitch
 from ..entity_classes.entity_exit import EntityExit
 from ..entity_classes.entity_door_locked import EntityDoorLocked
+from ..entity_classes.entity_door_base import EntityDoorBase
+from ..entity_classes.entity_toggle_mine import EntityToggleMine
 
 
 class EntityExtractor:
@@ -129,8 +131,6 @@ class EntityExtractor:
 
         return entities
 
-
-
     def _extract_locked_doors(self) -> List[Dict[str, Any]]:
         """Extract locked doors using direct entity access."""
         entities = []
@@ -157,7 +157,7 @@ class EntityExtractor:
                     "door_y": door_y,  # Door segment position
                     "active": getattr(locked_door, "active", True),
                     "closed": getattr(locked_door, "closed", True),
-                    "radius": EntityDoorLocked.RADIUS,
+                    "radius": EntityDoorLocked.RADIUS,  # Switch radius
                     "state": 0.0 if getattr(locked_door, "active", True) else 1.0,
                     "entity_id": entity_id,
                     "is_door_part": False,  # This is the switch part
@@ -169,7 +169,7 @@ class EntityExtractor:
             entities.append(
                 {
                     "type": EntityType.LOCKED_DOOR,
-                    "radius": EntityDoorLocked.RADIUS,
+                    "radius": EntityDoorBase.DOOR_RADIUS,  # Door radius
                     "x": door_x,  # Door segment position
                     "y": door_y,  # Door segment position
                     "sw_xcoord": locked_door.xpos,  # Switch coordinates for reachability
@@ -187,8 +187,6 @@ class EntityExtractor:
 
         return entities
 
-
-
     def _extract_mines(self) -> List[Dict[str, Any]]:
         """Extract mines (toggle mines and regular mines)."""
         entities = []
@@ -197,10 +195,12 @@ class EntityExtractor:
         if hasattr(self.nplay_headless.sim, "entity_dic"):
             toggle_mines = self.nplay_headless.sim.entity_dic.get(1, [])
             for i, mine in enumerate(toggle_mines):
+                mine_state = getattr(mine, "state", 0)
+                mine_radius = EntityToggleMine.RADII[mine_state]
                 entities.append(
                     {
                         "type": EntityType.TOGGLE_MINE,
-                        "radius": 0.5,  # Standard mine radius
+                        "radius": mine_radius,  # Standard mine radius
                         "x": getattr(mine, "xpos", 0.0),
                         "y": getattr(mine, "ypos", 0.0),
                         "active": getattr(mine, "active", True),
