@@ -413,7 +413,6 @@ class UnifiedObservationExtractor:
                 "ceiling": int(ninja.ceiling_count),
             },
             "game_state": ninja_state.tolist(),  # 30-feature array for npp-rl compatibility
-            "gold_collected": int(ninja.gold_collected),
             "doors_opened": int(ninja.doors_opened),
         }
 
