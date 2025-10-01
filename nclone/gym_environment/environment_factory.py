@@ -7,9 +7,11 @@ with common configurations for training, evaluation, and research.
 
 from typing import Dict, Any, Optional, Callable
 from .npp_environment import NppEnvironment
+from .config import EnvironmentConfig
 
 
 def create_training_env(
+    config: Optional[EnvironmentConfig] = None,
     env_kwargs: Optional[Dict[str, Any]] = None,
     enable_graph_updates: bool = True,
     enable_reachability: bool = True,
@@ -18,44 +20,40 @@ def create_training_env(
     """
     Create an environment optimized for training.
 
-    This function creates a production-ready environment with nclone graph integration,
-    optimized for accuracy and HGT processing. No performance mode options are provided
-    as the system is designed to prefer accuracy always.
-
     Args:
-        env_kwargs: Environment configuration parameters
-        enable_graph_updates: Whether to enable dynamic graph updates
-        enable_reachability: Whether to enable reachability analysis
-        debug: Enable debug logging for graph operations
+        config: Environment configuration object (preferred method)
+        env_kwargs: Environment configuration parameters (deprecated - use config)
+        enable_graph_updates: Whether to enable dynamic graph updates (deprecated)
+        enable_reachability: Whether to enable reachability analysis (deprecated)
+        debug: Enable debug logging for graph operations (deprecated)
 
     Returns:
         NppEnvironment: Environment configured for training
     """
-    # Set default environment kwargs optimized for training
+    if config is not None:
+        return NppEnvironment(config=config)
+    
+    # Backward compatibility path
     if env_kwargs is None:
-        env_kwargs = {
-            "render_mode": "rgb_array",
-            "enable_pbrs": True,
-            "pbrs_weights": {
-                "objective_weight": 1.0,
-                "hazard_weight": 0.5,
-                "impact_weight": 0.3,
-                "exploration_weight": 0.2,
-            },
-            "pbrs_gamma": 0.99,
-            "eval_mode": False,
-            "enable_short_episode_truncation": True,
-        }
-
-    # Add integrated functionality flags
-    env_kwargs.update(
-        {
-            "enable_graph_updates": enable_graph_updates,
-            "enable_reachability": enable_reachability,
-            "debug": debug,
-        }
-    )
-
+        config = EnvironmentConfig.for_training()
+        # Override with any provided parameters
+        if not enable_graph_updates:
+            config.graph.enable_graph_updates = False
+        if not enable_reachability:
+            config.reachability.enable_reachability = False
+        if debug:
+            config.graph.debug = True
+            config.reachability.debug = True
+        
+        return NppEnvironment(config=config)
+    
+    # Legacy parameter handling
+    env_kwargs.update({
+        "enable_graph_updates": enable_graph_updates,
+        "enable_reachability": enable_reachability,
+        "debug": debug,
+    })
+    
     return NppEnvironment(**env_kwargs)
 
 
@@ -255,10 +253,12 @@ create_reachability_aware_env = create_training_env
 
 
 def create_hierarchical_env(
+    config: Optional[EnvironmentConfig] = None,
+    completion_planner: Optional[Any] = None,
+    # Backward compatibility parameters (deprecated)
     env_kwargs: Optional[Dict[str, Any]] = None,
     enable_graph_updates: bool = True,
     enable_reachability: bool = True,
-    completion_planner: Optional[Any] = None,
     enable_subtask_rewards: bool = True,
     subtask_reward_scale: float = 0.1,
     max_subtask_steps: int = 1000,
@@ -267,14 +267,14 @@ def create_hierarchical_env(
     """
     Create an environment optimized for hierarchical RL training.
     
-    This function creates an environment with hierarchical RL capabilities,
-    including completion planner integration and subtask-specific reward shaping.
-    
     Args:
+        config: Environment configuration object (preferred method)
+        completion_planner: Optional completion planner instance
+        
+        # Deprecated parameters - use config instead:
         env_kwargs: Environment configuration parameters
         enable_graph_updates: Whether to enable dynamic graph updates
         enable_reachability: Whether to enable reachability analysis
-        completion_planner: Optional completion planner instance
         enable_subtask_rewards: Enable subtask-specific reward shaping
         subtask_reward_scale: Scale factor for subtask rewards
         max_subtask_steps: Maximum steps per subtask before forced transition
@@ -283,23 +283,35 @@ def create_hierarchical_env(
     Returns:
         NppEnvironment: Environment configured for hierarchical RL training
     """
-    # Set default environment kwargs optimized for hierarchical training
-    if env_kwargs is None:
-        env_kwargs = {
-            "render_mode": "rgb_array",
-            "enable_pbrs": True,
-            "pbrs_weights": {
-                "objective_weight": 1.0,
-                "hazard_weight": 0.5,
-                "impact_weight": 0.3,
-                "exploration_weight": 0.2,
-            },
-            "pbrs_gamma": 0.99,
-            "eval_mode": False,
-            "enable_short_episode_truncation": True,
-        }
+    if config is not None:
+        # Override completion planner if provided
+        if completion_planner is not None:
+            config.hierarchical.completion_planner = completion_planner
+        return NppEnvironment(config=config)
     
-    # Add hierarchical functionality flags
+    # Use config-based approach for clean implementation
+    if env_kwargs is None:
+        config = EnvironmentConfig.for_hierarchical_training(completion_planner=completion_planner)
+        
+        # Override with any provided parameters
+        if not enable_graph_updates:
+            config.graph.enable_graph_updates = False
+        if not enable_reachability:
+            config.reachability.enable_reachability = False
+        if not enable_subtask_rewards:
+            config.hierarchical.enable_subtask_rewards = False
+        if subtask_reward_scale != 0.1:
+            config.hierarchical.subtask_reward_scale = subtask_reward_scale
+        if max_subtask_steps != 1000:
+            config.hierarchical.max_subtask_steps = max_subtask_steps
+        if debug:
+            config.hierarchical.debug = True
+            config.graph.debug = True
+            config.reachability.debug = True
+        
+        return NppEnvironment(config=config)
+    
+    # Legacy parameter handling
     env_kwargs.update({
         "enable_graph_updates": enable_graph_updates,
         "enable_reachability": enable_reachability,

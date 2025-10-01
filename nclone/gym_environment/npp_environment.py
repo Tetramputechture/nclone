@@ -16,6 +16,7 @@ from ..graph.common import N_MAX_NODES, E_MAX_EDGES
 
 from .base_environment import BaseNppEnvironment
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin
+from .config import EnvironmentConfig
 
 
 class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin):
@@ -38,6 +39,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
     def __init__(
         self,
+        config: Optional[EnvironmentConfig] = None,
+        # Backward compatibility parameters
         render_mode: str = "rgb_array",
         enable_animation: bool = False,
         enable_logging: bool = False,
@@ -62,6 +65,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         Initialize the N++ environment.
 
         Args:
+            config: Environment configuration object (preferred method)
+            
+            # Backward compatibility parameters (deprecated - use config instead):
             render_mode: Rendering mode ("human" or "rgb_array")
             enable_animation: Enable animation in rendering
             enable_logging: Enable debug logging
@@ -82,47 +88,86 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             max_subtask_steps: Maximum steps per subtask before forced transition
             debug: Enable debug logging for graph operations
         """
-        # Initialize base environment
+        # Handle configuration - either from config object or individual parameters
+        if config is not None:
+            self.config = config
+        else:
+            # Create config from individual parameters for backward compatibility
+            from .config import RenderConfig, PBRSConfig, GraphConfig, ReachabilityConfig, HierarchicalConfig
+            
+            self.config = EnvironmentConfig(
+                seed=seed,
+                eval_mode=eval_mode,
+                custom_map_path=custom_map_path,
+                enable_logging=enable_logging,
+                enable_short_episode_truncation=enable_short_episode_truncation,
+                render=RenderConfig(
+                    render_mode=render_mode,
+                    enable_animation=enable_animation,
+                    enable_debug_overlay=enable_debug_overlay
+                ),
+                pbrs=PBRSConfig(
+                    enable_pbrs=enable_pbrs,
+                    pbrs_weights=pbrs_weights or {},
+                    pbrs_gamma=pbrs_gamma
+                ),
+                graph=GraphConfig(
+                    enable_graph_updates=enable_graph_updates,
+                    debug=debug
+                ),
+                reachability=ReachabilityConfig(
+                    enable_reachability=enable_reachability,
+                    debug=debug
+                ),
+                hierarchical=HierarchicalConfig(
+                    enable_hierarchical=enable_hierarchical,
+                    completion_planner=completion_planner,
+                    enable_subtask_rewards=enable_subtask_rewards,
+                    subtask_reward_scale=subtask_reward_scale,
+                    max_subtask_steps=max_subtask_steps,
+                    debug=debug
+                )
+            )
+        # Initialize base environment using config
         super().__init__(
-            render_mode=render_mode,
-            enable_animation=enable_animation,
-            enable_logging=enable_logging,
-            enable_debug_overlay=enable_debug_overlay,
-            enable_short_episode_truncation=enable_short_episode_truncation,
-            seed=seed,
-            eval_mode=eval_mode,
-            enable_pbrs=enable_pbrs,
-            pbrs_weights=pbrs_weights,
-            pbrs_gamma=pbrs_gamma,
-            custom_map_path=custom_map_path,
+            render_mode=self.config.render.render_mode,
+            enable_animation=self.config.render.enable_animation,
+            enable_logging=self.config.enable_logging,
+            enable_debug_overlay=self.config.render.enable_debug_overlay,
+            enable_short_episode_truncation=self.config.enable_short_episode_truncation,
+            seed=self.config.seed,
+            eval_mode=self.config.eval_mode,
+            enable_pbrs=self.config.pbrs.enable_pbrs,
+            pbrs_weights=self.config.pbrs.pbrs_weights,
+            pbrs_gamma=self.config.pbrs.pbrs_gamma,
+            custom_map_path=self.config.custom_map_path,
         )
 
-        # Initialize mixin systems
-        self._init_graph_system(enable_graph_updates, debug)
-        self._init_reachability_system(enable_reachability, debug)
-        self._init_debug_system(enable_debug_overlay)
-        self._init_hierarchical_system(
-            enable_hierarchical, completion_planner, enable_subtask_rewards,
-            subtask_reward_scale, max_subtask_steps, debug
-        )
+        # Initialize mixin systems using config
+        self._init_graph_system(self.config.graph.enable_graph_updates, self.config.graph.debug)
+        self._init_reachability_system(self.config.reachability.enable_reachability, self.config.reachability.debug)
+        self._init_debug_system(self.config.render.enable_debug_overlay)
+        self._init_hierarchical_system(self.config.hierarchical)
 
         # Update configuration flags with new options
         self.config_flags.update(
             {
-                "enable_graph_updates": enable_graph_updates,
-                "enable_reachability": enable_reachability,
-                "enable_hierarchical": enable_hierarchical,
-                "debug": debug,
+                "enable_graph_updates": self.config.graph.enable_graph_updates,
+                "enable_reachability": self.config.reachability.enable_reachability,
+                "enable_hierarchical": self.config.hierarchical.enable_hierarchical,
+                "debug": self.config.graph.debug or self.config.reachability.debug or self.config.hierarchical.debug,
             }
         )
 
         # Extend observation space with graph, reachability, and hierarchical features
         self.observation_space = self._build_extended_observation_space(
-            enable_graph_updates, enable_reachability, enable_hierarchical
+            self.config.graph.enable_graph_updates, 
+            self.config.reachability.enable_reachability, 
+            self.config.hierarchical.enable_hierarchical
         )
 
         # Initialize graph state if enabled
-        if enable_graph_updates:
+        if self.config.graph.enable_graph_updates:
             self._update_graph_from_env_state()
 
     def _build_extended_observation_space(

@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, Tuple
 from enum import Enum
 
 from ...planning.completion_planner import LevelCompletionPlanner
+from ..config import HierarchicalConfig
 
 
 class Subtask(Enum):
@@ -33,24 +34,17 @@ class HierarchicalMixin:
     - Performance tracking and logging
     """
     
-    def _init_hierarchical_system(
-        self,
-        enable_hierarchical: bool = True,
-        completion_planner: Optional[LevelCompletionPlanner] = None,
-        enable_subtask_rewards: bool = True,
-        subtask_reward_scale: float = 0.1,
-        max_subtask_steps: int = 1000,
-        debug: bool = False
-    ):
+    def _init_hierarchical_system(self, config: HierarchicalConfig):
         """Initialize the hierarchical system components."""
-        self.enable_hierarchical = enable_hierarchical
-        self.enable_subtask_rewards = enable_subtask_rewards
-        self.subtask_reward_scale = subtask_reward_scale
-        self.max_subtask_steps = max_subtask_steps
-        self.debug = debug
+        self.hierarchical_config = config
+        self.enable_hierarchical = config.enable_hierarchical
+        self.enable_subtask_rewards = config.enable_subtask_rewards
+        self.subtask_reward_scale = config.subtask_reward_scale
+        self.max_subtask_steps = config.max_subtask_steps
+        self.debug = config.debug
         
         # Initialize completion planner
-        self.completion_planner = completion_planner or LevelCompletionPlanner()
+        self.completion_planner = config.completion_planner or LevelCompletionPlanner()
         
         # Hierarchical state tracking
         self.current_subtask = Subtask.NAVIGATE_TO_EXIT_SWITCH
@@ -160,7 +154,7 @@ class HierarchicalMixin:
                 distance_moved = np.linalg.norm(
                     np.array(ninja_pos) - np.array(self.last_ninja_pos)
                 )
-                if distance_moved > 5.0:  # Moved significant distance
+                if distance_moved > self.hierarchical_config.SIGNIFICANT_MOVEMENT_THRESHOLD:
                     return True
         
         return False
@@ -302,11 +296,11 @@ class HierarchicalMixin:
         
         # Bonus for subtask completion
         if 'subtask_transition' in info:
-            reward += 0.5  # Bonus for successful subtask transition
+            reward += self.hierarchical_config.SUBTASK_COMPLETION_BONUS
         
         # Penalty for taking too long on a subtask
-        if self.subtask_step_count > 500:  # 500 steps without progress
-            reward -= 0.1
+        if self.subtask_step_count > self.hierarchical_config.SUBTASK_TIMEOUT_THRESHOLD:
+            reward -= self.hierarchical_config.SUBTASK_TIMEOUT_PENALTY
         
         return reward
     
@@ -375,20 +369,55 @@ class HierarchicalMixin:
         """Extract ninja position from observation/info."""
         # Try to get from info first
         if 'ninja_pos' in info:
-            return tuple(info['ninja_pos'])
+            pos = info['ninja_pos']
+            if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                return (int(pos[0]), int(pos[1]))
         
-        # Fallback: try to extract from observation
-        # This would need to be implemented based on actual observation structure
-        return (0, 0)  # Placeholder
+        # Try to get from game_state in observation
+        if 'game_state' in obs and obs['game_state'] is not None:
+            game_state = obs['game_state']
+            if hasattr(game_state, 'ninja_pos') and game_state.ninja_pos is not None:
+                pos = game_state.ninja_pos
+                return (int(pos[0]), int(pos[1]))
+        
+        # Fallback: log warning and return default
+        if self.debug:
+            logging.warning("Could not extract ninja position, using default (0, 0)")
+        return (0, 0)
     
     def _extract_level_data(self, obs: Dict[str, Any], info: Dict[str, Any]) -> Dict[str, Any]:
         """Extract level data from observation/info."""
-        # This would extract level layout information
-        return info.get('level_data', {})
+        # Try to get from info first
+        if 'level_data' in info and info['level_data']:
+            return info['level_data']
+        
+        # Try to get from game_state
+        if 'game_state' in obs and obs['game_state'] is not None:
+            game_state = obs['game_state']
+            if hasattr(game_state, 'level_data'):
+                return game_state.level_data
+        
+        # Fallback: return empty dict with warning
+        if self.debug:
+            logging.warning("Could not extract level data, using empty dict")
+        return {}
     
     def _extract_switch_states(self, obs: Dict[str, Any], info: Dict[str, Any]) -> Dict[str, bool]:
         """Extract switch states from observation/info."""
-        return info.get('switch_states', {})
+        # Try to get from info first
+        if 'switch_states' in info and info['switch_states']:
+            return info['switch_states']
+        
+        # Try to get from game_state
+        if 'game_state' in obs and obs['game_state'] is not None:
+            game_state = obs['game_state']
+            if hasattr(game_state, 'switch_states'):
+                return game_state.switch_states
+        
+        # Fallback: return empty dict
+        if self.debug:
+            logging.warning("Could not extract switch states, using empty dict")
+        return {}
     
     def _extract_reachability_features(self, obs: Dict[str, Any]) -> np.ndarray:
         """Extract 8D reachability features from observation."""
@@ -402,8 +431,22 @@ class HierarchicalMixin:
     def _find_exit_switch_id(self, obs: Dict[str, Any], info: Dict[str, Any]) -> Optional[str]:
         """Find the exit switch ID from level data."""
         level_data = self._extract_level_data(obs, info)
-        # This would find the exit switch in the level data
-        return None  # Placeholder
+        
+        # Look for exit switch in level data
+        if 'switches' in level_data:
+            for switch_id, switch_data in level_data['switches'].items():
+                if switch_data.get('type') == 'exit' or switch_data.get('is_exit', False):
+                    return switch_id
+        
+        # Try to find from switch states (exit switches are typically the main ones)
+        switch_states = self._extract_switch_states(obs, info)
+        if switch_states:
+            # Return the first switch ID as a fallback
+            return next(iter(switch_states.keys()), None)
+        
+        if self.debug:
+            logging.warning("Could not find exit switch ID")
+        return None
     
     def _create_reachability_system(self, reachability_features: np.ndarray):
         """Create a mock reachability system for the completion planner."""
