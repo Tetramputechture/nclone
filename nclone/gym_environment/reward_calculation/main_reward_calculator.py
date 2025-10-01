@@ -7,11 +7,13 @@ from .pbrs_potentials import PBRSCalculator
 
 
 class RewardCalculator:
-    """Main reward calculator."""
+    """Main reward calculator for completion-focused training."""
 
-    BASE_TERMINAL_REWARD = 1.0
+    # Completion-focused reward structure
+    SWITCH_ACTIVATION_REWARD = 0.1
+    EXIT_COMPLETION_REWARD = 1.0
     DEATH_PENALTY = -0.5
-    DOOR_OPEN_REWARD = 0.01
+    TIME_PENALTY = -0.01  # Per step to encourage efficiency
 
     def __init__(
         self,
@@ -47,7 +49,7 @@ class RewardCalculator:
         self.pbrs_calculator = PBRSCalculator(**pbrs_weights) if enable_pbrs else None
 
     def calculate_reward(self, obs: Dict[str, Any], prev_obs: Dict[str, Any]) -> float:
-        """Calculate reward.
+        """Calculate completion-focused reward.
 
         Args:
             obs: Current game state
@@ -58,40 +60,38 @@ class RewardCalculator:
         """
         self.steps_taken += 1
 
-        # Termination penalties
+        # Death penalty (terminal)
         if obs.get("player_dead", False):
             return self.DEATH_PENALTY
 
-        # Initialize reward
-        reward = 0.0
+        # Initialize reward with time penalty to encourage efficiency
+        reward = self.TIME_PENALTY
 
-        # Add door open reward for the difference in doors opened
-        door_diff = obs.get("doors_opened", 0) - prev_obs.get("doors_opened", 0)
-        reward += self.DOOR_OPEN_REWARD * door_diff
+        # Switch activation reward
+        if obs.get("switch_activated", False) and not prev_obs.get("switch_activated", False):
+            reward += self.SWITCH_ACTIVATION_REWARD
 
-        # Navigation reward with progressive scaling
+        # Exit completion reward (terminal)
+        if obs.get("player_won", False):
+            reward += self.EXIT_COMPLETION_REWARD
+
+        # Navigation reward (distance-based shaping)
         navigation_reward, switch_active_changed = (
             self.navigation_calculator.calculate_navigation_reward(obs, prev_obs)
         )
         reward += navigation_reward
 
-        # If our switch was activated or a door was opened, reset our exploration reward calculator
-        # This is so that the agent is curious about areas its already been to when it activates the switch,
-        # since the exit could be in any of the areas it has already explored
-        if switch_active_changed or door_diff > 0:
+        # Reset exploration when switch is activated to encourage re-exploration
+        if switch_active_changed:
             self.exploration_calculator.reset()
 
-        # Exploration reward
+        # Exploration reward (focused on switch/exit discovery)
         exploration_reward = self.exploration_calculator.calculate_exploration_reward(
             obs["player_x"], obs["player_y"]
         )
         reward += exploration_reward
 
-        # Win condition
-        if obs.get("player_won", False):
-            reward += self.BASE_TERMINAL_REWARD
-
-        # Add PBRS shaping reward if enabled
+        # Add PBRS shaping reward if enabled (focused on switch/exit objectives)
         pbrs_reward = 0.0
         pbrs_components = {}
         if self.enable_pbrs and self.pbrs_calculator is not None:

@@ -1,6 +1,7 @@
-"""Reward calculator for exploration.
+"""Completion-focused exploration reward calculator.
 
-Rewards exploration across the level, and penalizes excessive backtracking.
+Rewards exploration across the level to help discover switches and exits.
+Resets when switch is activated to encourage re-exploration for exit discovery.
 
 Our level is a grid of 42x23 24 pixel cells.
 We use a history of the ninja position to reward exploration at multiple scales:
@@ -13,7 +14,11 @@ We use a history of the ninja position to reward exploration at multiple scales:
 import numpy as np
 
 class ExplorationRewardCalculator:
-    """Handles calculation of exploration-based rewards."""
+    """Handles calculation of completion-focused exploration rewards.
+    
+    Encourages exploration to discover switches and exits. Gets reset when
+    switch is activated to encourage re-exploration for exit discovery.
+    """
 
     # Grid dimensions in cells (24x24 pixels each)
     GRID_WIDTH = 44
