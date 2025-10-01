@@ -7,13 +7,19 @@ from ..util.util import calculate_distance
 
 
 class NavigationRewardCalculator:
-    """Handles calculation of navigation and objective-based rewards."""
+    """Handles calculation of completion-focused navigation rewards.
+    
+    Provides distance-based shaping rewards for switch and exit objectives,
+    without gold-seeking behavior. Switch activation rewards are handled
+    by the main reward calculator.
+    """
 
-    # Navigation constants
-    # Scaled to be meaningful compared to -0.001 per step
+    # Navigation constants for completion-focused training
+    # Scaled to be meaningful compared to -0.01 per step time penalty
     DISTANCE_IMPROVEMENT_SCALE = 0.0001
     MIN_DISTANCE_THRESHOLD = 20.0
-    SWITCH_ACTIVATION_REWARD = 0.5
+    # Switch activation reward handled by main calculator, this is for distance shaping only
+    SWITCH_ACTIVATION_REWARD = 0.0  # Disabled - handled by main calculator
     # Scale potential-based shaping to be smaller than main rewards
     POTENTIAL_SCALE = 0.0005
 
