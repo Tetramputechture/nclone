@@ -232,7 +232,8 @@ class CompactReachabilityFeatures:
         """
         Calculate proximity to nearest hazard with mine state awareness.
         
-        For toggle mines, only considers dangerous states (toggled/toggling).
+        For toggle mines, only TOGGLED state (0) is dangerous.
+        UNTOGGLED (1) and TOGGLING (2) are safe states.
         """
         hazards = [e for e in entities if hasattr(e, "entity_type") and self._is_hazard_type(str(e.entity_type))]
         
@@ -246,11 +247,12 @@ class CompactReachabilityFeatures:
             else:
                 hazard_pos = (hazard.get("x", 0), hazard.get("y", 0))
             
-            # For toggle mines, check state - only consider dangerous states
+            # For toggle mines, check state - only TOGGLED (0) is dangerous
             if self._is_mine_entity(hazard):
                 mine_state = getattr(hazard, 'state', 1)  # Default to untoggled (safe)
-                # Skip if mine is untoggled (safe state)
-                if mine_state == 1:  # 1 = untoggled = safe
+                # Only consider TOGGLED mines (state=0) as dangerous
+                # UNTOGGLED (1) and TOGGLING (2) are safe
+                if mine_state != 0:
                     continue
             
             # Only consider reachable hazards as threats

@@ -21,15 +21,21 @@ class MineState:
     """
     Represents the state of a single toggle mine.
     
-    States:
-    - 0: Toggled (deadly, 4px radius)
-    - 1: Untoggled (safe, 3.5px radius)
-    - 2: Toggling (transitioning, 4.5px radius)
+    Mine State Mechanics:
+    - UNTOGGLED (1): Safe state. Mine has 3.5px radius.
+    - TOGGLING (2): Safe state while player is overlapping. Mine has 4.5px radius.
+                    When player leaves, transitions to TOGGLED.
+    - TOGGLED (0): Deadly state. Mine has 4px radius. Contact kills player instantly.
+    
+    State Transitions (player-driven):
+    - UNTOGGLED → TOGGLING: When player (10px radius) overlaps mine
+    - TOGGLING → TOGGLED: When player leaves mine radius
+    - TOGGLED: Terminal state (kills on contact)
     """
     
-    TOGGLED = 0
-    UNTOGGLED = 1
-    TOGGLING = 2
+    TOGGLED = 0      # Deadly state
+    UNTOGGLED = 1    # Safe state
+    TOGGLING = 2     # Safe state (player overlapping)
     
     def __init__(
         self,
@@ -63,13 +69,23 @@ class MineState:
     
     @property
     def is_dangerous(self) -> bool:
-        """Check if mine is currently dangerous."""
-        return self.state in (self.TOGGLED, self.TOGGLING)
+        """
+        Check if mine is currently dangerous.
+        
+        Only TOGGLED mines are dangerous (will kill on contact).
+        TOGGLING mines are safe because player is currently overlapping.
+        """
+        return self.state == self.TOGGLED
     
     @property
     def is_safe(self) -> bool:
-        """Check if mine is safe to touch."""
-        return self.state == self.UNTOGGLED
+        """
+        Check if mine is safe to touch.
+        
+        Both UNTOGGLED and TOGGLING states are safe.
+        TOGGLING is safe because player is actively overlapping it.
+        """
+        return self.state in (self.UNTOGGLED, self.TOGGLING)
     
     def update_state(self, new_state: int) -> None:
         """
