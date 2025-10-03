@@ -229,7 +229,11 @@ class CompactReachabilityFeatures:
         entities: List[Any],
         ninja_position: Tuple[float, float],
     ) -> float:
-        """Calculate proximity to nearest hazard."""
+        """
+        Calculate proximity to nearest hazard with mine state awareness.
+        
+        For toggle mines, only considers dangerous states (toggled/toggling).
+        """
         hazards = [e for e in entities if hasattr(e, "entity_type") and self._is_hazard_type(str(e.entity_type))]
         
         if not hazards:
@@ -241,6 +245,13 @@ class CompactReachabilityFeatures:
                 hazard_pos = (hazard.x, hazard.y)
             else:
                 hazard_pos = (hazard.get("x", 0), hazard.get("y", 0))
+            
+            # For toggle mines, check state - only consider dangerous states
+            if self._is_mine_entity(hazard):
+                mine_state = getattr(hazard, 'state', 1)  # Default to untoggled (safe)
+                # Skip if mine is untoggled (safe state)
+                if mine_state == 1:  # 1 = untoggled = safe
+                    continue
             
             # Only consider reachable hazards as threats
             if self._is_position_reachable(hazard_pos, reachability_result):
@@ -331,6 +342,13 @@ class CompactReachabilityFeatures:
         """Check if entity type represents a hazard."""
         hazard_types = ["drone", "mine", "thwump", "laser", "rocket", "chaingun"]
         return any(hazard in entity_type.lower() for hazard in hazard_types)
+    
+    def _is_mine_entity(self, entity: Any) -> bool:
+        """Check if entity is a toggle mine."""
+        if not hasattr(entity, 'entity_type'):
+            return False
+        entity_type_str = str(entity.entity_type).lower()
+        return "mine" in entity_type_str
 
     def _debug_feature_summary(
         self, features: np.ndarray, ninja_position: Tuple[float, float]
