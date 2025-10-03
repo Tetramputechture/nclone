@@ -41,7 +41,7 @@ This class should handle returning:
 import numpy as np
 from collections import deque
 import cv2
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from .constants import (
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
@@ -53,6 +53,7 @@ from .constants import (
 )
 from ..constants.physics_constants import MAX_HOR_SPEED
 from .frame_augmentation import apply_consistent_augmentation, get_recommended_config
+from .mine_state_processor import MineStateProcessor
 
 
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -136,7 +137,8 @@ class ObservationProcessor:
     def __init__(
         self, 
         enable_augmentation: bool = True,
-        augmentation_config: Dict[str, Any] = None
+        augmentation_config: Dict[str, Any] = None,
+        enable_mine_tracking: bool = True,
     ):
         self.enable_augmentation = enable_augmentation
         self.frame_history = deque(maxlen=TEMPORAL_FRAMES)
@@ -146,6 +148,10 @@ class ObservationProcessor:
             self.augmentation_config = get_recommended_config("mid")
         else:
             self.augmentation_config = augmentation_config
+        
+        # Initialize mine state processor
+        self.enable_mine_tracking = enable_mine_tracking
+        self.mine_processor = MineStateProcessor() if enable_mine_tracking else None
 
     def frame_around_player(
         self, frame: np.ndarray, player_x: float, player_y: float
@@ -218,18 +224,27 @@ class ObservationProcessor:
         
         # Calculate entity proximity features (features 24-27 in ninja state)
         ninja_x, ninja_y = obs["player_x"], obs["player_y"]
+        ninja_position = (ninja_x, ninja_y)
+        
+        # Update mine states if mine tracking is enabled
+        if self.enable_mine_tracking and self.mine_processor is not None:
+            entities = obs.get("entities", [])
+            self.mine_processor.update_mine_states(entities)
         
         # Calculate nearest hazard distance (normalized by screen diagonal)
         screen_diagonal = (LEVEL_WIDTH**2 + LEVEL_HEIGHT**2) ** 0.5
         nearest_hazard_dist = screen_diagonal  # Start with max distance
         hazard_threat = 0.0
         
-        # Check entity states for hazards (mines only in simplified system)
-        if "entity_states" in obs and len(obs["entity_states"]) > 0:
+        # Use mine processor for accurate hazard detection
+        if self.enable_mine_tracking and self.mine_processor is not None:
+            nearest_mine = self.mine_processor.get_nearest_dangerous_mine(ninja_position)
+            if nearest_mine is not None:
+                nearest_hazard_dist = nearest_mine.distance_to(ninja_position)
+                hazard_threat = self.mine_processor.get_mine_proximity_score(ninja_position)
+        elif "entity_states" in obs and len(obs["entity_states"]) > 0:
+            # Fallback to simplified approach if mine tracking disabled
             entity_states = obs["entity_states"]
-            # This is a simplified approach - in a full implementation, 
-            # we'd parse the entity states to find hazard positions
-            # For now, use a placeholder calculation
             nearest_hazard_dist = min(nearest_hazard_dist, screen_diagonal * 0.5)
             hazard_threat = 0.1  # Low threat level as placeholder
         
@@ -375,7 +390,68 @@ class ObservationProcessor:
         elif training_stage is not None:
             self.augmentation_config = get_recommended_config(training_stage)
     
+    def get_mine_features(
+        self,
+        ninja_position: Tuple[float, float],
+        target_position: Optional[Tuple[float, float]] = None,
+        max_mines: int = 5,
+    ) -> Optional[np.ndarray]:
+        """
+        Get mine feature array for current state.
+        
+        Args:
+            ninja_position: Current ninja position (x, y)
+            target_position: Optional target position for path blocking check
+            max_mines: Maximum number of mines to include
+            
+        Returns:
+            Feature array of shape (max_mines, 7) or None if tracking disabled
+        """
+        if not self.enable_mine_tracking or self.mine_processor is None:
+            return None
+        
+        return self.mine_processor.get_mine_features(
+            ninja_position,
+            target_position,
+            max_mines
+        )
+    
+    def is_path_safe_from_mines(
+        self,
+        start: Tuple[float, float],
+        end: Tuple[float, float],
+    ) -> bool:
+        """
+        Check if a path is safe from dangerous mines.
+        
+        Args:
+            start: Starting position (x, y)
+            end: Ending position (x, y)
+            
+        Returns:
+            True if path is safe, or if mine tracking is disabled
+        """
+        if not self.enable_mine_tracking or self.mine_processor is None:
+            return True
+        
+        return self.mine_processor.is_path_safe(start, end)
+    
+    def get_mine_stats(self) -> Optional[Dict[str, Any]]:
+        """
+        Get mine statistics for debugging.
+        
+        Returns:
+            Dictionary with mine stats or None if tracking disabled
+        """
+        if not self.enable_mine_tracking or self.mine_processor is None:
+            return None
+        
+        return self.mine_processor.get_summary_stats()
+    
     def reset(self) -> None:
         """Reset processor state."""
         if self.frame_history is not None:
             self.frame_history.clear()
+        
+        if self.enable_mine_tracking and self.mine_processor is not None:
+            self.mine_processor.reset()
