@@ -74,9 +74,17 @@ class EnvMapLoader:
             return
 
         # If we are in eval mode, load evaluation maps
-        if self.eval_mode:
+        if True:
             # Eval mode will load a random JUMP_REQUIRED or MAZE map
-            self.random_map_type = self.rng.choice(["JUMP_REQUIRED", "MAZE"])
+            self.random_map_type = self.rng.choice(
+                [
+                    # "JUMP_REQUIRED",
+                    # "MAZE",
+                    # "SIMPLE_HORIZONTAL_NO_BACKTRACK",
+                    # "MULTI_CHAMBER",
+                    "MINE_MAZE",
+                ]
+            )
             self.current_map_name = f"eval_map_{uuid.uuid4()}"
             self.nplay_headless.load_random_map(self.random_map_type)
             return

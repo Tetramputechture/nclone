@@ -17,7 +17,7 @@ python test_environment.py --headless --export-frame test_level.png
 """
 
 import pygame
-from nclone.gym_environment.npp_environment import NppEnvironment
+from nclone.gym_environment.environment_factory import create_visual_testing_env
 import argparse
 import time
 import cProfile
@@ -249,13 +249,7 @@ if args.interactive_graph and args.headless:
 # Create environment
 render_mode = "rgb_array" if args.headless else "human"
 debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
-env = NppEnvironment(
-    render_mode=render_mode,
-    enable_debug_overlay=debug_overlay_enabled,
-    eval_mode=False,
-    seed=42,
-    custom_map_path=args.map,
-)
+env = create_visual_testing_env()
 env.reset()
 
 if (

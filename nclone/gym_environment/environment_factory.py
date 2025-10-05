@@ -31,6 +31,15 @@ def create_research_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
     return NppEnvironment(config)
 
 
+def create_visual_testing_env(
+    config: Optional[EnvironmentConfig] = None,
+) -> NppEnvironment:
+    """Create an environment optimized for testing rendering and visualization."""
+    if config is None:
+        config = EnvironmentConfig.for_visual_testing()
+    return NppEnvironment(config)
+
+
 def create_minimal_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
     """Create a minimal environment with all advanced features disabled."""
     if config is None:
@@ -116,7 +125,9 @@ def create_hierarchical_env(
 ) -> NppEnvironment:
     """Create an environment optimized for hierarchical RL training."""
     if config is None:
-        config = EnvironmentConfig.for_hierarchical_training(completion_planner=completion_planner)
+        config = EnvironmentConfig.for_hierarchical_training(
+            completion_planner=completion_planner
+        )
     elif completion_planner is not None:
         config.hierarchical.completion_planner = completion_planner
     return NppEnvironment(config)
