@@ -12,33 +12,9 @@
     "completable": true
   },
   {
-    "name": "map-unreachable-areas",
-    "path": "nclone/test_maps/map-unreachable-areas",
-    "description": "A map with a path to the exit but a few areas in it are not reachable, due to hazards, tiles, or locked doors. The exit switch and door are blocked by a locked door, and the switch to open the door is reachable. There should be subgoals for the switch to open the door and the exit switch.",
-    "completable": true
-  },
-  {
-    "name": "bounce-block-reachable",
-    "path": "nclone/test_maps/bounce-block-reachable",
-    "description": "A completely empty map (NO TILE DATA) with a bounce block path up to an exit. The exit switch and doors are reachable",
-    "completable": true
-  },
-  {
     "name": "wall-jump-required",
     "path": "nclone/test_maps/wall-jump-required",
     "description": "A map where a wall jump is required to reach the exit switch and then fall to the exit door",
-    "completable": true
-  },
-  {
-    "name": "drone-reachable",
-    "path": "nclone/test_maps/drone-reachable",
-    "description": "A map with one drone in which the path to the exit is reachable based on the drone's cycle pattern",
-    "completable": true
-  },
-  {
-    "name": "drone-unreachable",
-    "path": "nclone/test_maps/drone-unreachable",
-    "description": "A map with two drones that make the path to the exit unreachable based on the two drones' cycle patterns (there is never a valid path to the exit regardless of where the drones are at in their cycle). Note: OpenCV flood fill sees this as reachable since it ignores drone movement patterns.",
     "completable": true
   },
   {
@@ -60,12 +36,6 @@
     "completable": true
   },
   {
-    "name": "long-jump-unreachable",
-    "path": "nclone/test_maps/long-jump-unreachable",
-    "description": "A map with a gap too wide to cross with a single jump, making the exit unreachable. Note: OpenCV flood fill sees this as reachable since it ignores jump distance limitations.",
-    "completable": true
-  },
-  {
     "name": "long-walk",
     "path": "nclone/test_maps/long-walk",
     "description": "A map with a long horizontal path that can be traversed by walking, testing basic movement mechanics",
@@ -81,12 +51,6 @@
     "name": "halfaligned-path",
     "path": "nclone/test_maps/halfaligned-path",
     "description": "A map where some tiles are misaligned with the main grid but the exit is still reachable",
-    "completable": true
-  },
-  {
-    "name": "launch-pad-required",
-    "path": "nclone/test_maps/launch-pad-required",
-    "description": "A map where the player must use a launch pad to reach the exit switch and then fall to the exit door",
     "completable": true
   },
   {
@@ -111,6 +75,24 @@
     "name": "long-vertical-corridor",
     "path": "nclone/test_maps/long-vertical-corridor",
     "description": "A vertical corridor where the player starts at the bottom and must wall jump up to reach the exit switch and then keep wall jumping up to reach the exit door.",
+    "completable": true
+  },
+  {
+    "name": "switch-puzzle-1",
+    "path": "nclone/test_maps/switch-puzzle-1",
+    "description": "A level with narrow corridors in which the player must trigger various switches in the correct order to reach the exit.",
+    "completable": true
+  },
+  {
+    "name": "switch-puzzle-2",
+    "path": "nclone/test_maps/switch-puzzle-2",
+    "description": "Another switch puzzle similar to switch-puzzle-1",
+    "completable": true
+  },
+  {
+    "name": "switch-simple",
+    "path": "nclone/test_maps/switch-simple",
+    "description": "A one tile high level where the player can move right and unlock locked doors to reach the exit.",
     "completable": true
   }
 ]

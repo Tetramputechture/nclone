@@ -11,6 +11,7 @@ class EntityType:
     EXIT_SWITCH = 4
     REGULAR_DOOR = 5
     LOCKED_DOOR = 6
+    LOCKED_DOOR_SWITCH = 7
     TRAP_DOOR = 8
     LAUNCH_PAD = 10
     ONE_WAY = 11

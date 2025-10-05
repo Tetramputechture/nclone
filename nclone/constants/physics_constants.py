@@ -3,6 +3,9 @@ Centralized physics constants for N++ simulation and RL integration.
 All physics-related constants should be defined here to avoid duplication.
 """
 
+import os
+from pathlib import Path
+
 # === ENTITY PHYSICS CONSTANTS ===
 # Basic entity properties
 NINJA_RADIUS = 10  # Ninja collision radius in pixels
@@ -221,8 +224,11 @@ EXTENDED_JUMP_DISTANCE = 300.0  # Extended jump distance for gap crossing
 MAX_FALL_DISTANCE = 400.0  # Increased maximum fall distance for better connectivity
 
 # === ANIMATION CONSTANTS ===
-# Animation data file
-ANIM_DATA = "anim_data_line_new.txt.bin"
+# Project root path (parent directory of nclone package)
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+# Animation data file (always use absolute path from project root)
+ANIM_DATA = os.path.join(_PROJECT_ROOT, "anim_data_line_new.txt.bin")
 
 # Victory dance settings
 DANCE_RANDOM = True  # Choose whether the victory dance is picked randomly.

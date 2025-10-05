@@ -19,7 +19,9 @@ from .mixins import GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin
 from .config import EnvironmentConfig
 
 
-class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin):
+class NppEnvironment(
+    BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin, HierarchicalMixin
+):
     """
     Consolidated N++ environment class using mixins.
 
@@ -45,11 +47,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             config: Environment configuration object
         """
         self.config = config
-        
+
         # Validate configuration
         from .config import validate_config
+
         validate_config(config)
-        
+
         # Initialize base environment using config
         super().__init__(
             render_mode=self.config.render.render_mode,
@@ -66,8 +69,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         )
 
         # Initialize mixin systems using config
-        self._init_graph_system(self.config.graph.enable_graph_updates, self.config.graph.debug)
-        self._init_reachability_system(self.config.reachability.enable_reachability, self.config.reachability.debug)
+        self._init_graph_system(
+            self.config.graph.enable_graph_updates, self.config.graph.debug
+        )
+        self._init_reachability_system(
+            self.config.reachability.enable_reachability, self.config.reachability.debug
+        )
         self._init_debug_system(self.config.render.enable_debug_overlay)
         self._init_hierarchical_system(self.config.hierarchical)
 
@@ -77,15 +84,17 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 "enable_graph_updates": self.config.graph.enable_graph_updates,
                 "enable_reachability": self.config.reachability.enable_reachability,
                 "enable_hierarchical": self.config.hierarchical.enable_hierarchical,
-                "debug": self.config.graph.debug or self.config.reachability.debug or self.config.hierarchical.debug,
+                "debug": self.config.graph.debug
+                or self.config.reachability.debug
+                or self.config.hierarchical.debug,
             }
         )
 
         # Extend observation space with graph, reachability, and hierarchical features
         self.observation_space = self._build_extended_observation_space(
-            self.config.graph.enable_graph_updates, 
-            self.config.reachability.enable_reachability, 
-            self.config.hierarchical.enable_hierarchical
+            self.config.graph.enable_graph_updates,
+            self.config.reachability.enable_reachability,
+            self.config.hierarchical.enable_hierarchical,
         )
 
         # Initialize graph state if enabled
@@ -93,7 +102,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._update_graph_from_env_state()
 
     def _build_extended_observation_space(
-        self, enable_graph_updates: bool, enable_reachability: bool, enable_hierarchical: bool
+        self,
+        enable_graph_updates: bool,
+        enable_reachability: bool,
+        enable_hierarchical: bool,
     ) -> SpacesDict:
         """Build the extended observation space with graph and reachability features."""
         obs_spaces = dict(self.observation_space.spaces)
@@ -103,7 +115,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             obs_spaces["reachability_features"] = box.Box(
                 low=0.0, high=1.0, shape=(8,), dtype=np.float32
             )
-        
+
         # Add hierarchical features
         if enable_hierarchical:
             obs_spaces["subtask_features"] = box.Box(
@@ -174,17 +186,19 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if self.enable_hierarchical:
             current_subtask = self._get_current_subtask(curr_obs, info)
             self._update_hierarchical_state(curr_obs, info)
-        
+
         # Calculate reward
         reward = self._calculate_reward(curr_obs, prev_obs)
-        
+
         # Add hierarchical reward shaping if enabled
         if self.enable_hierarchical and current_subtask is not None:
             hierarchical_reward = self._calculate_subtask_reward(
                 current_subtask, curr_obs, info, terminated
             )
-            reward += hierarchical_reward * self.config.hierarchical.subtask_reward_scale
-        
+            reward += (
+                hierarchical_reward * self.config.hierarchical.subtask_reward_scale
+            )
+
         self.current_ep_reward += reward
 
         # Process observation for training
@@ -206,7 +220,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if self.enable_reachability and self.reachability_times:
             avg_time = np.mean(self.reachability_times[-10:])  # Last 10 samples
             info["reachability_time_ms"] = avg_time * 1000
-        
+
         # Add hierarchical info if enabled
         if self.enable_hierarchical:
             info["hierarchical"] = self._get_hierarchical_info()
@@ -244,7 +258,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Add graph observations if enabled
         if self.enable_graph_updates:
             obs.update(self._get_graph_observations())
-        
+
         # Add hierarchical features if enabled
         if self.enable_hierarchical:
             obs["subtask_features"] = self._get_subtask_features()
@@ -305,3 +319,37 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Mark that we need to reinitialize on next reset
         self._needs_reinit = True
+
+    def load_random_categorized_map(self, category: str = "simple"):
+        """
+        Load a random map from the SI episode based on complexity category.
+
+        This is a convenience method that delegates to the map loader.
+        Maps are categorized as:
+        - "simple": Only contains exit doors, exit switches, toggle mines, locked doors, and gold
+        - "complex": Contains any other entity types (launch pads, thwumps, drones, etc.)
+
+        Args:
+            category: Either "simple" or "complex" to select map category
+
+        Raises:
+            ValueError: If category is invalid or no maps available in that category
+
+        Example:
+            >>> env = NppEnvironment(config)
+            >>> env.load_random_categorized_map("simple")  # Load a simple map
+            >>> env.load_random_categorized_map("complex")  # Load a complex map
+        """
+        self.map_loader.load_random_categorized_map(category)
+
+    def get_categorization_stats(self) -> Dict[str, int]:
+        """
+        Get statistics about available categorized maps.
+
+        Returns:
+            Dictionary with counts of simple and complex maps:
+            - simple_count: Number of simple maps available
+            - complex_count: Number of complex maps available
+            - total_count: Total number of categorized maps
+        """
+        return self.map_loader.get_categorization_stats()
