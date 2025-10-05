@@ -1,0 +1,5253 @@
+{
+  "simple": [
+    {
+      "name": "000 flateau",
+      "folder": "S"
+    },
+    {
+      "name": "001 a light launch",
+      "folder": "S"
+    },
+    {
+      "name": "002 swizzle",
+      "folder": "S"
+    },
+    {
+      "name": "005 gorge",
+      "folder": "S"
+    },
+    {
+      "name": "007 pixelightning",
+      "folder": "S"
+    },
+    {
+      "name": "008 zigzaggurat",
+      "folder": "S"
+    },
+    {
+      "name": "015 self restraint",
+      "folder": "S"
+    },
+    {
+      "name": "021 angler",
+      "folder": "S"
+    },
+    {
+      "name": "025 a brief history of amazing letdowns",
+      "folder": "S"
+    },
+    {
+      "name": "030 simple mountain hike",
+      "folder": "S"
+    },
+    {
+      "name": "035 opportunity costs",
+      "folder": "S"
+    },
+    {
+      "name": "037 trivium reactor",
+      "folder": "S"
+    },
+    {
+      "name": "045 alex austin's metaphor of life",
+      "folder": "S"
+    },
+    {
+      "name": "047 voices from the lake",
+      "folder": "S"
+    },
+    {
+      "name": "050 sky school",
+      "folder": "S"
+    },
+    {
+      "name": "053 ocean spray",
+      "folder": "S"
+    },
+    {
+      "name": "056 product placement",
+      "folder": "S"
+    },
+    {
+      "name": "072 deep within the mine mines",
+      "folder": "S"
+    },
+    {
+      "name": "075 galaxeasy",
+      "folder": "S"
+    },
+    {
+      "name": "076 strolly",
+      "folder": "S"
+    },
+    {
+      "name": "078 monoceros",
+      "folder": "S"
+    },
+    {
+      "name": "081 mine-altering substance",
+      "folder": "S"
+    },
+    {
+      "name": "083 roguish",
+      "folder": "S"
+    },
+    {
+      "name": "085 both sides of the brobe",
+      "folder": "S"
+    },
+    {
+      "name": "087 blorbity fjords",
+      "folder": "S"
+    },
+    {
+      "name": "090 queasy",
+      "folder": "S"
+    },
+    {
+      "name": "100 trimounds",
+      "folder": "S"
+    },
+    {
+      "name": "102 xercise",
+      "folder": "S"
+    },
+    {
+      "name": "107 brain sliva",
+      "folder": "S"
+    },
+    {
+      "name": "110 as you dare",
+      "folder": "S"
+    },
+    {
+      "name": "112 wabi-sabi",
+      "folder": "S"
+    },
+    {
+      "name": "115 armor shards",
+      "folder": "S"
+    },
+    {
+      "name": "116 acen",
+      "folder": "S"
+    },
+    {
+      "name": "118 expedient",
+      "folder": "S"
+    },
+    {
+      "name": "125 emptriness",
+      "folder": "S"
+    },
+    {
+      "name": "128 knurled",
+      "folder": "S"
+    },
+    {
+      "name": "131 basic shapes",
+      "folder": "S"
+    },
+    {
+      "name": "135 appendicide",
+      "folder": "S"
+    },
+    {
+      "name": "140 descen",
+      "folder": "S"
+    },
+    {
+      "name": "141 peaked",
+      "folder": "S"
+    },
+    {
+      "name": "143 portals",
+      "folder": "S"
+    },
+    {
+      "name": "158 cutting corners",
+      "folder": "S"
+    },
+    {
+      "name": "165 shoot it",
+      "folder": "S"
+    },
+    {
+      "name": "175 mine mounds",
+      "folder": "S"
+    },
+    {
+      "name": "176 slasher",
+      "folder": "S"
+    },
+    {
+      "name": "180 mechanic dimensional straight line",
+      "folder": "S"
+    },
+    {
+      "name": "183 recondite",
+      "folder": "S"
+    },
+    {
+      "name": "185 the other tick",
+      "folder": "S"
+    },
+    {
+      "name": "193 bocks",
+      "folder": "S"
+    },
+    {
+      "name": "198 ascent into madness",
+      "folder": "S"
+    },
+    {
+      "name": "201 race to the bottom",
+      "folder": "S"
+    },
+    {
+      "name": "203 process of elimination",
+      "folder": "S"
+    },
+    {
+      "name": "206 amber waves of pain",
+      "folder": "S"
+    },
+    {
+      "name": "215 in utero",
+      "folder": "S"
+    },
+    {
+      "name": "217 a circuitous route",
+      "folder": "S"
+    },
+    {
+      "name": "222 a series of interesting choices",
+      "folder": "S"
+    },
+    {
+      "name": "227 dashing",
+      "folder": "S"
+    },
+    {
+      "name": "231 architectural relief",
+      "folder": "S"
+    },
+    {
+      "name": "233 zusty mordant",
+      "folder": "S"
+    },
+    {
+      "name": "256 brambly",
+      "folder": "S"
+    },
+    {
+      "name": "260 funky dynamite",
+      "folder": "S"
+    },
+    {
+      "name": "275 weaving",
+      "folder": "S"
+    },
+    {
+      "name": "280 one is all you need",
+      "folder": "S"
+    },
+    {
+      "name": "285 diamond ladder",
+      "folder": "S"
+    },
+    {
+      "name": "300 circular logic",
+      "folder": "S"
+    },
+    {
+      "name": "310 lowrez cavern",
+      "folder": "S"
+    },
+    {
+      "name": "312 running out of chances",
+      "folder": "S"
+    },
+    {
+      "name": "325 diactites and stalagonals",
+      "folder": "S"
+    },
+    {
+      "name": "327 subtleties",
+      "folder": "S"
+    },
+    {
+      "name": "330 twisted sprint",
+      "folder": "S"
+    },
+    {
+      "name": "332 jagabees",
+      "folder": "S"
+    },
+    {
+      "name": "350 inelegant",
+      "folder": "S"
+    },
+    {
+      "name": "352 random walks of kindness",
+      "folder": "S"
+    },
+    {
+      "name": "355 steps",
+      "folder": "S"
+    },
+    {
+      "name": "358 acroblat",
+      "folder": "S"
+    },
+    {
+      "name": "372 runcible",
+      "folder": "S"
+    },
+    {
+      "name": "375 ripple mountain",
+      "folder": "S"
+    },
+    {
+      "name": "379 android architect",
+      "folder": "S"
+    },
+    {
+      "name": "380 intelligent falling",
+      "folder": "S"
+    },
+    {
+      "name": "383 surprisingly unbounded awkwardness potential",
+      "folder": "S"
+    },
+    {
+      "name": "385 protuberances",
+      "folder": "S"
+    },
+    {
+      "name": "388 machine precision",
+      "folder": "S"
+    },
+    {
+      "name": "398 hellway",
+      "folder": "S"
+    },
+    {
+      "name": "400 tentacly increnect",
+      "folder": "S"
+    },
+    {
+      "name": "401 midpoint algorithm",
+      "folder": "S"
+    },
+    {
+      "name": "403 orbital habitat",
+      "folder": "S"
+    },
+    {
+      "name": "412 think about it",
+      "folder": "S"
+    },
+    {
+      "name": "419 bitrate reduction",
+      "folder": "S"
+    },
+    {
+      "name": "422 tresher",
+      "folder": "S"
+    },
+    {
+      "name": "425 tantalization",
+      "folder": "S"
+    },
+    {
+      "name": "427 reduced degrees of freedom",
+      "folder": "S"
+    },
+    {
+      "name": "428 block party",
+      "folder": "S"
+    },
+    {
+      "name": "430 abandoned tower cavern fragment",
+      "folder": "S"
+    },
+    {
+      "name": "432 semantic loops",
+      "folder": "S"
+    },
+    {
+      "name": "435 x-over",
+      "folder": "S"
+    },
+    {
+      "name": "440 perp-plexed",
+      "folder": "S"
+    },
+    {
+      "name": "458 superliminal++",
+      "folder": "S"
+    },
+    {
+      "name": "470 choking hazard",
+      "folder": "S"
+    },
+    {
+      "name": "478 irritable level syndrome",
+      "folder": "S"
+    },
+    {
+      "name": "485 oblate spheroid, ob-la-da",
+      "folder": "S"
+    },
+    {
+      "name": "488 rigid internal logic",
+      "folder": "S"
+    },
+    {
+      "name": "494 your vision is a bunch of illusions that your brain is constantly cooking up",
+      "folder": "S"
+    },
+    {
+      "name": "496 galactic sigil",
+      "folder": "S"
+    },
+    {
+      "name": "507 scanlines and diamond mines",
+      "folder": "S"
+    },
+    {
+      "name": "513 vertex pain dispenser",
+      "folder": "S"
+    },
+    {
+      "name": "515 classified control study 985.3b",
+      "folder": "S"
+    },
+    {
+      "name": "522 losing your cool",
+      "folder": "S"
+    },
+    {
+      "name": "535 MUFG",
+      "folder": "S"
+    },
+    {
+      "name": "540 overdrive",
+      "folder": "S"
+    },
+    {
+      "name": "550 bamboo training forest",
+      "folder": "S"
+    },
+    {
+      "name": "584 slathered",
+      "folder": "S"
+    },
+    {
+      "name": "000 the basics",
+      "folder": "SI"
+    },
+    {
+      "name": "001 walljumptroduction",
+      "folder": "SI"
+    },
+    {
+      "name": "003 wall-to-wall",
+      "folder": "SI"
+    },
+    {
+      "name": "005 toggley tutor",
+      "folder": "SI"
+    },
+    {
+      "name": "006 both flavours of ramp jumping (and the control thereof)",
+      "folder": "SI"
+    },
+    {
+      "name": "008 the all-powerful golden rainbow of upwards momentum",
+      "folder": "SI"
+    },
+    {
+      "name": "018 sideways walljump test",
+      "folder": "SI"
+    },
+    {
+      "name": "025 regarding speed and jump control",
+      "folder": "SI"
+    },
+    {
+      "name": "027 hitting your head",
+      "folder": "SI"
+    },
+    {
+      "name": "028 wall-to-wall-to-wall-to-wall",
+      "folder": "SI"
+    },
+    {
+      "name": "029 warmup track",
+      "folder": "SI"
+    },
+    {
+      "name": "041 multimode phase 1",
+      "folder": "SI"
+    },
+    {
+      "name": "042 multimode phase 2",
+      "folder": "SI"
+    },
+    {
+      "name": "045 circular momentum",
+      "folder": "SI"
+    },
+    {
+      "name": "050 double-jumping, of a sort",
+      "folder": "SI"
+    },
+    {
+      "name": "052 to jump, or not to jump",
+      "folder": "SI"
+    },
+    {
+      "name": "053 the fine art of not pressing left right until after pressing and holding the jump button",
+      "folder": "SI"
+    },
+    {
+      "name": "055 learning process",
+      "folder": "SI"
+    },
+    {
+      "name": "056 minefield simulator",
+      "folder": "SI"
+    },
+    {
+      "name": "057 wall-hugging",
+      "folder": "SI"
+    },
+    {
+      "name": "068 onesided walljump orientation seminar",
+      "folder": "SI"
+    },
+    {
+      "name": "074 miney movement masterclass",
+      "folder": "SI"
+    },
+    {
+      "name": "075 rectilinear rooms",
+      "folder": "SI"
+    },
+    {
+      "name": "076 inertia control",
+      "folder": "SI"
+    },
+    {
+      "name": "077 traditional landscape",
+      "folder": "SI"
+    },
+    {
+      "name": "078 skydiver",
+      "folder": "SI"
+    },
+    {
+      "name": "092 tricky toggles",
+      "folder": "SI"
+    },
+    {
+      "name": "094 onesided walljump exit exam",
+      "folder": "SI"
+    },
+    {
+      "name": "095 thrice will suffice",
+      "folder": "SI"
+    },
+    {
+      "name": "096 air control chamber",
+      "folder": "SI"
+    },
+    {
+      "name": "098 walljumptroduction redux",
+      "folder": "SI"
+    },
+    {
+      "name": "101 various amounts of jump",
+      "folder": "SI"
+    },
+    {
+      "name": "102 the two methods of ramp jumping and the control thereof (part the second)",
+      "folder": "SI"
+    },
+    {
+      "name": "103 tiny taps",
+      "folder": "SI"
+    },
+    {
+      "name": "105 the room",
+      "folder": "SI"
+    },
+    {
+      "name": "110 air control towers",
+      "folder": "SI"
+    },
+    {
+      "name": "120 the impossible is possible",
+      "folder": "SI"
+    },
+    {
+      "name": "121 graduate degree in walljumping",
+      "folder": "SI"
+    },
+    {
+      "name": "122 quote-unquote triple-jumping",
+      "folder": "SI"
+    },
+    {
+      "name": "000 arc",
+      "folder": "SL"
+    },
+    {
+      "name": "002 orbital",
+      "folder": "SL"
+    },
+    {
+      "name": "005 rooted",
+      "folder": "SL"
+    },
+    {
+      "name": "007 ups and downs",
+      "folder": "SL"
+    },
+    {
+      "name": "010 the thing that only eats ninjas",
+      "folder": "SL"
+    },
+    {
+      "name": "013 build that momentum!",
+      "folder": "SL"
+    },
+    {
+      "name": "020 stumbleine",
+      "folder": "SL"
+    },
+    {
+      "name": "025 learning to fly",
+      "folder": "SL"
+    },
+    {
+      "name": "026 come back zinc!",
+      "folder": "SL"
+    },
+    {
+      "name": "027 suspension bridge",
+      "folder": "SL"
+    },
+    {
+      "name": "028 bullish on gold",
+      "folder": "SL"
+    },
+    {
+      "name": "030 hanging gardens",
+      "folder": "SL"
+    },
+    {
+      "name": "032 figure ocho",
+      "folder": "SL"
+    },
+    {
+      "name": "036 nivoc",
+      "folder": "SL"
+    },
+    {
+      "name": "046 take several pills",
+      "folder": "SL"
+    },
+    {
+      "name": "052 moses supposes",
+      "folder": "SL"
+    },
+    {
+      "name": "053 evanesce",
+      "folder": "SL"
+    },
+    {
+      "name": "058 the art of negotiation",
+      "folder": "SL"
+    },
+    {
+      "name": "063 leaps and bounds",
+      "folder": "SL"
+    },
+    {
+      "name": "075 honeyed",
+      "folder": "SL"
+    },
+    {
+      "name": "077 propellorhead",
+      "folder": "SL"
+    },
+    {
+      "name": "079 optimizer",
+      "folder": "SL"
+    },
+    {
+      "name": "080 ninja's first walljump",
+      "folder": "SL"
+    },
+    {
+      "name": "100 effervescence",
+      "folder": "SL"
+    },
+    {
+      "name": "101 old-school like a sysop in high-tops",
+      "folder": "SL"
+    },
+    {
+      "name": "102 superstructured",
+      "folder": "SL"
+    },
+    {
+      "name": "105 the bends",
+      "folder": "SL"
+    },
+    {
+      "name": "107 coprocessor",
+      "folder": "SL"
+    },
+    {
+      "name": "113 ka-razy",
+      "folder": "SL"
+    },
+    {
+      "name": "118 straylight axis",
+      "folder": "SL"
+    },
+    {
+      "name": "120 jinx malloy",
+      "folder": "SL"
+    },
+    {
+      "name": "126 let's hope the giant bees are on vacation",
+      "folder": "SL"
+    },
+    {
+      "name": "128 ninja's first balancing act",
+      "folder": "SL"
+    },
+    {
+      "name": "132 o gymru",
+      "folder": "SL"
+    },
+    {
+      "name": "145 control",
+      "folder": "SL"
+    },
+    {
+      "name": "150 everything i long for",
+      "folder": "SL"
+    },
+    {
+      "name": "155 the honey tree",
+      "folder": "SL"
+    },
+    {
+      "name": "157 pontifex",
+      "folder": "SL"
+    },
+    {
+      "name": "170 skyfires",
+      "folder": "SL"
+    },
+    {
+      "name": "177 b-steps",
+      "folder": "SL"
+    },
+    {
+      "name": "180 billesque",
+      "folder": "SL"
+    },
+    {
+      "name": "186 choose your own misadventure",
+      "folder": "SL"
+    },
+    {
+      "name": "192 postmod",
+      "folder": "SL"
+    },
+    {
+      "name": "197 thumb-twister",
+      "folder": "SL"
+    },
+    {
+      "name": "200 golgi apparatchik",
+      "folder": "SL"
+    },
+    {
+      "name": "201 anatomy of a level",
+      "folder": "SL"
+    },
+    {
+      "name": "202 digital distortion",
+      "folder": "SL"
+    },
+    {
+      "name": "205 stock prices",
+      "folder": "SL"
+    },
+    {
+      "name": "215 broke n hearted",
+      "folder": "SL"
+    },
+    {
+      "name": "220 somewhere over the greynbow",
+      "folder": "SL"
+    },
+    {
+      "name": "225 8-bit canyon",
+      "folder": "SL"
+    },
+    {
+      "name": "228 ramen brother",
+      "folder": "SL"
+    },
+    {
+      "name": "232 knackered",
+      "folder": "SL"
+    },
+    {
+      "name": "245 a thousand times no",
+      "folder": "SL"
+    },
+    {
+      "name": "250 pipeworks",
+      "folder": "SL"
+    },
+    {
+      "name": "251 round and round",
+      "folder": "SL"
+    },
+    {
+      "name": "253 rhomba",
+      "folder": "SL"
+    },
+    {
+      "name": "280 undersampling",
+      "folder": "SL"
+    },
+    {
+      "name": "285 things that make you go boom",
+      "folder": "SL"
+    },
+    {
+      "name": "290 spot the differences",
+      "folder": "SL"
+    },
+    {
+      "name": "293 smattering x",
+      "folder": "SL"
+    },
+    {
+      "name": "306 strange growth",
+      "folder": "SL"
+    },
+    {
+      "name": "312 sandtraps",
+      "folder": "SL"
+    },
+    {
+      "name": "327 hither and yon",
+      "folder": "SL"
+    },
+    {
+      "name": "331 all-terrain flow",
+      "folder": "SL"
+    },
+    {
+      "name": "332 dizzing",
+      "folder": "SL"
+    },
+    {
+      "name": "337 do it yourself",
+      "folder": "SL"
+    },
+    {
+      "name": "350 funjtables",
+      "folder": "SL"
+    },
+    {
+      "name": "358 serenity now",
+      "folder": "SL"
+    },
+    {
+      "name": "362 air matrices",
+      "folder": "SL"
+    },
+    {
+      "name": "375 comlink",
+      "folder": "SL"
+    },
+    {
+      "name": "376 descent",
+      "folder": "SL"
+    },
+    {
+      "name": "394 life after deaths",
+      "folder": "SL"
+    },
+    {
+      "name": "400 precariarity",
+      "folder": "SL"
+    },
+    {
+      "name": "407 modus pwnens",
+      "folder": "SL"
+    },
+    {
+      "name": "410 inward",
+      "folder": "SL"
+    },
+    {
+      "name": "415 dipsy doodle",
+      "folder": "SL"
+    },
+    {
+      "name": "420 mrs. dash",
+      "folder": "SL"
+    },
+    {
+      "name": "425 on the back of the great ninjasaurus",
+      "folder": "SL"
+    },
+    {
+      "name": "427 relearning to fly",
+      "folder": "SL"
+    },
+    {
+      "name": "430 crossfader",
+      "folder": "SL"
+    },
+    {
+      "name": "434 the creeper-downer",
+      "folder": "SL"
+    },
+    {
+      "name": "443 brain slugs",
+      "folder": "SL"
+    },
+    {
+      "name": "445 the boxer",
+      "folder": "SL"
+    },
+    {
+      "name": "450 the fundamentals",
+      "folder": "SL"
+    },
+    {
+      "name": "453 i am a rhombus",
+      "folder": "SL"
+    },
+    {
+      "name": "456 crooked",
+      "folder": "SL"
+    },
+    {
+      "name": "465 think of it as a challenge",
+      "folder": "SL"
+    },
+    {
+      "name": "470 Sakurajima",
+      "folder": "SL"
+    },
+    {
+      "name": "483 security grid",
+      "folder": "SL"
+    },
+    {
+      "name": "486 ruination",
+      "folder": "SL"
+    },
+    {
+      "name": "497 never ever",
+      "folder": "SL"
+    },
+    {
+      "name": "513 the pillar of dreams",
+      "folder": "SL"
+    },
+    {
+      "name": "545 pinnacle",
+      "folder": "SL"
+    },
+    {
+      "name": "548 unsafe at any speed",
+      "folder": "SL"
+    },
+    {
+      "name": "550 astonishingly sane",
+      "folder": "SL"
+    },
+    {
+      "name": "583 the seven gates of heck",
+      "folder": "SL"
+    },
+    {
+      "name": "588 a strangely isolated place",
+      "folder": "SL"
+    },
+    {
+      "name": "598 canonical domain",
+      "folder": "SL"
+    }
+  ],
+  "complex": [
+    {
+      "name": "003 corridory",
+      "folder": "S"
+    },
+    {
+      "name": "004 cyberdemon retirement community",
+      "folder": "S"
+    },
+    {
+      "name": "006 precision ground handling",
+      "folder": "S"
+    },
+    {
+      "name": "009 disallowed",
+      "folder": "S"
+    },
+    {
+      "name": "010 the amount of jump",
+      "folder": "S"
+    },
+    {
+      "name": "011 another one of these contraptions",
+      "folder": "S"
+    },
+    {
+      "name": "012 chain of events",
+      "folder": "S"
+    },
+    {
+      "name": "013 conspicuous consumption",
+      "folder": "S"
+    },
+    {
+      "name": "014 cheap thrills",
+      "folder": "S"
+    },
+    {
+      "name": "016 sleestack",
+      "folder": "S"
+    },
+    {
+      "name": "017 balcon",
+      "folder": "S"
+    },
+    {
+      "name": "018 counterclockwise heart",
+      "folder": "S"
+    },
+    {
+      "name": "019 stripes",
+      "folder": "S"
+    },
+    {
+      "name": "020 bridge under construction",
+      "folder": "S"
+    },
+    {
+      "name": "022 kinetic joy",
+      "folder": "S"
+    },
+    {
+      "name": "023 box slighter",
+      "folder": "S"
+    },
+    {
+      "name": "024 clairvoyage",
+      "folder": "S"
+    },
+    {
+      "name": "026 hatching chambers",
+      "folder": "S"
+    },
+    {
+      "name": "027 hella high water",
+      "folder": "S"
+    },
+    {
+      "name": "028 delay distortion",
+      "folder": "S"
+    },
+    {
+      "name": "029 shadow play",
+      "folder": "S"
+    },
+    {
+      "name": "031 rectilinear drips",
+      "folder": "S"
+    },
+    {
+      "name": "032 shortcutlets",
+      "folder": "S"
+    },
+    {
+      "name": "033 stroopwafel",
+      "folder": "S"
+    },
+    {
+      "name": "034 containment area",
+      "folder": "S"
+    },
+    {
+      "name": "036 circula",
+      "folder": "S"
+    },
+    {
+      "name": "038 the ceiling is bendin",
+      "folder": "S"
+    },
+    {
+      "name": "039 a strictly optional haunting",
+      "folder": "S"
+    },
+    {
+      "name": "040 your basic triangle laser trap",
+      "folder": "S"
+    },
+    {
+      "name": "041 the barricades",
+      "folder": "S"
+    },
+    {
+      "name": "042 vector poem",
+      "folder": "S"
+    },
+    {
+      "name": "043 go fish",
+      "folder": "S"
+    },
+    {
+      "name": "044 one got loose",
+      "folder": "S"
+    },
+    {
+      "name": "046 cave flier",
+      "folder": "S"
+    },
+    {
+      "name": "048 zingy zaps",
+      "folder": "S"
+    },
+    {
+      "name": "049 third strike",
+      "folder": "S"
+    },
+    {
+      "name": "051 it's full of stars",
+      "folder": "S"
+    },
+    {
+      "name": "052 the year is 199X",
+      "folder": "S"
+    },
+    {
+      "name": "054 squarangulation",
+      "folder": "S"
+    },
+    {
+      "name": "055 atmosphere recycler",
+      "folder": "S"
+    },
+    {
+      "name": "057 carouse hell",
+      "folder": "S"
+    },
+    {
+      "name": "058 plaftormer",
+      "folder": "S"
+    },
+    {
+      "name": "059 deconstruction set",
+      "folder": "S"
+    },
+    {
+      "name": "060 fractality",
+      "folder": "S"
+    },
+    {
+      "name": "061 electroencephalograffiti",
+      "folder": "S"
+    },
+    {
+      "name": "062 galorb",
+      "folder": "S"
+    },
+    {
+      "name": "063 hill complex",
+      "folder": "S"
+    },
+    {
+      "name": "064 hallway monitor",
+      "folder": "S"
+    },
+    {
+      "name": "065 fract'd",
+      "folder": "S"
+    },
+    {
+      "name": "066 creeping closer",
+      "folder": "S"
+    },
+    {
+      "name": "067 fancy footwork",
+      "folder": "S"
+    },
+    {
+      "name": "068 scaffolded",
+      "folder": "S"
+    },
+    {
+      "name": "069 alien wreck",
+      "folder": "S"
+    },
+    {
+      "name": "070 metallic tang",
+      "folder": "S"
+    },
+    {
+      "name": "071 mild rumpus",
+      "folder": "S"
+    },
+    {
+      "name": "073 slim odds",
+      "folder": "S"
+    },
+    {
+      "name": "074 blokus'd",
+      "folder": "S"
+    },
+    {
+      "name": "079 trungie",
+      "folder": "S"
+    },
+    {
+      "name": "080 prickly pete",
+      "folder": "S"
+    },
+    {
+      "name": "082 completionist's dilemma",
+      "folder": "S"
+    },
+    {
+      "name": "084 hella quids",
+      "folder": "S"
+    },
+    {
+      "name": "086 floored",
+      "folder": "S"
+    },
+    {
+      "name": "088 favourite turret",
+      "folder": "S"
+    },
+    {
+      "name": "089 barriers to entry",
+      "folder": "S"
+    },
+    {
+      "name": "091 two times",
+      "folder": "S"
+    },
+    {
+      "name": "092 command and conquer",
+      "folder": "S"
+    },
+    {
+      "name": "093 in the heat of the ninja",
+      "folder": "S"
+    },
+    {
+      "name": "094 bloodjet eye",
+      "folder": "S"
+    },
+    {
+      "name": "095 clusterfun",
+      "folder": "S"
+    },
+    {
+      "name": "096 the repository",
+      "folder": "S"
+    },
+    {
+      "name": "097 defiance",
+      "folder": "S"
+    },
+    {
+      "name": "098 septentrion",
+      "folder": "S"
+    },
+    {
+      "name": "099 stimulation of chaos",
+      "folder": "S"
+    },
+    {
+      "name": "101 cyber decaf",
+      "folder": "S"
+    },
+    {
+      "name": "103 of the thirty-six strategems, fleeing is best",
+      "folder": "S"
+    },
+    {
+      "name": "104 the lunatic device",
+      "folder": "S"
+    },
+    {
+      "name": "105 introductory jumpventure",
+      "folder": "S"
+    },
+    {
+      "name": "106 highly irregular",
+      "folder": "S"
+    },
+    {
+      "name": "108 pot of gold",
+      "folder": "S"
+    },
+    {
+      "name": "109 laser-assisted haircut",
+      "folder": "S"
+    },
+    {
+      "name": "111 harried hallway",
+      "folder": "S"
+    },
+    {
+      "name": "113 pokey gaps",
+      "folder": "S"
+    },
+    {
+      "name": "114 gibsonesque scenery",
+      "folder": "S"
+    },
+    {
+      "name": "117 electronic eyes",
+      "folder": "S"
+    },
+    {
+      "name": "119 buffer underrun",
+      "folder": "S"
+    },
+    {
+      "name": "120 leap year",
+      "folder": "S"
+    },
+    {
+      "name": "121 spaces",
+      "folder": "S"
+    },
+    {
+      "name": "122 slopular",
+      "folder": "S"
+    },
+    {
+      "name": "123 the griddler",
+      "folder": "S"
+    },
+    {
+      "name": "124 central chamber",
+      "folder": "S"
+    },
+    {
+      "name": "126 grey hill zone",
+      "folder": "S"
+    },
+    {
+      "name": "127 prosumer",
+      "folder": "S"
+    },
+    {
+      "name": "129 gamalgamated",
+      "folder": "S"
+    },
+    {
+      "name": "130 hoverflysby",
+      "folder": "S"
+    },
+    {
+      "name": "132 go",
+      "folder": "S"
+    },
+    {
+      "name": "133 roguesque",
+      "folder": "S"
+    },
+    {
+      "name": "134 heart-shaped blocks",
+      "folder": "S"
+    },
+    {
+      "name": "136 your textbook swizzle hallway",
+      "folder": "S"
+    },
+    {
+      "name": "137 anklebiter",
+      "folder": "S"
+    },
+    {
+      "name": "138 the modular",
+      "folder": "S"
+    },
+    {
+      "name": "139 infinite edge",
+      "folder": "S"
+    },
+    {
+      "name": "142 rhompus",
+      "folder": "S"
+    },
+    {
+      "name": "144 bullsh++ mountain",
+      "folder": "S"
+    },
+    {
+      "name": "145 proof of shove-cept",
+      "folder": "S"
+    },
+    {
+      "name": "146 solvalou",
+      "folder": "S"
+    },
+    {
+      "name": "147 framed",
+      "folder": "S"
+    },
+    {
+      "name": "148 shodan",
+      "folder": "S"
+    },
+    {
+      "name": "149 tenfold crossing",
+      "folder": "S"
+    },
+    {
+      "name": "150 a brief lesson on not jumping (except maybe at the very end (if you know what you're doing))",
+      "folder": "S"
+    },
+    {
+      "name": "151 cyber lark",
+      "folder": "S"
+    },
+    {
+      "name": "152 deliberate choices aplenty",
+      "folder": "S"
+    },
+    {
+      "name": "153 historicity",
+      "folder": "S"
+    },
+    {
+      "name": "154 semi-addled",
+      "folder": "S"
+    },
+    {
+      "name": "155 base jump",
+      "folder": "S"
+    },
+    {
+      "name": "156 loopers",
+      "folder": "S"
+    },
+    {
+      "name": "157 bit-rot landscape",
+      "folder": "S"
+    },
+    {
+      "name": "159 die area",
+      "folder": "S"
+    },
+    {
+      "name": "160 meldac",
+      "folder": "S"
+    },
+    {
+      "name": "161 insert blasstacre",
+      "folder": "S"
+    },
+    {
+      "name": "162 local space",
+      "folder": "S"
+    },
+    {
+      "name": "163 avoid direct eye contact",
+      "folder": "S"
+    },
+    {
+      "name": "164 alert security",
+      "folder": "S"
+    },
+    {
+      "name": "166 on shakey ground",
+      "folder": "S"
+    },
+    {
+      "name": "167 branch misprediction",
+      "folder": "S"
+    },
+    {
+      "name": "168 tindersticks",
+      "folder": "S"
+    },
+    {
+      "name": "169 the mile-high jellyfish",
+      "folder": "S"
+    },
+    {
+      "name": "170 now my timeline becomes immaculate",
+      "folder": "S"
+    },
+    {
+      "name": "171 structural integrity",
+      "folder": "S"
+    },
+    {
+      "name": "172 mid-spectrum warrior",
+      "folder": "S"
+    },
+    {
+      "name": "173 all over the place",
+      "folder": "S"
+    },
+    {
+      "name": "174 one who suttns",
+      "folder": "S"
+    },
+    {
+      "name": "177 feats of downward strength",
+      "folder": "S"
+    },
+    {
+      "name": "178 gravity",
+      "folder": "S"
+    },
+    {
+      "name": "179 factory ruins",
+      "folder": "S"
+    },
+    {
+      "name": "181 crawlspace",
+      "folder": "S"
+    },
+    {
+      "name": "182 jump shots",
+      "folder": "S"
+    },
+    {
+      "name": "184 the legend of the gold on that one level",
+      "folder": "S"
+    },
+    {
+      "name": "186 hide and seek",
+      "folder": "S"
+    },
+    {
+      "name": "187 salmon run",
+      "folder": "S"
+    },
+    {
+      "name": "188 beware the leap_ hard",
+      "folder": "S"
+    },
+    {
+      "name": "189 verticulous",
+      "folder": "S"
+    },
+    {
+      "name": "190 conumber",
+      "folder": "S"
+    },
+    {
+      "name": "191 harderer",
+      "folder": "S"
+    },
+    {
+      "name": "192 the light at the end of the tunnel",
+      "folder": "S"
+    },
+    {
+      "name": "194 super time-forced",
+      "folder": "S"
+    },
+    {
+      "name": "195 barrys",
+      "folder": "S"
+    },
+    {
+      "name": "196 err ducts",
+      "folder": "S"
+    },
+    {
+      "name": "197 blockchain",
+      "folder": "S"
+    },
+    {
+      "name": "199 temptation temple",
+      "folder": "S"
+    },
+    {
+      "name": "200 the machine will tell us so",
+      "folder": "S"
+    },
+    {
+      "name": "202 logiciel",
+      "folder": "S"
+    },
+    {
+      "name": "204 there but for the grace of graboids",
+      "folder": "S"
+    },
+    {
+      "name": "205 futuristhmus",
+      "folder": "S"
+    },
+    {
+      "name": "207 the wobblies part 1",
+      "folder": "S"
+    },
+    {
+      "name": "208 hunting grounds",
+      "folder": "S"
+    },
+    {
+      "name": "209 multiple redundancy self-destruct sequence activation protocol",
+      "folder": "S"
+    },
+    {
+      "name": "210 negative land",
+      "folder": "S"
+    },
+    {
+      "name": "211 confetti-ville",
+      "folder": "S"
+    },
+    {
+      "name": "212 mental leaps",
+      "folder": "S"
+    },
+    {
+      "name": "213 good grid dance",
+      "folder": "S"
+    },
+    {
+      "name": "214 finite resources",
+      "folder": "S"
+    },
+    {
+      "name": "216 sun of a b",
+      "folder": "S"
+    },
+    {
+      "name": "218 spun",
+      "folder": "S"
+    },
+    {
+      "name": "219 the conveyance",
+      "folder": "S"
+    },
+    {
+      "name": "220 roomy",
+      "folder": "S"
+    },
+    {
+      "name": "221 out of the blue++",
+      "folder": "S"
+    },
+    {
+      "name": "223 pyrite",
+      "folder": "S"
+    },
+    {
+      "name": "224 schnorgled",
+      "folder": "S"
+    },
+    {
+      "name": "225 don't look down",
+      "folder": "S"
+    },
+    {
+      "name": "226 cyber-cave",
+      "folder": "S"
+    },
+    {
+      "name": "228 money pit",
+      "folder": "S"
+    },
+    {
+      "name": "229 middlemarch",
+      "folder": "S"
+    },
+    {
+      "name": "232 bust an indeterminate number of moves",
+      "folder": "S"
+    },
+    {
+      "name": "234 photongle",
+      "folder": "S"
+    },
+    {
+      "name": "235 easy divisors",
+      "folder": "S"
+    },
+    {
+      "name": "236 capsule hotels",
+      "folder": "S"
+    },
+    {
+      "name": "237 wading pool",
+      "folder": "S"
+    },
+    {
+      "name": "238 keep them moving in your mind",
+      "folder": "S"
+    },
+    {
+      "name": "239 anti-intrusion electron space",
+      "folder": "S"
+    },
+    {
+      "name": "240 a fabulous crime",
+      "folder": "S"
+    },
+    {
+      "name": "241 freefall fort",
+      "folder": "S"
+    },
+    {
+      "name": "242 a rather curious horizontal mechanism",
+      "folder": "S"
+    },
+    {
+      "name": "243 laser time",
+      "folder": "S"
+    },
+    {
+      "name": "244 everything seems impossible when you haven't done it yet",
+      "folder": "S"
+    },
+    {
+      "name": "245 narbacular drop",
+      "folder": "S"
+    },
+    {
+      "name": "246 contained risk",
+      "folder": "S"
+    },
+    {
+      "name": "247 gridnik",
+      "folder": "S"
+    },
+    {
+      "name": "248 inverted gears",
+      "folder": "S"
+    },
+    {
+      "name": "249 a journey",
+      "folder": "S"
+    },
+    {
+      "name": "250 winds of change",
+      "folder": "S"
+    },
+    {
+      "name": "251 directional bias",
+      "folder": "S"
+    },
+    {
+      "name": "252 datacreche",
+      "folder": "S"
+    },
+    {
+      "name": "253 your garden-variety quad gold hazard",
+      "folder": "S"
+    },
+    {
+      "name": "254 introjection",
+      "folder": "S"
+    },
+    {
+      "name": "255 clamber",
+      "folder": "S"
+    },
+    {
+      "name": "257 experiencing the world through your own volition",
+      "folder": "S"
+    },
+    {
+      "name": "258 ruckazoid",
+      "folder": "S"
+    },
+    {
+      "name": "259 freeformed",
+      "folder": "S"
+    },
+    {
+      "name": "261 mathew kumar's capitalist death machine",
+      "folder": "S"
+    },
+    {
+      "name": "262 nu age cloud",
+      "folder": "S"
+    },
+    {
+      "name": "263 frisson",
+      "folder": "S"
+    },
+    {
+      "name": "264 level designed to thrizzle",
+      "folder": "S"
+    },
+    {
+      "name": "265 peek-a-boom",
+      "folder": "S"
+    },
+    {
+      "name": "266 pcell",
+      "folder": "S"
+    },
+    {
+      "name": "267 don't",
+      "folder": "S"
+    },
+    {
+      "name": "268 beamer",
+      "folder": "S"
+    },
+    {
+      "name": "269 tangled up",
+      "folder": "S"
+    },
+    {
+      "name": "270 sinusoidal",
+      "folder": "S"
+    },
+    {
+      "name": "271 worm drive",
+      "folder": "S"
+    },
+    {
+      "name": "272 delimiters",
+      "folder": "S"
+    },
+    {
+      "name": "273 world's two greatest monsters",
+      "folder": "S"
+    },
+    {
+      "name": "274 hidden in plain sight",
+      "folder": "S"
+    },
+    {
+      "name": "276 it followed me home",
+      "folder": "S"
+    },
+    {
+      "name": "277 phillips",
+      "folder": "S"
+    },
+    {
+      "name": "278 approachment",
+      "folder": "S"
+    },
+    {
+      "name": "279 zone of possible agreement",
+      "folder": "S"
+    },
+    {
+      "name": "281 sixty seven point five degrees",
+      "folder": "S"
+    },
+    {
+      "name": "282 crisscrossy",
+      "folder": "S"
+    },
+    {
+      "name": "283 sousveillance",
+      "folder": "S"
+    },
+    {
+      "name": "284 funnely enough",
+      "folder": "S"
+    },
+    {
+      "name": "286 segmentation fault",
+      "folder": "S"
+    },
+    {
+      "name": "287 mega-pokeys",
+      "folder": "S"
+    },
+    {
+      "name": "288 quad brobe",
+      "folder": "S"
+    },
+    {
+      "name": "289 endgame",
+      "folder": "S"
+    },
+    {
+      "name": "290 shots fired",
+      "folder": "S"
+    },
+    {
+      "name": "291 coffin nails",
+      "folder": "S"
+    },
+    {
+      "name": "292 light timer",
+      "folder": "S"
+    },
+    {
+      "name": "293 max float",
+      "folder": "S"
+    },
+    {
+      "name": "294 probability 0.0000001",
+      "folder": "S"
+    },
+    {
+      "name": "295 ninjabilities",
+      "folder": "S"
+    },
+    {
+      "name": "296 hardester",
+      "folder": "S"
+    },
+    {
+      "name": "297 hinted",
+      "folder": "S"
+    },
+    {
+      "name": "298 time pressure",
+      "folder": "S"
+    },
+    {
+      "name": "299 degreelessness",
+      "folder": "S"
+    },
+    {
+      "name": "301 stock depletion",
+      "folder": "S"
+    },
+    {
+      "name": "302 temptation",
+      "folder": "S"
+    },
+    {
+      "name": "303 containment units",
+      "folder": "S"
+    },
+    {
+      "name": "304 the cyborging chamber",
+      "folder": "S"
+    },
+    {
+      "name": "305 mt. err-ebus",
+      "folder": "S"
+    },
+    {
+      "name": "306 rebunk",
+      "folder": "S"
+    },
+    {
+      "name": "307 a little too busy at the drone factory",
+      "folder": "S"
+    },
+    {
+      "name": "308 the squizzler",
+      "folder": "S"
+    },
+    {
+      "name": "309 accepted eclectic",
+      "folder": "S"
+    },
+    {
+      "name": "311 overhead",
+      "folder": "S"
+    },
+    {
+      "name": "313 the overseer",
+      "folder": "S"
+    },
+    {
+      "name": "314 human techniques for earning glory",
+      "folder": "S"
+    },
+    {
+      "name": "316 the still vermillion",
+      "folder": "S"
+    },
+    {
+      "name": "317 undead burg",
+      "folder": "S"
+    },
+    {
+      "name": "318 baby lorg",
+      "folder": "S"
+    },
+    {
+      "name": "319 bouken!",
+      "folder": "S"
+    },
+    {
+      "name": "320 lazorbs",
+      "folder": "S"
+    },
+    {
+      "name": "321 mostly harmful",
+      "folder": "S"
+    },
+    {
+      "name": "322 some like it not",
+      "folder": "S"
+    },
+    {
+      "name": "323 running down that hill",
+      "folder": "S"
+    },
+    {
+      "name": "324 infiltration system",
+      "folder": "S"
+    },
+    {
+      "name": "326 bitcrushed seafoam",
+      "folder": "S"
+    },
+    {
+      "name": "328 overlap",
+      "folder": "S"
+    },
+    {
+      "name": "329 toe-tapper",
+      "folder": "S"
+    },
+    {
+      "name": "331 spiral gyro",
+      "folder": "S"
+    },
+    {
+      "name": "333 rumpled slitscan",
+      "folder": "S"
+    },
+    {
+      "name": "334 the algorithm",
+      "folder": "S"
+    },
+    {
+      "name": "336 sweeps",
+      "folder": "S"
+    },
+    {
+      "name": "337 space station",
+      "folder": "S"
+    },
+    {
+      "name": "338 arc minutes",
+      "folder": "S"
+    },
+    {
+      "name": "339 inside the autonomous sensory meridian response reactor",
+      "folder": "S"
+    },
+    {
+      "name": "340 the legend of column b",
+      "folder": "S"
+    },
+    {
+      "name": "341 moving platform",
+      "folder": "S"
+    },
+    {
+      "name": "342 reload the program of misery",
+      "folder": "S"
+    },
+    {
+      "name": "343 machine aesthetic",
+      "folder": "S"
+    },
+    {
+      "name": "344 strata gem",
+      "folder": "S"
+    },
+    {
+      "name": "345 blocktoberfest",
+      "folder": "S"
+    },
+    {
+      "name": "346 that backward-looking mood",
+      "folder": "S"
+    },
+    {
+      "name": "347 squeeze play",
+      "folder": "S"
+    },
+    {
+      "name": "348 nail biter",
+      "folder": "S"
+    },
+    {
+      "name": "349 a thoroughly permuted scenario",
+      "folder": "S"
+    },
+    {
+      "name": "351 terrain",
+      "folder": "S"
+    },
+    {
+      "name": "353 the mobile crowd",
+      "folder": "S"
+    },
+    {
+      "name": "354 gold rush",
+      "folder": "S"
+    },
+    {
+      "name": "356 boxen",
+      "folder": "S"
+    },
+    {
+      "name": "357 vaunt",
+      "folder": "S"
+    },
+    {
+      "name": "359 lazorb drone",
+      "folder": "S"
+    },
+    {
+      "name": "360 simplex",
+      "folder": "S"
+    },
+    {
+      "name": "361 skeletal fortress",
+      "folder": "S"
+    },
+    {
+      "name": "362 tactical freakout",
+      "folder": "S"
+    },
+    {
+      "name": "363 fantastically contrapted",
+      "folder": "S"
+    },
+    {
+      "name": "364 polyrhythmic pit",
+      "folder": "S"
+    },
+    {
+      "name": "365 platten freak",
+      "folder": "S"
+    },
+    {
+      "name": "366 glide",
+      "folder": "S"
+    },
+    {
+      "name": "367 betting the hausen",
+      "folder": "S"
+    },
+    {
+      "name": "368 platformonics",
+      "folder": "S"
+    },
+    {
+      "name": "369 fear of repeating yourself",
+      "folder": "S"
+    },
+    {
+      "name": "370 detunized gravity",
+      "folder": "S"
+    },
+    {
+      "name": "371 shooting gallery",
+      "folder": "S"
+    },
+    {
+      "name": "373 forgone accumulator",
+      "folder": "S"
+    },
+    {
+      "name": "374 symbolic act",
+      "folder": "S"
+    },
+    {
+      "name": "376 speedrun dream",
+      "folder": "S"
+    },
+    {
+      "name": "377 the gree",
+      "folder": "S"
+    },
+    {
+      "name": "378 neo tokyo",
+      "folder": "S"
+    },
+    {
+      "name": "381 an irregular path",
+      "folder": "S"
+    },
+    {
+      "name": "382 unsteady",
+      "folder": "S"
+    },
+    {
+      "name": "384 the lack of sound and the fury",
+      "folder": "S"
+    },
+    {
+      "name": "386 float max",
+      "folder": "S"
+    },
+    {
+      "name": "387 ring around the rosenthal zero-point energy device",
+      "folder": "S"
+    },
+    {
+      "name": "389 devious shoves",
+      "folder": "S"
+    },
+    {
+      "name": "390 blocked",
+      "folder": "S"
+    },
+    {
+      "name": "391 at the bottom of the well",
+      "folder": "S"
+    },
+    {
+      "name": "392 hot on the heels",
+      "folder": "S"
+    },
+    {
+      "name": "393 problematic cycle",
+      "folder": "S"
+    },
+    {
+      "name": "394 supercomplexity",
+      "folder": "S"
+    },
+    {
+      "name": "395 smattered",
+      "folder": "S"
+    },
+    {
+      "name": "396 reality leaves a lot to the imagination",
+      "folder": "S"
+    },
+    {
+      "name": "397 future unfolding",
+      "folder": "S"
+    },
+    {
+      "name": "399 opening gambit",
+      "folder": "S"
+    },
+    {
+      "name": "402 a wrinkle in time",
+      "folder": "S"
+    },
+    {
+      "name": "404 unstructured play",
+      "folder": "S"
+    },
+    {
+      "name": "405 squarez",
+      "folder": "S"
+    },
+    {
+      "name": "406 semi-menacing",
+      "folder": "S"
+    },
+    {
+      "name": "407 fallen angel industrial park",
+      "folder": "S"
+    },
+    {
+      "name": "408 lose the tail",
+      "folder": "S"
+    },
+    {
+      "name": "409 chock several blocks",
+      "folder": "S"
+    },
+    {
+      "name": "410 curl noise",
+      "folder": "S"
+    },
+    {
+      "name": "411 in an upwardly fashion",
+      "folder": "S"
+    },
+    {
+      "name": "413 press your luck",
+      "folder": "S"
+    },
+    {
+      "name": "414 incompatible override",
+      "folder": "S"
+    },
+    {
+      "name": "415 of mice and men and evil ninjas",
+      "folder": "S"
+    },
+    {
+      "name": "416 running out of headroom",
+      "folder": "S"
+    },
+    {
+      "name": "417 hypnagogic",
+      "folder": "S"
+    },
+    {
+      "name": "418 river hopping",
+      "folder": "S"
+    },
+    {
+      "name": "420 riding the rail",
+      "folder": "S"
+    },
+    {
+      "name": "421 world's greatest evil robotic cookie monster",
+      "folder": "S"
+    },
+    {
+      "name": "423 leapfrog",
+      "folder": "S"
+    },
+    {
+      "name": "424 feral concrete",
+      "folder": "S"
+    },
+    {
+      "name": "426 clever girl",
+      "folder": "S"
+    },
+    {
+      "name": "429 house of ten axis",
+      "folder": "S"
+    },
+    {
+      "name": "431 three increments from hooligan status",
+      "folder": "S"
+    },
+    {
+      "name": "433 target lock",
+      "folder": "S"
+    },
+    {
+      "name": "434 manifest",
+      "folder": "S"
+    },
+    {
+      "name": "436 lurid details",
+      "folder": "S"
+    },
+    {
+      "name": "437 bouncy, trouncy, flouncy, pouncy fun",
+      "folder": "S"
+    },
+    {
+      "name": "438 vorb roblon",
+      "folder": "S"
+    },
+    {
+      "name": "439 cyber dungeon quest",
+      "folder": "S"
+    },
+    {
+      "name": "441 retracer",
+      "folder": "S"
+    },
+    {
+      "name": "442 hexagonal honey trap",
+      "folder": "S"
+    },
+    {
+      "name": "443 multipular staged operation",
+      "folder": "S"
+    },
+    {
+      "name": "444 possibly impossible",
+      "folder": "S"
+    },
+    {
+      "name": "445 medium-sized shop of horrors",
+      "folder": "S"
+    },
+    {
+      "name": "446 when not to jump",
+      "folder": "S"
+    },
+    {
+      "name": "447 cinnabomb",
+      "folder": "S"
+    },
+    {
+      "name": "448 master exploder",
+      "folder": "S"
+    },
+    {
+      "name": "449 abject terror",
+      "folder": "S"
+    },
+    {
+      "name": "450 the other other tick",
+      "folder": "S"
+    },
+    {
+      "name": "451 map fragment",
+      "folder": "S"
+    },
+    {
+      "name": "452 mission understatement",
+      "folder": "S"
+    },
+    {
+      "name": "453 upwardly mobile",
+      "folder": "S"
+    },
+    {
+      "name": "454 meditations in an emergency",
+      "folder": "S"
+    },
+    {
+      "name": "455 the devil's plaything",
+      "folder": "S"
+    },
+    {
+      "name": "456 one too many dramatic flourishes",
+      "folder": "S"
+    },
+    {
+      "name": "457 orthogonal axes",
+      "folder": "S"
+    },
+    {
+      "name": "459 mikado",
+      "folder": "S"
+    },
+    {
+      "name": "460 recurrance relation",
+      "folder": "S"
+    },
+    {
+      "name": "461 raktor",
+      "folder": "S"
+    },
+    {
+      "name": "462 side-channel attack",
+      "folder": "S"
+    },
+    {
+      "name": "463 one-button game",
+      "folder": "S"
+    },
+    {
+      "name": "464 earthdate 2264",
+      "folder": "S"
+    },
+    {
+      "name": "465 this dome is our home",
+      "folder": "S"
+    },
+    {
+      "name": "466 clockwork zigzag",
+      "folder": "S"
+    },
+    {
+      "name": "467 manic miner",
+      "folder": "S"
+    },
+    {
+      "name": "468 a mild stroboscopic effect",
+      "folder": "S"
+    },
+    {
+      "name": "469 a mind is a terrible thing",
+      "folder": "S"
+    },
+    {
+      "name": "471 laser mission",
+      "folder": "S"
+    },
+    {
+      "name": "472 deathball surprise",
+      "folder": "S"
+    },
+    {
+      "name": "473 an immaculately mined moon",
+      "folder": "S"
+    },
+    {
+      "name": "474 the marinara trench",
+      "folder": "S"
+    },
+    {
+      "name": "475 ono-sendai",
+      "folder": "S"
+    },
+    {
+      "name": "476 sufficient ascent rapidity",
+      "folder": "S"
+    },
+    {
+      "name": "477 fragments of a shattered direction",
+      "folder": "S"
+    },
+    {
+      "name": "479 away in a mangler",
+      "folder": "S"
+    },
+    {
+      "name": "480 eddy",
+      "folder": "S"
+    },
+    {
+      "name": "481 let's launch over it!",
+      "folder": "S"
+    },
+    {
+      "name": "482 plandings",
+      "folder": "S"
+    },
+    {
+      "name": "483 one more spin around the light",
+      "folder": "S"
+    },
+    {
+      "name": "484 reaper madness",
+      "folder": "S"
+    },
+    {
+      "name": "486 an excursion",
+      "folder": "S"
+    },
+    {
+      "name": "487 comb filter",
+      "folder": "S"
+    },
+    {
+      "name": "489 nonplusplussed",
+      "folder": "S"
+    },
+    {
+      "name": "490 fire sticks",
+      "folder": "S"
+    },
+    {
+      "name": "491 thinking on the balls of your feet",
+      "folder": "S"
+    },
+    {
+      "name": "492 interstitial",
+      "folder": "S"
+    },
+    {
+      "name": "493 bewilderness",
+      "folder": "S"
+    },
+    {
+      "name": "495 ether drift theory",
+      "folder": "S"
+    },
+    {
+      "name": "497 it's adventure time",
+      "folder": "S"
+    },
+    {
+      "name": "498 dragged forward by time",
+      "folder": "S"
+    },
+    {
+      "name": "499 too much is almost enough",
+      "folder": "S"
+    },
+    {
+      "name": "500 stop",
+      "folder": "S"
+    },
+    {
+      "name": "501 quadrophobia",
+      "folder": "S"
+    },
+    {
+      "name": "502 saga",
+      "folder": "S"
+    },
+    {
+      "name": "503 sparse set",
+      "folder": "S"
+    },
+    {
+      "name": "504 following",
+      "folder": "S"
+    },
+    {
+      "name": "505 quit pro quo",
+      "folder": "S"
+    },
+    {
+      "name": "506 microblindsided",
+      "folder": "S"
+    },
+    {
+      "name": "508 deadly premonitions",
+      "folder": "S"
+    },
+    {
+      "name": "509 awhoops",
+      "folder": "S"
+    },
+    {
+      "name": "510 a rough approximation of laser-drums",
+      "folder": "S"
+    },
+    {
+      "name": "511 interloper",
+      "folder": "S"
+    },
+    {
+      "name": "512 cloned ninja assassin selection process",
+      "folder": "S"
+    },
+    {
+      "name": "514 leapin' laser lids",
+      "folder": "S"
+    },
+    {
+      "name": "516 a study in scarless",
+      "folder": "S"
+    },
+    {
+      "name": "517 the brute squad",
+      "folder": "S"
+    },
+    {
+      "name": "518 laser windows",
+      "folder": "S"
+    },
+    {
+      "name": "519 pace yourself",
+      "folder": "S"
+    },
+    {
+      "name": "520 angledance",
+      "folder": "S"
+    },
+    {
+      "name": "521 all hail arachnid",
+      "folder": "S"
+    },
+    {
+      "name": "523 complexity reducer",
+      "folder": "S"
+    },
+    {
+      "name": "524 escalation",
+      "folder": "S"
+    },
+    {
+      "name": "525 rife with metaphor",
+      "folder": "S"
+    },
+    {
+      "name": "526 convergence",
+      "folder": "S"
+    },
+    {
+      "name": "527 self-defeating",
+      "folder": "S"
+    },
+    {
+      "name": "528 fotoplastikon",
+      "folder": "S"
+    },
+    {
+      "name": "529 straight laser",
+      "folder": "S"
+    },
+    {
+      "name": "530 careful consideration",
+      "folder": "S"
+    },
+    {
+      "name": "531 bit depths",
+      "folder": "S"
+    },
+    {
+      "name": "532 cutting it close",
+      "folder": "S"
+    },
+    {
+      "name": "533 setagaya waverunner",
+      "folder": "S"
+    },
+    {
+      "name": "534 damballah",
+      "folder": "S"
+    },
+    {
+      "name": "536 fear less",
+      "folder": "S"
+    },
+    {
+      "name": "537 occam's laser",
+      "folder": "S"
+    },
+    {
+      "name": "538 lance micron",
+      "folder": "S"
+    },
+    {
+      "name": "539 method conductor",
+      "folder": "S"
+    },
+    {
+      "name": "541 the emboldening",
+      "folder": "S"
+    },
+    {
+      "name": "542 sneaky toggle fortress",
+      "folder": "S"
+    },
+    {
+      "name": "543 the river",
+      "folder": "S"
+    },
+    {
+      "name": "544 time barons of hell",
+      "folder": "S"
+    },
+    {
+      "name": "545 unlocky",
+      "folder": "S"
+    },
+    {
+      "name": "546 photon flux",
+      "folder": "S"
+    },
+    {
+      "name": "547 spring sprang",
+      "folder": "S"
+    },
+    {
+      "name": "548 hop-scorch",
+      "folder": "S"
+    },
+    {
+      "name": "549 ai ant colony",
+      "folder": "S"
+    },
+    {
+      "name": "551 spacing",
+      "folder": "S"
+    },
+    {
+      "name": "552 puzzle palace",
+      "folder": "S"
+    },
+    {
+      "name": "553 totally bleeped",
+      "folder": "S"
+    },
+    {
+      "name": "554 operator overload",
+      "folder": "S"
+    },
+    {
+      "name": "555 eye of the ninja",
+      "folder": "S"
+    },
+    {
+      "name": "556 sparse matrix solver",
+      "folder": "S"
+    },
+    {
+      "name": "557 barrel shoot",
+      "folder": "S"
+    },
+    {
+      "name": "558 syncretic",
+      "folder": "S"
+    },
+    {
+      "name": "559 suboptimal panopticon",
+      "folder": "S"
+    },
+    {
+      "name": "560 victory lapse",
+      "folder": "S"
+    },
+    {
+      "name": "561 slaughterhouse three",
+      "folder": "S"
+    },
+    {
+      "name": "562 escalating delirium",
+      "folder": "S"
+    },
+    {
+      "name": "563 biscuity boyle",
+      "folder": "S"
+    },
+    {
+      "name": "564 squibs",
+      "folder": "S"
+    },
+    {
+      "name": "565 killsphere",
+      "folder": "S"
+    },
+    {
+      "name": "566 spin quantum number",
+      "folder": "S"
+    },
+    {
+      "name": "567 vortex of plans",
+      "folder": "S"
+    },
+    {
+      "name": "568 ancient patrol route",
+      "folder": "S"
+    },
+    {
+      "name": "569 nothing is impossible",
+      "folder": "S"
+    },
+    {
+      "name": "570 upon the deep",
+      "folder": "S"
+    },
+    {
+      "name": "571 the fine art of biting off more than you can chew",
+      "folder": "S"
+    },
+    {
+      "name": "573 afternoon at the complex",
+      "folder": "S"
+    },
+    {
+      "name": "574 masterclass",
+      "folder": "S"
+    },
+    {
+      "name": "575 the great filter",
+      "folder": "S"
+    },
+    {
+      "name": "576 riding high",
+      "folder": "S"
+    },
+    {
+      "name": "577 blood monkey",
+      "folder": "S"
+    },
+    {
+      "name": "578 curiously recurring template pattern",
+      "folder": "S"
+    },
+    {
+      "name": "579 mid-air marathon",
+      "folder": "S"
+    },
+    {
+      "name": "580 shoot",
+      "folder": "S"
+    },
+    {
+      "name": "581 data hound",
+      "folder": "S"
+    },
+    {
+      "name": "582 the cave near infinity point",
+      "folder": "S"
+    },
+    {
+      "name": "583 panoplea",
+      "folder": "S"
+    },
+    {
+      "name": "585 reset",
+      "folder": "S"
+    },
+    {
+      "name": "586 a deceptively strong case for checkpoints",
+      "folder": "S"
+    },
+    {
+      "name": "587 vertiginous",
+      "folder": "S"
+    },
+    {
+      "name": "588 a series of unfortunate events",
+      "folder": "S"
+    },
+    {
+      "name": "589 escape is at hand",
+      "folder": "S"
+    },
+    {
+      "name": "590 memory insufficient",
+      "folder": "S"
+    },
+    {
+      "name": "591 epiphany continuum",
+      "folder": "S"
+    },
+    {
+      "name": "592 strive harder",
+      "folder": "S"
+    },
+    {
+      "name": "593 chase ace",
+      "folder": "S"
+    },
+    {
+      "name": "594 braindance",
+      "folder": "S"
+    },
+    {
+      "name": "595 deathballroom",
+      "folder": "S"
+    },
+    {
+      "name": "596 automatical hard",
+      "folder": "S"
+    },
+    {
+      "name": "597 skipping stone",
+      "folder": "S"
+    },
+    {
+      "name": "598 terrrors",
+      "folder": "S"
+    },
+    {
+      "name": "599 championship lode runner",
+      "folder": "S"
+    },
+    {
+      "name": "004 basics redux",
+      "folder": "SI"
+    },
+    {
+      "name": "007 bounce",
+      "folder": "SI"
+    },
+    {
+      "name": "009 a hint of what's to come",
+      "folder": "SI"
+    },
+    {
+      "name": "010 press the suicide button to retry",
+      "folder": "SI"
+    },
+    {
+      "name": "011 balljump",
+      "folder": "SI"
+    },
+    {
+      "name": "012 game shover",
+      "folder": "SI"
+    },
+    {
+      "name": "013 thwumpy friends",
+      "folder": "SI"
+    },
+    {
+      "name": "014 mine field challenge",
+      "folder": "SI"
+    },
+    {
+      "name": "015 practice makes perp-fect",
+      "folder": "SI"
+    },
+    {
+      "name": "016 launching off of bounceblocks is possible if you time it correctly",
+      "folder": "SI"
+    },
+    {
+      "name": "017 they'll chase ya",
+      "folder": "SI"
+    },
+    {
+      "name": "019 laser training",
+      "folder": "SI"
+    },
+    {
+      "name": "020 MEGAJUMP",
+      "folder": "SI"
+    },
+    {
+      "name": "021 laser braces",
+      "folder": "SI"
+    },
+    {
+      "name": "022 the art of descent part the fourth",
+      "folder": "SI"
+    },
+    {
+      "name": "023 practical application of theory",
+      "folder": "SI"
+    },
+    {
+      "name": "024 toggley terminus",
+      "folder": "SI"
+    },
+    {
+      "name": "026 floor-to-wall vs ramp-to-wall 'double jumping'",
+      "folder": "SI"
+    },
+    {
+      "name": "030 deadly friend",
+      "folder": "SI"
+    },
+    {
+      "name": "031 the art of descent part the first",
+      "folder": "SI"
+    },
+    {
+      "name": "032 on the subject of the navigation of gaps",
+      "folder": "SI"
+    },
+    {
+      "name": "033 launchers",
+      "folder": "SI"
+    },
+    {
+      "name": "034 rocketoggle room",
+      "folder": "SI"
+    },
+    {
+      "name": "035 laser-wise",
+      "folder": "SI"
+    },
+    {
+      "name": "036 the art of descent part the second",
+      "folder": "SI"
+    },
+    {
+      "name": "037 temporary platform",
+      "folder": "SI"
+    },
+    {
+      "name": "038 going up",
+      "folder": "SI"
+    },
+    {
+      "name": "039 a taste of evil",
+      "folder": "SI"
+    },
+    {
+      "name": "040 multimode phase 0",
+      "folder": "SI"
+    },
+    {
+      "name": "043 multimode phase 3",
+      "folder": "SI"
+    },
+    {
+      "name": "044 multimodal",
+      "folder": "SI"
+    },
+    {
+      "name": "046 encyclopedia of fundamentals vol xxi_ the mega-perp",
+      "folder": "SI"
+    },
+    {
+      "name": "047 parkour park prototype",
+      "folder": "SI"
+    },
+    {
+      "name": "048 timing tutor",
+      "folder": "SI"
+    },
+    {
+      "name": "049 tutorial mid-boss",
+      "folder": "SI"
+    },
+    {
+      "name": "051 bouncers",
+      "folder": "SI"
+    },
+    {
+      "name": "054 freerunning room",
+      "folder": "SI"
+    },
+    {
+      "name": "058 boosting",
+      "folder": "SI"
+    },
+    {
+      "name": "059 greed can be dangerous",
+      "folder": "SI"
+    },
+    {
+      "name": "060 doors galore",
+      "folder": "SI"
+    },
+    {
+      "name": "061 on a long enough timeline, the survival rate for everyone drops to zero",
+      "folder": "SI"
+    },
+    {
+      "name": "062 velocity multiplication device",
+      "folder": "SI"
+    },
+    {
+      "name": "063 mind-expansion",
+      "folder": "SI"
+    },
+    {
+      "name": "064 dexterity calibration apparatus II",
+      "folder": "SI"
+    },
+    {
+      "name": "065 temporary wall",
+      "folder": "SI"
+    },
+    {
+      "name": "066 the art of descent part the third",
+      "folder": "SI"
+    },
+    {
+      "name": "067 evil echoes",
+      "folder": "SI"
+    },
+    {
+      "name": "069 laser struggle",
+      "folder": "SI"
+    },
+    {
+      "name": "070 all aboard!",
+      "folder": "SI"
+    },
+    {
+      "name": "071 optionality",
+      "folder": "SI"
+    },
+    {
+      "name": "072 sometimes the best jump is to not jump",
+      "folder": "SI"
+    },
+    {
+      "name": "073 the room 2",
+      "folder": "SI"
+    },
+    {
+      "name": "079 learning to climb",
+      "folder": "SI"
+    },
+    {
+      "name": "080 fine-a++ motor skills",
+      "folder": "SI"
+    },
+    {
+      "name": "081 keep it moving",
+      "folder": "SI"
+    },
+    {
+      "name": "082 launch guidelines",
+      "folder": "SI"
+    },
+    {
+      "name": "083 bounceblock bridge",
+      "folder": "SI"
+    },
+    {
+      "name": "084 speed limiters",
+      "folder": "SI"
+    },
+    {
+      "name": "085 jumping off ramps can launch you",
+      "folder": "SI"
+    },
+    {
+      "name": "086 getting to know rockets",
+      "folder": "SI"
+    },
+    {
+      "name": "087 booster stage",
+      "folder": "SI"
+    },
+    {
+      "name": "088 chained temptation",
+      "folder": "SI"
+    },
+    {
+      "name": "089 the lookers",
+      "folder": "SI"
+    },
+    {
+      "name": "090 dexterity calibration apparatus III",
+      "folder": "SI"
+    },
+    {
+      "name": "091 live fire training exercise",
+      "folder": "SI"
+    },
+    {
+      "name": "093 temporary test",
+      "folder": "SI"
+    },
+    {
+      "name": "097 ingenuity opportunity",
+      "folder": "SI"
+    },
+    {
+      "name": "099 a taste of real life",
+      "folder": "SI"
+    },
+    {
+      "name": "100 the many uses of ramps",
+      "folder": "SI"
+    },
+    {
+      "name": "104 self-directed",
+      "folder": "SI"
+    },
+    {
+      "name": "106 throwing caution to the wind",
+      "folder": "SI"
+    },
+    {
+      "name": "107 dexterity calibration apparatus I",
+      "folder": "SI"
+    },
+    {
+      "name": "108 who needs floors anyway",
+      "folder": "SI"
+    },
+    {
+      "name": "109 bullet william",
+      "folder": "SI"
+    },
+    {
+      "name": "111 oscillaser",
+      "folder": "SI"
+    },
+    {
+      "name": "112 ride or die",
+      "folder": "SI"
+    },
+    {
+      "name": "113 vertical momentum test",
+      "folder": "SI"
+    },
+    {
+      "name": "114 starting to get the hang of it",
+      "folder": "SI"
+    },
+    {
+      "name": "115 rubber room",
+      "folder": "SI"
+    },
+    {
+      "name": "116 good and bad doors",
+      "folder": "SI"
+    },
+    {
+      "name": "117 introduction to ad-libbing",
+      "folder": "SI"
+    },
+    {
+      "name": "118 movement under fire",
+      "folder": "SI"
+    },
+    {
+      "name": "119 hangtime",
+      "folder": "SI"
+    },
+    {
+      "name": "123 deadly didactic device",
+      "folder": "SI"
+    },
+    {
+      "name": "124 puzzle platformer",
+      "folder": "SI"
+    },
+    {
+      "name": "001 take the easy way out",
+      "folder": "SL"
+    },
+    {
+      "name": "003 what the",
+      "folder": "SL"
+    },
+    {
+      "name": "004 all about thwumps",
+      "folder": "SL"
+    },
+    {
+      "name": "006 underground storage facility",
+      "folder": "SL"
+    },
+    {
+      "name": "008 the machine",
+      "folder": "SL"
+    },
+    {
+      "name": "009 suicidal lust for gold",
+      "folder": "SL"
+    },
+    {
+      "name": "011 honey bomb",
+      "folder": "SL"
+    },
+    {
+      "name": "012 acrophobe",
+      "folder": "SL"
+    },
+    {
+      "name": "014 hairpin turns",
+      "folder": "SL"
+    },
+    {
+      "name": "015 megamine",
+      "folder": "SL"
+    },
+    {
+      "name": "016 rotor",
+      "folder": "SL"
+    },
+    {
+      "name": "017 cutting in",
+      "folder": "SL"
+    },
+    {
+      "name": "018 simplicity",
+      "folder": "SL"
+    },
+    {
+      "name": "019 high water line",
+      "folder": "SL"
+    },
+    {
+      "name": "021 slick",
+      "folder": "SL"
+    },
+    {
+      "name": "022 mugen",
+      "folder": "SL"
+    },
+    {
+      "name": "023 trance gate",
+      "folder": "SL"
+    },
+    {
+      "name": "024 superliminal futura",
+      "folder": "SL"
+    },
+    {
+      "name": "029 tighten up tighter",
+      "folder": "SL"
+    },
+    {
+      "name": "031 slipgate complex",
+      "folder": "SL"
+    },
+    {
+      "name": "033 up and around",
+      "folder": "SL"
+    },
+    {
+      "name": "034 fool's gold",
+      "folder": "SL"
+    },
+    {
+      "name": "035 crop rectangles",
+      "folder": "SL"
+    },
+    {
+      "name": "037 hallway to heck",
+      "folder": "SL"
+    },
+    {
+      "name": "038 a sinister undercurrent",
+      "folder": "SL"
+    },
+    {
+      "name": "039 compound fracture",
+      "folder": "SL"
+    },
+    {
+      "name": "040 heap sort",
+      "folder": "SL"
+    },
+    {
+      "name": "041 vertebrae",
+      "folder": "SL"
+    },
+    {
+      "name": "042 dashed hopes",
+      "folder": "SL"
+    },
+    {
+      "name": "043 meerschaum",
+      "folder": "SL"
+    },
+    {
+      "name": "044 industrial zone 4",
+      "folder": "SL"
+    },
+    {
+      "name": "045 spin-a-rama",
+      "folder": "SL"
+    },
+    {
+      "name": "047 able to leap tall robots in a single bound",
+      "folder": "SL"
+    },
+    {
+      "name": "048 brownian motion",
+      "folder": "SL"
+    },
+    {
+      "name": "049 bifurcation",
+      "folder": "SL"
+    },
+    {
+      "name": "050 who dat ninja",
+      "folder": "SL"
+    },
+    {
+      "name": "051 mechazawa",
+      "folder": "SL"
+    },
+    {
+      "name": "054 bamboo battle",
+      "folder": "SL"
+    },
+    {
+      "name": "055 baby steps",
+      "folder": "SL"
+    },
+    {
+      "name": "056 hand solo",
+      "folder": "SL"
+    },
+    {
+      "name": "057 moving target",
+      "folder": "SL"
+    },
+    {
+      "name": "059 consumer x",
+      "folder": "SL"
+    },
+    {
+      "name": "060 hold it",
+      "folder": "SL"
+    },
+    {
+      "name": "061 illusory",
+      "folder": "SL"
+    },
+    {
+      "name": "062 whomping",
+      "folder": "SL"
+    },
+    {
+      "name": "064 downtown rush hour",
+      "folder": "SL"
+    },
+    {
+      "name": "065 mincome arcology",
+      "folder": "SL"
+    },
+    {
+      "name": "066 elevation",
+      "folder": "SL"
+    },
+    {
+      "name": "067 vertical theory",
+      "folder": "SL"
+    },
+    {
+      "name": "068 soul skimmer",
+      "folder": "SL"
+    },
+    {
+      "name": "069 spin class",
+      "folder": "SL"
+    },
+    {
+      "name": "070 plus pit",
+      "folder": "SL"
+    },
+    {
+      "name": "071 pokeyman",
+      "folder": "SL"
+    },
+    {
+      "name": "073 red light red light",
+      "folder": "SL"
+    },
+    {
+      "name": "074 blern!",
+      "folder": "SL"
+    },
+    {
+      "name": "076 you'll die if you try",
+      "folder": "SL"
+    },
+    {
+      "name": "078 the easy way",
+      "folder": "SL"
+    },
+    {
+      "name": "081 drone race",
+      "folder": "SL"
+    },
+    {
+      "name": "082 xenopool",
+      "folder": "SL"
+    },
+    {
+      "name": "083 below the root",
+      "folder": "SL"
+    },
+    {
+      "name": "084 optical smattering",
+      "folder": "SL"
+    },
+    {
+      "name": "085 comfort level",
+      "folder": "SL"
+    },
+    {
+      "name": "086 sphere of existence",
+      "folder": "SL"
+    },
+    {
+      "name": "087 tailgater",
+      "folder": "SL"
+    },
+    {
+      "name": "088 step on a crack, break your ninja's back",
+      "folder": "SL"
+    },
+    {
+      "name": "089 box-shaped heart",
+      "folder": "SL"
+    },
+    {
+      "name": "090 checkmate",
+      "folder": "SL"
+    },
+    {
+      "name": "091 decoder ring",
+      "folder": "SL"
+    },
+    {
+      "name": "092 the jeezly",
+      "folder": "SL"
+    },
+    {
+      "name": "093 return trip",
+      "folder": "SL"
+    },
+    {
+      "name": "094 n-key kong",
+      "folder": "SL"
+    },
+    {
+      "name": "095 outrun",
+      "folder": "SL"
+    },
+    {
+      "name": "096 refactory",
+      "folder": "SL"
+    },
+    {
+      "name": "097 there for the taking",
+      "folder": "SL"
+    },
+    {
+      "name": "098 by will alone",
+      "folder": "SL"
+    },
+    {
+      "name": "099 a daring daylight raid",
+      "folder": "SL"
+    },
+    {
+      "name": "103 knot funny",
+      "folder": "SL"
+    },
+    {
+      "name": "104 asterisky",
+      "folder": "SL"
+    },
+    {
+      "name": "106 variable aitch",
+      "folder": "SL"
+    },
+    {
+      "name": "108 kohoku",
+      "folder": "SL"
+    },
+    {
+      "name": "109 ninja's first whatever the hell that is",
+      "folder": "SL"
+    },
+    {
+      "name": "110 under the sea",
+      "folder": "SL"
+    },
+    {
+      "name": "111 O my",
+      "folder": "SL"
+    },
+    {
+      "name": "112 maas",
+      "folder": "SL"
+    },
+    {
+      "name": "114 danger dance B",
+      "folder": "SL"
+    },
+    {
+      "name": "115 a bit gold-fashioned",
+      "folder": "SL"
+    },
+    {
+      "name": "116 out of the blue 2",
+      "folder": "SL"
+    },
+    {
+      "name": "117 starscreams",
+      "folder": "SL"
+    },
+    {
+      "name": "119 data base",
+      "folder": "SL"
+    },
+    {
+      "name": "121 mazemerizing",
+      "folder": "SL"
+    },
+    {
+      "name": "122 the pit and the n-dulum",
+      "folder": "SL"
+    },
+    {
+      "name": "123 escarpment",
+      "folder": "SL"
+    },
+    {
+      "name": "124 all your base are belong to their respective owners",
+      "folder": "SL"
+    },
+    {
+      "name": "125 pale grey sky",
+      "folder": "SL"
+    },
+    {
+      "name": "129 exciting opportunities for advancement",
+      "folder": "SL"
+    },
+    {
+      "name": "130 stop all the downloadin'",
+      "folder": "SL"
+    },
+    {
+      "name": "131 dead end",
+      "folder": "SL"
+    },
+    {
+      "name": "133 near-death experiences",
+      "folder": "SL"
+    },
+    {
+      "name": "134 concentric",
+      "folder": "SL"
+    },
+    {
+      "name": "135 n-tropy",
+      "folder": "SL"
+    },
+    {
+      "name": "136 lithium-ionized",
+      "folder": "SL"
+    },
+    {
+      "name": "137 dead ends",
+      "folder": "SL"
+    },
+    {
+      "name": "138 underground",
+      "folder": "SL"
+    },
+    {
+      "name": "139 electric avenue",
+      "folder": "SL"
+    },
+    {
+      "name": "140 fort awesome",
+      "folder": "SL"
+    },
+    {
+      "name": "141 neuroscan",
+      "folder": "SL"
+    },
+    {
+      "name": "142 avoidance tactic",
+      "folder": "SL"
+    },
+    {
+      "name": "143 fine-toothed comb-over",
+      "folder": "SL"
+    },
+    {
+      "name": "144 glutney",
+      "folder": "SL"
+    },
+    {
+      "name": "146 superliminal x",
+      "folder": "SL"
+    },
+    {
+      "name": "147 loopy",
+      "folder": "SL"
+    },
+    {
+      "name": "148 neural net",
+      "folder": "SL"
+    },
+    {
+      "name": "149 die trying",
+      "folder": "SL"
+    },
+    {
+      "name": "151 hex sick",
+      "folder": "SL"
+    },
+    {
+      "name": "152 the pits",
+      "folder": "SL"
+    },
+    {
+      "name": "153 evac d",
+      "folder": "SL"
+    },
+    {
+      "name": "154 deft punk",
+      "folder": "SL"
+    },
+    {
+      "name": "156 death by misadventure",
+      "folder": "SL"
+    },
+    {
+      "name": "158 the perfectra",
+      "folder": "SL"
+    },
+    {
+      "name": "159 particulate",
+      "folder": "SL"
+    },
+    {
+      "name": "160 to blave",
+      "folder": "SL"
+    },
+    {
+      "name": "161 stung",
+      "folder": "SL"
+    },
+    {
+      "name": "162 candy dish",
+      "folder": "SL"
+    },
+    {
+      "name": "163 majestic",
+      "folder": "SL"
+    },
+    {
+      "name": "164 put on your dancing shoes",
+      "folder": "SL"
+    },
+    {
+      "name": "165 oldschool like aztecs but new in other aspects",
+      "folder": "SL"
+    },
+    {
+      "name": "166 the jeezster",
+      "folder": "SL"
+    },
+    {
+      "name": "167 sands of time",
+      "folder": "SL"
+    },
+    {
+      "name": "168 good as gold",
+      "folder": "SL"
+    },
+    {
+      "name": "169 the name of the rose",
+      "folder": "SL"
+    },
+    {
+      "name": "171 dances with rockets",
+      "folder": "SL"
+    },
+    {
+      "name": "172 integument",
+      "folder": "SL"
+    },
+    {
+      "name": "173 methodical A",
+      "folder": "SL"
+    },
+    {
+      "name": "174 the ultimate",
+      "folder": "SL"
+    },
+    {
+      "name": "175 obstacle cores",
+      "folder": "SL"
+    },
+    {
+      "name": "176 ninja's first temptation",
+      "folder": "SL"
+    },
+    {
+      "name": "178 stimulant",
+      "folder": "SL"
+    },
+    {
+      "name": "179 extremely cross",
+      "folder": "SL"
+    },
+    {
+      "name": "181 tricksy",
+      "folder": "SL"
+    },
+    {
+      "name": "182 hampered",
+      "folder": "SL"
+    },
+    {
+      "name": "183 hidey holes",
+      "folder": "SL"
+    },
+    {
+      "name": "184 de vermis mysteriis",
+      "folder": "SL"
+    },
+    {
+      "name": "185 the jackpot",
+      "folder": "SL"
+    },
+    {
+      "name": "187 snatch and grab",
+      "folder": "SL"
+    },
+    {
+      "name": "188 i am the cancer",
+      "folder": "SL"
+    },
+    {
+      "name": "189 docking mechanism",
+      "folder": "SL"
+    },
+    {
+      "name": "190 efficacy",
+      "folder": "SL"
+    },
+    {
+      "name": "191 greentone",
+      "folder": "SL"
+    },
+    {
+      "name": "193 recurring nightmare",
+      "folder": "SL"
+    },
+    {
+      "name": "195 take it or grieve it",
+      "folder": "SL"
+    },
+    {
+      "name": "196 twice round",
+      "folder": "SL"
+    },
+    {
+      "name": "198 ender",
+      "folder": "SL"
+    },
+    {
+      "name": "199 fear the reaper",
+      "folder": "SL"
+    },
+    {
+      "name": "204 feathered",
+      "folder": "SL"
+    },
+    {
+      "name": "206 bunker down",
+      "folder": "SL"
+    },
+    {
+      "name": "207 hypnotic",
+      "folder": "SL"
+    },
+    {
+      "name": "208 shimmy shakes",
+      "folder": "SL"
+    },
+    {
+      "name": "209 en passant",
+      "folder": "SL"
+    },
+    {
+      "name": "210 slow nerve action",
+      "folder": "SL"
+    },
+    {
+      "name": "211 speedo",
+      "folder": "SL"
+    },
+    {
+      "name": "212 mu",
+      "folder": "SL"
+    },
+    {
+      "name": "213 shut it down",
+      "folder": "SL"
+    },
+    {
+      "name": "214 solaar",
+      "folder": "SL"
+    },
+    {
+      "name": "216 Droids 'B' Us",
+      "folder": "SL"
+    },
+    {
+      "name": "217 keep away",
+      "folder": "SL"
+    },
+    {
+      "name": "218 industrial zone X",
+      "folder": "SL"
+    },
+    {
+      "name": "219 abandoned facility",
+      "folder": "SL"
+    },
+    {
+      "name": "221 teeth",
+      "folder": "SL"
+    },
+    {
+      "name": "222 jumping someone else's train",
+      "folder": "SL"
+    },
+    {
+      "name": "223 rooftop",
+      "folder": "SL"
+    },
+    {
+      "name": "224 daredevil",
+      "folder": "SL"
+    },
+    {
+      "name": "226 unstable",
+      "folder": "SL"
+    },
+    {
+      "name": "227 superliminal",
+      "folder": "SL"
+    },
+    {
+      "name": "229 asymptote",
+      "folder": "SL"
+    },
+    {
+      "name": "230 gauss darn it",
+      "folder": "SL"
+    },
+    {
+      "name": "231 bypass",
+      "folder": "SL"
+    },
+    {
+      "name": "233 i'm going to marry a caret",
+      "folder": "SL"
+    },
+    {
+      "name": "234 Level 5, Detention Block AA-23",
+      "folder": "SL"
+    },
+    {
+      "name": "235 improv",
+      "folder": "SL"
+    },
+    {
+      "name": "236 self-serve",
+      "folder": "SL"
+    },
+    {
+      "name": "237 G(old) turns to D(eath)",
+      "folder": "SL"
+    },
+    {
+      "name": "238 smoothsteps",
+      "folder": "SL"
+    },
+    {
+      "name": "239 river run",
+      "folder": "SL"
+    },
+    {
+      "name": "240 fribbulus xax",
+      "folder": "SL"
+    },
+    {
+      "name": "241 daring do",
+      "folder": "SL"
+    },
+    {
+      "name": "242 barglers",
+      "folder": "SL"
+    },
+    {
+      "name": "243 made muck of",
+      "folder": "SL"
+    },
+    {
+      "name": "244 rotary club",
+      "folder": "SL"
+    },
+    {
+      "name": "246 stantastic",
+      "folder": "SL"
+    },
+    {
+      "name": "247 all is full of love",
+      "folder": "SL"
+    },
+    {
+      "name": "248 interlocking",
+      "folder": "SL"
+    },
+    {
+      "name": "249 master control",
+      "folder": "SL"
+    },
+    {
+      "name": "252 crammy plus",
+      "folder": "SL"
+    },
+    {
+      "name": "254 rhetorical device",
+      "folder": "SL"
+    },
+    {
+      "name": "255 chandeliers",
+      "folder": "SL"
+    },
+    {
+      "name": "256 blocky",
+      "folder": "SL"
+    },
+    {
+      "name": "257 headspace",
+      "folder": "SL"
+    },
+    {
+      "name": "258 tooth skin",
+      "folder": "SL"
+    },
+    {
+      "name": "259 please securely fasten the controller wrist strap",
+      "folder": "SL"
+    },
+    {
+      "name": "260 interior node",
+      "folder": "SL"
+    },
+    {
+      "name": "261 precursor",
+      "folder": "SL"
+    },
+    {
+      "name": "262 rough around the edges",
+      "folder": "SL"
+    },
+    {
+      "name": "263 two trick pony",
+      "folder": "SL"
+    },
+    {
+      "name": "264 snaggy cleft",
+      "folder": "SL"
+    },
+    {
+      "name": "265 just keep it moving",
+      "folder": "SL"
+    },
+    {
+      "name": "266 it's more scared of you than you are of it",
+      "folder": "SL"
+    },
+    {
+      "name": "268 interference pattern",
+      "folder": "SL"
+    },
+    {
+      "name": "269 a bang and a whimper",
+      "folder": "SL"
+    },
+    {
+      "name": "270 the return of forever",
+      "folder": "SL"
+    },
+    {
+      "name": "271 fear is the little-death",
+      "folder": "SL"
+    },
+    {
+      "name": "272 concealed",
+      "folder": "SL"
+    },
+    {
+      "name": "273 hungry, hungry ninjas",
+      "folder": "SL"
+    },
+    {
+      "name": "274 the larch",
+      "folder": "SL"
+    },
+    {
+      "name": "275 I hope that someone gets my ninja in a bottle",
+      "folder": "SL"
+    },
+    {
+      "name": "276 dizzy spell",
+      "folder": "SL"
+    },
+    {
+      "name": "277 unfinished business",
+      "folder": "SL"
+    },
+    {
+      "name": "278 chev",
+      "folder": "SL"
+    },
+    {
+      "name": "279 sudden valley",
+      "folder": "SL"
+    },
+    {
+      "name": "281 blatant danger",
+      "folder": "SL"
+    },
+    {
+      "name": "282 blue-grey cross",
+      "folder": "SL"
+    },
+    {
+      "name": "283 softshoe",
+      "folder": "SL"
+    },
+    {
+      "name": "284 shell game",
+      "folder": "SL"
+    },
+    {
+      "name": "286 electric jellyfish",
+      "folder": "SL"
+    },
+    {
+      "name": "287 killswitch",
+      "folder": "SL"
+    },
+    {
+      "name": "288 you needn't worry about your reward",
+      "folder": "SL"
+    },
+    {
+      "name": "289 snuff box",
+      "folder": "SL"
+    },
+    {
+      "name": "291 dilated",
+      "folder": "SL"
+    },
+    {
+      "name": "292 twice removed",
+      "folder": "SL"
+    },
+    {
+      "name": "294 access tunnel",
+      "folder": "SL"
+    },
+    {
+      "name": "295 a precipice for disaster",
+      "folder": "SL"
+    },
+    {
+      "name": "296 back to school",
+      "folder": "SL"
+    },
+    {
+      "name": "297 attrition",
+      "folder": "SL"
+    },
+    {
+      "name": "298 unsuperimpossible",
+      "folder": "SL"
+    },
+    {
+      "name": "299 the almighty lorg",
+      "folder": "SL"
+    },
+    {
+      "name": "300 gronnick",
+      "folder": "SL"
+    },
+    {
+      "name": "301 deku",
+      "folder": "SL"
+    },
+    {
+      "name": "302 unsafe passage",
+      "folder": "SL"
+    },
+    {
+      "name": "303 blast ceiling",
+      "folder": "SL"
+    },
+    {
+      "name": "304 fort cut",
+      "folder": "SL"
+    },
+    {
+      "name": "305 binary star",
+      "folder": "SL"
+    },
+    {
+      "name": "307 fire eater",
+      "folder": "SL"
+    },
+    {
+      "name": "308 meandering",
+      "folder": "SL"
+    },
+    {
+      "name": "309 the jaggies",
+      "folder": "SL"
+    },
+    {
+      "name": "310 artifactory",
+      "folder": "SL"
+    },
+    {
+      "name": "311 metaphysical",
+      "folder": "SL"
+    },
+    {
+      "name": "313 prescience",
+      "folder": "SL"
+    },
+    {
+      "name": "314 gobias industries",
+      "folder": "SL"
+    },
+    {
+      "name": "315 goldaholics anonymous",
+      "folder": "SL"
+    },
+    {
+      "name": "316 ode to a small lump of green putty",
+      "folder": "SL"
+    },
+    {
+      "name": "317 stratego",
+      "folder": "SL"
+    },
+    {
+      "name": "318 the valley of the shadow",
+      "folder": "SL"
+    },
+    {
+      "name": "319 central processing south",
+      "folder": "SL"
+    },
+    {
+      "name": "321 control freak",
+      "folder": "SL"
+    },
+    {
+      "name": "322 remain calm",
+      "folder": "SL"
+    },
+    {
+      "name": "323 losing control",
+      "folder": "SL"
+    },
+    {
+      "name": "324 deathophobia",
+      "folder": "SL"
+    },
+    {
+      "name": "325 cumulonimble",
+      "folder": "SL"
+    },
+    {
+      "name": "326 feeding time",
+      "folder": "SL"
+    },
+    {
+      "name": "328 bluffs",
+      "folder": "SL"
+    },
+    {
+      "name": "329 chipset",
+      "folder": "SL"
+    },
+    {
+      "name": "330 sabot-n-der",
+      "folder": "SL"
+    },
+    {
+      "name": "333 the minerals",
+      "folder": "SL"
+    },
+    {
+      "name": "334 slinky wizard",
+      "folder": "SL"
+    },
+    {
+      "name": "335 rocket cacciatore",
+      "folder": "SL"
+    },
+    {
+      "name": "336 cavern",
+      "folder": "SL"
+    },
+    {
+      "name": "338 i set my mind in motion",
+      "folder": "SL"
+    },
+    {
+      "name": "339 mo' mentum",
+      "folder": "SL"
+    },
+    {
+      "name": "340 left branch",
+      "folder": "SL"
+    },
+    {
+      "name": "341 pear-shaped",
+      "folder": "SL"
+    },
+    {
+      "name": "342 solar power",
+      "folder": "SL"
+    },
+    {
+      "name": "343 stacks of wax",
+      "folder": "SL"
+    },
+    {
+      "name": "344 explosivo",
+      "folder": "SL"
+    },
+    {
+      "name": "345 leptons",
+      "folder": "SL"
+    },
+    {
+      "name": "346 spy row die rah",
+      "folder": "SL"
+    },
+    {
+      "name": "347 exposed faces",
+      "folder": "SL"
+    },
+    {
+      "name": "348 flying circus",
+      "folder": "SL"
+    },
+    {
+      "name": "349 don't fear the reaper",
+      "folder": "SL"
+    },
+    {
+      "name": "351 diamond caves",
+      "folder": "SL"
+    },
+    {
+      "name": "352 vitamin yay",
+      "folder": "SL"
+    },
+    {
+      "name": "353 timing 101",
+      "folder": "SL"
+    },
+    {
+      "name": "354 alignment",
+      "folder": "SL"
+    },
+    {
+      "name": "355 post-cyberpocalypse",
+      "folder": "SL"
+    },
+    {
+      "name": "356 jumping through hoops",
+      "folder": "SL"
+    },
+    {
+      "name": "357 swirl",
+      "folder": "SL"
+    },
+    {
+      "name": "359 vaguely satanic chamber",
+      "folder": "SL"
+    },
+    {
+      "name": "360 simplicity itself",
+      "folder": "SL"
+    },
+    {
+      "name": "361 target",
+      "folder": "SL"
+    },
+    {
+      "name": "363 the longest yard",
+      "folder": "SL"
+    },
+    {
+      "name": "364 hard sync",
+      "folder": "SL"
+    },
+    {
+      "name": "365 by misadventure",
+      "folder": "SL"
+    },
+    {
+      "name": "366 trekker",
+      "folder": "SL"
+    },
+    {
+      "name": "367 like liquid peppermint",
+      "folder": "SL"
+    },
+    {
+      "name": "368 the long and winding road that leads to your death",
+      "folder": "SL"
+    },
+    {
+      "name": "369 dance",
+      "folder": "SL"
+    },
+    {
+      "name": "370 grudge match",
+      "folder": "SL"
+    },
+    {
+      "name": "371 twinkle twinkle little gold",
+      "folder": "SL"
+    },
+    {
+      "name": "372 rage-o-hol",
+      "folder": "SL"
+    },
+    {
+      "name": "373 original exit strategy",
+      "folder": "SL"
+    },
+    {
+      "name": "374 heavenly s-word",
+      "folder": "SL"
+    },
+    {
+      "name": "377 glutton for punishment",
+      "folder": "SL"
+    },
+    {
+      "name": "378 in the depths of the Slor",
+      "folder": "SL"
+    },
+    {
+      "name": "379 core",
+      "folder": "SL"
+    },
+    {
+      "name": "380 assisted suicide",
+      "folder": "SL"
+    },
+    {
+      "name": "381 cyclic redundancy",
+      "folder": "SL"
+    },
+    {
+      "name": "382 sumo",
+      "folder": "SL"
+    },
+    {
+      "name": "383 wafflish",
+      "folder": "SL"
+    },
+    {
+      "name": "384 evac 2",
+      "folder": "SL"
+    },
+    {
+      "name": "385 fear is the mind-killer",
+      "folder": "SL"
+    },
+    {
+      "name": "386 sucks to your asmar",
+      "folder": "SL"
+    },
+    {
+      "name": "387 spring training",
+      "folder": "SL"
+    },
+    {
+      "name": "388 skip it",
+      "folder": "SL"
+    },
+    {
+      "name": "389 slurmy slonka",
+      "folder": "SL"
+    },
+    {
+      "name": "390 deep grey sea",
+      "folder": "SL"
+    },
+    {
+      "name": "391 tread on my dreams",
+      "folder": "SL"
+    },
+    {
+      "name": "392 monument",
+      "folder": "SL"
+    },
+    {
+      "name": "393 methodical B",
+      "folder": "SL"
+    },
+    {
+      "name": "395 mortal pong",
+      "folder": "SL"
+    },
+    {
+      "name": "396 level with no name",
+      "folder": "SL"
+    },
+    {
+      "name": "397 the other matrix",
+      "folder": "SL"
+    },
+    {
+      "name": "398 like the circles that you find in the windmills of your mind",
+      "folder": "SL"
+    },
+    {
+      "name": "399 requiem for a ninja",
+      "folder": "SL"
+    },
+    {
+      "name": "401 cavern and shirley",
+      "folder": "SL"
+    },
+    {
+      "name": "402 trench warfare",
+      "folder": "SL"
+    },
+    {
+      "name": "403 upstream",
+      "folder": "SL"
+    },
+    {
+      "name": "404 crag",
+      "folder": "SL"
+    },
+    {
+      "name": "405 preschool of hard knocks",
+      "folder": "SL"
+    },
+    {
+      "name": "406 halfway",
+      "folder": "SL"
+    },
+    {
+      "name": "408 enclave",
+      "folder": "SL"
+    },
+    {
+      "name": "409 tremors",
+      "folder": "SL"
+    },
+    {
+      "name": "411 polkaroony",
+      "folder": "SL"
+    },
+    {
+      "name": "412 go for self",
+      "folder": "SL"
+    },
+    {
+      "name": "413 mine field",
+      "folder": "SL"
+    },
+    {
+      "name": "416 pincer movement",
+      "folder": "SL"
+    },
+    {
+      "name": "417 grand prix",
+      "folder": "SL"
+    },
+    {
+      "name": "418 confined",
+      "folder": "SL"
+    },
+    {
+      "name": "419 into the lion's nest",
+      "folder": "SL"
+    },
+    {
+      "name": "421 simplicities",
+      "folder": "SL"
+    },
+    {
+      "name": "422 dip down",
+      "folder": "SL"
+    },
+    {
+      "name": "423 stalag might",
+      "folder": "SL"
+    },
+    {
+      "name": "424 pit of despair",
+      "folder": "SL"
+    },
+    {
+      "name": "426 breathing room",
+      "folder": "SL"
+    },
+    {
+      "name": "428 don't go there",
+      "folder": "SL"
+    },
+    {
+      "name": "429 twotone",
+      "folder": "SL"
+    },
+    {
+      "name": "431 the crucible",
+      "folder": "SL"
+    },
+    {
+      "name": "432 victory lap",
+      "folder": "SL"
+    },
+    {
+      "name": "433 infiltrate",
+      "folder": "SL"
+    },
+    {
+      "name": "435 ninja's first rush job",
+      "folder": "SL"
+    },
+    {
+      "name": "436 band of gold",
+      "folder": "SL"
+    },
+    {
+      "name": "437 MCP",
+      "folder": "SL"
+    },
+    {
+      "name": "438 path planner",
+      "folder": "SL"
+    },
+    {
+      "name": "439 the ringer",
+      "folder": "SL"
+    },
+    {
+      "name": "440 a neural net processor",
+      "folder": "SL"
+    },
+    {
+      "name": "441 underground agent",
+      "folder": "SL"
+    },
+    {
+      "name": "442 genius",
+      "folder": "SL"
+    },
+    {
+      "name": "444 wrong side of the road",
+      "folder": "SL"
+    },
+    {
+      "name": "446 deathtraps",
+      "folder": "SL"
+    },
+    {
+      "name": "447 tantalizingly irresistible",
+      "folder": "SL"
+    },
+    {
+      "name": "448 pussyfooting",
+      "folder": "SL"
+    },
+    {
+      "name": "449 unadulterated (exterior)",
+      "folder": "SL"
+    },
+    {
+      "name": "451 windswept",
+      "folder": "SL"
+    },
+    {
+      "name": "452 spassable",
+      "folder": "SL"
+    },
+    {
+      "name": "454 wall to wall",
+      "folder": "SL"
+    },
+    {
+      "name": "455 picturesque",
+      "folder": "SL"
+    },
+    {
+      "name": "457 buzzbomb",
+      "folder": "SL"
+    },
+    {
+      "name": "458 vertizontal",
+      "folder": "SL"
+    },
+    {
+      "name": "459 the child out of wedlock",
+      "folder": "SL"
+    },
+    {
+      "name": "460 sgruts",
+      "folder": "SL"
+    },
+    {
+      "name": "461 out of the blue",
+      "folder": "SL"
+    },
+    {
+      "name": "462 hanger",
+      "folder": "SL"
+    },
+    {
+      "name": "463 subterfuge",
+      "folder": "SL"
+    },
+    {
+      "name": "464 ziggurat vertigo",
+      "folder": "SL"
+    },
+    {
+      "name": "466 boom",
+      "folder": "SL"
+    },
+    {
+      "name": "467 tyrell 2",
+      "folder": "SL"
+    },
+    {
+      "name": "468 rocket run",
+      "folder": "SL"
+    },
+    {
+      "name": "469 superliminal 6",
+      "folder": "SL"
+    },
+    {
+      "name": "471 automatapaella",
+      "folder": "SL"
+    },
+    {
+      "name": "472 trench run 2",
+      "folder": "SL"
+    },
+    {
+      "name": "473 stantasy",
+      "folder": "SL"
+    },
+    {
+      "name": "474 a maze zinger",
+      "folder": "SL"
+    },
+    {
+      "name": "475 zeb rah",
+      "folder": "SL"
+    },
+    {
+      "name": "476 stippled hallway",
+      "folder": "SL"
+    },
+    {
+      "name": "477 you might be on B squad",
+      "folder": "SL"
+    },
+    {
+      "name": "478 101 damnations",
+      "folder": "SL"
+    },
+    {
+      "name": "479 coming down is the hardest thing",
+      "folder": "SL"
+    },
+    {
+      "name": "480 zappa",
+      "folder": "SL"
+    },
+    {
+      "name": "481 chaotic constellation",
+      "folder": "SL"
+    },
+    {
+      "name": "482 claustro",
+      "folder": "SL"
+    },
+    {
+      "name": "484 the squigglies",
+      "folder": "SL"
+    },
+    {
+      "name": "485 chock full of crazy",
+      "folder": "SL"
+    },
+    {
+      "name": "487 floating fortress",
+      "folder": "SL"
+    },
+    {
+      "name": "488 pinched",
+      "folder": "SL"
+    },
+    {
+      "name": "489 central processing",
+      "folder": "SL"
+    },
+    {
+      "name": "490 silverfish",
+      "folder": "SL"
+    },
+    {
+      "name": "491 biphase edit",
+      "folder": "SL"
+    },
+    {
+      "name": "492 exit strategy iv",
+      "folder": "SL"
+    },
+    {
+      "name": "493 swarm weather",
+      "folder": "SL"
+    },
+    {
+      "name": "494 the tester",
+      "folder": "SL"
+    },
+    {
+      "name": "495 plateau",
+      "folder": "SL"
+    },
+    {
+      "name": "496 quantic",
+      "folder": "SL"
+    },
+    {
+      "name": "498 watch your step",
+      "folder": "SL"
+    },
+    {
+      "name": "499 cubish",
+      "folder": "SL"
+    },
+    {
+      "name": "500 strongbox",
+      "folder": "SL"
+    },
+    {
+      "name": "501 ruined",
+      "folder": "SL"
+    },
+    {
+      "name": "502 b-cakes",
+      "folder": "SL"
+    },
+    {
+      "name": "503 a perfectly cromulent world",
+      "folder": "SL"
+    },
+    {
+      "name": "504 ever upward",
+      "folder": "SL"
+    },
+    {
+      "name": "505 stitch n ditch",
+      "folder": "SL"
+    },
+    {
+      "name": "506 runoffs",
+      "folder": "SL"
+    },
+    {
+      "name": "507 brain n-eurysm",
+      "folder": "SL"
+    },
+    {
+      "name": "508 close encounters",
+      "folder": "SL"
+    },
+    {
+      "name": "509 pinchy",
+      "folder": "SL"
+    },
+    {
+      "name": "510 squarely",
+      "folder": "SL"
+    },
+    {
+      "name": "511 spossible",
+      "folder": "SL"
+    },
+    {
+      "name": "512 crunch timing",
+      "folder": "SL"
+    },
+    {
+      "name": "514 praise the lorg",
+      "folder": "SL"
+    },
+    {
+      "name": "515 rippled",
+      "folder": "SL"
+    },
+    {
+      "name": "516 manimal lust 2_ return of the franchise",
+      "folder": "SL"
+    },
+    {
+      "name": "517 disrecognized space",
+      "folder": "SL"
+    },
+    {
+      "name": "518 thank the glord",
+      "folder": "SL"
+    },
+    {
+      "name": "519 scrum",
+      "folder": "SL"
+    },
+    {
+      "name": "520 oubliette",
+      "folder": "SL"
+    },
+    {
+      "name": "521 eruptive",
+      "folder": "SL"
+    },
+    {
+      "name": "522 pattern recognition",
+      "folder": "SL"
+    },
+    {
+      "name": "523 under pressure",
+      "folder": "SL"
+    },
+    {
+      "name": "524 zenith",
+      "folder": "SL"
+    },
+    {
+      "name": "525 n-trapment",
+      "folder": "SL"
+    },
+    {
+      "name": "526 sibilant S",
+      "folder": "SL"
+    },
+    {
+      "name": "528 lull fortress",
+      "folder": "SL"
+    },
+    {
+      "name": "529 the reason you broke your keyboard",
+      "folder": "SL"
+    },
+    {
+      "name": "530 boundish",
+      "folder": "SL"
+    },
+    {
+      "name": "531 platitude",
+      "folder": "SL"
+    },
+    {
+      "name": "532 the hidden fortress",
+      "folder": "SL"
+    },
+    {
+      "name": "533 totally skewed",
+      "folder": "SL"
+    },
+    {
+      "name": "534 fallout",
+      "folder": "SL"
+    },
+    {
+      "name": "535 great expectorations",
+      "folder": "SL"
+    },
+    {
+      "name": "536 lab",
+      "folder": "SL"
+    },
+    {
+      "name": "537 increnect",
+      "folder": "SL"
+    },
+    {
+      "name": "538 return trap",
+      "folder": "SL"
+    },
+    {
+      "name": "539 natty flow",
+      "folder": "SL"
+    },
+    {
+      "name": "540 get well soon lappy!",
+      "folder": "SL"
+    },
+    {
+      "name": "541 arterial crescendo",
+      "folder": "SL"
+    },
+    {
+      "name": "542 back and forth",
+      "folder": "SL"
+    },
+    {
+      "name": "543 Stores of Hell",
+      "folder": "SL"
+    },
+    {
+      "name": "544 hexactly",
+      "folder": "SL"
+    },
+    {
+      "name": "546 striving",
+      "folder": "SL"
+    },
+    {
+      "name": "547 death by murder device",
+      "folder": "SL"
+    },
+    {
+      "name": "549 the guidelines",
+      "folder": "SL"
+    },
+    {
+      "name": "551 fear of flying",
+      "folder": "SL"
+    },
+    {
+      "name": "552 the second-last straw",
+      "folder": "SL"
+    },
+    {
+      "name": "553 your second-worst nightmare",
+      "folder": "SL"
+    },
+    {
+      "name": "554 the punisher",
+      "folder": "SL"
+    },
+    {
+      "name": "555 the lowest highest point",
+      "folder": "SL"
+    },
+    {
+      "name": "556 intimidation",
+      "folder": "SL"
+    },
+    {
+      "name": "557 traction",
+      "folder": "SL"
+    },
+    {
+      "name": "558 beach head",
+      "folder": "SL"
+    },
+    {
+      "name": "559 insurmountable",
+      "folder": "SL"
+    },
+    {
+      "name": "560 a false sense of security",
+      "folder": "SL"
+    },
+    {
+      "name": "561 nbolism",
+      "folder": "SL"
+    },
+    {
+      "name": "562 funnely",
+      "folder": "SL"
+    },
+    {
+      "name": "563 unadulterated (interior)",
+      "folder": "SL"
+    },
+    {
+      "name": "564 paper thin walls",
+      "folder": "SL"
+    },
+    {
+      "name": "565 defunct",
+      "folder": "SL"
+    },
+    {
+      "name": "566 danger dance 1",
+      "folder": "SL"
+    },
+    {
+      "name": "567 out of the blue 4",
+      "folder": "SL"
+    },
+    {
+      "name": "568 laccolith",
+      "folder": "SL"
+    },
+    {
+      "name": "569 control yourself",
+      "folder": "SL"
+    },
+    {
+      "name": "571 contra",
+      "folder": "SL"
+    },
+    {
+      "name": "572 skeksis",
+      "folder": "SL"
+    },
+    {
+      "name": "573 shear",
+      "folder": "SL"
+    },
+    {
+      "name": "574 mazer",
+      "folder": "SL"
+    },
+    {
+      "name": "575 blastphemy",
+      "folder": "SL"
+    },
+    {
+      "name": "576 a deadly game of chess",
+      "folder": "SL"
+    },
+    {
+      "name": "577 i make paintings based on grids just like chuck close",
+      "folder": "SL"
+    },
+    {
+      "name": "578 death star",
+      "folder": "SL"
+    },
+    {
+      "name": "579 losing your mined",
+      "folder": "SL"
+    },
+    {
+      "name": "580 amortized",
+      "folder": "SL"
+    },
+    {
+      "name": "581 val-n-tine",
+      "folder": "SL"
+    },
+    {
+      "name": "582 daunting",
+      "folder": "SL"
+    },
+    {
+      "name": "584 one heck of a ride",
+      "folder": "SL"
+    },
+    {
+      "name": "585 accelera",
+      "folder": "SL"
+    },
+    {
+      "name": "586 hepped up",
+      "folder": "SL"
+    },
+    {
+      "name": "587 panic chamber",
+      "folder": "SL"
+    },
+    {
+      "name": "589 robot heaven",
+      "folder": "SL"
+    },
+    {
+      "name": "590 you can't take it with you",
+      "folder": "SL"
+    },
+    {
+      "name": "591 quixotic",
+      "folder": "SL"
+    },
+    {
+      "name": "592 crabbed and claw-like",
+      "folder": "SL"
+    },
+    {
+      "name": "593 pitcher plant",
+      "folder": "SL"
+    },
+    {
+      "name": "594 the last straw",
+      "folder": "SL"
+    },
+    {
+      "name": "595 around the world in 80 ways",
+      "folder": "SL"
+    },
+    {
+      "name": "596 a close shave",
+      "folder": "SL"
+    },
+    {
+      "name": "597 starfire",
+      "folder": "SL"
+    },
+    {
+      "name": "599 slippery trip hazard",
+      "folder": "SL"
+    }
+  ],
+  "errors": [],
+  "summary": {
+    "total_maps": 1310,
+    "simple_count": 249,
+    "complex_count": 1061,
+    "error_count": 0
+  }
+}
