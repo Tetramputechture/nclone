@@ -1,7 +1,6 @@
 """Unit tests for the simplified completion-focused reward system."""
 
 import unittest
-from unittest.mock import Mock, patch
 import numpy as np
 
 from ..reward_calculation.main_reward_calculator import RewardCalculator

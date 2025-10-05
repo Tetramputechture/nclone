@@ -9,7 +9,7 @@ mixins for better code organization and maintainability.
 import logging
 import numpy as np
 from gymnasium.spaces import box, Dict as SpacesDict
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import time
 
 from ..graph.common import N_MAX_NODES, E_MAX_EDGES
