@@ -183,35 +183,6 @@ class MazeGenerator(Map):
                     3, door_x, door_y, door_orientation, 0, switch_x, switch_y
                 )
 
-    def _place_gold(self):
-        """Place gold pieces in valid positions."""
-        valid_positions = []
-        for y in range(self.height):
-            for x in range(self.width):
-                if self.grid[y][x] == 0:
-                    # Don't place gold at ninja spawn or switch
-                    ninja_pixel_x, ninja_pixel_y = self._to_screen_coordinates(
-                        x + 1, y + 1, NINJA_SPAWN_OFFSET_PX
-                    )
-                    switch_pixel_x, switch_pixel_y = self._to_screen_coordinates(
-                        x + 1, y + 1, SWITCH_OFFSET_PX
-                    )
-                    if (ninja_pixel_x, ninja_pixel_y) != (
-                        self.ninja_spawn_x,
-                        self.ninja_spawn_y,
-                    ) and (switch_pixel_x, switch_pixel_y) != (
-                        self.ninja_spawn_x,
-                        self.ninja_spawn_y,
-                    ):
-                        valid_positions.append((x, y))
-
-        count = min(self.MAX_GOLD, len(valid_positions))
-        selected_positions = self.rng.sample(valid_positions, count)
-
-        # Add gold entities using Map's add_entity method
-        for x, y in selected_positions:
-            self.add_entity(2, (x + 1), (y + 1), 0, 0)
-
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a complete maze with entities.
 
@@ -220,7 +191,6 @@ class MazeGenerator(Map):
         2. Carve paths through the walls using a depth-first search algorithm
         3. Place the ninja spawn point near the left side
         4. Place the exit door and switch in valid positions
-        5. Add gold pieces in valid positions
         6. Add random entities outside the playspace
 
         Args:
@@ -259,7 +229,6 @@ class MazeGenerator(Map):
         # Place entities in the carved maze
         self._place_ninja()
         self._place_exit()
-        self._place_gold()
 
         # Add random entities outside the playspace
         # For maze, playspace is the maze area plus some padding

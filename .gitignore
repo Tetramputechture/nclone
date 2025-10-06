@@ -38,3 +38,11 @@ datasets/test_suite/**/*.pkl
 # OS
 .DS_Store
 Thumbs.db
+
+*.bin
+*.txt
+.venv/
+
+nclone/maps/official/
+
+_version.py

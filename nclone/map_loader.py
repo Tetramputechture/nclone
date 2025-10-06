@@ -71,6 +71,11 @@ class MapLoader:
         exit_door_count = self.sim.map_data[1156]
         Entity.entity_counts = [0] * 40  # Reset global entity counts
         while index < len(self.sim.map_data):
+            # Check if we have enough data for a complete entity (5 values needed)
+            if index + 4 >= len(self.sim.map_data):
+                # Incomplete entity data at end of map_data, skip it
+                break
+
             entity_type = self.sim.map_data[index]
             xcoord = self.sim.map_data[index + 1]
             ycoord = self.sim.map_data[index + 2]
