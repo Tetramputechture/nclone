@@ -91,15 +91,14 @@ class EnvMapLoader:
                 [
                     # "JUMP_REQUIRED",
                     # "MAZE",
-                    # "SIMPLE_HORIZONTAL_NO_BACKTRACK",
+                    "SIMPLE_HORIZONTAL_NO_BACKTRACK",
                     # "MULTI_CHAMBER",
                     # "MINE_MAZE",
-                    "SWITCH_PUZZLE",
                 ]
             )
             self.current_map_name = f"eval_map_{uuid.uuid4()}"
-            # self.nplay_headless.load_random_map(self.random_map_type)
-            self.load_random_categorized_map()
+            self.nplay_headless.load_random_map(self.random_map_type)
+            # self.load_random_categorized_map()
             return
 
         # Load the test map 'doortest' for training

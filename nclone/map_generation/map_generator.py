@@ -9,7 +9,6 @@ from .map_single_chamber import SingleChamberGenerator
 from .map_multi_chamber import MultiChamberGenerator
 from .map_jump_required import MapJumpRequired
 from .map_mine_maze import MapMineMaze
-from .map_switch_puzzle import SwitchPuzzleGenerator
 
 
 def generate_map(
@@ -19,14 +18,13 @@ def generate_map(
         "MULTI_CHAMBER",
         "JUMP_REQUIRED",
         "MINE_MAZE",
-        "SWITCH_PUZZLE",
     ] = "MAZE",
     seed: Optional[int] = None,
 ) -> Map:
     """Generate a level of the specified type.
 
     Args:
-        level_type: Type of level to generate ("MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK", "MULTI_CHAMBER", "JUMP_REQUIRED", "MINE_MAZE", or "SWITCH_PUZZLE")
+        level_type: Type of level to generate ("MAZE", "SIMPLE_HORIZONTAL_NO_BACKTRACK", "MULTI_CHAMBER", "JUMP_REQUIRED", "MINE_MAZE")
         width: Width of the map (only used for maze generation)
         height: Height of the map (only used for maze generation)
         seed: Random seed for reproducible generation
@@ -47,9 +45,6 @@ def generate_map(
         return generator.generate()
     elif level_type == "MINE_MAZE":
         generator = MapMineMaze(seed=seed)
-        return generator.generate()
-    elif level_type == "SWITCH_PUZZLE":
-        generator = SwitchPuzzleGenerator(seed=seed)
         return generator.generate()
 
 
