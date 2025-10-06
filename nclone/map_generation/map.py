@@ -139,7 +139,9 @@ class Map:
         elif entity_type in (6, 8):  # Locked door or trap door
             if switch_x is None or switch_y is None:
                 raise ValueError(f"Door type {entity_type} requires switch coordinates")
+            # Add entity data and switch coordinates
             self.entity_data.extend(entity_data)
+            self.entity_data.extend([switch_screen_x, switch_screen_y, 0, 0])
         else:
             self.entity_data.extend(entity_data)
 
