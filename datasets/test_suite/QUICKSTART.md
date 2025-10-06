@@ -23,7 +23,7 @@ print(f"Seed: {level['seed']}")
 ### 2. Use TestSuiteLoader
 
 ```python
-from npp_rl.evaluation import TestSuiteLoader
+from nclone.evaluation import TestSuiteLoader
 
 # Initialize
 loader = TestSuiteLoader('datasets/test_suite')
@@ -42,7 +42,7 @@ print(f"Simple levels: {loader.get_level_count('simple')}")
 ### 3. Load into Environment
 
 ```python
-from npp_rl.evaluation import TestSuiteLoader
+from nclone.evaluation import TestSuiteLoader
 from nclone.gym_environment import NppEnvironment
 from nclone.gym_environment.config import EnvironmentConfig
 

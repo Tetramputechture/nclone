@@ -175,10 +175,30 @@ seed = level['seed']
 description = level['metadata']['description']
 ```
 
+### Using the Test Suite Loader
+
+The test suite includes a Python loader utility for easy access:
+
+```python
+from nclone.evaluation import TestSuiteLoader
+
+# Load test suite
+loader = TestSuiteLoader('datasets/test_suite')
+
+# Get all simple levels
+simple_levels = loader.get_category('simple')
+
+# Get a specific level
+level = loader.get_level('simple_025')  # Locked door level
+
+# Load into environment (if using npp-rl)
+env.unwrapped.nplay_headless.load_map_from_map_data(level['map_data'])
+```
+
 ### Running Test Suite Loader CLI
 
 ```bash
-python -m npp_rl.evaluation.test_suite_loader /path/to/test_suite
+python -m nclone.evaluation.test_suite_loader datasets/test_suite
 ```
 
 This will display:
@@ -191,9 +211,9 @@ This will display:
 The test suite was generated using the deterministic generation script:
 
 ```bash
-cd /workspace/nclone
+cd nclone
 python -m nclone.map_generation.generate_test_suite_maps \
-    --output_dir /workspace/npp-rl/datasets/test_suite
+    --output_dir datasets/test_suite
 ```
 
 ### Reproducibility
