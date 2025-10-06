@@ -57,11 +57,39 @@ class TestSuiteGenerator:
             'exploration': []
         }
     
+    def _add_locked_door_to_corridor(self, map_gen: Map, corridor_x: int, corridor_y: int, 
+                                      switch_x: int, switch_y: int, orientation: int = 4) -> None:
+        """Add a locked door blocking a corridor with its switch placed elsewhere.
+        
+        Args:
+            map_gen: Map instance to add door to
+            corridor_x, corridor_y: Grid position where door blocks passage
+            switch_x, switch_y: Grid position of the switch that opens this door
+            orientation: Door orientation (0 or 4 for vertical, others for horizontal)
+        """
+        map_gen.add_entity(6, corridor_x, corridor_y, orientation=orientation, mode=2,
+                          switch_x=switch_x, switch_y=switch_y)
+    
+    def _find_empty_tiles_in_region(self, map_gen: Map, x1: int, y1: int, 
+                                     x2: int, y2: int) -> List[Tuple[int, int]]:
+        """Find all empty (walkable) tiles in a rectangular region.
+        
+        Returns:
+            List of (x, y) coordinates of empty tiles
+        """
+        empty_tiles = []
+        for y in range(y1, min(y2 + 1, 25)):
+            for x in range(x1, min(x2 + 1, 44)):
+                idx = x + y * 43
+                if 0 <= idx < len(map_gen.tile_data) and map_gen.tile_data[idx] == 0:
+                    empty_tiles.append((x, y))
+        return empty_tiles
+    
     def generate_simple_levels(self, count: int = 50) -> None:
         """Generate simple levels: single switch, direct path to exit.
         
         These levels test basic navigation and switch activation.
-        Progression: flat surfaces -> small vertical deviations -> require jump
+        Progression: flat surfaces -> small vertical deviations -> locked doors -> require jump
         
         Args:
             count: Number of simple levels to generate
@@ -71,13 +99,16 @@ class TestSuiteGenerator:
         for i in range(count):
             seed = self.SIMPLE_BASE_SEED + i
             
-            # First 20: very simple flat levels (minimal chamber)
-            if i < 20:
+            # First 15: very simple flat levels (minimal chamber with exit switch only)
+            if i < 15:
                 map_gen = self._create_minimal_simple_level(seed, i)
-            # Next 15: single chamber with vertical deviations
-            elif i < 35:
+            # Next 10: single chamber with vertical deviations
+            elif i < 25:
                 map_gen = self._create_single_chamber_level(seed, with_deviation=True)
-            # Last 15: require a jump
+            # Next 15: simple locked door (introduces type 6 doors)
+            elif i < 40:
+                map_gen = self._create_simple_locked_door_level(seed, i - 25)
+            # Last 10: require a jump
             else:
                 map_gen = self._create_simple_jump_level(seed)
             
@@ -88,7 +119,7 @@ class TestSuiteGenerator:
                 'map_data': map_gen.map_data(),
                 'metadata': {
                     'description': self._get_simple_description(i),
-                    'difficulty_tier': 1 if i < 20 else (2 if i < 35 else 3)
+                    'difficulty_tier': 1 if i < 15 else (2 if i < 25 else (3 if i < 40 else 4))
                 }
             }
             self.levels['simple'].append(level_data)
@@ -173,12 +204,68 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
     
+    def _create_simple_locked_door_level(self, seed: int, index: int) -> Map:
+        """Create a simple level with one locked door blocking progress.
+        
+        Layout: Ninja -> Switch -> Locked Door -> Exit
+        """
+        map_gen = Map(seed=seed)
+        rng = map_gen.rng
+        
+        # Create a simple corridor with locked door
+        width = 16 + (index % 8)
+        height = 3 + (index % 2)
+        
+        # Center the corridor
+        start_x = (43 - width) // 2
+        start_y = (24 - height) // 2
+        
+        # Fill everything with walls
+        for y in range(25):
+            for x in range(44):
+                map_gen.set_tile(x, y, 1)
+        
+        # Create corridor
+        for y in range(start_y, start_y + height):
+            for x in range(start_x, start_x + width):
+                map_gen.set_tile(x, y, 0)
+        
+        # Place ninja at start
+        ninja_x = start_x
+        ninja_y = start_y + height - 1
+        
+        # Place switch in first third
+        switch_x = start_x + width // 4
+        switch_y = start_y + height - 1
+        
+        # Place locked door in middle (blocks passage)
+        door_x = start_x + width // 2
+        door_y = start_y + height - 1
+        
+        # Place exit at end
+        exit_x = start_x + width - 2
+        exit_y = start_y + height - 1
+        exit_switch_x = start_x + 3 * width // 4
+        exit_switch_y = start_y + height - 1
+        
+        map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=1)
+        
+        # Add locked door (type 6) - must collect switch before passing
+        self._add_locked_door_to_corridor(map_gen, door_x, door_y, switch_x, switch_y, orientation=4)
+        
+        # Add exit door with its switch (type 3 + 4)
+        map_gen.add_entity(3, exit_x, exit_y, 0, 0, exit_switch_x, exit_switch_y)
+        
+        return map_gen
+    
     def _get_simple_description(self, index: int) -> str:
         """Get description for simple level based on index."""
-        if index < 20:
-            return "Minimal chamber: ninja on one side, switch in middle, door on other side"
-        elif index < 35:
-            return "Single chamber with vertical deviations, single switch"
+        if index < 15:
+            return "Minimal chamber: ninja -> exit switch -> door (no locked doors)"
+        elif index < 25:
+            return "Single chamber with vertical deviations, exit switch only"
+        elif index < 40:
+            return "Corridor with locked door: must collect switch to pass, then reach exit"
         else:
             return "Simple jump required to reach switch or exit"
     
