@@ -27,6 +27,7 @@ from .map_jump_required import MapJumpRequired
 from .map_maze import MazeGenerator
 from .map_multi_chamber import MultiChamberGenerator
 from .map_mine_maze import MapMineMaze
+from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 class TestSuiteGenerator:
@@ -136,12 +137,12 @@ class TestSuiteGenerator:
         height = 1 + (index % 3)  # 1-3 tiles high
         
         # Center the chamber
-        start_x = (43 - width) // 2
-        start_y = (24 - height) // 2
+        start_x = (MAP_TILE_WIDTH - width) // 2
+        start_y = (MAP_TILE_HEIGHT - height) // 2
         
         # Fill everything with walls first
-        for y in range(25):
-            for x in range(44):
+        for y in range(MAP_TILE_HEIGHT):
+            for x in range(MAP_TILE_WIDTH):
                 map_gen.set_tile(x, y, 1)
         
         # Create empty chamber
@@ -217,12 +218,12 @@ class TestSuiteGenerator:
         height = 3 + (index % 2)
         
         # Center the corridor
-        start_x = (43 - width) // 2
-        start_y = (24 - height) // 2
+        start_x = (MAP_TILE_WIDTH - width) // 2
+        start_y = (MAP_TILE_HEIGHT - height) // 2
         
         # Fill everything with walls
-        for y in range(25):
-            for x in range(44):
+        for y in range(MAP_TILE_HEIGHT):
+            for x in range(MAP_TILE_WIDTH):
                 map_gen.set_tile(x, y, 1)
         
         # Create corridor

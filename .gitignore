@@ -39,10 +39,17 @@ datasets/test_suite/**/*.pkl
 .DS_Store
 Thumbs.db
 
+# Binary and text files
 *.bin
 *.txt
 .venv/
 
+# Maps
 nclone/maps/official/
 
+# Version file
 _version.py
+nclone/_version.py
+
+# OpenHands
+.openhands/

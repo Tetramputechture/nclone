@@ -103,7 +103,12 @@ class MapLoader:
                     ] = []  # Initialize list for new entity type
                 self.sim.entity_dic[entity_type].append(entity)
                 self.sim.grid_entity[entity.cell].append(entity)
-            index += 5
+            
+            # Entity types 6 (locked door) and 8 (trap door) use 9 bytes instead of 5
+            if entity_type in (6, 8):
+                index += 9
+            else:
+                index += 5
 
         for entity_list in self.sim.entity_dic.values():
             for entity_instance in entity_list:
