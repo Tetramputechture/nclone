@@ -106,7 +106,7 @@ class EnvMapLoader:
 
             # Get the current level ID and load it
             level_id = self._test_suite_levels[self._test_suite_index]
-            loader = TestSuiteLoader("datasets/test_suite")
+            loader = TestSuiteLoader("datasets/test")
             level = loader.get_level(level_id)
             self.nplay_headless.load_map_from_map_data(level["map_data"])
             # print(
@@ -169,8 +169,8 @@ class EnvMapLoader:
         metadata_path = (
             Path(__file__).parent.parent.parent
             / "datasets"
-            / "test_suite"
-            / "test_suite_metadata.json"
+            / "test"
+            / "test_metadata.json"
         )
 
         if not metadata_path.exists():
