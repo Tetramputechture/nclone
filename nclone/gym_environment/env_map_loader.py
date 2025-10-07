@@ -108,12 +108,15 @@ class EnvMapLoader:
             level_id = self._test_suite_levels[self._test_suite_index]
             loader = TestSuiteLoader("datasets/test_suite")
             level = loader.get_level(level_id)
-            self.nplay_headless.load_map_from_map_data(level["map_data"])
-            # self.nplay_headless.load_map_from_map_data(
-            #     self._test_suite_generator._create_minimal_simple_level(
-            #         1, 13
-            #     ).map_data()
-            # )
+            # self.nplay_headless.load_map_from_map_data(level["map_data"])
+            print(
+                f"Loading level with parameters: {1 + self._test_suite_index}, {self._test_suite_index}"
+            )
+            self.nplay_headless.load_map_from_map_data(
+                self._test_suite_generator._create_tiny_maze(
+                    1 + self._test_suite_index
+                ).map_data()
+            )
 
             # Update state
             self.current_map_name = level_id

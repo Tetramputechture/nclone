@@ -210,19 +210,33 @@ class TestSuiteGenerator:
         width = rng.randint(3, max_width)
         height = rng.randint(1, max_height)
 
-        # Center the chamber
-        start_x = (MAP_TILE_WIDTH - width) // 2
-        start_y = (MAP_TILE_HEIGHT - height) // 2
+        # Random offset for the chamber, ensuring walls fit within map bounds
+        # Need space for: wall (-1), chamber (width/height), wall (+width/+height)
+        max_start_x = MAP_TILE_WIDTH - width - 1
+        max_start_y = MAP_TILE_HEIGHT - height - 1
+        start_x = rng.randint(1, max_start_x)
+        start_y = rng.randint(1, max_start_y)
 
-        # Fill everything with walls first
-        for y in range(MAP_TILE_HEIGHT):
-            for x in range(MAP_TILE_WIDTH):
-                map_gen.set_tile(x, y, 1)
+        # Fill everything with walls first (using type 1 - full solid)
+        should_fill_walls = rng.choice([True, False])
+        if should_fill_walls:
+            for y in range(MAP_TILE_HEIGHT):
+                for x in range(MAP_TILE_WIDTH):
+                    map_gen.set_tile(x, y, 1)
 
         # Create empty chamber
         for y in range(start_y, start_y + height):
             for x in range(start_x, start_x + width):
                 map_gen.set_tile(x, y, 0)
+
+        # Add decorative random walls on the chamber edges
+        map_gen.set_hollow_rectangle(
+            start_x - 1,
+            start_y - 1,
+            start_x + width,
+            start_y + height,
+            use_random_tiles_type=True,
+        )
 
         # Randomly choose ninja starting side
         ninja_on_left = rng.choice([True, False])
@@ -242,13 +256,18 @@ class TestSuiteGenerator:
 
         # Generate random positions with quarter-tile increments (0.25) for granular positioning
         num_positions = (width - 1) * 4  # Quadruple the positions with 0.25 increments
-        available_positions = [start_x + 1 + i * 0.25 for i in range(num_positions)]
+        available_positions = [start_x + i * 0.25 for i in range(num_positions)]
 
         # Remove positions too close to the edge of the playspace
         available_positions = [
             pos
             for pos in available_positions
-            if pos > start_x + 1 and pos < start_x + width - 1
+            if pos > start_x + 0.25 and pos < start_x + width - 0.25
+        ]
+
+        # Remove positions within 1 tile of ninja spawn
+        available_positions = [
+            pos for pos in available_positions if abs(pos - ninja_x) >= 1
         ]
 
         # Sample positions based on layout complexity

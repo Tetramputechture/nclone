@@ -279,7 +279,7 @@
   },
   "generation_info": {
     "script_version": "1.0",
-    "description": "NPP-RL comprehensive test suite",
+    "description": "NPP-RL Task 3.3 comprehensive test suite",
     "deterministic": true
   }
 }

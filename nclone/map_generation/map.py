@@ -126,9 +126,6 @@ class Map:
         # Basic entity data
         entity_data = [entity_type, units_x, units_y, orientation, mode]
 
-        if entity_type == 3:
-            print(f"Exit door coordinates: {units_x}, {units_y}")
-
         # Handle special cases
         if entity_type == 3:  # Exit door
             # Store the exit door data
@@ -210,6 +207,52 @@ class Map:
             start_idx = x1 + y * MAP_TILE_WIDTH
             end_idx = x2 + 1 + y * MAP_TILE_WIDTH
             self.tile_data[start_idx:end_idx] = [0] * (x2 - x1 + 1)
+
+    def set_hollow_rectangle(self, x1, y1, x2, y2, use_random_tiles_type: bool = False):
+        """Set a hollow rectangle border with wall-appropriate tile types.
+
+        When use_random_tiles_type is True, each wall uses tiles with appropriate
+        solid faces: left wall uses right-facing tiles, right wall uses left-facing
+        tiles, top wall uses bottom-facing tiles, bottom wall uses top-facing tiles.
+
+        Args:
+            x1, y1: Top-left corner of the rectangle
+            x2, y2: Bottom-right corner of the rectangle
+            use_random_tiles_type: If True, use random tiles appropriate for each wall
+        """
+        # Tile sets for each wall direction based on solid face orientation
+        LEFT_WALL_TILES = [1, 3, 7, 8, 11, 11, 15, 16, 23, 24, 27, 28, 31, 32]
+        RIGHT_WALL_TILES = [1, 5, 6, 9, 10, 13, 14, 17, 22, 25, 26, 29, 30, 33]
+        TOP_WALL_TILES = [1, 4, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25, 32, 33]
+        BOTTOM_WALL_TILES = [1, 2, 6, 7, 10, 11, 14, 15, 18, 19, 30, 31]
+
+        # Top wall
+        for x in range(x1, x2 + 1):
+            if use_random_tiles_type:
+                self.set_tile(x, y1, self.rng.choice(TOP_WALL_TILES))
+            else:
+                self.set_tile(x, y1, 1)
+
+        # Bottom wall
+        for x in range(x1, x2 + 1):
+            if use_random_tiles_type:
+                self.set_tile(x, y2, self.rng.choice(BOTTOM_WALL_TILES))
+            else:
+                self.set_tile(x, y2, 1)
+
+        # Left wall (excluding corners already set)
+        for y in range(y1 + 1, y2):
+            if use_random_tiles_type:
+                self.set_tile(x1, y, self.rng.choice(LEFT_WALL_TILES))
+            else:
+                self.set_tile(x1, y, 1)
+
+        # Right wall (excluding corners already set)
+        for y in range(y1 + 1, y2):
+            if use_random_tiles_type:
+                self.set_tile(x2, y, self.rng.choice(RIGHT_WALL_TILES))
+            else:
+                self.set_tile(x2, y, 1)
 
     @staticmethod
     def from_map_data(map_data: list) -> "Map":

@@ -25,6 +25,12 @@ class MazeGenerator(Map):
         self.width = self.rng.randint(self.MIN_WIDTH, self.MAX_WIDTH)
         self.height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
 
+        # Random offset for the maze, ensuring it fits within map bounds
+        max_start_x = MAP_TILE_WIDTH - self.width - 1
+        max_start_y = MAP_TILE_HEIGHT - self.height - 1
+        self.start_x = self.rng.randint(0, max_start_x)
+        self.start_y = self.rng.randint(0, max_start_y)
+
         # Initialize tracking variables
         self.visited: Set[Tuple[int, int]] = set()
         self.grid: List[List[int]] = []
@@ -41,11 +47,20 @@ class MazeGenerator(Map):
         # Fill the map with solid walls
         self._fill_with_walls()
 
+        # Add solid walls around maze boundaries
+        self.set_hollow_rectangle(
+            self.start_x - 1,
+            self.start_y - 1,
+            self.start_x + self.width,
+            self.start_y + self.height,
+            use_random_tiles_type=True,
+        )
+
     def _fill_with_walls(self):
-        """Fill the entire map with solid walls."""
+        """Fill the maze area with solid walls."""
         for y in range(self.height + 1):
             for x in range(self.width + 1):
-                self.set_tile(x, y, 1)  # 1 = wall
+                self.set_tile(self.start_x + x, self.start_y + y, 1)  # 1 = wall
 
     def _is_valid_cell(self, x: int, y: int) -> bool:
         """Check if coordinates are within maze bounds."""
@@ -63,7 +78,9 @@ class MazeGenerator(Map):
     def _carve_empty_space(self, x: int, y: int):
         """Carve an empty space at the given coordinates in both grid and map."""
         self.grid[y][x] = 0  # Update grid for maze logic
-        self.set_tile(x, y, 0)  # Update actual map tiles (0 = empty space)
+        self.set_tile(
+            self.start_x + x, self.start_y + y, 0
+        )  # Update actual map tiles (0 = empty space)
 
     def _carve_path(self, x: int, y: int):
         """Recursively carve paths using depth-first search.
@@ -121,14 +138,16 @@ class MazeGenerator(Map):
             orientation = 1  # Default facing right
             if "right" in corner_name:  # If on right side, face left
                 orientation = -1
-            # Convert grid coordinates to pixel coordinates
-            self.set_ninja_spawn(grid_x, grid_y, orientation)
+            # Convert grid coordinates to map coordinates with offset
+            self.set_ninja_spawn(
+                self.start_x + grid_x, self.start_y + grid_y, orientation
+            )
         else:
             # Fallback to first empty cell if no valid corner positions
             for y in range(self.height):
                 for x in range(self.width):
                     if self.grid[y][x] == 0:
-                        self.set_ninja_spawn(x, y, 1)
+                        self.set_ninja_spawn(self.start_x + x, self.start_y + y, 1)
                         return
 
     def _place_exit(self, add_locked_doors: bool = False):
@@ -180,9 +199,15 @@ class MazeGenerator(Map):
             if valid_switch_positions:
                 switch_x, switch_y = self.rng.choice(valid_switch_positions)
 
-                # Add exit door and switch using Map's add_entity method
+                # Add exit door and switch using Map's add_entity method (with offset)
                 self.add_entity(
-                    3, door_x, door_y, door_orientation, 0, switch_x, switch_y
+                    3,
+                    self.start_x + door_x,
+                    self.start_y + door_y,
+                    door_orientation,
+                    0,
+                    self.start_x + switch_x,
+                    self.start_y + switch_y,
                 )
 
                 # Optionally add locked doors in front of exit door or switch
@@ -239,8 +264,13 @@ class MazeGenerator(Map):
         self._place_exit()
 
         # Add random entities outside the playspace
-        # For maze, playspace is the maze area plus some padding
-        playspace = (2, 2, 2 + self.width * 2, 2 + self.height * 2)
+        # For maze, playspace is the maze area with offset
+        playspace = (
+            self.start_x,
+            self.start_y,
+            self.start_x + self.width + 1,
+            self.start_y + self.height + 1,
+        )
         self.add_random_entities_outside_playspace(
             playspace[0], playspace[1], playspace[2], playspace[3]
         )
