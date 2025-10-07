@@ -2,7 +2,7 @@
 
 from .map import Map
 from typing import List, Tuple, Optional, Set
-from .constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_PX, SWITCH_OFFSET_PX
+from .constants import VALID_TILE_TYPES, NINJA_SPAWN_OFFSET_UNITS
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
@@ -14,8 +14,6 @@ class MazeGenerator(Map):
     MAX_WIDTH = 20
     MIN_HEIGHT = 6
     MAX_HEIGHT = 10
-
-    MAX_GOLD = 0
 
     def __init__(self, seed: Optional[int] = None):
         """Initialize the maze generator.
@@ -135,13 +133,13 @@ class MazeGenerator(Map):
 
     def _place_exit(self, add_locked_doors: bool = False):
         """Place the exit door and switch in valid positions.
-        
+
         Args:
             add_locked_doors: If True, may place locked doors in front of exit door or switch
         """
         # Place exit door on the opposite side from ninja
-        ninja_x, _ = self._from_screen_coordinates(
-            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX
+        ninja_x, _ = self._from_map_data_units(
+            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_UNITS
         )
 
         # Determine which side to place the exit based on ninja position
@@ -169,10 +167,10 @@ class MazeGenerator(Map):
             for y in range(self.height):
                 for x in range(self.width):
                     if self.grid[y][x] == 0:
-                        ninja_grid_x, ninja_grid_y = self._from_screen_coordinates(
+                        ninja_grid_x, ninja_grid_y = self._from_map_data_units(
                             self.ninja_spawn_x,
                             self.ninja_spawn_y,
-                            NINJA_SPAWN_OFFSET_PX,
+                            NINJA_SPAWN_OFFSET_UNITS,
                         )
                         if abs(x - ninja_grid_x) + abs(
                             y - ninja_grid_y
@@ -186,122 +184,14 @@ class MazeGenerator(Map):
                 self.add_entity(
                     3, door_x, door_y, door_orientation, 0, switch_x, switch_y
                 )
-                
+
                 # Optionally add locked doors in front of exit door or switch
                 if add_locked_doors:
-                    self._place_locked_doors(door_x, door_y, switch_x, switch_y, door_orientation)
-    
-    def _place_locked_doors(self, exit_door_x: int, exit_door_y: int, 
-                            exit_switch_x: int, exit_switch_y: int, 
-                            exit_door_orientation: int):
-        """Place 1-2 locked doors in front of the exit door or switch.
-        
-        Args:
-            exit_door_x, exit_door_y: Position of the exit door
-            exit_switch_x, exit_switch_y: Position of the exit switch
-            exit_door_orientation: Orientation of the exit door
-        """
-        # Decide how many locked doors: 0 (33%), 1 (50%), or 2 (17%)
-        num_locked_doors = self.rng.choices([0, 1, 2], weights=[33, 50, 17])[0]
-        
-        if num_locked_doors == 0:
-            return
-        
-        # Find valid positions for locked door switches (away from ninja and exit points)
-        ninja_grid_x, ninja_grid_y = self._from_screen_coordinates(
-            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX
-        )
-        
-        valid_switch_positions = []
-        for y in range(self.height):
-            for x in range(self.width):
-                if self.grid[y][x] == 0:
-                    # Not too close to ninja, exit door, or exit switch
-                    if (abs(x - ninja_grid_x) + abs(y - ninja_grid_y) >= 2 and
-                        (x, y) != (exit_door_x, exit_door_y) and
-                        (x, y) != (exit_switch_x, exit_switch_y)):
-                        valid_switch_positions.append((x, y))
-        
-        if not valid_switch_positions:
-            return  # Can't place locked doors without switch positions
-        
-        # Shuffle to randomize selection
-        self.rng.shuffle(valid_switch_positions)
-        
-        if num_locked_doors == 1:
-            # Place locked door in front of exit door OR exit switch (50/50)
-            if self.rng.random() < 0.5:
-                # Block exit door
-                self._add_locked_door_blocking(exit_door_x, exit_door_y, 
-                                               valid_switch_positions[0], 
-                                               exit_door_orientation)
-            else:
-                # Block exit switch
-                self._add_locked_door_blocking(exit_switch_x, exit_switch_y,
-                                               valid_switch_positions[0],
-                                               exit_door_orientation)
-        elif num_locked_doors == 2 and len(valid_switch_positions) >= 2:
-            # Block both exit door and exit switch
-            self._add_locked_door_blocking(exit_door_x, exit_door_y,
-                                           valid_switch_positions[0],
-                                           exit_door_orientation)
-            self._add_locked_door_blocking(exit_switch_x, exit_switch_y,
-                                           valid_switch_positions[1],
-                                           exit_door_orientation)
-    
-    def _add_locked_door_blocking(self, target_x: int, target_y: int, 
-                                   switch_pos: Tuple[int, int], orientation: int):
-        """Add a locked door that blocks access to a target position.
-        
-        Args:
-            target_x, target_y: Grid position of the entity to block
-            switch_pos: (x, y) tuple for the locked door switch position
-            orientation: Door orientation (determines which direction the door faces)
-        """
-        switch_x, switch_y = switch_pos
-        
-        # Find an adjacent empty tile to place the locked door
-        # The door should be in a position that the player must pass through to reach the target
-        ninja_grid_x, ninja_grid_y = self._from_screen_coordinates(
-            self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_PX
-        )
-        
-        # Check all adjacent tiles and find one that's empty and closer to the ninja
-        adjacent_positions = [
-            (target_x - 1, target_y),  # Left
-            (target_x + 1, target_y),  # Right
-            (target_x, target_y - 1),  # Up
-            (target_x, target_y + 1),  # Down
-        ]
-        
-        valid_door_positions = []
-        for adj_x, adj_y in adjacent_positions:
-            if (self._is_valid_cell(adj_x, adj_y) and 
-                self.grid[adj_y][adj_x] == 0 and  # Empty tile
-                (adj_x, adj_y) != (ninja_grid_x, ninja_grid_y)):  # Not ninja spawn
-                # Check if this tile is between ninja and target
-                ninja_dist = abs(adj_x - ninja_grid_x) + abs(adj_y - ninja_grid_y)
-                target_dist = abs(adj_x - target_x) + abs(adj_y - target_y)
-                if ninja_dist < abs(target_x - ninja_grid_x) + abs(target_y - ninja_grid_y):
-                    valid_door_positions.append((adj_x, adj_y))
-        
-        # If we found valid positions, place the door at one of them
-        if valid_door_positions:
-            door_x, door_y = self.rng.choice(valid_door_positions)
-            # Determine orientation based on position relative to target
-            if door_x < target_x:
-                door_orient = 0  # Face right (blocking path to target)
-            elif door_x > target_x:
-                door_orient = 2  # Face left
-            elif door_y < target_y:
-                door_orient = 3  # Face down
-            else:
-                door_orient = 1  # Face up
-            
-            self.add_entity(6, door_x, door_y, door_orient, 0, switch_x, switch_y)
-        # If no valid adjacent position, don't place the locked door
+                    self._place_locked_doors(
+                        door_x, door_y, switch_x, switch_y, door_orientation
+                    )
 
-    def generate(self, seed: Optional[int] = None, add_locked_doors: bool = False) -> Map:
+    def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a complete maze with entities.
 
         This method follows these steps:
@@ -309,12 +199,10 @@ class MazeGenerator(Map):
         2. Carve paths through the walls using a depth-first search algorithm
         3. Place the ninja spawn point near the left side
         4. Place the exit door and switch in valid positions
-        5. Optionally add locked doors in front of exit door or switch
         6. Add random entities outside the playspace
 
         Args:
             seed: Random seed for reproducible generation
-            add_locked_doors: If True, may place locked doors in front of exit door or switch
 
         Returns:
             Map: A Map instance with the generated maze and entities
@@ -348,7 +236,7 @@ class MazeGenerator(Map):
 
         # Place entities in the carved maze
         self._place_ninja()
-        self._place_exit(add_locked_doors=add_locked_doors)
+        self._place_exit()
 
         # Add random entities outside the playspace
         # For maze, playspace is the maze area plus some padding

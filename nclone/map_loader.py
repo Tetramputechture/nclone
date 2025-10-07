@@ -103,10 +103,25 @@ class MapLoader:
                     ] = []  # Initialize list for new entity type
                 self.sim.entity_dic[entity_type].append(entity)
                 self.sim.grid_entity[entity.cell].append(entity)
-            
-            # Entity types 6 (locked door) and 8 (trap door) use 9 bytes instead of 5
+
+            # Entity types 6 (locked door) and 8 (trap door) have variable size
+            # Old format: 9 bytes [type, x, y, orientation, mode, switch_x, switch_y, 0, 0]
+            # New format: 10 bytes [type, x, y, orientation, mode, switch_x, switch_y, extra, 0, 0]
+            # Try to detect which format by checking if byte at index+7 is typically 0 or non-zero
             if entity_type in (6, 8):
-                index += 9
+                # Check if this might be the 10-byte format (has extra byte before the zeros)
+                if index + 9 < len(self.sim.map_data):
+                    # If byte at index+7 is non-zero and bytes at index+8 and index+9 are zero, it's 10-byte format
+                    if (
+                        self.sim.map_data[index + 7] != 0
+                        and self.sim.map_data[index + 8] == 0
+                        and self.sim.map_data[index + 9] == 0
+                    ):
+                        index += 10
+                    else:
+                        index += 9
+                else:
+                    index += 9
             else:
                 index += 5
 

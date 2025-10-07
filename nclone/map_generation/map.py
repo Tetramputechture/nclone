@@ -2,10 +2,11 @@ from typing import Tuple, Optional, List
 import random
 from .constants import (
     GRID_SIZE_FACTOR,
-    NINJA_SPAWN_OFFSET_PX,
-    EXIT_DOOR_OFFSET_PX,
-    SWITCH_OFFSET_PX,
-    GOLD_OFFSET_PX,
+    NINJA_SPAWN_OFFSET_UNITS,
+    EXIT_DOOR_OFFSET_UNITS,
+    SWITCH_OFFSET_UNITS,
+    GOLD_OFFSET_UNITS,
+    LOCKED_DOOR_OFFSET_UNITS,
 )
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
@@ -45,18 +46,21 @@ class Map:
 
         self.rng = random.Random(seed)
 
-    def _to_screen_coordinates(
+    def _to_map_data_units(
         self, grid_x: int, grid_y: int, offset: int = 0
     ) -> Tuple[int, int]:
-        """Convert grid coordinates to screen coordinates."""
+        """Convert grid coordinates to map data units.
+
+        Map data units are multiplied by 6 during entity loading to get pixel coordinates.
+        """
         return grid_x * GRID_SIZE_FACTOR + offset, grid_y * GRID_SIZE_FACTOR + offset
 
-    def _from_screen_coordinates(
-        self, screen_x: int, screen_y: int, offset: int = 0
+    def _from_map_data_units(
+        self, units_x: int, units_y: int, offset: int = 0
     ) -> Tuple[int, int]:
-        """Convert screen coordinates to grid coordinates."""
-        return (screen_x - offset) // GRID_SIZE_FACTOR, (
-            screen_y - offset
+        """Convert map data units to grid coordinates."""
+        return (units_x - offset) // GRID_SIZE_FACTOR, (
+            units_y - offset
         ) // GRID_SIZE_FACTOR
 
     def set_tile(self, x, y, tile_type):
@@ -71,10 +75,10 @@ class Map:
 
     def set_ninja_spawn(self, grid_x, grid_y, orientation=None):
         """Set the ninja spawn point coordinates and optionally orientation.
-        Converts tile coordinates to screen coordinates (x6 multiplier).
+        Converts tile coordinates to map data units (multiplied by 6 to get pixels during loading).
         Orientation: 1 = right, -1 = left"""
-        self.ninja_spawn_x, self.ninja_spawn_y = self._to_screen_coordinates(
-            grid_x, grid_y, NINJA_SPAWN_OFFSET_PX
+        self.ninja_spawn_x, self.ninja_spawn_y = self._to_map_data_units(
+            grid_x, grid_y, NINJA_SPAWN_OFFSET_UNITS
         )
         if orientation is not None:
             self.ninja_orientation = orientation
@@ -92,17 +96,15 @@ class Map:
         """Add an entity to the map.
         For doors that require switch coordinates (types 6 and 8), provide switch_x and switch_y.
         For exit doors (type 3), provide switch_x and switch_y for the switch location.
-        Converts tile coordinates to screen coordinates (x4.5 multiplier)."""
+        Converts tile coordinates to map data units (multiplied by 6 to get pixels during loading)."""
 
-        # Convert grid coords to screen
-        screen_x, screen_y = self._to_screen_coordinates(grid_x, grid_y)
+        # Convert grid coords to map data units
+        units_x, units_y = self._to_map_data_units(grid_x, grid_y)
 
-        # Convert switch grid coords to screen coords, if provided
-        switch_screen_x, switch_screen_y = None, None
+        # Convert switch grid coords to map data units, if provided
+        switch_units_x, switch_units_y = None, None
         if switch_x is not None and switch_y is not None:
-            switch_screen_x, switch_screen_y = self._to_screen_coordinates(
-                switch_x, switch_y
-            )
+            switch_units_x, switch_units_y = self._to_map_data_units(switch_x, switch_y)
         elif (
             switch_x is not None or switch_y is not None
         ):  # If one is provided but not the other
@@ -112,14 +114,20 @@ class Map:
 
         # Handle entity offsets
         if entity_type == 3:
-            screen_x += EXIT_DOOR_OFFSET_PX
-            screen_y += EXIT_DOOR_OFFSET_PX
+            units_x += EXIT_DOOR_OFFSET_UNITS
+            units_y += EXIT_DOOR_OFFSET_UNITS
         elif entity_type == 2:
-            screen_x += GOLD_OFFSET_PX
-            screen_y += GOLD_OFFSET_PX
+            units_x += GOLD_OFFSET_UNITS
+            units_y += GOLD_OFFSET_UNITS
+        elif entity_type == 6:
+            units_x += LOCKED_DOOR_OFFSET_UNITS
+            units_y += LOCKED_DOOR_OFFSET_UNITS
 
         # Basic entity data
-        entity_data = [entity_type, screen_x, screen_y, orientation, mode]
+        entity_data = [entity_type, units_x, units_y, orientation, mode]
+
+        if entity_type == 3:
+            print(f"Exit door coordinates: {units_x}, {units_y}")
 
         # Handle special cases
         if entity_type == 3:  # Exit door
@@ -130,8 +138,8 @@ class Map:
             self.entity_data.extend(
                 [
                     4,
-                    switch_screen_x + SWITCH_OFFSET_PX,
-                    switch_screen_y + SWITCH_OFFSET_PX,
+                    switch_units_x + SWITCH_OFFSET_UNITS,
+                    switch_units_y + SWITCH_OFFSET_UNITS,
                     0,
                     0,
                 ]
@@ -139,9 +147,18 @@ class Map:
         elif entity_type in (6, 8):  # Locked door or trap door
             if switch_x is None or switch_y is None:
                 raise ValueError(f"Door type {entity_type} requires switch coordinates")
-            # Add entity data and switch coordinates
+            # Add entity data and switch coordinates with offset
+            # Use 9-byte format to match existing map files:
+            # [type, x, y, orientation, mode, padding, switch_x, switch_y, padding]
             self.entity_data.extend(entity_data)
-            self.entity_data.extend([switch_screen_x, switch_screen_y, 0, 0])
+            self.entity_data.extend(
+                [
+                    orientation,  # padding byte (copy of orientation)
+                    switch_units_x + SWITCH_OFFSET_UNITS,
+                    switch_units_y + SWITCH_OFFSET_UNITS,
+                    orientation,  # padding byte (copy of orientation)
+                ]
+            )
         else:
             self.entity_data.extend(entity_data)
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..evaluation import TestSuiteLoader
+from ..map_generation.generate_test_suite_maps import TestSuiteGenerator
 
 
 # Path to the map categorization JSON file
@@ -58,6 +59,7 @@ class EnvMapLoader:
         # Test suite sequential loading
         self._test_suite_levels = self._load_test_suite_levels()
         self._test_suite_index = 0
+        self._test_suite_generator = TestSuiteGenerator("datasets/test_suite")
 
     def load_initial_map(self):
         """Load the first map based on configuration."""
@@ -107,6 +109,11 @@ class EnvMapLoader:
             loader = TestSuiteLoader("datasets/test_suite")
             level = loader.get_level(level_id)
             self.nplay_headless.load_map_from_map_data(level["map_data"])
+            # self.nplay_headless.load_map_from_map_data(
+            #     self._test_suite_generator._create_minimal_simple_level(
+            #         1, 13
+            #     ).map_data()
+            # )
 
             # Update state
             self.current_map_name = level_id
@@ -122,6 +129,7 @@ class EnvMapLoader:
         # TODO: This is hardcoded for testing, should be made configurable
         self.current_map_name = "complex-path-switch-required"
         self.nplay_headless.load_map("nclone/test_maps/complex-path-switch-required")
+        # self.nplay_headless.load_map("nclone/maps/official/SI/060 doors galore")
 
     def get_map_display_name(self) -> str:
         """Get the display name for the current map."""

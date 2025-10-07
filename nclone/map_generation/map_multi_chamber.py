@@ -57,7 +57,6 @@ class MultiChamberGenerator(Map):
     MAX_CORRIDOR_LENGTH = 5
     MIN_CORRIDOR_WIDTH = 1
     MAX_CORRIDOR_WIDTH = 3
-    MAX_GOLD_PER_CHAMBER = 0
 
     def __init__(self, seed: Optional[int] = None):
         """Initialize the multi-chamber generator.
@@ -322,19 +321,6 @@ class MultiChamberGenerator(Map):
         # but not on top of the exit
         if switch_y + 1 != exit_y or switch_x != exit_x:
             self.set_tile(switch_x, switch_y + 1, 1)
-
-        # Add gold to random chambers
-        if self.MAX_GOLD_PER_CHAMBER > 0:
-            for chamber in self.chambers:
-                gold_count = 0
-                if self.rng.random() < 0.7:  # 70% chance for gold in each chamber
-                    gold_count = self.rng.randint(1, self.MAX_GOLD_PER_CHAMBER)
-                chamber.gold_count = gold_count
-
-                for _ in range(gold_count):
-                    gold_x = chamber.x + self.rng.randint(1, chamber.width - 2)
-                    gold_y = chamber.y + self.rng.randint(1, chamber.height - 2)
-                    self.add_entity(2, gold_x + 2, gold_y + 2, 0, 0)
 
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a multi-chamber level.
