@@ -2,10 +2,11 @@ from typing import Tuple, Optional, List
 import random
 from .constants import (
     GRID_SIZE_FACTOR,
-    NINJA_SPAWN_OFFSET_PX,
-    EXIT_DOOR_OFFSET_PX,
-    SWITCH_OFFSET_PX,
-    GOLD_OFFSET_PX,
+    NINJA_SPAWN_OFFSET_UNITS,
+    EXIT_DOOR_OFFSET_UNITS,
+    SWITCH_OFFSET_UNITS,
+    GOLD_OFFSET_UNITS,
+    LOCKED_DOOR_OFFSET_UNITS,
 )
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
@@ -45,18 +46,21 @@ class Map:
 
         self.rng = random.Random(seed)
 
-    def _to_screen_coordinates(
+    def _to_map_data_units(
         self, grid_x: int, grid_y: int, offset: int = 0
     ) -> Tuple[int, int]:
-        """Convert grid coordinates to screen coordinates."""
+        """Convert grid coordinates to map data units.
+
+        Map data units are multiplied by 6 during entity loading to get pixel coordinates.
+        """
         return grid_x * GRID_SIZE_FACTOR + offset, grid_y * GRID_SIZE_FACTOR + offset
 
-    def _from_screen_coordinates(
-        self, screen_x: int, screen_y: int, offset: int = 0
+    def _from_map_data_units(
+        self, units_x: int, units_y: int, offset: int = 0
     ) -> Tuple[int, int]:
-        """Convert screen coordinates to grid coordinates."""
-        return (screen_x - offset) // GRID_SIZE_FACTOR, (
-            screen_y - offset
+        """Convert map data units to grid coordinates."""
+        return (units_x - offset) // GRID_SIZE_FACTOR, (
+            units_y - offset
         ) // GRID_SIZE_FACTOR
 
     def set_tile(self, x, y, tile_type):
@@ -71,10 +75,10 @@ class Map:
 
     def set_ninja_spawn(self, grid_x, grid_y, orientation=None):
         """Set the ninja spawn point coordinates and optionally orientation.
-        Converts tile coordinates to screen coordinates (x6 multiplier).
+        Converts tile coordinates to map data units (multiplied by 6 to get pixels during loading).
         Orientation: 1 = right, -1 = left"""
-        self.ninja_spawn_x, self.ninja_spawn_y = self._to_screen_coordinates(
-            grid_x, grid_y, NINJA_SPAWN_OFFSET_PX
+        self.ninja_spawn_x, self.ninja_spawn_y = self._to_map_data_units(
+            grid_x, grid_y, NINJA_SPAWN_OFFSET_UNITS
         )
         if orientation is not None:
             self.ninja_orientation = orientation
@@ -92,17 +96,15 @@ class Map:
         """Add an entity to the map.
         For doors that require switch coordinates (types 6 and 8), provide switch_x and switch_y.
         For exit doors (type 3), provide switch_x and switch_y for the switch location.
-        Converts tile coordinates to screen coordinates (x4.5 multiplier)."""
+        Converts tile coordinates to map data units (multiplied by 6 to get pixels during loading)."""
 
-        # Convert grid coords to screen
-        screen_x, screen_y = self._to_screen_coordinates(grid_x, grid_y)
+        # Convert grid coords to map data units
+        units_x, units_y = self._to_map_data_units(grid_x, grid_y)
 
-        # Convert switch grid coords to screen coords, if provided
-        switch_screen_x, switch_screen_y = None, None
+        # Convert switch grid coords to map data units, if provided
+        switch_units_x, switch_units_y = None, None
         if switch_x is not None and switch_y is not None:
-            switch_screen_x, switch_screen_y = self._to_screen_coordinates(
-                switch_x, switch_y
-            )
+            switch_units_x, switch_units_y = self._to_map_data_units(switch_x, switch_y)
         elif (
             switch_x is not None or switch_y is not None
         ):  # If one is provided but not the other
@@ -112,14 +114,17 @@ class Map:
 
         # Handle entity offsets
         if entity_type == 3:
-            screen_x += EXIT_DOOR_OFFSET_PX
-            screen_y += EXIT_DOOR_OFFSET_PX
+            units_x += EXIT_DOOR_OFFSET_UNITS
+            units_y += EXIT_DOOR_OFFSET_UNITS
         elif entity_type == 2:
-            screen_x += GOLD_OFFSET_PX
-            screen_y += GOLD_OFFSET_PX
+            units_x += GOLD_OFFSET_UNITS
+            units_y += GOLD_OFFSET_UNITS
+        elif entity_type == 6:
+            units_x += LOCKED_DOOR_OFFSET_UNITS
+            units_y += LOCKED_DOOR_OFFSET_UNITS
 
         # Basic entity data
-        entity_data = [entity_type, screen_x, screen_y, orientation, mode]
+        entity_data = [entity_type, units_x, units_y, orientation, mode]
 
         # Handle special cases
         if entity_type == 3:  # Exit door
@@ -130,8 +135,8 @@ class Map:
             self.entity_data.extend(
                 [
                     4,
-                    switch_screen_x + SWITCH_OFFSET_PX,
-                    switch_screen_y + SWITCH_OFFSET_PX,
+                    switch_units_x + SWITCH_OFFSET_UNITS,
+                    switch_units_y + SWITCH_OFFSET_UNITS,
                     0,
                     0,
                 ]
@@ -139,7 +144,18 @@ class Map:
         elif entity_type in (6, 8):  # Locked door or trap door
             if switch_x is None or switch_y is None:
                 raise ValueError(f"Door type {entity_type} requires switch coordinates")
+            # Add entity data and switch coordinates with offset
+            # Use 9-byte format to match existing map files:
+            # [type, x, y, orientation, mode, padding, switch_x, switch_y, padding]
             self.entity_data.extend(entity_data)
+            self.entity_data.extend(
+                [
+                    orientation,  # padding byte (copy of orientation)
+                    switch_units_x + SWITCH_OFFSET_UNITS,
+                    switch_units_y + SWITCH_OFFSET_UNITS,
+                    orientation,  # padding byte (copy of orientation)
+                ]
+            )
         else:
             self.entity_data.extend(entity_data)
 
@@ -191,6 +207,52 @@ class Map:
             start_idx = x1 + y * MAP_TILE_WIDTH
             end_idx = x2 + 1 + y * MAP_TILE_WIDTH
             self.tile_data[start_idx:end_idx] = [0] * (x2 - x1 + 1)
+
+    def set_hollow_rectangle(self, x1, y1, x2, y2, use_random_tiles_type: bool = False):
+        """Set a hollow rectangle border with wall-appropriate tile types.
+
+        When use_random_tiles_type is True, each wall uses tiles with appropriate
+        solid faces: left wall uses right-facing tiles, right wall uses left-facing
+        tiles, top wall uses bottom-facing tiles, bottom wall uses top-facing tiles.
+
+        Args:
+            x1, y1: Top-left corner of the rectangle
+            x2, y2: Bottom-right corner of the rectangle
+            use_random_tiles_type: If True, use random tiles appropriate for each wall
+        """
+        # Tile sets for each wall direction based on solid face orientation
+        LEFT_WALL_TILES = [1, 3, 7, 8, 11, 11, 15, 16, 23, 24, 27, 28, 31, 32]
+        RIGHT_WALL_TILES = [1, 5, 6, 9, 10, 13, 14, 17, 22, 25, 26, 29, 30, 33]
+        TOP_WALL_TILES = [1, 4, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25, 32, 33]
+        BOTTOM_WALL_TILES = [1, 2, 6, 7, 10, 11, 14, 15, 18, 19, 30, 31]
+
+        # Top wall
+        for x in range(x1, x2 + 1):
+            if use_random_tiles_type:
+                self.set_tile(x, y1, self.rng.choice(TOP_WALL_TILES))
+            else:
+                self.set_tile(x, y1, 1)
+
+        # Bottom wall
+        for x in range(x1, x2 + 1):
+            if use_random_tiles_type:
+                self.set_tile(x, y2, self.rng.choice(BOTTOM_WALL_TILES))
+            else:
+                self.set_tile(x, y2, 1)
+
+        # Left wall (excluding corners already set)
+        for y in range(y1 + 1, y2):
+            if use_random_tiles_type:
+                self.set_tile(x1, y, self.rng.choice(LEFT_WALL_TILES))
+            else:
+                self.set_tile(x1, y, 1)
+
+        # Right wall (excluding corners already set)
+        for y in range(y1 + 1, y2):
+            if use_random_tiles_type:
+                self.set_tile(x2, y, self.rng.choice(RIGHT_WALL_TILES))
+            else:
+                self.set_tile(x2, y, 1)
 
     @staticmethod
     def from_map_data(map_data: list) -> "Map":

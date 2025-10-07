@@ -57,7 +57,6 @@ class MultiChamberGenerator(Map):
     MAX_CORRIDOR_LENGTH = 5
     MIN_CORRIDOR_WIDTH = 1
     MAX_CORRIDOR_WIDTH = 3
-    MAX_GOLD_PER_CHAMBER = 0
 
     def __init__(self, seed: Optional[int] = None):
         """Initialize the multi-chamber generator.
@@ -67,6 +66,10 @@ class MultiChamberGenerator(Map):
         """
         super().__init__()
         self.chambers: List[Chamber] = []
+        # Track corridor segments: (start_x, start_y, end_x, end_y, width, orientation)
+        self.corridor_segments: List[Tuple[int, int, int, int, int, str]] = []
+        # Track entity positions to avoid platform overlap
+        self.entity_positions: Set[Tuple[int, int]] = set()
 
     def _try_place_chamber(self) -> Optional[Chamber]:
         """Attempt to place a new chamber without overlapping existing ones."""
@@ -205,6 +208,12 @@ class MultiChamberGenerator(Map):
                     if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                         self.set_tile(x, y, 0)
 
+            # Track this horizontal segment if it's long enough
+            if abs(max_x - min_x) >= 3:
+                self.corridor_segments.append(
+                    (min_x, start_y, max_x, start_y, corridor_width, "horizontal")
+                )
+
             # Create vertical connection
             min_y = min(start_y, end_y)
             max_y = max(start_y, end_y)
@@ -213,6 +222,12 @@ class MultiChamberGenerator(Map):
                     if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                         self.set_tile(x, y, 0)
 
+            # Track this vertical segment if it's long enough
+            if abs(max_y - min_y) >= 3:
+                self.corridor_segments.append(
+                    (mid_x, min_y, mid_x, max_y, corridor_width, "vertical")
+                )
+
             # Create horizontal connection to end point
             min_x = min(mid_x, end_x)
             max_x = max(mid_x, end_x)
@@ -220,6 +235,12 @@ class MultiChamberGenerator(Map):
                 for y in range(end_y - corridor_width, end_y + corridor_width + 1):
                     if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
                         self.set_tile(x, y, 0)
+
+            # Track this horizontal segment if it's long enough
+            if abs(max_x - min_x) >= 3:
+                self.corridor_segments.append(
+                    (min_x, end_y, max_x, end_y, corridor_width, "horizontal")
+                )
 
             # If we got here, we successfully created a corridor
             return
@@ -232,6 +253,119 @@ class MultiChamberGenerator(Map):
         for y in range(chamber.y, chamber.y + chamber.height):
             for x in range(chamber.x, chamber.x + chamber.width):
                 self.set_tile(x, y, 0)
+
+    def _add_chamber_platforms(self):
+        """Add platforms at the bottom of each chamber to ensure vertical reachability."""
+        for chamber in self.chambers:
+            # Determine platform width based on chamber width
+            if chamber.width >= 5:
+                platform_width = 3
+            elif chamber.width == 4:
+                platform_width = 2
+            else:  # chamber.width == 3
+                platform_width = 1
+
+            # Center the platform at the bottom of the chamber
+            platform_x = chamber.x + (chamber.width - platform_width) // 2
+            platform_y = chamber.y + chamber.height - 1
+
+            # Place the platform tiles (solid tiles)
+            for x in range(platform_x, platform_x + platform_width):
+                random_tile = self.rng.randint(1, VALID_TILE_TYPES)
+                self.set_tile(x, platform_y, random_tile)
+
+    def _add_chamber_top_platforms(self):
+        """Add 1-tile platforms at the top of each chamber for vertical variety."""
+        for chamber in self.chambers:
+            # Always use 1-tile width for top platforms
+            platform_width = 1
+
+            # Determine platform height position based on chamber height
+            if chamber.height <= 5:
+                # For small chambers (5 rows or less), place platform 2 rows from bottom
+                platform_y = chamber.y + chamber.height - 2
+            else:
+                # For larger chambers, place platform 3 rows from bottom
+                platform_y = chamber.y + chamber.height - 3
+
+            # Center the platform horizontally
+            platform_x = chamber.x + (chamber.width - platform_width) // 2
+
+            # Place the platform tile (solid tile)
+            random_tile = self.rng.randint(1, VALID_TILE_TYPES)
+            self.set_tile(platform_x, platform_y, random_tile)
+
+    def _add_corridor_platforms(self):
+        """Add 3-tile platforms in the middle of corridor segments."""
+        for (
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            width,
+            orientation,
+        ) in self.corridor_segments:
+            if orientation == "horizontal":
+                # For horizontal corridors, place a 3-tile wide horizontal platform
+                segment_length = abs(end_x - start_x)
+                if segment_length >= 3:
+                    # Find the middle position
+                    mid_x = start_x + segment_length // 2
+
+                    # Place 3 tiles centered on mid_x
+                    # Determine platform width based on corridor width
+                    if width >= 2:
+                        platform_width = 3
+                    else:
+                        platform_width = (
+                            3  # Still use 3 tiles even for narrow corridors
+                        )
+
+                    platform_start_x = mid_x - platform_width // 2
+
+                    # Place the platform tiles along the corridor with gaps (every other tile)
+                    for i, x in enumerate(
+                        range(platform_start_x, platform_start_x + platform_width)
+                    ):
+                        if i % 2 == 0:  # Only place tiles on even indices (0, 2, 4...)
+                            if (
+                                0 <= x < MAP_TILE_WIDTH
+                                and 0 <= start_y < MAP_TILE_HEIGHT
+                                and (x, start_y) not in self.entity_positions
+                            ):
+                                random_tile = self.rng.randint(1, VALID_TILE_TYPES)
+                                self.set_tile(x, start_y, random_tile)
+
+            else:  # vertical
+                # For vertical corridors, place a 3-tile tall vertical platform
+                segment_length = abs(end_y - start_y)
+                if segment_length >= 3:
+                    # Find the middle position
+                    mid_y = start_y + segment_length // 2
+
+                    # Place 3 tiles centered on mid_y
+                    # Determine platform height based on corridor width
+                    if width >= 2:
+                        platform_height = 3
+                    else:
+                        platform_height = (
+                            3  # Still use 3 tiles even for narrow corridors
+                        )
+
+                    platform_start_y = mid_y - platform_height // 2
+
+                    # Place the platform tiles along the corridor with gaps (every other tile)
+                    for i, y in enumerate(
+                        range(platform_start_y, platform_start_y + platform_height)
+                    ):
+                        if i % 2 == 0:  # Only place tiles on even indices (0, 2, 4...)
+                            if (
+                                0 <= start_x < MAP_TILE_WIDTH
+                                and 0 <= y < MAP_TILE_HEIGHT
+                                and (start_x, y) not in self.entity_positions
+                            ):
+                                random_tile = self.rng.randint(1, VALID_TILE_TYPES)
+                                self.set_tile(start_x, y, random_tile)
 
     def _add_walls(self):
         """Add walls around all empty spaces while preserving corridors."""
@@ -293,23 +427,74 @@ class MultiChamberGenerator(Map):
         # Place ninja on the floor
         ninja_x = ninja_chamber.x + self.rng.randint(1, ninja_chamber.width - 2)
         # Place ninja one tile above the floor
-        ninja_y = ninja_chamber.y + ninja_chamber.height - 1
+        ninja_y = ninja_chamber.y + ninja_chamber.height - 2
         ninja_orientation = self.rng.choice([-1, 1])
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
+
+        # Track ninja position with larger buffer (3x3 area)
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                self.entity_positions.add((ninja_x + dx, ninja_y + dy))
 
         # Place a solid tile under ninja spawn so we always spawn grounded
         self.set_tile(ninja_x, ninja_y + 1, 1)
 
-        # Place exit door and switch
-        exit_x = exit_chamber.x + self.rng.randint(1, exit_chamber.width - 2)
-        exit_y = exit_chamber.y + self.rng.randint(1, exit_chamber.height - 2)
-        switch_x = switch_chamber.x + self.rng.randint(1, switch_chamber.width - 2)
-        switch_y = switch_chamber.y + self.rng.randint(1, switch_chamber.height - 2)
+        # Place exit door - ensure it's on an empty tile with surrounding space
+        max_attempts = 100
+        for _ in range(max_attempts):
+            exit_x = exit_chamber.x + self.rng.randint(1, exit_chamber.width - 2)
+            exit_y = exit_chamber.y + self.rng.randint(1, exit_chamber.height - 2)
 
-        # Ensure switch is not on top of exit
-        while switch_x == exit_x and switch_y == exit_y:
+            # Avoid ninja spawn area
+            if (exit_x, exit_y) in self.entity_positions:
+                continue
+
+            # Check that the exit position and surrounding tiles are empty
+            exit_tile = self.tile_data[exit_x + exit_y * MAP_TILE_WIDTH]
+            if exit_tile == 0:  # Empty tile
+                # Check that there's at least one empty adjacent tile for access
+                has_access = False
+                for dx, dy in [(0, 1), (1, 0), (-1, 0), (0, -1)]:
+                    adj_x, adj_y = exit_x + dx, exit_y + dy
+                    if 0 <= adj_x < MAP_TILE_WIDTH and 0 <= adj_y < MAP_TILE_HEIGHT:
+                        adj_tile = self.tile_data[adj_x + adj_y * MAP_TILE_WIDTH]
+                        if adj_tile == 0:
+                            has_access = True
+                            break
+                if has_access:
+                    break
+
+        # Place switch - ensure it's on an empty tile with surrounding space
+        for _ in range(max_attempts):
             switch_x = switch_chamber.x + self.rng.randint(1, switch_chamber.width - 2)
             switch_y = switch_chamber.y + self.rng.randint(1, switch_chamber.height - 2)
+
+            # Check that switch is not too close to exit or ninja area (2 tile buffer)
+            if abs(switch_x - exit_x) <= 1 and abs(switch_y - exit_y) <= 1:
+                continue
+            if (switch_x, switch_y) in self.entity_positions:
+                continue
+
+            # Check that the switch position and surrounding tiles are empty
+            switch_tile = self.tile_data[switch_x + switch_y * MAP_TILE_WIDTH]
+            if switch_tile == 0:  # Empty tile
+                # Check that there's at least one empty adjacent tile for access
+                has_access = False
+                for dx, dy in [(0, 1), (1, 0), (-1, 0), (0, -1)]:
+                    adj_x, adj_y = switch_x + dx, switch_y + dy
+                    if 0 <= adj_x < MAP_TILE_WIDTH and 0 <= adj_y < MAP_TILE_HEIGHT:
+                        adj_tile = self.tile_data[adj_x + adj_y * MAP_TILE_WIDTH]
+                        if adj_tile == 0:
+                            has_access = True
+                            break
+                if has_access:
+                    break
+
+        # Track exit and switch positions with larger buffer (3x3 area around each)
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                self.entity_positions.add((exit_x + dx, exit_y + dy))
+                self.entity_positions.add((switch_x + dx, switch_y + dy))
 
         self.add_entity(3, exit_x, exit_y, 0, 0, switch_x, switch_y)
 
@@ -322,19 +507,6 @@ class MultiChamberGenerator(Map):
         # but not on top of the exit
         if switch_y + 1 != exit_y or switch_x != exit_x:
             self.set_tile(switch_x, switch_y + 1, 1)
-
-        # Add gold to random chambers
-        if self.MAX_GOLD_PER_CHAMBER > 0:
-            for chamber in self.chambers:
-                gold_count = 0
-                if self.rng.random() < 0.7:  # 70% chance for gold in each chamber
-                    gold_count = self.rng.randint(1, self.MAX_GOLD_PER_CHAMBER)
-                chamber.gold_count = gold_count
-
-                for _ in range(gold_count):
-                    gold_x = chamber.x + self.rng.randint(1, chamber.width - 2)
-                    gold_y = chamber.y + self.rng.randint(1, chamber.height - 2)
-                    self.add_entity(2, gold_x + 2, gold_y + 2, 0, 0)
 
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a multi-chamber level.
@@ -350,6 +522,8 @@ class MultiChamberGenerator(Map):
 
         self.reset()
         self.chambers.clear()
+        self.corridor_segments.clear()
+        self.entity_positions.clear()
 
         # Fill the map with random tiles
         tile_types = [
@@ -401,10 +575,19 @@ class MultiChamberGenerator(Map):
                 self.chambers[chamber1_idx].connected_to.add(chamber2_idx)
                 self.chambers[chamber2_idx].connected_to.add(chamber1_idx)
 
+        # Add platforms at the bottom of each chamber
+        self._add_chamber_platforms()
+
+        # Add platforms at the top of each chamber
+        self._add_chamber_top_platforms()
+
         # Add walls around empty spaces
         self._add_walls()
 
         # Place entities
         self._place_entities()
+
+        # Add platforms in the middle of corridors (after entities to avoid overlap)
+        self._add_corridor_platforms()
 
         return self

@@ -1,55 +1,57 @@
-anim_data_line_new.txt.bin
-inputs_episode
-inputs
-inputs_0
-inputs_1
-inputs_2
-inputs_3
-map_data
-map_data_0
-map_data_1
-map_data_2
-map_data_3
-map_data_4
-ntrace_manual.py
-profiling_stats.txt
-
+# Python
 __pycache__/
-
-# python builds
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
-nclone/_version.py
-
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
+.installed.cfg
+*.egg
 
-# Virtual environment
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test suite dataset pickle files
+datasets/test_suite/**/*.pkl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Binary and text files
+*.bin
+*.txt
 .venv/
 
-# maps
-maps/
+# Maps
+nclone/maps/official/
 
-# benchmark
-benchmark/
+# Version file
+_version.py
+nclone/_version.py
 
-# Output files
-global_frame.png
+# OpenHands
+.openhands/
 
-# Openhands tasks and logs
-.openhands/TASKS.md
-.openhands/.setup.log
-
-# Ruff
-.ruff_cache/
-
-# pytest
-.pytest_cache/
-
-official_levels/
-
-test_output/
-
-# testing data
-*.dat
-*.jsonl
-*.mp4
+datasets/
