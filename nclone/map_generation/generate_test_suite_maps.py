@@ -224,8 +224,16 @@ class TestSuiteGenerator:
             for x in range(start_x, start_x + width):
                 map_gen.set_tile(x, y, 0)
 
-        # Place ninja on one side
-        ninja_x = start_x
+        # Randomly choose ninja starting side
+        ninja_on_left = rng.choice([True, False])
+
+        if ninja_on_left:
+            ninja_x = start_x
+            ninja_orientation = 1  # Facing right
+        else:
+            ninja_x = start_x + width - 1
+            ninja_orientation = -1  # Facing left
+
         ninja_y = start_y + height - 1
 
         # Check if we should add a locked door (1 tile high, 4+ tiles wide)
@@ -247,10 +255,15 @@ class TestSuiteGenerator:
         if add_locked_door:
             # Layout: Ninja -> Locked Door Switch -> Locked Door -> Exit Switch -> Exit Door
             positions = sorted(rng.sample(available_positions, k=4))
+
+            # Reverse order if ninja is on the right so entities are still between ninja and exit
+            if not ninja_on_left:
+                positions = positions[::-1]
+
             locked_switch_x, locked_door_x, exit_switch_x, exit_door_x = positions
 
             entity_y = start_y
-            map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=1)
+            map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=ninja_orientation)
 
             # Add locked door with its switch
             map_gen.add_entity(
@@ -262,11 +275,16 @@ class TestSuiteGenerator:
         else:
             # Simple layout: Ninja -> Exit Switch -> Exit Door
             positions = sorted(rng.sample(available_positions, k=2))
+
+            # Reverse order if ninja is on the right so entities are still between ninja and exit
+            if not ninja_on_left:
+                positions = positions[::-1]
+
             exit_switch_x, exit_door_x = positions
 
             entity_y = start_y + height - 1
 
-            map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=1)
+            map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=ninja_orientation)
             map_gen.add_entity(3, exit_door_x, entity_y, 0, 0, exit_switch_x, entity_y)
 
         return map_gen
