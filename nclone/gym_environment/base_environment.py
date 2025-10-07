@@ -290,7 +290,9 @@ class BaseNppEnvironment(gymnasium.Env):
 
     def render(self):
         """Render the environment."""
-        return self.nplay_headless.render(self._debug_info())
+        # Get debug info from mixin if available, otherwise None
+        debug_info = self._debug_info() if hasattr(self, "_debug_info") else None
+        return self.nplay_headless.render(debug_info)
 
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
@@ -368,10 +370,6 @@ class BaseNppEnvironment(gymnasium.Env):
     def _reset_reward_calculator(self):
         """Reset the reward calculator."""
         self.reward_calculator.reset()
-
-    def _debug_info(self) -> Optional[Dict[str, Any]]:
-        """Returns debug information - to be overridden by debug mixin."""
-        return None
 
     def _extract_level_data(self) -> LevelData:
         """

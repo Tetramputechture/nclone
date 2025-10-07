@@ -165,6 +165,8 @@ class MapMineMaze(Map):
             # Place mines at the positions
             for row_y in mine_positions:
                 # Type 1 = toggle mine, mode 1 = active
+                # Add plus or minus a range of 0.5 to col_x
+                col_x += self.rng.choice([-0.5, 0.5])
                 self.add_entity(1, col_x, row_y, 0, 1)
                 total_mines += 1
 

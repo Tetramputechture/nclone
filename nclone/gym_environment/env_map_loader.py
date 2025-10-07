@@ -10,6 +10,9 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from ..evaluation import TestSuiteLoader
+from ..map_generation.generate_test_suite_maps import TestSuiteGenerator
+
 
 # Path to the map categorization JSON file
 MAP_CATEGORIZATION_PATH = (
@@ -53,6 +56,11 @@ class EnvMapLoader:
         # Load map categorization data
         self._map_categories = self._load_map_categorization()
 
+        # Test suite sequential loading
+        self._test_suite_levels = self._load_test_suite_levels()
+        self._test_suite_index = 0
+        self._test_suite_generator = TestSuiteGenerator("datasets/test_suite")
+
     def load_initial_map(self):
         """Load the first map based on configuration."""
         if self.eval_mode:
@@ -86,25 +94,45 @@ class EnvMapLoader:
 
         # If we are in eval mode, load evaluation maps
         if True:
-            # Eval mode will load a random JUMP_REQUIRED or MAZE map
-            self.random_map_type = self.rng.choice(
-                [
-                    # "JUMP_REQUIRED",
-                    # "MAZE",
-                    "SIMPLE_HORIZONTAL_NO_BACKTRACK",
-                    # "MULTI_CHAMBER",
-                    # "MINE_MAZE",
-                ]
+            # Load test suite maps sequentially
+            if not self._test_suite_levels:
+                print(
+                    "Warning: No test suite levels loaded, falling back to random map"
+                )
+                self.random_map_type = "SIMPLE_HORIZONTAL_NO_BACKTRACK"
+                self.current_map_name = f"eval_map_{uuid.uuid4()}"
+                self.nplay_headless.load_random_map(self.random_map_type)
+                return
+
+            # Get the current level ID and load it
+            level_id = self._test_suite_levels[self._test_suite_index]
+            loader = TestSuiteLoader("datasets/test_suite")
+            level = loader.get_level(level_id)
+            self.nplay_headless.load_map_from_map_data(level["map_data"])
+            # print(
+            #     f"Loading level with parameters: {1 + self._test_suite_index}, {self._test_suite_index}"
+            # )
+            # self.nplay_headless.load_map_from_map_data(
+            #     self._test_suite_generator._create_complex_multi_chamber(
+            #         1 + self._test_suite_index
+            #     ).map_data()
+            # )
+
+            # Update state
+            self.current_map_name = level_id
+            self.random_map_type = None
+
+            # Advance to next level (with wraparound)
+            self._test_suite_index = (self._test_suite_index + 1) % len(
+                self._test_suite_levels
             )
-            self.current_map_name = f"eval_map_{uuid.uuid4()}"
-            self.nplay_headless.load_random_map(self.random_map_type)
-            # self.load_random_categorized_map()
             return
 
         # Load the test map 'doortest' for training
         # TODO: This is hardcoded for testing, should be made configurable
         self.current_map_name = "complex-path-switch-required"
         self.nplay_headless.load_map("nclone/test_maps/complex-path-switch-required")
+        # self.nplay_headless.load_map("nclone/maps/official/SI/060 doors galore")
 
     def get_map_display_name(self) -> str:
         """Get the display name for the current map."""
@@ -130,6 +158,47 @@ class EnvMapLoader:
         except Exception as e:
             print(f"Warning: Failed to load map categorization: {e}")
             return {"simple": [], "complex": []}
+
+    def _load_test_suite_levels(self) -> list:
+        """
+        Load the test suite level IDs from metadata JSON in sequential order.
+
+        Returns:
+            Ordered list of level IDs starting with simple levels
+        """
+        metadata_path = (
+            Path(__file__).parent.parent.parent
+            / "datasets"
+            / "test_suite"
+            / "test_suite_metadata.json"
+        )
+
+        if not metadata_path.exists():
+            print(f"Warning: Test suite metadata not found at {metadata_path}")
+            return []
+
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            # Extract levels in order: simple, medium, complex, mine_heavy, exploration
+            ordered_levels = []
+            category_order = [
+                "simple",
+                "medium",
+                "complex",
+                "mine_heavy",
+                "exploration",
+            ]
+
+            for category in category_order:
+                if category in metadata.get("categories", {}):
+                    ordered_levels.extend(metadata["categories"][category]["level_ids"])
+
+            return ordered_levels
+        except Exception as e:
+            print(f"Warning: Failed to load test suite metadata: {e}")
+            return []
 
     def load_random_categorized_map(self, category: str = "simple"):
         """

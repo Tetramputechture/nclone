@@ -1,5 +1,11 @@
 from ..map_generation.map import Map
-from ..map_generation.constants import NINJA_SPAWN_OFFSET_PX, SWITCH_OFFSET_PX, EXIT_DOOR_OFFSET_PX, GOLD_OFFSET_PX, GRID_SIZE_FACTOR
+from ..map_generation.constants import (
+    NINJA_SPAWN_OFFSET_UNITS,
+    SWITCH_OFFSET_UNITS,
+    EXIT_DOOR_OFFSET_UNITS,
+    GOLD_OFFSET_UNITS,
+    GRID_SIZE_FACTOR,
+)
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
@@ -18,8 +24,7 @@ def mirror_map_horizontally(original_map: Map) -> Map:
     # Mirror tiles
     for y in range(MAP_TILE_HEIGHT):
         for x in range(MAP_TILE_WIDTH):
-            original_tile = original_map.tile_data[x +
-                                                   y * MAP_TILE_WIDTH]
+            original_tile = original_map.tile_data[x + y * MAP_TILE_WIDTH]
             if original_tile == 0:
                 continue
 
@@ -51,10 +56,11 @@ def mirror_map_horizontally(original_map: Map) -> Map:
 
     # Mirror ninja spawn
     mirrored.set_ninja_spawn(
-        MAP_TILE_WIDTH - 1 -
-        (original_map.ninja_spawn_x - NINJA_SPAWN_OFFSET_PX) // GRID_SIZE_FACTOR,
-        (original_map.ninja_spawn_y - NINJA_SPAWN_OFFSET_PX) // GRID_SIZE_FACTOR,
-        -original_map.ninja_orientation  # Flip orientation
+        MAP_TILE_WIDTH
+        - 1
+        - (original_map.ninja_spawn_x - NINJA_SPAWN_OFFSET_UNITS) // GRID_SIZE_FACTOR,
+        (original_map.ninja_spawn_y - NINJA_SPAWN_OFFSET_UNITS) // GRID_SIZE_FACTOR,
+        -original_map.ninja_orientation,  # Flip orientation
     )
 
     # Mirror entities
@@ -74,8 +80,7 @@ def mirror_map_horizontally(original_map: Map) -> Map:
             if orientation in (0, 4):  # Vertical orientations stay the same
                 pass
             else:  # Horizontal orientations flip
-                mirrored_orientation = {1: 3, 2: 6,
-                                        3: 1, 5: 7, 6: 2, 7: 5}[orientation]
+                mirrored_orientation = {1: 3, 2: 6, 3: 1, 5: 7, 6: 2, 7: 5}[orientation]
 
         # # Mirror mode for drone entities by swapping CW/CCW
         mirrored_mode = mode
@@ -93,10 +98,10 @@ def mirror_map_horizontally(original_map: Map) -> Map:
         entity_offset = 0
         switch_offset = 0
         if entity_type == 3:
-            entity_offset = EXIT_DOOR_OFFSET_PX
-            switch_offset = SWITCH_OFFSET_PX
+            entity_offset = EXIT_DOOR_OFFSET_UNITS
+            switch_offset = SWITCH_OFFSET_UNITS
         elif entity_type == 2:
-            entity_offset = GOLD_OFFSET_PX
+            entity_offset = GOLD_OFFSET_UNITS
 
         # Handle special cases for entities that need switch coordinates
         if entity_type in (3, 6, 8):
@@ -104,11 +109,22 @@ def mirror_map_horizontally(original_map: Map) -> Map:
             switch_y = original_map.entity_data[i + 7]
             mirrored_switch_x = MAP_TILE_WIDTH * GRID_SIZE_FACTOR - switch_x
 
-            mirrored.add_entity(entity_type, (mirrored_x - entity_offset) / GRID_SIZE_FACTOR + 2, (y - entity_offset) / GRID_SIZE_FACTOR,
-                                mirrored_orientation, mode,
-                                (mirrored_switch_x - switch_offset) / GRID_SIZE_FACTOR + 2, (switch_y - switch_offset) / GRID_SIZE_FACTOR)
+            mirrored.add_entity(
+                entity_type,
+                (mirrored_x - entity_offset) / GRID_SIZE_FACTOR + 2,
+                (y - entity_offset) / GRID_SIZE_FACTOR,
+                mirrored_orientation,
+                mode,
+                (mirrored_switch_x - switch_offset) / GRID_SIZE_FACTOR + 2,
+                (switch_y - switch_offset) / GRID_SIZE_FACTOR,
+            )
         else:
-            mirrored.add_entity(entity_type, (mirrored_x - entity_offset) / GRID_SIZE_FACTOR + 2, (y - entity_offset) / GRID_SIZE_FACTOR,
-                                mirrored_orientation, mirrored_mode)
+            mirrored.add_entity(
+                entity_type,
+                (mirrored_x - entity_offset) / GRID_SIZE_FACTOR + 2,
+                (y - entity_offset) / GRID_SIZE_FACTOR,
+                mirrored_orientation,
+                mirrored_mode,
+            )
 
     return mirrored

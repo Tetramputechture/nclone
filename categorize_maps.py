@@ -106,7 +106,8 @@ def categorize_map(map_path: Path) -> tuple:
         map_path: Path to the binary map file
 
     Returns:
-        Tuple of (category, entity_types_list) where category is "Simple", "Complex", or "Error"
+        Tuple of (category, all_entity_types) where category is "Simple", "Complex", or "Error"
+        and all_entity_types is a sorted list of all entity type integers in the map
     """
     try:
         map_data = read_map_file(map_path)
@@ -115,13 +116,14 @@ def categorize_map(map_path: Path) -> tuple:
         # Remove ninja (type 0) from consideration as it's always present
         entity_types.discard(EntityType.NINJA)
 
+        # Store all entity types for the result
+        all_entity_types = sorted(list(entity_types))
+
         # Check if all entity types are in the simple set
         if entity_types.issubset(SIMPLE_ENTITY_TYPES):
-            return "Simple", sorted(list(entity_types))
+            return "Simple", all_entity_types
         else:
-            # Find complex entity types (those not in simple set)
-            complex_types = entity_types - SIMPLE_ENTITY_TYPES
-            return "Complex", sorted(list(complex_types))
+            return "Complex", all_entity_types
 
     except Exception as e:
         logger.error(f"Error processing {map_path.name}: {e}")
@@ -168,6 +170,7 @@ def categorize_all_maps(maps_dir: Path, folder_name: str) -> Dict[str, Dict[str,
                 {
                     "name": map_name,
                     "folder": folder_name,
+                    "entity_types": [str(et) for et in entity_types],
                 }
             )
             results["summary"]["simple_count"] += 1
@@ -177,6 +180,7 @@ def categorize_all_maps(maps_dir: Path, folder_name: str) -> Dict[str, Dict[str,
                 {
                     "name": map_name,
                     "folder": folder_name,
+                    "entity_types": [str(et) for et in entity_types],
                 }
             )
             results["summary"]["complex_count"] += 1
