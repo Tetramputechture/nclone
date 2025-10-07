@@ -128,6 +128,11 @@ class DebugMixin:
         """Enable/disable grid outline debug overlay visualization."""
         self._grid_debug_enabled = bool(enabled)
 
+    def set_tile_rendering_enabled(self, enabled: bool):
+        """Enable/disable tile rendering."""
+        if hasattr(self.nplay_headless, "sim_renderer"):
+            self.nplay_headless.sim_renderer.tile_rendering_enabled = bool(enabled)
+
     def set_reachability_debug_enabled(self, enabled: bool):
         """Enable/disable reachability analysis debug overlay visualization."""
         self._reachability_debug_enabled = bool(enabled)

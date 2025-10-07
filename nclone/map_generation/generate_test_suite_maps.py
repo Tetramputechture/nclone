@@ -1,18 +1,30 @@
 """
-Generate comprehensive test suite maps for NPP-RL evaluation (Task 3.3).
+Generate comprehensive train and test suite maps for NPP-RL (Task 3.3).
 
-This script creates a deterministic dataset of 250 N++ levels across 5 complexity categories:
+This script creates deterministic datasets of N++ levels across 5 complexity categories:
 - 50 simple levels (single switch, direct path, includes tiny mazes)
-- 100 medium levels (1-3 switches, simple dependencies, includes medium-sized mazes)
-- 50 complex levels (4+ switches, complex dependencies, multi-chamber, large mazes)
+- 100 medium levels (includes medium-sized mazes and jump-required levels)
+- 50 complex levels (multi-chamber, large mazes)
 - 30 mine-heavy levels (significant mine obstacles)
-- 20 exploration levels (hidden switches, extensive exploration required)
+- 20 movement based exploration levels
+
+The script can generate:
+- Training set (250 levels) with seeds 10000-99999
+- Test set (250 levels) with seeds 1000-9999
+- Both sets (500 unique levels total)
 
 All maps are generated deterministically using fixed seeds to ensure reproducibility.
-The dataset can be used as a baseline for training and evaluating NPP-RL agents.
+Levels are guaranteed to be unique across both train and test sets.
 
 Usage:
-    python -m nclone.map_generation.generate_test_suite_maps --output_dir /path/to/dataset
+    # Generate both train and test sets
+    python -m nclone.map_generation.generate_test_suite_maps --mode both
+
+    # Generate only training set
+    python -m nclone.map_generation.generate_test_suite_maps --mode train
+
+    # Generate only test set
+    python -m nclone.map_generation.generate_test_suite_maps --mode test
 """
 
 import argparse
@@ -31,29 +43,43 @@ from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 class TestSuiteGenerator:
-    """Generator for comprehensive NPP-RL test suite."""
+    """Generator for comprehensive NPP-RL train and test suites."""
 
-    # Base seeds for each category to ensure deterministic generation
-    SIMPLE_BASE_SEED = 1000
-    MEDIUM_BASE_SEED = 2000
-    COMPLEX_BASE_SEED = 3000
-    MINE_HEAVY_BASE_SEED = 4000
-    EXPLORATION_BASE_SEED = 5000
+    # Base seeds for TEST set (1000-9999 range)
+    TEST_SIMPLE_BASE_SEED = 1000
+    TEST_MEDIUM_BASE_SEED = 2000
+    TEST_COMPLEX_BASE_SEED = 3000
+    TEST_MINE_HEAVY_BASE_SEED = 4000
+    TEST_EXPLORATION_BASE_SEED = 5000
+
+    # Base seeds for TRAIN set (10000-99999 range)
+    TRAIN_SIMPLE_BASE_SEED = 10000
+    TRAIN_MEDIUM_BASE_SEED = 20000
+    TRAIN_COMPLEX_BASE_SEED = 30000
+    TRAIN_MINE_HEAVY_BASE_SEED = 40000
+    TRAIN_EXPLORATION_BASE_SEED = 50000
 
     # Maximum attempts to generate a unique map before giving up
     MAX_REGENERATION_ATTEMPTS = 1000
 
-    def __init__(self, output_dir: str):
+    def __init__(self, base_output_dir: str = "./datasets"):
         """Initialize the test suite generator.
 
         Args:
-            output_dir: Directory where the test suite will be saved
+            base_output_dir: Base directory where train/test datasets will be saved
         """
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.base_output_dir = Path(base_output_dir)
+        self.base_output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Track generated levels
-        self.levels: Dict[str, List[Dict[str, Any]]] = {
+        # Track generated levels for both train and test
+        self.train_levels: Dict[str, List[Dict[str, Any]]] = {
+            "simple": [],
+            "medium": [],
+            "complex": [],
+            "mine_heavy": [],
+            "exploration": [],
+        }
+        self.test_levels: Dict[str, List[Dict[str, Any]]] = {
             "simple": [],
             "medium": [],
             "complex": [],
@@ -61,11 +87,11 @@ class TestSuiteGenerator:
             "exploration": [],
         }
 
-        # Track unique maps by their data hash to prevent duplicates
+        # Track unique maps by their data hash to prevent duplicates across both sets
         self.seen_maps: set = set()
 
         # Counter for generating new seeds when duplicates are found
-        self.seed_offset = 100000
+        self.seed_offset = 200000
 
         # Track statistics
         self.duplicate_count = 0
@@ -146,7 +172,7 @@ class TestSuiteGenerator:
             f"after {self.MAX_REGENERATION_ATTEMPTS} attempts"
         )
 
-    def generate_simple_levels(self, count: int = 50) -> None:
+    def generate_simple_levels(self, count: int = 50, mode: str = "test") -> None:
         """Generate simple levels: single switch, direct path to exit.
 
         These levels test basic navigation and switch activation.
@@ -154,11 +180,19 @@ class TestSuiteGenerator:
 
         Args:
             count: Number of simple levels to generate
+            mode: 'train' or 'test' to determine seed range and output location
         """
-        print(f"Generating {count} simple levels...")
+        print(f"Generating {count} simple levels ({mode} set)...")
+
+        base_seed_start = (
+            self.TRAIN_SIMPLE_BASE_SEED
+            if mode == "train"
+            else self.TEST_SIMPLE_BASE_SEED
+        )
+        levels_dict = self.train_levels if mode == "train" else self.test_levels
 
         for i in range(count):
-            base_seed = self.SIMPLE_BASE_SEED + i
+            base_seed = base_seed_start + i
 
             # First 25: very simple flat levels (minimal chamber with exit switch only)
             # Some of these will have locked doors (1-tile high, 5+ tiles wide)
@@ -177,7 +211,9 @@ class TestSuiteGenerator:
                 def generator_func(seed):
                     return self._create_simple_jump_level(seed)
 
-            map_gen = self._generate_unique_map(generator_func, base_seed, i, "simple")
+            map_gen = self._generate_unique_map(
+                generator_func, base_seed, i, f"simple-{mode}"
+            )
             actual_seed = base_seed  # The seed used (may differ if regenerated)
 
             level_data = {
@@ -190,11 +226,12 @@ class TestSuiteGenerator:
                     "difficulty_tier": 1
                     if i < 15
                     else (2 if i < 25 else (3 if i < 40 else 4)),
+                    "split": mode,
                 },
             }
-            self.levels["simple"].append(level_data)
+            levels_dict["simple"].append(level_data)
 
-        print(f"✓ Generated {count} simple levels")
+        print(f"✓ Generated {count} simple levels ({mode} set)")
 
     def _create_minimal_simple_level(self, seed: int, index: int) -> Map:
         """Create a minimal simple level (1-3 tiles high, 3-12 tiles wide).
@@ -230,12 +267,13 @@ class TestSuiteGenerator:
                 map_gen.set_tile(x, y, 0)
 
         # Add decorative random walls on the chamber edges
+        use_random_tiles_type = rng.choice([True, False])
         map_gen.set_hollow_rectangle(
             start_x - 1,
             start_y - 1,
             start_x + width,
             start_y + height,
-            use_random_tiles_type=True,
+            use_random_tiles_type=use_random_tiles_type,
         )
 
         # Randomly choose ninja starting side
@@ -301,10 +339,20 @@ class TestSuiteGenerator:
 
             exit_switch_x, exit_door_x = positions
 
+            # if height is more than 1, lets vary the height of the exit switch and exit door indepently by
+            # a certain random height in 0.25
+            exit_switch_y = start_y
+            exit_door_y = start_y
+            if height > 1:
+                exit_switch_y = start_y + rng.randint(1, height - 1) * 0.25
+                exit_door_y = start_y + rng.randint(1, height - 1) * 0.25
+
             entity_y = start_y + height - 1
 
             map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=ninja_orientation)
-            map_gen.add_entity(3, exit_door_x, entity_y, 0, 0, exit_switch_x, entity_y)
+            map_gen.add_entity(
+                3, exit_door_x, exit_door_y, 0, 0, exit_switch_x, exit_switch_y
+            )
 
         return map_gen
 
@@ -370,7 +418,7 @@ class TestSuiteGenerator:
         else:
             return "Simple jump required to reach switch or exit"
 
-    def generate_medium_levels(self, count: int = 100) -> None:
+    def generate_medium_levels(self, count: int = 100, mode: str = "test") -> None:
         """Generate medium levels: 1-3 switches, simple dependencies.
 
         These levels test navigation with multiple objectives and basic planning.
@@ -378,11 +426,19 @@ class TestSuiteGenerator:
 
         Args:
             count: Number of medium levels to generate
+            mode: 'train' or 'test' to determine seed range and output location
         """
-        print(f"Generating {count} medium levels...")
+        print(f"Generating {count} medium levels ({mode} set)...")
+
+        base_seed_start = (
+            self.TRAIN_MEDIUM_BASE_SEED
+            if mode == "train"
+            else self.TEST_MEDIUM_BASE_SEED
+        )
+        levels_dict = self.train_levels if mode == "train" else self.test_levels
 
         for i in range(count):
-            base_seed = self.MEDIUM_BASE_SEED + i
+            base_seed = base_seed_start + i
 
             # Mix different types of medium levels
             level_type = i % 4
@@ -412,7 +468,9 @@ class TestSuiteGenerator:
 
                 desc = "Medium chamber with and obstacles"
 
-            map_gen = self._generate_unique_map(generator_func, base_seed, i, "medium")
+            map_gen = self._generate_unique_map(
+                generator_func, base_seed, i, f"medium-{mode}"
+            )
 
             level_data = {
                 "level_id": f"medium_{i:03d}",
@@ -422,21 +480,22 @@ class TestSuiteGenerator:
                 "metadata": {
                     "description": desc,
                     "difficulty_tier": (i // 25) + 1,  # 4 tiers
+                    "split": mode,
                 },
             }
-            self.levels["medium"].append(level_data)
+            levels_dict["medium"].append(level_data)
 
-        print(f"✓ Generated {count} medium levels")
+        print(f"✓ Generated {count} medium levels ({mode} set)")
 
     def _create_small_maze(self, seed: int) -> Map:
-        """Create a medium-sized maze level with optional locked doors."""
+        """Create a medium-sized maze level."""
         map_gen = MazeGenerator(seed=seed)
 
         # Medium maze dimensions (larger than tiny mazes in simple levels)
-        map_gen.MIN_WIDTH = 12
-        map_gen.MAX_WIDTH = 22
+        map_gen.MIN_WIDTH = 14
+        map_gen.MAX_WIDTH = 30
         map_gen.MIN_HEIGHT = 8
-        map_gen.MAX_HEIGHT = 14
+        map_gen.MAX_HEIGHT = 16
 
         map_gen.generate(seed=seed)
         return map_gen
@@ -493,7 +552,7 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
-    def generate_complex_levels(self, count: int = 50) -> None:
+    def generate_complex_levels(self, count: int = 50, mode: str = "test") -> None:
         """Generate complex levels: 4+ switches, complex dependencies.
 
         These levels test advanced planning and multi-step problem solving.
@@ -501,11 +560,19 @@ class TestSuiteGenerator:
 
         Args:
             count: Number of complex levels to generate
+            mode: 'train' or 'test' to determine seed range and output location
         """
-        print(f"Generating {count} complex levels...")
+        print(f"Generating {count} complex levels ({mode} set)...")
+
+        base_seed_start = (
+            self.TRAIN_COMPLEX_BASE_SEED
+            if mode == "train"
+            else self.TEST_COMPLEX_BASE_SEED
+        )
+        levels_dict = self.train_levels if mode == "train" else self.test_levels
 
         for i in range(count):
-            base_seed = self.COMPLEX_BASE_SEED + i
+            base_seed = base_seed_start + i
 
             # Alternate between different complex level types
             level_type = i % 3
@@ -529,7 +596,9 @@ class TestSuiteGenerator:
 
                 desc = "Complex jump sequence with multiple switches"
 
-            map_gen = self._generate_unique_map(generator_func, base_seed, i, "complex")
+            map_gen = self._generate_unique_map(
+                generator_func, base_seed, i, f"complex-{mode}"
+            )
 
             level_data = {
                 "level_id": f"complex_{i:03d}",
@@ -539,11 +608,12 @@ class TestSuiteGenerator:
                 "metadata": {
                     "description": desc,
                     "difficulty_tier": (i // 17) + 1,  # 3 tiers
+                    "split": mode,
                 },
             }
-            self.levels["complex"].append(level_data)
+            levels_dict["complex"].append(level_data)
 
-        print(f"✓ Generated {count} complex levels")
+        print(f"✓ Generated {count} complex levels ({mode} set)")
 
     def _create_complex_multi_chamber(self, seed: int) -> Map:
         """Create a complex multi-chamber level."""
@@ -590,7 +660,7 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
-    def generate_mine_heavy_levels(self, count: int = 30) -> None:
+    def generate_mine_heavy_levels(self, count: int = 30, mode: str = "test") -> None:
         """Generate mine-heavy levels: significant mine obstacles.
 
         These levels test hazard avoidance and precise navigation.
@@ -598,11 +668,19 @@ class TestSuiteGenerator:
 
         Args:
             count: Number of mine-heavy levels to generate
+            mode: 'train' or 'test' to determine seed range and output location
         """
-        print(f"Generating {count} mine-heavy levels...")
+        print(f"Generating {count} mine-heavy levels ({mode} set)...")
+
+        base_seed_start = (
+            self.TRAIN_MINE_HEAVY_BASE_SEED
+            if mode == "train"
+            else self.TEST_MINE_HEAVY_BASE_SEED
+        )
+        levels_dict = self.train_levels if mode == "train" else self.test_levels
 
         for i in range(count):
-            base_seed = self.MINE_HEAVY_BASE_SEED + i
+            base_seed = base_seed_start + i
 
             # Alternate between mine maze and jump with heavy mines
             if i % 2 == 0:
@@ -619,7 +697,7 @@ class TestSuiteGenerator:
                 desc = "Jump level with heavy mine obstacles"
 
             map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, "mine_heavy"
+                generator_func, base_seed, i, f"mine_heavy-{mode}"
             )
 
             level_data = {
@@ -630,11 +708,12 @@ class TestSuiteGenerator:
                 "metadata": {
                     "description": desc,
                     "difficulty_tier": (i // 10) + 1,  # 3 tiers
+                    "split": mode,
                 },
             }
-            self.levels["mine_heavy"].append(level_data)
+            levels_dict["mine_heavy"].append(level_data)
 
-        print(f"✓ Generated {count} mine-heavy levels")
+        print(f"✓ Generated {count} mine-heavy levels ({mode} set)")
 
     def _create_heavy_mine_maze(self, seed: int) -> Map:
         """Create a mine maze with heavy mine density."""
@@ -671,7 +750,7 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
-    def generate_exploration_levels(self, count: int = 20) -> None:
+    def generate_exploration_levels(self, count: int = 20, mode: str = "test") -> None:
         """Generate exploration levels: hidden switches, extensive exploration.
 
         These levels test exploration strategies and discovery.
@@ -679,11 +758,19 @@ class TestSuiteGenerator:
 
         Args:
             count: Number of exploration levels to generate
+            mode: 'train' or 'test' to determine seed range and output location
         """
-        print(f"Generating {count} exploration levels...")
+        print(f"Generating {count} exploration levels ({mode} set)...")
+
+        base_seed_start = (
+            self.TRAIN_EXPLORATION_BASE_SEED
+            if mode == "train"
+            else self.TEST_EXPLORATION_BASE_SEED
+        )
+        levels_dict = self.train_levels if mode == "train" else self.test_levels
 
         for i in range(count):
-            base_seed = self.EXPLORATION_BASE_SEED + i
+            base_seed = base_seed_start + i
 
             # Alternate between large mazes and sprawling multi-chamber
             if i % 2 == 0:
@@ -700,7 +787,7 @@ class TestSuiteGenerator:
                 desc = "Sprawling multi-chamber with distant objectives"
 
             map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, "exploration"
+                generator_func, base_seed, i, f"exploration-{mode}"
             )
 
             level_data = {
@@ -711,11 +798,12 @@ class TestSuiteGenerator:
                 "metadata": {
                     "description": desc,
                     "difficulty_tier": (i // 7) + 1,  # 3 tiers
+                    "split": mode,
                 },
             }
-            self.levels["exploration"].append(level_data)
+            levels_dict["exploration"].append(level_data)
 
-        print(f"✓ Generated {count} exploration levels")
+        print(f"✓ Generated {count} exploration levels ({mode} set)")
 
     def _create_exploration_maze(self, seed: int) -> Map:
         """Create a large maze for exploration."""
@@ -723,7 +811,7 @@ class TestSuiteGenerator:
 
         # Maximum maze dimensions for exploration
         map_gen.MIN_WIDTH = 20
-        map_gen.MAX_WIDTH = 35
+        map_gen.MAX_WIDTH = 40
         map_gen.MIN_HEIGHT = 12
         map_gen.MAX_HEIGHT = 20
 
@@ -751,100 +839,149 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
-    def save_dataset(self) -> None:
-        """Save the generated test suite to disk."""
-        print("\nSaving test suite dataset...")
+    def save_dataset(self, mode: str = "both") -> None:
+        """Save the generated datasets to disk.
 
-        # Save each category separately
-        for category, levels in self.levels.items():
-            if not levels:
-                continue
+        Args:
+            mode: 'train', 'test', or 'both' to determine which datasets to save
+        """
+        print("\nSaving dataset...")
 
-            category_dir = self.output_dir / category
-            category_dir.mkdir(parents=True, exist_ok=True)
+        datasets_to_save = []
+        if mode in ["train", "both"]:
+            datasets_to_save.append(("train", self.train_levels))
+        if mode in ["test", "both"]:
+            datasets_to_save.append(("test", self.test_levels))
 
-            # Save each level as a separate file
-            for level in levels:
-                level_file = category_dir / f"{level['level_id']}.pkl"
-                with open(level_file, "wb") as f:
-                    pickle.dump(level, f)
+        total_saved = 0
+        for split_name, levels_dict in datasets_to_save:
+            split_dir = self.base_output_dir / split_name
+            split_dir.mkdir(parents=True, exist_ok=True)
 
-            print(f"  ✓ Saved {len(levels)} {category} levels to {category_dir}")
+            # Save each category separately
+            split_total = 0
+            for category, levels in levels_dict.items():
+                if not levels:
+                    continue
 
-        # Save metadata summary
-        metadata = {
-            "total_levels": sum(len(levels) for levels in self.levels.values()),
-            "categories": {
-                category: {
-                    "count": len(levels),
-                    "level_ids": [level["level_id"] for level in levels],
-                }
-                for category, levels in self.levels.items()
-            },
-            "generation_info": {
-                "script_version": "1.0",
-                "description": "NPP-RL Task 3.3 comprehensive test suite",
-                "deterministic": True,
-            },
-        }
+                category_dir = split_dir / category
+                category_dir.mkdir(parents=True, exist_ok=True)
 
-        metadata_file = self.output_dir / "test_suite_metadata.json"
-        with open(metadata_file, "w") as f:
-            json.dump(metadata, f, indent=2)
+                # Save each level as a separate file
+                for level in levels:
+                    level_file = category_dir / f"{level['level_id']}.pkl"
+                    with open(level_file, "wb") as f:
+                        pickle.dump(level, f)
 
-        print(f"  ✓ Saved metadata to {metadata_file}")
-        print("\n✓ Test suite generation complete!")
-        print(f"  Total levels: {metadata['total_levels']}")
+                split_total += len(levels)
+                print(f"  ✓ Saved {len(levels)} {category} levels to {category_dir}")
+
+            # Save metadata summary for this split
+            metadata = {
+                "split": split_name,
+                "total_levels": sum(len(levels) for levels in levels_dict.values()),
+                "categories": {
+                    category: {
+                        "count": len(levels),
+                        "level_ids": [level["level_id"] for level in levels],
+                    }
+                    for category, levels in levels_dict.items()
+                },
+                "generation_info": {
+                    "script_version": "2.0",
+                    "description": f"NPP-RL Task 3.3 {split_name} dataset",
+                    "deterministic": True,
+                },
+            }
+
+            metadata_file = split_dir / f"{split_name}_metadata.json"
+            with open(metadata_file, "w") as f:
+                json.dump(metadata, f, indent=2)
+
+            print(f"  ✓ Saved {split_name} metadata to {metadata_file}")
+            total_saved += split_total
+
+        print("\n✓ Dataset generation complete!")
+        print(f"  Total levels generated: {total_saved}")
         print(f"  Unique maps: {len(self.seen_maps)}")
         print(f"  Duplicates detected and regenerated: {self.duplicate_count}")
-        print(f"  Output directory: {self.output_dir}")
+        print(f"  Output directory: {self.base_output_dir}")
 
-    def generate_all(self) -> None:
-        """Generate all test suite levels."""
+    def generate_all(self, mode: str = "both") -> None:
+        """Generate all dataset levels.
+
+        Args:
+            mode: 'train', 'test', or 'both' to determine which datasets to generate
+        """
         print("=" * 70)
-        print("NPP-RL Test Suite Generation (Task 3.3)")
+        print(f"NPP-RL Dataset Generation (Task 3.3) - Mode: {mode.upper()}")
         print("=" * 70)
         print()
 
-        self.generate_simple_levels(50)
-        self.generate_medium_levels(100)
-        self.generate_complex_levels(50)
-        self.generate_mine_heavy_levels(30)
-        self.generate_exploration_levels(20)
+        modes_to_generate = []
+        if mode in ["train", "both"]:
+            modes_to_generate.append("train")
+        if mode in ["test", "both"]:
+            modes_to_generate.append("test")
 
-        self.save_dataset()
+        for gen_mode in modes_to_generate:
+            print(f"\n{'=' * 70}")
+            print(f"Generating {gen_mode.upper()} dataset")
+            print(f"{'=' * 70}\n")
+
+            self.generate_simple_levels(50, mode=gen_mode)
+            self.generate_medium_levels(100, mode=gen_mode)
+            self.generate_complex_levels(50, mode=gen_mode)
+            self.generate_mine_heavy_levels(30, mode=gen_mode)
+            self.generate_exploration_levels(20, mode=gen_mode)
+
+        self.save_dataset(mode)
 
         print()
         print("=" * 70)
 
 
 def main():
-    """Main entry point for test suite generation."""
+    """Main entry point for dataset generation."""
     parser = argparse.ArgumentParser(
-        description="Generate NPP-RL test suite maps (Task 3.3)",
+        description="Generate NPP-RL train and test datasets (Task 3.3)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Generate full test suite (250 levels)
-  python -m nclone.map_generation.generate_test_suite_maps --output_dir ./test_suite
+  # Generate both train and test datasets (500 levels total)
+  python -m nclone.map_generation.generate_test_suite_maps --mode both
   
-  # Generate to custom location
-  python -m nclone.map_generation.generate_test_suite_maps --output_dir /workspace/npp-rl/datasets/test_suite
+  # Generate only training dataset (250 levels)
+  python -m nclone.map_generation.generate_test_suite_maps --mode train
+  
+  # Generate only test dataset (250 levels)
+  python -m nclone.map_generation.generate_test_suite_maps --mode test
+  
+  # Custom output directory
+  python -m nclone.map_generation.generate_test_suite_maps --mode both --output_dir /custom/path
         """,
+    )
+
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["train", "test", "both"],
+        default="both",
+        help="Which dataset(s) to generate: 'train', 'test', or 'both' (default: both)",
     )
 
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./test_suite",
-        help="Output directory for generated test suite (default: ./test_suite)",
+        default="./datasets",
+        help="Base output directory for datasets (default: ./datasets). Train and test subdirectories will be created automatically.",
     )
 
     args = parser.parse_args()
 
-    # Generate the test suite
+    # Generate the datasets
     generator = TestSuiteGenerator(args.output_dir)
-    generator.generate_all()
+    generator.generate_all(mode=args.mode)
 
     return 0
 

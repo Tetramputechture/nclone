@@ -53,3 +53,5 @@ nclone/_version.py
 
 # OpenHands
 .openhands/
+
+datasets/

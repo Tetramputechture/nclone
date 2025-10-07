@@ -184,6 +184,7 @@ class EnvironmentConfig:
     def for_visual_testing(cls, **kwargs) -> "EnvironmentConfig":
         """Create configuration optimized for testing rendering and visualization."""
         config = cls(
+            enable_logging=True,
             render=RenderConfig(
                 render_mode="human", enable_animation=True, enable_debug_overlay=True
             ),

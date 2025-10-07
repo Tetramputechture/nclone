@@ -22,22 +22,16 @@ class MazeGenerator(Map):
             seed: Random seed for reproducible generation
         """
         super().__init__(seed)
-        self.width = self.rng.randint(self.MIN_WIDTH, self.MAX_WIDTH)
-        self.height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
-
-        # Random offset for the maze, ensuring it fits within map bounds
-        max_start_x = MAP_TILE_WIDTH - self.width - 1
-        max_start_y = MAP_TILE_HEIGHT - self.height - 1
-        self.start_x = self.rng.randint(0, max_start_x)
-        self.start_y = self.rng.randint(0, max_start_y)
 
         # Initialize tracking variables
+        # Width and height will be set in generate() to allow modification of MIN/MAX constants
+        self.width = 0
+        self.height = 0
+        self.start_x = 0
+        self.start_y = 0
         self.visited: Set[Tuple[int, int]] = set()
         self.grid: List[List[int]] = []
         self.ninja_orientation = -1  # Default orientation (facing right)
-
-        # Initialize the map with solid walls
-        self._init_solid_map()
 
     def _init_solid_map(self):
         """Initialize both the grid and map tiles with solid walls."""
@@ -48,12 +42,13 @@ class MazeGenerator(Map):
         self._fill_with_walls()
 
         # Add solid walls around maze boundaries
+        use_random_tiles_type = self.rng.choice([True, False])
         self.set_hollow_rectangle(
             self.start_x - 1,
             self.start_y - 1,
             self.start_x + self.width,
             self.start_y + self.height,
-            use_random_tiles_type=True,
+            use_random_tiles_type=use_random_tiles_type,
         )
 
     def _fill_with_walls(self):
@@ -150,16 +145,20 @@ class MazeGenerator(Map):
                         self.set_ninja_spawn(self.start_x + x, self.start_y + y, 1)
                         return
 
-    def _place_exit(self, add_locked_doors: bool = False):
+    def _place_exit(self):
         """Place the exit door and switch in valid positions.
 
         Args:
             add_locked_doors: If True, may place locked doors in front of exit door or switch
         """
         # Place exit door on the opposite side from ninja
-        ninja_x, _ = self._from_map_data_units(
+        # Convert ninja spawn from map data units to global grid coordinates
+        ninja_x_global, ninja_y_global = self._from_map_data_units(
             self.ninja_spawn_x, self.ninja_spawn_y, NINJA_SPAWN_OFFSET_UNITS
         )
+        # Convert to local grid coordinates (relative to maze start position)
+        ninja_x = ninja_x_global - self.start_x
+        ninja_y = ninja_y_global - self.start_y
 
         # Determine which side to place the exit based on ninja position
         if ninja_x < self.width // 2:  # Ninja on left side
@@ -181,19 +180,18 @@ class MazeGenerator(Map):
 
             # Find valid switch positions (empty cells not too close to ninja, and not on top of exit door)
             valid_switch_positions = []
-            min_distance = (self.width + self.height) // 4
+            min_distance = max(2, (self.width + self.height) // 4)
 
             for y in range(self.height):
                 for x in range(self.width):
                     if self.grid[y][x] == 0:
-                        ninja_grid_x, ninja_grid_y = self._from_map_data_units(
-                            self.ninja_spawn_x,
-                            self.ninja_spawn_y,
-                            NINJA_SPAWN_OFFSET_UNITS,
-                        )
-                        if abs(x - ninja_grid_x) + abs(
-                            y - ninja_grid_y
-                        ) >= min_distance and (x, y) != (door_x, door_y):
+                        # Check: far enough from ninja, not on exit door, and not within 1 tile radius of ninja
+                        # Use Chebyshev distance (max of x and y distances) for "1 tile radius"
+                        if (
+                            abs(x - ninja_x) + abs(y - ninja_y) >= min_distance
+                            and (x, y) != (door_x, door_y)
+                            and max(abs(x - ninja_x), abs(y - ninja_y)) > 1
+                        ):
                             valid_switch_positions.append((x, y))
 
             if valid_switch_positions:
@@ -209,12 +207,6 @@ class MazeGenerator(Map):
                     self.start_x + switch_x,
                     self.start_y + switch_y,
                 )
-
-                # Optionally add locked doors in front of exit door or switch
-                if add_locked_doors:
-                    self._place_locked_doors(
-                        door_x, door_y, switch_x, switch_y, door_orientation
-                    )
 
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a complete maze with entities.
@@ -238,6 +230,17 @@ class MazeGenerator(Map):
         self.reset()
         # Reset state and ensure we start with a solid level
         self.visited.clear()
+
+        # Calculate width and height based on MIN/MAX constants
+        # This allows modification of constants before calling generate()
+        self.width = self.rng.randint(self.MIN_WIDTH, self.MAX_WIDTH)
+        self.height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
+
+        # Calculate random offset for the maze, ensuring it fits within map bounds
+        max_start_x = MAP_TILE_WIDTH - self.width - 1
+        max_start_y = MAP_TILE_HEIGHT - self.height - 1
+        self.start_x = self.rng.randint(0, max_start_x)
+        self.start_y = self.rng.randint(0, max_start_y)
 
         # Pre-generate all random tiles at once
         # Choose if tiles will be random, solid, or empty for the border
@@ -266,10 +269,10 @@ class MazeGenerator(Map):
         # Add random entities outside the playspace
         # For maze, playspace is the maze area with offset
         playspace = (
-            self.start_x,
-            self.start_y,
-            self.start_x + self.width + 1,
-            self.start_y + self.height + 1,
+            self.start_x - 1,
+            self.start_y - 1,
+            self.start_x + self.width + 2,
+            self.start_y + self.height + 2,
         )
         self.add_random_entities_outside_playspace(
             playspace[0], playspace[1], playspace[2], playspace[3]

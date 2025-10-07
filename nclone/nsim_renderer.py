@@ -31,6 +31,7 @@ class NSimRenderer:
         self.tile_x_offset = 0.0
         self.tile_y_offset = 0.0
         self.enable_debug_overlay = enable_debug_overlay
+        self.tile_rendering_enabled = True  # Toggle for tile rendering
 
         self.tile_paths = {}
 
@@ -54,9 +55,10 @@ class NSimRenderer:
         entities_surface = self.entity_renderer.draw_entities(init)
         self.screen.blit(entities_surface, (self.tile_x_offset, self.tile_y_offset))
 
-        # Draw tiles on top of entities
-        tiles_surface = self.tile_renderer.draw_tiles(init)
-        self.screen.blit(tiles_surface, (self.tile_x_offset, self.tile_y_offset))
+        # Draw tiles on top of entities (if enabled)
+        if self.tile_rendering_enabled:
+            tiles_surface = self.tile_renderer.draw_tiles(init)
+            self.screen.blit(tiles_surface, (self.tile_x_offset, self.tile_y_offset))
 
         if self.enable_debug_overlay:
             overlay_surface = self.debug_overlay_renderer.draw_debug_overlay(debug_info)

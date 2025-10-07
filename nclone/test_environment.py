@@ -9,6 +9,7 @@ Interactive Controls (during runtime):
 
 E - Toggle exploration debug overlay
 C - Toggle grid debug overlay
+L - Toggle tile rendering
 R - Reset environment
 
 Examples:
@@ -299,6 +300,7 @@ if (
 graph_debug_enabled = False
 exploration_debug_enabled = False
 grid_debug_enabled = False
+tile_rendering_enabled = True  # Tiles are rendered by default
 
 # Initialize reachability system if requested
 reachability_analyzer = None
@@ -697,6 +699,16 @@ while running:
                         env.set_grid_debug_enabled(grid_debug_enabled)
                     except Exception:
                         pass
+                if event.key == pygame.K_l:
+                    # Toggle tile rendering
+                    tile_rendering_enabled = not tile_rendering_enabled
+                    try:
+                        env.set_tile_rendering_enabled(tile_rendering_enabled)
+                        print(
+                            f"Tile rendering: {'ON' if tile_rendering_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Could not toggle tile rendering: {e}")
 
                 # Reachability visualization controls
                 if event.key == pygame.K_t:
