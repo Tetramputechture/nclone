@@ -180,7 +180,7 @@ class TestSuiteGenerator:
         """Generate simple levels: single switch, direct path to exit.
 
         These levels test basic navigation and switch activation.
-        Progression: flat surfaces -> locked doors -> small mazes -> require jump
+        Maps are evenly distributed across all available map types.
 
         Args:
             count: Number of simple levels to generate
@@ -195,62 +195,96 @@ class TestSuiteGenerator:
         )
         levels_dict = self.train_levels if mode == "train" else self.test_levels
 
-        for i in range(count):
-            base_seed = base_seed_start + i
+        # Define map types with their generator functions and descriptions
+        # For minimal_simple_level, we use a special marker and handle it separately
+        map_types = [
+            (
+                "minimal_simple_level",  # Special marker
+                "Minimal chamber: ninja -> exit switch -> door (may have locked doors if 1-tile high)",
+            ),
+            (
+                self._create_tiny_maze,
+                "Tiny maze for basic navigation practice",
+            ),
+            (
+                self._create_simple_hills_level,
+                "Simple hills level with rolling terrain",
+            ),
+            (
+                self._create_simple_vertical_corridor,
+                "Simple vertical corridor: climb from bottom to exit at top",
+            ),
+            (
+                self._create_simple_jump_level,
+                "Simple jump required to reach switch or exit",
+            ),
+            (
+                self._create_simple_jump_platforms,
+                "Jump between platforms to reach switch and exit",
+            ),
+        ]
 
-            # First 22: very simple flat levels (minimal chamber with exit switch only)
-            # Some of these will have locked doors (1-tile high, 5+ tiles wide)
-            if i < 22:
+        # Calculate even distribution
+        num_types = len(map_types)
+        base_per_type = count // num_types
+        remainder = count % num_types
 
-                def generator_func(seed):
-                    return self._create_minimal_simple_level(seed, i)
-            # Next 13: small mazes for simple navigation practice
-            elif i < 35:
+        # Build distribution list: first 'remainder' types get one extra map
+        type_counts = [
+            base_per_type + (1 if i < remainder else 0) for i in range(num_types)
+        ]
 
-                def generator_func(seed):
-                    return self._create_tiny_maze(seed)
-            # Next 5: simple hills levels
-            elif i < 40:
+        # Generate levels with dynamic distribution
+        current_index = 0
+        for type_idx, (generator_func, description) in enumerate(map_types):
+            type_count = type_counts[type_idx]
 
-                def generator_func(seed):
-                    return self._create_simple_hills_level(seed)
-            # Next 5: simple vertical corridors
-            elif i < 45:
+            for j in range(type_count):
+                i = current_index + j
+                base_seed = base_seed_start + i
 
-                def generator_func(seed):
-                    return self._create_simple_vertical_corridor(seed)
-            # Next 3: require a jump
-            elif i < 48:
+                # Handle the special case for minimal_simple_level
+                if generator_func == "minimal_simple_level":
+                    # Create a closure that properly captures the current value of i
+                    def make_generator(index):
+                        return lambda seed: self._create_minimal_simple_level(
+                            seed, index
+                        )
 
-                def generator_func(seed):
-                    return self._create_simple_jump_level(seed)
-            # Last 2: jump platforms
-            else:
+                    actual_generator = make_generator(i)
+                else:
+                    actual_generator = generator_func
 
-                def generator_func(seed):
-                    return self._create_simple_jump_platforms(seed)
+                map_gen = self._generate_unique_map(
+                    actual_generator, base_seed, i, f"simple-{mode}"
+                )
+                actual_seed = base_seed  # The seed used (may differ if regenerated)
 
-            map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, f"simple-{mode}"
-            )
-            actual_seed = base_seed  # The seed used (may differ if regenerated)
+                # Calculate difficulty tier dynamically (4 tiers)
+                difficulty_tier = min(4, (i * 4 // count) + 1)
 
-            level_data = {
-                "level_id": f"simple_{i:03d}",
-                "seed": actual_seed,
-                "category": "simple",
-                "map_data": map_gen.map_data(),
-                "metadata": {
-                    "description": self._get_simple_description(i),
-                    "difficulty_tier": 1
-                    if i < 15
-                    else (2 if i < 25 else (3 if i < 40 else 4)),
-                    "split": mode,
-                },
-            }
-            levels_dict["simple"].append(level_data)
+                level_data = {
+                    "level_id": f"simple_{i:03d}",
+                    "seed": actual_seed,
+                    "category": "simple",
+                    "map_data": map_gen.map_data(),
+                    "metadata": {
+                        "description": description,
+                        "difficulty_tier": difficulty_tier,
+                        "split": mode,
+                    },
+                }
+                levels_dict["simple"].append(level_data)
+
+            current_index += type_count
 
         print(f"✓ Generated {count} simple levels ({mode} set)")
+        # Print distribution summary
+        dist_summary = ", ".join(
+            f"{type_counts[i]} {map_types[i][1].split(':')[0].split('(')[0].strip()}"
+            for i in range(num_types)
+        )
+        print(f"  Distribution: {dist_summary}")
 
     def _create_minimal_simple_level(self, seed: int, index: int) -> Map:
         """Create a minimal simple level (1-3 tiles high, 3-12 tiles wide).
@@ -474,26 +508,11 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
-    def _get_simple_description(self, index: int) -> str:
-        """Get description for simple level based on index."""
-        if index < 22:
-            return "Minimal chamber: ninja -> exit switch -> door (may have locked doors if 1-tile high)"
-        elif index < 35:
-            return "Tiny maze for basic navigation practice"
-        elif index < 40:
-            return "Simple hills level with rolling terrain"
-        elif index < 45:
-            return "Simple vertical corridor: climb from bottom to exit at top"
-        elif index < 48:
-            return "Simple jump required to reach switch or exit"
-        else:
-            return "Jump between platforms to reach switch and exit"
-
     def generate_medium_levels(self, count: int = 100, mode: str = "test") -> None:
         """Generate medium levels: 1-3 switches, simple dependencies.
 
         These levels test navigation with multiple objectives and basic planning.
-        Mix of: small mazes, multi-switch chambers, jump-required with switches
+        Maps are evenly distributed across all available map types.
 
         Args:
             count: Number of medium levels to generate
@@ -508,81 +527,90 @@ class TestSuiteGenerator:
         )
         levels_dict = self.train_levels if mode == "train" else self.test_levels
 
-        for i in range(count):
-            base_seed = base_seed_start + i
+        # Define map types with their generator functions and descriptions
+        map_types = [
+            (
+                self._create_small_maze,
+                "Medium-sized maze with navigation challenges",
+            ),
+            (
+                lambda seed: self._create_medium_multi_chamber(seed, num_chambers=2),
+                "2-chamber level with switch dependencies",
+            ),
+            (
+                self._create_medium_jump_level,
+                "Jump required with moderate mine obstacles",
+            ),
+            (
+                self._create_medium_chamber_with_obstacles,
+                "Medium chamber with obstacles",
+            ),
+            (
+                self._create_medium_hills_level,
+                "Medium hills level with rolling terrain and slopes",
+            ),
+            (
+                self._create_medium_vertical_corridor,
+                "Medium vertical corridor: climb from bottom to exit at top with wall mines",
+            ),
+            (
+                self._create_islands_map,
+                "Island-style level with 4x4 tile groups spread across empty space",
+            ),
+            (
+                self._create_medium_jump_platforms,
+                "Jump between platforms with mines on the floor",
+            ),
+        ]
 
-            # Mix different types of medium levels
-            level_type = i % 8
+        # Calculate even distribution
+        num_types = len(map_types)
+        base_per_type = count // num_types
+        remainder = count % num_types
 
-            if level_type == 0:
-                # Medium-sized maze
-                def generator_func(seed):
-                    return self._create_small_maze(seed)
+        # Build distribution list: first 'remainder' types get one extra map
+        type_counts = [
+            base_per_type + (1 if i < remainder else 0) for i in range(num_types)
+        ]
 
-                desc = "Medium-sized maze with navigation challenges"
-            elif level_type == 1:
-                # Multi-chamber (2 chambers)
-                def generator_func(seed):
-                    return self._create_medium_multi_chamber(seed, num_chambers=2)
+        # Generate levels with dynamic distribution
+        current_index = 0
+        for type_idx, (generator_func, description) in enumerate(map_types):
+            type_count = type_counts[type_idx]
 
-                desc = "2-chamber level with switch dependencies"
-            elif level_type == 2:
-                # Jump required with mines
-                def generator_func(seed):
-                    return self._create_medium_jump_level(seed)
+            for j in range(type_count):
+                i = current_index + j
+                base_seed = base_seed_start + i
 
-                desc = "Jump required with moderate mine obstacles"
-            elif level_type == 3:
-                # Larger single chamber with obstacles
-                def generator_func(seed):
-                    return self._create_medium_chamber_with_obstacles(seed)
-
-                desc = "Medium chamber with and obstacles"
-            elif level_type == 4:
-                # Hills map with rolling terrain
-                def generator_func(seed):
-                    return self._create_medium_hills_level(seed)
-
-                desc = "Medium hills level with rolling terrain and slopes"
-            elif level_type == 5:
-                # Vertical corridor - climb from bottom to top
-                def generator_func(seed):
-                    return self._create_medium_vertical_corridor(seed)
-
-                desc = "Medium vertical corridor: climb from bottom to exit at top with wall mines"
-            elif level_type == 6:
-                # Islands map - 4x4 tile groups spread across empty space
-                def generator_func(seed):
-                    return self._create_islands_map(seed)
-
-                desc = (
-                    "Island-style level with 4x4 tile groups spread across empty space"
+                map_gen = self._generate_unique_map(
+                    generator_func, base_seed, i, f"medium-{mode}"
                 )
-            else:
-                # Jump platforms - jump between single-tile platforms
-                def generator_func(seed):
-                    return self._create_medium_jump_platforms(seed)
 
-                desc = "Jump between platforms with mines on the floor"
+                # Calculate difficulty tier dynamically (4 tiers)
+                difficulty_tier = min(4, (i * 4 // count) + 1)
 
-            map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, f"medium-{mode}"
-            )
+                level_data = {
+                    "level_id": f"medium_{i:03d}",
+                    "seed": base_seed,
+                    "category": "medium",
+                    "map_data": map_gen.map_data(),
+                    "metadata": {
+                        "description": description,
+                        "difficulty_tier": difficulty_tier,
+                        "split": mode,
+                    },
+                }
+                levels_dict["medium"].append(level_data)
 
-            level_data = {
-                "level_id": f"medium_{i:03d}",
-                "seed": base_seed,
-                "category": "medium",
-                "map_data": map_gen.map_data(),
-                "metadata": {
-                    "description": desc,
-                    "difficulty_tier": (i // 25) + 1,  # 4 tiers
-                    "split": mode,
-                },
-            }
-            levels_dict["medium"].append(level_data)
+            current_index += type_count
 
         print(f"✓ Generated {count} medium levels ({mode} set)")
+        # Print distribution summary
+        dist_summary = ", ".join(
+            f"{type_counts[i]} {map_types[i][1].split(':')[0].split('with')[0].strip()}"
+            for i in range(num_types)
+        )
+        print(f"  Distribution: {dist_summary}")
 
     def _create_small_maze(self, seed: int) -> Map:
         """Create a medium-sized maze level."""
@@ -713,7 +741,7 @@ class TestSuiteGenerator:
         """Generate complex levels: 4+ switches, complex dependencies.
 
         These levels test advanced planning and multi-step problem solving.
-        Multi-chamber with many switches, large mazes, complex jump sequences.
+        Maps are evenly distributed across all available map types.
 
         Args:
             count: Number of complex levels to generate
@@ -728,49 +756,90 @@ class TestSuiteGenerator:
         )
         levels_dict = self.train_levels if mode == "train" else self.test_levels
 
-        for i in range(count):
-            base_seed = base_seed_start + i
+        # Define map types with their generator functions and descriptions
+        map_types = [
+            (
+                self._create_large_maze,
+                "Large maze requiring extensive navigation",
+            ),
+            (
+                self._create_complex_multi_chamber,
+                "3-4 chambers with complex switch dependencies",
+            ),
+            (
+                self._create_complex_jump_level,
+                "Complex jump sequence with heavy mine obstacles",
+            ),
+            (
+                self._create_complex_mine_maze,
+                "Complex maze with significant mine obstacles",
+            ),
+            (
+                self._create_complex_hills_level,
+                "Complex hills level with challenging terrain",
+            ),
+            (
+                self._create_complex_vertical_corridor,
+                "Complex vertical corridor with heavy mine obstacles",
+            ),
+            (
+                self._create_complex_islands_map,
+                "Complex island-style level with distant objectives",
+            ),
+            (
+                self._create_complex_jump_platforms,
+                "Complex jump platforms with challenging spacing and mines",
+            ),
+        ]
 
-            # Alternate between different complex level types
-            level_type = i % 3
+        # Calculate even distribution
+        num_types = len(map_types)
+        base_per_type = count // num_types
+        remainder = count % num_types
 
-            if level_type == 0:
-                # Large multi-chamber (3-4 chambers)
-                def generator_func(seed):
-                    return self._create_complex_multi_chamber(seed)
+        # Build distribution list: first 'remainder' types get one extra map
+        type_counts = [
+            base_per_type + (1 if i < remainder else 0) for i in range(num_types)
+        ]
 
-                desc = "3-4 chambers with complex switch dependencies"
-            elif level_type == 1:
-                # Large maze
-                def generator_func(seed):
-                    return self._create_large_maze(seed)
+        # Generate levels with dynamic distribution
+        current_index = 0
+        for type_idx, (generator_func, description) in enumerate(map_types):
+            type_count = type_counts[type_idx]
 
-                desc = "Large maze requiring extensive navigation"
-            else:
-                # Complex jump sequence with multiple objectives
-                def generator_func(seed):
-                    return self._create_complex_jump_sequence(seed)
+            for j in range(type_count):
+                i = current_index + j
+                base_seed = base_seed_start + i
 
-                desc = "Complex jump sequence with multiple switches"
+                map_gen = self._generate_unique_map(
+                    generator_func, base_seed, i, f"complex-{mode}"
+                )
 
-            map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, f"complex-{mode}"
-            )
+                # Calculate difficulty tier dynamically (3 tiers for complex)
+                difficulty_tier = min(3, (i * 3 // count) + 1)
 
-            level_data = {
-                "level_id": f"complex_{i:03d}",
-                "seed": base_seed,
-                "category": "complex",
-                "map_data": map_gen.map_data(),
-                "metadata": {
-                    "description": desc,
-                    "difficulty_tier": (i // 17) + 1,  # 3 tiers
-                    "split": mode,
-                },
-            }
-            levels_dict["complex"].append(level_data)
+                level_data = {
+                    "level_id": f"complex_{i:03d}",
+                    "seed": base_seed,
+                    "category": "complex",
+                    "map_data": map_gen.map_data(),
+                    "metadata": {
+                        "description": description,
+                        "difficulty_tier": difficulty_tier,
+                        "split": mode,
+                    },
+                }
+                levels_dict["complex"].append(level_data)
+
+            current_index += type_count
 
         print(f"✓ Generated {count} complex levels ({mode} set)")
+        # Print distribution summary
+        dist_summary = ", ".join(
+            f"{type_counts[i]} {map_types[i][1].split(':')[0].split('with')[0].strip()}"
+            for i in range(num_types)
+        )
+        print(f"  Distribution: {dist_summary}")
 
     def _create_complex_multi_chamber(self, seed: int) -> Map:
         """Create a complex multi-chamber level."""
@@ -802,17 +871,101 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
-    def _create_complex_jump_sequence(self, seed: int) -> Map:
-        """Create a complex jump level with multiple platforms."""
-        # For complex jump sequences, we'll use multi-chamber with jump-like properties
-        map_gen = MultiChamberGenerator(seed=seed)
+    def _create_complex_jump_level(self, seed: int) -> Map:
+        """Create a complex jump level with heavy mines."""
+        map_gen = MapJumpRequired(seed=seed)
 
-        map_gen.MIN_CHAMBERS = 3
-        map_gen.MAX_CHAMBERS = 4
-        map_gen.MIN_CHAMBER_WIDTH = 5
-        map_gen.MAX_CHAMBER_WIDTH = 10
-        map_gen.MIN_CHAMBER_HEIGHT = 4
-        map_gen.MAX_CHAMBER_HEIGHT = 7
+        # Large and difficult
+        map_gen.MIN_WIDTH = 25
+        map_gen.MAX_WIDTH = 42
+        map_gen.MIN_HEIGHT = 12
+        map_gen.MAX_HEIGHT = 18
+        map_gen.MIN_PIT_WIDTH = 5
+        map_gen.MAX_PIT_WIDTH = 7
+        map_gen.MAX_MINES_PER_PLATFORM = 6
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_complex_mine_maze(self, seed: int) -> Map:
+        """Create a complex mine maze with high mine density."""
+        map_gen = MapMineMaze(seed=seed)
+
+        # Large chamber with high mine density
+        map_gen.MIN_WIDTH = 20
+        map_gen.MAX_WIDTH = 40
+        map_gen.MIN_HEIGHT = 6
+        map_gen.MAX_HEIGHT = 12
+
+        # High mine density
+        map_gen.MIN_SKIP_COLUMNS = 2
+        map_gen.MAX_SKIP_COLUMNS = 3
+        map_gen.MIN_MINES_PER_COLUMN = 4
+        map_gen.MAX_MINES_PER_COLUMN = 12
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_complex_hills_level(self, seed: int) -> Map:
+        """Create a complex hills level with challenging terrain."""
+        map_gen = MapHills(seed=seed)
+
+        # Large dimensions with many hills
+        map_gen.MIN_WIDTH = 30
+        map_gen.MAX_WIDTH = 42
+        map_gen.MIN_HEIGHT = 16
+        map_gen.MAX_HEIGHT = 22  # MAP_TILE_HEIGHT - 1 to stay within bounds
+        map_gen.MIN_HILLS = 6
+        map_gen.MAX_HILLS = 12
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_complex_vertical_corridor(self, seed: int) -> Map:
+        """Create a complex vertical corridor level."""
+        map_gen = MapVerticalCorridor(seed=seed)
+
+        # Large dimensions with more complexity
+        map_gen.MIN_WIDTH = 3
+        map_gen.MAX_WIDTH = 8
+        map_gen.MIN_HEIGHT = 20
+        map_gen.MAX_HEIGHT = 22  # MAP_TILE_HEIGHT - 1 to stay within bounds
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_complex_islands_map(self, seed: int) -> Map:
+        """Create a complex islands map with more spread out tile groups."""
+        map_gen = MapIslands(seed=seed)
+
+        # Use larger dimensions for complex difficulty
+        # MapIslands defaults: MIN_WIDTH=36, MAX_WIDTH=38, MIN_HEIGHT=12, MAX_HEIGHT=19
+        # For complex, we use the upper range
+        map_gen.MIN_WIDTH = 37  # Near max for more challenging navigation
+        map_gen.MAX_WIDTH = MAP_TILE_WIDTH - 4  # 38
+        map_gen.MIN_HEIGHT = 16
+        map_gen.MAX_HEIGHT = MAP_TILE_HEIGHT - 4  # 19
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_complex_jump_platforms(self, seed: int) -> Map:
+        """Create a complex jump platforms level."""
+        map_gen = MapJumpPlatforms(seed=seed)
+
+        # Large dimensions with challenging spacing
+        map_gen.MIN_WIDTH = 38
+        map_gen.MAX_WIDTH = 42
+        map_gen.MIN_HEIGHT = 20
+        map_gen.MAX_HEIGHT = 22  # MAP_TILE_HEIGHT - 1 to stay within bounds
+
+        # Wider platform spacing for more challenging jumps
+        map_gen.MIN_PLATFORM_SPACING = 10
+        map_gen.MAX_PLATFORM_SPACING = 14
+        map_gen.MAX_Y_OFFSET = 4
+
+        # Tighter mine spacing for more obstacles
+        map_gen.MINE_SPACING = 1.0
 
         map_gen.generate(seed=seed)
         return map_gen
