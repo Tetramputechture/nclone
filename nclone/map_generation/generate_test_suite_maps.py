@@ -41,6 +41,7 @@ from .map_multi_chamber import MultiChamberGenerator
 from .map_mine_maze import MapMineMaze
 from .map_islands import MapIslands
 from .map_hills import MapHills
+from .map_vertical_corridor import MapVerticalCorridor
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
@@ -196,22 +197,27 @@ class TestSuiteGenerator:
         for i in range(count):
             base_seed = base_seed_start + i
 
-            # First 25: very simple flat levels (minimal chamber with exit switch only)
+            # First 22: very simple flat levels (minimal chamber with exit switch only)
             # Some of these will have locked doors (1-tile high, 5+ tiles wide)
-            if i < 25:
+            if i < 22:
 
                 def generator_func(seed):
                     return self._create_minimal_simple_level(seed, i)
-            # Next 15: small mazes for simple navigation practice
-            elif i < 40:
+            # Next 13: small mazes for simple navigation practice
+            elif i < 35:
 
                 def generator_func(seed):
                     return self._create_tiny_maze(seed)
             # Next 5: simple hills levels
-            elif i < 45:
+            elif i < 40:
 
                 def generator_func(seed):
                     return self._create_simple_hills_level(seed)
+            # Next 5: simple vertical corridors
+            elif i < 45:
+
+                def generator_func(seed):
+                    return self._create_simple_vertical_corridor(seed)
             # Last 5: require a jump
             else:
 
@@ -431,14 +437,29 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
+    def _create_simple_vertical_corridor(self, seed: int) -> Map:
+        """Create a simple vertical corridor level."""
+        map_gen = MapVerticalCorridor(seed=seed)
+
+        # Small dimensions for simple difficulty
+        map_gen.MIN_WIDTH = 1
+        map_gen.MAX_WIDTH = 4
+        map_gen.MIN_HEIGHT = 8
+        map_gen.MAX_HEIGHT = 14
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
     def _get_simple_description(self, index: int) -> str:
         """Get description for simple level based on index."""
-        if index < 25:
+        if index < 22:
             return "Minimal chamber: ninja -> exit switch -> door (may have locked doors if 1-tile high)"
-        elif index < 40:
+        elif index < 35:
             return "Tiny maze for basic navigation practice"
-        elif index < 45:
+        elif index < 40:
             return "Simple hills level with rolling terrain"
+        elif index < 45:
+            return "Simple vertical corridor: climb from bottom to exit at top"
         else:
             return "Simple jump required to reach switch or exit"
 
@@ -465,7 +486,7 @@ class TestSuiteGenerator:
             base_seed = base_seed_start + i
 
             # Mix different types of medium levels
-            level_type = i % 6
+            level_type = i % 7
 
             if level_type == 0:
                 # Medium-sized maze
@@ -497,6 +518,12 @@ class TestSuiteGenerator:
                     return self._create_medium_hills_level(seed)
 
                 desc = "Medium hills level with rolling terrain and slopes"
+            elif level_type == 5:
+                # Vertical corridor - climb from bottom to top
+                def generator_func(seed):
+                    return self._create_medium_vertical_corridor(seed)
+
+                desc = "Medium vertical corridor: climb from bottom to exit at top with wall mines"
             else:
                 # Islands map - 4x4 tile groups spread across empty space
                 def generator_func(seed):
@@ -612,6 +639,19 @@ class TestSuiteGenerator:
         map_gen.MAX_HEIGHT = 18
         map_gen.MIN_HILLS = 4
         map_gen.MAX_HILLS = 8
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_medium_vertical_corridor(self, seed: int) -> Map:
+        """Create a medium vertical corridor level."""
+        map_gen = MapVerticalCorridor(seed=seed)
+
+        # Medium dimensions for moderate difficulty
+        map_gen.MIN_WIDTH = 2
+        map_gen.MAX_WIDTH = 6
+        map_gen.MIN_HEIGHT = 14
+        map_gen.MAX_HEIGHT = 22
 
         map_gen.generate(seed=seed)
         return map_gen
