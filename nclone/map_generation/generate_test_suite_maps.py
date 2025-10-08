@@ -39,6 +39,8 @@ from .map_jump_required import MapJumpRequired
 from .map_maze import MazeGenerator
 from .map_multi_chamber import MultiChamberGenerator
 from .map_mine_maze import MapMineMaze
+from .map_islands import MapIslands
+from .map_hills import MapHills
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
@@ -205,7 +207,12 @@ class TestSuiteGenerator:
 
                 def generator_func(seed):
                     return self._create_tiny_maze(seed)
-            # Last 10: require a jump
+            # Next 5: simple hills levels
+            elif i < 45:
+
+                def generator_func(seed):
+                    return self._create_simple_hills_level(seed)
+            # Last 5: require a jump
             else:
 
                 def generator_func(seed):
@@ -409,12 +416,29 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
+    def _create_simple_hills_level(self, seed: int) -> Map:
+        """Create a simple hills level with rolling terrain."""
+        map_gen = MapHills(seed=seed)
+
+        # Small dimensions for simple difficulty
+        map_gen.MIN_WIDTH = 10
+        map_gen.MAX_WIDTH = 20
+        map_gen.MIN_HEIGHT = 8
+        map_gen.MAX_HEIGHT = 12
+        map_gen.MIN_HILLS = 2
+        map_gen.MAX_HILLS = 4
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
     def _get_simple_description(self, index: int) -> str:
         """Get description for simple level based on index."""
         if index < 25:
             return "Minimal chamber: ninja -> exit switch -> door (may have locked doors if 1-tile high)"
         elif index < 40:
             return "Tiny maze for basic navigation practice"
+        elif index < 45:
+            return "Simple hills level with rolling terrain"
         else:
             return "Simple jump required to reach switch or exit"
 
@@ -441,7 +465,7 @@ class TestSuiteGenerator:
             base_seed = base_seed_start + i
 
             # Mix different types of medium levels
-            level_type = i % 4
+            level_type = i % 6
 
             if level_type == 0:
                 # Medium-sized maze
@@ -461,12 +485,26 @@ class TestSuiteGenerator:
                     return self._create_medium_jump_level(seed)
 
                 desc = "Jump required with moderate mine obstacles"
-            else:
+            elif level_type == 3:
                 # Larger single chamber with obstacles
                 def generator_func(seed):
                     return self._create_medium_chamber_with_obstacles(seed)
 
                 desc = "Medium chamber with and obstacles"
+            elif level_type == 4:
+                # Hills map with rolling terrain
+                def generator_func(seed):
+                    return self._create_medium_hills_level(seed)
+
+                desc = "Medium hills level with rolling terrain and slopes"
+            else:
+                # Islands map - 4x4 tile groups spread across empty space
+                def generator_func(seed):
+                    return self._create_islands_map(seed)
+
+                desc = (
+                    "Island-style level with 4x4 tile groups spread across empty space"
+                )
 
             map_gen = self._generate_unique_map(
                 generator_func, base_seed, i, f"medium-{mode}"
@@ -548,6 +586,32 @@ class TestSuiteGenerator:
         map_gen.MAX_SKIP_COLUMNS = 6
         map_gen.MIN_MINES_PER_COLUMN = 1
         map_gen.MAX_MINES_PER_COLUMN = 4
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_islands_map(self, seed: int) -> Map:
+        """Create an islands map with 4x4 tile groups spread across empty space."""
+        map_gen = MapIslands(seed=seed)
+
+        # Use default constraints from MapIslands class
+        # MIN_WIDTH = 36, MAX_WIDTH = MAP_TILE_WIDTH - 4
+        # MIN_HEIGHT = 12, MAX_HEIGHT = MAP_TILE_HEIGHT - 4
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_medium_hills_level(self, seed: int) -> Map:
+        """Create a medium hills level with rolling terrain."""
+        map_gen = MapHills(seed=seed)
+
+        # Medium dimensions for moderate difficulty
+        map_gen.MIN_WIDTH = 20
+        map_gen.MAX_WIDTH = 35
+        map_gen.MIN_HEIGHT = 10
+        map_gen.MAX_HEIGHT = 18
+        map_gen.MIN_HILLS = 4
+        map_gen.MAX_HILLS = 8
 
         map_gen.generate(seed=seed)
         return map_gen
