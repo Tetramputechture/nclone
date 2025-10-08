@@ -42,6 +42,7 @@ from .map_mine_maze import MapMineMaze
 from .map_islands import MapIslands
 from .map_hills import MapHills
 from .map_vertical_corridor import MapVerticalCorridor
+from .map_jump_platforms import MapJumpPlatforms
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
@@ -218,11 +219,16 @@ class TestSuiteGenerator:
 
                 def generator_func(seed):
                     return self._create_simple_vertical_corridor(seed)
-            # Last 5: require a jump
-            else:
+            # Next 3: require a jump
+            elif i < 48:
 
                 def generator_func(seed):
                     return self._create_simple_jump_level(seed)
+            # Last 2: jump platforms
+            else:
+
+                def generator_func(seed):
+                    return self._create_simple_jump_platforms(seed)
 
             map_gen = self._generate_unique_map(
                 generator_func, base_seed, i, f"simple-{mode}"
@@ -450,6 +456,24 @@ class TestSuiteGenerator:
         map_gen.generate(seed=seed)
         return map_gen
 
+    def _create_simple_jump_platforms(self, seed: int) -> Map:
+        """Create a simple jump platforms level."""
+        map_gen = MapJumpPlatforms(seed=seed)
+
+        # Smaller dimensions for simple difficulty
+        map_gen.MIN_WIDTH = 30
+        map_gen.MAX_WIDTH = 32
+        map_gen.MIN_HEIGHT = 20
+        map_gen.MAX_HEIGHT = 21
+
+        # Shorter platform spacing for easier jumps
+        map_gen.MIN_PLATFORM_SPACING = 8
+        map_gen.MAX_PLATFORM_SPACING = 10
+        map_gen.MAX_Y_OFFSET = 2
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
     def _get_simple_description(self, index: int) -> str:
         """Get description for simple level based on index."""
         if index < 22:
@@ -460,8 +484,10 @@ class TestSuiteGenerator:
             return "Simple hills level with rolling terrain"
         elif index < 45:
             return "Simple vertical corridor: climb from bottom to exit at top"
-        else:
+        elif index < 48:
             return "Simple jump required to reach switch or exit"
+        else:
+            return "Jump between platforms to reach switch and exit"
 
     def generate_medium_levels(self, count: int = 100, mode: str = "test") -> None:
         """Generate medium levels: 1-3 switches, simple dependencies.
@@ -486,7 +512,7 @@ class TestSuiteGenerator:
             base_seed = base_seed_start + i
 
             # Mix different types of medium levels
-            level_type = i % 7
+            level_type = i % 8
 
             if level_type == 0:
                 # Medium-sized maze
@@ -524,7 +550,7 @@ class TestSuiteGenerator:
                     return self._create_medium_vertical_corridor(seed)
 
                 desc = "Medium vertical corridor: climb from bottom to exit at top with wall mines"
-            else:
+            elif level_type == 6:
                 # Islands map - 4x4 tile groups spread across empty space
                 def generator_func(seed):
                     return self._create_islands_map(seed)
@@ -532,6 +558,12 @@ class TestSuiteGenerator:
                 desc = (
                     "Island-style level with 4x4 tile groups spread across empty space"
                 )
+            else:
+                # Jump platforms - jump between single-tile platforms
+                def generator_func(seed):
+                    return self._create_medium_jump_platforms(seed)
+
+                desc = "Jump between platforms with mines on the floor"
 
             map_gen = self._generate_unique_map(
                 generator_func, base_seed, i, f"medium-{mode}"
@@ -652,6 +684,27 @@ class TestSuiteGenerator:
         map_gen.MAX_WIDTH = 6
         map_gen.MIN_HEIGHT = 14
         map_gen.MAX_HEIGHT = 22
+
+        map_gen.generate(seed=seed)
+        return map_gen
+
+    def _create_medium_jump_platforms(self, seed: int) -> Map:
+        """Create a medium difficulty jump platforms level."""
+        map_gen = MapJumpPlatforms(seed=seed)
+
+        # Medium dimensions for moderate difficulty
+        map_gen.MIN_WIDTH = 32
+        map_gen.MAX_WIDTH = 38
+        map_gen.MIN_HEIGHT = 20
+        map_gen.MAX_HEIGHT = 23
+
+        # Full platform spacing range
+        map_gen.MIN_PLATFORM_SPACING = 8
+        map_gen.MAX_PLATFORM_SPACING = 12
+        map_gen.MAX_Y_OFFSET = 3
+
+        # Standard mine spacing
+        map_gen.MINE_SPACING = 1.5
 
         map_gen.generate(seed=seed)
         return map_gen
