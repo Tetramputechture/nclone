@@ -9,6 +9,7 @@ Interactive Controls (during runtime):
 
 E - Toggle exploration debug overlay
 C - Toggle grid debug overlay
+I - Toggle tile type overlay
 L - Toggle tile rendering
 R - Reset environment
 
@@ -250,7 +251,17 @@ if args.interactive_graph and args.headless:
 # Create environment
 render_mode = "rgb_array" if args.headless else "human"
 debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
-env = create_visual_testing_env()
+
+# Create environment configuration with custom map path if provided
+if args.map:
+    from nclone.gym_environment.config import EnvironmentConfig
+
+    config = EnvironmentConfig.for_visual_testing(custom_map_path=args.map)
+    env = create_visual_testing_env(config=config)
+    print(f"Loading custom map from: {args.map}")
+else:
+    env = create_visual_testing_env()
+
 env.reset()
 
 if (
@@ -301,6 +312,7 @@ graph_debug_enabled = False
 exploration_debug_enabled = False
 grid_debug_enabled = False
 tile_rendering_enabled = True  # Tiles are rendered by default
+tile_types_debug_enabled = False  # Tile type overlay disabled by default
 
 # Initialize reachability system if requested
 reachability_analyzer = None
@@ -709,6 +721,17 @@ while running:
                         )
                     except Exception as e:
                         print(f"Could not toggle tile rendering: {e}")
+
+                if event.key == pygame.K_i:
+                    # Toggle tile type overlay
+                    tile_types_debug_enabled = not tile_types_debug_enabled
+                    try:
+                        env.set_tile_types_debug_enabled(tile_types_debug_enabled)
+                        print(
+                            f"Tile type overlay: {'ON' if tile_types_debug_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Could not toggle tile type overlay: {e}")
 
                 # Reachability visualization controls
                 if event.key == pygame.K_t:

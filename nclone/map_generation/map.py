@@ -9,6 +9,7 @@ from .constants import (
     LOCKED_DOOR_OFFSET_UNITS,
 )
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
+from . import terrain_utils
 
 # Valid entity types that can be randomly placed
 VALID_RANDOM_ENTITIES = [
@@ -364,3 +365,136 @@ class Map:
                 self.add_entity(entity_type, x, y, orientation)
             else:
                 self.add_entity(entity_type, x, y)
+
+    def create_slope_up(
+        self, x: int, y: int, height_change: int, use_mild: bool = True
+    ) -> int:
+        """Create an ascending slope starting at (x, y).
+
+        See terrain_utils.create_slope_up for full documentation.
+        """
+        return terrain_utils.create_slope_up(self, x, y, height_change, use_mild)
+
+    def create_slope_down(
+        self, x: int, y: int, height_change: int, use_mild: bool = True
+    ) -> int:
+        """Create a descending slope starting at (x, y).
+
+        See terrain_utils.create_slope_down for full documentation.
+        """
+        return terrain_utils.create_slope_down(self, x, y, height_change, use_mild)
+
+    def create_45_degree_slope_up(self, x: int, y: int) -> int:
+        """Create a single 45-degree ascending slope tile.
+
+        See terrain_utils.create_45_degree_slope_up for full documentation.
+        """
+        return terrain_utils.create_45_degree_slope_up(self, x, y)
+
+    def create_45_degree_slope_down(self, x: int, y: int) -> int:
+        """Create a single 45-degree descending slope tile.
+
+        See terrain_utils.create_45_degree_slope_down for full documentation.
+        """
+        return terrain_utils.create_45_degree_slope_down(self, x, y)
+
+    def create_mild_hill(
+        self,
+        x: int,
+        y: int,
+        height: int,
+        width: int = None,
+        min_x: int = None,
+        max_x: int = None,
+        min_y: int = None,
+        max_y: int = None,
+    ) -> int:
+        """Create a gentle hill using mild slope tiles.
+
+        See terrain_utils.create_mild_hill for full documentation.
+        """
+        return terrain_utils.create_mild_hill(
+            self,
+            x,
+            y,
+            height,
+            width,
+            min_x=min_x,
+            max_x=max_x,
+            min_y=min_y,
+            max_y=max_y,
+        )
+
+    def create_steep_hill(
+        self,
+        x: int,
+        y: int,
+        height: int,
+        width: int = None,
+        min_x: int = None,
+        max_x: int = None,
+        min_y: int = None,
+        max_y: int = None,
+    ) -> int:
+        """Create a steep hill using steep slope tiles.
+
+        See terrain_utils.create_steep_hill for full documentation.
+        """
+        return terrain_utils.create_steep_hill(
+            self,
+            x,
+            y,
+            height,
+            width,
+            min_x=min_x,
+            max_x=max_x,
+            min_y=min_y,
+            max_y=max_y,
+        )
+
+    def create_45_degree_hill(
+        self,
+        x: int,
+        y: int,
+        height: int,
+        min_x: int = None,
+        max_x: int = None,
+        min_y: int = None,
+        max_y: int = None,
+    ) -> int:
+        """Create a sharp 45-degree hill.
+
+        See terrain_utils.create_45_degree_hill for full documentation.
+        """
+        return terrain_utils.create_45_degree_hill(
+            self, x, y, height, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y
+        )
+
+    def create_mixed_hill(
+        self,
+        x: int,
+        y: int,
+        height: int,
+        ascent_type: str = "mild",
+        descent_type: str = "mild",
+        min_x: int = None,
+        max_x: int = None,
+        min_y: int = None,
+        max_y: int = None,
+    ) -> int:
+        """Create a hill with different slope types for ascent and descent.
+
+        See terrain_utils.create_mixed_hill for full documentation.
+        """
+        return terrain_utils.create_mixed_hill(
+            self,
+            x,
+            y,
+            height,
+            ascent_type,
+            descent_type,
+            min_x=min_x,
+            max_x=max_x,
+            min_y=min_y,
+            max_y=max_y,
+        )

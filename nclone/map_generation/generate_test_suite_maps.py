@@ -471,7 +471,7 @@ class TestSuiteGenerator:
         map_gen.MAX_WIDTH = 20
         map_gen.MIN_HEIGHT = 8
         map_gen.MAX_HEIGHT = 12
-        map_gen.MIN_HILLS = 2
+        map_gen.MIN_HILLS = 1
         map_gen.MAX_HILLS = 4
 
         map_gen.generate(seed=seed)
