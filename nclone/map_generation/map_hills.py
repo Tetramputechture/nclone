@@ -218,12 +218,14 @@ class MapHills(Map):
         Returns:
             Y coordinate of the ground surface (empty tile just above solid)
         """
-        # Search from ceiling to floor for the first solid tile
-        for y in range(ceiling_y, floor_y + 1):
+        # Clamp x to valid range to prevent out-of-bounds access
+        x = max(0, min(x, MAP_TILE_WIDTH - 1))
+
+        for y in range(ceiling_y, min(floor_y + 1, MAP_TILE_HEIGHT)):
             tile = self.tile_data[x + y * MAP_TILE_WIDTH]
             # Check if this is a solid or slope tile (non-zero)
             if tile != 0:
                 return y
 
         # If no solid tile found, return floor level
-        return floor_y
+        return min(floor_y, MAP_TILE_HEIGHT - 1)

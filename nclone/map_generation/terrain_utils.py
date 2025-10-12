@@ -120,17 +120,17 @@ def create_slope_up(
 
                 map_instance.set_tile(current_x, current_y, tile_to_place)
 
-                # Fill below past leftmost tile
-                if current_x > start_x:
-                    map_instance.set_tile(current_x, current_y + 1, SOLID_TILE)
-
                 if tile_to_place == STEEP_SLOPE_UP_STEP:
+                    # Set solid tile below
+                    if current_x > start_x:
+                        map_instance.set_tile(current_x + 1, current_y, SOLID_TILE)
                     # Move right and up
                     current_x += 1
                     current_y -= 1
                 else:
                     # Just move up (tile 32)
                     current_y -= 1
+
                 remaining_height -= 1
             else:
                 break

@@ -458,6 +458,7 @@ class TestSuiteGenerator:
         map_gen.MAX_WIDTH = 10
         map_gen.MIN_HEIGHT = 4
         map_gen.MAX_HEIGHT = 7
+        map_gen.MAX_CELL_SIZE = 1
 
         map_gen.generate(seed=seed)
         return map_gen
@@ -621,6 +622,7 @@ class TestSuiteGenerator:
         map_gen.MAX_WIDTH = 30
         map_gen.MIN_HEIGHT = 8
         map_gen.MAX_HEIGHT = 16
+        map_gen.MAX_CELL_SIZE = 3
 
         map_gen.generate(seed=seed)
         return map_gen
@@ -867,6 +869,7 @@ class TestSuiteGenerator:
         map_gen.MAX_WIDTH = 30
         map_gen.MIN_HEIGHT = 10
         map_gen.MAX_HEIGHT = 18
+        map_gen.MAX_CELL_SIZE = 4
 
         map_gen.generate(seed=seed)
         return map_gen
