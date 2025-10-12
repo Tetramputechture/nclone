@@ -30,6 +30,7 @@ from PIL import Image
 
 from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability.reachability_system import ReachabilitySystem
+from nclone.replay.gameplay_recorder import GameplayRecorder
 
 # Removed legacy trajectory calculator import
 # SubgoalPlanner deprecated - using nclone.planning instead
@@ -168,6 +169,19 @@ parser.add_argument(
     help="Export frame with subgoal visualization to specified image file and quit.",
 )
 
+# Replay recording arguments
+parser.add_argument(
+    "--record",
+    action="store_true",
+    help="Enable compact replay recording for behavioral cloning",
+)
+parser.add_argument(
+    "--recording-output",
+    type=str,
+    default="datasets/human_replays",
+    help="Output directory for recorded replays",
+)
+
 args = parser.parse_args()
 
 print(f"Headless: {args.headless}")
@@ -263,6 +277,21 @@ else:
     env = create_visual_testing_env()
 
 env.reset()
+
+# Initialize replay recorder if enabled
+recorder = None
+if args.record:
+    recorder = GameplayRecorder(output_dir=args.recording_output)
+    print("\n" + "=" * 60)
+    print("COMPACT REPLAY RECORDING ENABLED")
+    print("=" * 60)
+    print(f"Output directory: {args.recording_output}")
+    print(f"Storage format: Binary (map + inputs only)")
+    print("\nControls:")
+    print("  B - Start recording")
+    print("  N - Stop recording (without saving)")
+    print("  R - Reset (auto-saves if successful)")
+    print("=" * 60 + "\n")
 
 if (
     args.visualize_graph
@@ -695,8 +724,38 @@ while running:
                 running = False
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r:
+                    # Check if episode was successful before reset (for recorder)
+                    if recorder is not None and recorder.is_recording:
+                        # Determine if episode was successful
+                        player_won = env.nplay_headless.ninja_has_won()
+                        recorder.stop_recording(success=player_won, save=player_won)
+                    
                     # Reset environment
                     observation, info = env.reset()
+                    
+                    # Auto-start recording on reset if recorder was active
+                    if recorder is not None and not args.headless:
+                        map_data = bytes(env.nplay_headless.current_map_data)
+                        map_name = getattr(env.map_loader, 'current_map_name', 'unknown') if hasattr(env, 'map_loader') else 'unknown'
+                        level_id = None  # TODO: Extract from env if using test suite
+                        recorder.start_recording(map_data, map_name, level_id)
+                        
+                if event.key == pygame.K_b and recorder is not None:
+                    # Start recording
+                    if not recorder.is_recording:
+                        map_data = bytes(env.nplay_headless.current_map_data)
+                        map_name = getattr(env.map_loader, 'current_map_name', 'unknown') if hasattr(env, 'map_loader') else 'unknown'
+                        level_id = None  # TODO: Extract from env if using test suite
+                        recorder.start_recording(map_data, map_name, level_id)
+                    else:
+                        print("Already recording!")
+                
+                if event.key == pygame.K_n and recorder is not None:
+                    # Stop recording without saving
+                    if recorder.is_recording:
+                        recorder.stop_recording(success=False, save=False)
+                        print("Recording stopped (not saved)")
+                        
                 if event.key == pygame.K_e:
                     # Toggle exploration debug overlay
                     exploration_debug_enabled = not exploration_debug_enabled
@@ -1030,6 +1089,10 @@ while running:
         # actions are desired in headless testing.
         action = 0
 
+    # Record action if recording is active
+    if recorder is not None and recorder.is_recording:
+        recorder.record_action(action)
+    
     # Step the environment
     observation, reward, terminated, truncated, info = env.step(action)
 
@@ -1052,6 +1115,10 @@ while running:
         running = False
 
 profiler.disable()
+
+# Print recording statistics if recorder was enabled
+if recorder is not None:
+    recorder.print_statistics()
 
 # Cleanup
 pygame.quit()
