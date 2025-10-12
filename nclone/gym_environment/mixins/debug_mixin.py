@@ -18,6 +18,7 @@ class DebugMixin:
     - Graph debug visualization
     - Exploration debug visualization
     - Grid debug visualization
+    - Tile type debug visualization
     - Reachability debug visualization
     - Subgoal visualization
     """
@@ -29,6 +30,7 @@ class DebugMixin:
         # Debug visualization state
         self._exploration_debug_enabled: bool = False
         self._grid_debug_enabled: bool = False
+        self._tile_types_debug_enabled: bool = False
         self._reachability_debug_enabled: bool = False
         self._reachability_state = None
         self._reachability_subgoals = []
@@ -81,6 +83,10 @@ class DebugMixin:
             if self._grid_debug_enabled:
                 info["grid_outline"] = True
 
+            # Add tile types debug info if enabled
+            if self._tile_types_debug_enabled:
+                info["tile_types"] = True
+
         return info if info else None  # Return None if no debug info is to be shown
 
     def _get_exploration_debug_info(
@@ -127,6 +133,10 @@ class DebugMixin:
     def set_grid_debug_enabled(self, enabled: bool):
         """Enable/disable grid outline debug overlay visualization."""
         self._grid_debug_enabled = bool(enabled)
+
+    def set_tile_types_debug_enabled(self, enabled: bool):
+        """Enable/disable tile type overlay visualization."""
+        self._tile_types_debug_enabled = bool(enabled)
 
     def set_tile_rendering_enabled(self, enabled: bool):
         """Enable/disable tile rendering."""

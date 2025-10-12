@@ -253,6 +253,42 @@ class DebugOverlayRenderer:
 
         return surface
 
+    def _draw_tile_types(self) -> pygame.Surface:
+        """Draw tile type numbers in the center of each cell (excluding type 0)."""
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        # Calculate cell size
+        cell_size = TILE_PIXEL_SIZE * self.adjust
+
+        # Create font for rendering tile types
+        try:
+            font = pygame.font.Font(None, int(14 * self.adjust))
+        except pygame.error:
+            font = pygame.font.SysFont("arial", int(12 * self.adjust))
+
+        # Black color for text
+        text_color = (0, 0, 0, 255)
+
+        # Iterate through all tiles in the simulator's tile dictionary
+        if hasattr(self.sim, "tile_dic"):
+            for (tile_x, tile_y), tile_type in self.sim.tile_dic.items():
+                # Skip empty tiles (type 0)
+                if tile_type == 0:
+                    continue
+
+                # Calculate screen position for this tile
+                screen_x = tile_x * cell_size + self.tile_x_offset
+                screen_y = tile_y * cell_size + self.tile_y_offset
+
+                # Render the tile type number
+                text_surf = font.render(str(tile_type), True, text_color)
+                text_rect = text_surf.get_rect(
+                    center=(screen_x + cell_size / 2, screen_y + cell_size / 2)
+                )
+                surface.blit(text_surf, text_rect)
+
+        return surface
+
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -275,6 +311,11 @@ class DebugOverlayRenderer:
         if debug_info and "grid_outline" in debug_info:
             grid_surface = self._draw_grid_outline()
             surface.blit(grid_surface, (0, 0))
+
+        # Draw tile types if provided
+        if debug_info and "tile_types" in debug_info:
+            tile_types_surface = self._draw_tile_types()
+            surface.blit(tile_types_surface, (0, 0))
 
         # Draw subgoal visualization if enabled
         if self.subgoal_debug_enabled:
@@ -314,6 +355,10 @@ class DebugOverlayRenderer:
                     key == "grid_outline"
                 ):  # Don't count grid outline dict for text height, it's visual
                     continue
+                if (
+                    key == "tile_types"
+                ):  # Don't count tile types dict for text height, it's visual
+                    continue
                 height += line_height
                 if isinstance(value, dict):
                     height += calc_text_height(value, level + 1)
@@ -352,6 +397,8 @@ class DebugOverlayRenderer:
                 if key == "graph":  # Skip rendering graph data as text
                     continue
                 if key == "grid_outline":  # Skip rendering grid outline data as text
+                    continue
+                if key == "tile_types":  # Skip rendering tile types data as text
                     continue
                 if isinstance(value, dict):
                     # Render dictionary key as a header

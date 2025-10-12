@@ -7,7 +7,6 @@ The terrain is created using a combination of mild slopes, steep slopes, and 45-
 from .map import Map
 from typing import Optional
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
-import math
 
 
 class MapHills(Map):
@@ -20,35 +19,18 @@ class MapHills(Map):
     MAX_HEIGHT = MAP_TILE_HEIGHT - 4
 
     # Terrain generation parameters
-    MIN_HILLS = 2
+    MIN_HILLS = 1
     MAX_HILLS = 8
     MIN_HILL_WIDTH = 2
     MAX_HILL_WIDTH = 8
     MIN_HEIGHT_CHANGE = 1
-    MAX_HEIGHT_CHANGE = 4
-
-    # Tile types for different slopes
-    # 45-degree slopes
-    SLOPE_45_UP = [8, 7]  # ascending 45-degree slopes
-    SLOPE_45_DOWN = [6, 9]  # descending 45-degree slopes
-
-    # Mild slopes (gentle)
-    MILD_SLOPE_UP = [18, 19]  # short mild slopes ascending
-    MILD_SLOPE_DOWN = [20, 21]  # short mild slopes descending
-    MILD_RAISED_UP = [22, 23]  # raised mild slopes
-    MILD_RAISED_DOWN = [24, 25]  # raised mild slopes descending
-
-    # Steep slopes
-    STEEP_SLOPE_UP = [26, 27]  # short steep slopes ascending
-    STEEP_SLOPE_DOWN = [28, 29]  # short steep slopes descending
-    STEEP_RAISED_UP = [30, 31]  # raised steep slopes
-    STEEP_RAISED_DOWN = [32, 33]  # raised steep slopes descending
+    MAX_HEIGHT_CHANGE = 10
 
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a hills level with procedurally generated terrain.
 
         Args:
-            seed: Random seed for reproducible generation
+            seed: Random seed for reproducible generation.
 
         Returns:
             Map: A Map instance with the generated level
@@ -82,22 +64,12 @@ class MapHills(Map):
 
         # Step 4: Create boundary walls
         use_random_tiles = self.rng.choice([True, False])
-        self.set_hollow_rectangle(
-            chamber_x - 1,
-            chamber_y - 1,
-            chamber_x + width,
-            chamber_y + height,
-            use_random_tiles_type=use_random_tiles,
-        )
 
         # Step 5: Generate rolling hills terrain
-        floor_y = chamber_y + height - 1
-        terrain_heights = self._generate_terrain_heights(
-            chamber_x, width, floor_y, height
-        )
+        floor_y = chamber_y + height
 
-        # Apply terrain heights to the map
-        self._apply_terrain_to_map(chamber_x, width, terrain_heights, floor_y)
+        # Use new hill pattern approach for more natural terrain
+        self._apply_hill_patterns(chamber_x - 1, width, floor_y, chamber_y)
 
         # Step 6: Place entities
         # Ninja at one end, exit switch in middle, exit door at other end
@@ -114,159 +86,144 @@ class MapHills(Map):
             door_x = chamber_x + 1
             ninja_orientation = -1  # Facing left
 
-        # Place entities one tile above ground
-        ninja_y = terrain_heights[ninja_x - chamber_x] - 1
-        switch_y = terrain_heights[switch_x - chamber_x] - 1
-        door_y = terrain_heights[door_x - chamber_x] - 1
+        # Find ground level at entity positions
+        ninja_y = self._find_ground_level(ninja_x, floor_y, chamber_y) - 1
+        switch_y = self._find_ground_level(switch_x, floor_y, chamber_y) - 1
+        door_y = self._find_ground_level(door_x, floor_y, chamber_y) - 1
+
+        self.set_hollow_rectangle(
+            chamber_x - 1,
+            chamber_y - 1,
+            chamber_x + width,
+            chamber_y + height,
+            use_random_tiles_type=use_random_tiles,
+        )
 
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
 
-        # Add random entities outside playspace
-        self.add_random_entities_outside_playspace(
-            chamber_x - 4, chamber_y - 4, chamber_x + width + 4, chamber_y + height + 4
-        )
-
         return self
 
-    def _generate_terrain_heights(
-        self, start_x: int, width: int, floor_y: int, chamber_height: int
-    ) -> list:
-        """Generate height map for rolling hills terrain.
+    def _apply_hill_patterns(
+        self, start_x: int, width: int, floor_y: int, chamber_y: int
+    ) -> None:
+        """Apply terrain using the new hill pattern functions.
 
-        Uses a combination of sine waves and random perturbations to create
-        natural-looking rolling hills.
+        This creates more natural-looking hills by using complete hill patterns
+        (mild, steep, 45-degree, mixed) rather than individual slope tiles.
 
         Args:
             start_x: Starting x coordinate of the chamber
             width: Width of the chamber
             floor_y: Y coordinate of the floor
-            chamber_height: Total height of the chamber
-
-        Returns:
-            List of y-coordinates for each x position (ground level)
+            chamber_y: Y coordinate of the chamber ceiling (top of playable area)
         """
-        heights = []
-        max_height_variance = min(chamber_height - 3, self.MAX_HEIGHT_CHANGE)
+        # Calculate chamber boundaries
+        chamber_left = start_x
+        chamber_right = start_x + width + 1
+        chamber_ceiling = chamber_y
 
-        # Generate number of hills
-        num_hills = self.rng.randint(self.MIN_HILLS, self.MAX_HILLS)
-
-        # Use sine wave for base terrain
-        frequency = (num_hills * 2 * math.pi) / width
-        amplitude = max_height_variance
-
-        for i in range(width):
-            # Base sine wave
-            base_height = math.sin(i * frequency) * amplitude
-
-            # Add random perturbation
-            noise = self.rng.uniform(-0.5, 0.5)
-
-            # Calculate final height
-            height_offset = int(base_height + noise)
-            # Clamp to valid range
-            height_offset = max(
-                -max_height_variance, min(max_height_variance, height_offset)
-            )
-
-            # Ground y position (higher y = lower on screen in tile coords)
-            ground_y = floor_y + height_offset
-            ground_y = max(floor_y - max_height_variance, min(floor_y, ground_y))
-
-            heights.append(ground_y)
-
-        # Smooth out extreme changes
-        heights = self._smooth_terrain(heights, floor_y)
-
-        return heights
-
-    def _smooth_terrain(self, heights: list, floor_y: int) -> list:
-        """Smooth terrain to prevent impossible jumps.
-
-        Args:
-            heights: List of ground heights
-            floor_y: Base floor y coordinate
-
-        Returns:
-            Smoothed list of heights
-        """
-        smoothed = heights.copy()
-        max_change = 2  # Maximum height change between adjacent tiles
-
-        for i in range(1, len(smoothed)):
-            height_diff = abs(smoothed[i] - smoothed[i - 1])
-            if height_diff > max_change:
-                # Interpolate to smooth the transition
-                if smoothed[i] > smoothed[i - 1]:
-                    smoothed[i] = smoothed[i - 1] + max_change
-                else:
-                    smoothed[i] = smoothed[i - 1] - max_change
-
-        return smoothed
-
-    def _apply_terrain_to_map(
-        self, start_x: int, width: int, heights: list, floor_y: int
-    ) -> None:
-        """Apply terrain heights to the map using appropriate slope tiles.
-
-        Args:
-            start_x: Starting x coordinate of the chamber
-            width: Width of the chamber
-            heights: List of ground heights for each x position
-            floor_y: Base floor y coordinate
-        """
-        for i in range(width):
-            x = start_x + i
-            ground_y = heights[i]
-
-            # Fill in solid tiles below ground level
-            for y in range(ground_y + 1, floor_y + 2):
+        # Fill the floor with solid tiles first
+        for x in range(start_x, start_x + width):
+            for y in range(floor_y + 1, floor_y + 3):
                 self.set_tile(x, y, 1)
 
-            # Determine slope tile to use based on height change
-            if i < width - 1:
-                current_height = heights[i]
-                next_height = heights[i + 1]
-                height_diff = next_height - current_height
+        # Calculate how many hills to create based on width
+        num_hills = self.rng.randint(self.MIN_HILLS, max(self.MAX_HILLS, width // 6))
 
-                slope_tile = self._get_slope_tile(height_diff)
+        # Determine max height based on chamber size
+        chamber_height = floor_y - chamber_y
+        max_hill_height = min(self.MAX_HEIGHT_CHANGE, chamber_height - 1)
+        hill_types_to_use = ["mild", "steep", "45", "mixed"]
 
-                if slope_tile is not None:
-                    # Place slope tile at the ground level
-                    self.set_tile(x, ground_y, slope_tile)
-                else:
-                    # Flat ground - use full tile
-                    self.set_tile(x, ground_y, 1)
-            else:
-                # Last tile - use full tile
-                self.set_tile(x, ground_y, 1)
+        # Create rolling hills across the chamber
+        current_x = start_x
+        hills_created = 0
 
-    def _get_slope_tile(self, height_diff: int) -> Optional[int]:
-        """Get appropriate slope tile based on height difference.
+        while current_x < start_x + width and hills_created < num_hills:
+            # Randomly choose hill parameters
+            hill_height = self.rng.randint(1, max_hill_height)
+            hill_type = self.rng.choice(hill_types_to_use)
+
+            # Add some flat ground occasionally
+            if hills_created > 0 and self.rng.random() < 0.3:
+                flat_width = self.rng.randint(1, 3)
+                for _ in range(flat_width):
+                    if current_x >= start_x + width:
+                        break
+                    self.set_tile(current_x, floor_y, 1)
+                    current_x += 1
+
+            # Create the hill based on type, with boundary constraints
+            if hill_type == "mild":
+                current_x = self.create_mild_hill(
+                    current_x,
+                    floor_y,
+                    hill_height,
+                    min_x=chamber_left,
+                    max_x=chamber_right,
+                    min_y=chamber_ceiling,
+                    max_y=floor_y,
+                )
+            elif hill_type == "steep":
+                current_x = self.create_steep_hill(
+                    current_x,
+                    floor_y,
+                    hill_height,
+                    min_x=chamber_left,
+                    max_x=chamber_right,
+                    min_y=chamber_ceiling,
+                    max_y=floor_y,
+                )
+            elif hill_type == "45":
+                current_x = self.create_45_degree_hill(
+                    current_x,
+                    floor_y,
+                    hill_height,
+                    min_x=chamber_left,
+                    max_x=chamber_right,
+                    min_y=chamber_ceiling,
+                    max_y=floor_y,
+                )
+            elif hill_type == "mixed":
+                ascent_type = self.rng.choice(["mild", "steep", "45"])
+                descent_type = self.rng.choice(["mild", "steep", "45"])
+                current_x = self.create_mixed_hill(
+                    current_x,
+                    floor_y,
+                    hill_height,
+                    ascent_type,
+                    descent_type,
+                    min_x=chamber_left,
+                    max_x=chamber_right,
+                    min_y=chamber_ceiling,
+                    max_y=floor_y,
+                )
+
+            hills_created += 1
+
+        # Fill remaining space with flat ground
+        while current_x < start_x + width:
+            self.set_tile(current_x, floor_y, 1)
+            current_x += 1
+
+    def _find_ground_level(self, x: int, floor_y: int, ceiling_y: int) -> int:
+        """Find the ground level (first solid tile from top) at position x.
 
         Args:
-            height_diff: Height difference to next tile (negative = ascending, positive = descending)
+            x: X coordinate to check
+            floor_y: Bottom of the chamber
+            ceiling_y: Top of the chamber
 
         Returns:
-            Tile type ID for the appropriate slope, or None for flat ground
+            Y coordinate of the ground surface (empty tile just above solid)
         """
-        if height_diff == 0:
-            # Flat ground
-            return None
-        elif height_diff < 0:
-            # Ascending (going up)
-            if abs(height_diff) >= 2:
-                # Steep slope
-                return self.rng.choice(self.STEEP_SLOPE_UP)
-            else:
-                # Mild slope
-                return self.rng.choice(self.MILD_SLOPE_UP)
-        else:
-            # Descending (going down)
-            if abs(height_diff) >= 2:
-                # Steep slope
-                return self.rng.choice(self.STEEP_SLOPE_DOWN)
-            else:
-                # Mild slope
-                return self.rng.choice(self.MILD_SLOPE_DOWN)
+        # Search from ceiling to floor for the first solid tile
+        for y in range(ceiling_y, floor_y + 1):
+            tile = self.tile_data[x + y * MAP_TILE_WIDTH]
+            # Check if this is a solid or slope tile (non-zero)
+            if tile != 0:
+                return y
+
+        # If no solid tile found, return floor level
+        return floor_y
