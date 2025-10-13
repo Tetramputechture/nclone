@@ -158,7 +158,7 @@ class ReplayExecutor:
                 float(ninja.on_ground),
                 float(ninja.wall_sliding),
                 # Add more state as needed...
-            ] + [0.0] * 24, dtype=np.float32),  # Pad to 30 features
+            ] + [0.0] * 20, dtype=np.float32),  # Pad to 26 features
             "reachability_features": np.zeros(8, dtype=np.float32),  # Placeholder
         }
         

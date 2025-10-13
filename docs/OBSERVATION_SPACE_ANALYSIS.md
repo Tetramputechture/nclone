@@ -156,10 +156,16 @@ After validating Phase 1 performance, consider removing feature 27 (switch_progr
 
 ## Decision
 
-**Current Status**: DOCUMENTED - Redundancies identified and analyzed
+**Current Status**: ✅ IMPLEMENTED - Phase 1 complete
 
-**Recommendation**: Implement Phase 1 (remove features 21, 22, 25, 29) in next major version update after validating current architecture performance. This provides 13% dimensionality reduction with minimal risk.
+**Implementation**: Phase 1 (remove features 21, 22, 25, 29) has been implemented. All tests passing (36/36).
 
 **Version Planning**:
-- v1.0 (current): 30-feature state space
-- v2.0 (proposed): 26-feature state space with redundancy removal
+- v1.0 (legacy): 30-feature state space
+- v2.0 (current): 26-feature state space with redundancy removal ✅
+
+**Files Modified**:
+- `/workspace/nclone/nclone/nplay_headless.py` - Removed redundant feature computations
+- `/workspace/nclone/nclone/gym_environment/observation_processor.py` - Updated feature indices
+- `/workspace/nclone/nclone/replay/replay_executor.py` - Updated padding (24 -> 20)
+- `/workspace/nclone/nclone/replay/unified_observation_extractor.py` - Updated documentation

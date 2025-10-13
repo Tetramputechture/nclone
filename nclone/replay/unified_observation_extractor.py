@@ -374,10 +374,10 @@ class UnifiedObservationExtractor:
         # Extract raw observation using unified system
         raw_obs = self.extract_raw_observation(sim, frame_number)
 
-        # Extract ninja state from the processed game state (first 30 features)
+        # Extract ninja state from the processed game state (first 26 features after redundancy removal)
         ninja_state = (
-            raw_obs["game_state"][:30]
-            if len(raw_obs["game_state"]) >= 30
+            raw_obs["game_state"][:26]
+            if len(raw_obs["game_state"]) >= 26
             else raw_obs["game_state"]
         )
 
@@ -412,7 +412,7 @@ class UnifiedObservationExtractor:
                 "wall": int(ninja.wall_count),
                 "ceiling": int(ninja.ceiling_count),
             },
-            "game_state": ninja_state.tolist(),  # 30-feature array for npp-rl compatibility
+            "game_state": ninja_state.tolist(),  # 26-feature array for npp-rl compatibility
             "doors_opened": int(ninja.doors_opened),
         }
 

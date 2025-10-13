@@ -305,11 +305,11 @@ class ObservationProcessor:
 
     def process_game_state(self, obs: Dict[str, Any]) -> np.ndarray:
         """Process game state into enhanced normalized feature vector."""
-        # Extract the ninja state (now 30 features)
-        ninja_state = obs["game_state"][:30] if len(obs["game_state"]) >= 30 else obs["game_state"]
+        # Extract the ninja state (now 26 features after redundancy removal)
+        ninja_state = obs["game_state"][:26] if len(obs["game_state"]) >= 26 else obs["game_state"]
         ninja_state = list(ninja_state)  # Convert to list for modification
         
-        # Calculate entity proximity features (features 24-27 in ninja state)
+        # Calculate entity proximity features (features 21-23 in ninja state)
         ninja_x, ninja_y = obs["player_x"], obs["player_y"]
         ninja_position = (ninja_x, ninja_y)
         
@@ -344,13 +344,14 @@ class ObservationProcessor:
         nearest_collectible_norm = (switch_dist / screen_diagonal) * 2 - 1
         
         # Update ninja state with computed proximity features
-        if len(ninja_state) >= 30:
-            ninja_state[23] = nearest_hazard_norm  # Feature 24: nearest hazard distance
-            ninja_state[24] = nearest_collectible_norm  # Feature 25: nearest collectible distance  
-            ninja_state[25] = hazard_threat * 2 - 1  # Feature 26: hazard threat level (normalized to [-1,1])
-            # Feature 27 (interaction cooldown) is already computed in get_ninja_state
+        # New indices after redundancy removal (26-feature state)
+        if len(ninja_state) >= 26:
+            ninja_state[21] = nearest_hazard_norm  # Feature 21: nearest hazard distance
+            ninja_state[22] = nearest_collectible_norm  # Feature 22: nearest collectible distance  
+            # REMOVED: hazard_threat_level (redundant - exponential decay of nearest_hazard)
+            # Feature 23 (interaction cooldown) is already computed in get_ninja_state
         
-        # Calculate level progress features (features 28-30 in ninja state)
+        # Calculate level progress features (features 24-25 in ninja state)
         # Switch activation progress
         if obs.get("switch_activated", False):
             switch_progress = 1.0  # Switch is activated
@@ -363,27 +364,20 @@ class ObservationProcessor:
         # Exit accessibility
         exit_accessibility = 1.0 if obs.get("switch_activated", False) else -1.0
         
-        # Level completion progress (combination of switch and exit progress)
-        if obs.get("switch_activated", False):
-            exit_dist = ((ninja_x - obs["exit_door_x"])**2 + (ninja_y - obs["exit_door_y"])**2) ** 0.5
-            exit_progress = 1.0 - (exit_dist / screen_diagonal)
-            completion_progress = (switch_progress + exit_progress) / 2
-        else:
-            completion_progress = switch_progress * 0.5  # Only switch progress matters
+        # REMOVED: completion_progress (redundant - computed from switch_progress and exit distance)
         
         # Update ninja state with computed progress features
-        if len(ninja_state) >= 30:
-            ninja_state[27] = switch_progress  # Feature 28: switch activation progress
-            ninja_state[28] = exit_accessibility  # Feature 29: exit accessibility
-            ninja_state[29] = completion_progress  # Feature 30: level completion progress
+        if len(ninja_state) >= 26:
+            ninja_state[24] = switch_progress  # Feature 24: switch activation progress
+            ninja_state[25] = exit_accessibility  # Feature 25: exit accessibility
         
         # Convert back to numpy array
         ninja_state = np.array(ninja_state, dtype=np.float32)
         
         # For backward compatibility, if we have entity states, include them
         # but the new design focuses on the enhanced ninja state
-        if len(obs["game_state"]) > 30:
-            entity_states = obs["game_state"][30:]
+        if len(obs["game_state"]) > 26:
+            entity_states = obs["game_state"][26:]
             processed_state = np.concatenate([ninja_state, entity_states])
         else:
             processed_state = ninja_state
