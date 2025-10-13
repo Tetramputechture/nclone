@@ -1,6 +1,6 @@
 # nclone: N++ Simulator for Deep RL
 
-Production-ready N++ game simulator with Gym-compatible interface for Deep Reinforcement Learning research.
+N++ game simulator with Gym-compatible interface for Deep Reinforcement Learning research.
 
 ## Overview
 
@@ -11,7 +11,6 @@ Production-ready N++ game simulator with Gym-compatible interface for Deep Reinf
 - **Headless rendering** for fast training (1000+ FPS)
 - **Multi-modal observations** (visual frames, physics state, graph representations)
 - **Fast reachability analysis** (<1ms using OpenCV flood fill)
-- **Entity support** for exits, switches, mines, and locked doors
 
 ## Installation
 
@@ -318,23 +317,6 @@ python -m pstats profile.out
 python -m nclone.test_environment --log-frametimes
 ```
 
-## Physics Constants
-
-All physics constants match N++ specifications:
-
-```python
-from nclone.constants import (
-    NINJA_RADIUS,        # 10 pixels
-    GRAVITY_FALL,        # 0.06666...
-    GRAVITY_JUMP,        # 0.01111...
-    MAX_HOR_SPEED,       # 3.333...
-    JUMP_FLAT_GROUND_Y,  # -2
-    # ... and more
-)
-```
-
-Never redefine physics constants - always import from `nclone.constants`.
-
 ## Integration with npp-rl
 
 This simulator is designed to work with the `npp-rl` training framework:
@@ -356,73 +338,3 @@ python scripts/train_and_compare.py \
 ```
 
 See `npp-rl/README.md` for full training instructions.
-
-## Troubleshooting
-
-### Import Errors
-
-```bash
-# Ensure package is installed
-pip install -e .
-
-# Verify installation
-python -c "import nclone; print(nclone.__file__)"
-```
-
-### Performance Issues
-
-```bash
-# Use headless mode
-env = NPPEnvironment(render_mode="rgb_array")
-
-# Disable graph observations if not needed
-env = NPPEnvironment(enable_graph_updates=False)
-
-# Reduce temporal stack size
-env = NPPEnvironment(temporal_frames=4)
-```
-
-### Memory Issues with Multi-Processing
-
-```bash
-# Reduce number of parallel environments
-# Or use SubprocVecEnv instead of DummyVecEnv
-from stable_baselines3.common.vec_env import SubprocVecEnv
-```
-
-## API Reference
-
-See `docs/` directory for detailed API documentation:
-- `docs/ENVIRONMENT_API.md` - Complete environment interface
-- `docs/OBSERVATIONS.md` - Observation space details
-- `docs/PHYSICS.md` - Physics constants and mechanics
-
-## License
-
-MIT License - See LICENSE file for details.
-
-## Citation
-
-```bibtex
-@software{nclone_2025,
-  title={nclone: N++ Simulator for Deep Reinforcement Learning},
-  author={Your Name},
-  year={2025},
-  url={https://github.com/Tetramputechture/nclone}
-}
-```
-
-## Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure `make test` and `make lint` pass
-5. Submit a pull request
-
-## Support
-
-- Issues: https://github.com/Tetramputechture/nclone/issues
-- Documentation: See `docs/` directory
-- Related: [npp-rl training framework](https://github.com/Tetramputechture/npp-rl)
