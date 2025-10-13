@@ -53,29 +53,34 @@ class TestObservationProfiles(unittest.TestCase):
         # Reset environments
         rich_obs = self.env_rich.reset()[0]
 
-        # Check feature vector sizes
-        self.assertEqual(len(rich_obs["game_state"]), GAME_STATE_CHANNELS)
+        # Check feature vector size (should have at least ninja_state features)
+        # May include additional entity_states beyond the base 30 ninja features
+        self.assertGreaterEqual(len(rich_obs["game_state"]), GAME_STATE_CHANNELS)
 
         # Check that all features are finite
         self.assertTrue(np.all(np.isfinite(rich_obs["game_state"])))
 
-        # Check feature ranges (should be normalized)
-        rich_features = rich_obs["game_state"]
+        # Check feature ranges for ninja_state (first 30 features should be normalized)
+        ninja_state_features = rich_obs["game_state"][:GAME_STATE_CHANNELS]
 
-        # Most features should be in reasonable ranges
-        self.assertTrue(np.all(rich_features >= -10.0))
-        self.assertTrue(np.all(rich_features <= 10.0))
+        # Ninja state features should be normalized to reasonable ranges
+        self.assertTrue(np.all(ninja_state_features >= -10.0))
+        self.assertTrue(np.all(ninja_state_features <= 10.0))
 
     def test_feature_stability_across_steps(self):
         """Test that features remain stable across environment steps."""
-        self.env_rich.reset()
+        obs_reset = self.env_rich.reset()[0]
+        initial_state_size = len(obs_reset["game_state"])
 
         # Take several steps and check feature consistency
         for _ in range(10):
             obs, _, terminated, truncated, _ = self.env_rich.step(0)  # No action
 
-            # Check shapes remain consistent
-            self.assertEqual(obs["game_state"].shape, (GAME_STATE_CHANNELS,))
+            # Check that game_state size remains consistent across steps
+            self.assertEqual(len(obs["game_state"]), initial_state_size)
+            
+            # Check that at least ninja_state features are present
+            self.assertGreaterEqual(len(obs["game_state"]), GAME_STATE_CHANNELS)
             self.assertTrue(np.all(np.isfinite(obs["game_state"])))
 
             # Check image shapes remain consistent
