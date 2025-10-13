@@ -125,7 +125,8 @@ class MapMineMaze(Map):
             )
 
             # Chamber bounds for mine placement
-            min_y = chamber_y1 + 2
+            # Limit mines to no more than 3 tiles from ground floor (chamber_y2)
+            min_y = max(chamber_y1 + 2, chamber_y2 - 1)
             max_y = chamber_y2 + 2  # Include ground level
 
             # Pick a random starting position for the mine sequence
@@ -167,7 +168,8 @@ class MapMineMaze(Map):
                 # Type 1 = toggle mine, mode 1 = active
                 # Add plus or minus a range of 0.5 to col_x
                 col_x += self.rng.choice([-0.5, 0.5])
-                self.add_entity(1, col_x, row_y, 0, 1)
+                mine_type = self.rng.choice([1, 21])
+                self.add_entity(mine_type, col_x, row_y, 0, 1)
                 total_mines += 1
 
             # Skip 2-4 columns randomly

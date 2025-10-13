@@ -7,7 +7,6 @@ Leverages the completely deterministic nature of N++ physics simulation.
 
 from typing import Dict, List, Any, Optional
 import numpy as np
-from pathlib import Path
 
 from ..nplay_headless import NPlayHeadless
 from ..gym_environment.observation_processor import ObservationProcessor

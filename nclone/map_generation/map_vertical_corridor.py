@@ -68,16 +68,19 @@ class MapVerticalCorridor(Map):
             use_random_tiles_type=use_random_tiles,
         )
 
-        # Step 6: Place mines on walls (if enabled)
-        should_place_mines = self.rng.choice([True, False])
+        # Step 6: Place mines on walls
+        should_place_mines = width > 1 and self.rng.choice([True, False])
         if should_place_mines:
             self._place_wall_mines(chamber_x, chamber_y, width, height)
 
         # Step 7: Place entities
         # Ninja at bottom on ground floor at random X position
-        ninja_x = chamber_x + self.rng.randint(0, width - 1)
+        ninja_x = chamber_x + self.rng.randint(0, max(0, width - 2))
         ninja_y = chamber_y + height - 1
         ninja_orientation = self.rng.choice([1, -1])
+
+        # ensure ninja is on an empty tile
+        ninja_x, ninja_y = self._find_closest_valid_tile(ninja_x, ninja_y, tile_type=0)
 
         # Exit switch and exit door at top, next to each other
         # Place them side by side at a random height between midpoint and top

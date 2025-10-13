@@ -1,4 +1,177 @@
-# N++ Attract Replay Data File Structure
+# N++ Replay Processing Documentation
+
+This document covers two replay formats used in the nclone project:
+
+1. **Compact Replay Format** - For recording human gameplay demonstrations
+2. **N++ Attract Replay Format** - For processing official N++ attract mode replays
+
+---
+
+## Compact Replay Format (GameplayRecorder)
+
+### Overview
+
+The compact replay format is designed for efficiently recording human gameplay demonstrations for behavioral cloning. It stores only the essential data needed to reconstruct gameplay: map data and input sequences.
+
+**Key Features:**
+- ✅ **Ultra-compact storage**: ~1-5KB per episode (vs 500KB+ with full observations)
+- ✅ **Deterministic replay**: Leverages N++ physics to regenerate observations on-demand
+- ✅ **Simple format**: 8-byte header + map data + input sequence
+- ✅ **Video generation**: Built-in MP4 video export capability
+
+### File Format Specification
+
+**Binary Layout:**
+```
+[HEADER - 8 bytes]
+├── Map data length (4 bytes, uint32, little-endian)
+└── Input sequence length (4 bytes, uint32, little-endian)
+
+[MAP DATA - typically 1335 bytes]
+└── Raw N++ map data (binary)
+
+[INPUT SEQUENCE - 1 byte per frame]
+└── Input commands (0-7, bit flags for left/right/jump)
+```
+
+**Input Encoding (bit flags):**
+```
+Bit 0: Jump    (0x01)
+Bit 1: Right   (0x02)
+Bit 2: Left    (0x04)
+
+Examples:
+  0 (0b000): NOOP
+  1 (0b001): Jump
+  2 (0b010): Right
+  3 (0b011): Right + Jump
+  4 (0b100): Left
+  5 (0b101): Left + Jump
+```
+
+### Recording Gameplay
+
+**Using test_environment.py:**
+
+```bash
+# Start test environment with recording enabled
+cd /home/tetra/projects/nclone
+python -m nclone.test_environment --record --recording-output output/
+
+# Interactive controls:
+# - B: Start recording (resets to spawn on CURRENT map)
+# - Play through the level until completion (win or death)
+# - R: Reset (auto-saves if successful, discards if failed)
+# - N: Stop recording without saving
+
+# IMPORTANT: 
+# - Recording automatically resets to spawn position on the SAME map (B key)
+# - The map does NOT change when starting a recording
+# - This ensures replay starts from spawn position for deterministic playback
+# - Only complete episodes (win/death) should be saved for training
+```
+
+**Example output:**
+```
+🔴 Recording started: 20251012_180456_simple_002
+   Map size: 1335 bytes
+
+✅ Replay saved: output/20251012_180456_simple_002.replay
+   - Frames: 348
+   - Duration: 15.8s
+   - File size: 1601 bytes (1.6 KB)
+```
+
+### Converting Replays to Video
+
+Use the `replay_to_video.py` tool to convert `.replay` files to MP4 videos:
+
+```bash
+# Basic usage (60 FPS by default)
+python tools/replay_to_video.py input.replay output.mp4
+
+# Custom framerate
+python tools/replay_to_video.py input.replay output.mp4 --fps 30
+
+# Example with actual file
+python tools/replay_to_video.py output/20251012_180456_simple_002.replay videos/gameplay.mp4
+```
+
+**Features:**
+- Deterministic replay execution using original map data and inputs
+- High-quality H.264 encoding (CRF 18, visually lossless)
+- Progress reporting during frame rendering
+- Automatic ffmpeg availability checking
+
+**Requirements:**
+- `ffmpeg` must be installed on your system
+  - Ubuntu/Debian: `sudo apt-get install ffmpeg`
+  - macOS: `brew install ffmpeg`
+
+### Python API Usage
+
+**Recording replays:**
+
+```python
+from nclone.replay.gameplay_recorder import GameplayRecorder
+
+# Create recorder
+recorder = GameplayRecorder(output_dir="datasets/human_replays")
+
+# Start recording
+recorder.start_recording(map_data=env.get_map_data(), map_name="level_001")
+
+# During gameplay loop
+recorder.record_action(action)
+
+# Stop and save (only if successful)
+recorder.stop_recording(success=player_won, save=player_won)
+```
+
+**Loading and executing replays:**
+
+```python
+from nclone.replay.gameplay_recorder import CompactReplay
+from nclone.replay.replay_executor import ReplayExecutor
+
+# Load replay file
+with open("replay.replay", "rb") as f:
+    replay_data = f.read()
+
+replay = CompactReplay.from_binary(replay_data)
+
+# Execute replay to regenerate observations
+executor = ReplayExecutor()
+observations = executor.execute_replay(
+    map_data=replay.map_data,
+    input_sequence=replay.input_sequence
+)
+```
+
+### Storage Efficiency
+
+**Comparison with traditional observation storage:**
+
+```
+Traditional approach (storing full observations):
+- 50 episodes × 500KB/episode = 25 MB
+
+Compact replay approach (map + inputs only):
+- 50 episodes × 2.5KB/episode = 125 KB
+
+Reduction: 200x smaller!
+```
+
+### Use Cases
+
+1. **Behavioral Cloning Pre-training**: Record human demonstrations efficiently
+2. **Debugging**: Replay exact gameplay sequences for debugging
+3. **Video Generation**: Create gameplay videos from compact recordings
+4. **Dataset Creation**: Build large-scale demonstration datasets with minimal storage
+
+---
+
+## N++ Attract Replay Format
 
 This document provides a comprehensive specification of the N++ attract replay binary file format, reverse-engineered through extensive analysis and validation to achieve **TRUE 100% accuracy**.
 
