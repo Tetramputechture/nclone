@@ -89,6 +89,10 @@ class MapHills(Map):
         # Find ground level at entity positions
         ninja_y = self._find_ground_level(ninja_x, floor_y, chamber_y) - 1
         switch_y = self._find_ground_level(switch_x, floor_y, chamber_y) - 1
+
+        # move switch_y up a random number of tiles, respecting the ceiling, with a max of 4 tiles up
+        switch_y = switch_y - self.rng.randint(0, min(4, switch_y - chamber_y))
+
         door_y = self._find_ground_level(door_x, floor_y, chamber_y) - 1
 
         self.set_hollow_rectangle(
@@ -144,6 +148,7 @@ class MapHills(Map):
             # Randomly choose hill parameters
             hill_height = self.rng.randint(1, max_hill_height)
             hill_type = self.rng.choice(hill_types_to_use)
+            # hill_type = "steep"
 
             # Add some flat ground occasionally
             if hills_created > 0 and self.rng.random() < 0.3:

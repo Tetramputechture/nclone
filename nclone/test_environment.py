@@ -286,11 +286,16 @@ if args.record:
     print("COMPACT REPLAY RECORDING ENABLED")
     print("=" * 60)
     print(f"Output directory: {args.recording_output}")
-    print(f"Storage format: Binary (map + inputs only)")
+    print("Storage format: Binary (map + inputs only)")
     print("\nControls:")
-    print("  B - Start recording")
+    print("  B - Start recording (resets to spawn on SAME map)")
     print("  N - Stop recording (without saving)")
     print("  R - Reset (auto-saves if successful)")
+    print("\nIMPORTANT:")
+    print("  • Pressing 'B' resets to spawn position on current map")
+    print("  • The map does NOT change when starting a recording")
+    print("  • Play through the level to completion (win/death)")
+    print("  • Only complete episodes are saved for training")
     print("=" * 60 + "\n")
 
 if (
@@ -729,33 +734,53 @@ while running:
                         # Determine if episode was successful
                         player_won = env.nplay_headless.ninja_has_won()
                         recorder.stop_recording(success=player_won, save=player_won)
-                    
+
                     # Reset environment
                     observation, info = env.reset()
-                    
-                    # Auto-start recording on reset if recorder was active
-                    if recorder is not None and not args.headless:
-                        map_data = bytes(env.nplay_headless.current_map_data)
-                        map_name = getattr(env.map_loader, 'current_map_name', 'unknown') if hasattr(env, 'map_loader') else 'unknown'
-                        level_id = None  # TODO: Extract from env if using test suite
-                        recorder.start_recording(map_data, map_name, level_id)
-                        
+
                 if event.key == pygame.K_b and recorder is not None:
                     # Start recording
                     if not recorder.is_recording:
-                        map_data = bytes(env.nplay_headless.current_map_data)
-                        map_name = getattr(env.map_loader, 'current_map_name', 'unknown') if hasattr(env, 'map_loader') else 'unknown'
+                        # CRITICAL: Reset environment to spawn position on SAME map
+                        # Save current map data before resetting
+                        current_map_data = list(env.nplay_headless.current_map_data)
+
+                        print("Resetting to spawn position on current map...")
+
+                        # Reset physics and observation processors
+                        env.observation_processor.reset()
+                        env.reward_calculator.reset()
+                        env.truncation_checker.reset()
+                        env.current_ep_reward = 0
+
+                        # Reset ninja physics but keep same map
+                        env.nplay_headless.reset()
+                        env.nplay_headless.load_map_from_map_data(current_map_data)
+
+                        # Get initial observation
+                        initial_obs = env._get_observation()
+                        observation = env._process_observation(initial_obs)
+
+                        # Prepare map data for recording
+                        map_data = bytes(
+                            max(0, min(255, int(b))) for b in current_map_data
+                        )
+                        map_name = (
+                            getattr(env.map_loader, "current_map_name", "unknown")
+                            if hasattr(env, "map_loader")
+                            else "unknown"
+                        )
                         level_id = None  # TODO: Extract from env if using test suite
                         recorder.start_recording(map_data, map_name, level_id)
                     else:
                         print("Already recording!")
-                
+
                 if event.key == pygame.K_n and recorder is not None:
                     # Stop recording without saving
                     if recorder.is_recording:
                         recorder.stop_recording(success=False, save=False)
                         print("Recording stopped (not saved)")
-                        
+
                 if event.key == pygame.K_e:
                     # Toggle exploration debug overlay
                     exploration_debug_enabled = not exploration_debug_enabled
@@ -1092,12 +1117,18 @@ while running:
     # Record action if recording is active
     if recorder is not None and recorder.is_recording:
         recorder.record_action(action)
-    
+
     # Step the environment
     observation, reward, terminated, truncated, info = env.step(action)
 
     # Reset if episode is done
     if terminated or truncated:
+        # Stop recording if active (episode naturally ended)
+        if recorder is not None and recorder.is_recording:
+            # Determine if episode was successful
+            player_won = env.nplay_headless.ninja_has_won()
+            recorder.stop_recording(success=player_won, save=player_won)
+
         observation, info = env.reset()
 
     current_time = time.perf_counter()

@@ -69,10 +69,88 @@ class Map:
         if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
             self.tile_data[x + y * MAP_TILE_WIDTH] = tile_type
 
+    def get_tile(self, x, y):
+        """Get the tile type at the given coordinates.
+
+        Args:
+            x: X coordinate (in tiles)
+            y: Y coordinate (in tiles)
+
+        Returns:
+            Tile type (int), or -1 if out of bounds
+        """
+        # Ensure coordinates are integers
+        x, y = int(x), int(y)
+        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
+            return self.tile_data[x + y * MAP_TILE_WIDTH]
+        return -1
+
     def set_tiles_bulk(self, tile_types):
         """Set all tiles at once using a pre-generated array."""
         if len(tile_types) == len(self.tile_data):
             self.tile_data = tile_types
+
+    def _find_closest_valid_tile(
+        self, x: int, y: int, tile_type: int = 0
+    ) -> Tuple[int, int]:
+        """Find the closest tile of a given type within map boundaries.
+
+        Uses BFS to find the nearest tile of the specified type that's within bounds.
+
+        Args:
+            x: Starting x coordinate
+            y: Starting y coordinate
+            tile_type: The tile type to search for (default: 0 for empty)
+
+        Returns:
+            Tuple of (x, y) for the closest valid tile, or original (x, y) if none found
+        """
+        # First check if the position is already valid
+        if 0 <= x < MAP_TILE_WIDTH and 0 <= y < MAP_TILE_HEIGHT:
+            if self.tile_data[x + y * MAP_TILE_WIDTH] == tile_type:
+                return (x, y)
+
+        # Clamp to boundaries first
+        x = max(0, min(x, MAP_TILE_WIDTH - 1))
+        y = max(0, min(y, MAP_TILE_HEIGHT - 1))
+
+        # BFS to find closest valid tile
+        from collections import deque
+
+        visited = set()
+        queue = deque([(x, y, 0)])  # (x, y, distance)
+        visited.add((x, y))
+
+        while queue:
+            curr_x, curr_y, dist = queue.popleft()
+
+            # Check if this tile is valid
+            if 0 <= curr_x < MAP_TILE_WIDTH and 0 <= curr_y < MAP_TILE_HEIGHT:
+                if self.tile_data[curr_x + curr_y * MAP_TILE_WIDTH] == tile_type:
+                    return (curr_x, curr_y)
+
+            # Add neighbors (8-directional search for better coverage)
+            for dx, dy in [
+                (-1, 0),
+                (1, 0),
+                (0, -1),
+                (0, 1),
+                (-1, -1),
+                (-1, 1),
+                (1, -1),
+                (1, 1),
+            ]:
+                next_x, next_y = curr_x + dx, curr_y + dy
+                if (
+                    (next_x, next_y) not in visited
+                    and 0 <= next_x < MAP_TILE_WIDTH
+                    and 0 <= next_y < MAP_TILE_HEIGHT
+                ):
+                    visited.add((next_x, next_y))
+                    queue.append((next_x, next_y, dist + 1))
+
+        # If no valid tile found, return clamped position
+        return (x, y)
 
     def set_ninja_spawn(self, grid_x, grid_y, orientation=None):
         """Set the ninja spawn point coordinates and optionally orientation.
@@ -365,38 +443,6 @@ class Map:
                 self.add_entity(entity_type, x, y, orientation)
             else:
                 self.add_entity(entity_type, x, y)
-
-    def create_slope_up(
-        self, x: int, y: int, height_change: int, use_mild: bool = True
-    ) -> int:
-        """Create an ascending slope starting at (x, y).
-
-        See terrain_utils.create_slope_up for full documentation.
-        """
-        return terrain_utils.create_slope_up(self, x, y, height_change, use_mild)
-
-    def create_slope_down(
-        self, x: int, y: int, height_change: int, use_mild: bool = True
-    ) -> int:
-        """Create a descending slope starting at (x, y).
-
-        See terrain_utils.create_slope_down for full documentation.
-        """
-        return terrain_utils.create_slope_down(self, x, y, height_change, use_mild)
-
-    def create_45_degree_slope_up(self, x: int, y: int) -> int:
-        """Create a single 45-degree ascending slope tile.
-
-        See terrain_utils.create_45_degree_slope_up for full documentation.
-        """
-        return terrain_utils.create_45_degree_slope_up(self, x, y)
-
-    def create_45_degree_slope_down(self, x: int, y: int) -> int:
-        """Create a single 45-degree descending slope tile.
-
-        See terrain_utils.create_45_degree_slope_down for full documentation.
-        """
-        return terrain_utils.create_45_degree_slope_down(self, x, y)
 
     def create_mild_hill(
         self,

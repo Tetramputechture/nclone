@@ -428,6 +428,9 @@ class MultiChamberGenerator(Map):
         ninja_x = ninja_chamber.x + self.rng.randint(1, ninja_chamber.width - 2)
         # Place ninja one tile above the floor
         ninja_y = ninja_chamber.y + ninja_chamber.height - 2
+
+        # make sure ninja is on an empty tile
+        ninja_x, ninja_y = self._find_closest_valid_tile(ninja_x, ninja_y, tile_type=0)
         ninja_orientation = self.rng.choice([-1, 1])
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
 
@@ -495,6 +498,12 @@ class MultiChamberGenerator(Map):
             for dy in range(-1, 2):
                 self.entity_positions.add((exit_x + dx, exit_y + dy))
                 self.entity_positions.add((switch_x + dx, switch_y + dy))
+
+        # ensure exit and switch are on empty tiles
+        exit_x, exit_y = self._find_closest_valid_tile(exit_x, exit_y, tile_type=0)
+        switch_x, switch_y = self._find_closest_valid_tile(
+            switch_x, switch_y, tile_type=0
+        )
 
         self.add_entity(3, exit_x, exit_y, 0, 0, switch_x, switch_y)
 

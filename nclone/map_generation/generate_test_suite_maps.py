@@ -901,8 +901,8 @@ class TestSuiteGenerator:
         map_gen.MAX_HEIGHT = 12
 
         # High mine density
-        map_gen.MIN_SKIP_COLUMNS = 2
-        map_gen.MAX_SKIP_COLUMNS = 3
+        map_gen.MIN_SKIP_COLUMNS = 3
+        map_gen.MAX_SKIP_COLUMNS = 4
         map_gen.MIN_MINES_PER_COLUMN = 4
         map_gen.MAX_MINES_PER_COLUMN = 12
 
@@ -1039,8 +1039,8 @@ class TestSuiteGenerator:
         map_gen.MAX_HEIGHT = 10
 
         # High mine density
-        map_gen.MIN_SKIP_COLUMNS = 2
-        map_gen.MAX_SKIP_COLUMNS = 3
+        map_gen.MIN_SKIP_COLUMNS = 3
+        map_gen.MAX_SKIP_COLUMNS = 4
         map_gen.MIN_MINES_PER_COLUMN = 3
         map_gen.MAX_MINES_PER_COLUMN = 10
 

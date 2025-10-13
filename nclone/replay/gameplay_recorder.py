@@ -11,7 +11,6 @@ Storage format mirrors N++ attract files:
 """
 
 import struct
-import numpy as np
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
@@ -205,7 +204,7 @@ class GameplayRecorder:
             print(f"   - Duration: {duration:.1f}s")
             print(f"   - File size: {file_size} bytes ({file_size/1024:.1f} KB)")
         elif not success:
-            print(f"❌ Episode failed, not saved")
+            print("❌ Episode failed, not saved")
         
         # Reset state
         self.current_map_data = None

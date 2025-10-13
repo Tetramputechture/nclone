@@ -113,7 +113,7 @@ class EnvMapLoader:
                 f"Loading level with parameters: {1 + self._test_suite_index}, {self._test_suite_index}"
             )
             self.nplay_headless.load_map_from_map_data(
-                self._test_suite_generator._create_complex_hills_level(
+                self._test_suite_generator._create_complex_mine_maze(
                     1 + self._test_suite_index
                 ).map_data()
             )
