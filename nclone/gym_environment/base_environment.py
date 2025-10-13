@@ -307,6 +307,14 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Get entity states for PBRS hazard detection
         entity_states_raw = self.nplay_headless.get_entity_states()
+        
+        # Get actual entity objects for mine tracking
+        from ..constants.entity_types import EntityType
+        entities = []
+        if hasattr(self.nplay_headless.sim, "entity_dic"):
+            # Extract toggle mines with their state information
+            toggle_mines = self.nplay_headless.sim.entity_dic.get(EntityType.TOGGLE_MINE, [])
+            entities.extend(toggle_mines)
 
         obs = {
             "screen": self.render(),
@@ -324,6 +332,7 @@ class BaseNppEnvironment(gymnasium.Env):
             "sim_frame": self.nplay_headless.sim.frame,
             "doors_opened": self.nplay_headless.get_doors_opened(),
             "entity_states": entity_states_raw,  # For PBRS hazard detection
+            "entities": entities,  # For mine state tracking
         }
 
         return obs

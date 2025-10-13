@@ -131,6 +131,93 @@ def calculate_vector(
     return (dx / magnitude, dy / magnitude)
 
 
+def compute_hazard_from_entity_states(entity_states: np.ndarray, ninja_x: float, ninja_y: float) -> Tuple[float, float]:
+    """
+    Compute hazard proximity from flattened entity_states array.
+    
+    This is a fallback for when mine tracking is disabled. It extracts mine proximity
+    information from the flattened entity_states array structure.
+    
+    Entity states structure (from nplay_headless.get_entity_states()):
+    - For each entity type (TOGGLE_MINE first with MAX_COUNT=128):
+        - [0]: count of this entity type (normalized by MAX_COUNT)
+        - Then for each entity (MAX_COUNT slots):
+            - [0]: active (0 or 1)
+            - [1]: x_pos (normalized by SRCWIDTH)
+            - [2]: y_pos (normalized by SRCHEIGHT)
+            - [3]: type (normalized by 28)
+            - [4]: distance to ninja (normalized by screen diagonal)
+            - [5]: relative velocity magnitude (normalized by MAX_HOR_SPEED)
+    
+    Args:
+        entity_states: Flattened entity states array from obs["entity_states"]
+        ninja_x: Ninja x position in pixels
+        ninja_y: Ninja y position in pixels
+        
+    Returns:
+        Tuple of (nearest_hazard_distance_pixels, hazard_threat_score)
+    """
+    from ..constants.render_utils import SRCWIDTH, SRCHEIGHT
+    
+    if len(entity_states) < 1:
+        return (float('inf'), 0.0)
+    
+    # Entity states structure: 
+    # First entity type is TOGGLE_MINE with MAX_COUNT=128
+    # Format: [count, entity0_attr0, entity0_attr1, ..., entity0_attr5, entity1_attr0, ...]
+    MAX_ATTRIBUTES = 6
+    TOGGLE_MINE_MAX_COUNT = 128
+    
+    # Extract mine count (first value)
+    mine_count_norm = entity_states[0]
+    mine_count = int(mine_count_norm * TOGGLE_MINE_MAX_COUNT)
+    
+    if mine_count == 0:
+        return (float('inf'), 0.0)
+    
+    # Screen diagonal for denormalization
+    screen_diagonal = (SRCWIDTH**2 + SRCHEIGHT**2) ** 0.5
+    
+    # Find nearest active mine
+    nearest_dist = float('inf')
+    for mine_idx in range(min(mine_count, TOGGLE_MINE_MAX_COUNT)):
+        # Calculate offset in entity_states array
+        # offset = 1 (count) + mine_idx * 6 (attributes per mine)
+        offset = 1 + mine_idx * MAX_ATTRIBUTES
+        
+        if offset + MAX_ATTRIBUTES > len(entity_states):
+            break
+        
+        # Extract mine attributes
+        active = entity_states[offset + 0]
+        x_norm = entity_states[offset + 1]
+        y_norm = entity_states[offset + 2]
+        # type_norm = entity_states[offset + 3]  # Not needed
+        dist_norm = entity_states[offset + 4]
+        # rel_vel = entity_states[offset + 5]  # Not needed
+        
+        # Only consider active mines
+        if active < 0.5:
+            continue
+        
+        # Denormalize distance
+        distance = dist_norm * screen_diagonal
+        
+        if distance < nearest_dist:
+            nearest_dist = distance
+    
+    # Compute hazard threat based on proximity
+    # Threat is high when close, low when far
+    # Use exponential decay: threat = exp(-distance / decay_factor)
+    if nearest_dist < float('inf'):
+        # Decay factor of 100 pixels means threat drops to ~0.37 at 100px
+        decay_factor = 100.0
+        hazard_threat = np.exp(-nearest_dist / decay_factor)
+        return (nearest_dist, float(hazard_threat))
+    
+    return (float('inf'), 0.0)
+
+
 class ObservationProcessor:
     """Processes raw game observations into frame stacks and normalized feature vectors."""
 
@@ -243,10 +330,11 @@ class ObservationProcessor:
                 nearest_hazard_dist = nearest_mine.distance_to(ninja_position)
                 hazard_threat = self.mine_processor.get_mine_proximity_score(ninja_position)
         elif "entity_states" in obs and len(obs["entity_states"]) > 0:
-            # Fallback to simplified approach if mine tracking disabled
+            # Fallback: compute hazard from entity_states array
             entity_states = obs["entity_states"]
-            nearest_hazard_dist = min(nearest_hazard_dist, screen_diagonal * 0.5)
-            hazard_threat = 0.1  # Low threat level as placeholder
+            nearest_hazard_dist, hazard_threat = compute_hazard_from_entity_states(
+                entity_states, ninja_x, ninja_y
+            )
         
         # Normalize hazard distance to [-1, 1]
         nearest_hazard_norm = (nearest_hazard_dist / screen_diagonal) * 2 - 1
