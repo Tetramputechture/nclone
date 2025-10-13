@@ -17,6 +17,7 @@ sys.path.insert(0, str(project_root))
 from nclone.gym_environment.npp_environment import (
     NppEnvironment,
 )
+from nclone.gym_environment.config import EnvironmentConfig, RenderConfig, PBRSConfig
 from nclone.gym_environment.reward_calculation.pbrs_potentials import (
     PBRSPotentials,
     PBRSCalculator,
@@ -215,16 +216,17 @@ class TestPBRSIntegration(unittest.TestCase):
 
     def setUp(self):
         """Set up test environments."""
-        self.env_pbrs = NppEnvironment(
-            render_mode="rgb_array",
-            enable_pbrs=True,
-            pbrs_gamma=0.99,
+        config_pbrs = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array"),
+            pbrs=PBRSConfig(enable_pbrs=True, pbrs_gamma=0.99)
         )
+        self.env_pbrs = NppEnvironment(config=config_pbrs)
 
-        self.env_no_pbrs = NppEnvironment(
-            render_mode="rgb_array",
-            enable_pbrs=False,
+        config_no_pbrs = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array"),
+            pbrs=PBRSConfig(enable_pbrs=False)
         )
+        self.env_no_pbrs = NppEnvironment(config=config_no_pbrs)
 
     def test_pbrs_reward_shaping(self):
         """Test that PBRS affects rewards."""

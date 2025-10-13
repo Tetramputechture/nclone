@@ -12,6 +12,7 @@ from pathlib import Path
 from nclone.gym_environment.npp_environment import (
     NppEnvironment,
 )
+from nclone.gym_environment.config import EnvironmentConfig, RenderConfig
 from nclone.gym_environment.constants import (
     GAME_STATE_CHANNELS,
 )
@@ -26,9 +27,10 @@ class TestObservationProfiles(unittest.TestCase):
 
     def setUp(self):
         """Set up test environments."""
-        self.env_rich = NppEnvironment(
-            render_mode="rgb_array",
+        config = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array")
         )
+        self.env_rich = NppEnvironment(config=config)
 
     def test_observation_space_shapes(self):
         """Test that observation spaces have correct shapes."""
@@ -89,9 +91,10 @@ class TestFrameStability(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment."""
-        self.env = NppEnvironment(
-            render_mode="rgb_array",
+        config = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array")
         )
+        self.env = NppEnvironment(config=config)
 
     def test_frame_dtype_consistency(self):
         """Test that frames have consistent dtype."""
@@ -139,9 +142,10 @@ class TestEntityFeatures(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment."""
-        self.env = NppEnvironment(
-            render_mode="rgb_array",
+        config = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array")
         )
+        self.env = NppEnvironment(config=config)
 
     def test_ninja_physics_features(self):
         """Test ninja physics state features."""
