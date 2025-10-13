@@ -98,6 +98,18 @@ This command will launch 4 independent headless simulations, each running for 50
 
 Each simulation runs in its own process, allowing for parallel execution.
 
+## Gym Environment Observation Space
+
+The `NppEnvironment` provides a multi-modal observation space for RL agents:
+
+- **player_frame**: (12, 84, 84) - Temporal stack of 12 grayscale frames centered on player
+- **global_view**: (176, 100) - Downsampled grayscale view of entire level
+- **game_state**: (30+,) - Physics state vector including velocities, positions, forces
+- **reachability_features**: (8,) - Strategic features from ultra-fast flood fill analysis
+- **entity_positions**: (6,) - Normalized [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y] for hierarchical planning
+
+All observations are normalized and ready for neural network processing. See `gym_environment/observation_processor.py` for implementation details.
+
 ## Simplified Reachability System
 
 The reachability system has been simplified to reduce overengineering while maintaining optimal performance for RL training.
