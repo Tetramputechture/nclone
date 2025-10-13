@@ -311,6 +311,10 @@ class NPlayHeadless:
     def locked_doors(self):
         """Return locked door entities (type 6). Includes their switch coordinates."""
         return list(self.sim.entity_dic.get(6, []))
+    
+    def locked_door_switches(self):
+        """Return locked door switch entities (type 7)."""
+        return list(self.sim.entity_dic.get(7, []))
 
     def trap_doors(self):
         """Return trap door entities (type 8). Includes their switch coordinates."""
@@ -479,56 +483,35 @@ class NPlayHeadless:
         accel_y = max(-1.0, min(1.0, accel_y))
         state.extend([accel_x, accel_y])
 
-        # 22. Momentum preservation (dot product of current and previous velocity)
-        prev_velocity_mag = (ninja.xspeed_old**2 + ninja.yspeed_old**2) ** 0.5
-        if prev_velocity_mag > 1e-6 and velocity_magnitude > 1e-6:
-            momentum_preservation = (
-                ninja.xspeed * ninja.xspeed_old + ninja.yspeed * ninja.yspeed_old
-            ) / (velocity_magnitude * prev_velocity_mag)
-        else:
-            momentum_preservation = 0.0
-        state.append(momentum_preservation)  # Already [-1, 1]
+        # === Entity Proximity and Hazards (3 features) ===
+        # REMOVED: momentum_preservation, impact_risk (redundant - derivable from other features)
 
-        # 23. Impact risk (velocity magnitude when approaching surfaces)
-        impact_risk = (
-            velocity_mag_norm
-            if (ninja.floor_count > 0 or ninja.ceiling_count > 0)
-            else 0.0
-        )
-        state.append(impact_risk)
-
-        # === Entity Proximity and Hazards (4 features) ===
-
-        # 24. Nearest hazard distance (placeholder - will be computed from entity states)
-        nearest_hazard_distance = 0.0  # Will be updated by observation processor
+        # 21. Nearest hazard distance (initialized to 0, computed by observation processor)
+        nearest_hazard_distance = 0.0  # Computed from entity_states or mine processor
         state.append(nearest_hazard_distance)
 
-        # 25. Nearest collectible distance (placeholder)
-        nearest_collectible_distance = 0.0  # Will be updated by observation processor
+        # 22. Nearest collectible distance (initialized to 0, computed by observation processor)
+        nearest_collectible_distance = 0.0  # Computed from switch position
         state.append(nearest_collectible_distance)
 
-        # 26. Hazard threat level (placeholder)
-        hazard_threat_level = 0.0  # Will be updated by observation processor
-        state.append(hazard_threat_level)
+        # REMOVED: hazard_threat_level (redundant - exponential decay of nearest_hazard_distance)
 
-        # 27. Entity interaction cooldown (frames since last entity interaction)
+        # 23. Entity interaction cooldown (frames since last entity interaction)
         # This would need to be tracked separately - for now, use jump duration as proxy
         interaction_cooldown = (ninja.jump_duration / MAX_JUMP_DURATION) * 2 - 1
         state.append(interaction_cooldown)
 
-        # === Level Progress and Objectives (3 features) ===
+        # === Level Progress and Objectives (2 features) ===
 
-        # 28. Switch activation progress (will be updated by observation processor)
+        # 24. Switch activation progress (will be updated by observation processor)
         switch_progress = 0.0  # Placeholder
         state.append(switch_progress)
 
-        # 29. Exit accessibility (will be updated by observation processor)
+        # 25. Exit accessibility (will be updated by observation processor)
         exit_accessibility = -1.0  # Placeholder (assume not accessible initially)
         state.append(exit_accessibility)
 
-        # 30. Level completion progress (will be updated by observation processor)
-        completion_progress = -1.0  # Placeholder
-        state.append(completion_progress)
+        # REMOVED: completion_progress (redundant - computed from switch_progress and exit distance)
 
         return state
 

@@ -131,6 +131,93 @@ def calculate_vector(
     return (dx / magnitude, dy / magnitude)
 
 
+def compute_hazard_from_entity_states(entity_states: np.ndarray, ninja_x: float, ninja_y: float) -> Tuple[float, float]:
+    """
+    Compute hazard proximity from flattened entity_states array.
+    
+    This is a fallback for when mine tracking is disabled. It extracts mine proximity
+    information from the flattened entity_states array structure.
+    
+    Entity states structure (from nplay_headless.get_entity_states()):
+    - For each entity type (TOGGLE_MINE first with MAX_COUNT=128):
+        - [0]: count of this entity type (normalized by MAX_COUNT)
+        - Then for each entity (MAX_COUNT slots):
+            - [0]: active (0 or 1)
+            - [1]: x_pos (normalized by SRCWIDTH)
+            - [2]: y_pos (normalized by SRCHEIGHT)
+            - [3]: type (normalized by 28)
+            - [4]: distance to ninja (normalized by screen diagonal)
+            - [5]: relative velocity magnitude (normalized by MAX_HOR_SPEED)
+    
+    Args:
+        entity_states: Flattened entity states array from obs["entity_states"]
+        ninja_x: Ninja x position in pixels
+        ninja_y: Ninja y position in pixels
+        
+    Returns:
+        Tuple of (nearest_hazard_distance_pixels, hazard_threat_score)
+    """
+    from ..constants.render_utils import SRCWIDTH, SRCHEIGHT
+    
+    if len(entity_states) < 1:
+        return (float('inf'), 0.0)
+    
+    # Entity states structure: 
+    # First entity type is TOGGLE_MINE with MAX_COUNT=128
+    # Format: [count, entity0_attr0, entity0_attr1, ..., entity0_attr5, entity1_attr0, ...]
+    MAX_ATTRIBUTES = 6
+    TOGGLE_MINE_MAX_COUNT = 128
+    
+    # Extract mine count (first value)
+    mine_count_norm = entity_states[0]
+    mine_count = int(mine_count_norm * TOGGLE_MINE_MAX_COUNT)
+    
+    if mine_count == 0:
+        return (float('inf'), 0.0)
+    
+    # Screen diagonal for denormalization
+    screen_diagonal = (SRCWIDTH**2 + SRCHEIGHT**2) ** 0.5
+    
+    # Find nearest active mine
+    nearest_dist = float('inf')
+    for mine_idx in range(min(mine_count, TOGGLE_MINE_MAX_COUNT)):
+        # Calculate offset in entity_states array
+        # offset = 1 (count) + mine_idx * 6 (attributes per mine)
+        offset = 1 + mine_idx * MAX_ATTRIBUTES
+        
+        if offset + MAX_ATTRIBUTES > len(entity_states):
+            break
+        
+        # Extract mine attributes
+        active = entity_states[offset + 0]
+        x_norm = entity_states[offset + 1]
+        y_norm = entity_states[offset + 2]
+        # type_norm = entity_states[offset + 3]  # Not needed
+        dist_norm = entity_states[offset + 4]
+        # rel_vel = entity_states[offset + 5]  # Not needed
+        
+        # Only consider active mines
+        if active < 0.5:
+            continue
+        
+        # Denormalize distance
+        distance = dist_norm * screen_diagonal
+        
+        if distance < nearest_dist:
+            nearest_dist = distance
+    
+    # Compute hazard threat based on proximity
+    # Threat is high when close, low when far
+    # Use exponential decay: threat = exp(-distance / decay_factor)
+    if nearest_dist < float('inf'):
+        # Decay factor of 100 pixels means threat drops to ~0.37 at 100px
+        decay_factor = 100.0
+        hazard_threat = np.exp(-nearest_dist / decay_factor)
+        return (nearest_dist, float(hazard_threat))
+    
+    return (float('inf'), 0.0)
+
+
 class ObservationProcessor:
     """Processes raw game observations into frame stacks and normalized feature vectors."""
 
@@ -218,11 +305,11 @@ class ObservationProcessor:
 
     def process_game_state(self, obs: Dict[str, Any]) -> np.ndarray:
         """Process game state into enhanced normalized feature vector."""
-        # Extract the ninja state (now 30 features)
-        ninja_state = obs["game_state"][:30] if len(obs["game_state"]) >= 30 else obs["game_state"]
+        # Extract the ninja state (now 26 features after redundancy removal)
+        ninja_state = obs["game_state"][:26] if len(obs["game_state"]) >= 26 else obs["game_state"]
         ninja_state = list(ninja_state)  # Convert to list for modification
         
-        # Calculate entity proximity features (features 24-27 in ninja state)
+        # Calculate entity proximity features (features 21-23 in ninja state)
         ninja_x, ninja_y = obs["player_x"], obs["player_y"]
         ninja_position = (ninja_x, ninja_y)
         
@@ -243,10 +330,11 @@ class ObservationProcessor:
                 nearest_hazard_dist = nearest_mine.distance_to(ninja_position)
                 hazard_threat = self.mine_processor.get_mine_proximity_score(ninja_position)
         elif "entity_states" in obs and len(obs["entity_states"]) > 0:
-            # Fallback to simplified approach if mine tracking disabled
+            # Fallback: compute hazard from entity_states array
             entity_states = obs["entity_states"]
-            nearest_hazard_dist = min(nearest_hazard_dist, screen_diagonal * 0.5)
-            hazard_threat = 0.1  # Low threat level as placeholder
+            nearest_hazard_dist, hazard_threat = compute_hazard_from_entity_states(
+                entity_states, ninja_x, ninja_y
+            )
         
         # Normalize hazard distance to [-1, 1]
         nearest_hazard_norm = (nearest_hazard_dist / screen_diagonal) * 2 - 1
@@ -256,13 +344,14 @@ class ObservationProcessor:
         nearest_collectible_norm = (switch_dist / screen_diagonal) * 2 - 1
         
         # Update ninja state with computed proximity features
-        if len(ninja_state) >= 30:
-            ninja_state[23] = nearest_hazard_norm  # Feature 24: nearest hazard distance
-            ninja_state[24] = nearest_collectible_norm  # Feature 25: nearest collectible distance  
-            ninja_state[25] = hazard_threat * 2 - 1  # Feature 26: hazard threat level (normalized to [-1,1])
-            # Feature 27 (interaction cooldown) is already computed in get_ninja_state
+        # New indices after redundancy removal (26-feature state)
+        if len(ninja_state) >= 26:
+            ninja_state[21] = nearest_hazard_norm  # Feature 21: nearest hazard distance
+            ninja_state[22] = nearest_collectible_norm  # Feature 22: nearest collectible distance  
+            # REMOVED: hazard_threat_level (redundant - exponential decay of nearest_hazard)
+            # Feature 23 (interaction cooldown) is already computed in get_ninja_state
         
-        # Calculate level progress features (features 28-30 in ninja state)
+        # Calculate level progress features (features 24-25 in ninja state)
         # Switch activation progress
         if obs.get("switch_activated", False):
             switch_progress = 1.0  # Switch is activated
@@ -275,27 +364,20 @@ class ObservationProcessor:
         # Exit accessibility
         exit_accessibility = 1.0 if obs.get("switch_activated", False) else -1.0
         
-        # Level completion progress (combination of switch and exit progress)
-        if obs.get("switch_activated", False):
-            exit_dist = ((ninja_x - obs["exit_door_x"])**2 + (ninja_y - obs["exit_door_y"])**2) ** 0.5
-            exit_progress = 1.0 - (exit_dist / screen_diagonal)
-            completion_progress = (switch_progress + exit_progress) / 2
-        else:
-            completion_progress = switch_progress * 0.5  # Only switch progress matters
+        # REMOVED: completion_progress (redundant - computed from switch_progress and exit distance)
         
         # Update ninja state with computed progress features
-        if len(ninja_state) >= 30:
-            ninja_state[27] = switch_progress  # Feature 28: switch activation progress
-            ninja_state[28] = exit_accessibility  # Feature 29: exit accessibility
-            ninja_state[29] = completion_progress  # Feature 30: level completion progress
+        if len(ninja_state) >= 26:
+            ninja_state[24] = switch_progress  # Feature 24: switch activation progress
+            ninja_state[25] = exit_accessibility  # Feature 25: exit accessibility
         
         # Convert back to numpy array
         ninja_state = np.array(ninja_state, dtype=np.float32)
         
         # For backward compatibility, if we have entity states, include them
         # but the new design focuses on the enhanced ninja state
-        if len(obs["game_state"]) > 30:
-            entity_states = obs["game_state"][30:]
+        if len(obs["game_state"]) > 26:
+            entity_states = obs["game_state"][26:]
             processed_state = np.concatenate([ninja_state, entity_states])
         else:
             processed_state = ninja_state

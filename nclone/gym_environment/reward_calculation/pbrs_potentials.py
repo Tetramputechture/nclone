@@ -56,20 +56,37 @@ class PBRSPotentials:
 
     @staticmethod
     def hazard_proximity_potential(state: Dict[str, Any]) -> float:
-        """Potential penalty based on proximity to active hazards.
+        """Potential penalty based on proximity to active hazards (mines).
 
-        Currently simplified - returns neutral potential since entity parsing
-        from flattened array is complex. Could be enhanced in future versions.
+        Returns lower potential when close to dangerous mines, encouraging
+        the agent to maintain safe distance from hazards.
 
         Args:
-            state: Game state dictionary
+            state: Game state dictionary containing entity_states and player position
 
         Returns:
-            float: Potential in range [0.0, 1.0], currently returns 1.0 (neutral)
+            float: Potential in range [0.0, 1.0], lower when close to hazards
         """
-        # TODO: Implement hazard detection from flattened entity_states array
-        # For now, return neutral potential to avoid errors
-        return 1.0
+        # Extract entity states if available
+        entity_states = state.get("entity_states", None)
+        if entity_states is None or len(entity_states) == 0:
+            return 1.0  # No entity data, assume safe
+        
+        player_x = state.get("player_x", 0.0)
+        player_y = state.get("player_y", 0.0)
+        
+        # Import the helper function to compute hazard proximity
+        from ..observation_processor import compute_hazard_from_entity_states
+        
+        nearest_hazard_dist, hazard_threat = compute_hazard_from_entity_states(
+            entity_states, player_x, player_y
+        )
+        
+        # Return potential based on hazard proximity
+        # When far from hazards: high potential (1.0)
+        # When close to hazards: low potential (approaches 0.0)
+        # This encourages maintaining safe distance
+        return 1.0 - hazard_threat
 
     @staticmethod
     def impact_risk_potential(state: Dict[str, Any]) -> float:
