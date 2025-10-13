@@ -311,6 +311,10 @@ class NPlayHeadless:
     def locked_doors(self):
         """Return locked door entities (type 6). Includes their switch coordinates."""
         return list(self.sim.entity_dic.get(6, []))
+    
+    def locked_door_switches(self):
+        """Return locked door switch entities (type 7)."""
+        return list(self.sim.entity_dic.get(7, []))
 
     def trap_doors(self):
         """Return trap door entities (type 8). Includes their switch coordinates."""
@@ -482,12 +486,12 @@ class NPlayHeadless:
         # === Entity Proximity and Hazards (3 features) ===
         # REMOVED: momentum_preservation, impact_risk (redundant - derivable from other features)
 
-        # 21. Nearest hazard distance (placeholder - will be computed from entity states)
-        nearest_hazard_distance = 0.0  # Will be updated by observation processor
+        # 21. Nearest hazard distance (initialized to 0, computed by observation processor)
+        nearest_hazard_distance = 0.0  # Computed from entity_states or mine processor
         state.append(nearest_hazard_distance)
 
-        # 22. Nearest collectible distance (placeholder)
-        nearest_collectible_distance = 0.0  # Will be updated by observation processor
+        # 22. Nearest collectible distance (initialized to 0, computed by observation processor)
+        nearest_collectible_distance = 0.0  # Computed from switch position
         state.append(nearest_collectible_distance)
 
         # REMOVED: hazard_threat_level (redundant - exponential decay of nearest_hazard_distance)
