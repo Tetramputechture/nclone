@@ -55,6 +55,13 @@ from ..constants.physics_constants import MAX_HOR_SPEED
 from .frame_augmentation import apply_consistent_augmentation, get_recommended_config
 from .mine_state_processor import MineStateProcessor
 
+# Entity position array indices
+# Format: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
+NINJA_POS_IDX = 0
+SWITCH_POS_IDX = 2
+EXIT_POS_IDX = 4
+ENTITY_POSITIONS_SIZE = 6
+
 
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     """Resize frame to desired dimensions with stable interpolation."""
@@ -430,11 +437,10 @@ class ObservationProcessor:
         exit_y_norm = obs["exit_door_y"] / LEVEL_HEIGHT
         
         # Create entity positions array: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
-        entity_positions = np.array([
-            ninja_x_norm, ninja_y_norm,
-            switch_x_norm, switch_y_norm,
-            exit_x_norm, exit_y_norm
-        ], dtype=np.float32)
+        entity_positions = np.zeros(ENTITY_POSITIONS_SIZE, dtype=np.float32)
+        entity_positions[NINJA_POS_IDX:NINJA_POS_IDX+2] = [ninja_x_norm, ninja_y_norm]
+        entity_positions[SWITCH_POS_IDX:SWITCH_POS_IDX+2] = [switch_x_norm, switch_y_norm]
+        entity_positions[EXIT_POS_IDX:EXIT_POS_IDX+2] = [exit_x_norm, exit_y_norm]
 
         result = {
             "game_state": self.process_game_state(obs),
