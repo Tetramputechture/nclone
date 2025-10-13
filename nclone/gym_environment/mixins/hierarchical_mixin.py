@@ -453,12 +453,32 @@ class HierarchicalMixin:
                 return self._get_reachability_features()
             except Exception as e:
                 if self.debug:
-                    logging.warning(f"Failed to compute reachability features: {e}")
+                    logging.warning(f"Failed to compute reachability features, using fallback: {e}")
         
-        # Fallback: return zeros as placeholder
-        if self.debug:
-            logging.warning("Using zero reachability features as fallback")
-        return np.zeros(8, dtype=np.float32)
+        # Fallback: compute simplified reachability features from basic game state
+        # This fallback is only used when reachability system is disabled or fails
+        try:
+            ninja_x, ninja_y = self.nplay_headless.ninja_position()
+            features = np.zeros(8, dtype=np.float32)
+            
+            # At minimum, provide distance-based features
+            switch_x, switch_y = self.nplay_headless.exit_switch_position()
+            exit_x, exit_y = self.nplay_headless.exit_door_position()
+            
+            max_dist = np.sqrt(1056**2 + 600**2)
+            dist_to_switch = np.sqrt((ninja_x - switch_x)**2 + (ninja_y - switch_y)**2)
+            dist_to_exit = np.sqrt((ninja_x - exit_x)**2 + (ninja_y - exit_y)**2)
+            
+            features[1] = 1.0 - min(dist_to_switch / max_dist, 1.0)  # Distance to switch
+            features[2] = 1.0 - min(dist_to_exit / max_dist, 1.0)    # Distance to exit
+            features[6] = 1.0 if self.nplay_headless.exit_switch_activated() else 0.0  # Exit reachable
+            features[7] = features[6]  # Path exists (simplified)
+            
+            return features
+        except Exception as e:
+            if self.debug:
+                logging.warning(f"Fallback reachability computation failed: {e}")
+            return np.zeros(8, dtype=np.float32)
     
     def _find_exit_switch_id(self, obs: Dict[str, Any], info: Dict[str, Any]) -> Optional[str]:
         """Find the exit switch ID from level data."""

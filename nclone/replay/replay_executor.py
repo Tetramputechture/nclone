@@ -144,6 +144,9 @@ class ReplayExecutor:
         # Get ninja state
         ninja = self.nplay_headless.sim.ninja
         
+        # Compute simplified reachability features from available data
+        reachability_features = self._compute_reachability_features(ninja_x, ninja_y)
+        
         # Build raw observation (similar to npp_environment.py)
         obs = {
             "screen": screen,
@@ -159,10 +162,80 @@ class ReplayExecutor:
                 float(ninja.wall_sliding),
                 # Add more state as needed...
             ] + [0.0] * 20, dtype=np.float32),  # Pad to 26 features
-            "reachability_features": np.zeros(8, dtype=np.float32),  # Placeholder
+            "reachability_features": reachability_features,
         }
         
         return obs
+    
+    def _compute_reachability_features(self, ninja_x: float, ninja_y: float) -> np.ndarray:
+        """
+        Compute simplified 8-dimensional reachability features from available data.
+        
+        Features:
+        1. Reachable area ratio (simplified: always 0.5 as we don't do flood fill)
+        2. Distance to nearest switch (normalized)
+        3. Distance to exit (normalized)
+        4. Reachable switches count (simplified: 0 or 1 based on switch state)
+        5. Reachable hazards count (simplified: count of nearby mines)
+        6. Connectivity score (simplified: always 0.5)
+        7. Exit reachable flag (based on switch activation)
+        8. Switch-to-exit path exists (based on switch activation)
+        """
+        features = np.zeros(8, dtype=np.float32)
+        
+        # Feature 1: Reachable area ratio (simplified, not computed in replay mode)
+        features[0] = 0.5
+        
+        # Feature 2: Distance to nearest switch (normalized by max level distance)
+        try:
+            switch_x, switch_y = self.nplay_headless.exit_switch_position()
+            dist_to_switch = np.sqrt((ninja_x - switch_x)**2 + (ninja_y - switch_y)**2)
+            max_distance = np.sqrt(1056**2 + 600**2)  # Max level diagonal
+            features[1] = 1.0 - min(dist_to_switch / max_distance, 1.0)
+        except:
+            features[1] = 0.0
+        
+        # Feature 3: Distance to exit (normalized)
+        try:
+            exit_x, exit_y = self.nplay_headless.exit_door_position()
+            dist_to_exit = np.sqrt((ninja_x - exit_x)**2 + (ninja_y - exit_y)**2)
+            features[2] = 1.0 - min(dist_to_exit / max_distance, 1.0)
+        except:
+            features[2] = 0.0
+        
+        # Feature 4: Reachable switches count (0 or 1 based on activation state)
+        try:
+            switch_activated = self.nplay_headless.exit_switch_activated()
+            features[3] = 1.0 if not switch_activated else 0.0  # 1 if still needs activation
+        except:
+            features[3] = 0.0
+        
+        # Feature 5: Reachable hazards count (simplified: count of nearby mines)
+        try:
+            mines = self.nplay_headless.mines()
+            # Count mines within reasonable distance (e.g., 200 pixels)
+            nearby_mines = sum(
+                1 for mine in mines
+                if np.sqrt((ninja_x - mine.xpos)**2 + (ninja_y - mine.ypos)**2) < 200
+            )
+            features[4] = min(nearby_mines / 10.0, 1.0)  # Normalize by expected max
+        except:
+            features[4] = 0.0
+        
+        # Feature 6: Connectivity score (simplified, not computed in replay mode)
+        features[5] = 0.5
+        
+        # Feature 7: Exit reachable flag (based on switch activation)
+        try:
+            switch_activated = self.nplay_headless.exit_switch_activated()
+            features[6] = 1.0 if switch_activated else 0.0
+        except:
+            features[6] = 0.0
+        
+        # Feature 8: Switch-to-exit path exists (same as exit reachable for simplified version)
+        features[7] = features[6]
+        
+        return features
     
     def close(self):
         """Clean up resources."""
