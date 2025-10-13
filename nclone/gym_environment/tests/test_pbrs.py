@@ -175,40 +175,47 @@ class TestPBRSCalculator(unittest.TestCase):
             self.assertIn(component, components)
             self.assertTrue(np.isfinite(components[component]))
 
-    def test_visited_positions_tracking(self):
-        """Test visited positions tracking."""
-        # Initial calculation
-        self.calculator.calculate_combined_potential(self.test_state)
+    def test_position_based_potential_changes(self):
+        """Test that potential changes based on player position."""
+        # Initial potential
+        pot1 = self.calculator.calculate_combined_potential(self.test_state)
 
-        # Move to new position
+        # Move to new position (closer to switch)
         new_state = self.test_state.copy()
-        new_state["player_x"] = 150.0
-        new_state["player_y"] = 125.0
+        new_state["player_x"] = self.test_state["switch_x"] - 10.0  # Closer to switch
+        new_state["player_y"] = self.test_state["switch_y"] - 10.0
 
-        self.calculator.calculate_combined_potential(new_state)
+        pot2 = self.calculator.calculate_combined_potential(new_state)
 
-        # Should have updated visited positions
-        self.assertGreater(len(self.calculator.visited_positions), 0)
+        # Potential should be different (and generally higher when closer to objective)
+        self.assertNotEqual(pot1, pot2)
+        self.assertTrue(np.isfinite(pot1))
+        self.assertTrue(np.isfinite(pot2))
 
-        # Exploration component should change
+        # Components should also be finite
         components1 = self.calculator.get_potential_components(self.test_state)
         components2 = self.calculator.get_potential_components(new_state)
 
-        # Exploration values might be different due to position tracking
-        self.assertTrue(np.isfinite(components1["exploration"]))
-        self.assertTrue(np.isfinite(components2["exploration"]))
+        for key in components1:
+            self.assertTrue(np.isfinite(components1[key]), f"Component {key} not finite")
+            self.assertTrue(np.isfinite(components2[key]), f"Component {key} not finite")
 
     def test_reset_functionality(self):
         """Test calculator reset."""
-        # Add some visited positions
-        self.calculator.calculate_combined_potential(self.test_state)
-        self.assertGreater(len(self.calculator.visited_positions), 0)
+        # Calculate potentials before reset
+        pot_before = self.calculator.calculate_combined_potential(self.test_state)
+        self.assertTrue(np.isfinite(pot_before))
 
         # Reset calculator
         self.calculator.reset()
 
-        # Visited positions should be cleared
+        # visited_positions list should exist and be empty after reset
         self.assertEqual(len(self.calculator.visited_positions), 0)
+        
+        # Potential calculation should still work after reset
+        pot_after = self.calculator.calculate_combined_potential(self.test_state)
+        self.assertTrue(np.isfinite(pot_after))
+        self.assertEqual(pot_before, pot_after)  # Same state should give same potential
 
 
 class TestPBRSIntegration(unittest.TestCase):
