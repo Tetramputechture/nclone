@@ -71,6 +71,8 @@ class TestObservationProfiles(unittest.TestCase):
         """Test that features remain stable across environment steps."""
         obs_reset = self.env_rich.reset()[0]
         initial_state_size = len(obs_reset["game_state"])
+        initial_player_frame_shape = obs_reset["player_frame"].shape
+        initial_global_view_shape = obs_reset["global_view"].shape
 
         # Take several steps and check feature consistency
         for _ in range(10):
@@ -83,9 +85,13 @@ class TestObservationProfiles(unittest.TestCase):
             self.assertGreaterEqual(len(obs["game_state"]), GAME_STATE_CHANNELS)
             self.assertTrue(np.all(np.isfinite(obs["game_state"])))
 
-            # Check image shapes remain consistent
-            self.assertEqual(obs["player_frame"].shape, (84, 84, 1))
-            self.assertEqual(obs["global_view"].shape, (176, 100, 1))
+            # Check image shapes remain consistent (may be temporal stacked)
+            self.assertEqual(obs["player_frame"].shape, initial_player_frame_shape)
+            self.assertEqual(obs["global_view"].shape, initial_global_view_shape)
+            
+            # Check that frame dimensions match expected base dimensions
+            self.assertEqual(obs["player_frame"].shape[:2], (84, 84))
+            self.assertEqual(obs["global_view"].shape[:2], (176, 100))
 
             if terminated or truncated:
                 break
