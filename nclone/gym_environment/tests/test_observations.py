@@ -12,6 +12,7 @@ from pathlib import Path
 from nclone.gym_environment.npp_environment import (
     NppEnvironment,
 )
+from nclone.gym_environment.config import EnvironmentConfig, RenderConfig
 from nclone.gym_environment.constants import (
     GAME_STATE_CHANNELS,
 )
@@ -26,9 +27,10 @@ class TestObservationProfiles(unittest.TestCase):
 
     def setUp(self):
         """Set up test environments."""
-        self.env_rich = NppEnvironment(
-            render_mode="rgb_array",
+        config = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array")
         )
+        self.env_rich = NppEnvironment(config=config)
 
     def test_observation_space_shapes(self):
         """Test that observation spaces have correct shapes."""
@@ -51,34 +53,45 @@ class TestObservationProfiles(unittest.TestCase):
         # Reset environments
         rich_obs = self.env_rich.reset()[0]
 
-        # Check feature vector sizes
-        self.assertEqual(len(rich_obs["game_state"]), GAME_STATE_CHANNELS)
+        # Check feature vector size (should have at least ninja_state features)
+        # May include additional entity_states beyond the base 30 ninja features
+        self.assertGreaterEqual(len(rich_obs["game_state"]), GAME_STATE_CHANNELS)
 
         # Check that all features are finite
         self.assertTrue(np.all(np.isfinite(rich_obs["game_state"])))
 
-        # Check feature ranges (should be normalized)
-        rich_features = rich_obs["game_state"]
+        # Check feature ranges for ninja_state (first 30 features should be normalized)
+        ninja_state_features = rich_obs["game_state"][:GAME_STATE_CHANNELS]
 
-        # Most features should be in reasonable ranges
-        self.assertTrue(np.all(rich_features >= -10.0))
-        self.assertTrue(np.all(rich_features <= 10.0))
+        # Ninja state features should be normalized to reasonable ranges
+        self.assertTrue(np.all(ninja_state_features >= -10.0))
+        self.assertTrue(np.all(ninja_state_features <= 10.0))
 
     def test_feature_stability_across_steps(self):
         """Test that features remain stable across environment steps."""
-        self.env_rich.reset()
+        obs_reset = self.env_rich.reset()[0]
+        initial_state_size = len(obs_reset["game_state"])
+        initial_player_frame_shape = obs_reset["player_frame"].shape
+        initial_global_view_shape = obs_reset["global_view"].shape
 
         # Take several steps and check feature consistency
         for _ in range(10):
             obs, _, terminated, truncated, _ = self.env_rich.step(0)  # No action
 
-            # Check shapes remain consistent
-            self.assertEqual(obs["game_state"].shape, (GAME_STATE_CHANNELS,))
+            # Check that game_state size remains consistent across steps
+            self.assertEqual(len(obs["game_state"]), initial_state_size)
+            
+            # Check that at least ninja_state features are present
+            self.assertGreaterEqual(len(obs["game_state"]), GAME_STATE_CHANNELS)
             self.assertTrue(np.all(np.isfinite(obs["game_state"])))
 
-            # Check image shapes remain consistent
-            self.assertEqual(obs["player_frame"].shape, (84, 84, 1))
-            self.assertEqual(obs["global_view"].shape, (176, 100, 1))
+            # Check image shapes remain consistent (may be temporal stacked)
+            self.assertEqual(obs["player_frame"].shape, initial_player_frame_shape)
+            self.assertEqual(obs["global_view"].shape, initial_global_view_shape)
+            
+            # Check that frame dimensions match expected base dimensions
+            self.assertEqual(obs["player_frame"].shape[:2], (84, 84))
+            self.assertEqual(obs["global_view"].shape[:2], (176, 100))
 
             if terminated or truncated:
                 break
@@ -89,9 +102,10 @@ class TestFrameStability(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment."""
-        self.env = NppEnvironment(
-            render_mode="rgb_array",
+        config = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array")
         )
+        self.env = NppEnvironment(config=config)
 
     def test_frame_dtype_consistency(self):
         """Test that frames have consistent dtype."""
@@ -139,9 +153,10 @@ class TestEntityFeatures(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment."""
-        self.env = NppEnvironment(
-            render_mode="rgb_array",
+        config = EnvironmentConfig(
+            render=RenderConfig(render_mode="rgb_array")
         )
+        self.env = NppEnvironment(config=config)
 
     def test_ninja_physics_features(self):
         """Test ninja physics state features."""

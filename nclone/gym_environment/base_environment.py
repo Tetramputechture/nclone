@@ -307,6 +307,27 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Get entity states for PBRS hazard detection
         entity_states_raw = self.nplay_headless.get_entity_states()
+        
+        # Get actual entity objects for tracking critical entities
+        from ..constants.entity_types import EntityType
+        entities = []
+        if hasattr(self.nplay_headless.sim, "entity_dic"):
+            # Extract entities relevant for Deep RL agent:
+            # - Toggle mines (hazards)
+            toggle_mines = self.nplay_headless.sim.entity_dic.get(EntityType.TOGGLE_MINE, [])
+            entities.extend(toggle_mines)
+            
+            # - Toggled mines (active hazards)
+            toggled_mines = self.nplay_headless.sim.entity_dic.get(EntityType.TOGGLE_MINE_TOGGLED, [])
+            entities.extend(toggled_mines)
+            
+            # - Locked doors (obstacles requiring switch activation)
+            locked_doors = self.nplay_headless.sim.entity_dic.get(EntityType.LOCKED_DOOR, [])
+            entities.extend(locked_doors)
+            
+            # - Locked door switches (objectives for opening locked doors)
+            locked_door_switches = self.nplay_headless.sim.entity_dic.get(EntityType.LOCKED_DOOR_SWITCH, [])
+            entities.extend(locked_door_switches)
 
         obs = {
             "screen": self.render(),
@@ -324,6 +345,9 @@ class BaseNppEnvironment(gymnasium.Env):
             "sim_frame": self.nplay_headless.sim.frame,
             "doors_opened": self.nplay_headless.get_doors_opened(),
             "entity_states": entity_states_raw,  # For PBRS hazard detection
+            "entities": entities,  # Entity objects (mines, locked doors, switches)
+            "locked_doors": locked_doors,  # For hierarchical navigation
+            "locked_door_switches": locked_door_switches,  # For hierarchical navigation
         }
 
         return obs

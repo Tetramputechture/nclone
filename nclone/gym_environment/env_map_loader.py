@@ -128,8 +128,9 @@ class EnvMapLoader:
             )
             return
 
-        # Load the test map 'doortest' for training
-        # TODO: This is hardcoded for testing, should be made configurable
+        # Load the test map for training
+        # Note: This is a fallback when no custom_map_path or eval_mode is set
+        # Maps can be configured via custom_map_path parameter in __init__
         self.current_map_name = "complex-path-switch-required"
         self.nplay_headless.load_map("nclone/test_maps/complex-path-switch-required")
         # self.nplay_headless.load_map("nclone/maps/official/SI/060 doors galore")
