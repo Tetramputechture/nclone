@@ -1,7 +1,7 @@
 """
 Production-ready feature builder for graph nodes and edges.
 
-This module creates comprehensive 61-dimensional node features and 6-dimensional
+This module creates comprehensive 56-dimensional node features and 6-dimensional
 edge features for deep RL with GNNs. Features are designed to provide all necessary 
 information for level completion while avoiding complex physics pre-computation.
 
@@ -18,6 +18,8 @@ Supported entities:
 - Locked doors (up to 16) with switches
 - Toggle mines (up to 256 total: 128 toggled + 128 untoggled)
 - All tile types (38 types)
+
+Feature dimensions: 56 total (reduced from 61 by removing unused entity indices)
 """
 
 import numpy as np
@@ -42,36 +44,36 @@ from .common import (
 
 class NodeFeatureBuilder:
     """
-    Builds comprehensive 61-dimensional node feature vectors.
+    Builds comprehensive 56-dimensional node feature vectors.
     
     Feature breakdown:
     - Spatial (3): position (x, y) + resolution level
     - Type (6): one-hot node type
-    - Entity (10): entity-specific information
+    - Entity (5): entity-specific information (reduced from 10, removed unused)
     - Tile (38): one-hot tile type
     - Reachability (2): from reachability system
     - Proximity (2): distances to key points
     
-    Total: 3 + 6 + 10 + 38 + 2 + 2 = 61 features
+    Total: 3 + 6 + 5 + 38 + 2 + 2 = 56 features
     """
     
     def __init__(self):
         """Initialize the node feature builder."""
         self.screen_diagonal = np.sqrt(FULL_MAP_WIDTH_PX**2 + FULL_MAP_HEIGHT_PX**2)
         
-        # Feature index boundaries for clarity
+        # Feature index boundaries for clarity (UPDATED: removed 5 unused entity indices)
         self.SPATIAL_START = 0
         self.SPATIAL_END = 3
         self.TYPE_START = 3
         self.TYPE_END = 9
         self.ENTITY_START = 9
-        self.ENTITY_END = 19
-        self.TILE_START = 19
-        self.TILE_END = 57
-        self.REACHABILITY_START = 57
-        self.REACHABILITY_END = 59
-        self.PROXIMITY_START = 59
-        self.PROXIMITY_END = 61
+        self.ENTITY_END = 14  # Changed from 19 to 14 (5 features instead of 10)
+        self.TILE_START = 14  # Changed from 19 to 14
+        self.TILE_END = 52    # Changed from 57 to 52 (14 + 38)
+        self.REACHABILITY_START = 52  # Changed from 57
+        self.REACHABILITY_END = 54    # Changed from 59
+        self.PROXIMITY_START = 54     # Changed from 59
+        self.PROXIMITY_END = 56       # Changed from 61
         
         assert self.PROXIMITY_END == NODE_FEATURE_DIM, "Feature dimensions mismatch!"
     
@@ -143,7 +145,7 @@ class NodeFeatureBuilder:
     
     def _add_entity_features(self, features: np.ndarray, entity_info: Dict[str, Any]):
         """
-        Add entity-specific features (indices 9-18, 10 features).
+        Add entity-specific features (indices 9-13, 5 features).
         
         Args:
             features: Feature array to modify
@@ -173,9 +175,8 @@ class NodeFeatureBuilder:
             type_encoding = 1.0  # exit
         features[self.ENTITY_START] = type_encoding
         
-        # Index 10: entity_subtype (for locked doors: could use entity_id parsing, for mines: state value)
+        # Index 10: entity_subtype (for locked doors: closed status, for mines: state value)
         # For toggle mines, state is 0 (toggled/deadly), 1 (untoggled/safe), or 2 (toggling)
-        # For doors, we can use active status
         entity_subtype = 0.0
         if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
             # Use the mine's actual state (0, 1, or 2) normalized
@@ -197,34 +198,52 @@ class NodeFeatureBuilder:
         entity_radius = entity_info.get('radius', 0.0)
         max_radius = NINJA_RADIUS * 2  # Assume max entity radius is 2x ninja radius
         features[self.ENTITY_START + 4] = np.clip(entity_radius / max_radius, 0.0, 1.0)
-        
-        # Indices 14-18: Reserved for future use / set to 0
-        # These were for features not present in actual entity classes
-        # (switch_activated, door_open, door_locked, requires_switch, cooldown)
-        # Keeping indices for compatibility but setting to 0
-        features[self.ENTITY_START + 5] = 0.0  # Reserved
-        features[self.ENTITY_START + 6] = 0.0  # Reserved  
-        features[self.ENTITY_START + 7] = 0.0  # Reserved
-        features[self.ENTITY_START + 8] = 0.0  # Reserved
-        features[self.ENTITY_START + 9] = 0.0  # Reserved
     
     def _add_reachability_features(self, features: np.ndarray, reachability_info: Dict[str, Any]):
         """
-        Add reachability features from flood-fill system (indices 57-58, 2 features).
+        Add reachability features from flood-fill system (indices 52-53, 2 features).
+        
+        The reachability system uses OpenCV flood-fill (<1ms) for connectivity analysis.
+        This is NOT physics simulation - it's simple connectivity checking.
+        
+        **Usage Example**:
+        ```python
+        from nclone.graph.reachability.reachability_system import ReachabilitySystem
+        
+        # Initialize system
+        reachability_sys = ReachabilitySystem()
+        
+        # Analyze reachability
+        result = reachability_sys.analyze_reachability(
+            level_data=level_data,
+            ninja_position=(ninja_x, ninja_y),
+            switch_states=switch_states
+        )
+        
+        # Check if node position is reachable
+        node_pos = (x, y)  # in pixels
+        is_reachable = result.is_position_reachable(node_pos)
+        
+        # Use in node features
+        reachability_info = {
+            'reachable_from_ninja': is_reachable,
+            'on_critical_path': False  # from path planning if needed
+        }
+        ```
         
         Args:
             features: Feature array to modify
             reachability_info: Dict with keys:
-                - reachable_from_ninja: bool (from flood-fill)
-                - on_critical_path: bool (shortest path to goal)
+                - reachable_from_ninja: bool (from ReachabilityApproximation.is_position_reachable)
+                - on_critical_path: bool (from path planning, optional)
                 
         Note: Movement requirements (jump/walljump) are NOT included as physics
         is too complex to pre-compute. Agent learns from temporal frames.
         """
-        # Index 57: reachable_from_ninja (from reachability system's flood-fill)
+        # Index 52: reachable_from_ninja (from reachability system's flood-fill)
         features[self.REACHABILITY_START] = 1.0 if reachability_info.get('reachable_from_ninja', False) else 0.0
         
-        # Index 58: on_critical_path (on shortest path from ninja to goal)
+        # Index 53: on_critical_path (on shortest path from ninja to goal)
         features[self.REACHABILITY_START + 1] = 1.0 if reachability_info.get('on_critical_path', False) else 0.0
 
 

@@ -29,7 +29,7 @@ N_MAX_NODES = (
 E_MAX_EDGES = N_MAX_NODES * 8  # Up to 8 directions per node (4 cardinal + 4 diagonal)
 
 # Feature dimensions for enhanced observation space
-NODE_FEATURE_DIM = 61  # Comprehensive node features (spatial, type, entity, tile, reachability, proximity)
+NODE_FEATURE_DIM = 56  # Comprehensive node features (reduced from 61, removed 5 unused entity indices)
 EDGE_FEATURE_DIM = 6  # Edge features (type one-hot, weight, reachability confidence)
 
 # Entity tracking limits
