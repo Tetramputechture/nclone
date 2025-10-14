@@ -1,35 +1,56 @@
 """Completion-focused exploration reward calculator.
 
 Rewards exploration across the level to help discover switches and exits.
+Uses multi-scale spatial exploration following count-based methods from
+Bellemare et al. (2016): "Unifying Count-Based Exploration and Intrinsic Motivation".
+
 Resets when switch is activated to encourage re-exploration for exit discovery.
 
-Our level is a grid of 42x23 24 pixel cells.
-We use a history of the ninja position to reward exploration at multiple scales:
-- Individual cells (24x24)
-- 4x4 cell areas (96x96)
-- 8x8 cell areas (192x192)
-- 16x16 cell areas (384x384)
+The N++ level is a grid of 42x23 cells (24 pixels each = 1056x600 pixels total).
+We track exploration at multiple spatial scales:
+- Individual cells (24x24 pixels) - fine-grained exploration
+- 4x4 cell areas (96x96 pixels) - room-sized regions
+- 8x8 cell areas (192x192 pixels) - section-sized regions  
+- 16x16 cell areas (384x384 pixels) - major level regions
+
+This multi-scale approach encourages both thorough local exploration and
+broad coverage of the entire level.
 """
 
 import numpy as np
+from .reward_constants import (
+    EXPLORATION_GRID_WIDTH,
+    EXPLORATION_GRID_HEIGHT,
+    EXPLORATION_CELL_SIZE,
+    EXPLORATION_CELL_REWARD,
+    EXPLORATION_AREA_4X4_REWARD,
+    EXPLORATION_AREA_8X8_REWARD,
+    EXPLORATION_AREA_16X16_REWARD,
+)
+
 
 class ExplorationRewardCalculator:
     """Handles calculation of completion-focused exploration rewards.
     
-    Encourages exploration to discover switches and exits. Gets reset when
-    switch is activated to encourage re-exploration for exit discovery.
+    Implements multi-scale count-based exploration rewards that encourage
+    the agent to discover all areas of the level, including switches and exits.
+    
+    The exploration state resets when the switch is activated, encouraging
+    the agent to re-explore to find the newly-accessible exit door.
+    
+    All constants defined in reward_constants.py with full documentation.
     """
 
-    # Grid dimensions in cells (24x24 pixels each)
-    GRID_WIDTH = 44
-    GRID_HEIGHT = 25
-    CELL_SIZE = 24.0
+    # Import exploration constants from centralized module
+    GRID_WIDTH = EXPLORATION_GRID_WIDTH
+    GRID_HEIGHT = EXPLORATION_GRID_HEIGHT
+    CELL_SIZE = EXPLORATION_CELL_SIZE
 
-    # Scale rewards to keep total step reward <= 0.1
-    CELL_REWARD = 0.001  # New cell
-    AREA_4x4_REWARD = 0.001  # New 4x4 area
-    AREA_8x8_REWARD = 0.001  # New 8x8 area
-    AREA_16x16_REWARD = 0.001  # New 16x16 area
+    # Multi-scale reward constants
+    CELL_REWARD = EXPLORATION_CELL_REWARD
+    AREA_4x4_REWARD = EXPLORATION_AREA_4X4_REWARD
+    AREA_8x8_REWARD = EXPLORATION_AREA_8X8_REWARD
+    AREA_16x16_REWARD = EXPLORATION_AREA_16X16_REWARD
 
     def __init__(self):
         """Initialize exploration tracking matrices."""

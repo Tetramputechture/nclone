@@ -4,16 +4,39 @@ from typing import Dict, Any, Optional
 from .navigation_reward_calculator import NavigationRewardCalculator
 from .exploration_reward_calculator import ExplorationRewardCalculator
 from .pbrs_potentials import PBRSCalculator
+from .reward_constants import (
+    LEVEL_COMPLETION_REWARD,
+    DEATH_PENALTY,
+    SWITCH_ACTIVATION_REWARD,
+    TIME_PENALTY_PER_STEP,
+    PBRS_GAMMA,
+    PBRS_OBJECTIVE_WEIGHT,
+    PBRS_HAZARD_WEIGHT,
+    PBRS_IMPACT_WEIGHT,
+    PBRS_EXPLORATION_WEIGHT,
+)
 
 
 class RewardCalculator:
-    """Main reward calculator for completion-focused training."""
+    """Main reward calculator for completion-focused training.
+    
+    Orchestrates multiple reward components:
+    - Terminal rewards (completion, death)
+    - Milestone rewards (switch activation)
+    - Time-based penalties (efficiency)
+    - Navigation shaping (PBRS-based distance rewards)
+    - Exploration rewards (multi-scale spatial coverage)
+    - PBRS potentials (policy-invariant shaping)
+    
+    All constants are defined in reward_constants.py to eliminate magic numbers
+    and provide clear documentation of reward design decisions.
+    """
 
-    # Completion-focused reward structure
-    SWITCH_ACTIVATION_REWARD = 0.1
-    EXIT_COMPLETION_REWARD = 1.0
-    DEATH_PENALTY = -0.5
-    TIME_PENALTY = -0.01  # Per step to encourage efficiency
+    # Import constants from centralized module
+    SWITCH_ACTIVATION_REWARD = SWITCH_ACTIVATION_REWARD
+    EXIT_COMPLETION_REWARD = LEVEL_COMPLETION_REWARD
+    DEATH_PENALTY = DEATH_PENALTY
+    TIME_PENALTY = TIME_PENALTY_PER_STEP
 
     def __init__(
         self,
@@ -34,16 +57,17 @@ class RewardCalculator:
 
         # PBRS configuration
         self.enable_pbrs = enable_pbrs
-        self.pbrs_gamma = pbrs_gamma
+        self.pbrs_gamma = pbrs_gamma if pbrs_gamma is not None else PBRS_GAMMA
         self.prev_potential = None
 
         # Initialize PBRS calculator with weights
+        # Use centralized defaults if no custom weights provided
         if pbrs_weights is None:
             pbrs_weights = {
-                "objective_weight": 1.0,
-                "hazard_weight": 0.5,
-                "impact_weight": 0.3,
-                "exploration_weight": 0.2,
+                "objective_weight": PBRS_OBJECTIVE_WEIGHT,
+                "hazard_weight": PBRS_HAZARD_WEIGHT,
+                "impact_weight": PBRS_IMPACT_WEIGHT,
+                "exploration_weight": PBRS_EXPLORATION_WEIGHT,
             }
 
         self.pbrs_calculator = PBRSCalculator(**pbrs_weights) if enable_pbrs else None

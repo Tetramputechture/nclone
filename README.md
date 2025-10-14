@@ -126,20 +126,45 @@ Multi-modal Dict observation:
 
 ### Reward Structure
 
+nclone implements a sophisticated multi-component reward system designed for effective RL training, following best practices from reward shaping research.
+
+**Quick Reference:**
+
+| Component | Value | Description |
+|-----------|-------|-------------|
+| **Level Completion** | +1.0 | Primary success signal |
+| **Death** | -0.5 | Moderate penalty for failure |
+| **Switch Activation** | +0.1 | Intermediate milestone |
+| **Time Penalty** | -0.01/step | Encourages efficiency |
+| **Navigation** | ~0.0001 | Distance-based shaping |
+| **Exploration** | 0.001-0.004 | Multi-scale spatial coverage |
+
+**Key Features:**
+- ✅ **No Magic Numbers**: All constants documented in `reward_constants.py`
+- ✅ **PBRS Theory**: Policy-invariant reward shaping (Ng et al. 1999)
+- ✅ **Multi-Scale**: Terminal, milestone, and dense shaping signals
+- ✅ **Production Ready**: Validation, presets, comprehensive testing
+
+**Configuration Presets:**
+
 ```python
-{
-    'reward': float,     # Total reward for the step
-    'success': bool,     # Level completed
-    'death': bool,       # Ninja died
-    'progress': float,   # Movement toward objectives
-}
+from nclone.gym_environment.reward_calculation.reward_constants import (
+    get_completion_focused_config,  # Fast completion (default)
+    get_safe_navigation_config,      # Safety-constrained navigation
+    get_exploration_focused_config,  # Maximum exploration
+    get_minimal_shaping_config,      # Sparse rewards only
+)
+
+# Use preset configuration
+config = get_completion_focused_config()
 ```
 
-Reward components:
-- **Success**: +1000 for level completion
-- **Death**: -100 for ninja death
-- **Progress**: Small positive rewards for exploration and goal proximity
-- **Time penalty**: -0.01 per step (encourages efficiency)
+**Detailed Documentation:** See [docs/REWARD_SYSTEM.md](docs/REWARD_SYSTEM.md) for comprehensive reward system documentation including:
+- Theoretical foundation (PBRS, ICM, count-based exploration)
+- All reward constants with rationale
+- Configuration presets and examples
+- Best practices and troubleshooting
+- Research references
 
 ## Configuration
 
