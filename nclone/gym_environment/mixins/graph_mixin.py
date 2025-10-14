@@ -219,12 +219,18 @@ class GraphMixin:
         return self.level_data
 
     def _get_graph_observations(self) -> Dict[str, np.ndarray]:
-        """Get complete graph observations for HGT processing."""
-        # Initialize empty graph observations
+        """Get complete graph observations for HGT processing with full 56/6 features."""
+        from ...graph.common import NODE_FEATURE_DIM, EDGE_FEATURE_DIM
+
+        # Initialize empty graph observations with full feature dimensions
         graph_obs = {
-            "graph_node_feats": np.zeros((N_MAX_NODES, 3), dtype=np.float32),
+            "graph_node_feats": np.zeros(
+                (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
+            ),  # 56 dims
             "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-            "graph_edge_feats": np.zeros((E_MAX_EDGES, 1), dtype=np.float32),
+            "graph_edge_feats": np.zeros(
+                (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
+            ),  # 6 dims
             "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
             "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
             "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),

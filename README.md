@@ -271,12 +271,17 @@ Enable structural level understanding:
 env = NPPEnvironment(
     enable_graph_updates=True,
     graph_config={
-        'node_features': 8,     # Simplified node features
-        'edge_features': 4,     # Simplified edge features
+        'node_features': 56,    # Comprehensive node features (reduced from 61)
+        'edge_features': 6,     # Comprehensive edge features
         'max_nodes': 100,       # Maximum nodes in graph
         'max_edges': 400        # Maximum edges in graph
     }
 )
+
+# Note: Feature dimensions come from nclone.graph.common:
+# - NODE_FEATURE_DIM = 56 (spatial, type, entity, tile, reachability, proximity)
+# - EDGE_FEATURE_DIM = 6 (edge type, connectivity)
+# See OBSERVATION_SPACE_README.md for complete documentation
 ```
 
 Graph structure:

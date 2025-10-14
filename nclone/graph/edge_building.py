@@ -249,12 +249,14 @@ def _determine_node_type(pos: Tuple[int, int], level_data: LevelData) -> NodeTyp
 
 def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     """
-    Create GraphData from edges.
+    Create GraphData from edges with comprehensive 56-dim node and 6-dim edge features.
 
-    This function converts the edge representation into the
-    standard GraphData format expected by the rest of the system.
+    This function converts the edge representation into the standard GraphData format
+    expected by the rest of the system, using NodeFeatureBuilder and EdgeFeatureBuilder
+    to create full feature representations.
     """
-    from .common import N_MAX_NODES, E_MAX_EDGES
+    from .common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
+    from .feature_builder import NodeFeatureBuilder, EdgeFeatureBuilder
 
     # Extract unique positions from edges
     positions = set()
@@ -272,29 +274,39 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     num_nodes = len(positions)
     num_edges = len(edges)
 
-    # Initialize fixed-size arrays
-    node_features = np.zeros((N_MAX_NODES, 3), dtype=np.float32)  # [x, y, node_type]
+    # Initialize fixed-size arrays with full feature dimensions
+    node_features = np.zeros((N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32)
     node_types = np.zeros(N_MAX_NODES, dtype=np.int32)
     node_mask = np.zeros(N_MAX_NODES, dtype=np.int32)
 
     edge_index = np.zeros((2, E_MAX_EDGES), dtype=np.int32)
-    edge_features = np.zeros((E_MAX_EDGES, 1), dtype=np.float32)  # Just weight
+    edge_features = np.zeros((E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32)
     edge_types = np.zeros(E_MAX_EDGES, dtype=np.int32)
     edge_mask = np.zeros(E_MAX_EDGES, dtype=np.int32)
 
-    # Fill node data
+    # Initialize feature builders
+    node_builder = NodeFeatureBuilder()
+    edge_builder = EdgeFeatureBuilder()
+
+    # Fill node data with comprehensive features
     for i, pos in enumerate(sorted(positions)):
         if i >= N_MAX_NODES:
             break
 
-        # Comprehensive node type assignment
+        # Determine node type
         node_type = _determine_node_type(pos, level_data)
 
-        node_features[i] = [pos[0], pos[1], float(node_type)]
+        # Build comprehensive node features (56 dimensions)
+        node_features[i] = node_builder.build_node_features(
+            position=pos,
+            node_type=node_type,
+            level_data=level_data,
+            resolution_level=1,  # Default resolution
+        )
         node_types[i] = node_type
         node_mask[i] = 1
 
-    # Fill edge data
+    # Fill edge data with comprehensive features
     for i, edge in enumerate(edges):
         if i >= E_MAX_EDGES:
             break
@@ -304,7 +316,14 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
 
         edge_index[0, i] = source_idx
         edge_index[1, i] = target_idx
-        edge_features[i, 0] = edge.weight
+
+        # Build comprehensive edge features (6 dimensions)
+        edge_features[i] = edge_builder.build_edge_features(
+            edge=edge,
+            source_pos=edge.source,
+            target_pos=edge.target,
+            level_data=level_data,
+        )
         edge_types[i] = edge.edge_type
         edge_mask[i] = 1
 
