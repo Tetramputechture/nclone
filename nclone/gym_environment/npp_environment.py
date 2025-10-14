@@ -110,6 +110,12 @@ class NppEnvironment(
         """Build the extended observation space with graph and reachability features."""
         obs_spaces = dict(self.observation_space.spaces)
 
+        # Add entity positions (always available)
+        # Format: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
+        obs_spaces["entity_positions"] = box.Box(
+            low=0.0, high=1.0, shape=(6,), dtype=np.float32
+        )
+
         # Add reachability features
         if enable_reachability:
             obs_spaces["reachability_features"] = box.Box(
