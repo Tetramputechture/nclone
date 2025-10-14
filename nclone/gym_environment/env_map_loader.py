@@ -34,6 +34,7 @@ class EnvMapLoader:
         rng,
         eval_mode: bool = False,
         custom_map_path: Optional[str] = None,
+        curriculum_stage: Optional[str] = None,
     ):
         """
         Initialize the map loader.
@@ -43,11 +44,14 @@ class EnvMapLoader:
             rng: Random number generator for map selection
             eval_mode: Whether to use evaluation maps
             custom_map_path: Path to custom map file
+            curriculum_stage: Current curriculum stage for difficulty control (optional)
+                             Options: 'simple', 'medium', 'complex', 'mine_heavy', 'exploration'
         """
         self.nplay_headless = nplay_headless
         self.rng = rng
         self.eval_mode = eval_mode
         self.custom_map_path = custom_map_path
+        self.curriculum_stage = curriculum_stage
 
         # Map state
         self.current_map_name = None
@@ -63,6 +67,9 @@ class EnvMapLoader:
         # Test suite generator for training (random map generation)
         self._train_generator = None  # Lazy initialization
         self._train_seed_counter = 100000  # Start from high seed range for training
+        
+        # Curriculum learning weights (can be dynamically adjusted)
+        self._curriculum_weights = self._get_default_curriculum_weights()
 
     def load_initial_map(self):
         """Load the first map based on configuration."""
@@ -128,18 +135,23 @@ class EnvMapLoader:
         if self._train_generator is None:
             self._train_generator = TestSuiteGenerator("datasets/train_runtime")
         
-        # Randomly select difficulty category for training diversity
-        # Use weighted sampling to favor simpler levels early in training
-        categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
-        category_weights = [30, 30, 20, 10, 10]  # Relative weights
-        
-        # Convert to cumulative weights for random.choices
-        import random
-        if isinstance(self.rng, random.Random):
-            category = self.rng.choices(categories, weights=category_weights, k=1)[0]
+        # Determine difficulty category based on curriculum stage or weighted sampling
+        if self.curriculum_stage:
+            # Use curriculum stage directly if specified
+            category = self.curriculum_stage
         else:
-            # Fallback to simple choice if not using random.Random
-            category = self.rng.choice(categories)
+            # Randomly select difficulty category for training diversity
+            # Use weighted sampling to favor simpler levels early in training
+            categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+            category_weights = self._curriculum_weights
+            
+            # Convert to cumulative weights for random.choices
+            import random
+            if isinstance(self.rng, random.Random):
+                category = self.rng.choices(categories, weights=category_weights, k=1)[0]
+            else:
+                # Fallback to simple choice if not using random.Random
+                category = self.rng.choice(categories)
         
         # Generate a map from the selected category
         self._train_seed_counter += 1
@@ -312,4 +324,86 @@ class EnvMapLoader:
             "complex_count": len(self._map_categories.get("complex", [])),
             "total_count": len(self._map_categories.get("simple", []))
             + len(self._map_categories.get("complex", [])),
+        }
+    
+    def set_curriculum_stage(self, stage: str) -> None:
+        """Set the current curriculum stage for map selection.
+        
+        Args:
+            stage: Curriculum stage name ('simple', 'medium', 'complex', 'mine_heavy', 'exploration')
+            
+        Raises:
+            ValueError: If stage is invalid
+        """
+        valid_stages = ['simple', 'medium', 'complex', 'mine_heavy', 'exploration']
+        if stage not in valid_stages:
+            raise ValueError(
+                f"Invalid curriculum stage '{stage}'. Must be one of: {valid_stages}"
+            )
+        
+        self.curriculum_stage = stage
+        print(f"Curriculum stage set to: {stage}")
+    
+    def get_curriculum_stage(self) -> Optional[str]:
+        """Get the current curriculum stage.
+        
+        Returns:
+            Current curriculum stage name, or None if not using curriculum learning
+        """
+        return self.curriculum_stage
+    
+    def set_curriculum_weights(self, weights: dict) -> None:
+        """Set custom category weights for curriculum learning.
+        
+        Args:
+            weights: Dictionary mapping category names to relative weights
+                    Example: {'simple': 50, 'medium': 30, 'complex': 15, 'mine_heavy': 5, 'exploration': 0}
+                    
+        Raises:
+            ValueError: If weights are invalid
+        """
+        categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+        
+        # Validate all categories are present
+        for cat in categories:
+            if cat not in weights:
+                raise ValueError(f"Missing weight for category '{cat}'")
+        
+        # Validate all weights are non-negative
+        for cat, weight in weights.items():
+            if weight < 0:
+                raise ValueError(f"Weight for '{cat}' must be non-negative, got {weight}")
+        
+        # Update weights
+        self._curriculum_weights = [weights[cat] for cat in categories]
+        print(f"Curriculum weights updated: {weights}")
+    
+    def _get_default_curriculum_weights(self) -> list:
+        """Get default curriculum weights for training.
+        
+        Returns:
+            List of weights for [simple, medium, complex, mine_heavy, exploration]
+        """
+        # Default weights: favor simpler levels
+        return [30, 30, 20, 10, 10]
+    
+    def reset_curriculum_weights(self) -> None:
+        """Reset curriculum weights to default values."""
+        self._curriculum_weights = self._get_default_curriculum_weights()
+        print("Curriculum weights reset to default")
+    
+    def get_curriculum_info(self) -> dict:
+        """Get curriculum learning configuration info.
+        
+        Returns:
+            Dictionary with curriculum settings
+        """
+        categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+        weights_dict = {cat: weight for cat, weight in zip(categories, self._curriculum_weights)}
+        
+        return {
+            'current_stage': self.curriculum_stage,
+            'category_weights': weights_dict,
+            'eval_mode': self.eval_mode,
+            'using_curriculum': self.curriculum_stage is not None,
         }
