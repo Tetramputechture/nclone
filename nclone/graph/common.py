@@ -28,6 +28,16 @@ N_MAX_NODES = (
 )  # Sub-grid + entities buffer (~18000)
 E_MAX_EDGES = N_MAX_NODES * 8  # Up to 8 directions per node (4 cardinal + 4 diagonal)
 
+# Feature dimensions for enhanced observation space
+NODE_FEATURE_DIM = 61  # Comprehensive node features (spatial, type, entity, tile, reachability, proximity)
+EDGE_FEATURE_DIM = 6  # Edge features (type one-hot, weight, reachability confidence)
+
+# Entity tracking limits
+MAX_TOGGLE_MINES = 128  # Maximum toggled mines per level
+MAX_UNTOGGLE_MINES = 128  # Maximum untoggled mines per level
+MAX_MINES_TOTAL = MAX_TOGGLE_MINES + MAX_UNTOGGLE_MINES  # 256 total
+MAX_LOCKED_DOORS = 16  # Maximum locked doors per level
+
 # Map constants - playable area is 42x23 tiles (1008x552 pixels)
 # with a 1-tile border making full map 44x25 tiles (1056x600 pixels)
 GRID_WIDTH = MAP_TILE_WIDTH  # 42 tiles (playable area)

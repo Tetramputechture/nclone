@@ -87,16 +87,29 @@ Discrete(6) actions:
 
 ### Observation Space
 
+**Comprehensive multi-modal observations for CNN, MLP, and GNN architectures.**
+
+See **[OBSERVATION_SPACE_README.md](OBSERVATION_SPACE_README.md)** for complete documentation.
+
 Multi-modal Dict observation:
 
 ```python
 {
-    'player_frame': Box(0, 255, (84, 84, 12), uint8),  # 12-frame temporal stack
-    'global_view': Box(0, 255, (176, 100, 1), uint8),  # Full level view
-    'game_state': Box(-inf, inf, (39,), float32),      # Physics state vector
-    'reachability_features': Box(0, 1, (8,), float32), # Strategic features
-    'entity_positions': Box(0, 1, (6,), float32),      # Normalized positions
-    'graph_obs': Dict({...})  # Optional graph representation
+    # Visual Modalities (CNNs)
+    'player_frame': Box(0, 255, (84, 84, 12), uint8),  # Local 12-frame temporal
+    'global_view': Box(0, 255, (176, 100, 1), uint8),  # Global strategic view
+    
+    # State Modalities (MLPs)
+    'game_state': Box(-1, 1, (26+N,), float32),        # Physics + entities
+    'reachability_features': Box(0, 1, (8,), float32), # Path planning
+    'entity_positions': Box(0, 1, (6,), float32),      # Key positions
+    
+    # Graph Modality (GNNs)
+    'graph_node_feats': Box(-inf, inf, (N_MAX_NODES, F_node), float32),
+    'graph_edge_index': Box(0, N_MAX_NODES-1, (2, E_MAX_EDGES), int32),
+    'graph_edge_feats': Box(0, 1, (E_MAX_EDGES, F_edge), float32),
+    'graph_node_mask': Box(0, 1, (N_MAX_NODES,), int32),
+    'graph_edge_mask': Box(0, 1, (E_MAX_EDGES,), int32),
 }
 ```
 
