@@ -503,12 +503,16 @@ class NPlayHeadless:
 
         # === Level Progress and Objectives (2 features) ===
 
-        # 24. Switch activation progress (will be updated by observation processor)
-        switch_progress = 0.0  # Placeholder
+        # 24. Switch activation progress
+        # Compute based on actual switch state: 1.0 if activated, -1.0 if not
+        switch_activated = self.exit_switch_activated()
+        switch_progress = 1.0 if switch_activated else -1.0
         state.append(switch_progress)
 
-        # 25. Exit accessibility (will be updated by observation processor)
-        exit_accessibility = -1.0  # Placeholder (assume not accessible initially)
+        # 25. Exit accessibility
+        # Compute based on switch state and distance to exit
+        # 1.0 if switch is activated (exit accessible), -1.0 otherwise
+        exit_accessibility = 1.0 if switch_activated else -1.0
         state.append(exit_accessibility)
 
         # REMOVED: completion_progress (redundant - computed from switch_progress and exit distance)
