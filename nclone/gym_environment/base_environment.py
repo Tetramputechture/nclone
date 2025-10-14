@@ -303,35 +303,44 @@ class BaseNppEnvironment(gymnasium.Env):
 
         ninja_state = self.nplay_headless.get_ninja_state()
         entity_states_full = self.nplay_headless.get_entity_states()
-        
+
         # For production: limit entity_states to fixed size (GAME_STATE_CHANNELS - len(ninja_state) = 30 - 26 = 4)
         # Use first 4 dimensions which contain critical entity counts
-        entity_states = entity_states_full[:4] if len(entity_states_full) >= 4 else np.pad(entity_states_full, (0, 4 - len(entity_states_full)))
-        
+        entity_states = (
+            entity_states_full[:4]
+            if len(entity_states_full) >= 4
+            else np.pad(entity_states_full, (0, 4 - len(entity_states_full)))
+        )
+
         game_state = np.concatenate([ninja_state, entity_states])
 
         # Get entity states for PBRS hazard detection
         entity_states_raw = self.nplay_headless.get_entity_states()
-        
+
         # Get actual entity objects for tracking critical entities
         from ..constants.entity_types import EntityType
+
         entities = []
         if hasattr(self.nplay_headless.sim, "entity_dic"):
             # Extract entities relevant for Deep RL agent:
             # - Toggle mines (hazards)
-            toggle_mines = self.nplay_headless.sim.entity_dic.get(EntityType.TOGGLE_MINE, [])
+            toggle_mines = self.nplay_headless.sim.entity_dic.get(
+                EntityType.TOGGLE_MINE, []
+            )
             entities.extend(toggle_mines)
-            
+
             # - Toggled mines (active hazards)
-            toggled_mines = self.nplay_headless.sim.entity_dic.get(EntityType.TOGGLE_MINE_TOGGLED, [])
+            toggled_mines = self.nplay_headless.sim.entity_dic.get(
+                EntityType.TOGGLE_MINE_TOGGLED, []
+            )
             entities.extend(toggled_mines)
-            
+
             # - Locked doors (obstacles requiring switch activation)
-            locked_doors = self.nplay_headless.sim.entity_dic.get(EntityType.LOCKED_DOOR, [])
+            locked_doors = self.nplay_headless.locked_doors()
             entities.extend(locked_doors)
-            
+
             # - Locked door switches (objectives for opening locked doors)
-            locked_door_switches = self.nplay_headless.sim.entity_dic.get(EntityType.LOCKED_DOOR_SWITCH, [])
+            locked_door_switches = self.nplay_headless.locked_door_switches()
             entities.extend(locked_door_switches)
 
         obs = {
