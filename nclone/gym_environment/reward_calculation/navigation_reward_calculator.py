@@ -6,6 +6,10 @@ from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
 from ..util.util import calculate_distance
 from .reward_constants import (
     NAVIGATION_DISTANCE_IMPROVEMENT_SCALE,
+    NAVIGATION_POTENTIAL_SCALE,
+    NAVIGATION_MIN_DISTANCE_THRESHOLD,
+    PBRS_SWITCH_DISTANCE_SCALE,
+    PBRS_EXIT_DISTANCE_SCALE,
 )
 
 
@@ -27,6 +31,13 @@ class NavigationRewardCalculator:
     def __init__(self):
         """Initialize navigation reward calculator."""
         super().__init__()
+        # Initialize reward constants
+        self.POTENTIAL_SCALE = NAVIGATION_POTENTIAL_SCALE
+        self.MIN_DISTANCE_THRESHOLD = NAVIGATION_MIN_DISTANCE_THRESHOLD
+        self.SWITCH_DISTANCE_SCALE = PBRS_SWITCH_DISTANCE_SCALE
+        self.EXIT_DISTANCE_SCALE = PBRS_EXIT_DISTANCE_SCALE
+        
+        # Initialize state tracking
         self.closest_distance_to_switch = float("inf")
         self.closest_distance_to_exit = float("inf")
         self.prev_potential = None

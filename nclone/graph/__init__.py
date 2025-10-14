@@ -7,7 +7,8 @@ from .hierarchical_builder import (
     HierarchicalGraphData,
     ResolutionLevel,
 )
-from .feature_extraction import FeatureExtractor
+# Note: FeatureExtractor moved to npp-rl project
+# from .feature_extraction import FeatureExtractor
 from .edge_building import EdgeBuilder
 from .level_data import LevelData, ensure_level_data, create_level_data_dict
 from .common import (
@@ -25,7 +26,7 @@ __all__ = [
     "HierarchicalGraphBuilder",
     "HierarchicalGraphData",
     "ResolutionLevel",
-    "FeatureExtractor",
+    # "FeatureExtractor",  # Moved to npp-rl
     "EdgeBuilder",
     "LevelData",
     "ensure_level_data",
