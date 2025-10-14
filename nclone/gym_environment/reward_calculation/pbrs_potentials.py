@@ -1,23 +1,52 @@
 """Potential-Based Reward Shaping (PBRS) potential functions.
 
 This module implements reusable potential functions Φ(s) for reward shaping
-without changing the optimal policy. Each potential is normalized to comparable
-scales and documented with units and bounds.
+following the theory of Ng, Harada, and Russell (1999): "Policy Invariance
+Under Reward Transformations: Theory and Application to Reward Shaping".
+
+PBRS provides dense reward signals without changing the optimal policy by using
+the formula: F(s,s') = γ * Φ(s') - Φ(s)
+
+Key properties:
+- Policy invariance: Optimal policy unchanged under PBRS
+- Dense rewards: Provides gradient at every step
+- Normalization: All potentials normalized to [0, 1] range
+- Composability: Multiple potentials can be combined with weights
+
+All constants defined in reward_constants.py with full documentation.
 """
 
 import numpy as np
 from typing import Dict, Any, List, Tuple
 from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
 from ..util.util import calculate_distance
+from .reward_constants import (
+    PBRS_MAX_VELOCITY,
+    PBRS_HAZARD_DANGER_RADIUS,
+    PBRS_EXPLORATION_VISIT_THRESHOLD,
+    PBRS_EXPLORATION_RADIUS,
+    PBRS_SWITCH_DISTANCE_SCALE,
+    PBRS_EXIT_DISTANCE_SCALE,
+)
 
 
 class PBRSPotentials:
-    """Collection of potential functions for reward shaping."""
+    """Collection of potential functions for reward shaping.
+    
+    Each potential function Φ(s) represents a heuristic estimate of state value.
+    Potentials are normalized to [0, 1] range for consistent scaling.
+    
+    Available potentials:
+    - objective_distance_potential: Distance to current objective (switch/exit)
+    - hazard_proximity_potential: Proximity to dangerous hazards
+    - impact_risk_potential: Risk of high-velocity collisions
+    - exploration_potential: Novelty of current state
+    """
 
-    # Normalization constants
+    # Import normalization constants from centralized module
     LEVEL_DIAGONAL = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
-    MAX_VELOCITY = 10.0  # Approximate max ninja velocity
-    HAZARD_DANGER_RADIUS = 50.0  # Radius within which hazards are considered dangerous
+    MAX_VELOCITY = PBRS_MAX_VELOCITY
+    HAZARD_DANGER_RADIUS = PBRS_HAZARD_DANGER_RADIUS
 
     @staticmethod
     def objective_distance_potential(state: Dict[str, Any]) -> float:
@@ -161,7 +190,7 @@ class PBRSPotentials:
             min_distance = min(min_distance, distance)
 
         # Exploration radius - positions within this distance are considered "visited"
-        exploration_radius = 30.0
+        exploration_radius = PBRS_EXPLORATION_RADIUS
 
         # Return potential based on distance from visited areas
         if min_distance > exploration_radius:
@@ -172,11 +201,18 @@ class PBRSPotentials:
 
 
 class PBRSCalculator:
-    """Calculator for completion-focused potential functions."""
+    """Calculator for completion-focused potential functions.
+    
+    Combines multiple PBRS potentials with configurable weights to create
+    a composite potential function. The calculator maintains state across
+    steps and computes the shaping reward: F(s,s') = γ * Φ(s') - Φ(s)
+    
+    All constants imported from reward_constants.py for consistency.
+    """
 
-    # Completion-focused PBRS scaling
-    PBRS_SWITCH_DISTANCE = 0.05  # Distance-based shaping to switches
-    PBRS_EXIT_DISTANCE = 0.05    # Distance-based shaping to exit
+    # Import PBRS scaling constants from centralized module
+    PBRS_SWITCH_DISTANCE = PBRS_SWITCH_DISTANCE_SCALE
+    PBRS_EXIT_DISTANCE = PBRS_EXIT_DISTANCE_SCALE
 
     def __init__(
         self,
@@ -189,9 +225,9 @@ class PBRSCalculator:
 
         Args:
             objective_weight: Weight for objective distance potential (switch/exit)
-            hazard_weight: Disabled for completion focus
-            impact_weight: Disabled for completion focus
-            exploration_weight: Disabled for completion focus
+            hazard_weight: Weight for hazard proximity potential (0.0 = disabled)
+            impact_weight: Weight for impact risk potential (0.0 = disabled)
+            exploration_weight: Weight for exploration potential (0.0 = disabled)
         """
         self.objective_weight = objective_weight
         self.hazard_weight = hazard_weight
@@ -200,9 +236,7 @@ class PBRSCalculator:
 
         # Track visited positions for exploration potential (minimal usage)
         self.visited_positions: List[Tuple[float, float]] = []
-        self.visit_threshold = (
-            25.0  # Distance threshold for considering a position "new"
-        )
+        self.visit_threshold = PBRS_EXPLORATION_VISIT_THRESHOLD
 
     def calculate_combined_potential(self, state: Dict[str, Any]) -> float:
         """Calculate completion-focused potential from switch/exit distance only.
