@@ -71,7 +71,7 @@ class EdgeBuilder:
         for row in range(level_data.height):
             for col in range(level_data.width):
                 tile_id = level_data.tiles[row, col]
-                # Check if tile is traversable based on comprehensive tile analysis
+                # Check if tile is traversable based on approximate tile analysis
                 # Tile 0: Empty space (fully traversable)
                 # Tiles 2-33: Complex geometry but generally traversable
                 # Tile 1 and 34+: Solid walls or glitched (not traversable)
@@ -168,8 +168,6 @@ def _determine_node_type(pos: Tuple[int, int], level_data: LevelData) -> NodeTyp
     x, y = pos
 
     # Convert pixel coordinates to tile coordinates
-    from ..constants.physics_constants import TILE_PIXEL_SIZE
-
     tile_col = int(x // TILE_PIXEL_SIZE)
     tile_row = int(y // TILE_PIXEL_SIZE)
 

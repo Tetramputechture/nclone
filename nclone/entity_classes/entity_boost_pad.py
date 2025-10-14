@@ -1,8 +1,9 @@
 import math
 
 from ..entities import Entity
-from ..physics import *
+from ..physics import overlap_circle_vs_circle
 from ..ninja import NINJA_RADIUS
+
 
 class EntityBoostPad(Entity):
     """Launch Pad Entity (Type 24)
@@ -33,6 +34,7 @@ class EntityBoostPad(Entity):
         - Normalizes velocity vector before applying boost
         - Applies boost instantaneously on first frame of contact
     """
+
     RADIUS = 6
     MAX_COUNT_PER_LEVEL = 128
 
@@ -47,13 +49,14 @@ class EntityBoostPad(Entity):
         if not ninja.is_valid_target():
             self.is_touching_ninja = False
             return
-        if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
+        if overlap_circle_vs_circle(
+            self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+        ):
             if not self.is_touching_ninja:
                 vel_norm = math.sqrt(ninja.xspeed**2 + ninja.yspeed**2)
                 if vel_norm > 0:
-                    x_boost = 2 * ninja.xspeed/vel_norm
-                    y_boost = 2 * ninja.yspeed/vel_norm
+                    x_boost = 2 * ninja.xspeed / vel_norm
+                    y_boost = 2 * ninja.yspeed / vel_norm
                     ninja.xspeed += x_boost
                     ninja.yspeed += y_boost
                 self.is_touching_ninja = True

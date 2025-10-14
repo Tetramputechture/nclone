@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Tuple, Optional, Dict
 
-# Use shared constants from the simulator - FIXED DIMENSIONS
 from ..constants import TILE_PIXEL_SIZE
 from ..constants.physics_constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 

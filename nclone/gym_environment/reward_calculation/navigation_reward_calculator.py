@@ -6,31 +6,23 @@ from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
 from ..util.util import calculate_distance
 from .reward_constants import (
     NAVIGATION_DISTANCE_IMPROVEMENT_SCALE,
-    NAVIGATION_MIN_DISTANCE_THRESHOLD,
-    NAVIGATION_POTENTIAL_SCALE,
 )
 
 
 class NavigationRewardCalculator:
     """Handles calculation of completion-focused navigation rewards.
-    
+
     Provides distance-based shaping rewards for switch and exit objectives
     using potential-based reward shaping (PBRS) theory from Ng et al. (1999).
-    
+
     Key features:
     - Distance-based shaping provides dense gradient for learning
     - Potential-based formulation ensures policy invariance
     - Rewards progress toward current objective (switch → exit)
     - Switch activation milestone handled by main calculator
-    
+
     All constants defined in reward_constants.py with full documentation.
     """
-
-    # Import navigation constants from centralized module
-    DISTANCE_IMPROVEMENT_SCALE = NAVIGATION_DISTANCE_IMPROVEMENT_SCALE
-    MIN_DISTANCE_THRESHOLD = NAVIGATION_MIN_DISTANCE_THRESHOLD
-    SWITCH_ACTIVATION_REWARD = 0.0  # Disabled - handled by main calculator
-    POTENTIAL_SCALE = NAVIGATION_POTENTIAL_SCALE
 
     def __init__(self):
         """Initialize navigation reward calculator."""
@@ -146,12 +138,11 @@ class NavigationRewardCalculator:
                 distance_improvement = (
                     self.closest_distance_to_switch - curr_distance_to_switch
                 )
-                reward += distance_improvement * self.DISTANCE_IMPROVEMENT_SCALE
+                reward += distance_improvement * NAVIGATION_DISTANCE_IMPROVEMENT_SCALE
                 self.closest_distance_to_switch = curr_distance_to_switch
         else:
-            # Reward for activating switch
+            # Switch activated
             if not prev_state["switch_activated"]:
-                reward += self.SWITCH_ACTIVATION_REWARD
                 self.closest_distance_to_exit = curr_distance_to_exit
                 switch_active_changed = True
             else:
@@ -160,7 +151,9 @@ class NavigationRewardCalculator:
                     distance_improvement = (
                         self.closest_distance_to_exit - curr_distance_to_exit
                     )
-                    reward += distance_improvement * self.DISTANCE_IMPROVEMENT_SCALE
+                    reward += (
+                        distance_improvement * NAVIGATION_DISTANCE_IMPROVEMENT_SCALE
+                    )
                     self.closest_distance_to_exit = curr_distance_to_exit
 
         # Calculate potential-based shaping reward

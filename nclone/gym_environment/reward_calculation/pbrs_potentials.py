@@ -22,7 +22,6 @@ from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
 from ..util.util import calculate_distance
 from .reward_constants import (
     PBRS_MAX_VELOCITY,
-    PBRS_HAZARD_DANGER_RADIUS,
     PBRS_EXPLORATION_VISIT_THRESHOLD,
     PBRS_EXPLORATION_RADIUS,
     PBRS_SWITCH_DISTANCE_SCALE,
@@ -32,10 +31,10 @@ from .reward_constants import (
 
 class PBRSPotentials:
     """Collection of potential functions for reward shaping.
-    
+
     Each potential function Φ(s) represents a heuristic estimate of state value.
     Potentials are normalized to [0, 1] range for consistent scaling.
-    
+
     Available potentials:
     - objective_distance_potential: Distance to current objective (switch/exit)
     - hazard_proximity_potential: Proximity to dangerous hazards
@@ -45,8 +44,6 @@ class PBRSPotentials:
 
     # Import normalization constants from centralized module
     LEVEL_DIAGONAL = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
-    MAX_VELOCITY = PBRS_MAX_VELOCITY
-    HAZARD_DANGER_RADIUS = PBRS_HAZARD_DANGER_RADIUS
 
     @staticmethod
     def objective_distance_potential(state: Dict[str, Any]) -> float:
@@ -100,17 +97,17 @@ class PBRSPotentials:
         entity_states = state.get("entity_states", None)
         if entity_states is None or len(entity_states) == 0:
             return 1.0  # No entity data, assume safe
-        
+
         player_x = state.get("player_x", 0.0)
         player_y = state.get("player_y", 0.0)
-        
+
         # Import the helper function to compute hazard proximity
         from ..observation_processor import compute_hazard_from_entity_states
-        
+
         nearest_hazard_dist, hazard_threat = compute_hazard_from_entity_states(
             entity_states, player_x, player_y
         )
-        
+
         # Return potential based on hazard proximity
         # When far from hazards: high potential (1.0)
         # When close to hazards: low potential (approaches 0.0)
@@ -153,8 +150,8 @@ class PBRSPotentials:
 
         # Calculate impact risk based on downward velocity and surface proximity
         # Higher risk when moving fast downward near surfaces
-        velocity_risk = min(1.0, velocity_magnitude / PBRSPotentials.MAX_VELOCITY)
-        downward_risk = min(1.0, downward_velocity / PBRSPotentials.MAX_VELOCITY)
+        velocity_risk = min(1.0, velocity_magnitude / PBRS_MAX_VELOCITY)
+        downward_risk = min(1.0, downward_velocity / PBRS_MAX_VELOCITY)
         surface_proximity = floor_normal_y  # Higher when near floor
 
         # Combine factors: higher risk when fast downward movement near surfaces
@@ -202,11 +199,11 @@ class PBRSPotentials:
 
 class PBRSCalculator:
     """Calculator for completion-focused potential functions.
-    
+
     Combines multiple PBRS potentials with configurable weights to create
     a composite potential function. The calculator maintains state across
     steps and computes the shaping reward: F(s,s') = γ * Φ(s') - Φ(s)
-    
+
     All constants imported from reward_constants.py for consistency.
     """
 
@@ -249,7 +246,7 @@ class PBRSCalculator:
         """
         # Calculate only objective distance potential (switch/exit focus)
         objective_pot = PBRSPotentials.objective_distance_potential(state)
-        
+
         # Apply completion-focused scaling
         if not state.get("switch_activated", False):
             # Focus on switch distance
@@ -287,8 +284,12 @@ class PBRSCalculator:
         objective_pot = PBRSPotentials.objective_distance_potential(state)
         return {
             "objective": objective_pot,
-            "switch_distance_potential": self.PBRS_SWITCH_DISTANCE * objective_pot if not state.get("switch_activated", False) else 0.0,
-            "exit_distance_potential": self.PBRS_EXIT_DISTANCE * objective_pot if state.get("switch_activated", False) else 0.0,
+            "switch_distance_potential": self.PBRS_SWITCH_DISTANCE * objective_pot
+            if not state.get("switch_activated", False)
+            else 0.0,
+            "exit_distance_potential": self.PBRS_EXIT_DISTANCE * objective_pot
+            if state.get("switch_activated", False)
+            else 0.0,
             "hazard": 0.0,  # Disabled for completion focus
             "impact": 0.0,  # Disabled for completion focus
             "exploration": 0.0,  # Disabled for completion focus

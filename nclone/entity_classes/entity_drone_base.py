@@ -1,7 +1,7 @@
 import math
 
 from ..entities import Entity
-from ..physics import *
+from ..physics import is_empty_column, is_empty_row
 from ..constants.physics_constants import DRONE_RADIUS, DRONE_GRID_SIZE
 
 
@@ -62,14 +62,14 @@ class EntityDroneBase(Entity):
     Note: This is an abstract base class and should not be instantiated directly.
     Use one of the derived drone types instead.
     """
+
     RADIUS = DRONE_RADIUS
     GRID_WIDTH = DRONE_GRID_SIZE
     DIR_TO_VEC = {0: [1, 0], 1: [0, 1], 2: [-1, 0], 3: [0, -1]}
     # Dictionary to choose the next direction from the patrolling mode of the drone.
     # Patrolling modes : {0:follow wall CW, 1:follow wall CCW, 2:wander CW, 3:wander CCW}
     # Directions : {0:keep forward, 1:turn right, 2:go backward, 3:turn left}
-    DIR_LIST = {0: [1, 0, 3, 2], 1: [3, 0, 1, 2],
-                2: [0, 1, 3, 2], 3: [0, 3, 1, 2]}
+    DIR_LIST = {0: [1, 0, 3, 2], 1: [3, 0, 1, 2], 2: [0, 1, 3, 2], 3: [0, 3, 1, 2]}
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode, speed):
         super().__init__(type, sim, xcoord, ycoord)
@@ -101,7 +101,14 @@ class EntityDroneBase(Entity):
         dy = self.ytarget - self.ypos
         dist = math.sqrt(dx**2 + dy**2)
         # If the drone has reached or passed the center of the cell, choose the next cell to go to.
-        if dist < 0.000001 or (dx * (self.xtarget - (self.xpos + xspeed)) + dy * (self.ytarget - (self.ypos + yspeed))) < 0:
+        if (
+            dist < 0.000001
+            or (
+                dx * (self.xtarget - (self.xpos + xspeed))
+                + dy * (self.ytarget - (self.ypos + yspeed))
+            )
+            < 0
+        ):
             self.xpos, self.ypos = self.xtarget, self.ytarget
             can_move = self.choose_next_direction_and_goal()
             if can_move:
@@ -133,11 +140,11 @@ class EntityDroneBase(Entity):
         This is true if there are no walls impeding the drone's movement.
         If true, set the center of the adjacent cell as the drone's next target."""
         xdir, ydir = self.DIR_TO_VEC[dir]
-        xtarget = self.xpos + self.GRID_WIDTH*xdir
-        ytarget = self.ypos + self.GRID_WIDTH*ydir
+        xtarget = self.xpos + self.GRID_WIDTH * xdir
+        ytarget = self.ypos + self.GRID_WIDTH * ydir
         if not ydir:
-            cell_x = math.floor((self.xpos + xdir*self.RADIUS) / 12)
-            cell_xtarget = math.floor((xtarget + xdir*self.RADIUS) / 12)
+            cell_x = math.floor((self.xpos + xdir * self.RADIUS) / 12)
+            cell_xtarget = math.floor((xtarget + xdir * self.RADIUS) / 12)
             cell_y1 = math.floor((self.ypos - self.RADIUS) / 12)
             cell_y2 = math.floor((self.ypos + self.RADIUS) / 12)
             while cell_x != cell_xtarget:
@@ -145,8 +152,8 @@ class EntityDroneBase(Entity):
                     return False
                 cell_x += xdir
         else:
-            cell_y = math.floor((self.ypos + ydir*self.RADIUS) / 12)
-            cell_ytarget = math.floor((ytarget + ydir*self.RADIUS) / 12)
+            cell_y = math.floor((self.ypos + ydir * self.RADIUS) / 12)
+            cell_ytarget = math.floor((ytarget + ydir * self.RADIUS) / 12)
             cell_x1 = math.floor((self.xpos - self.RADIUS) / 12)
             cell_x2 = math.floor((self.xpos + self.RADIUS) / 12)
             while cell_y != cell_ytarget:

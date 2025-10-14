@@ -1,5 +1,3 @@
-
-from ..physics import *
 from .entity_drone_zap import EntityDroneZap
 
 
@@ -54,6 +52,7 @@ class EntityDroneChaser(EntityDroneZap):
     functionality marked as TODO. The chase behavior may not
     be fully implemented yet.
     """
+
     MAX_COUNT_PER_LEVEL = 256
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):
@@ -71,8 +70,18 @@ class EntityDroneChaser(EntityDroneZap):
                 for i in range(-1, 2):
                     dir = (self.dir + i) % 4
                     xdir, ydir = self.DIR_TO_VEC[dir]
-                    if xdir*(ninja.xpos - self.xpos) + ydir*(ninja.ypos - self.ypos) > 0:
-                        if abs(ydir*(ninja.xpos - self.xpos) - xdir*(ninja.ypos - self.ypos)) <= 12:
+                    if (
+                        xdir * (ninja.xpos - self.xpos)
+                        + ydir * (ninja.ypos - self.ypos)
+                        > 0
+                    ):
+                        if (
+                            abs(
+                                ydir * (ninja.xpos - self.xpos)
+                                - xdir * (ninja.ypos - self.ypos)
+                            )
+                            <= 12
+                        ):
                             pass
 
     def choose_next_direction_and_goal(self):

@@ -13,7 +13,6 @@ References:
 """
 
 from typing import Dict, Any
-import numpy as np
 
 
 # =============================================================================
@@ -166,7 +165,6 @@ PBRS_EXIT_DISTANCE_SCALE = 0.05
 # Rationale: N++ levels are 1056x600 pixels (42x23 cells of 24 pixels).
 # Level diagonal used for normalizing distances to [0, 1] range.
 # These values are imported from constants.py to maintain single source of truth.
-from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
 
 # Maximum ninja velocity estimate (pixels/frame)
 # Rationale: Approximate maximum velocity (~10 px/frame) for normalizing

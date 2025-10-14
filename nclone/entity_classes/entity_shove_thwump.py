@@ -1,9 +1,18 @@
 import math
 
 from ..entities import Entity
-from ..physics import *
+from ..physics import (
+    penetration_square_vs_point,
+    map_vector_to_orientation,
+    is_empty_column,
+    is_empty_row,
+    overlap_circle_vs_circle,
+)
 from ..ninja import NINJA_RADIUS
-from ..constants.physics_constants import SHOVE_THWUMP_SEMI_SIDE, SHOVE_THWUMP_PROJECTILE_RADIUS
+from ..constants.physics_constants import (
+    SHOVE_THWUMP_SEMI_SIDE,
+    SHOVE_THWUMP_PROJECTILE_RADIUS,
+)
 
 
 class EntityShoveThwump(Entity):
@@ -73,6 +82,7 @@ class EntityShoveThwump(Entity):
             * Position restoration
             * Grid cell transitions
     """
+
     SEMI_SIDE = SHOVE_THWUMP_SEMI_SIDE
     RADIUS = SHOVE_THWUMP_PROJECTILE_RADIUS  # for the projectile inside
     MAX_COUNT_PER_LEVEL = 128
@@ -104,8 +114,7 @@ class EntityShoveThwump(Entity):
                 return
             self.set_state(2)
         if self.state == 3:
-            origin_dist = abs(self.xpos - self.xorigin) + \
-                abs(self.ypos - self.yorigin)
+            origin_dist = abs(self.xpos - self.xorigin) + abs(self.ypos - self.yorigin)
             if origin_dist >= 1:
                 self.move_if_possible(self.xdir, self.ydir, 1)
             else:
@@ -149,8 +158,13 @@ class EntityShoveThwump(Entity):
         """
         ninja = self.sim.ninja
         if self.state <= 1:
-            depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                                self.SEMI_SIDE + NINJA_RADIUS)
+            depen = penetration_square_vs_point(
+                self.xpos,
+                self.ypos,
+                ninja.xpos,
+                ninja.ypos,
+                self.SEMI_SIDE + NINJA_RADIUS,
+            )
             if depen:
                 depen_x, depen_y = depen[0]
                 if self.state == 0 or self.xdir * depen_x + self.ydir * depen_y >= 0.01:
@@ -161,8 +175,13 @@ class EntityShoveThwump(Entity):
         Kill the ninja if it touches the lethal core of the shwump.
         """
         ninja = self.sim.ninja
-        depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                            self.SEMI_SIDE + NINJA_RADIUS + 0.1)
+        depen = penetration_square_vs_point(
+            self.xpos,
+            self.ypos,
+            ninja.xpos,
+            ninja.ypos,
+            self.SEMI_SIDE + NINJA_RADIUS + 0.1,
+        )
         if depen and self.state <= 1:
             depen_x, depen_y = depen[0]
             if self.state == 0:
@@ -177,6 +196,7 @@ class EntityShoveThwump(Entity):
                 else:
                     return
             return depen_x
-        if overlap_circle_vs_circle(ninja.xpos, ninja.ypos, NINJA_RADIUS,
-                                    self.xpos, self.ypos, self.RADIUS):
+        if overlap_circle_vs_circle(
+            ninja.xpos, ninja.ypos, NINJA_RADIUS, self.xpos, self.ypos, self.RADIUS
+        ):
             ninja.kill(0, 0, 0, 0, 0)
