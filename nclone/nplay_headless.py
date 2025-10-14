@@ -190,7 +190,6 @@ class NPlayHeadless:
         Args:
             debug_info: A dictionary containing debug information to be displayed on the screen.
         """
-        # --- Cache Check ---
         if self.current_tick == self.last_rendered_tick:
             if (
                 self.render_mode == "human" and self.cached_render_surface is not None
@@ -217,9 +216,8 @@ class NPlayHeadless:
                 )  # Cache the new grayscale buffer
                 return self.cached_render_buffer
 
-        # --- New Frame Rendering ---
         init = self.sim.frame <= 1
-        surface = self.sim_renderer.draw(init, debug_info)  # This is a Pygame Surface
+        surface = self.sim_renderer.draw(init, debug_info)
 
         self.cached_render_surface = surface  # Always cache the raw surface for potential mode switch or human display
         self.last_rendered_tick = self.current_tick
@@ -234,14 +232,6 @@ class NPlayHeadless:
         )  # Cache the (H,W,1) grayscale buffer
         return final_gray_output_hw1
 
-    def render_collision_map(self):
-        """Render the collision map to a NumPy array."""
-        init = self.sim.frame <= 1
-        surface = self.sim_renderer.draw_collision_map(init)
-        imgdata = pygame.surfarray.array3d(surface)
-        imgdata = imgdata.swapaxes(0, 1)
-        return imgdata
-
     def ninja_has_won(self):
         return self.sim.ninja.has_won()
 
@@ -253,12 +243,6 @@ class NPlayHeadless:
 
     def ninja_velocity(self):
         return self.sim.ninja.xspeed, self.sim.ninja.yspeed
-
-    def ninja_is_in_air(self):
-        return self.sim.ninja.airborn
-
-    def ninja_is_walled(self):
-        return self.sim.ninja.walled
 
     def _sim_exit_switch(self):
         # We want to get the last entry of self.sim.entity_dic[3];
@@ -311,73 +295,21 @@ class NPlayHeadless:
     def locked_doors(self):
         """Return locked door entities (type 6). Includes their switch coordinates."""
         return list(self.sim.entity_dic.get(6, []))
-    
+
     def locked_door_switches(self):
         """Return locked door switch entities (type 7)."""
         return list(self.sim.entity_dic.get(7, []))
-
-    def trap_doors(self):
-        """Return trap door entities (type 8). Includes their switch coordinates."""
-        return list(self.sim.entity_dic.get(8, []))
 
     def get_tile_data(self):
         """Get tile data from simulator."""
         return self.sim.tile_dic
 
-    def get_segment_data(self):
-        """Get segment data from simulator."""
-        return self.sim.segment_dic
-
-    def get_grid_edges(self):
-        """Get horizontal and vertical grid edges."""
-        return {
-            "horizontal": self.sim.hor_grid_edge_dic,
-            "vertical": self.sim.ver_grid_edge_dic,
-        }
-
-    def get_segment_edges(self):
-        """Get horizontal and vertical segment edges."""
-        return {
-            "horizontal": self.sim.hor_segment_dic,
-            "vertical": self.sim.ver_segment_dic,
-        }
-
     def exit(self):
         pygame.quit()
-
-    def get_state_vector(self):
-        """
-        Get a complete state representation of the game environment as a vector of float values.
-        This includes ninja state, entity states, and environment geometry.
-
-        Returns:
-            numpy.ndarray: A 1D array containing all state information, with fixed length.
-            All values are normalized between 0 and 1.
-        """
-        state = []
-
-        # Add ninja state
-        ninja_state = self.get_ninja_state()
-        state.extend(ninja_state)
-
-        # Add entity states with fixed size per entity type
-        entity_states = self.get_entity_states()
-        state.extend(entity_states)
-
-        # Add environment geometry (fixed size)
-        # Lets avoid this for now
-        # geometry_state = self._get_geometry_state()
-        # state.extend(geometry_state)
-
-        return np.array(state, dtype=np.float32)
 
     def get_doors_opened(self):
         """Returns the total doors opened by the ninja."""
         return self.sim.ninja.doors_opened
-
-    def get_total_gold_available(self):
-        """Returns count of all gold (entity type 2) in the map."""
-        return sum(1 for entity in self.sim.entity_dic[2])
 
     def get_ninja_state(self):
         """Get ninja state as a list of floats with fixed length, all normalized between -1 and 1.
@@ -483,9 +415,6 @@ class NPlayHeadless:
         accel_y = max(-1.0, min(1.0, accel_y))
         state.extend([accel_x, accel_y])
 
-        # === Entity Proximity and Hazards (3 features) ===
-        # REMOVED: momentum_preservation, impact_risk (redundant - derivable from other features)
-
         # 21. Nearest hazard distance (initialized to 0, computed by observation processor)
         nearest_hazard_distance = 0.0  # Computed from entity_states or mine processor
         state.append(nearest_hazard_distance)
@@ -493,8 +422,6 @@ class NPlayHeadless:
         # 22. Nearest collectible distance (initialized to 0, computed by observation processor)
         nearest_collectible_distance = 0.0  # Computed from switch position
         state.append(nearest_collectible_distance)
-
-        # REMOVED: hazard_threat_level (redundant - exponential decay of nearest_hazard_distance)
 
         # 23. Entity interaction cooldown (frames since last entity interaction)
         # This would need to be tracked separately - for now, use jump duration as proxy
@@ -515,8 +442,6 @@ class NPlayHeadless:
         exit_accessibility = 1.0 if switch_activated else -1.0
         state.append(exit_accessibility)
 
-        # REMOVED: completion_progress (redundant - computed from switch_progress and exit distance)
-
         return state
 
     def get_entity_states(self):
@@ -529,20 +454,9 @@ class NPlayHeadless:
         MAX_COUNTS = {
             # Support max amount of mines and gold; otherwise, constrain to 32
             EntityType.TOGGLE_MINE: 128,
-            EntityType.GOLD: 128,
             EntityType.EXIT_DOOR: 1,
-            EntityType.REGULAR_DOOR: 32,
             EntityType.LOCKED_DOOR: 32,
-            EntityType.TRAP_DOOR: 32,
             EntityType.LAUNCH_PAD: 32,
-            EntityType.ONE_WAY: 32,
-            EntityType.DRONE_ZAP: 32,
-            EntityType.BOUNCE_BLOCK: 32,
-            EntityType.THWUMP: 32,
-            EntityType.BOOST_PAD: 32,
-            EntityType.DEATH_BALL: 32,
-            EntityType.MINI_DRONE: 32,
-            EntityType.SHWUMP: 32,
         }
 
         entity_types = list(MAX_COUNTS.keys())
@@ -602,53 +516,5 @@ class NPlayHeadless:
                 else:
                     # Add padding for non-existent entity
                     state.extend([0.0] * MAX_ATTRIBUTES)
-
-        return state
-
-    def _get_geometry_state(self):
-        """Get environment geometry state as a list of floats, all normalized between 0 and 1."""
-        state = []
-
-        # Add tile data - normalize by max tile ID (37)
-        # Fixed size: 44 * 25 = 1100 tiles
-        for x in range(44):
-            for y in range(25):
-                tile_id = self.sim.tile_dic.get((x, y), 0)
-                state.append(float(tile_id) / 37.0)
-
-        # Grid edges and segments can be -1, 0, or 1, so normalize to [0,1]
-        # Add horizontal grid edges (88 * 51 = 4488 edges)
-        for x in range(88):
-            for y in range(51):
-                edge = self.sim.hor_grid_edge_dic.get((x, y), 0)
-                # Normalize from [-1,1] to [0,1]
-                state.append((float(edge) + 1) / 2)
-
-        # Add vertical grid edges (89 * 50 = 4450 edges)
-        for x in range(89):
-            for y in range(50):
-                edge = self.sim.ver_grid_edge_dic.get((x, y), 0)
-                # Normalize from [-1,1] to [0,1]
-                state.append((float(edge) + 1) / 2)
-
-        # Add horizontal segments (88 * 51 = 4488 segments)
-        for x in range(88):
-            for y in range(51):
-                segment = self.sim.hor_segment_dic.get((x, y), 0)
-                # Normalize from [-1,1] to [0,1]
-                state.append((float(segment) + 1) / 2)
-
-        # Add vertical segments (89 * 50 = 4450 segments)
-        for x in range(89):
-            for y in range(50):
-                segment = self.sim.ver_segment_dic.get((x, y), 0)
-                # Normalize from [-1,1] to [0,1]
-                state.append((float(segment) + 1) / 2)
-
-        # Assert that all states are between 0 and 1
-        if not all(0 <= s <= 1 for s in state):
-            invalid_states = [(i, s) for i, s in enumerate(state) if not 0 <= s <= 1]
-            print(f"Invalid states found at indices: {invalid_states}")
-            raise ValueError("Some geometry states are out of bounds [0,1]")
 
         return state

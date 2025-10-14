@@ -51,10 +51,10 @@ python -m nclone.test_environment
 ### RL Training Integration
 
 ```python
-from nclone import NPPEnvironment
+from nclone import NppEnvironment
 
 # Create environment
-env = NPPEnvironment(
+env = NppEnvironment(
     render_mode="rgb_array",  # Headless for training
     dataset_dir="datasets/train",
     enable_graph_updates=True,  # Graph observations
