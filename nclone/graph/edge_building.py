@@ -253,10 +253,11 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
 
     This function converts the edge representation into the standard GraphData format
     expected by the rest of the system, using NodeFeatureBuilder and EdgeFeatureBuilder
-    to create full feature representations.
+    to create full feature representations with proper ReachabilitySystem integration.
     """
     from .common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
     from .feature_builder import NodeFeatureBuilder, EdgeFeatureBuilder
+    from .reachability.reachability_system import ReachabilitySystem
 
     # Extract unique positions from edges
     positions = set()
@@ -288,6 +289,44 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     node_builder = NodeFeatureBuilder()
     edge_builder = EdgeFeatureBuilder()
 
+    # Extract ninja position from level_data for reachability and proximity
+    ninja_pos = None
+    if hasattr(level_data, 'ninja') and level_data.ninja is not None:
+        ninja_pos = (level_data.ninja.position.x, level_data.ninja.position.y)
+    
+    # Extract goal position (exit door or next switch)
+    goal_pos = None
+    if hasattr(level_data, 'objects') and level_data.objects:
+        # Find exit door or nearest switch
+        for obj in level_data.objects:
+            if hasattr(obj, 'type'):
+                # Exit door (type 11)
+                if obj.type == 11:
+                    goal_pos = (obj.position.x, obj.position.y)
+                    break
+    
+    # Initialize reachability system for connectivity analysis
+    reachability_sys = ReachabilitySystem(debug=False)
+    reachability_result = None
+    
+    # Compute reachability if ninja position is available
+    if ninja_pos is not None:
+        try:
+            # Get current switch states (default to empty if not available)
+            switch_states = {}
+            if hasattr(level_data, 'switch_states'):
+                switch_states = level_data.switch_states
+            
+            # Analyze reachability using OpenCV flood-fill (<1ms)
+            reachability_result = reachability_sys.analyze_reachability(
+                level_data=level_data,
+                ninja_position=ninja_pos,
+                switch_states=switch_states
+            )
+        except Exception:
+            # If reachability analysis fails, continue without it
+            reachability_result = None
+
     # Fill node data with comprehensive features
     for i, pos in enumerate(sorted(positions)):
         if i >= N_MAX_NODES:
@@ -295,13 +334,33 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
 
         # Determine node type
         node_type = _determine_node_type(pos, level_data)
+        
+        # Get tile type at this position
+        tile_type = 0
+        if hasattr(level_data, 'get_tile_at'):
+            try:
+                tile_type = level_data.get_tile_at(pos[0], pos[1])
+            except Exception:
+                tile_type = 0
+        
+        # Build reachability info for this node
+        reachability_info = None
+        if reachability_result is not None:
+            reachability_info = {
+                'reachable_from_ninja': reachability_result.is_position_reachable(pos),
+                'on_critical_path': False  # TODO: Add path planning if needed
+            }
 
         # Build comprehensive node features (56 dimensions)
         node_features[i] = node_builder.build_node_features(
-            position=pos,
+            node_pos=pos,
             node_type=node_type,
-            level_data=level_data,
-            resolution_level=1,  # Default resolution
+            resolution_level=1,  # Default resolution (medium)
+            tile_type=tile_type,
+            entity_info=None,  # TODO: Extract entity info if node is entity
+            reachability_info=reachability_info,
+            ninja_pos=ninja_pos,
+            goal_pos=goal_pos,
         )
         node_types[i] = node_type
         node_mask[i] = 1
@@ -317,12 +376,22 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
         edge_index[0, i] = source_idx
         edge_index[1, i] = target_idx
 
+        # Build reachability confidence for edge
+        edge_reachability_confidence = 1.0
+        if reachability_result is not None:
+            # Edge is confident if both endpoints are reachable
+            source_reachable = reachability_result.is_position_reachable(edge.source)
+            target_reachable = reachability_result.is_position_reachable(edge.target)
+            if source_reachable and target_reachable:
+                edge_reachability_confidence = reachability_result.confidence
+            else:
+                edge_reachability_confidence = 0.0
+
         # Build comprehensive edge features (6 dimensions)
         edge_features[i] = edge_builder.build_edge_features(
-            edge=edge,
-            source_pos=edge.source,
-            target_pos=edge.target,
-            level_data=level_data,
+            edge_type=edge.edge_type,
+            weight=edge.weight,
+            reachability_confidence=edge_reachability_confidence,
         )
         edge_types[i] = edge.edge_type
         edge_mask[i] = 1
