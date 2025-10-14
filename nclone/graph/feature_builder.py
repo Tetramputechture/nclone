@@ -147,63 +147,66 @@ class NodeFeatureBuilder:
         
         Args:
             features: Feature array to modify
-            entity_info: Dict with keys:
+            entity_info: Dict with keys from entity_extractor.py:
                 - type: EntityType enum value
-                - subtype: int (door ID, mine toggle state)
                 - active: bool (entity is active)
-                - state: float (0-1, for toggles/animations)
+                - state: float (normalized entity state)
                 - radius: float (collision radius in pixels)
-                - switch_activated: bool (for switches)
-                - door_open: bool (for doors)
-                - door_locked: bool (for locked doors)
-                - requires_switch: bool (for locked doors)
-                - cooldown: int (frames until next interaction)
+                - closed: bool (for doors, True if closed)
+                
+        Entity-specific attributes from actual classes:
+            Toggle Mine: type, active, state (0/1/2), radius, xpos, ypos
+            Exit Switch: type, active, state, radius, xpos, ypos
+            Exit Door: type, active, state, radius, xpos, ypos
+            Locked Door: type, active, state, closed, radius, xpos, ypos
         """
-        # Index 9: entity_type (0=none, 1=mine, 2=switch, 3=door, 4=exit)
+        # Index 9: entity_type (0=none, 0.25=mine, 0.5=switch, 0.75=door, 1.0=exit)
         entity_type = entity_info.get('type', 0)
         type_encoding = 0.0
         if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
             type_encoding = 0.25  # mine
-        elif entity_type in [EntityType.EXIT_SWITCH, EntityType.LOCKED_DOOR_SWITCH]:
+        elif entity_type == EntityType.EXIT_SWITCH:
             type_encoding = 0.5  # switch
-        elif entity_type in [EntityType.LOCKED_DOOR, EntityType.REGULAR_DOOR, EntityType.TRAP_DOOR]:
+        elif entity_type == EntityType.LOCKED_DOOR:
             type_encoding = 0.75  # door
         elif entity_type == EntityType.EXIT_DOOR:
             type_encoding = 1.0  # exit
         features[self.ENTITY_START] = type_encoding
         
-        # Index 10: entity_subtype (for locked doors: door ID 0-15, for mines: toggle state)
-        entity_subtype = entity_info.get('subtype', 0)
-        features[self.ENTITY_START + 1] = np.clip(entity_subtype / MAX_LOCKED_DOORS, 0.0, 1.0)
+        # Index 10: entity_subtype (for locked doors: could use entity_id parsing, for mines: state value)
+        # For toggle mines, state is 0 (toggled/deadly), 1 (untoggled/safe), or 2 (toggling)
+        # For doors, we can use active status
+        entity_subtype = 0.0
+        if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
+            # Use the mine's actual state (0, 1, or 2) normalized
+            mine_state = entity_info.get('state', 0.0)
+            entity_subtype = mine_state / 2.0  # Normalize to [0, 1]
+        elif entity_type == EntityType.LOCKED_DOOR:
+            # For doors, use closed status (0=open, 1=closed)
+            entity_subtype = 1.0 if entity_info.get('closed', True) else 0.0
+        features[self.ENTITY_START + 1] = np.clip(entity_subtype, 0.0, 1.0)
         
-        # Index 11: entity_active
+        # Index 11: entity_active (from entity_extractor)
         features[self.ENTITY_START + 2] = 1.0 if entity_info.get('active', True) else 0.0
         
-        # Index 12: entity_state (for mines: 0=safe, 1=deadly; for doors: 0=closed, 1=open)
+        # Index 12: entity_state (normalized state from entity_extractor)
         entity_state = entity_info.get('state', 0.0)
         features[self.ENTITY_START + 3] = np.clip(entity_state, 0.0, 1.0)
         
-        # Index 13: entity_radius_norm (collision radius)
+        # Index 13: entity_radius_norm (collision radius from entity_extractor)
         entity_radius = entity_info.get('radius', 0.0)
         max_radius = NINJA_RADIUS * 2  # Assume max entity radius is 2x ninja radius
         features[self.ENTITY_START + 4] = np.clip(entity_radius / max_radius, 0.0, 1.0)
         
-        # Index 14: switch_activated (for switches)
-        features[self.ENTITY_START + 5] = 1.0 if entity_info.get('switch_activated', False) else 0.0
-        
-        # Index 15: door_open (for doors)
-        features[self.ENTITY_START + 6] = 1.0 if entity_info.get('door_open', False) else 0.0
-        
-        # Index 16: door_locked (for doors)
-        features[self.ENTITY_START + 7] = 1.0 if entity_info.get('door_locked', False) else 0.0
-        
-        # Index 17: door_requires_switch (for locked doors)
-        features[self.ENTITY_START + 8] = 1.0 if entity_info.get('requires_switch', False) else 0.0
-        
-        # Index 18: interaction_cooldown
-        cooldown = entity_info.get('cooldown', 0)
-        max_cooldown = 60  # Assume max cooldown is 1 second at 60fps
-        features[self.ENTITY_START + 9] = np.clip(cooldown / max_cooldown, 0.0, 1.0)
+        # Indices 14-18: Reserved for future use / set to 0
+        # These were for features not present in actual entity classes
+        # (switch_activated, door_open, door_locked, requires_switch, cooldown)
+        # Keeping indices for compatibility but setting to 0
+        features[self.ENTITY_START + 5] = 0.0  # Reserved
+        features[self.ENTITY_START + 6] = 0.0  # Reserved  
+        features[self.ENTITY_START + 7] = 0.0  # Reserved
+        features[self.ENTITY_START + 8] = 0.0  # Reserved
+        features[self.ENTITY_START + 9] = 0.0  # Reserved
     
     def _add_reachability_features(self, features: np.ndarray, reachability_info: Dict[str, Any]):
         """

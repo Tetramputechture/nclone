@@ -10,8 +10,10 @@ The current observation space is optimized for levels containing:
 - **Ninja** (player character) 
 - **Exit Switch** and **Exit Door** (required for completion)
 - **Locked Doors** (up to 16) with corresponding switches
-- **Toggle Mines** (types 1 and 21)
+- **Toggle Mines** (up to 256 total: 128 toggled + 128 untoggled, entity types 1 and 21)
 - **All Tile Types** (0-37: empty, blocks, slopes, curves)
+
+**Note**: Regular doors and trap doors are not supported in the current design.
 
 ## Observation Modalities
 
