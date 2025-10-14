@@ -56,10 +56,13 @@ class EnvMapLoader:
         # Load map categorization data
         self._map_categories = self._load_map_categorization()
 
-        # Test suite sequential loading
+        # Test suite for evaluation (sequential loading)
         self._test_suite_levels = self._load_test_suite_levels()
         self._test_suite_index = 0
-        self._test_suite_generator = TestSuiteGenerator("datasets/test_suite")
+        
+        # Test suite generator for training (random map generation)
+        self._train_generator = None  # Lazy initialization
+        self._train_seed_counter = 100000  # Start from high seed range for training
 
     def load_initial_map(self):
         """Load the first map based on configuration."""
@@ -93,7 +96,7 @@ class EnvMapLoader:
             return
 
         # If we are in eval mode, load evaluation maps
-        if True:
+        if self.eval_mode:
             # Load test suite maps sequentially
             if not self._test_suite_levels:
                 print(
@@ -108,15 +111,7 @@ class EnvMapLoader:
             level_id = self._test_suite_levels[self._test_suite_index]
             loader = TestSuiteLoader("datasets/test")
             level = loader.get_level(level_id)
-            # self.nplay_headless.load_map_from_map_data(level["map_data"])
-            print(
-                f"Loading level with parameters: {1 + self._test_suite_index}, {self._test_suite_index}"
-            )
-            self.nplay_headless.load_map_from_map_data(
-                self._test_suite_generator._create_complex_mine_maze(
-                    1 + self._test_suite_index
-                ).map_data()
-            )
+            self.nplay_headless.load_map_from_map_data(level["map_data"])
 
             # Update state
             self.current_map_name = level_id
@@ -128,12 +123,77 @@ class EnvMapLoader:
             )
             return
 
-        # Load the test map for training
-        # Note: This is a fallback when no custom_map_path or eval_mode is set
-        # Maps can be configured via custom_map_path parameter in __init__
-        self.current_map_name = "complex-path-switch-required"
-        self.nplay_headless.load_map("nclone/test_maps/complex-path-switch-required")
-        # self.nplay_headless.load_map("nclone/maps/official/SI/060 doors galore")
+        # Load training maps using Test Suite Generator
+        # This ensures diverse, procedurally generated levels for robust training
+        if self._train_generator is None:
+            self._train_generator = TestSuiteGenerator("datasets/train_runtime")
+        
+        # Randomly select difficulty category for training diversity
+        # Use weighted sampling to favor simpler levels early in training
+        categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+        category_weights = [30, 30, 20, 10, 10]  # Relative weights
+        
+        # Convert to cumulative weights for random.choices
+        import random
+        if isinstance(self.rng, random.Random):
+            category = self.rng.choices(categories, weights=category_weights, k=1)[0]
+        else:
+            # Fallback to simple choice if not using random.Random
+            category = self.rng.choice(categories)
+        
+        # Generate a map from the selected category
+        self._train_seed_counter += 1
+        seed = self._train_seed_counter
+        
+        # Generate map based on category using available generator methods
+        if category == "simple":
+            # Randomly select from simple level generators
+            generators = [
+                self._train_generator._create_simple_jump_level,
+                self._train_generator._create_simple_hills_level,
+                self._train_generator._create_simple_vertical_corridor,
+                self._train_generator._create_simple_jump_platforms,
+            ]
+            map_gen = self.rng.choice(generators)(seed)
+        elif category == "medium":
+            # Randomly select from medium level generators
+            generators = [
+                self._train_generator._create_medium_jump_level,
+                self._train_generator._create_medium_hills_level,
+                self._train_generator._create_medium_vertical_corridor,
+                self._train_generator._create_medium_jump_platforms,
+            ]
+            map_gen = self.rng.choice(generators)(seed)
+        elif category == "complex":
+            # Randomly select from complex level generators
+            generators = [
+                self._train_generator._create_complex_mine_maze,
+                self._train_generator._create_complex_jump_level,
+                self._train_generator._create_complex_hills_level,
+                self._train_generator._create_complex_islands_map,
+            ]
+            map_gen = self.rng.choice(generators)(seed)
+        elif category == "mine_heavy":
+            # Heavy mine levels
+            generators = [
+                self._train_generator._create_heavy_mine_maze,
+                self._train_generator._create_heavy_mine_jump,
+            ]
+            map_gen = self.rng.choice(generators)(seed)
+        else:  # exploration
+            # Exploration levels
+            generators = [
+                self._train_generator._create_exploration_maze,
+                self._train_generator._create_exploration_multi_chamber,
+            ]
+            map_gen = self.rng.choice(generators)(seed)
+        
+        # Load the generated map
+        self.nplay_headless.load_map_from_map_data(map_gen.map_data())
+        
+        # Update state
+        self.current_map_name = f"train_{category}_{seed}"
+        self.random_map_type = None
 
     def get_map_display_name(self) -> str:
         """Get the display name for the current map."""
