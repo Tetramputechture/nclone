@@ -1,6 +1,5 @@
-
 from ..entities import Entity
-from ..physics import *
+from ..physics import overlap_circle_vs_circle
 from ..ninja import NINJA_RADIUS
 from ..constants.physics_constants import TOGGLE_MINE_RADII
 
@@ -72,6 +71,7 @@ class EntityToggleMine(Entity):
             * Death state checks
             * Transition timing
     """
+
     RADII = TOGGLE_MINE_RADII  # 0:toggled, 1:untoggled, 2:toggling
     MAX_COUNT_PER_LEVEL = 8192
 
@@ -86,12 +86,26 @@ class EntityToggleMine(Entity):
         ninja = self.sim.ninja
         if ninja.is_valid_target():
             if self.state == 1:  # Set state to toggling if ninja touches untoggled mine
-                if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                            ninja.xpos, ninja.ypos, NINJA_RADIUS):
+                if overlap_circle_vs_circle(
+                    self.xpos,
+                    self.ypos,
+                    self.RADIUS,
+                    ninja.xpos,
+                    ninja.ypos,
+                    NINJA_RADIUS,
+                ):
                     self.set_state(2)
-            elif self.state == 2:  # Set state to toggled if ninja stops touching toggling mine
-                if not overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                                ninja.xpos, ninja.ypos, NINJA_RADIUS):
+            elif (
+                self.state == 2
+            ):  # Set state to toggled if ninja stops touching toggling mine
+                if not overlap_circle_vs_circle(
+                    self.xpos,
+                    self.ypos,
+                    self.RADIUS,
+                    ninja.xpos,
+                    ninja.ypos,
+                    NINJA_RADIUS,
+                ):
                     self.set_state(0)
         else:  # Set state to untoggled if ninja dies while toggling a mine
             if self.state == 2 and ninja.state == 6:
@@ -101,8 +115,9 @@ class EntityToggleMine(Entity):
         """Kill the ninja if it touches a toggled mine"""
         ninja = self.sim.ninja
         if ninja.is_valid_target() and self.state == 0:
-            if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                        ninja.xpos, ninja.ypos, NINJA_RADIUS):
+            if overlap_circle_vs_circle(
+                self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+            ):
                 self.set_state(1)
                 ninja.kill(0, 0, 0, 0, 0)
 

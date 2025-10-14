@@ -1,5 +1,5 @@
 from ..entities import Entity
-from ..physics import *
+from ..physics import overlap_circle_vs_circle
 from ..ninja import NINJA_RADIUS
 
 

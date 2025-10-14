@@ -1,5 +1,4 @@
-
-from ..physics import *
+from ..physics import overlap_circle_vs_circle
 from ..ninja import NINJA_RADIUS
 from .entity_door_base import EntityDoorBase
 
@@ -35,6 +34,7 @@ class EntityDoorRegular(EntityDoorBase):
         - Updates state through collision and think cycles
         - Supports both physical and logical collision detection
     """
+
     RADIUS = 10
     MAX_COUNT_PER_LEVEL = 256
 
@@ -44,7 +44,7 @@ class EntityDoorRegular(EntityDoorBase):
         self.open_timer = 0
 
     def think(self):
-        """If the door has been opened for more than 5 frames without being touched by the ninja, 
+        """If the door has been opened for more than 5 frames without being touched by the ninja,
         close it.
         """
         if not self.closed:
@@ -56,7 +56,8 @@ class EntityDoorRegular(EntityDoorBase):
         """If the ninja touches the activation region of the door (circle with a radius of 10 at the
         door's center), open it."""
         ninja = self.sim.ninja
-        if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
+        if overlap_circle_vs_circle(
+            self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+        ):
             self.change_state(closed=False)
             self.open_timer = 0

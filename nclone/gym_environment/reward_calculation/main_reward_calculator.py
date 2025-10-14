@@ -19,7 +19,7 @@ from .reward_constants import (
 
 class RewardCalculator:
     """Main reward calculator for completion-focused training.
-    
+
     Orchestrates multiple reward components:
     - Terminal rewards (completion, death)
     - Milestone rewards (switch activation)
@@ -27,22 +27,16 @@ class RewardCalculator:
     - Navigation shaping (PBRS-based distance rewards)
     - Exploration rewards (multi-scale spatial coverage)
     - PBRS potentials (policy-invariant shaping)
-    
+
     All constants are defined in reward_constants.py to eliminate magic numbers
     and provide clear documentation of reward design decisions.
     """
-
-    # Import constants from centralized module
-    SWITCH_ACTIVATION_REWARD = SWITCH_ACTIVATION_REWARD
-    EXIT_COMPLETION_REWARD = LEVEL_COMPLETION_REWARD
-    DEATH_PENALTY = DEATH_PENALTY
-    TIME_PENALTY = TIME_PENALTY_PER_STEP
 
     def __init__(
         self,
         enable_pbrs: bool = True,
         pbrs_weights: Optional[Dict[str, float]] = None,
-        pbrs_gamma: float = 0.99,
+        pbrs_gamma: float = PBRS_GAMMA,
     ):
         """Initialize reward calculator with all components.
 
@@ -86,18 +80,20 @@ class RewardCalculator:
 
         # Death penalty (terminal)
         if obs.get("player_dead", False):
-            return self.DEATH_PENALTY
+            return DEATH_PENALTY
 
         # Initialize reward with time penalty to encourage efficiency
-        reward = self.TIME_PENALTY
+        reward = TIME_PENALTY_PER_STEP
 
         # Switch activation reward
-        if obs.get("switch_activated", False) and not prev_obs.get("switch_activated", False):
-            reward += self.SWITCH_ACTIVATION_REWARD
+        if obs.get("switch_activated", False) and not prev_obs.get(
+            "switch_activated", False
+        ):
+            reward += SWITCH_ACTIVATION_REWARD
 
         # Exit completion reward (terminal)
         if obs.get("player_won", False):
-            reward += self.EXIT_COMPLETION_REWARD
+            reward += LEVEL_COMPLETION_REWARD
 
         # Navigation reward (distance-based shaping)
         navigation_reward, switch_active_changed = (

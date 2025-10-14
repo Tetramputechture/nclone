@@ -1,7 +1,14 @@
 import math
 
 from ..entities import Entity
-from ..physics import *
+from ..physics import (
+    get_single_closest_point,
+    get_raycast_distance,
+    map_orientation_to_vector,
+    raycast_vs_player,
+    check_lineseg_vs_ninja,
+    gather_segments_from_region,
+)
 from ..ninja import NINJA_RADIUS
 
 
@@ -67,6 +74,7 @@ class EntityLaser(Entity):
     Note: Surface mode implementation is marked as TODO in the code.
     Some functionality may not be fully implemented yet.
     """
+
     RADIUS = 5.9
     SPIN_SPEED = 0.010471975  # roughly 2pi/600
     SURFACE_FLAT_SPEED = 0.1
@@ -77,7 +85,8 @@ class EntityLaser(Entity):
         self.is_thinkable = True
         # Find out what is the laser mode : spinner or surface. Surface mode if segment close enough.
         result, closest_point = get_single_closest_point(
-            self.sim, self.xpos, self.ypos, 12)
+            self.sim, self.xpos, self.ypos, 12
+        )
         if result == -1:
             self.mode = 1
         else:
@@ -85,7 +94,9 @@ class EntityLaser(Entity):
                 self.mode = 1
             else:
                 dist = math.sqrt(
-                    (closest_point[0] - self.xpos)**2 + (closest_point[1] - self.ypos)**2)
+                    (closest_point[0] - self.xpos) ** 2
+                    + (closest_point[1] - self.ypos) ** 2
+                )
                 self.mode = 1 if dist < 7 else 0
         if self.mode == 0:  # Spinner mode
             self.xend, self.yend = self.xpos, self.ypos
@@ -105,58 +116,65 @@ class EntityLaser(Entity):
 
     def think_spinner(self):
         # TODO
-        angle_new = (self.angle + self.SPIN_SPEED*self.dir) % (2*math.pi)
+        angle_new = (self.angle + self.SPIN_SPEED * self.dir) % (2 * math.pi)
         dx = math.cos(self.angle)
         dy = math.sin(self.angle)
         self.len = get_raycast_distance(self.sim, self.xpos, self.ypos, dx, dy)
         if self.len:
-            self.xend = self.xpos + dx*self.len
-            self.yend = self.ypos + dy*self.len
+            self.xend = self.xpos + dx * self.len
+            self.yend = self.ypos + dy * self.len
         else:
             self.xend = self.xpos
             self.yend = self.ypos
         ninja = self.sim.ninja
         if ninja.is_valid_target():
-            if raycast_vs_player(self.sim, self.xpos, self.ypos, ninja.xpos, ninja.ypos, NINJA_RADIUS):
-                ninja_angle = math.atan2(
-                    ninja.ypos-self.ypos, ninja.xpos-self.xpos)
-                angle_diff = abs(self.angle - ninja_angle) % (2*math.pi)
+            if raycast_vs_player(
+                self.sim, self.xpos, self.ypos, ninja.xpos, ninja.ypos, NINJA_RADIUS
+            ):
+                ninja_angle = math.atan2(ninja.ypos - self.ypos, ninja.xpos - self.xpos)
+                angle_diff = abs(self.angle - ninja_angle) % (2 * math.pi)
                 if angle_diff <= 0.0052359875:
                     ninja.kill(0, 0, 0, 0, 0)
                 else:
-                    if check_lineseg_vs_ninja(self.xpos, self.ypos, self.xend, self.yend, ninja):
+                    if check_lineseg_vs_ninja(
+                        self.xpos, self.ypos, self.xend, self.yend, ninja
+                    ):
                         ninja.kill(0, 0, 0, 0, 0)
         self.angle = angle_new
 
     def think_surface(self):
-        segments = gather_segments_from_region(self.sim, self.xpos-12, self.ypos-12,
-                                               self.xpos+12, self.ypos+12)
+        segments = gather_segments_from_region(
+            self.sim, self.xpos - 12, self.ypos - 12, self.xpos + 12, self.ypos + 12
+        )
         if not segments:
             return
         while True:
-            xspeed = -self.dir*self.yvec*self.SURFACE_FLAT_SPEED
-            yspeed = self.dir*self.xvec*self.SURFACE_FLAT_SPEED
+            xspeed = -self.dir * self.yvec * self.SURFACE_FLAT_SPEED
+            yspeed = self.dir * self.xvec * self.SURFACE_FLAT_SPEED
             xpos_new = self.xpos + xspeed
             ypos_new = self.ypos + yspeed
             shortest_distance = 9999999
             closest_point = (0, 0)
             for segment in segments:
-                is_back_facing, a, b = segment.get_closest_point(
-                    xpos_new, ypos_new)
-                distance_sq = (xpos_new - a)**2 + (ypos_new - b)**2
+                is_back_facing, a, b = segment.get_closest_point(xpos_new, ypos_new)
+                distance_sq = (xpos_new - a) ** 2 + (ypos_new - b) ** 2
                 if distance_sq < shortest_distance:
                     shortest_distance = distance_sq
                     closest_point = (a, b)
             dx = xpos_new - closest_point[0]
             dy = ypos_new - closest_point[1]
-            if ((self.xpos - self.sx)*dx + (self.ypos - self.sy)*dy) > 0.01 and segment.oriented:
+            if (
+                (self.xpos - self.sx) * dx + (self.ypos - self.sy) * dy
+            ) > 0.01 and segment.oriented:
                 dist = math.sqrt(
-                    (closest_point[0] - self.sx)**2 + (closest_point[1] - self.sy)**2)
+                    (closest_point[0] - self.sx) ** 2
+                    + (closest_point[1] - self.sy) ** 2
+                )
                 if dist >= 0.0000001:
                     pass
                 else:
                     angle = math.atan2(self.yvec, self.xvec)
-                    angle += self.dir*self.SURFACE_CORNER_SPEED
+                    angle += self.dir * self.SURFACE_CORNER_SPEED
                     self.xvec = math.cos(angle)
                     self.yvec = math.sin(angle)
 

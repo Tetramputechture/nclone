@@ -1,9 +1,18 @@
 import math
 
 from ..entities import Entity
-from ..physics import *
+from ..physics import (
+    is_empty_column,
+    is_empty_row,
+    penetration_square_vs_point,
+    overlap_circle_vs_segment,
+)
 from ..ninja import NINJA_RADIUS
-from ..constants.physics_constants import THWUMP_SEMI_SIDE, THWUMP_FORWARD_SPEED, THWUMP_BACKWARD_SPEED
+from ..constants.physics_constants import (
+    THWUMP_SEMI_SIDE,
+    THWUMP_FORWARD_SPEED,
+    THWUMP_BACKWARD_SPEED,
+)
 
 
 class EntityThwump(Entity):
@@ -72,6 +81,7 @@ class EntityThwump(Entity):
             * Origin position tracking
             * Direction-based behavior
     """
+
     SEMI_SIDE = THWUMP_SEMI_SIDE
     FORWARD_SPEED = THWUMP_FORWARD_SPEED
     BACKWARD_SPEED = THWUMP_BACKWARD_SPEED
@@ -106,7 +116,10 @@ class EntityThwump(Entity):
             if not self.is_horizontal:
                 ypos_new = self.ypos + speed * speed_dir
                 # If the thwump as retreated past its starting point, set its position to the origin.
-                if self.state == -1 and (ypos_new - self.yorigin) * (self.ypos - self.yorigin) < 0:
+                if (
+                    self.state == -1
+                    and (ypos_new - self.yorigin) * (self.ypos - self.yorigin) < 0
+                ):
                     self.ypos = self.yorigin
                     self.set_state(0)
                     return
@@ -122,7 +135,10 @@ class EntityThwump(Entity):
             else:
                 xpos_new = self.xpos + speed * speed_dir
                 # If the thwump as retreated past its starting point, set its position to the origin.
-                if self.state == -1 and (xpos_new - self.xorigin) * (self.xpos - self.xorigin) < 0:
+                if (
+                    self.state == -1
+                    and (xpos_new - self.xorigin) * (self.xpos - self.xorigin) < 0
+                ):
                     self.xpos = self.xorigin
                     self.set_state(0)
                     return
@@ -131,7 +147,9 @@ class EntityThwump(Entity):
                 if cell_x != cell_x_new:
                     cell_y1 = math.floor((self.ypos - 11) / 12)
                     cell_y2 = math.floor((self.ypos + 11) / 12)
-                    if not is_empty_column(self.sim, cell_x, cell_y1, cell_y2, speed_dir):
+                    if not is_empty_column(
+                        self.sim, cell_x, cell_y1, cell_y2, speed_dir
+                    ):
                         self.set_state(-1)
                         return
                 self.xpos = xpos_new
@@ -146,14 +164,19 @@ class EntityThwump(Entity):
                 # If the ninja is in the activation range
                 if abs(self.xpos - ninja.xpos) < activation_range:
                     ninja_ycell = math.floor(ninja.ypos / 12)
-                    thwump_ycell = math.floor(
-                        (self.ypos - self.direction * 11) / 12)
+                    thwump_ycell = math.floor((self.ypos - self.direction * 11) / 12)
                     thwump_xcell1 = math.floor((self.xpos - 11) / 12)
                     thwump_xcell2 = math.floor((self.xpos + 11) / 12)
                     dy = ninja_ycell - thwump_ycell
                     if dy * self.direction >= 0:
                         for i in range(100):
-                            if not is_empty_row(self.sim, thwump_xcell1, thwump_xcell2, thwump_ycell, self.direction):
+                            if not is_empty_row(
+                                self.sim,
+                                thwump_xcell1,
+                                thwump_xcell2,
+                                thwump_ycell,
+                                self.direction,
+                            ):
                                 dy = ninja_ycell - thwump_ycell
                                 break
                             thwump_ycell += self.direction
@@ -163,14 +186,19 @@ class EntityThwump(Entity):
                 # If the ninja is in the activation range
                 if abs(self.ypos - ninja.ypos) < activation_range:
                     ninja_xcell = math.floor(ninja.xpos / 12)
-                    thwump_xcell = math.floor(
-                        (self.xpos - self.direction * 11) / 12)
+                    thwump_xcell = math.floor((self.xpos - self.direction * 11) / 12)
                     thwump_ycell1 = math.floor((self.ypos - 11) / 12)
                     thwump_ycell2 = math.floor((self.ypos + 11) / 12)
                     dx = ninja_xcell - thwump_xcell
                     if dx * self.direction >= 0:
                         for i in range(100):
-                            if not is_empty_column(self.sim, thwump_xcell, thwump_ycell1, thwump_ycell2, self.direction):
+                            if not is_empty_column(
+                                self.sim,
+                                thwump_xcell,
+                                thwump_ycell1,
+                                thwump_ycell2,
+                                self.direction,
+                            ):
                                 dx = ninja_xcell - thwump_xcell
                                 break
                             thwump_xcell += self.direction
@@ -180,8 +208,9 @@ class EntityThwump(Entity):
     def physical_collision(self):
         """Return the depenetration vector for the ninja if it collides with the thwump."""
         ninja = self.sim.ninja
-        return penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                           self.SEMI_SIDE + NINJA_RADIUS)
+        return penetration_square_vs_point(
+            self.xpos, self.ypos, ninja.xpos, ninja.ypos, self.SEMI_SIDE + NINJA_RADIUS
+        )
 
     def logical_collision(self):
         """Return the wall normal if the ninja can interact with a thwump's side.
@@ -189,8 +218,13 @@ class EntityThwump(Entity):
         """
         ninja = self.sim.ninja
         if ninja.is_valid_target():
-            depen = penetration_square_vs_point(self.xpos, self.ypos, ninja.xpos, ninja.ypos,
-                                                self.SEMI_SIDE + NINJA_RADIUS + 0.1)
+            depen = penetration_square_vs_point(
+                self.xpos,
+                self.ypos,
+                ninja.xpos,
+                ninja.ypos,
+                self.SEMI_SIDE + NINJA_RADIUS + 0.1,
+            )
             if depen:
                 if self.is_horizontal:
                     dx = (self.SEMI_SIDE + 2) * self.direction
@@ -202,6 +236,8 @@ class EntityThwump(Entity):
                     dy = (self.SEMI_SIDE + 2) * self.direction
                     px1, py1 = self.xpos - dx, self.ypos + dy
                     px2, py2 = self.xpos + dx, self.ypos + dy
-                if overlap_circle_vs_segment(ninja.xpos, ninja.ypos, NINJA_RADIUS + 2, px1, py1, px2, py2):
+                if overlap_circle_vs_segment(
+                    ninja.xpos, ninja.ypos, NINJA_RADIUS + 2, px1, py1, px2, py2
+                ):
                     ninja.kill(0, 0, 0, 0, 0)
                 return depen[0][0]

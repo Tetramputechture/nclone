@@ -1,6 +1,5 @@
-
 from ..entities import Entity
-from ..physics import *
+from ..physics import overlap_circle_vs_circle
 from ..ninja import NINJA_RADIUS
 
 
@@ -50,6 +49,7 @@ class EntityExit(Entity):
         - Handles win condition triggering
         - Manages entity grid presence
     """
+
     RADIUS = 12
     MAX_COUNT_PER_LEVEL = 16
 
@@ -63,6 +63,7 @@ class EntityExit(Entity):
         grid before the exit switch is collected.
         """
         ninja = self.sim.ninja
-        if overlap_circle_vs_circle(self.xpos, self.ypos, self.RADIUS,
-                                    ninja.xpos, ninja.ypos, NINJA_RADIUS):
+        if overlap_circle_vs_circle(
+            self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+        ):
             ninja.win()
