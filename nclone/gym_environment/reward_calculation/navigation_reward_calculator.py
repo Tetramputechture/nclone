@@ -4,24 +4,33 @@ from typing import Dict, Any, Tuple
 import numpy as np
 from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
 from ..util.util import calculate_distance
+from .reward_constants import (
+    NAVIGATION_DISTANCE_IMPROVEMENT_SCALE,
+    NAVIGATION_MIN_DISTANCE_THRESHOLD,
+    NAVIGATION_POTENTIAL_SCALE,
+)
 
 
 class NavigationRewardCalculator:
     """Handles calculation of completion-focused navigation rewards.
     
-    Provides distance-based shaping rewards for switch and exit objectives,
-    without gold-seeking behavior. Switch activation rewards are handled
-    by the main reward calculator.
+    Provides distance-based shaping rewards for switch and exit objectives
+    using potential-based reward shaping (PBRS) theory from Ng et al. (1999).
+    
+    Key features:
+    - Distance-based shaping provides dense gradient for learning
+    - Potential-based formulation ensures policy invariance
+    - Rewards progress toward current objective (switch → exit)
+    - Switch activation milestone handled by main calculator
+    
+    All constants defined in reward_constants.py with full documentation.
     """
 
-    # Navigation constants for completion-focused training
-    # Scaled to be meaningful compared to -0.01 per step time penalty
-    DISTANCE_IMPROVEMENT_SCALE = 0.0001
-    MIN_DISTANCE_THRESHOLD = 20.0
-    # Switch activation reward handled by main calculator, this is for distance shaping only
+    # Import navigation constants from centralized module
+    DISTANCE_IMPROVEMENT_SCALE = NAVIGATION_DISTANCE_IMPROVEMENT_SCALE
+    MIN_DISTANCE_THRESHOLD = NAVIGATION_MIN_DISTANCE_THRESHOLD
     SWITCH_ACTIVATION_REWARD = 0.0  # Disabled - handled by main calculator
-    # Scale potential-based shaping to be smaller than main rewards
-    POTENTIAL_SCALE = 0.0005
+    POTENTIAL_SCALE = NAVIGATION_POTENTIAL_SCALE
 
     def __init__(self):
         """Initialize navigation reward calculator."""
