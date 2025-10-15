@@ -29,8 +29,12 @@ N_MAX_NODES = (
 E_MAX_EDGES = N_MAX_NODES * 8  # Up to 8 directions per node (4 cardinal + 4 diagonal)
 
 # Feature dimensions for enhanced observation space
-NODE_FEATURE_DIM = 55
-EDGE_FEATURE_DIM = 6
+NODE_FEATURE_DIM = 55  # Comprehensive node features
+EDGE_FEATURE_DIM = 6   # Comprehensive edge features
+
+# Type counts (derived from IntEnum classes below)
+N_NODE_TYPES = 6  # NodeType: EMPTY, WALL, ENTITY, HAZARD, SPAWN, EXIT
+N_EDGE_TYPES = 4  # EdgeType: ADJACENT, REACHABLE, FUNCTIONAL, BLOCKED
 
 # Entity tracking limits
 MAX_TOGGLE_MINES = 128  # Maximum toggled mines per level
