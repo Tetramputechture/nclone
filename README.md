@@ -279,9 +279,8 @@ env = NPPEnvironment(
 )
 
 # Note: Feature dimensions come from nclone.graph.common:
-# - NODE_FEATURE_DIM = 56 (spatial, type, entity, tile, reachability, proximity)
+# - NODE_FEATURE_DIM = 55 (spatial, type, entity, tile, reachability, proximity)
 # - EDGE_FEATURE_DIM = 6 (edge type, connectivity)
-# See OBSERVATION_SPACE_README.md for complete documentation
 ```
 
 Graph structure:
