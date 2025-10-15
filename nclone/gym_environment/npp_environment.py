@@ -130,17 +130,19 @@ class NppEnvironment(
 
         # Add graph observation spaces if graph updates are enabled
         if enable_graph_updates:
-            # Graph node features: [x, y, node_type] for each node
+            from ..graph.common import NODE_FEATURE_DIM, EDGE_FEATURE_DIM
+            
+            # Graph node features: comprehensive features from graph builder
             obs_spaces["graph_node_feats"] = box.Box(
-                low=-np.inf, high=np.inf, shape=(N_MAX_NODES, 3), dtype=np.float32
+                low=-np.inf, high=np.inf, shape=(N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
             )
             # Graph edge index: [2, max_edges] connectivity matrix
             obs_spaces["graph_edge_index"] = box.Box(
                 low=0, high=N_MAX_NODES - 1, shape=(2, E_MAX_EDGES), dtype=np.int32
             )
-            # Graph edge features: [weight] for each edge
+            # Graph edge features: comprehensive features from graph builder
             obs_spaces["graph_edge_feats"] = box.Box(
-                low=0.0, high=np.inf, shape=(E_MAX_EDGES, 1), dtype=np.float32
+                low=-np.inf, high=np.inf, shape=(E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
             )
             # Graph masks for variable-size graphs
             obs_spaces["graph_node_mask"] = box.Box(
