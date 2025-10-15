@@ -1,25 +1,25 @@
 """
-Production-ready feature builder for graph nodes and edges.
+Optimized feature builder for graph nodes and edges.
 
-This module creates comprehensive 56-dimensional node features and 6-dimensional
-edge features for deep RL with GNNs. Features are designed to provide all necessary
-information for level completion while avoiding complex physics pre-computation.
+This module creates compact 19-dimensional node features and 6-dimensional
+edge features for efficient deep RL with GNNs. Features are designed to provide
+essential information for level completion with minimal overhead.
 
 Key design principles:
 - Spatial information from positions and distances
-- Entity state tracking (mines, doors, switches)
+- Entity state tracking (toggle mines, locked doors, exit switch/door)
 - Reachability from flood-fill analysis (not physics simulation)
-- Tile type encoding for terrain understanding
+- Compact tile category encoding (3 categories instead of 38-dim one-hot)
 - Agent learns movement dynamics from temporal frames and game state
+- NO physics pre-computation (too complex for continuous movement)
 
-Supported entities:
-- Ninja (player)
-- Exit switch and door
-- Locked doors (up to 16) with switches
-- Toggle mines (up to 256 total: 128 toggled + 128 untoggled)
-- All tile types (38 types)
+Supported critical entities:
+- Toggle mines (types 1, 21): state-dependent hazards
+- Locked doors (type 6): gated progression
+- Exit switch (type 4): primary objective
+- Exit door (type 3): level completion
 
-Feature dimensions: 56 total (reduced from 61 by removing unused entity indices)
+Feature dimensions: 19 total (optimized from 55)
 """
 
 import numpy as np
@@ -35,17 +35,17 @@ from .common import NodeType, EdgeType, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 class NodeFeatureBuilder:
     """
-    Builds comprehensive 56-dimensional node feature vectors.
+    Builds compact 19-dimensional node feature vectors.
 
     Feature breakdown:
-    - Spatial (3): position (x, y) + resolution level
+    - Spatial (2): position (x, y)
     - Type (6): one-hot node type
-    - Entity (5): entity-specific information (reduced from 10, removed unused)
-    - Tile (38): one-hot tile type
-    - Reachability (2): from reachability system
-    - Proximity (2): distances to key points
+    - Tile Category (3): compact tile encoding (empty, solid, navigable)
+    - Entity (4): entity-specific information (type, state, active, radius)
+    - Reachability (1): from reachability system
+    - Proximity (3): distances to key points + ninja node flag
 
-    Total: 3 + 6 + 5 + 38 + 2 + 2 = 56 features
+    Total: 2 + 6 + 3 + 4 + 1 + 3 = 19 features
     """
 
     def __init__(self):
@@ -54,17 +54,17 @@ class NodeFeatureBuilder:
 
         # Feature index boundaries
         self.SPATIAL_START = 0
-        self.SPATIAL_END = 3
-        self.TYPE_START = 3
-        self.TYPE_END = 9
-        self.ENTITY_START = 9
-        self.ENTITY_END = 14
-        self.TILE_START = 14
-        self.TILE_END = 52
-        self.REACHABILITY_START = 52
-        self.REACHABILITY_END = 53
-        self.PROXIMITY_START = 53
-        self.PROXIMITY_END = 55
+        self.SPATIAL_END = 2
+        self.TYPE_START = 2
+        self.TYPE_END = 8
+        self.TILE_CAT_START = 8
+        self.TILE_CAT_END = 11
+        self.ENTITY_START = 11
+        self.ENTITY_END = 15
+        self.REACHABILITY_START = 15
+        self.REACHABILITY_END = 16
+        self.PROXIMITY_START = 16
+        self.PROXIMITY_END = 19
 
         assert self.PROXIMITY_END == NODE_FEATURE_DIM, "Feature dimensions mismatch!"
 
@@ -72,171 +72,115 @@ class NodeFeatureBuilder:
         self,
         node_pos: Tuple[float, float],
         node_type: NodeType,
-        resolution_level: int = 0,  # 0=fine, 1=medium, 2=coarse
-        tile_type: int = 0,
+        tile_category: int = 0,  # 0=empty, 1=solid, 2=navigable_complex
         entity_info: Optional[Dict[str, Any]] = None,
-        reachability_info: Optional[Dict[str, Any]] = None,
+        reachability: bool = False,
         ninja_pos: Optional[Tuple[float, float]] = None,
         goal_pos: Optional[Tuple[float, float]] = None,
+        is_ninja_node: bool = False,
     ) -> np.ndarray:
         """
-        Build comprehensive 61-dimensional node features.
+        Build compact 19-dimensional node features.
 
         Args:
             node_pos: (x, y) position of node in pixels
             node_type: NodeType enum value (EMPTY, WALL, ENTITY, HAZARD, SPAWN, EXIT)
-            resolution_level: 0=fine(6px), 1=medium(24px), 2=coarse(96px)
-            tile_type: Tile type ID (0-37), if applicable
-            entity_info: Dict with entity-specific information (type, state, etc.)
-            reachability_info: Dict with reachability from flood-fill system
+            tile_category: Tile category (0=empty, 1=solid, 2=navigable slopes/curves)
+            entity_info: Dict with entity-specific information (type, state, active, radius)
+            reachability: Boolean flag indicating if reachable from ninja
             ninja_pos: Current ninja position for distance calculation
             goal_pos: Current goal position (switch or exit) for distance
+            is_ninja_node: Boolean flag indicating if this is the ninja's current node
 
         Returns:
-            np.ndarray of shape (61,) with normalized features
+            np.ndarray of shape (19,) with normalized features
         """
         features = np.zeros(NODE_FEATURE_DIM, dtype=np.float32)
 
-        # ===== Spatial Features =====
+        # ===== Spatial Features (0-1) =====
         features[0] = np.clip(node_pos[0] / FULL_MAP_WIDTH_PX, 0.0, 1.0)
         features[1] = np.clip(node_pos[1] / FULL_MAP_HEIGHT_PX, 0.0, 1.0)
-        features[2] = resolution_level / 2.0  # 0=fine, 0.5=medium, 1.0=coarse
 
-        # ===== Type Encoding =====
+        # ===== Type Encoding (2-7) =====
         # [EMPTY, WALL, ENTITY, HAZARD, SPAWN, EXIT]
         if 0 <= node_type < 6:
             features[self.TYPE_START + int(node_type)] = 1.0
 
-        # ===== Entity-Specific Features =====
+        # ===== Tile Category (8-10) =====
+        if 0 <= tile_category < 3:
+            features[self.TILE_CAT_START + tile_category] = 1.0
+
+        # ===== Entity-Specific Features (11-14) =====
         if entity_info is not None:
             self._add_entity_features(features, entity_info)
 
-        # ===== Tile Information =====
-        if 0 <= tile_type <= 37:
-            features[self.TILE_START + tile_type] = 1.0
+        # ===== Reachability (15) =====
+        features[self.REACHABILITY_START] = 1.0 if reachability else 0.0
 
-        # ===== Reachability Features =====
-        if reachability_info is not None:
-            self._add_reachability_features(features, reachability_info)
-
-        # ===== Proximity Features =====
+        # ===== Proximity Features (16-18) =====
         if ninja_pos is not None:
-            dx = node_pos[0] - ninja_pos[0]
-            dy = node_pos[1] - ninja_pos[1]
-            dist = np.sqrt(dx**2 + dy**2)
+            dist = np.linalg.norm(np.array(node_pos) - np.array(ninja_pos))
             features[self.PROXIMITY_START] = min(dist / self.screen_diagonal, 1.0)
 
         if goal_pos is not None:
-            dx = node_pos[0] - goal_pos[0]
-            dy = node_pos[1] - goal_pos[1]
-            dist = np.sqrt(dx**2 + dy**2)
+            dist = np.linalg.norm(np.array(node_pos) - np.array(goal_pos))
             features[self.PROXIMITY_START + 1] = min(dist / self.screen_diagonal, 1.0)
+
+        features[self.PROXIMITY_START + 2] = 1.0 if is_ninja_node else 0.0
 
         return features
 
     def _add_entity_features(self, features: np.ndarray, entity_info: Dict[str, Any]):
         """
-        Add entity-specific features (indices 9-13, 5 features).
+        Add entity-specific features (indices 11-14, 4 features).
+
+        Entity types from entity files:
+        - Toggle Mine (types 1, 21): state (0=toggled/deadly, 1=untoggled/safe, 2=toggling), xpos, ypos, RADIUS
+        - Locked Door (type 6): xpos, ypos, active, closed, RADIUS
+        - Exit Switch (type 4): xpos, ypos, active, RADIUS
+        - Exit Door (type 3): xpos, ypos, switch_hit, RADIUS
 
         Args:
             features: Feature array to modify
-            entity_info: Dict with keys from entity_extractor.py:
-                - type: EntityType enum value
-                - active: bool (entity is active)
-                - state: float (normalized entity state)
-                - radius: float (collision radius in pixels)
-                - closed: bool (for doors, True if closed)
-
-        Entity-specific attributes from actual classes:
-            Toggle Mine: type, active, state (0/1/2), radius, xpos, ypos
-            Exit Switch: type, active, state, radius, xpos, ypos
-            Exit Door: type, active, state, radius, xpos, ypos
-            Locked Door: type, active, state, closed, radius, xpos, ypos
+            entity_info: Dict with entity-specific information
         """
-        # Index 9: entity_type (0=none, 0.25=mine, 0.5=switch, 0.75=door, 1.0=exit)
         entity_type = entity_info.get("type", 0)
+
+        # Index 11: entity_type encoding
         type_encoding = 0.0
         if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
-            type_encoding = 0.25  # mine
+            type_encoding = 0.25  # toggle mine
         elif entity_type == EntityType.EXIT_SWITCH:
-            type_encoding = 0.5  # switch
+            type_encoding = 0.5  # exit switch
         elif entity_type == EntityType.LOCKED_DOOR:
-            type_encoding = 0.75  # door
+            type_encoding = 0.75  # locked door
         elif entity_type == EntityType.EXIT_DOOR:
-            type_encoding = 1.0  # exit
+            type_encoding = 1.0  # exit door
         features[self.ENTITY_START] = type_encoding
 
-        # Index 10: entity_subtype (for locked doors: closed status, for mines: state value)
-        # For toggle mines, state is 0 (toggled/deadly), 1 (untoggled/safe), or 2 (toggling)
-        entity_subtype = 0.0
+        # Index 12: entity state (normalized)
+        entity_state = 0.0
         if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
-            # Use the mine's actual state (0, 1, or 2) normalized
-            mine_state = entity_info.get("state", 0.0)
-            entity_subtype = mine_state / 2.0  # Normalize to [0, 1]
+            # Toggle mine state: 0/1/2 → 0.0/0.5/1.0
+            mine_state = entity_info.get("state", 1)
+            entity_state = mine_state / 2.0
         elif entity_type == EntityType.LOCKED_DOOR:
-            # For doors, use closed status (0=open, 1=closed)
-            entity_subtype = 1.0 if entity_info.get("closed", True) else 0.0
-        features[self.ENTITY_START + 1] = np.clip(entity_subtype, 0.0, 1.0)
+            # Locked door: closed → 1.0, open → 0.0
+            entity_state = 1.0 if entity_info.get("closed", True) else 0.0
+        elif entity_type == EntityType.EXIT_DOOR:
+            # Exit door: switch_hit → 0.0 (inactive), not hit → 1.0 (active)
+            entity_state = 0.0 if entity_info.get("switch_hit", False) else 1.0
+        features[self.ENTITY_START + 1] = entity_state
 
-        # Index 11: entity_active (from entity_extractor)
+        # Index 13: entity active
         features[self.ENTITY_START + 2] = (
             1.0 if entity_info.get("active", True) else 0.0
         )
 
-        # Index 12: entity_state (normalized state from entity_extractor)
-        entity_state = entity_info.get("state", 0.0)
-        features[self.ENTITY_START + 3] = np.clip(entity_state, 0.0, 1.0)
-
-        # Index 13: entity_radius_norm (collision radius from entity_extractor)
+        # Index 14: entity radius (normalized)
         entity_radius = entity_info.get("radius", 0.0)
-        max_radius = NINJA_RADIUS * 2  # Assume max entity radius is 2x ninja radius
-        features[self.ENTITY_START + 4] = np.clip(entity_radius / max_radius, 0.0, 1.0)
-
-    def _add_reachability_features(
-        self, features: np.ndarray, reachability_info: Dict[str, Any]
-    ):
-        """
-        Add reachability features from flood-fill system (indices 52-53, 2 features).
-
-        The reachability system uses OpenCV flood-fill (<1ms) for connectivity analysis.
-        This is NOT physics simulation - it's simple connectivity checking.
-
-        **Usage Example**:
-        ```python
-        from nclone.graph.reachability.reachability_system import ReachabilitySystem
-
-        # Initialize system
-        reachability_sys = ReachabilitySystem()
-
-        # Analyze reachability
-        result = reachability_sys.analyze_reachability(
-            level_data=level_data,
-            ninja_position=(ninja_x, ninja_y),
-            switch_states=switch_states
-        )
-
-        # Check if node position is reachable
-        node_pos = (x, y)  # in pixels
-        is_reachable = result.is_position_reachable(node_pos)
-
-        # Use in node features
-        reachability_info = {
-            'reachable_from_ninja': is_reachable,
-        }
-        ```
-
-        Args:
-            features: Feature array to modify
-            reachability_info: Dict with keys:
-                - reachable_from_ninja: bool (from ReachabilityApproximation.is_position_reachable)
-
-        Note: Movement requirements (jump/walljump) are NOT included as physics
-        is too complex to pre-compute. Agent learns from temporal frames.
-        """
-        # Index 52: reachable_from_ninja (from reachability system's flood-fill)
-        features[self.REACHABILITY_START] = (
-            1.0 if reachability_info.get("reachable_from_ninja", False) else 0.0
-        )
+        max_radius = NINJA_RADIUS * 2
+        features[self.ENTITY_START + 3] = np.clip(entity_radius / max_radius, 0.0, 1.0)
 
 
 class EdgeFeatureBuilder:

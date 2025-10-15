@@ -11,7 +11,7 @@ import numpy as np
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
-from ...graph.hierarchical_builder import HierarchicalGraphBuilder
+from ...graph.graph_builder import GraphBuilder
 from ...graph.level_data import LevelData
 from ...graph.common import (
     GraphData,
@@ -55,10 +55,10 @@ class GraphMixin:
         self.debug = debug
 
         # Initialize graph system
-        self.graph_builder = HierarchicalGraphBuilder(debug=debug)
+        self.graph_builder = GraphBuilder(debug=debug)
         self.current_graph: Optional[GraphData] = None
         self.current_hierarchical_graph = None
-        self.last_switch_states: Dict[int, bool] = {}
+        self._last_entity_states: Dict = {}
         self.last_update_time = 0.0
 
         # Graph performance tracking
@@ -70,7 +70,7 @@ class GraphMixin:
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
-        self._graph_builder: Optional[HierarchicalGraphBuilder] = None
+        self._graph_builder: Optional[GraphBuilder] = None
         self._graph_debug_cache: Optional[GraphData] = None
 
         # Initialize logging if debug is enabled
@@ -83,23 +83,66 @@ class GraphMixin:
         if self.enable_graph_updates:
             self.current_graph = None
             self.current_hierarchical_graph = None
-            self.last_switch_states.clear()
+            self._last_entity_states.clear()
             self.last_update_time = time.time()
 
     def _should_update_graph(self) -> bool:
         """
-        Simple check if graph update is needed.
+        Determine if graph update is needed based on entity state changes.
 
-        Only updates when switch states change - no complex event system.
+        Only update when:
+        - Toggle mines toggled
+        - Exit switch activated
+        - Locked door switches activated
         """
-        # Get current switch states from environment
-        current_switch_states = self._get_switch_states_from_env()
+        if not self.enable_graph_updates:
+            return False
 
-        # Check if any switch state changed
-        if current_switch_states != self.last_switch_states:
+        # Get current entity states
+        current_states = self._get_entity_states()
+
+        # Check for changes
+        if not hasattr(self, "_last_entity_states"):
+            self._last_entity_states = current_states
+            return True  # First time, need to build
+
+        # Detect state changes
+        changed = current_states != self._last_entity_states
+
+        if changed:
+            self._last_entity_states = current_states
             return True
 
         return False
+
+    def _get_entity_states(self) -> Dict:
+        """Extract entity states for change detection."""
+        states = {}
+        sim = self.nplay_headless.sim
+
+        # Toggle mines (types 1, 21)
+        for idx, mine in enumerate(sim.entity_dic.get(1, [])):
+            if hasattr(mine, "state"):
+                states[f"toggle_mine_{idx}"] = mine.state
+
+        for idx, mine in enumerate(sim.entity_dic.get(21, [])):
+            if hasattr(mine, "state"):
+                states[f"toggle_mine_toggled_{idx}"] = mine.state
+
+        # Locked doors (type 6)
+        for idx, door in enumerate(sim.entity_dic.get(6, [])):
+            if hasattr(door, "closed"):
+                states[f"locked_door_{idx}"] = door.closed
+
+        # Exit switch (type 4)
+        exit_entities = sim.entity_dic.get(3, [])
+        for idx, entity in enumerate(exit_entities):
+            if type(entity).__name__ == "EntityExitSwitch" and hasattr(
+                entity, "active"
+            ):
+                states[f"exit_switch_{idx}"] = entity.active
+
+        return states
 
     def _get_switch_states_from_env(self) -> Dict[int, bool]:
         """Extract switch states from nclone environment entities."""
@@ -406,4 +449,6 @@ class GraphMixin:
     def _reinit_graph_system_after_unpickling(self, debug: bool = False):
         """Reinitialize graph system components after unpickling."""
         if self.enable_graph_updates and not hasattr(self, "graph_builder"):
-            self.graph_builder = HierarchicalGraphBuilder(debug=debug)
+            self.graph_builder = GraphBuilder(
+                debug=self.debug if hasattr(self, "debug") else False
+            )

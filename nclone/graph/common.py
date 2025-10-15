@@ -13,24 +13,17 @@ from typing import Tuple, Optional, Dict
 from ..constants import TILE_PIXEL_SIZE
 from ..constants.physics_constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
-# Graph configuration constants
-# Sub-grid resolution for better spatial accuracy
-SUB_GRID_RESOLUTION = 4  # Divide each tile into 4x4 sub-cells (6x6 pixels each)
-SUB_CELL_SIZE = TILE_PIXEL_SIZE // SUB_GRID_RESOLUTION  # 6 pixels per sub-cell
+# Graph configuration constants - Optimized for single tile-level graph
+# Tile-level resolution (24px) - no sub-grid needed for efficiency
+TILE_LEVEL_RESOLUTION = TILE_PIXEL_SIZE  # 24 pixels per node
 
-# Calculate sub-grid dimensions using inner playable area (42x23 tiles)
-SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 168 sub-cells wide (42*4)
-SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 92 sub-cells tall (23*4)
+# Optimized graph configuration (down from hierarchical multi-resolution)
+N_MAX_NODES = 1000  # Conservative upper bound (down from ~18,000)
+E_MAX_EDGES = 4000  # 4 adjacency edges per node average (down from ~144,000)
 
-# Keep generous upper bounds to allow entity padding in observations
-N_MAX_NODES = (
-    SUB_GRID_WIDTH * SUB_GRID_HEIGHT + 400
-)  # Sub-grid + entities buffer (~18000)
-E_MAX_EDGES = N_MAX_NODES * 8  # Up to 8 directions per node (4 cardinal + 4 diagonal)
-
-# Feature dimensions for enhanced observation space
-NODE_FEATURE_DIM = 55  # Comprehensive node features
-EDGE_FEATURE_DIM = 6   # Comprehensive edge features
+# Feature dimensions for optimized observation space
+NODE_FEATURE_DIM = 19  # Compact features (down from 55)
+EDGE_FEATURE_DIM = 6  # Comprehensive edge features (unchanged)
 
 # Type counts (derived from IntEnum classes below)
 N_NODE_TYPES = 6  # NodeType: EMPTY, WALL, ENTITY, HAZARD, SPAWN, EXIT
@@ -78,6 +71,21 @@ class Edge:
     edge_type: EdgeType
     weight: float = 1.0
     metadata: Optional[Dict] = None
+
+
+@dataclass
+class StaticGraphStructure:
+    """Static graph topology that doesn't change during episode."""
+
+    node_positions: np.ndarray  # [num_nodes, 2] - (x, y) positions
+    node_types: np.ndarray  # [num_nodes] - NodeType enum values
+    tile_categories: np.ndarray  # [num_nodes] - 0=empty, 1=solid, 2=navigable
+    edge_index: np.ndarray  # [2, num_edges] - adjacency structure
+    edge_types: np.ndarray  # [num_edges] - EdgeType enum values
+    entity_node_indices: Dict[str, int]  # entity_id -> node_index mapping
+    tile_to_node_index: Dict[Tuple[int, int], int]  # (x, y) -> node_index
+    num_nodes: int
+    num_edges: int
 
 
 @dataclass

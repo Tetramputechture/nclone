@@ -1,14 +1,15 @@
 """
-Simplified edge building for strategic RL representation.
+Optimized edge building with hybrid static-dynamic architecture.
 
-This module creates basic graph edges using only connectivity information from
-the fast flood fill reachability system. It focuses on simple adjacency and reachability relationships.
+This module creates graph edges and static structure for efficient RL training.
+It builds static topology once per level and supports selective feature updates.
+Only includes critical entities: toggle mines, locked doors, exit switch/door.
 """
 
 import numpy as np
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Dict
 from .reachability.reachability_system import ReachabilitySystem
-from .common import EdgeType, NodeType, GraphData, Edge
+from .common import EdgeType, NodeType, GraphData, Edge, StaticGraphStructure
 from .level_data import LevelData
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 from ..constants.entity_types import EntityType
@@ -17,11 +18,10 @@ from .common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 class EdgeBuilder:
     """
-    Edge builder using basic connectivity.
+    Edge builder with hybrid static-dynamic architecture.
 
-    This approach focuses on simple connectivity information:
-    - Adjacent edges for direct movement possibilities
-    - Basic reachability edges from flood fill analysis
+    Builds static graph structure once per level, updates features selectively.
+    Only includes critical entities: toggle mines, locked doors, exit switch/door.
     """
 
     def __init__(
@@ -151,6 +151,224 @@ class EdgeBuilder:
                                 weight=distance / TILE_PIXEL_SIZE,
                             )
                         )
+
+        return edges
+
+    def build_static_structure(self, level_data: LevelData) -> StaticGraphStructure:
+        """
+        Build static graph structure once per level.
+
+        Returns topology that doesn't change during episode:
+        - Node positions (tiles + entities)
+        - Node types
+        - Edge connectivity (4-adjacency + functional edges)
+
+        Args:
+            level_data: Complete level data
+
+        Returns:
+            StaticGraphStructure with immutable graph topology
+        """
+        # Extract traversable tile positions
+        traversable_tiles = self._get_traversable_positions(level_data)
+
+        # Filter entities to only critical types
+        critical_entities = self._filter_critical_entities(level_data.entities)
+
+        # Build node list: tiles + entity positions
+        nodes = []
+        node_types = []
+        tile_categories = []
+        entity_node_indices = {}
+        tile_to_node_index = {}
+
+        # Add tile nodes
+        for tile_pos in sorted(traversable_tiles):
+            node_idx = len(nodes)
+            nodes.append(tile_pos)
+            node_types.append(NodeType.EMPTY)
+
+            # Determine tile category
+            tile_id = self._get_tile_at_pos(tile_pos, level_data)
+            tile_cat = self._tile_to_category(tile_id)
+            tile_categories.append(tile_cat)
+
+            tile_to_node_index[tile_pos] = node_idx
+
+        # Add entity nodes
+        for entity in critical_entities:
+            node_idx = len(nodes)
+            entity_pos = (entity.get("x", 0), entity.get("y", 0))
+            nodes.append(entity_pos)
+
+            # Determine node type based on entity
+            entity_type = entity.get("type", 0)
+            if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
+                node_types.append(NodeType.HAZARD)
+            elif entity_type == EntityType.EXIT_DOOR:
+                node_types.append(NodeType.EXIT)
+            elif entity_type == EntityType.LOCKED_DOOR:
+                node_types.append(NodeType.ENTITY)
+            elif entity_type == EntityType.EXIT_SWITCH:
+                node_types.append(NodeType.ENTITY)
+            else:
+                node_types.append(NodeType.ENTITY)
+
+            tile_categories.append(0)  # Entities don't have tile category
+            entity_node_indices[entity.get("entity_id", f"entity_{node_idx}")] = (
+                node_idx
+            )
+
+        # Build edges
+        edges = self._build_adjacency_edges_for_structure(nodes, tile_to_node_index)
+        functional_edges = self._build_functional_edges(
+            critical_entities, entity_node_indices, tile_to_node_index
+        )
+        edges.extend(functional_edges)
+
+        # Convert to arrays
+        edge_index = np.zeros((2, max(len(edges), 1)), dtype=np.int32)
+        edge_types = np.zeros(max(len(edges), 1), dtype=np.int32)
+
+        for i, edge in enumerate(edges):
+            # Map source and target to node indices
+            if isinstance(edge.source, tuple):
+                source_idx = tile_to_node_index.get(edge.source, 0)
+            else:
+                source_idx = entity_node_indices.get(edge.source, 0)
+
+            if isinstance(edge.target, tuple):
+                target_idx = tile_to_node_index.get(edge.target, 0)
+            else:
+                target_idx = entity_node_indices.get(edge.target, 0)
+
+            edge_index[0, i] = source_idx
+            edge_index[1, i] = target_idx
+            edge_types[i] = edge.edge_type
+
+        if self.debug:
+            print("Built static structure:")
+            print(
+                f"  Nodes: {len(nodes)} ({len(traversable_tiles)} tiles + {len(critical_entities)} entities)"
+            )
+            print(f"  Edges: {len(edges)}")
+
+        return StaticGraphStructure(
+            node_positions=np.array(nodes, dtype=np.float32),
+            node_types=np.array(node_types, dtype=np.int32),
+            tile_categories=np.array(tile_categories, dtype=np.int32),
+            edge_index=edge_index,
+            edge_types=edge_types,
+            entity_node_indices=entity_node_indices,
+            tile_to_node_index=tile_to_node_index,
+            num_nodes=len(nodes),
+            num_edges=len(edges),
+        )
+
+    def _filter_critical_entities(self, entities: List[Dict]) -> List[Dict]:
+        """Filter to only critical entity types for initial graph."""
+        critical_types = [
+            EntityType.TOGGLE_MINE,
+            EntityType.TOGGLE_MINE_TOGGLED,
+            EntityType.LOCKED_DOOR,
+            EntityType.EXIT_SWITCH,
+            EntityType.EXIT_DOOR,
+        ]
+        return [e for e in entities if e.get("type") in critical_types]
+
+    def _get_tile_at_pos(self, pos: Tuple[int, int], level_data: LevelData) -> int:
+        """Get tile type at position."""
+        x, y = pos
+        tile_col = int(x // TILE_PIXEL_SIZE)
+        tile_row = int(y // TILE_PIXEL_SIZE)
+
+        if 0 <= tile_row < level_data.height and 0 <= tile_col < level_data.width:
+            return level_data.tiles[tile_row, tile_col]
+        return 1  # Out of bounds = wall
+
+    def _tile_to_category(self, tile_id: int) -> int:
+        """Convert tile ID to category (0=empty, 1=solid, 2=navigable)."""
+        if tile_id == 0:
+            return 0  # empty
+        elif tile_id == 1 or tile_id >= 34:
+            return 1  # solid
+        elif 2 <= tile_id <= 33:
+            return 2  # navigable (slopes, half-tiles, curves)
+        else:
+            return 1  # default to solid
+
+    def _build_adjacency_edges_for_structure(
+        self,
+        nodes: List[Tuple[float, float]],
+        tile_to_node_index: Dict[Tuple[int, int], int],
+    ) -> List[Edge]:
+        """Build adjacency edges for static structure."""
+        edges = []
+        directions = [
+            (0, TILE_PIXEL_SIZE),
+            (0, -TILE_PIXEL_SIZE),
+            (TILE_PIXEL_SIZE, 0),
+            (-TILE_PIXEL_SIZE, 0),
+        ]
+
+        for pos in tile_to_node_index.keys():
+            x, y = pos
+            for dx, dy in directions:
+                neighbor = (x + dx, y + dy)
+                if neighbor in tile_to_node_index:
+                    edges.append(
+                        Edge(
+                            source=pos,
+                            target=neighbor,
+                            edge_type=EdgeType.ADJACENT,
+                            weight=1.0,
+                        )
+                    )
+
+        return edges
+
+    def _build_functional_edges(
+        self,
+        entities: List[Dict],
+        entity_node_indices: Dict[str, int],
+        tile_to_node_index: Dict[Tuple[int, int], int],
+    ) -> List[Edge]:
+        """Build functional edges between related entities (switch→door pairs)."""
+        edges = []
+
+        # Build switch→door edges for locked doors
+        # Each locked door has a switch part and a door part
+        locked_door_pairs = {}
+        for entity in entities:
+            entity_type = entity.get("type")
+            entity_id = entity.get("entity_id", "")
+
+            if entity_type == EntityType.LOCKED_DOOR:
+                # Group by base ID
+                if entity_id.startswith("locked_"):
+                    base_id = entity_id.split("_switch")[0].split("_door")[0]
+                    if base_id not in locked_door_pairs:
+                        locked_door_pairs[base_id] = {}
+
+                    if entity.get("is_door_part"):
+                        locked_door_pairs[base_id]["door"] = entity_id
+                    else:
+                        locked_door_pairs[base_id]["switch"] = entity_id
+
+        # Create functional edges for switch→door pairs
+        for pair_data in locked_door_pairs.values():
+            if "switch" in pair_data and "door" in pair_data:
+                switch_id = pair_data["switch"]
+                door_id = pair_data["door"]
+                if switch_id in entity_node_indices and door_id in entity_node_indices:
+                    edges.append(
+                        Edge(
+                            source=switch_id,
+                            target=door_id,
+                            edge_type=EdgeType.FUNCTIONAL,
+                            weight=0.5,
+                        )
+                    )
 
         return edges
 
