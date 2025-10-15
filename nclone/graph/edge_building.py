@@ -12,6 +12,7 @@ from .common import EdgeType, NodeType, GraphData, Edge
 from .level_data import LevelData
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 from ..constants.entity_types import EntityType
+from .common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 
 class EdgeBuilder:
@@ -249,12 +250,14 @@ def _determine_node_type(pos: Tuple[int, int], level_data: LevelData) -> NodeTyp
 
 def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     """
-    Create GraphData from edges.
+    Create GraphData from edges with comprehensive 56-dim node and 6-dim edge features.
 
-    This function converts the edge representation into the
-    standard GraphData format expected by the rest of the system.
+    This function converts the edge representation into the standard GraphData format
+    expected by the rest of the system, using NodeFeatureBuilder and EdgeFeatureBuilder
+    to create full feature representations with proper ReachabilitySystem integration.
     """
-    from .common import N_MAX_NODES, E_MAX_EDGES
+    from .feature_builder import NodeFeatureBuilder, EdgeFeatureBuilder
+    from .reachability.reachability_system import ReachabilitySystem
 
     # Extract unique positions from edges
     positions = set()
@@ -272,29 +275,96 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     num_nodes = len(positions)
     num_edges = len(edges)
 
-    # Initialize fixed-size arrays
-    node_features = np.zeros((N_MAX_NODES, 3), dtype=np.float32)  # [x, y, node_type]
+    # Initialize fixed-size arrays with full feature dimensions
+    node_features = np.zeros((N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32)
     node_types = np.zeros(N_MAX_NODES, dtype=np.int32)
     node_mask = np.zeros(N_MAX_NODES, dtype=np.int32)
 
     edge_index = np.zeros((2, E_MAX_EDGES), dtype=np.int32)
-    edge_features = np.zeros((E_MAX_EDGES, 1), dtype=np.float32)  # Just weight
+    edge_features = np.zeros((E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32)
     edge_types = np.zeros(E_MAX_EDGES, dtype=np.int32)
     edge_mask = np.zeros(E_MAX_EDGES, dtype=np.int32)
 
-    # Fill node data
+    # Initialize feature builders
+    node_builder = NodeFeatureBuilder()
+    edge_builder = EdgeFeatureBuilder()
+
+    # Extract ninja position from level_data for reachability and proximity
+    ninja_pos = None
+    if hasattr(level_data, "ninja") and level_data.ninja is not None:
+        ninja_pos = (level_data.ninja.position.x, level_data.ninja.position.y)
+
+    # Extract goal position (exit door or next switch)
+    goal_pos = None
+    if hasattr(level_data, "objects") and level_data.objects:
+        # Find exit door or nearest switch
+        for obj in level_data.objects:
+            if hasattr(obj, "type"):
+                # Exit door (type 11)
+                if obj.type == 11:
+                    goal_pos = (obj.position.x, obj.position.y)
+                    break
+
+    # Initialize reachability system for connectivity analysis
+    reachability_sys = ReachabilitySystem(debug=False)
+    reachability_result = None
+
+    # Compute reachability if ninja position is available
+    if ninja_pos is not None:
+        try:
+            # Get current switch states (default to empty if not available)
+            switch_states = {}
+            if hasattr(level_data, "switch_states"):
+                switch_states = level_data.switch_states
+
+            # Analyze reachability using OpenCV flood-fill (<1ms)
+            reachability_result = reachability_sys.analyze_reachability(
+                level_data=level_data,
+                ninja_position=ninja_pos,
+                switch_states=switch_states,
+            )
+        except Exception:
+            # If reachability analysis fails, continue without it
+            reachability_result = None
+
+    # Fill node data with comprehensive features
     for i, pos in enumerate(sorted(positions)):
         if i >= N_MAX_NODES:
             break
 
-        # Comprehensive node type assignment
+        # Determine node type
         node_type = _determine_node_type(pos, level_data)
 
-        node_features[i] = [pos[0], pos[1], float(node_type)]
+        # Get tile type at this position
+        tile_type = 0
+        if hasattr(level_data, "get_tile_at"):
+            try:
+                tile_type = level_data.get_tile_at(pos[0], pos[1])
+            except Exception:
+                tile_type = 0
+
+        # Build reachability info for this node
+        reachability_info = None
+        if reachability_result is not None:
+            reachability_info = {
+                "reachable_from_ninja": reachability_result.is_position_reachable(pos),
+            }
+
+        # Build comprehensive node features (56 dimensions)
+        node_features[i] = node_builder.build_node_features(
+            node_pos=pos,
+            node_type=node_type,
+            resolution_level=1,  # Default resolution (medium)
+            tile_type=tile_type,
+            entity_info=None,  # TODO: Extract entity info if node is entity
+            reachability_info=reachability_info,
+            ninja_pos=ninja_pos,
+            goal_pos=goal_pos,
+        )
         node_types[i] = node_type
         node_mask[i] = 1
 
-    # Fill edge data
+    # Fill edge data with comprehensive features
     for i, edge in enumerate(edges):
         if i >= E_MAX_EDGES:
             break
@@ -304,7 +374,24 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
 
         edge_index[0, i] = source_idx
         edge_index[1, i] = target_idx
-        edge_features[i, 0] = edge.weight
+
+        # Build reachability confidence for edge
+        edge_reachability_confidence = 1.0
+        if reachability_result is not None:
+            # Edge is confident if both endpoints are reachable
+            source_reachable = reachability_result.is_position_reachable(edge.source)
+            target_reachable = reachability_result.is_position_reachable(edge.target)
+            if source_reachable and target_reachable:
+                edge_reachability_confidence = reachability_result.confidence
+            else:
+                edge_reachability_confidence = 0.0
+
+        # Build comprehensive edge features (6 dimensions)
+        edge_features[i] = edge_builder.build_edge_features(
+            edge_type=edge.edge_type,
+            weight=edge.weight,
+            reachability_confidence=edge_reachability_confidence,
+        )
         edge_types[i] = edge.edge_type
         edge_mask[i] = 1
 
