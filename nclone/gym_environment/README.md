@@ -106,16 +106,29 @@ The integrated environment provides a rich observation space:
 - `game_state`: Enhanced ninja and entity states (3891-dim)
 
 ### Graph Observations (if enabled)
-- `graph_node_feats`: Node features [N_MAX_NODES, 3]
+- `graph_node_feats`: Comprehensive node features [N_MAX_NODES, 56]
+  - Spatial (3): Position + resolution
+  - Type (6): One-hot node type
+  - Entity (5): Entity-specific features
+  - Tile (38): One-hot tile encoding
+  - Reachability (2): Connectivity flags
+  - Proximity (2): Distances to key points
 - `graph_edge_index`: Edge connectivity [2, E_MAX_EDGES]
-- `graph_edge_feats`: Edge features [E_MAX_EDGES, 1]
+- `graph_edge_feats`: Comprehensive edge features [E_MAX_EDGES, 6]
+  - Edge Type (4): One-hot edge type
+  - Connectivity (2): Weight + confidence
 - `graph_node_mask`: Valid node indicators [N_MAX_NODES]
 - `graph_edge_mask`: Valid edge indicators [E_MAX_EDGES]
 - `graph_node_types`: Node type IDs [N_MAX_NODES]
 - `graph_edge_types`: Edge type IDs [E_MAX_EDGES]
 
-### Reachability Observations (if enabled)
-- `reachability_features`: 8-dimensional reachability analysis
+**Note**: Graph features have been updated to comprehensive 56-dim node and 6-dim edge features. See `OBSERVATION_SPACE_README.md` for complete feature documentation.
+
+### Reachability Observations
+
+**Integrated in Graph Features**: Reachability information is now integrated directly into the graph node features (indices 52-53) using OpenCV flood-fill connectivity analysis (<1ms computation time).
+
+**Legacy 8-dimensional reachability vector** (if explicitly enabled):
   1. Reachable area ratio (0-1)
   2. Distance to nearest switch (normalized)
   3. Distance to exit (normalized)
@@ -124,6 +137,8 @@ The integrated environment provides a rich observation space:
   6. Connectivity score (0-1)
   7. Exit reachable flag (0-1)
   8. Switch-to-exit path exists (0-1)
+
+**Note**: The graph-based reachability (integrated approach) is recommended for deep RL as it provides per-node connectivity information. The legacy 8-dim vector provides global-level reachability statistics.
 
 ## Configuration Options
 
