@@ -12,6 +12,7 @@ from .common import EdgeType, NodeType, GraphData, Edge
 from .level_data import LevelData
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 from ..constants.entity_types import EntityType
+from .common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 
 class EdgeBuilder:
@@ -255,7 +256,6 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     expected by the rest of the system, using NodeFeatureBuilder and EdgeFeatureBuilder
     to create full feature representations with proper ReachabilitySystem integration.
     """
-    from .common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
     from .feature_builder import NodeFeatureBuilder, EdgeFeatureBuilder
     from .reachability.reachability_system import ReachabilitySystem
 
@@ -291,37 +291,37 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
 
     # Extract ninja position from level_data for reachability and proximity
     ninja_pos = None
-    if hasattr(level_data, 'ninja') and level_data.ninja is not None:
+    if hasattr(level_data, "ninja") and level_data.ninja is not None:
         ninja_pos = (level_data.ninja.position.x, level_data.ninja.position.y)
-    
+
     # Extract goal position (exit door or next switch)
     goal_pos = None
-    if hasattr(level_data, 'objects') and level_data.objects:
+    if hasattr(level_data, "objects") and level_data.objects:
         # Find exit door or nearest switch
         for obj in level_data.objects:
-            if hasattr(obj, 'type'):
+            if hasattr(obj, "type"):
                 # Exit door (type 11)
                 if obj.type == 11:
                     goal_pos = (obj.position.x, obj.position.y)
                     break
-    
+
     # Initialize reachability system for connectivity analysis
     reachability_sys = ReachabilitySystem(debug=False)
     reachability_result = None
-    
+
     # Compute reachability if ninja position is available
     if ninja_pos is not None:
         try:
             # Get current switch states (default to empty if not available)
             switch_states = {}
-            if hasattr(level_data, 'switch_states'):
+            if hasattr(level_data, "switch_states"):
                 switch_states = level_data.switch_states
-            
+
             # Analyze reachability using OpenCV flood-fill (<1ms)
             reachability_result = reachability_sys.analyze_reachability(
                 level_data=level_data,
                 ninja_position=ninja_pos,
-                switch_states=switch_states
+                switch_states=switch_states,
             )
         except Exception:
             # If reachability analysis fails, continue without it
@@ -334,21 +334,20 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
 
         # Determine node type
         node_type = _determine_node_type(pos, level_data)
-        
+
         # Get tile type at this position
         tile_type = 0
-        if hasattr(level_data, 'get_tile_at'):
+        if hasattr(level_data, "get_tile_at"):
             try:
                 tile_type = level_data.get_tile_at(pos[0], pos[1])
             except Exception:
                 tile_type = 0
-        
+
         # Build reachability info for this node
         reachability_info = None
         if reachability_result is not None:
             reachability_info = {
-                'reachable_from_ninja': reachability_result.is_position_reachable(pos),
-                'on_critical_path': False  # TODO: Add path planning if needed
+                "reachable_from_ninja": reachability_result.is_position_reachable(pos),
             }
 
         # Build comprehensive node features (56 dimensions)

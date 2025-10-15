@@ -13,7 +13,13 @@ from dataclasses import dataclass
 
 from ...graph.hierarchical_builder import HierarchicalGraphBuilder
 from ...graph.level_data import LevelData
-from ...graph.common import GraphData, N_MAX_NODES, E_MAX_EDGES
+from ...graph.common import (
+    GraphData,
+    N_MAX_NODES,
+    E_MAX_EDGES,
+    NODE_FEATURE_DIM,
+    EDGE_FEATURE_DIM,
+)
 
 
 @dataclass
@@ -220,7 +226,6 @@ class GraphMixin:
 
     def _get_graph_observations(self) -> Dict[str, np.ndarray]:
         """Get complete graph observations for HGT processing with full 56/6 features."""
-        from ...graph.common import NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
         # Initialize empty graph observations with full feature dimensions
         graph_obs = {
