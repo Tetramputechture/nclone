@@ -1,8 +1,11 @@
 from .sim_config import SimConfig
 from .map_loader import MapLoader
 from .physics import clear_caches
+import os
 
 CACHE_CLEAR_INTERVAL = 100
+
+os.environ["SDL_AUDIODRIVER"] = "dsp"
 
 
 class Simulator:
