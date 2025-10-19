@@ -196,57 +196,7 @@ from nclone.gym_environment import benchmark_environment_performance
 results = benchmark_environment_performance(env, num_steps=1000, target_fps=60.0)
 ```
 
-## Migration from Wrappers
-
-If you were using the old wrapper system, migration is straightforward:
-
-### Old Code (No longer available)
-```python
-# This approach is no longer supported - wrapper classes have been removed
-from nclone.gym_environment import (
-    NppEnvironment,
-    DynamicGraphWrapper,      # REMOVED
-    ReachabilityWrapper,      # REMOVED  
-    VectorizationWrapper      # REMOVED
-)
-
-base_env = NppEnvironment()
-graph_env = DynamicGraphWrapper(base_env)  # No longer works
-reach_env = ReachabilityWrapper(graph_env)  # No longer works
-final_env = VectorizationWrapper(reach_env)  # No longer works
-```
-
-### New Code (Recommended)
-```python
-from nclone.gym_environment import create_training_env
-
-# All functionality integrated
-env = create_training_env(
-    enable_graph_updates=True,
-    enable_reachability=True
-)
-```
-
-## Migration from Legacy Wrappers
-
-Legacy wrapper classes have been **removed** and are no longer available. The functionality has been fully integrated into `NppEnvironment`. Here's the migration guide:
-
-**Removed Classes:**
-- `DynamicGraphWrapper` → Use `create_training_env(enable_graph_updates=True)`
-- `ReachabilityWrapper` → Use `create_training_env(enable_reachability=True)`
-- `VectorizationWrapper` → Use `create_vectorized_training_envs()`
-
-**Legacy Factory Functions (still available):**
-- `create_dynamic_graph_env` → Use `create_training_env()` (backward compatible)
-- `create_reachability_aware_env` → Use `create_training_env()` (backward compatible)
-
-**Benefits of the integrated approach:**
-- Simplified codebase with no wrapper overhead
-- Better performance through direct integration
-- Easier configuration and debugging
-- All features available in a single environment class
-
-## Advanced Usage
+## Environment Usage
 
 ### Custom Environment Configuration
 
@@ -269,7 +219,7 @@ env = NppEnvironment(
 )
 ```
 
-### Accessing Advanced Features
+### Accessing Graph Features
 
 ```python
 # Get hierarchical graph data
@@ -309,30 +259,3 @@ env = create_training_env()
 is_valid = validate_environment(env)
 print(f"Environment valid: {is_valid}")
 ```
-
-## Performance Tips
-
-1. **Disable unused features**: Set `enable_graph_updates=False` or `enable_reachability=False` if not needed
-2. **Use minimal config for baselines**: Use `create_minimal_env()` for maximum performance
-3. **Enable caching**: Reachability analysis uses caching automatically
-4. **Monitor performance**: Use performance stats to identify bottlenecks
-5. **Vectorize training**: Use `create_vectorized_training_envs()` for parallel training
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Missing observations**: Ensure features are enabled in environment configuration
-2. **Performance issues**: Check if debug mode is enabled in production
-3. **Vectorization problems**: Use factory functions for proper initialization
-4. **Graph update failures**: Check debug logs for detailed error information
-
-### Debug Mode
-
-Enable debug mode for detailed logging:
-
-```python
-env = create_training_env(debug=True)
-```
-
-This will provide detailed information about graph updates, reachability computation, and performance metrics.

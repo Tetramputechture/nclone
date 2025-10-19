@@ -15,10 +15,6 @@ the most effective augmentations for game environments like N++:
 Note: Gaussian noise is NOT included as it's inappropriate for clean game visuals.
 Game environments have crisp, deterministic graphics unlike sensor data.
 
-Performance optimizations:
-- OpenCV threading disabled for PyTorch DataLoader compatibility
-- Validation can be disabled in production for ~12% performance improvement
-- Pipelines are cached via @functools.lru_cache for reuse
 
 References:
 - Laskin et al. (2020): Reinforcement Learning with Augmented Data (RAD)
@@ -52,8 +48,7 @@ def get_augmentation_pipeline(
     Args:
         p: Probability of applying each augmentation.
         intensity: Augmentation intensity level ("light", "medium", "strong")
-        disable_validation: If True, disables Albumentations validation for ~12% performance boost.
-            Recommended for production training/evaluation.
+        disable_validation: If True, disables Albumentations validation. Recommended for training.
 
     Returns:
         ReplayCompose pipeline that can record and replay exact transformations

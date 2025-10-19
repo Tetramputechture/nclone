@@ -139,7 +139,7 @@ Multi-modal Dict observation:
 
 ### Reward Structure
 
-nclone implements a sophisticated multi-component reward system designed for effective RL training, following best practices from reward shaping research.
+nclone implements a multi-component reward system designed for effective RL training, following best practices from reward shaping research.
 
 **Quick Reference:**
 
@@ -152,14 +152,6 @@ nclone implements a sophisticated multi-component reward system designed for eff
 | **Navigation** | ~0.0001 | Distance-based shaping |
 | **Exploration** | 0.001-0.004 | Multi-scale spatial coverage |
 
-**Key Features:**
-- ✅ **No Magic Numbers**: All constants documented in `reward_constants.py`
-- ✅ **PBRS Theory**: Policy-invariant reward shaping (Ng et al. 1999)
-- ✅ **Multi-Scale**: Terminal, milestone, and dense shaping signals
-- ✅ **Production Ready**: Validation, presets, comprehensive testing
-
-**Configuration Presets:**
-
 ```python
 from nclone.gym_environment.reward_calculation.reward_constants import (
     get_completion_focused_config,  # Fast completion (default)
@@ -171,13 +163,6 @@ from nclone.gym_environment.reward_calculation.reward_constants import (
 # Use preset configuration
 config = get_completion_focused_config()
 ```
-
-**Detailed Documentation:** See [docs/REWARD_SYSTEM.md](docs/REWARD_SYSTEM.md) for comprehensive reward system documentation including:
-- Theoretical foundation (PBRS, ICM, count-based exploration)
-- All reward constants with rationale
-- Configuration presets and examples
-- Best practices and troubleshooting
-- Research references
 
 ## Configuration
 

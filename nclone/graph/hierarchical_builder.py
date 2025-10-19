@@ -5,9 +5,6 @@ This module creates hierarchical graph representations with multiple resolution 
 optimized for Deep RL. It focuses on strategic information rather than detailed
 physics calculations, designed to work with heterogeneous graph transformers,
 3D CNNs, and MLPs.
-
-This is the simplified, production-ready version that replaces the complex
-physics-based approach with connectivity-focused strategic information.
 """
 
 import numpy as np

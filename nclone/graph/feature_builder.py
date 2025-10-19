@@ -1,5 +1,5 @@
 """
-Production-ready feature builder for graph nodes and edges.
+Feature builder for graph nodes and edges.
 
 This module creates comprehensive 56-dimensional node features and 6-dimensional
 edge features for deep RL with GNNs. Features are designed to provide all necessary

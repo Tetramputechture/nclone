@@ -1,8 +1,5 @@
 """
 Strategic level completion planner using reachability analysis.
-
-This module provides the LevelCompletionPlanner that implements the production-ready
-NPP level completion algorithm using intrinsic curiosity-driven reachability features.
 """
 
 from typing import Dict, Tuple, List, Optional
@@ -17,12 +14,11 @@ class LevelCompletionPlanner:
     """
     Strategic planner for hierarchical level completion using fast reachability analysis.
 
-    This planner implements the production-ready NPP level completion heuristic that leverages
+    This planner implements a level completion heuristic that leverages
     intrinsic curiosity-driven reachability analysis rather than expensive physics calculations.
-    The strategy focuses on systematic switch activation sequences following the definitive
-    NPP level completion algorithm.
+    The strategy focuses on systematic switch activation sequences so the ninja can reach the exit.
 
-    NPP Level Completion Strategy (Production Implementation):
+    Level Completion Strategy:
     1. Check if exit door switch is reachable using curiosity-driven reachability features
        - If reachable: trigger exit door switch, proceed to step 2
        - If not reachable: find nearest reachable locked door switch, trigger it, return to step 1
@@ -75,14 +71,13 @@ class LevelCompletionPlanner:
             level_data, ninja_pos, switch_states
         )
 
-        # Identify level objectives using production-ready level analysis
+        # Identify level objectives
         exit_door = self._find_exit_door(level_data)
         exit_switch = self._find_exit_switch(level_data)
 
         if not exit_door or not exit_switch:
             return CompletionStrategy([], "No exit found", 0.0)
 
-        # Implement NPP Level Completion Algorithm (Production Implementation)
         completion_steps = []
         current_state = "check_exit_switch"
         max_iterations = 10  # Prevent infinite loops
@@ -185,7 +180,7 @@ class LevelCompletionPlanner:
 
         return CompletionStrategy(
             steps=completion_steps,
-            description="NPP Level Completion Strategy (Production Implementation)",
+            description="NPP Level Completion Strategy",
             confidence=confidence,
         )
 
