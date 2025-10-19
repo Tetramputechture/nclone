@@ -176,10 +176,13 @@ class Ninja:
         self.is_crushable = False
         self.x_crush, self.y_crush = 0, 0
         self.crush_len = 0
+        self._cached_entities = gather_entities_from_neighbourhood(
+            self.sim, self.xpos, self.ypos
+        )
 
     def collide_vs_objects(self):
         """Gather all entities in neighbourhood and apply physical collisions if possible."""
-        entities = gather_entities_from_neighbourhood(self.sim, self.xpos, self.ypos)
+        entities = self._cached_entities
         for entity in entities:
             if entity.is_physical_collidable:
                 depen = entity.physical_collision()
@@ -233,10 +236,17 @@ class Ninja:
         self.xpos = self.xpos_old + time * dx
         self.ypos = self.ypos_old + time * dy
 
+        # Gather segments once for the entire depenetration loop
+        # The ninja moves very little during depenetration, so segments rarely change
+        rad = NINJA_RADIUS
+        segments = gather_segments_from_region(
+            self.sim, self.xpos - rad, self.ypos - rad, self.xpos + rad, self.ypos + rad
+        )
+
         # Find the closest point from the ninja, apply depenetration and update speed. Loop 32 times.
         for _ in range(32):
             result, closest_point = get_single_closest_point(
-                self.sim, self.xpos, self.ypos, NINJA_RADIUS
+                self.sim, self.xpos, self.ypos, NINJA_RADIUS, segments=segments
             )
             if result == 0:
                 break
@@ -254,8 +264,9 @@ class Ninja:
             depen_len = NINJA_RADIUS - dist * result
             if dist == 0 or depen_len < 0.0000001:
                 return
-            depen_x = dx / dist * depen_len
-            depen_y = dy / dist * depen_len
+            inv_dist = 1.0 / dist
+            depen_x = dx * inv_dist * depen_len
+            depen_y = dy * inv_dist * depen_len
             self.xpos += depen_x
             self.ypos += depen_y
             self.x_crush += depen_x
@@ -265,19 +276,21 @@ class Ninja:
             if (
                 dot_product < 0
             ):  # Project velocity onto surface only if moving towards surface
-                xspeed_new = (self.xspeed * dy - self.yspeed * dx) / dist**2 * dy
-                yspeed_new = (self.xspeed * dy - self.yspeed * dx) / dist**2 * (-dx)
+                cross_product = self.xspeed * dy - self.yspeed * dx
+                inv_dist_sq = inv_dist * inv_dist
+                xspeed_new = cross_product * inv_dist_sq * dy
+                yspeed_new = cross_product * inv_dist_sq * (-dx)
                 self.xspeed = xspeed_new
                 self.yspeed = yspeed_new
             # Adjust ceiling variables if ninja collides with ceiling (or wall!)
             if dy >= -0.0001:
                 self.ceiling_count += 1
-                self.ceiling_normal_x += dx / dist
-                self.ceiling_normal_y += dy / dist
+                self.ceiling_normal_x += dx * inv_dist
+                self.ceiling_normal_y += dy * inv_dist
             else:  # Adjust floor variables if ninja collides with floor
                 self.floor_count += 1
-                self.floor_normal_x += dx / dist
-                self.floor_normal_y += dy / dist
+                self.floor_normal_x += dx * inv_dist
+                self.floor_normal_y += dy * inv_dist
 
     def post_collision(self):
         """Perform logical collisions with entities, check for airborn state,
