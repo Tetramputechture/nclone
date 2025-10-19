@@ -55,3 +55,5 @@ nclone/_version.py
 .openhands/
 
 datasets/
+
+.ruff_cache/

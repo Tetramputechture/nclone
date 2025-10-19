@@ -142,72 +142,78 @@ def draw_complex_tile_to_cairo(ctx, tile_type, x, y, tile_size):
         ctx.fill()
 
 
-def render_tiles_to_cairo_surface(tile_dic, surface_width, surface_height, tile_size, tile_color_rgb):
+def render_tiles_to_cairo_surface(
+    tile_dic, surface_width, surface_height, tile_size, tile_color_rgb
+):
     """
     Render tiles to a Cairo surface using the core tile rendering logic.
-    
+
     Args:
         tile_dic: Dictionary mapping (x, y) coordinates to tile type values
         surface_width: Width of the target surface
-        surface_height: Height of the target surface  
+        surface_height: Height of the target surface
         tile_size: Size of each tile in pixels
         tile_color_rgb: RGB color tuple for tiles
-        
+
     Returns:
         cairo.ImageSurface with rendered tiles
     """
     # Create Cairo surface for precise rendering
-    cairo_surface = cairo.ImageSurface(cairo.Format.ARGB32, surface_width, surface_height)
+    cairo_surface = cairo.ImageSurface(
+        cairo.Format.ARGB32, surface_width, surface_height
+    )
     ctx = cairo.Context(cairo_surface)
-    
+
     # Clear surface
     ctx.set_operator(cairo.Operator.CLEAR)
     ctx.paint()
     ctx.set_operator(cairo.Operator.SOURCE)
-    
+
     # Set tile color
     ctx.set_source_rgb(*tile_color_rgb)
-    
+
     # Group tiles by type for efficient rendering
     tile_groups = group_tiles_by_type(tile_dic)
-    
+
     # Render each tile type group
     for tile_type, coords_list in tile_groups.items():
         render_tile_group_to_cairo(ctx, tile_type, coords_list, tile_size)
-    
+
     return cairo_surface
 
 
 class SharedTileRenderer:
     """Convenience wrapper for tile rendering functionality."""
-    
+
     @staticmethod
-    def render_tiles_to_pygame_surface(tile_dic, surface_width, surface_height, tile_size=24, tile_color_rgb=None):
+    def render_tiles_to_pygame_surface(
+        tile_dic, surface_width, surface_height, tile_size=24, tile_color_rgb=None
+    ):
         """
         Render tiles to a pygame surface using the core tile rendering logic.
-        
+
         Args:
             tile_dic: Dictionary mapping (x, y) coordinates to tile type values
             surface_width: Width of the target surface
-            surface_height: Height of the target surface  
+            surface_height: Height of the target surface
             tile_size: Size of each tile in pixels (default 24)
             tile_color_rgb: RGB color tuple for tiles (default uses TILECOLOR_RGB)
-            
+
         Returns:
             pygame.Surface with rendered tiles
         """
         if tile_color_rgb is None:
             tile_color_rgb = render_utils.TILECOLOR_RGB
-            
+
         # Use the core rendering function
         cairo_surface = render_tiles_to_cairo_surface(
             tile_dic, surface_width, surface_height, tile_size, tile_color_rgb
         )
-        
+
         # Convert Cairo surface to pygame surface
         buffer = cairo_surface.get_data()
         pygame_surface = pygame.image.frombuffer(
             buffer, (cairo_surface.get_width(), cairo_surface.get_height()), "BGRA"
         )
-        
+
         return pygame_surface

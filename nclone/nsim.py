@@ -1,7 +1,8 @@
 from .sim_config import SimConfig
 from .map_loader import MapLoader
+from .physics import clear_caches
 
-# Quadtree removed: grid cell-based collision queries are used instead.
+CACHE_CLEAR_INTERVAL = 100
 
 
 class Simulator:
@@ -23,7 +24,7 @@ class Simulator:
         self.hor_segment_dic = {}
         self.ver_segment_dic = {}
         self.map_data = None
-        self.map_loader = MapLoader(self)  # Initialize MapLoader
+        self.map_loader = MapLoader(self)
 
     def load(self, map_data):
         """From the given map data, initiate the level geometry, the entities and the ninja."""
@@ -150,10 +151,5 @@ class Simulator:
                 entity.log_position()
 
         # Clear physics caches periodically to prevent memory bloat or stale data
-        if self.frame % 100 == 0:  # Clear caches every 100 frames
-            from .physics import (
-                clear_caches,
-            )  # Local import to avoid circular dependencies if physics imports Simulator
-
-            clear_caches()  # This clears helper caches in physics.py
-            # No quadtree clearing necessary
+        if self.frame % CACHE_CLEAR_INTERVAL == 0:
+            clear_caches()
