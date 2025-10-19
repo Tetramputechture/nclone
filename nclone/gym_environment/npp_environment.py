@@ -339,37 +339,3 @@ class NppEnvironment(
 
         # Mark that we need to reinitialize on next reset
         self._needs_reinit = True
-
-    def load_random_categorized_map(self, category: str = "simple"):
-        """
-        Load a random map from the SI episode based on complexity category.
-
-        This is a convenience method that delegates to the map loader.
-        Maps are categorized as:
-        - "simple": Only contains exit doors, exit switches, toggle mines, locked doors, and gold
-        - "complex": Contains any other entity types (launch pads, thwumps, drones, etc.)
-
-        Args:
-            category: Either "simple" or "complex" to select map category
-
-        Raises:
-            ValueError: If category is invalid or no maps available in that category
-
-        Example:
-            >>> env = NppEnvironment(config)
-            >>> env.load_random_categorized_map("simple")  # Load a simple map
-            >>> env.load_random_categorized_map("complex")  # Load a complex map
-        """
-        self.map_loader.load_random_categorized_map(category)
-
-    def get_categorization_stats(self) -> Dict[str, int]:
-        """
-        Get statistics about available categorized maps.
-
-        Returns:
-            Dictionary with counts of simple and complex maps:
-            - simple_count: Number of simple maps available
-            - complex_count: Number of complex maps available
-            - total_count: Total number of categorized maps
-        """
-        return self.map_loader.get_categorization_stats()

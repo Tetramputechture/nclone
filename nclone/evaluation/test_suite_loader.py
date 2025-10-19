@@ -32,7 +32,14 @@ from typing import Dict, List, Optional, Any
 class TestSuiteLoader:
     """Loader for NPP-RL test suite maps."""
 
-    CATEGORIES = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+    CATEGORIES = [
+        "very_simple",
+        "simple",
+        "medium",
+        "complex",
+        "mine_heavy",
+        "exploration",
+    ]
 
     def __init__(self, test_suite_dir: str):
         """Initialize the test suite loader.
