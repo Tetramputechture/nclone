@@ -66,6 +66,12 @@ class NppEnvironment(
             pbrs_weights=self.config.pbrs.pbrs_weights,
             pbrs_gamma=self.config.pbrs.pbrs_gamma,
             custom_map_path=self.config.custom_map_path,
+            enable_augmentation=self.config.augmentation.enable_augmentation,
+            augmentation_config={
+                "p": self.config.augmentation.p,
+                "intensity": self.config.augmentation.intensity,
+                "disable_validation": self.config.augmentation.disable_validation,
+            },
         )
 
         # Initialize mixin systems using config
@@ -131,10 +137,13 @@ class NppEnvironment(
         # Add graph observation spaces if graph updates are enabled
         if enable_graph_updates:
             from ..graph.common import NODE_FEATURE_DIM, EDGE_FEATURE_DIM
-            
+
             # Graph node features: comprehensive features from graph builder
             obs_spaces["graph_node_feats"] = box.Box(
-                low=-np.inf, high=np.inf, shape=(N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
+                low=-np.inf,
+                high=np.inf,
+                shape=(N_MAX_NODES, NODE_FEATURE_DIM),
+                dtype=np.float32,
             )
             # Graph edge index: [2, max_edges] connectivity matrix
             obs_spaces["graph_edge_index"] = box.Box(
@@ -142,7 +151,10 @@ class NppEnvironment(
             )
             # Graph edge features: comprehensive features from graph builder
             obs_spaces["graph_edge_feats"] = box.Box(
-                low=-np.inf, high=np.inf, shape=(E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
+                low=-np.inf,
+                high=np.inf,
+                shape=(E_MAX_EDGES, EDGE_FEATURE_DIM),
+                dtype=np.float32,
             )
             # Graph masks for variable-size graphs
             obs_spaces["graph_node_mask"] = box.Box(
