@@ -313,7 +313,6 @@ class BaseNppEnvironment(gymnasium.Env):
         ninja_state = self.nplay_headless.get_ninja_state()
         entity_states_full = self.nplay_headless.get_entity_states()
 
-        # For production: limit entity_states to fixed size (GAME_STATE_CHANNELS - len(ninja_state) = 30 - 26 = 4)
         # Use first 4 dimensions which contain critical entity counts
         entity_states = (
             entity_states_full[:4]
