@@ -65,6 +65,8 @@ class BaseNppEnvironment(gymnasium.Env):
         pbrs_weights: Optional[dict] = None,
         pbrs_gamma: float = 0.99,
         custom_map_path: Optional[str] = None,
+        enable_augmentation: bool = True,
+        augmentation_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the base N++ environment.
@@ -81,6 +83,8 @@ class BaseNppEnvironment(gymnasium.Env):
             pbrs_weights: PBRS component weights dictionary
             pbrs_gamma: PBRS discount factor
             custom_map_path: Path to custom map file
+            enable_augmentation: Enable frame augmentation
+            augmentation_config: Augmentation configuration dictionary
         """
         super().__init__()
 
@@ -117,8 +121,13 @@ class BaseNppEnvironment(gymnasium.Env):
             self.nplay_headless, self.rng, eval_mode, custom_map_path
         )
 
-        # Initialize observation processor
-        self.observation_processor = ObservationProcessor()
+        # Initialize observation processor with performance optimizations
+        # training_mode=True disables validation for ~12% performance boost
+        self.observation_processor = ObservationProcessor(
+            enable_augmentation=enable_augmentation,
+            augmentation_config=augmentation_config,
+            training_mode=not eval_mode,  # Disable validation in training mode
+        )
 
         # Initialize reward calculator with PBRS configuration
         self.reward_calculator = RewardCalculator(
