@@ -142,7 +142,14 @@ class EnvMapLoader:
         else:
             # Randomly select difficulty category for training diversity
             # Use weighted sampling to favor simpler levels early in training
-            categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+            categories = [
+                "very_simple",
+                "simple",
+                "medium",
+                "complex",
+                "mine_heavy",
+                "exploration",
+            ]
             category_weights = self._curriculum_weights
 
             # Convert to cumulative weights for random.choices
@@ -161,7 +168,14 @@ class EnvMapLoader:
         seed = self._train_seed_counter
 
         # Generate map based on category using available generator methods
-        if category == "simple":
+        if category == "very_simple":
+            # Very simple levels
+            # Minimal simple level takes an index parameter
+            def map_func(seed):
+                return self._train_generator._create_minimal_simple_level(seed, 0)
+
+            map_gen = map_func(seed)
+        elif category == "simple":
             # Randomly select from simple level generators
             generators = [
                 self._train_generator._create_simple_jump_level,
@@ -314,20 +328,6 @@ class EnvMapLoader:
         # Load the map
         self.nplay_headless.load_map(str(map_path))
 
-    def get_categorization_stats(self) -> dict:
-        """
-        Get statistics about available categorized maps.
-
-        Returns:
-            Dictionary with counts of simple and complex maps
-        """
-        return {
-            "simple_count": len(self._map_categories.get("simple", [])),
-            "complex_count": len(self._map_categories.get("complex", [])),
-            "total_count": len(self._map_categories.get("simple", []))
-            + len(self._map_categories.get("complex", [])),
-        }
-
     def set_curriculum_stage(self, stage: str) -> None:
         """Set the current curriculum stage for map selection.
 
@@ -337,7 +337,14 @@ class EnvMapLoader:
         Raises:
             ValueError: If stage is invalid
         """
-        valid_stages = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+        valid_stages = [
+            "very_simple",
+            "simple",
+            "medium",
+            "complex",
+            "mine_heavy",
+            "exploration",
+        ]
         if stage not in valid_stages:
             raise ValueError(
                 f"Invalid curriculum stage '{stage}'. Must be one of: {valid_stages}"
@@ -364,7 +371,14 @@ class EnvMapLoader:
         Raises:
             ValueError: If weights are invalid
         """
-        categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+        categories = [
+            "very_simple",
+            "simple",
+            "medium",
+            "complex",
+            "mine_heavy",
+            "exploration",
+        ]
 
         # Validate all categories are present
         for cat in categories:
@@ -389,7 +403,7 @@ class EnvMapLoader:
             List of weights for [simple, medium, complex, mine_heavy, exploration]
         """
         # Default weights: favor simpler levels
-        return [30, 30, 20, 10, 10]
+        return [30, 30, 20, 10, 10, 10]
 
     def reset_curriculum_weights(self) -> None:
         """Reset curriculum weights to default values."""
@@ -402,7 +416,14 @@ class EnvMapLoader:
         Returns:
             Dictionary with curriculum settings
         """
-        categories = ["simple", "medium", "complex", "mine_heavy", "exploration"]
+        categories = [
+            "very_simple",
+            "simple",
+            "medium",
+            "complex",
+            "mine_heavy",
+            "exploration",
+        ]
         weights_dict = {
             cat: weight for cat, weight in zip(categories, self._curriculum_weights)
         }
