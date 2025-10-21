@@ -13,16 +13,7 @@ RENDERED_VIEW_WIDTH = 100  # 100 / 6
 RENDERED_VIEW_HEIGHT = 176  # 1056 / 6
 RENDERED_VIEW_CHANNELS = 1  # Grayscale
 
-# Total game state features including all entities
-GAME_STATE_FEATURES = 159019
-
-# Total game state features with limited entity count
-GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT = 2594
-
-# Ninja state size
-NINJA_STATE_SIZE_RICH = 26  # Enhanced state: movement(8) + input(5) + contact(6) + momentum(4) + proximity(2) + progress(2)
-
-GAME_STATE_CHANNELS = 26  # game_state now contains only ninja_state (entity counts removed)
+GAME_STATE_CHANNELS = 26
 
 # LEVEL_WIDTH and LEVEL_HEIGHT
 LEVEL_WIDTH = 1056.0
