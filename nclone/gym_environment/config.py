@@ -175,20 +175,20 @@ class EnvironmentConfig:
         Memory optimizations enabled:
         - Animation disabled (saves ~500 KB per environment)
         - Optimized for parallel training with 50+ environments
-        
+
         Expected performance: ~50-60% faster than unoptimized configuration.
         Expected memory savings: ~500 KB per environment instance.
         """
         config = cls(
             augmentation=AugmentationConfig(
                 enable_augmentation=True,
-                disable_validation=True,  # Performance optimization
+                disable_validation=True,
                 intensity="medium",
                 p=0.5,
             ),
             render=RenderConfig(
                 render_mode="rgb_array",
-                enable_animation=False,  # MEMORY: Saves ~500 KB per env
+                enable_animation=False,
             ),
             pbrs=PBRSConfig(enable_pbrs=True),
             graph=GraphConfig(enable_graph_updates=True),
@@ -210,12 +210,12 @@ class EnvironmentConfig:
         config = cls(
             augmentation=AugmentationConfig(
                 enable_augmentation=True,
-                disable_validation=True,  # Performance optimization
+                disable_validation=True,
                 intensity="medium",
                 p=0.5,
             ),
             render=RenderConfig(render_mode="rgb_array"),
-            pbrs=PBRSConfig(enable_pbrs=False),  # Clean evaluation
+            pbrs=PBRSConfig(enable_pbrs=False),
             graph=GraphConfig(enable_graph_updates=True),
             reachability=ReachabilityConfig(enable_reachability=True),
             eval_mode=True,
@@ -311,41 +311,6 @@ class EnvironmentConfig:
             graph=GraphConfig(enable_graph_updates=False),
             reachability=ReachabilityConfig(enable_reachability=False),
             hierarchical=HierarchicalConfig(enable_hierarchical=False),
-            **kwargs,
-        )
-        return config
-
-    @classmethod
-    def for_parallel_training(cls, **kwargs) -> "EnvironmentConfig":
-        """Create configuration optimized for parallel environment training.
-
-        MEMORY OPTIMIZATIONS:
-        - Animation disabled (saves ~500 KB per env)
-        - Augmentation disabled to reduce processing copies
-        - Debug features disabled
-        - Graph and reachability updates disabled (can share across envs)
-        
-        Recommended for training with 50+ parallel environments.
-        Expected memory savings: ~850 KB per environment instance.
-        """
-        config = cls(
-            augmentation=AugmentationConfig(
-                enable_augmentation=False,  # Reduces memory copies
-                disable_validation=True,
-                intensity="light",
-                p=0.0,
-            ),
-            render=RenderConfig(
-                render_mode="rgb_array",
-                enable_animation=False,  # CRITICAL: Saves ~500 KB per env
-                enable_debug_overlay=False,
-            ),
-            pbrs=PBRSConfig(enable_pbrs=True),  # Keep PBRS for better learning
-            graph=GraphConfig(enable_graph_updates=False),  # Disable for memory
-            reachability=ReachabilityConfig(enable_reachability=False),  # Disable for memory
-            hierarchical=HierarchicalConfig(enable_hierarchical=False),
-            enable_short_episode_truncation=True,
-            enable_logging=False,
             **kwargs,
         )
         return config
