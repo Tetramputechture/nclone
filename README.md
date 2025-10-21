@@ -87,55 +87,33 @@ Discrete(6) actions:
 
 ### Observation Space
 
-**Comprehensive multi-modal observations for CNN, MLP, and GNN architectures.**
-
-See **[OBSERVATION_SPACE_README.md](OBSERVATION_SPACE_README.md)** for complete documentation.
-
-Multi-modal Dict observation:
+Multi-modal observations for CNN, MLP, and GNN architectures.
 
 ```python
 {
-    # Visual Modalities (CNNs)
-    'player_frame': Box(0, 255, (84, 84, 1), uint8),  # Local player-centered frame
-    'global_view': Box(0, 255, (176, 100, 1), uint8),  # Global strategic view
+    # Visual (CNNs)
+    'player_frame': Box(0, 255, (84, 84, 1), uint8),
+    'global_view': Box(0, 255, (176, 100, 1), uint8),
     
-    # State Modalities (MLPs)
-    'game_state': Box(-1, 1, (26+N,), float32),        # Physics + entities
-    'reachability_features': Box(0, 1, (8,), float32), # Path planning
-    'entity_positions': Box(0, 1, (6,), float32),      # Key positions
+    # State vectors (MLPs)
+    'game_state': Box(-1, 1, (26,), float32),
+    'reachability_features': Box(0, 1, (8,), float32),
+    'entity_positions': Box(0, 1, (6,), float32),
+    'switch_states': Box(0, 1, (25,), float32),
     
-    # Graph Modality (GNNs)
-    'graph_node_feats': Box(-inf, inf, (N_MAX_NODES, F_node), float32),
-    'graph_edge_index': Box(0, N_MAX_NODES-1, (2, E_MAX_EDGES), int32),
-    'graph_edge_feats': Box(0, 1, (E_MAX_EDGES, F_edge), float32),
-    'graph_node_mask': Box(0, 1, (N_MAX_NODES,), int32),
-    'graph_edge_mask': Box(0, 1, (E_MAX_EDGES,), int32),
+    # Graph (GNNs, optional)
+    'graph_node_feats': Box(-inf, inf, (max_nodes, 55), float32),
+    'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), int32),
+    ...
 }
 ```
 
-**game_state vector (39 dims):**
-- Ninja state (12): position, velocity, contact, jump state, etc.
-- Exit state (2): normalized position
-- Switch state (3): position + activation status
-- Mine states (20): positions + activation for 10 mines
-- Time remaining (1)
-- Vector to switch (2)
-- Vector to exit (2)
+**Validate observations:**
+```bash
+python tools/validate_observations.py --episodes 3
+```
 
-**reachability_features (8 dims):**
-- Area ratio (explored vs total)
-- Distance to switch (normalized)
-- Distance to exit (normalized)
-- Reachable switches count
-- Reachable hazards count
-- Connectivity score
-- Exit reachable (boolean)
-- Path exists to exit (boolean)
-
-**entity_positions (6 dims):**
-- `[0:2]`: Ninja (x, y)
-- `[2:4]`: Switch (x, y)
-- `[4:6]`: Exit (x, y)
+**Full documentation:** [OBSERVATION_SPACE_README.md](OBSERVATION_SPACE_README.md)
 
 ### Reward Structure
 
