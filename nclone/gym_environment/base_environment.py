@@ -410,6 +410,36 @@ class BaseNppEnvironment(gymnasium.Env):
         """Reset the reward calculator."""
         self.reward_calculator.reset()
 
+    def _get_switch_states_from_env(self) -> Dict[str, bool]:
+        """
+        Extract locked door switch states from environment.
+
+        Returns:
+            Dictionary mapping switch IDs to activation states (True = activated/collected)
+        """
+        switch_states = {}
+
+        # Get locked door entities (type 6)
+        # Each locked door has a switch that the ninja must collect to open the door
+        locked_doors = self.nplay_headless.locked_doors()
+
+        for i, locked_door in enumerate(locked_doors):
+            # The 'active' attribute indicates if the switch is still collectible
+            # active=True means switch not yet collected (door still locked)
+            # active=False means switch has been collected (door is open)
+            is_activated = not getattr(locked_door, "active", True)
+            switch_states[f"locked_door_{i}"] = is_activated
+
+        # Get locked door switch entities (type 7) if they exist separately
+        locked_door_switches = self.nplay_headless.locked_door_switches()
+
+        for i, switch in enumerate(locked_door_switches):
+            # Similar logic for separate switch entities
+            is_activated = not getattr(switch, "active", True)
+            switch_states[f"locked_door_switch_{i}"] = is_activated
+
+        return switch_states
+
     def _extract_level_data(self) -> LevelData:
         """
         Extract level structure data for graph construction.
