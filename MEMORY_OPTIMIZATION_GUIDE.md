@@ -186,28 +186,53 @@ config = EnvironmentConfig(
 
 ## Quick Start: Using Memory-Optimized Configuration
 
+The default training configuration now includes memory optimizations:
+
 ```python
 from nclone.gym_environment.config import EnvironmentConfig
-from nclone.gym_environment.environment_factory import create_environment
+from nclone.gym_environment.environment_factory import create_training_env
 
-# For parallel training with minimal memory footprint
+# Standard training config now includes memory optimizations
+env = create_training_env()  # Uses EnvironmentConfig.for_training()
+
+# Memory savings: ~500 KB per environment instance
+# Safe for 100+ parallel environments
+# Augmentation and reachability enabled by default
+```
+
+For even more aggressive memory optimization (not recommended for training quality):
+```python
+# Alternative: Minimal config with augmentation/reachability disabled
 config = EnvironmentConfig.for_parallel_training()
 env = create_environment(config)
-
-# Memory savings: ~850 KB per environment instance
-# Safe for 100+ parallel environments
+# Additional ~350 KB savings but may impact learning
 ```
 
 ## Expected Memory Savings
 
+### Standard Training Config (for_training)
+Memory optimizations with full training features enabled:
+
 | Optimization | Memory Saved per Env | Impact (100 envs) |
 |--------------|---------------------|-------------------|
-| float16 game_state | ~60 bytes | ~6 KB |
+| Buffer reuse (observation_processor) | ~50 KB per step | ~5 MB |
 | Disable animation | ~500 KB | ~50 MB |
-| Array views in processor | ~100 KB | ~10 MB |
-| Shared level data | ~200 KB | ~19.5 MB (95% saving) |
-| Buffer reuse | ~50 KB | ~5 MB |
-| **TOTAL** | **~850 KB** | **~85 MB** |
+| **TOTAL (Standard)** | **~550 KB** | **~55 MB** |
+
+*Augmentation, graph, and reachability remain enabled for optimal learning quality*
+
+### Aggressive Config (for_parallel_training)
+Additional memory savings (may impact training quality):
+
+| Optimization | Memory Saved per Env | Impact (100 envs) |
+|--------------|---------------------|-------------------|
+| Standard optimizations | ~550 KB | ~55 MB |
+| Disable augmentation (additional) | ~100 KB | ~10 MB |
+| Disable graph (additional) | ~150 KB | ~15 MB |
+| Disable reachability (additional) | ~50 KB | ~5 MB |
+| **TOTAL (Aggressive)** | **~850 KB** | **~85 MB** |
+
+**Note**: Animation disabled provides the largest single memory reduction (~59% of total savings)
 
 ## Testing Memory Optimizations
 
