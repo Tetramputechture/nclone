@@ -115,44 +115,41 @@ def get_augmentation_pipeline(
 def apply_augmentation(
     frame: np.ndarray,
     seed: Optional[int] = None,
-    saved_params: Optional[Dict[str, Any]] = None,
     p: float = 0.5,
     intensity: str = "medium",
     disable_validation: bool = False,
-) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-    """Applies random augmentations to the input frame for N++ game.
+) -> np.ndarray:
+    """Apply random augmentation to a single frame.
+
+    Simplified function for single-frame augmentation, optimized for performance.
+    This replaces the old version that returned a tuple with replay parameters,
+    which is no longer needed since we only augment single frames now.
 
     Args:
-        frame: Input frame of shape (H, W, C)
+        frame: Single frame to augment, shape (H, W, C)
         seed: Optional random seed for reproducibility
-        saved_params: Optional parameters from a previous transform to replay
         p: Probability of applying each augmentation
         intensity: Augmentation intensity level ("light", "medium", "strong")
         disable_validation: If True, disables validation for performance
 
     Returns:
-        Tuple of (augmented frame, saved parameters for replay)
+        Augmented frame with same shape as input
     """
     if seed is not None:
         np.random.seed(seed)
 
     # Ensure frame is in uint8 format for albumentations (performance best practice)
-    frame = frame.astype(np.uint8)
+    frame_uint8 = frame.astype(np.uint8)
 
     # Get augmentation pipeline with specified parameters
     transform = get_augmentation_pipeline(
         p=p, intensity=intensity, disable_validation=disable_validation
     )
 
-    # Apply augmentations
-    if saved_params is not None:
-        # Replay exact same augmentation
-        augmented = transform.replay(saved_params, image=frame)["image"]
-        return augmented, None
-    else:
-        # Generate new random augmentation and save parameters
-        data = transform(image=frame)
-        return data["image"], data["replay"]
+    # Apply augmentation
+    augmented = transform(image=frame_uint8)["image"]
+
+    return augmented
 
 
 def apply_consistent_augmentation(
@@ -164,7 +161,9 @@ def apply_consistent_augmentation(
 ) -> List[np.ndarray]:
     """Applies the same random augmentations to all frames.
 
-    This ensures consistent augmentations across the batch of frames provided.
+    DEPRECATED: Use apply_augmentation() for single-frame processing.
+    This function is maintained for backward compatibility but is no longer
+    needed since the system now uses single frames instead of frame stacking.
 
     Args:
         frames: List of frames to augment, each of shape (H, W, C)

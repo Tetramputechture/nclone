@@ -50,7 +50,7 @@ from .constants import (
     RENDERED_VIEW_HEIGHT,
 )
 from ..constants.physics_constants import MAX_HOR_SPEED
-from .frame_augmentation import apply_consistent_augmentation, get_recommended_config
+from .frame_augmentation import apply_augmentation, get_recommended_config
 from .mine_state_processor import MineStateProcessor
 
 # Entity position array indices
@@ -504,15 +504,14 @@ class ObservationProcessor:
 
         # Apply augmentation to the single frame if enabled
         if self.enable_augmentation:
-            augmented_frames = apply_consistent_augmentation(
-                [player_frame],
+            player_frame = apply_augmentation(
+                player_frame,
                 p=self.augmentation_config.get("p", 0.5),
                 intensity=self.augmentation_config.get("intensity", "medium"),
                 disable_validation=self.augmentation_config.get(
                     "disable_validation", False
                 ),
             )
-            player_frame = augmented_frames[0]
 
         result = {
             "game_state": self.process_game_state(obs),
