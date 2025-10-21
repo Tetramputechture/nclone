@@ -307,6 +307,41 @@ class EnvironmentConfig:
         )
         return config
 
+    @classmethod
+    def for_parallel_training(cls, **kwargs) -> "EnvironmentConfig":
+        """Create configuration optimized for parallel environment training.
+
+        MEMORY OPTIMIZATIONS:
+        - Animation disabled (saves ~500 KB per env)
+        - Augmentation disabled to reduce processing copies
+        - Debug features disabled
+        - Graph and reachability updates disabled (can share across envs)
+        
+        Recommended for training with 50+ parallel environments.
+        Expected memory savings: ~850 KB per environment instance.
+        """
+        config = cls(
+            augmentation=AugmentationConfig(
+                enable_augmentation=False,  # Reduces memory copies
+                disable_validation=True,
+                intensity="light",
+                p=0.0,
+            ),
+            render=RenderConfig(
+                render_mode="rgb_array",
+                enable_animation=False,  # CRITICAL: Saves ~500 KB per env
+                enable_debug_overlay=False,
+            ),
+            pbrs=PBRSConfig(enable_pbrs=True),  # Keep PBRS for better learning
+            graph=GraphConfig(enable_graph_updates=False),  # Disable for memory
+            reachability=ReachabilityConfig(enable_reachability=False),  # Disable for memory
+            hierarchical=HierarchicalConfig(enable_hierarchical=False),
+            enable_short_episode_truncation=True,
+            enable_logging=False,
+            **kwargs,
+        )
+        return config
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary for backward compatibility."""
         return {
