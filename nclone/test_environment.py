@@ -32,8 +32,6 @@ from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability.reachability_system import ReachabilitySystem
 from nclone.replay.gameplay_recorder import GameplayRecorder
 
-# Removed legacy trajectory calculator import
-# SubgoalPlanner deprecated - using nclone.planning instead
 from nclone.planning import LevelCompletionPlanner
 from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
 from nclone.graph.reachability.frontier_detector import FrontierDetector
