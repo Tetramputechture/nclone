@@ -114,11 +114,6 @@ def create_vectorized_training_envs(
     return env_factories
 
 
-# Convenience aliases for backward compatibility
-create_dynamic_graph_env = create_training_env
-create_reachability_aware_env = create_training_env
-
-
 def create_hierarchical_env(
     config: Optional[EnvironmentConfig] = None,
     completion_planner: Optional[Any] = None,

@@ -85,7 +85,7 @@ class TestObservationProfiles(unittest.TestCase):
             self.assertGreaterEqual(len(obs["game_state"]), GAME_STATE_CHANNELS)
             self.assertTrue(np.all(np.isfinite(obs["game_state"])))
 
-            # Check image shapes remain consistent (may be temporal stacked)
+            # Check image shapes remain consistent
             self.assertEqual(obs["player_frame"].shape, initial_player_frame_shape)
             self.assertEqual(obs["global_view"].shape, initial_global_view_shape)
             
