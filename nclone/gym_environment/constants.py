@@ -20,9 +20,9 @@ GAME_STATE_FEATURES = 159019
 GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT = 2594
 
 # Ninja state size
-NINJA_STATE_SIZE_RICH = 30  # Enhanced state: movement(8) + input(5) + contact(6) + momentum(4) + proximity(4) + progress(3)
+NINJA_STATE_SIZE_RICH = 26  # Enhanced state: movement(8) + input(5) + contact(6) + momentum(4) + proximity(2) + progress(2)
 
-GAME_STATE_CHANNELS = 30
+GAME_STATE_CHANNELS = 26  # game_state now contains only ninja_state (entity counts removed)
 
 # LEVEL_WIDTH and LEVEL_HEIGHT
 LEVEL_WIDTH = 1056.0

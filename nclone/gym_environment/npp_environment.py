@@ -124,10 +124,11 @@ class NppEnvironment(
 
         # Add switch states (always available for hierarchical and ICM systems)
         # Format: Fixed array with per-door information for up to 5 locked doors
-        # Per door: [switch_x_norm, switch_y_norm, door_x_norm, door_y_norm, switch_collected, door_open]
-        # Total: 6 features * 5 doors = 30 features
+        # Per door: [switch_x_norm, switch_y_norm, door_x_norm, door_y_norm, collected]
+        # Note: collected state represents both switch collection AND door open (they're always synchronized)
+        # Total: 5 features * 5 doors = 25 features
         obs_spaces["switch_states"] = box.Box(
-            low=0.0, high=1.0, shape=(30,), dtype=np.float32
+            low=0.0, high=1.0, shape=(25,), dtype=np.float32
         )
 
         # Add reachability features (always available - zeros if reachability disabled)
@@ -314,26 +315,28 @@ class NppEnvironment(
         """
         Build switch states array with detailed locked door information.
         
-        Format per door (6 features):
+        Format per door (5 features):
         - switch_x_norm: Normalized X position of switch (0-1)
         - switch_y_norm: Normalized Y position of switch (0-1)
         - door_x_norm: Normalized X position of door (0-1)
         - door_y_norm: Normalized Y position of door (0-1)
-        - switch_collected: 1.0 if collected, 0.0 otherwise
-        - door_open: 1.0 if door is open, 0.0 otherwise
+        - collected: 1.0 if switch collected (door open), 0.0 otherwise (door closed)
+        
+        Note: collected state represents both switch collection AND door open state
+        since they are always synchronized (collected switch = open door).
         
         Returns:
-            Array of shape (30,) for up to 5 locked doors
+            Array of shape (25,) for up to 5 locked doors
         """
         from ..constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
         
-        switch_states_array = np.zeros(30, dtype=np.float32)
+        switch_states_array = np.zeros(25, dtype=np.float32)
         
         # Get locked door entities
         locked_doors = obs.get("locked_doors", [])
         
         for i, locked_door in enumerate(locked_doors[:5]):  # Max 5 doors
-            base_idx = i * 6
+            base_idx = i * 5
             
             # Get door segment position (stored before position is updated to switch position)
             # The door entity stores the door segment coordinates
@@ -358,13 +361,10 @@ class NppEnvironment(
             door_x_norm = door_x / LEVEL_WIDTH_PX
             door_y_norm = door_y / LEVEL_HEIGHT_PX
             
-            # Switch collected state
-            # active=True means switch not yet collected, active=False means collected
+            # Switch collected state (also represents door open state - they're synchronized)
+            # active=True means switch not yet collected (door closed)
+            # active=False means collected (door open)
             switch_collected = 0.0 if getattr(locked_door, "active", True) else 1.0
-            
-            # Door open state
-            # closed=True means door is closed, closed=False means door is open
-            door_open = 0.0 if getattr(locked_door, "closed", True) else 1.0
             
             # Store in array
             switch_states_array[base_idx + 0] = np.clip(switch_x_norm, 0.0, 1.0)
@@ -372,7 +372,6 @@ class NppEnvironment(
             switch_states_array[base_idx + 2] = np.clip(door_x_norm, 0.0, 1.0)
             switch_states_array[base_idx + 3] = np.clip(door_y_norm, 0.0, 1.0)
             switch_states_array[base_idx + 4] = switch_collected
-            switch_states_array[base_idx + 5] = door_open
         
         return switch_states_array
     
