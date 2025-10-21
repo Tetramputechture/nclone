@@ -55,7 +55,7 @@ from nclone import NppEnvironment
 
 # Create environment
 env = NppEnvironment(
-    render_mode="rgb_array",  # Headless for training
+    render_mode="grayscale_array",  # Headless for training
     dataset_dir="datasets/train",
     enable_graph_updates=True,  # Graph observations
     curriculum_level=0  # Difficulty level
@@ -178,7 +178,7 @@ Progressive difficulty stages:
 
 | Mode | FPS | Use Case |
 |------|-----|----------|
-| Headless (rgb_array) | 1000-2000 | RL training |
+| Headless (grayscale_array) | 1000-2000 | RL training |
 | Rendered (human) | 60 | Interactive play/debug |
 | Multi-process (64 envs) | 30K+ steps/sec | Distributed training |
 

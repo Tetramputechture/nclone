@@ -8,12 +8,15 @@ from .debug_overlay_renderer import DebugOverlayRenderer
 
 class NSimRenderer:
     def __init__(
-        self, sim, render_mode: str = "rgb_array", enable_debug_overlay: bool = False,
-        grayscale: bool = False
+        self,
+        sim,
+        render_mode: str = "grayscale_array",
+        enable_debug_overlay: bool = False,
+        grayscale: bool = False,
     ):
         self.sim = sim
         self.grayscale = grayscale
-        
+
         if render_mode == "human":
             # RGB for human viewing
             self.screen = pygame.display.set_mode(

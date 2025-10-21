@@ -197,8 +197,12 @@ class TestPBRSCalculator(unittest.TestCase):
         components2 = self.calculator.get_potential_components(new_state)
 
         for key in components1:
-            self.assertTrue(np.isfinite(components1[key]), f"Component {key} not finite")
-            self.assertTrue(np.isfinite(components2[key]), f"Component {key} not finite")
+            self.assertTrue(
+                np.isfinite(components1[key]), f"Component {key} not finite"
+            )
+            self.assertTrue(
+                np.isfinite(components2[key]), f"Component {key} not finite"
+            )
 
     def test_reset_functionality(self):
         """Test calculator reset."""
@@ -211,7 +215,7 @@ class TestPBRSCalculator(unittest.TestCase):
 
         # visited_positions list should exist and be empty after reset
         self.assertEqual(len(self.calculator.visited_positions), 0)
-        
+
         # Potential calculation should still work after reset
         pot_after = self.calculator.calculate_combined_potential(self.test_state)
         self.assertTrue(np.isfinite(pot_after))
@@ -224,14 +228,14 @@ class TestPBRSIntegration(unittest.TestCase):
     def setUp(self):
         """Set up test environments."""
         config_pbrs = EnvironmentConfig(
-            render=RenderConfig(render_mode="rgb_array"),
-            pbrs=PBRSConfig(enable_pbrs=True, pbrs_gamma=0.99)
+            render=RenderConfig(render_mode="grayscale_array"),
+            pbrs=PBRSConfig(enable_pbrs=True, pbrs_gamma=0.99),
         )
         self.env_pbrs = NppEnvironment(config=config_pbrs)
 
         config_no_pbrs = EnvironmentConfig(
-            render=RenderConfig(render_mode="rgb_array"),
-            pbrs=PBRSConfig(enable_pbrs=False)
+            render=RenderConfig(render_mode="grayscale_array"),
+            pbrs=PBRSConfig(enable_pbrs=False),
         )
         self.env_no_pbrs = NppEnvironment(config=config_no_pbrs)
 

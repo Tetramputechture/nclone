@@ -29,7 +29,7 @@ class NPlayHeadless:
 
     def __init__(
         self,
-        render_mode: str = "rgb_array",
+        render_mode: str = "grayscale_array",
         enable_animation: bool = False,
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
@@ -38,8 +38,8 @@ class NPlayHeadless:
         """
         Initialize the simulation and renderer, as well as the headless pygame
         interface and display.
-        
-        Note: Rendering automatically uses grayscale in rgb_array mode (headless) for performance.
+
+        Note: Rendering automatically uses grayscale in grayscale_array mode (headless) for performance.
         RGB is only used in 'human' mode for visual testing.
         """
         self.render_mode = render_mode
@@ -48,14 +48,13 @@ class NPlayHeadless:
             SimConfig(enable_anim=enable_animation, log_data=enable_logging)
         )
 
-        # OPTIMIZATION: Always use grayscale in headless mode (rgb_array)
+        # OPTIMIZATION: Always use grayscale in headless mode (grayscale_array)
         # RGB only used for human viewing (render_mode="human")
         # This eliminates expensive RGB->grayscale conversion (~30% speedup)
-        use_grayscale = (render_mode == "rgb_array")
-        
+        use_grayscale = render_mode == "grayscale_array"
+
         self.sim_renderer = NSimRenderer(
-            self.sim, render_mode, enable_debug_overlay, 
-            grayscale=use_grayscale
+            self.sim, render_mode, enable_debug_overlay, grayscale=use_grayscale
         )
         self.current_map_data = None
         self.clock = pygame.time.Clock()
@@ -63,7 +62,7 @@ class NPlayHeadless:
         # init pygame
         pygame.init()
         pygame.display.init()
-        if self.render_mode == "rgb_array":
+        if self.render_mode == "grayscale_array":
             os.environ["SDL_VIDEODRIVER"] = "dummy"
         else:
             print("Setting up pygame display")
@@ -97,7 +96,9 @@ class NPlayHeadless:
                 # Transpose to (H, W) and add channel dimension
                 grayscale_hw = np.transpose(referenced_array_wh, (1, 0))
                 # Copy and add channel dimension (H, W, 1)
-                final_gray_output_hw1 = np.array(grayscale_hw, copy=True, dtype=np.uint8)[..., np.newaxis]
+                final_gray_output_hw1 = np.array(
+                    grayscale_hw, copy=True, dtype=np.uint8
+                )[..., np.newaxis]
                 del referenced_array_wh  # Unlock surface
                 return final_gray_output_hw1
             except Exception:
@@ -105,7 +106,7 @@ class NPlayHeadless:
                 array_wh = pygame.surfarray.array2d(surface)
                 grayscale_hw = np.transpose(array_wh, (1, 0))
                 return grayscale_hw.astype(np.uint8)[..., np.newaxis]
-        
+
         # RGB surface - perform grayscale conversion
         try:
             # Attempt to get a referenced array (W, H, C)
@@ -213,7 +214,7 @@ class NPlayHeadless:
     def render(self, debug_info: Optional[dict] = None):
         """
         Render the current frame.
-        If render_mode is 'rgb_array', returns a grayscaled HxWx1 NumPy array.
+        If render_mode is 'grayscale_array', returns a grayscaled HxWx1 NumPy array.
         If render_mode is 'human', returns the Pygame surface.
         Uses caching for performance.
 
@@ -236,7 +237,7 @@ class NPlayHeadless:
                 return self.cached_render_buffer
             elif (
                 self.cached_render_surface is not None
-            ):  # Mode might have switched from human to rgb_array, or first rgb_array render
+            ):  # Mode might have switched from human to grayscale_array, or first grayscale_array render
                 # Generate grayscaled buffer from self.cached_render_surface
                 gray_array_hw1 = self._perform_grayscale_conversion(
                     self.cached_render_surface
