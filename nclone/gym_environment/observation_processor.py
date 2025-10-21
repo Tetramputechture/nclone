@@ -498,35 +498,29 @@ class ObservationProcessor:
         ]
         entity_positions[EXIT_POS_IDX : EXIT_POS_IDX + 2] = [exit_x_norm, exit_y_norm]
 
-        result = {
-            "game_state": self.process_game_state(obs),
-            "global_view": self.process_rendered_global_view(screen),
-            "reachability_features": obs["reachability_features"],
-            "entity_positions": entity_positions,  # Add actual entity positions
-        }
+        # Ensure player_frame has shape (H, W, 1)
+        if len(player_frame.shape) == 2:
+            player_frame = player_frame[..., np.newaxis]
 
-        # Get player frames from history
-        player_frames = []
-        # Reverse to get [current, last, second_to_last]
-        for frame in reversed(self.frame_history):
-            # Ensure each frame has shape (H, W, 1)
-            if len(frame.shape) == 2:
-                frame = frame[..., np.newaxis]
-            player_frames.append(frame)
-
-        # Apply consistent augmentation across all frames if enabled
+        # Apply augmentation to the single frame if enabled
         if self.enable_augmentation:
-            player_frames = apply_consistent_augmentation(
-                player_frames,
+            augmented_frames = apply_consistent_augmentation(
+                [player_frame],
                 p=self.augmentation_config.get("p", 0.5),
                 intensity=self.augmentation_config.get("intensity", "medium"),
                 disable_validation=self.augmentation_config.get(
                     "disable_validation", False
                 ),
             )
+            player_frame = augmented_frames[0]
 
-        # Stack frames along channel dimension
-        result["player_frame"] = np.concatenate(player_frames, axis=-1)
+        result = {
+            "game_state": self.process_game_state(obs),
+            "global_view": self.process_rendered_global_view(screen),
+            "reachability_features": obs["reachability_features"],
+            "entity_positions": entity_positions,
+            "player_frame": player_frame,
+        }
 
         return result
 
@@ -602,8 +596,5 @@ class ObservationProcessor:
 
     def reset(self) -> None:
         """Reset processor state."""
-        if self.frame_history is not None:
-            self.frame_history.clear()
-
         if self.enable_mine_tracking and self.mine_processor is not None:
             self.mine_processor.reset()
