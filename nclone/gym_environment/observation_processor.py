@@ -246,7 +246,7 @@ def compute_hazard_from_entity_states(
 
 
 class ObservationProcessor:
-    """Processes raw game observations into frame stacks and normalized feature vectors.
+    """Processes raw game observations into frames and normalized feature vectors.
 
     Performance optimizations:
     - Frame stabilization called once per observation (67% reduction from baseline)
@@ -469,7 +469,7 @@ class ObservationProcessor:
         return downsampled
 
     def process_observation(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
-        """Process observation into frame stack, base map, and feature vectors."""
+        """Process observation into player frame, global view, and feature vectors."""
         # Ensure screen stability and consistent format
         screen = stabilize_frame(obs["screen"])
 

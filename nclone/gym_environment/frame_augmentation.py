@@ -162,11 +162,9 @@ def apply_consistent_augmentation(
     intensity: str = "medium",
     disable_validation: bool = False,
 ) -> List[np.ndarray]:
-    """Applies the same random augmentations to all frames in a stack.
+    """Applies the same random augmentations to all frames.
 
-    This is crucial for temporal consistency in RL where frame stacks represent
-    consecutive time steps. All frames in the stack must receive identical
-    augmentations to preserve temporal relationships.
+    This ensures consistent augmentations across the batch of frames provided.
 
     Args:
         frames: List of frames to augment, each of shape (H, W, C)
