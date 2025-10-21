@@ -102,6 +102,7 @@ class BaseNppEnvironment(gymnasium.Env):
             enable_logging=enable_logging,
             enable_debug_overlay=enable_debug_overlay,
             seed=seed,
+            grayscale_rendering=False,  # Keep RGB rendering for stability
         )
 
         # Initialize action space (6 actions: NOOP, Left, Right, Jump, Jump+Left, Jump+Right)

@@ -15,9 +15,12 @@ RENDERED_VIEW_CHANNELS = 1  # Grayscale
 
 
 # Temporal frames
-# Increased to 12 based on research suggesting benefits of larger frame stacks for temporal modeling
-# in procedural environments (e.g., findings from ProcGen benchmark research).
-TEMPORAL_FRAMES = 12
+# OPTIMIZED: Reduced from 12 to 1 after analysis showing frame stacking is unnecessary.
+# Reasoning: The game provides explicit velocity, acceleration, and input buffers in state,
+# eliminating the need for temporal frame stacking. This provides 10-12x speedup in observation
+# processing while maintaining full Markov property satisfaction.
+# For more details, see: docs/performance_optimization.md
+TEMPORAL_FRAMES = 1
 
 # Total game state features including all entities
 GAME_STATE_FEATURES = 159019
