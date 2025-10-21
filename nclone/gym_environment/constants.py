@@ -13,15 +13,6 @@ RENDERED_VIEW_WIDTH = 100  # 100 / 6
 RENDERED_VIEW_HEIGHT = 176  # 1056 / 6
 RENDERED_VIEW_CHANNELS = 1  # Grayscale
 
-
-# Temporal frames
-# OPTIMIZED: Reduced from 12 to 1 after analysis showing frame stacking is unnecessary.
-# Reasoning: The game provides explicit velocity, acceleration, and input buffers in state,
-# eliminating the need for temporal frame stacking. This provides 10-12x speedup in observation
-# processing while maintaining full Markov property satisfaction.
-# For more details, see: docs/performance_optimization.md
-TEMPORAL_FRAMES = 1
-
 # Total game state features including all entities
 GAME_STATE_FEATURES = 159019
 
@@ -30,9 +21,7 @@ GAME_STATE_FEATURES_LIMITED_ENTITY_COUNT = 2594
 
 # Ninja state size
 NINJA_STATE_SIZE = 10  # Legacy minimal state (deprecated)
-NINJA_STATE_SIZE_RICH = (
-    30  # Enhanced state: movement(8) + input(5) + contact(6) + momentum(4) + proximity(4) + progress(3)
-)
+NINJA_STATE_SIZE_RICH = 30  # Enhanced state: movement(8) + input(5) + contact(6) + momentum(4) + proximity(4) + progress(3)
 
 GAME_STATE_CHANNELS = 30
 

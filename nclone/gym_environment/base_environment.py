@@ -20,7 +20,6 @@ from ..graph.level_data import LevelData
 
 from .constants import (
     GAME_STATE_CHANNELS,
-    TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
     MAX_TIME_IN_FRAMES,
@@ -171,7 +170,7 @@ class BaseNppEnvironment(gymnasium.Env):
                 shape=(
                     PLAYER_FRAME_HEIGHT,
                     PLAYER_FRAME_WIDTH,
-                    TEMPORAL_FRAMES,
+                    1,
                 ),
                 dtype=np.uint8,
             ),

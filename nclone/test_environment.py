@@ -264,11 +264,17 @@ if args.interactive_graph and args.headless:
 
 # Create environment
 render_mode = "rgb_array" if args.headless else "human"
-debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
+debug_overlay_enabled = False  # Disable overlay in headless mode
 
 # Create environment configuration with custom map path if provided
 if args.map:
-    from nclone.gym_environment.config import EnvironmentConfig, RenderConfig, PBRSConfig, GraphConfig, ReachabilityConfig
+    from nclone.gym_environment.config import (
+        EnvironmentConfig,
+        RenderConfig,
+        PBRSConfig,
+        GraphConfig,
+        ReachabilityConfig,
+    )
 
     # Create config with proper render mode for headless
     render_config = RenderConfig(
@@ -287,8 +293,14 @@ if args.map:
     env = create_visual_testing_env(config=config)
     print(f"Loading custom map from: {args.map}")
 else:
-    from nclone.gym_environment.config import EnvironmentConfig, RenderConfig, PBRSConfig, GraphConfig, ReachabilityConfig
-    
+    from nclone.gym_environment.config import (
+        EnvironmentConfig,
+        RenderConfig,
+        PBRSConfig,
+        GraphConfig,
+        ReachabilityConfig,
+    )
+
     # Create config with proper render mode for headless
     render_config = RenderConfig(
         render_mode=render_mode,

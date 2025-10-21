@@ -47,7 +47,6 @@ from .constants import (
     PLAYER_FRAME_HEIGHT,
     LEVEL_WIDTH,
     LEVEL_HEIGHT,
-    TEMPORAL_FRAMES,
     RENDERED_VIEW_WIDTH,
     RENDERED_VIEW_HEIGHT,
 )
@@ -70,7 +69,7 @@ def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
 
 def stabilize_frame(frame: np.ndarray) -> np.ndarray:
     """Ensure frame has consistent properties for stable processing.
-    
+
     OPTIMIZED: More efficient conversion with early exits and optimized grayscale conversion.
     """
     # Convert pygame.Surface to numpy array if needed
@@ -265,7 +264,6 @@ class ObservationProcessor:
         # OPTIMIZATION: Only enable augmentation during training
         self.enable_augmentation = enable_augmentation and training_mode
         self.training_mode = training_mode
-        self.frame_history = deque(maxlen=TEMPORAL_FRAMES)
 
         # Set augmentation configuration optimized for platformer games
         if augmentation_config is None:
@@ -280,7 +278,7 @@ class ObservationProcessor:
         # Initialize mine state processor
         self.enable_mine_tracking = enable_mine_tracking
         self.mine_processor = MineStateProcessor() if enable_mine_tracking else None
-        
+
         # OPTIMIZATION: Cache for stabilized frames to avoid redundant conversions
         self._frame_cache = None
         self._frame_cache_id = None
@@ -508,13 +506,6 @@ class ObservationProcessor:
             "entity_positions": entity_positions,  # Add actual entity positions
         }
 
-        # Update frame history with cropped player frame instead of full frame
-        self.frame_history.append(player_frame)
-
-        # Fill frame history if needed
-        while len(self.frame_history) < TEMPORAL_FRAMES:
-            self.frame_history.append(player_frame)
-
         # Get player frames from history
         player_frames = []
         # Reverse to get [current, last, second_to_last]
@@ -537,11 +528,6 @@ class ObservationProcessor:
 
         # Stack frames along channel dimension
         result["player_frame"] = np.concatenate(player_frames, axis=-1)
-
-        # Verify we have exactly 3 channels
-        assert result["player_frame"].shape[-1] == TEMPORAL_FRAMES, (
-            f"Expected {TEMPORAL_FRAMES} channels, got {result['player_frame'].shape[-1]}"
-        )
 
         return result
 
