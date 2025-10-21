@@ -268,13 +268,41 @@ debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
 
 # Create environment configuration with custom map path if provided
 if args.map:
-    from nclone.gym_environment.config import EnvironmentConfig
+    from nclone.gym_environment.config import EnvironmentConfig, RenderConfig, PBRSConfig, GraphConfig, ReachabilityConfig
 
-    config = EnvironmentConfig.for_visual_testing(custom_map_path=args.map)
+    # Create config with proper render mode for headless
+    render_config = RenderConfig(
+        render_mode=render_mode,
+        enable_animation=not args.headless,
+        enable_debug_overlay=debug_overlay_enabled,
+    )
+    config = EnvironmentConfig(
+        custom_map_path=args.map,
+        enable_logging=False,
+        render=render_config,
+        pbrs=PBRSConfig(enable_pbrs=False),
+        graph=GraphConfig(enable_graph_updates=False, debug=False),
+        reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+    )
     env = create_visual_testing_env(config=config)
     print(f"Loading custom map from: {args.map}")
 else:
-    env = create_visual_testing_env()
+    from nclone.gym_environment.config import EnvironmentConfig, RenderConfig, PBRSConfig, GraphConfig, ReachabilityConfig
+    
+    # Create config with proper render mode for headless
+    render_config = RenderConfig(
+        render_mode=render_mode,
+        enable_animation=not args.headless,
+        enable_debug_overlay=debug_overlay_enabled,
+    )
+    config = EnvironmentConfig(
+        enable_logging=False,
+        render=render_config,
+        pbrs=PBRSConfig(enable_pbrs=False),
+        graph=GraphConfig(enable_graph_updates=False, debug=False),
+        reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+    )
+    env = create_visual_testing_env(config=config)
 
 env.reset()
 

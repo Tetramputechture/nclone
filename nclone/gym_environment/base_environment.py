@@ -96,13 +96,13 @@ class BaseNppEnvironment(gymnasium.Env):
         self.eval_mode = eval_mode
 
         # Initialize core game interface
+        # Note: Grayscale rendering is automatic in headless mode (rgb_array)
         self.nplay_headless = NPlayHeadless(
             render_mode=render_mode,
             enable_animation=enable_animation,
             enable_logging=enable_logging,
             enable_debug_overlay=enable_debug_overlay,
             seed=seed,
-            grayscale_rendering=False,  # Keep RGB rendering for stability
         )
 
         # Initialize action space (6 actions: NOOP, Left, Right, Jump, Jump+Left, Jump+Right)

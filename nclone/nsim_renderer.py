@@ -15,6 +15,7 @@ class NSimRenderer:
         self.grayscale = grayscale
         
         if render_mode == "human":
+            # RGB for human viewing
             self.screen = pygame.display.set_mode(
                 (render_utils.SRCWIDTH, render_utils.SRCHEIGHT), pygame.RESIZABLE
             )
@@ -26,6 +27,9 @@ class NSimRenderer:
                 self.screen = pygame.Surface(
                     (render_utils.SRCWIDTH, render_utils.SRCHEIGHT), depth=8
                 )
+                # Set up grayscale palette (0-255 mapping to gray shades)
+                palette = [(i, i, i) for i in range(256)]
+                self.screen.set_palette(palette)
             else:
                 self.screen = pygame.Surface(
                     (render_utils.SRCWIDTH, render_utils.SRCHEIGHT)
@@ -57,9 +61,15 @@ class NSimRenderer:
         self._update_screen_size_and_offsets()
 
         # Fill the main screen with the general background color
-        # Convert 0-1 float RGB to 0-255 int RGB for Pygame fill
-        pygame_bgcolor = tuple(int(c * 255) for c in render_utils.BGCOLOR_RGB)
-        self.screen.fill(pygame_bgcolor)
+        if self.grayscale:
+            # For grayscale: convert RGB to grayscale value (Y = 0.299R + 0.587G + 0.114B)
+            r, g, b = render_utils.BGCOLOR_RGB
+            gray_value = int((0.299 * r + 0.587 * g + 0.114 * b) * 255)
+            self.screen.fill(gray_value)
+        else:
+            # Convert 0-1 float RGB to 0-255 int RGB for Pygame fill
+            pygame_bgcolor = tuple(int(c * 255) for c in render_utils.BGCOLOR_RGB)
+            self.screen.fill(pygame_bgcolor)
 
         # Draw entities first
         entities_surface = self.entity_renderer.draw_entities(init)

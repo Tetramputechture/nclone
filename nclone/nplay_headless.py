@@ -34,15 +34,13 @@ class NPlayHeadless:
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
         seed: Optional[int] = None,
-        grayscale_rendering: bool = True,
     ):
         """
         Initialize the simulation and renderer, as well as the headless pygame
         interface and display.
         
-        Args:
-            grayscale_rendering: If True, render directly to 8-bit grayscale for performance.
-                                Default True for training/eval (saves ~30% observation processing time).
+        Note: Rendering automatically uses grayscale in rgb_array mode (headless) for performance.
+        RGB is only used in 'human' mode for visual testing.
         """
         self.render_mode = render_mode
 
@@ -50,9 +48,14 @@ class NPlayHeadless:
             SimConfig(enable_anim=enable_animation, log_data=enable_logging)
         )
 
+        # OPTIMIZATION: Always use grayscale in headless mode (rgb_array)
+        # RGB only used for human viewing (render_mode="human")
+        # This eliminates expensive RGB->grayscale conversion (~30% speedup)
+        use_grayscale = (render_mode == "rgb_array")
+        
         self.sim_renderer = NSimRenderer(
             self.sim, render_mode, enable_debug_overlay, 
-            grayscale=grayscale_rendering and render_mode == "rgb_array"
+            grayscale=use_grayscale
         )
         self.current_map_data = None
         self.clock = pygame.time.Clock()
@@ -83,8 +86,27 @@ class NPlayHeadless:
     def _perform_grayscale_conversion(self, surface: pygame.Surface) -> np.ndarray:
         """
         Converts a Pygame surface to a grayscaled NumPy array (H, W, 1).
-        Tries pixels3d for efficiency, falls back to pixelcopy.
+        OPTIMIZED: If surface is already grayscale (8-bit), use fast path.
         """
+        # OPTIMIZATION: Check if surface is already grayscale (8-bit with palette)
+        if surface.get_bytesize() == 1:
+            # Grayscale surface - use fast pixels2d (no RGB conversion needed!)
+            try:
+                # Get direct reference to pixel data (W, H)
+                referenced_array_wh = pygame.surfarray.pixels2d(surface)
+                # Transpose to (H, W) and add channel dimension
+                grayscale_hw = np.transpose(referenced_array_wh, (1, 0))
+                # Copy and add channel dimension (H, W, 1)
+                final_gray_output_hw1 = np.array(grayscale_hw, copy=True, dtype=np.uint8)[..., np.newaxis]
+                del referenced_array_wh  # Unlock surface
+                return final_gray_output_hw1
+            except Exception as e:
+                # Fallback to array2d if pixels2d fails
+                array_wh = pygame.surfarray.array2d(surface)
+                grayscale_hw = np.transpose(array_wh, (1, 0))
+                return grayscale_hw.astype(np.uint8)[..., np.newaxis]
+        
+        # RGB surface - perform grayscale conversion
         try:
             # Attempt to get a referenced array (W, H, C)
             referenced_array_whc = pygame.surfarray.pixels3d(surface)
