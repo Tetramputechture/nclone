@@ -10,7 +10,7 @@ Key design principles:
 - Entity state tracking (mines, doors, switches)
 - Reachability from flood-fill analysis (not physics simulation)
 - Tile type encoding for terrain understanding
-- Agent learns movement dynamics from temporal frames and game state
+- Agent learns movement dynamics from frames and game state
 
 Supported entities:
 - Ninja (player)
@@ -231,7 +231,7 @@ class NodeFeatureBuilder:
                 - reachable_from_ninja: bool (from ReachabilityApproximation.is_position_reachable)
 
         Note: Movement requirements (jump/walljump) are NOT included as physics
-        is too complex to pre-compute. Agent learns from temporal frames.
+        is too complex to pre-compute. Agent learns from frames and game state.
         """
         # Index 52: reachable_from_ninja (from reachability system's flood-fill)
         features[self.REACHABILITY_START] = (

@@ -96,7 +96,7 @@ Multi-modal Dict observation:
 ```python
 {
     # Visual Modalities (CNNs)
-    'player_frame': Box(0, 255, (84, 84, 12), uint8),  # Local 12-frame temporal
+    'player_frame': Box(0, 255, (84, 84, 1), uint8),  # Local player-centered frame
     'global_view': Box(0, 255, (176, 100, 1), uint8),  # Global strategic view
     
     # State Modalities (MLPs)
@@ -159,27 +159,6 @@ from nclone.gym_environment.reward_calculation.reward_constants import (
     get_exploration_focused_config,  # Maximum exploration
     get_minimal_shaping_config,      # Sparse rewards only
 )
-
-# Use preset configuration
-config = get_completion_focused_config()
-```
-
-## Configuration
-
-### Environment Creation Options
-
-```python
-env = NPPEnvironment(
-    render_mode="rgb_array",        # "human" or "rgb_array"
-    dataset_dir="datasets/train",   # Level dataset directory
-    enable_graph_updates=True,      # Enable graph observations
-    curriculum_level=0,             # Curriculum stage (0-4)
-    enable_mines=True,              # Include mine entities
-    max_episode_steps=20000,        # Timeout (frames at 60 FPS)
-    frame_skip=1,                   # Action repeat
-    temporal_frames=12,             # Temporal stack size
-)
-```
 
 ### Curriculum Levels
 
@@ -272,35 +251,6 @@ Graph structure:
 - Nodes represent level geometry and entities
 - Edges represent spatial relationships
 - Automatically computed and cached
-
-### Mine State Tracking
-
-Detailed mine interaction tracking:
-
-```python
-from nclone.gym_environment.mine_state_processor import MineStateProcessor
-
-processor = MineStateProcessor()
-obs = env.reset()
-
-# Access mine states
-mine_states = processor.extract_mine_states(obs)
-# Returns: [(x, y, active, toggled), ...] for each mine
-```
-
-### Frame Augmentation
-
-Consistent data augmentation for training:
-
-```python
-from nclone.gym_environment.frame_augmentation import (
-    apply_consistent_augmentation,
-    get_recommended_config
-)
-
-config = get_recommended_config()
-augmented_frame = apply_consistent_augmentation(frame, config, seed=42)
-```
 
 ## Development
 

@@ -20,7 +20,6 @@ from ..graph.level_data import LevelData
 
 from .constants import (
     GAME_STATE_CHANNELS,
-    TEMPORAL_FRAMES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
     MAX_TIME_IN_FRAMES,
@@ -96,6 +95,7 @@ class BaseNppEnvironment(gymnasium.Env):
         self.eval_mode = eval_mode
 
         # Initialize core game interface
+        # Note: Grayscale rendering is automatic in headless mode (rgb_array)
         self.nplay_headless = NPlayHeadless(
             render_mode=render_mode,
             enable_animation=enable_animation,
@@ -170,7 +170,7 @@ class BaseNppEnvironment(gymnasium.Env):
                 shape=(
                     PLAYER_FRAME_HEIGHT,
                     PLAYER_FRAME_WIDTH,
-                    TEMPORAL_FRAMES,
+                    1,
                 ),
                 dtype=np.uint8,
             ),
@@ -387,13 +387,6 @@ class BaseNppEnvironment(gymnasium.Env):
         player_won = self.nplay_headless.ninja_has_won()
         player_dead = self.nplay_headless.ninja_has_died()
         terminated = player_won or player_dead
-
-        # If player won, output current map name and total reward
-        if player_won:
-            map_to_display = self.map_loader.get_map_display_name()
-            print(
-                f"\n---\nPlayer won on map: {map_to_display} on frame {self.nplay_headless.sim.frame}\n---\n"
-            )
 
         # Check truncation using our truncation checker
         ninja_x, ninja_y = self.nplay_headless.ninja_position()

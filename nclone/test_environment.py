@@ -32,8 +32,6 @@ from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability.reachability_system import ReachabilitySystem
 from nclone.replay.gameplay_recorder import GameplayRecorder
 
-# Removed legacy trajectory calculator import
-# SubgoalPlanner deprecated - using nclone.planning instead
 from nclone.planning import LevelCompletionPlanner
 from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
 from nclone.graph.reachability.frontier_detector import FrontierDetector
@@ -264,17 +262,57 @@ if args.interactive_graph and args.headless:
 
 # Create environment
 render_mode = "rgb_array" if args.headless else "human"
-debug_overlay_enabled = not args.headless  # Disable overlay in headless mode
+debug_overlay_enabled = False  # Disable overlay in headless mode
 
 # Create environment configuration with custom map path if provided
 if args.map:
-    from nclone.gym_environment.config import EnvironmentConfig
+    from nclone.gym_environment.config import (
+        EnvironmentConfig,
+        RenderConfig,
+        PBRSConfig,
+        GraphConfig,
+        ReachabilityConfig,
+    )
 
-    config = EnvironmentConfig.for_visual_testing(custom_map_path=args.map)
+    # Create config with proper render mode for headless
+    render_config = RenderConfig(
+        render_mode=render_mode,
+        enable_animation=not args.headless,
+        enable_debug_overlay=debug_overlay_enabled,
+    )
+    config = EnvironmentConfig(
+        custom_map_path=args.map,
+        enable_logging=False,
+        render=render_config,
+        pbrs=PBRSConfig(enable_pbrs=False),
+        graph=GraphConfig(enable_graph_updates=False, debug=False),
+        reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+    )
     env = create_visual_testing_env(config=config)
     print(f"Loading custom map from: {args.map}")
 else:
-    env = create_visual_testing_env()
+    from nclone.gym_environment.config import (
+        EnvironmentConfig,
+        RenderConfig,
+        PBRSConfig,
+        GraphConfig,
+        ReachabilityConfig,
+    )
+
+    # Create config with proper render mode for headless
+    render_config = RenderConfig(
+        render_mode=render_mode,
+        enable_animation=not args.headless,
+        enable_debug_overlay=debug_overlay_enabled,
+    )
+    config = EnvironmentConfig(
+        enable_logging=False,
+        render=render_config,
+        pbrs=PBRSConfig(enable_pbrs=False),
+        graph=GraphConfig(enable_graph_updates=False, debug=False),
+        reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+    )
+    env = create_visual_testing_env(config=config)
 
 env.reset()
 
@@ -368,14 +406,11 @@ if (
     print("Initializing reachability analysis system...")
 
     try:
-        # Initialize simplified reachability analyzer
         reachability_analyzer = ReachabilitySystem()
 
-        # Initialize level completion planner (replaces deprecated SubgoalPlanner)
         level_completion_planner = LevelCompletionPlanner()
         subgoal_planner = ReachabilitySubgoalIntegration(level_completion_planner)
 
-        # Initialize frontier detector
         frontier_detector = FrontierDetector()
 
         # Set initial debug states

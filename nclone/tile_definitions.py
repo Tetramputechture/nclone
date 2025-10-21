@@ -16,10 +16,10 @@ Tile Types 2-5: Half tiles
 - 5: Left half solid (right half traversable)
 
 Tile Types 6-9: 45-degree slopes
-- 6: Slope from top-left to bottom-right (\ shape)
+- 6: Slope from top-left to bottom-right (\\ shape)
 - 7: Slope from top-right to bottom-left (/ shape)
 - 8: Slope from bottom-left to top-right (/ shape, inverted)
-- 9: Slope from bottom-right to top-left (\ shape, inverted)
+- 9: Slope from bottom-right to top-left (\\ shape, inverted)
 
 Tile Types 10-13: Quarter circles (convex corners)
 - 10: Bottom-right quarter circle (solid in bottom-right corner)
