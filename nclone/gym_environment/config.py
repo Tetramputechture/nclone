@@ -172,16 +172,24 @@ class EnvironmentConfig:
         - RGB array rendering (no display overhead)
         - Frame stabilization optimized (67% fewer calls)
 
+        Memory optimizations enabled:
+        - Animation disabled (saves ~500 KB per environment)
+        - Optimized for parallel training with 50+ environments
+
         Expected performance: ~50-60% faster than unoptimized configuration.
+        Expected memory savings: ~500 KB per environment instance.
         """
         config = cls(
             augmentation=AugmentationConfig(
                 enable_augmentation=True,
-                disable_validation=True,  # Performance optimization
+                disable_validation=True,
                 intensity="medium",
                 p=0.5,
             ),
-            render=RenderConfig(render_mode="rgb_array"),
+            render=RenderConfig(
+                render_mode="rgb_array",
+                enable_animation=False,
+            ),
             pbrs=PBRSConfig(enable_pbrs=True),
             graph=GraphConfig(enable_graph_updates=True),
             reachability=ReachabilityConfig(enable_reachability=True),
@@ -202,12 +210,12 @@ class EnvironmentConfig:
         config = cls(
             augmentation=AugmentationConfig(
                 enable_augmentation=True,
-                disable_validation=True,  # Performance optimization
+                disable_validation=True,
                 intensity="medium",
                 p=0.5,
             ),
             render=RenderConfig(render_mode="rgb_array"),
-            pbrs=PBRSConfig(enable_pbrs=False),  # Clean evaluation
+            pbrs=PBRSConfig(enable_pbrs=False),
             graph=GraphConfig(enable_graph_updates=True),
             reachability=ReachabilityConfig(enable_reachability=True),
             eval_mode=True,

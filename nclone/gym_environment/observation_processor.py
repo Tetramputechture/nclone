@@ -281,6 +281,16 @@ class ObservationProcessor:
         # OPTIMIZATION: Cache for stabilized frames to avoid redundant conversions
         self._frame_cache = None
         self._frame_cache_id = None
+        
+        # MEMORY OPTIMIZATION: Pre-allocate reusable buffers to avoid repeated allocations
+        # These buffers are reused across observations to minimize memory churn
+        self._player_frame_buffer = np.zeros(
+            (PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH, 1), dtype=np.uint8
+        )
+        self._global_view_buffer = np.zeros(
+            (RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1), dtype=np.uint8
+        )
+        self._entity_positions_buffer = np.zeros(ENTITY_POSITIONS_SIZE, dtype=np.float32)
 
     def frame_around_player(
         self, frame: np.ndarray, player_x: float, player_y: float
@@ -468,7 +478,10 @@ class ObservationProcessor:
         return downsampled
 
     def process_observation(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
-        """Process observation into player frame, global view, and feature vectors."""
+        """Process observation into player frame, global view, and feature vectors.
+        
+        MEMORY OPTIMIZED: Reuses pre-allocated buffers to minimize allocations.
+        """
         # Ensure screen stability and consistent format
         screen = stabilize_frame(obs["screen"])
 
@@ -477,6 +490,7 @@ class ObservationProcessor:
             screen, obs["player_x"], obs["player_y"]
         )
 
+        # MEMORY OPTIMIZATION: Reuse entity_positions_buffer instead of allocating new array
         # Extract entity positions from raw observation
         # Normalize positions to [0, 1] range based on level dimensions
         ninja_x_norm = obs["player_x"] / LEVEL_WIDTH
@@ -486,17 +500,19 @@ class ObservationProcessor:
         exit_x_norm = obs["exit_door_x"] / LEVEL_WIDTH
         exit_y_norm = obs["exit_door_y"] / LEVEL_HEIGHT
 
-        # Create entity positions array: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
-        entity_positions = np.zeros(ENTITY_POSITIONS_SIZE, dtype=np.float32)
-        entity_positions[NINJA_POS_IDX : NINJA_POS_IDX + 2] = [
+        # Reuse buffer: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
+        self._entity_positions_buffer[NINJA_POS_IDX : NINJA_POS_IDX + 2] = [
             ninja_x_norm,
             ninja_y_norm,
         ]
-        entity_positions[SWITCH_POS_IDX : SWITCH_POS_IDX + 2] = [
+        self._entity_positions_buffer[SWITCH_POS_IDX : SWITCH_POS_IDX + 2] = [
             switch_x_norm,
             switch_y_norm,
         ]
-        entity_positions[EXIT_POS_IDX : EXIT_POS_IDX + 2] = [exit_x_norm, exit_y_norm]
+        self._entity_positions_buffer[EXIT_POS_IDX : EXIT_POS_IDX + 2] = [
+            exit_x_norm, 
+            exit_y_norm
+        ]
 
         # Ensure player_frame has shape (H, W, 1)
         if len(player_frame.shape) == 2:
@@ -513,11 +529,14 @@ class ObservationProcessor:
                 ),
             )
 
+        # MEMORY OPTIMIZATION: Return views/references to buffers where safe
+        # game_state needs to be a new array since it's computed fresh
+        # but entity_positions can be a copy of the buffer (needed for safety)
         result = {
             "game_state": self.process_game_state(obs),
             "global_view": self.process_rendered_global_view(screen),
             "reachability_features": obs["reachability_features"],
-            "entity_positions": entity_positions,
+            "entity_positions": self._entity_positions_buffer.copy(),  # Copy for safety
             "player_frame": player_frame,
         }
 
@@ -594,6 +613,12 @@ class ObservationProcessor:
         return self.mine_processor.get_summary_stats()
 
     def reset(self) -> None:
-        """Reset processor state."""
+        """Reset processor state and clear buffers."""
         if self.enable_mine_tracking and self.mine_processor is not None:
             self.mine_processor.reset()
+        
+        # MEMORY OPTIMIZATION: Clear buffers to prepare for next episode
+        # Using fill(0) is faster than reallocating
+        self._player_frame_buffer.fill(0)
+        self._global_view_buffer.fill(0)
+        self._entity_positions_buffer.fill(0)

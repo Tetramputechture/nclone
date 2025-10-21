@@ -41,8 +41,11 @@ Thumbs.db
 
 # Binary and text files
 *.bin
-*.txt
 .venv/
+
+# Memory profiling outputs
+memory_profiling_report.txt
+profiling_stats.txt
 
 # Maps
 nclone/maps/official/
