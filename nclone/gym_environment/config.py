@@ -37,13 +37,13 @@ class AugmentationConfig:
 class RenderConfig:
     """Configuration for rendering and visualization."""
 
-    render_mode: str = "rgb_array"
+    render_mode: str = "grayscale_array"
     enable_animation: bool = False
     enable_debug_overlay: bool = False
 
     def __post_init__(self):
         """Validate render configuration."""
-        valid_modes = ["human", "rgb_array"]
+        valid_modes = ["human", "grayscale_array"]
         if self.render_mode not in valid_modes:
             raise ValueError(f"render_mode must be one of {valid_modes}")
 
@@ -187,7 +187,7 @@ class EnvironmentConfig:
                 p=0.5,
             ),
             render=RenderConfig(
-                render_mode="rgb_array",
+                render_mode="grayscale_array",
                 enable_animation=False,
             ),
             pbrs=PBRSConfig(enable_pbrs=True),
@@ -214,7 +214,7 @@ class EnvironmentConfig:
                 intensity="medium",
                 p=0.5,
             ),
-            render=RenderConfig(render_mode="rgb_array"),
+            render=RenderConfig(render_mode="grayscale_array"),
             pbrs=PBRSConfig(enable_pbrs=False),
             graph=GraphConfig(enable_graph_updates=True),
             reachability=ReachabilityConfig(enable_reachability=True),
@@ -279,7 +279,7 @@ class EnvironmentConfig:
                 intensity="medium",
                 p=0.5,
             ),
-            render=RenderConfig(render_mode="rgb_array"),
+            render=RenderConfig(render_mode="grayscale_array"),
             pbrs=PBRSConfig(enable_pbrs=True),
             graph=GraphConfig(enable_graph_updates=True),
             reachability=ReachabilityConfig(enable_reachability=True),
@@ -306,7 +306,7 @@ class EnvironmentConfig:
                 intensity="light",
                 p=0.0,
             ),
-            render=RenderConfig(render_mode="rgb_array"),
+            render=RenderConfig(render_mode="grayscale_array"),
             pbrs=PBRSConfig(enable_pbrs=False),
             graph=GraphConfig(enable_graph_updates=False),
             reachability=ReachabilityConfig(enable_reachability=False),

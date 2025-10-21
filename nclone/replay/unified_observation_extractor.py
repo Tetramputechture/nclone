@@ -71,7 +71,7 @@ class UnifiedObservationExtractor:
         if self._nplay_headless is None:
             # Create headless instance with minimal configuration for observation extraction
             self._nplay_headless = NPlayHeadless(
-                render_mode="rgb_array",
+                render_mode="grayscale_array",
                 enable_animation=False,
                 enable_logging=False,
                 enable_debug_overlay=False,

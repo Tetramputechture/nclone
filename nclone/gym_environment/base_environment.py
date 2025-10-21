@@ -48,12 +48,12 @@ class BaseNppEnvironment(gymnasium.Env):
     - Map loading and basic game state management
     """
 
-    metadata = {"render.modes": ["human", "rgb_array"]}
+    metadata = {"render.modes": ["human", "grayscale_array"]}
     RANDOM_MAP_CHANCE = 0.5
 
     def __init__(
         self,
-        render_mode: str = "rgb_array",
+        render_mode: str = "grayscale_array",
         enable_animation: bool = False,
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
@@ -71,7 +71,7 @@ class BaseNppEnvironment(gymnasium.Env):
         Initialize the base N++ environment.
 
         Args:
-            render_mode: Rendering mode ("human" or "rgb_array")
+            render_mode: Rendering mode ("human" or "grayscale_array")
             enable_animation: Enable animation in rendering
             enable_logging: Enable debug logging
             enable_debug_overlay: Enable debug overlay visualization
@@ -95,7 +95,7 @@ class BaseNppEnvironment(gymnasium.Env):
         self.eval_mode = eval_mode
 
         # Initialize core game interface
-        # Note: Grayscale rendering is automatic in headless mode (rgb_array)
+        # Note: Grayscale rendering is automatic in headless mode (grayscale_array)
         self.nplay_headless = NPlayHeadless(
             render_mode=render_mode,
             enable_animation=enable_animation,
@@ -470,7 +470,9 @@ class BaseNppEnvironment(gymnasium.Env):
         if "nplay_headless" in state:
             # Store initialization parameters instead
             state["_nplay_headless_params"] = {
-                "render_mode": getattr(self.nplay_headless, "render_mode", "rgb_array"),
+                "render_mode": getattr(
+                    self.nplay_headless, "render_mode", "grayscale_array"
+                ),
                 "enable_animation": getattr(
                     self.nplay_headless, "enable_animation", False
                 ),

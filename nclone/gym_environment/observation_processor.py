@@ -66,7 +66,7 @@ def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
 
-def stabilize_frame(frame: np.ndarray) -> np.ndarray:
+def stabilize_frame(frame: Any) -> np.ndarray:
     """Ensure frame has consistent properties for stable processing.
 
     OPTIMIZED: More efficient conversion with early exits and optimized grayscale conversion.
@@ -281,7 +281,7 @@ class ObservationProcessor:
         # OPTIMIZATION: Cache for stabilized frames to avoid redundant conversions
         self._frame_cache = None
         self._frame_cache_id = None
-        
+
         # MEMORY OPTIMIZATION: Pre-allocate reusable buffers to avoid repeated allocations
         # These buffers are reused across observations to minimize memory churn
         self._player_frame_buffer = np.zeros(
@@ -290,7 +290,9 @@ class ObservationProcessor:
         self._global_view_buffer = np.zeros(
             (RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1), dtype=np.uint8
         )
-        self._entity_positions_buffer = np.zeros(ENTITY_POSITIONS_SIZE, dtype=np.float32)
+        self._entity_positions_buffer = np.zeros(
+            ENTITY_POSITIONS_SIZE, dtype=np.float32
+        )
 
     def frame_around_player(
         self, frame: np.ndarray, player_x: float, player_y: float
@@ -479,7 +481,7 @@ class ObservationProcessor:
 
     def process_observation(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
         """Process observation into player frame, global view, and feature vectors.
-        
+
         MEMORY OPTIMIZED: Reuses pre-allocated buffers to minimize allocations.
         """
         # Ensure screen stability and consistent format
@@ -510,8 +512,8 @@ class ObservationProcessor:
             switch_y_norm,
         ]
         self._entity_positions_buffer[EXIT_POS_IDX : EXIT_POS_IDX + 2] = [
-            exit_x_norm, 
-            exit_y_norm
+            exit_x_norm,
+            exit_y_norm,
         ]
 
         # Ensure player_frame has shape (H, W, 1)
@@ -616,7 +618,7 @@ class ObservationProcessor:
         """Reset processor state and clear buffers."""
         if self.enable_mine_tracking and self.mine_processor is not None:
             self.mine_processor.reset()
-        
+
         # MEMORY OPTIMIZATION: Clear buffers to prepare for next episode
         # Using fill(0) is faster than reallocating
         self._player_frame_buffer.fill(0)

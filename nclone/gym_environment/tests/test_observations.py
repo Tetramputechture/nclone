@@ -27,9 +27,7 @@ class TestObservationProfiles(unittest.TestCase):
 
     def setUp(self):
         """Set up test environments."""
-        config = EnvironmentConfig(
-            render=RenderConfig(render_mode="rgb_array")
-        )
+        config = EnvironmentConfig(render=RenderConfig(render_mode="grayscale_array"))
         self.env_rich = NppEnvironment(config=config)
 
     def test_observation_space_shapes(self):
@@ -80,7 +78,7 @@ class TestObservationProfiles(unittest.TestCase):
 
             # Check that game_state size remains consistent across steps
             self.assertEqual(len(obs["game_state"]), initial_state_size)
-            
+
             # Check that at least ninja_state features are present
             self.assertGreaterEqual(len(obs["game_state"]), GAME_STATE_CHANNELS)
             self.assertTrue(np.all(np.isfinite(obs["game_state"])))
@@ -88,7 +86,7 @@ class TestObservationProfiles(unittest.TestCase):
             # Check image shapes remain consistent
             self.assertEqual(obs["player_frame"].shape, initial_player_frame_shape)
             self.assertEqual(obs["global_view"].shape, initial_global_view_shape)
-            
+
             # Check that frame dimensions match expected base dimensions
             self.assertEqual(obs["player_frame"].shape[:2], (84, 84))
             self.assertEqual(obs["global_view"].shape[:2], (176, 100))
@@ -102,9 +100,7 @@ class TestFrameStability(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment."""
-        config = EnvironmentConfig(
-            render=RenderConfig(render_mode="rgb_array")
-        )
+        config = EnvironmentConfig(render=RenderConfig(render_mode="grayscale_array"))
         self.env = NppEnvironment(config=config)
 
     def test_frame_dtype_consistency(self):
@@ -153,9 +149,7 @@ class TestEntityFeatures(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment."""
-        config = EnvironmentConfig(
-            render=RenderConfig(render_mode="rgb_array")
-        )
+        config = EnvironmentConfig(render=RenderConfig(render_mode="grayscale_array"))
         self.env = NppEnvironment(config=config)
 
     def test_ninja_physics_features(self):

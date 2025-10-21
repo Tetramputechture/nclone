@@ -228,7 +228,7 @@ class VideoGenerator:
         """Get or create environment instance for rendering."""
         if self.env is None:
             self.env = NppEnvironment(
-                render_mode="rgb_array",
+                render_mode="grayscale_array",
                 enable_animation=True,
                 enable_debug_overlay=False,
                 custom_map_path=custom_map_path,
@@ -399,22 +399,24 @@ class VideoGenerator:
         """
         try:
             logger.info(f"Generating video from npp_attract file: {npp_attract_file}")
-            
+
             # Use perfect decoder to extract map data
             npp_decoder = NppAttractDecoder()
             decoded_data = npp_decoder.decode_npp_attract_file(str(npp_attract_file))
-            
+
             # Create temporary map file
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_map_file = Path(temp_dir) / "perfect_map.dat"
-                
+
                 # Create nclone-compatible map
                 nclone_map_bytes = npp_decoder.create_nclone_map(str(npp_attract_file))
-                with open(temp_map_file, 'wb') as f:
+                with open(temp_map_file, "wb") as f:
                     f.write(nclone_map_bytes)
-                
-                logger.info(f"Created perfect map: {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}")
-                
+
+                logger.info(
+                    f"Created perfect map: {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}"
+                )
+
                 # Use binary replay parser to generate JSONL with perfect map
                 return self.generate_video_from_binary_replay(
                     npp_attract_file, output_video, str(temp_map_file)

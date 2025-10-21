@@ -26,7 +26,7 @@ def test_replay_termination(replay_path: str):
 
     # Create environment
     nplay = NPlayHeadless(
-        render_mode="rgb_array",
+        render_mode="grayscale_array",
         enable_animation=False,
         enable_logging=False,
         enable_debug_overlay=False,

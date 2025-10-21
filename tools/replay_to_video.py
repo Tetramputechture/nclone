@@ -114,7 +114,7 @@ class CompactReplayVideoGenerator:
         """
         # Create headless environment for simulation
         nplay = NPlayHeadless(
-            render_mode="rgb_array",
+            render_mode="grayscale_array",
             enable_animation=True,
             enable_logging=False,
             enable_debug_overlay=False,

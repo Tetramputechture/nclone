@@ -21,7 +21,7 @@ def run_single_simulation(simulation_id, num_steps, video_path_prefix=None):
     pygame.init()
 
     env = NppEnvironment(
-        render_mode="rgb_array",
+        render_mode="grayscale_array",
         enable_debug_overlay=False,
         eval_mode=True,
         seed=None,
