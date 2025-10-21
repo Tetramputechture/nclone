@@ -388,13 +388,6 @@ class BaseNppEnvironment(gymnasium.Env):
         player_dead = self.nplay_headless.ninja_has_died()
         terminated = player_won or player_dead
 
-        # If player won, output current map name and total reward
-        if player_won:
-            map_to_display = self.map_loader.get_map_display_name()
-            print(
-                f"\n---\nPlayer won on map: {map_to_display} on frame {self.nplay_headless.sim.frame}\n---\n"
-            )
-
         # Check truncation using our truncation checker
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
         should_truncate, reason = self.truncation_checker.update(ninja_x, ninja_y)
