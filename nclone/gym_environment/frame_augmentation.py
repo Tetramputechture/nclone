@@ -152,57 +152,6 @@ def apply_augmentation(
     return augmented
 
 
-def apply_consistent_augmentation(
-    frames: List[np.ndarray],
-    seed: Optional[int] = None,
-    p: float = 0.5,
-    intensity: str = "medium",
-    disable_validation: bool = False,
-) -> List[np.ndarray]:
-    """Applies the same random augmentations to all frames.
-
-    DEPRECATED: Use apply_augmentation() for single-frame processing.
-    This function is maintained for backward compatibility but is no longer
-    needed since the system now uses single frames instead of frame stacking.
-
-    Args:
-        frames: List of frames to augment, each of shape (H, W, C)
-        seed: Optional random seed for reproducibility
-        p: Probability of applying each augmentation
-        intensity: Augmentation intensity level ("light", "medium", "strong")
-        disable_validation: If True, disables validation for performance
-
-    Returns:
-        List of augmented frames with same shapes as inputs
-    """
-    if not frames:
-        return []
-
-    if seed is not None:
-        np.random.seed(seed)
-
-    # Ensure frames are in uint8 format for albumentations (performance best practice)
-    first_frame_uint8 = frames[0].astype(np.uint8)
-
-    # Get augmentation pipeline with specified parameters
-    transform = get_augmentation_pipeline(
-        p=p, intensity=intensity, disable_validation=disable_validation
-    )
-
-    # Apply augmentation to the first frame and get parameters
-    data = transform(image=first_frame_uint8)
-    augmented_frames = [data["image"]]
-    saved_params = data["replay"]
-
-    # Apply exact same augmentation to remaining frames
-    for frame in frames[1:]:
-        frame_uint8 = frame.astype(np.uint8)
-        aug_frame = transform.replay(saved_params, image=frame_uint8)["image"]
-        augmented_frames.append(aug_frame)
-
-    return augmented_frames
-
-
 def get_recommended_config(training_stage: str = "early") -> Dict[str, Any]:
     """Get recommended augmentation configuration for different training stages.
 

@@ -252,35 +252,6 @@ Graph structure:
 - Edges represent spatial relationships
 - Automatically computed and cached
 
-### Mine State Tracking
-
-Detailed mine interaction tracking:
-
-```python
-from nclone.gym_environment.mine_state_processor import MineStateProcessor
-
-processor = MineStateProcessor()
-obs = env.reset()
-
-# Access mine states
-mine_states = processor.extract_mine_states(obs)
-# Returns: [(x, y, active, toggled), ...] for each mine
-```
-
-### Frame Augmentation
-
-Consistent data augmentation for training:
-
-```python
-from nclone.gym_environment.frame_augmentation import (
-    apply_consistent_augmentation,
-    get_recommended_config
-)
-
-config = get_recommended_config()
-augmented_frame = apply_consistent_augmentation(frame, config, seed=42)
-```
-
 ## Development
 
 ### Running Tests

@@ -406,14 +406,11 @@ if (
     print("Initializing reachability analysis system...")
 
     try:
-        # Initialize simplified reachability analyzer
         reachability_analyzer = ReachabilitySystem()
 
-        # Initialize level completion planner (replaces deprecated SubgoalPlanner)
         level_completion_planner = LevelCompletionPlanner()
         subgoal_planner = ReachabilitySubgoalIntegration(level_completion_planner)
 
-        # Initialize frontier detector
         frontier_detector = FrontierDetector()
 
         # Set initial debug states
