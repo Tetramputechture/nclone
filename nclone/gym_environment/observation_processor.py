@@ -39,7 +39,6 @@ This class should handle returning:
 """
 
 import numpy as np
-from collections import deque
 import cv2
 from typing import Dict, Any, Tuple, Optional
 from .constants import (

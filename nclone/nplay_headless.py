@@ -100,7 +100,7 @@ class NPlayHeadless:
                 final_gray_output_hw1 = np.array(grayscale_hw, copy=True, dtype=np.uint8)[..., np.newaxis]
                 del referenced_array_wh  # Unlock surface
                 return final_gray_output_hw1
-            except Exception as e:
+            except Exception:
                 # Fallback to array2d if pixels2d fails
                 array_wh = pygame.surfarray.array2d(surface)
                 grayscale_hw = np.transpose(array_wh, (1, 0))
