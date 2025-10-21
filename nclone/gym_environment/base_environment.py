@@ -311,16 +311,10 @@ class BaseNppEnvironment(gymnasium.Env):
         ) / MAX_TIME_IN_FRAMES
 
         ninja_state = self.nplay_headless.get_ninja_state()
-        entity_states_full = self.nplay_headless.get_entity_states()
-
-        # Use first 4 dimensions which contain critical entity counts
-        entity_states = (
-            entity_states_full[:4]
-            if len(entity_states_full) >= 4
-            else np.pad(entity_states_full, (0, 4 - len(entity_states_full)))
-        )
-
-        game_state = np.concatenate([ninja_state, entity_states])
+        
+        # game_state contains only ninja_state (26 features)
+        # Entity counts removed - not needed for training
+        game_state = ninja_state
 
         # Get entity states for PBRS hazard detection
         entity_states_raw = self.nplay_headless.get_entity_states()

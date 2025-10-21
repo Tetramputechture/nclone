@@ -446,12 +446,13 @@ class ObservationProcessor:
         # For backward compatibility, if we have entity states, include them
         # but the new design focuses on the enhanced ninja state
         if len(obs["game_state"]) > 26:
-            entity_states = obs["game_state"][26:]
+            entity_states = obs["game_state"][26:].astype(np.float32)  # Ensure float32
             processed_state = np.concatenate([ninja_state, entity_states])
         else:
             processed_state = ninja_state
 
-        return processed_state
+        # Ensure final state is float32
+        return processed_state.astype(np.float32)
 
     def process_rendered_global_view(self, screen: np.ndarray) -> np.ndarray:
         """Process the rendered screen into a downsampled global view.

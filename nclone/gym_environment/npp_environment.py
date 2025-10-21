@@ -122,11 +122,20 @@ class NppEnvironment(
             low=0.0, high=1.0, shape=(6,), dtype=np.float32
         )
 
-        # Add reachability features
-        if enable_reachability:
-            obs_spaces["reachability_features"] = box.Box(
-                low=0.0, high=1.0, shape=(8,), dtype=np.float32
-            )
+        # Add switch states (always available for hierarchical and ICM systems)
+        # Format: Fixed array with per-door information for up to 5 locked doors
+        # Per door: [switch_x_norm, switch_y_norm, door_x_norm, door_y_norm, collected]
+        # Note: collected state represents both switch collection AND door open (they're always synchronized)
+        # Total: 5 features * 5 doors = 25 features
+        obs_spaces["switch_states"] = box.Box(
+            low=0.0, high=1.0, shape=(25,), dtype=np.float32
+        )
+
+        # Add reachability features (always available - zeros if reachability disabled)
+        # The feature extractor expects this key to always be present
+        obs_spaces["reachability_features"] = box.Box(
+            low=0.0, high=1.0, shape=(8,), dtype=np.float32
+        )
 
         # Add hierarchical features
         if enable_hierarchical:
@@ -290,30 +299,88 @@ class NppEnvironment(
         # Store dict version for ICM and reachability systems
         obs["switch_states_dict"] = switch_states_dict
 
-        # Convert to numpy array for hierarchical policy (max 5 switches)
-        # The policy expects a fixed-size array of switch states
-        switch_states_array = np.zeros(5, dtype=np.float32)
-        for i, (switch_id, activated) in enumerate(switch_states_dict.items()):
-            if i < 5:  # Limit to first 5 switches
-                switch_states_array[i] = float(activated)
+        # Convert to numpy array for hierarchical policy (max 5 doors)
+        # Format: [switch_x, switch_y, door_x, door_y, switch_collected, door_open] per door
+        # Total: 6 features * 5 doors = 30 features
+        switch_states_array = self._build_switch_states_array(obs)
         obs["switch_states"] = switch_states_array
 
         # Add level data for reachability analysis and hierarchical planning
         # This is needed by ICM and reachability-aware exploration
         obs["level_data"] = self._extract_level_data()
 
-        # print out all keys and values of our obs in a readable format
-        for key, value in obs.items():
-            print(f"{key}: {value}")
-
         return obs
 
+    def _build_switch_states_array(self, obs: Dict[str, Any]) -> np.ndarray:
+        """
+        Build switch states array with detailed locked door information.
+        
+        Format per door (5 features):
+        - switch_x_norm: Normalized X position of switch (0-1)
+        - switch_y_norm: Normalized Y position of switch (0-1)
+        - door_x_norm: Normalized X position of door (0-1)
+        - door_y_norm: Normalized Y position of door (0-1)
+        - collected: 1.0 if switch collected (door open), 0.0 otherwise (door closed)
+        
+        Note: collected state represents both switch collection AND door open state
+        since they are always synchronized (collected switch = open door).
+        
+        Returns:
+            Array of shape (25,) for up to 5 locked doors
+        """
+        from ..constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
+        
+        switch_states_array = np.zeros(25, dtype=np.float32)
+        
+        # Get locked door entities
+        locked_doors = obs.get("locked_doors", [])
+        
+        for i, locked_door in enumerate(locked_doors[:5]):  # Max 5 doors
+            base_idx = i * 5
+            
+            # Get door segment position (stored before position is updated to switch position)
+            # The door entity stores the door segment coordinates
+            # Note: entity.segment contains the door position, entity.xpos/ypos is switch position
+            door_segment = getattr(locked_door, "segment", None)
+            if door_segment and hasattr(door_segment, "p1"):
+                # Door segment center
+                door_x = (door_segment.p1[0] + door_segment.p2[0]) / 2.0
+                door_y = (door_segment.p1[1] + door_segment.p2[1]) / 2.0
+            else:
+                # Fallback: use entity position (which is actually switch position after init)
+                door_x = getattr(locked_door, "xpos", 0.0)
+                door_y = getattr(locked_door, "ypos", 0.0)
+            
+            # Switch position (stored in sw_xpos, sw_ypos OR in xpos, ypos)
+            switch_x = getattr(locked_door, "sw_xpos", getattr(locked_door, "xpos", 0.0))
+            switch_y = getattr(locked_door, "sw_ypos", getattr(locked_door, "ypos", 0.0))
+            
+            # Normalize positions to [0, 1]
+            switch_x_norm = switch_x / LEVEL_WIDTH_PX
+            switch_y_norm = switch_y / LEVEL_HEIGHT_PX
+            door_x_norm = door_x / LEVEL_WIDTH_PX
+            door_y_norm = door_y / LEVEL_HEIGHT_PX
+            
+            # Switch collected state (also represents door open state - they're synchronized)
+            # active=True means switch not yet collected (door closed)
+            # active=False means collected (door open)
+            switch_collected = 0.0 if getattr(locked_door, "active", True) else 1.0
+            
+            # Store in array
+            switch_states_array[base_idx + 0] = np.clip(switch_x_norm, 0.0, 1.0)
+            switch_states_array[base_idx + 1] = np.clip(switch_y_norm, 0.0, 1.0)
+            switch_states_array[base_idx + 2] = np.clip(door_x_norm, 0.0, 1.0)
+            switch_states_array[base_idx + 3] = np.clip(door_y_norm, 0.0, 1.0)
+            switch_states_array[base_idx + 4] = switch_collected
+        
+        return switch_states_array
+    
     def _process_observation(self, obs):
         """Process the observation from the environment."""
         processed_obs = super()._process_observation(obs)
 
-        # Add reachability features if enabled and not already added
-        if self.enable_reachability and "reachability_features" not in processed_obs:
+        # Add reachability features if not already added (always present in raw obs)
+        if "reachability_features" not in processed_obs:
             processed_obs["reachability_features"] = obs.get(
                 "reachability_features", np.zeros(8, dtype=np.float32)
             )
@@ -325,17 +392,23 @@ class NppEnvironment(
                 if key not in processed_obs:
                     processed_obs[key] = value
 
-        # Add switch states if not already added (array version for policy)
+        # Add switch states if not already added (always present in raw obs)
         if "switch_states" not in processed_obs:
             processed_obs["switch_states"] = obs.get(
-                "switch_states", np.zeros(5, dtype=np.float32)
+                "switch_states", np.zeros(30, dtype=np.float32)
             )
 
-        # Add switch states dict if not already added (dict version for ICM)
+        # Add subtask features if enabled and not already added
+        if self.enable_hierarchical and "subtask_features" not in processed_obs:
+            processed_obs["subtask_features"] = obs.get(
+                "subtask_features", np.zeros(4, dtype=np.float32)
+            )
+
+        # Add switch states dict if not already added (dict version for ICM - not in obs space)
         if "switch_states_dict" not in processed_obs:
             processed_obs["switch_states_dict"] = obs.get("switch_states_dict", {})
 
-        # Add level data if not already added
+        # Add level data if not already added (for reachability/hierarchical - not in obs space)
         if "level_data" not in processed_obs:
             processed_obs["level_data"] = obs.get("level_data", None)
 
