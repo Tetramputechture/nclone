@@ -283,6 +283,29 @@ class NppEnvironment(
         if self.enable_hierarchical:
             obs["subtask_features"] = self._get_subtask_features()
 
+        # Add switch states for hierarchical PPO and ICM
+        # Extract locked door switch states from environment
+        switch_states_dict = self._get_switch_states_from_env()
+
+        # Store dict version for ICM and reachability systems
+        obs["switch_states_dict"] = switch_states_dict
+
+        # Convert to numpy array for hierarchical policy (max 5 switches)
+        # The policy expects a fixed-size array of switch states
+        switch_states_array = np.zeros(5, dtype=np.float32)
+        for i, (switch_id, activated) in enumerate(switch_states_dict.items()):
+            if i < 5:  # Limit to first 5 switches
+                switch_states_array[i] = float(activated)
+        obs["switch_states"] = switch_states_array
+
+        # Add level data for reachability analysis and hierarchical planning
+        # This is needed by ICM and reachability-aware exploration
+        obs["level_data"] = self._extract_level_data()
+
+        # print out all keys and values of our obs in a readable format
+        for key, value in obs.items():
+            print(f"{key}: {value}")
+
         return obs
 
     def _process_observation(self, obs):
@@ -301,6 +324,20 @@ class NppEnvironment(
             for key, value in graph_obs.items():
                 if key not in processed_obs:
                     processed_obs[key] = value
+
+        # Add switch states if not already added (array version for policy)
+        if "switch_states" not in processed_obs:
+            processed_obs["switch_states"] = obs.get(
+                "switch_states", np.zeros(5, dtype=np.float32)
+            )
+
+        # Add switch states dict if not already added (dict version for ICM)
+        if "switch_states_dict" not in processed_obs:
+            processed_obs["switch_states_dict"] = obs.get("switch_states_dict", {})
+
+        # Add level data if not already added
+        if "level_data" not in processed_obs:
+            processed_obs["level_data"] = obs.get("level_data", None)
 
         return processed_obs
 
