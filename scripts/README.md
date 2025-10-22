@@ -23,31 +23,31 @@ This script validates that replay files:
 Validate all replays in a directory:
 
 ```bash
-python scripts/validate_replays.py bc_replay/
+python scripts/validate_replays.py bc_replays/
 ```
 
 #### Save Results to JSON
 
 ```bash
-python scripts/validate_replays.py bc_replay/ --output validation_results.json
+python scripts/validate_replays.py bc_replays/ --output validation_results.json
 ```
 
 #### Validate Specific Pattern
 
 ```bash
-python scripts/validate_replays.py bc_replay/ --pattern "train_*.replay"
+python scripts/validate_replays.py bc_replays/ --pattern "train_*.replay"
 ```
 
 #### Limit Number of Replays (for Testing)
 
 ```bash
-python scripts/validate_replays.py bc_replay/ --max-replays 5
+python scripts/validate_replays.py bc_replays/ --max-replays 5
 ```
 
 #### Enable Verbose Output
 
 ```bash
-python scripts/validate_replays.py bc_replay/ --verbose
+python scripts/validate_replays.py bc_replays/ --verbose
 ```
 
 ### Output
@@ -141,7 +141,7 @@ The script detects and categorizes various issues:
 This makes the script suitable for CI/CD pipelines:
 
 ```bash
-python scripts/validate_replays.py bc_replay/ || exit 1
+python scripts/validate_replays.py bc_replays/ || exit 1
 ```
 
 ### When to Use This Script
@@ -150,10 +150,10 @@ python scripts/validate_replays.py bc_replay/ || exit 1
 Always validate replay datasets before using them for behavioral cloning:
 
 ```bash
-python scripts/validate_replays.py bc_replay/
+python scripts/validate_replays.py bc_replays/
 # If all valid, proceed with BC training
 python npp-rl/scripts/train_and_compare.py \
-    --replay-data-dir bc_replay/ \
+    --replay-data-dir bc_replays/ \
     --bc-epochs 10
 ```
 
@@ -161,7 +161,7 @@ python npp-rl/scripts/train_and_compare.py \
 After adding new replays to your dataset:
 
 ```bash
-python scripts/validate_replays.py bc_replay/ --output validation_report.json
+python scripts/validate_replays.py bc_replays/ --output validation_report.json
 ```
 
 #### In CI/CD Pipelines
@@ -169,14 +169,14 @@ Add to your continuous integration:
 
 ```yaml
 - name: Validate replays
-  run: python scripts/validate_replays.py bc_replay/
+  run: python scripts/validate_replays.py bc_replays/
 ```
 
 #### Debugging Replay Issues
 Use verbose mode to debug specific replays:
 
 ```bash
-python scripts/validate_replays.py bc_replay/ --verbose --max-replays 5
+python scripts/validate_replays.py bc_replays/ --verbose --max-replays 5
 ```
 
 ### Requirements
