@@ -36,36 +36,87 @@ class CompactReplay:
         Convert to binary format (similar to N++ attract files).
         
         Format:
-        - Header (8 bytes):
+        - Header (12 bytes):
+            - Format version (4 bytes, uint32) - always 1 for now
             - Map data length (4 bytes, uint32)
             - Input sequence length (4 bytes, uint32)
+        - Metadata (1 byte):
+            - Success flag (1 byte, 0x01 if successful, 0x00 if not)
         - Map data (variable, typically 1335 bytes)
         - Input sequence (variable, 1 byte per frame)
+        
+        Note: Version 1 adds success flag serialization to fix bug where
+        success state was lost when saving/loading replays.
         """
         map_data_len = len(self.map_data)
         input_seq_len = len(self.input_sequence)
         
-        # Pack header
-        header = struct.pack("<II", map_data_len, input_seq_len)
+        # Pack header with version (version 1)
+        header = struct.pack("<III", 1, map_data_len, input_seq_len)
+        
+        # Pack metadata (success flag)
+        metadata = struct.pack("<B", 1 if self.success else 0)
         
         # Pack input sequence
         inputs_bytes = bytes(self.input_sequence)
         
-        # Combine
-        return header + self.map_data + inputs_bytes
+        # Combine: header + metadata + map_data + inputs
+        return header + metadata + self.map_data + inputs_bytes
     
     @classmethod
     def from_binary(cls, data: bytes, episode_id: str = "unknown") -> "CompactReplay":
-        """Load from binary format."""
-        # Unpack header
-        map_data_len, input_seq_len = struct.unpack("<II", data[0:8])
+        """
+        Load from binary format with backward compatibility.
         
-        # Extract map data
-        map_data = data[8:8+map_data_len]
+        Supports two format versions:
+        - Version 0 (legacy): 8-byte header without success flag
+        - Version 1 (current): 12-byte header + 1-byte metadata with success flag
         
-        # Extract input sequence
-        input_start = 8 + map_data_len
-        input_sequence = list(data[input_start:input_start+input_seq_len])
+        Version 0 format (legacy):
+            Header (8 bytes): map_data_len, input_seq_len
+            Map data
+            Input sequence
+        
+        Version 1 format (current):
+            Header (12 bytes): version, map_data_len, input_seq_len
+            Metadata (1 byte): success flag
+            Map data
+            Input sequence
+        """
+        # Try to read version number (4 bytes)
+        # If first 4 bytes seem like a valid version (small number), it's V1
+        # If first 4 bytes are large (map_data_len in V0 format), it's V0
+        potential_version = struct.unpack("<I", data[0:4])[0]
+        
+        # Heuristic: if potential_version <= 100, assume it's actually a version number
+        # Otherwise, it's likely the map_data_len from V0 format (typically 1335)
+        if potential_version <= 100:
+            # Version 1+ format
+            version, map_data_len, input_seq_len = struct.unpack("<III", data[0:12])
+            
+            # Extract metadata (success flag)
+            success = bool(struct.unpack("<B", data[12:13])[0])
+            
+            # Extract map data
+            map_data = data[13:13+map_data_len]
+            
+            # Extract input sequence
+            input_start = 13 + map_data_len
+            input_sequence = list(data[input_start:input_start+input_seq_len])
+        else:
+            # Version 0 (legacy) format - backward compatibility
+            map_data_len, input_seq_len = struct.unpack("<II", data[0:8])
+            
+            # Extract map data
+            map_data = data[8:8+map_data_len]
+            
+            # Extract input sequence
+            input_start = 8 + map_data_len
+            input_sequence = list(data[input_start:input_start+input_seq_len])
+            
+            # Default to True for backward compatibility with existing replays
+            # Note: All existing replays were recorded from successful runs
+            success = True
         
         return cls(
             episode_id=episode_id,
@@ -74,12 +125,13 @@ class CompactReplay:
             level_id=None,
             start_time=datetime.now(),
             end_time=datetime.now(),
-            success=True,
+            success=success,
         )
     
     def get_file_size(self) -> int:
-        """Get file size in bytes."""
-        return 8 + len(self.map_data) + len(self.input_sequence)
+        """Get file size in bytes (Version 1 format)."""
+        # Header (12 bytes) + Metadata (1 byte) + map_data + input_sequence
+        return 12 + 1 + len(self.map_data) + len(self.input_sequence)
 
 
 def map_action_to_input(action: int) -> int:
