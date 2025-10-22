@@ -136,7 +136,20 @@ class ReplayExecutor:
         return observations
 
     def _get_raw_observation(self) -> Dict[str, Any]:
-        """Get raw observation from environment."""
+        """Get raw observation from environment.
+        
+        Returns a complete raw observation dict with all required keys
+        that the ObservationProcessor expects.
+        
+        Required keys:
+        - screen: rendered frame
+        - player_x, player_y: ninja position
+        - switch_x, switch_y: exit switch position
+        - exit_door_x, exit_door_y: exit door position
+        - switch_activated: whether switch has been activated
+        - game_state: concatenated ninja and entity state (26+ floats)
+        - reachability_features: 8-dimensional reachability vector
+        """
         # Render current frame
         screen = self.nplay_headless.render()
 
@@ -146,45 +159,142 @@ class ReplayExecutor:
         # Get ninja state
         ninja = self.nplay_headless.sim.ninja
 
-        # Compute simplified reachability features from available data
-        reachability_features = self._compute_reachability_features(ninja_x, ninja_y)
+        # Get entity positions
+        switch_x, switch_y = self._get_switch_position()
+        exit_door_x, exit_door_y = self._get_exit_door_position()
+        switch_activated = self._is_switch_activated()
 
-        # Build raw observation (similar to npp_environment.py)
+        # Build game state array (26 features minimum)
+        game_state = self._build_game_state(ninja, ninja_x, ninja_y)
+
+        # Compute reachability features
+        reachability_features = self._compute_reachability_features(
+            ninja_x, ninja_y, switch_x, switch_y, exit_door_x, exit_door_y
+        )
+
+        # Build complete raw observation
         obs = {
             "screen": screen,
             "player_x": ninja_x,
             "player_y": ninja_y,
-            "game_state": np.array(
-                [
-                    # Ninja physics state (simplified)
-                    ninja_x / 1008,  # Normalized position
-                    ninja_y / 552,
-                    ninja.xspeed / 10.0,  # Normalized velocity
-                    ninja.yspeed / 10.0,
-                    float(not ninja.airborn),  # on_ground (inverted airborn)
-                    float(ninja.state == 5),  # wall_sliding (state 5)
-                    # Add more state as needed...
-                ]
-                + [0.0] * 20,
-                dtype=np.float32,
-            ),  # Pad to 26 features
+            "switch_x": switch_x,
+            "switch_y": switch_y,
+            "exit_door_x": exit_door_x,
+            "exit_door_y": exit_door_y,
+            "switch_activated": switch_activated,
+            "game_state": game_state,
             "reachability_features": reachability_features,
         }
 
         return obs
 
+    def _get_switch_position(self) -> tuple:
+        """Get exit switch position with fallback."""
+        try:
+            return self.nplay_headless.exit_switch_position()
+        except:
+            # Fallback to level center if no switch exists
+            return (528.0, 300.0)
+
+    def _get_exit_door_position(self) -> tuple:
+        """Get exit door position with fallback."""
+        try:
+            return self.nplay_headless.exit_door_position()
+        except:
+            # Fallback to level center if no exit exists
+            return (528.0, 300.0)
+
+    def _is_switch_activated(self) -> bool:
+        """Check if exit switch is activated."""
+        try:
+            return self.nplay_headless.exit_switch_activated()
+        except:
+            return False
+
+    def _build_game_state(
+        self, ninja, ninja_x: float, ninja_y: float
+    ) -> np.ndarray:
+        """Build the game state array matching the format expected by observation processor.
+        
+        The game state contains ninja physics state (12 values) + entity states.
+        Minimum 26 features to match observation processor expectations.
+        
+        Ninja state (12 values):
+        - Position (x, y) normalized
+        - Speed (xspeed, yspeed) normalized
+        - Airborn boolean
+        - Walled boolean
+        - Jump duration normalized
+        - Applied gravity normalized
+        - Applied drag normalized
+        - Applied friction normalized
+        - State (movement state enum)
+        - Jump buffer normalized
+        """
+        from ..constants import (
+            MAX_HOR_SPEED,
+            GRAVITY_FALL,
+            DRAG_REGULAR,
+            FRICTION_GROUND,
+            MAX_JUMP_DURATION,
+        )
+
+        # Normalize values
+        x_norm = ninja_x / 1056.0  # LEVEL_WIDTH
+        y_norm = ninja_y / 600.0  # LEVEL_HEIGHT
+        xspeed_norm = ninja.xspeed / MAX_HOR_SPEED
+        yspeed_norm = ninja.yspeed / 10.0  # Reasonable max vertical speed
+        jump_duration_norm = ninja.jump_duration / MAX_JUMP_DURATION
+        gravity_norm = ninja.applied_gravity / GRAVITY_FALL
+        drag_norm = ninja.applied_drag / DRAG_REGULAR
+        friction_norm = ninja.applied_friction / FRICTION_GROUND
+        state_norm = ninja.state / 5.0  # States are 0-5
+        jump_buffer_norm = max(ninja.jump_buffer, 0) / 5.0  # Buffer is -1 to 5
+
+        # Build ninja state array (12 values)
+        ninja_state = np.array(
+            [
+                x_norm,
+                y_norm,
+                xspeed_norm,
+                yspeed_norm,
+                float(not ninja.airborn),  # on_ground
+                float(ninja.walled),
+                jump_duration_norm,
+                gravity_norm,
+                drag_norm,
+                friction_norm,
+                state_norm,
+                jump_buffer_norm,
+            ],
+            dtype=np.float32,
+        )
+
+        # Pad to minimum 26 features (12 ninja + 14 padding for entity states)
+        # The observation processor will extract what it needs
+        padding = np.zeros(14, dtype=np.float32)
+        game_state = np.concatenate([ninja_state, padding])
+
+        return game_state
+
     def _compute_reachability_features(
-        self, ninja_x: float, ninja_y: float
+        self,
+        ninja_x: float,
+        ninja_y: float,
+        switch_x: float,
+        switch_y: float,
+        exit_door_x: float,
+        exit_door_y: float,
     ) -> np.ndarray:
         """
-        Compute simplified 8-dimensional reachability features from available data.
+        Compute 8-dimensional reachability features.
 
         Features:
         1. Reachable area ratio (simplified: always 0.5 as we don't do flood fill)
-        2. Distance to nearest switch (normalized)
-        3. Distance to exit (normalized)
-        4. Reachable switches count (simplified: 0 or 1 based on switch state)
-        5. Reachable hazards count (simplified: count of nearby mines)
+        2. Distance to nearest switch (normalized, inverted so closer = higher)
+        3. Distance to exit (normalized, inverted so closer = higher)
+        4. Reachable switches count (0 or 1 based on switch state)
+        5. Reachable hazards count (count of nearby mines, normalized)
         6. Connectivity score (simplified: always 0.5)
         7. Exit reachable flag (based on switch activation)
         8. Switch-to-exit path exists (based on switch activation)
@@ -194,35 +304,24 @@ class ReplayExecutor:
         # Feature 1: Reachable area ratio (simplified, not computed in replay mode)
         features[0] = 0.5
 
-        # Feature 2: Distance to nearest switch (normalized by max level distance)
-        try:
-            switch_x, switch_y = self.nplay_headless.exit_switch_position()
-            dist_to_switch = np.sqrt(
-                (ninja_x - switch_x) ** 2 + (ninja_y - switch_y) ** 2
-            )
-            max_distance = np.sqrt(1056**2 + 600**2)  # Max level diagonal
-            features[1] = 1.0 - min(dist_to_switch / max_distance, 1.0)
-        except:
-            features[1] = 0.0
+        # Feature 2: Distance to nearest switch (normalized, inverted)
+        max_distance = np.sqrt(1056**2 + 600**2)  # Max level diagonal
+        dist_to_switch = np.sqrt(
+            (ninja_x - switch_x) ** 2 + (ninja_y - switch_y) ** 2
+        )
+        features[1] = 1.0 - min(dist_to_switch / max_distance, 1.0)
 
-        # Feature 3: Distance to exit (normalized)
-        try:
-            exit_x, exit_y = self.nplay_headless.exit_door_position()
-            dist_to_exit = np.sqrt((ninja_x - exit_x) ** 2 + (ninja_y - exit_y) ** 2)
-            features[2] = 1.0 - min(dist_to_exit / max_distance, 1.0)
-        except:
-            features[2] = 0.0
+        # Feature 3: Distance to exit (normalized, inverted)
+        dist_to_exit = np.sqrt(
+            (ninja_x - exit_door_x) ** 2 + (ninja_y - exit_door_y) ** 2
+        )
+        features[2] = 1.0 - min(dist_to_exit / max_distance, 1.0)
 
         # Feature 4: Reachable switches count (0 or 1 based on activation state)
-        try:
-            switch_activated = self.nplay_headless.exit_switch_activated()
-            features[3] = (
-                1.0 if not switch_activated else 0.0
-            )  # 1 if still needs activation
-        except:
-            features[3] = 0.0
+        switch_activated = self._is_switch_activated()
+        features[3] = 1.0 if not switch_activated else 0.0  # 1 if still needs activation
 
-        # Feature 5: Reachable hazards count (simplified: count of nearby mines)
+        # Feature 5: Reachable hazards count (count of nearby mines, normalized)
         try:
             mines = self.nplay_headless.mines()
             # Count mines within reasonable distance (e.g., 200 pixels)
@@ -240,13 +339,9 @@ class ReplayExecutor:
         features[5] = 0.5
 
         # Feature 7: Exit reachable flag (based on switch activation)
-        try:
-            switch_activated = self.nplay_headless.exit_switch_activated()
-            features[6] = 1.0 if switch_activated else 0.0
-        except:
-            features[6] = 0.0
+        features[6] = 1.0 if switch_activated else 0.0
 
-        # Feature 8: Switch-to-exit path exists (same as exit reachable for simplified version)
+        # Feature 8: Switch-to-exit path exists (same as exit reachable)
         features[7] = features[6]
 
         return features
