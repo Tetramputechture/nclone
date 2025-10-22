@@ -59,4 +59,4 @@ nclone/_version.py
 
 datasets/
 
-.ruff_cache/
+.ruff_cache/validation_results.json

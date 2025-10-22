@@ -149,6 +149,8 @@ class ReplayExecutor:
         - switch_activated: whether switch has been activated
         - game_state: concatenated ninja and entity state (26+ floats)
         - reachability_features: 8-dimensional reachability vector
+        - player_won: whether the player has won
+        - player_dead: whether the player has died
         """
         # Render current frame
         screen = self.nplay_headless.render()
@@ -172,6 +174,10 @@ class ReplayExecutor:
             ninja_x, ninja_y, switch_x, switch_y, exit_door_x, exit_door_y
         )
 
+        # Get win/death state
+        player_won = self.nplay_headless.ninja_has_won()
+        player_dead = self.nplay_headless.sim.ninja.has_died()
+
         # Build complete raw observation
         obs = {
             "screen": screen,
@@ -184,6 +190,8 @@ class ReplayExecutor:
             "switch_activated": switch_activated,
             "game_state": game_state,
             "reachability_features": reachability_features,
+            "player_won": player_won,
+            "player_dead": player_dead,
         }
 
         return obs
