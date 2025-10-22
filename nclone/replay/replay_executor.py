@@ -161,8 +161,8 @@ class ReplayExecutor:
                     ninja_y / 552,
                     ninja.xspeed / 10.0,  # Normalized velocity
                     ninja.yspeed / 10.0,
-                    float(ninja.on_ground),
-                    float(ninja.wall_sliding),
+                    float(not ninja.airborn),  # on_ground (inverted airborn)
+                    float(ninja.state == 5),  # wall_sliding (state 5)
                     # Add more state as needed...
                 ]
                 + [0.0] * 20,
