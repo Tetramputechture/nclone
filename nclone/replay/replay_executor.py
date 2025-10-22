@@ -159,8 +159,8 @@ class ReplayExecutor:
                     # Ninja physics state (simplified)
                     ninja_x / 1008,  # Normalized position
                     ninja_y / 552,
-                    ninja.xvel / 10.0,  # Normalized velocity
-                    ninja.yvel / 10.0,
+                    ninja.xspeed / 10.0,  # Normalized velocity
+                    ninja.yspeed / 10.0,
                     float(ninja.on_ground),
                     float(ninja.wall_sliding),
                     # Add more state as needed...
