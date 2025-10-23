@@ -1,4 +1,5 @@
 import pygame
+import numpy as np
 from typing import Optional
 from . import render_utils
 from .tile_renderer import TileRenderer
@@ -76,12 +77,21 @@ class NSimRenderer:
 
         # Draw entities first
         entities_surface = self.entity_renderer.draw_entities(init)
-        self.screen.blit(entities_surface, (self.tile_x_offset, self.tile_y_offset))
+        
+        # Blit entities onto screen
+        if self.grayscale:
+            # For grayscale mode, manually composite to preserve pixel values
+            self._blit_grayscale(entities_surface, (self.tile_x_offset, self.tile_y_offset))
+        else:
+            self.screen.blit(entities_surface, (self.tile_x_offset, self.tile_y_offset))
 
         # Draw tiles on top of entities (if enabled)
         if self.tile_rendering_enabled:
             tiles_surface = self.tile_renderer.draw_tiles(init)
-            self.screen.blit(tiles_surface, (self.tile_x_offset, self.tile_y_offset))
+            if self.grayscale:
+                self._blit_grayscale(tiles_surface, (self.tile_x_offset, self.tile_y_offset))
+            else:
+                self.screen.blit(tiles_surface, (self.tile_x_offset, self.tile_y_offset))
 
         if self.enable_debug_overlay:
             overlay_surface = self.debug_overlay_renderer.draw_debug_overlay(debug_info)
@@ -89,6 +99,7 @@ class NSimRenderer:
 
         if self.render_mode == "human":
             pygame.display.flip()
+        
         return self.screen
 
     def draw_collision_map(self, init: bool) -> pygame.Surface:
@@ -121,3 +132,74 @@ class NSimRenderer:
         self.debug_overlay_renderer.update_params(
             self.adjust, self.tile_x_offset, self.tile_y_offset
         )
+    
+    def _blit_grayscale(self, source_surface: pygame.Surface, offset: tuple):
+        """
+        Blit a colored surface (BGRA from Cairo) onto the grayscale screen,
+        converting colors to grayscale and respecting alpha transparency.
+        
+        Args:
+            source_surface: The BGRA surface to blit (typically from entity_renderer)
+            offset: (x, y) offset for blitting
+        """
+        offset_x, offset_y = int(offset[0]), int(offset[1])
+        
+        try:
+            # Get RGB and alpha data from source surface
+            rgb_array = pygame.surfarray.array3d(source_surface)  # (W, H, 3)
+            alpha_array = pygame.surfarray.array_alpha(source_surface)  # (W, H)
+            
+            # Convert to grayscale
+            gray_wh = (
+                0.2989 * rgb_array[:, :, 0] + 
+                0.5870 * rgb_array[:, :, 1] + 
+                0.1140 * rgb_array[:, :, 2]
+            ).astype(np.uint8)
+            
+            # Get screen pixel array
+            screen_pixels = pygame.surfarray.pixels2d(self.screen)
+            
+            src_width, src_height = source_surface.get_size()
+            screen_width, screen_height = self.screen.get_size()
+            
+            # Calculate the region to copy
+            # Handle cases where source might extend beyond screen boundaries
+            src_x_start = max(0, -offset_x)
+            src_y_start = max(0, -offset_y)
+            src_x_end = min(src_width, screen_width - offset_x)
+            src_y_end = min(src_height, screen_height - offset_y)
+            
+            dst_x_start = max(0, offset_x)
+            dst_y_start = max(0, offset_y)
+            dst_x_end = dst_x_start + (src_x_end - src_x_start)
+            dst_y_end = dst_y_start + (src_y_end - src_y_start)
+            
+            if src_x_start < src_x_end and src_y_start < src_y_end:
+                # Extract the relevant region
+                src_gray_region = gray_wh[src_x_start:src_x_end, src_y_start:src_y_end]
+                src_alpha_region = alpha_array[src_x_start:src_x_end, src_y_start:src_y_end]
+                
+                # Get the destination region
+                dst_region = screen_pixels[dst_x_start:dst_x_end, dst_y_start:dst_y_end]
+                
+                # Alpha blend: only draw where alpha > 0
+                # For alpha = 255, use entity color; for alpha = 0, keep background
+                alpha_mask = src_alpha_region > 0
+                alpha_normalized = src_alpha_region.astype(np.float32) / 255.0
+                
+                # Blend: result = src * alpha + dst * (1 - alpha)
+                blended = (
+                    src_gray_region * alpha_normalized + 
+                    dst_region * (1 - alpha_normalized)
+                ).astype(np.uint8)
+                
+                # Apply only where there's some alpha
+                dst_region[:] = np.where(alpha_mask, blended, dst_region)
+            
+            del screen_pixels  # Unlock the surface
+            
+        except Exception as e:
+            # Fallback: use normal blit (may not work well with grayscale)
+            import sys
+            print(f"WARNING: _blit_grayscale failed: {e}, falling back to normal blit", file=sys.stderr)
+            self.screen.blit(source_surface, offset)
