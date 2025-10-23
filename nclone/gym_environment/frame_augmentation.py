@@ -118,7 +118,8 @@ def apply_augmentation(
     p: float = 0.5,
     intensity: str = "medium",
     disable_validation: bool = False,
-) -> np.ndarray:
+    return_replay: bool = False,
+) -> Any:
     """Apply random augmentation to a single frame.
 
     Simplified function for single-frame augmentation, optimized for performance.
@@ -131,9 +132,12 @@ def apply_augmentation(
         p: Probability of applying each augmentation
         intensity: Augmentation intensity level ("light", "medium", "strong")
         disable_validation: If True, disables validation for performance
+        return_replay: If True, returns (augmented_frame, replay_data) tuple for replaying
+                      augmentation on additional frames. If False, returns just the frame.
 
     Returns:
-        Augmented frame with same shape as input
+        If return_replay=False: Augmented frame with same shape as input
+        If return_replay=True: Tuple of (augmented_frame, replay_data)
     """
     if seed is not None:
         np.random.seed(seed)
@@ -147,8 +151,48 @@ def apply_augmentation(
     )
 
     # Apply augmentation
-    augmented = transform(image=frame_uint8)["image"]
+    result = transform(image=frame_uint8)
+    augmented = result["image"]
 
+    if return_replay:
+        # Return both the augmented frame and replay data for consistent augmentation
+        return augmented, result["replay"]
+    else:
+        return augmented
+
+
+def apply_augmentation_with_replay(
+    frame: np.ndarray,
+    replay_data: Dict[str, Any],
+    p: float = 0.5,
+    intensity: str = "medium",
+    disable_validation: bool = False,
+) -> np.ndarray:
+    """Apply the same augmentation to a frame using replay data.
+    
+    This ensures consistent augmentation across multiple frames in a stack.
+    
+    Args:
+        frame: Frame to augment, shape (H, W, C)
+        replay_data: Replay data from a previous apply_augmentation call
+        p: Probability parameter (must match original)
+        intensity: Intensity parameter (must match original)
+        disable_validation: Validation parameter (must match original)
+        
+    Returns:
+        Augmented frame with the same transformations as the original
+    """
+    # Ensure frame is in uint8 format
+    frame_uint8 = frame.astype(np.uint8)
+    
+    # Get the same augmentation pipeline
+    transform = get_augmentation_pipeline(
+        p=p, intensity=intensity, disable_validation=disable_validation
+    )
+    
+    # Replay the augmentation with the recorded parameters
+    augmented = A.ReplayCompose.replay(replay_data, image=frame_uint8)["image"]
+    
     return augmented
 
 
