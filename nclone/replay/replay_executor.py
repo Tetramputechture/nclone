@@ -10,6 +10,13 @@ import numpy as np
 
 from ..nplay_headless import NPlayHeadless
 from ..gym_environment.observation_processor import ObservationProcessor
+from ..constants.physics_constants import (
+    MAX_HOR_SPEED,
+    GRAVITY_FALL,
+    DRAG_REGULAR,
+    FRICTION_GROUND,
+    MAX_JUMP_DURATION,
+)
 
 
 def map_input_to_action(input_byte: int) -> int:
@@ -137,10 +144,10 @@ class ReplayExecutor:
 
     def _get_raw_observation(self) -> Dict[str, Any]:
         """Get raw observation from environment.
-        
+
         Returns a complete raw observation dict with all required keys
         that the ObservationProcessor expects.
-        
+
         Required keys:
         - screen: rendered frame
         - player_x, player_y: ninja position
@@ -198,35 +205,22 @@ class ReplayExecutor:
 
     def _get_switch_position(self) -> tuple:
         """Get exit switch position with fallback."""
-        try:
-            return self.nplay_headless.exit_switch_position()
-        except:
-            # Fallback to level center if no switch exists
-            return (528.0, 300.0)
+        return self.nplay_headless.exit_switch_position()
 
     def _get_exit_door_position(self) -> tuple:
         """Get exit door position with fallback."""
-        try:
-            return self.nplay_headless.exit_door_position()
-        except:
-            # Fallback to level center if no exit exists
-            return (528.0, 300.0)
+        return self.nplay_headless.exit_door_position()
 
     def _is_switch_activated(self) -> bool:
         """Check if exit switch is activated."""
-        try:
-            return self.nplay_headless.exit_switch_activated()
-        except:
-            return False
+        return self.nplay_headless.exit_switch_activated()
 
-    def _build_game_state(
-        self, ninja, ninja_x: float, ninja_y: float
-    ) -> np.ndarray:
+    def _build_game_state(self, ninja, ninja_x: float, ninja_y: float) -> np.ndarray:
         """Build the game state array matching the format expected by observation processor.
-        
+
         The game state contains ninja physics state (12 values) + entity states.
         Minimum 26 features to match observation processor expectations.
-        
+
         Ninja state (12 values):
         - Position (x, y) normalized
         - Speed (xspeed, yspeed) normalized
@@ -239,13 +233,6 @@ class ReplayExecutor:
         - State (movement state enum)
         - Jump buffer normalized
         """
-        from ..constants import (
-            MAX_HOR_SPEED,
-            GRAVITY_FALL,
-            DRAG_REGULAR,
-            FRICTION_GROUND,
-            MAX_JUMP_DURATION,
-        )
 
         # Normalize values
         x_norm = ninja_x / 1056.0  # LEVEL_WIDTH
@@ -314,9 +301,7 @@ class ReplayExecutor:
 
         # Feature 2: Distance to nearest switch (normalized, inverted)
         max_distance = np.sqrt(1056**2 + 600**2)  # Max level diagonal
-        dist_to_switch = np.sqrt(
-            (ninja_x - switch_x) ** 2 + (ninja_y - switch_y) ** 2
-        )
+        dist_to_switch = np.sqrt((ninja_x - switch_x) ** 2 + (ninja_y - switch_y) ** 2)
         features[1] = 1.0 - min(dist_to_switch / max_distance, 1.0)
 
         # Feature 3: Distance to exit (normalized, inverted)
@@ -327,7 +312,9 @@ class ReplayExecutor:
 
         # Feature 4: Reachable switches count (0 or 1 based on activation state)
         switch_activated = self._is_switch_activated()
-        features[3] = 1.0 if not switch_activated else 0.0  # 1 if still needs activation
+        features[3] = (
+            1.0 if not switch_activated else 0.0
+        )  # 1 if still needs activation
 
         # Feature 5: Reachable hazards count (count of nearby mines, normalized)
         try:

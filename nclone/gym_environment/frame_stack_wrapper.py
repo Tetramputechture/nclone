@@ -28,7 +28,7 @@ References:
 
 import numpy as np
 from collections import deque
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from gymnasium import ObservationWrapper
 from gymnasium.spaces import Box, Dict as SpacesDict
 import gymnasium as gym
