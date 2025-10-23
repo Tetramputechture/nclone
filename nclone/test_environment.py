@@ -119,7 +119,7 @@ class MemoryProfiler:
         print(f"  Delta from baseline: {snapshot_data['memory_delta_mb']:+.2f} MB")
 
         if obs_sizes:
-            print("  Observation sizes:")
+            print(f"  Observation sizes:")
             total_obs_size = 0
             for key, info in obs_sizes.items():
                 print(
@@ -130,7 +130,7 @@ class MemoryProfiler:
 
         # Show top memory allocations
         top_stats = snapshot.statistics("lineno")[:5]
-        print("  Top 5 memory allocations:")
+        print(f"  Top 5 memory allocations:")
         for stat in top_stats:
             print(f"    {stat}")
 
@@ -209,13 +209,13 @@ class MemoryProfiler:
                     f.write(f"  Delta: {snap_data['memory_delta_mb']:+.2f} MB\n")
 
                     if snap_data["observation_sizes"]:
-                        f.write("  Observations:\n")
+                        f.write(f"  Observations:\n")
                         for key, info in snap_data["observation_sizes"].items():
                             f.write(
                                 f"    {key}: {info['shape']} ({info['dtype']}) = {info['size_mb']:.3f} MB\n"
                             )
 
-                    f.write("  Top allocations:\n")
+                    f.write(f"  Top allocations:\n")
                     top_stats = snap_data["snapshot"].statistics("lineno")[:10]
                     for stat in top_stats:
                         f.write(f"    {stat}\n")
