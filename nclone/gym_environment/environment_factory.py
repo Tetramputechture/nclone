@@ -8,27 +8,67 @@ with common configurations for training, evaluation, and research.
 from typing import Optional, Callable, Dict, Any
 from .npp_environment import NppEnvironment
 from .config import EnvironmentConfig
+from .frame_stack_wrapper import FrameStackWrapper
 
 
 def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
     """Create an environment optimized for training."""
     if config is None:
         config = EnvironmentConfig.for_training()
-    return NppEnvironment(config)
+    env = NppEnvironment(config)
+    
+    # Apply frame stacking wrapper if enabled
+    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+        env = FrameStackWrapper(
+            env,
+            visual_stack_size=config.frame_stack.visual_stack_size,
+            state_stack_size=config.frame_stack.state_stack_size,
+            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
+            enable_state_stacking=config.frame_stack.enable_state_stacking,
+            padding_type=config.frame_stack.padding_type,
+        )
+    
+    return env
 
 
 def create_evaluation_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
     """Create an environment optimized for evaluation."""
     if config is None:
         config = EnvironmentConfig.for_evaluation()
-    return NppEnvironment(config)
+    env = NppEnvironment(config)
+    
+    # Apply frame stacking wrapper if enabled
+    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+        env = FrameStackWrapper(
+            env,
+            visual_stack_size=config.frame_stack.visual_stack_size,
+            state_stack_size=config.frame_stack.state_stack_size,
+            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
+            enable_state_stacking=config.frame_stack.enable_state_stacking,
+            padding_type=config.frame_stack.padding_type,
+        )
+    
+    return env
 
 
 def create_research_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
     """Create an environment optimized for research and debugging."""
     if config is None:
         config = EnvironmentConfig.for_research()
-    return NppEnvironment(config)
+    env = NppEnvironment(config)
+    
+    # Apply frame stacking wrapper if enabled
+    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+        env = FrameStackWrapper(
+            env,
+            visual_stack_size=config.frame_stack.visual_stack_size,
+            state_stack_size=config.frame_stack.state_stack_size,
+            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
+            enable_state_stacking=config.frame_stack.enable_state_stacking,
+            padding_type=config.frame_stack.padding_type,
+        )
+    
+    return env
 
 
 def create_visual_testing_env(
@@ -37,14 +77,40 @@ def create_visual_testing_env(
     """Create an environment optimized for testing rendering and visualization."""
     if config is None:
         config = EnvironmentConfig.for_visual_testing()
-    return NppEnvironment(config)
+    env = NppEnvironment(config)
+    
+    # Apply frame stacking wrapper if enabled
+    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+        env = FrameStackWrapper(
+            env,
+            visual_stack_size=config.frame_stack.visual_stack_size,
+            state_stack_size=config.frame_stack.state_stack_size,
+            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
+            enable_state_stacking=config.frame_stack.enable_state_stacking,
+            padding_type=config.frame_stack.padding_type,
+        )
+    
+    return env
 
 
 def create_minimal_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
     """Create a minimal environment with all advanced features disabled."""
     if config is None:
         config = EnvironmentConfig.minimal()
-    return NppEnvironment(config)
+    env = NppEnvironment(config)
+    
+    # Apply frame stacking wrapper if enabled
+    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+        env = FrameStackWrapper(
+            env,
+            visual_stack_size=config.frame_stack.visual_stack_size,
+            state_stack_size=config.frame_stack.state_stack_size,
+            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
+            enable_state_stacking=config.frame_stack.enable_state_stacking,
+            padding_type=config.frame_stack.padding_type,
+        )
+    
+    return env
 
 
 def make_vectorizable_env(
@@ -125,7 +191,20 @@ def create_hierarchical_env(
         )
     elif completion_planner is not None:
         config.hierarchical.completion_planner = completion_planner
-    return NppEnvironment(config)
+    env = NppEnvironment(config)
+    
+    # Apply frame stacking wrapper if enabled
+    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+        env = FrameStackWrapper(
+            env,
+            visual_stack_size=config.frame_stack.visual_stack_size,
+            state_stack_size=config.frame_stack.state_stack_size,
+            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
+            enable_state_stacking=config.frame_stack.enable_state_stacking,
+            padding_type=config.frame_stack.padding_type,
+        )
+    
+    return env
 
 
 def benchmark_environment_performance(

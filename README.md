@@ -92,11 +92,11 @@ Multi-modal observations for CNN, MLP, and GNN architectures.
 ```python
 {
     # Visual (CNNs)
-    'player_frame': Box(0, 255, (84, 84, 1), uint8),
-    'global_view': Box(0, 255, (176, 100, 1), uint8),
+    'player_frame': Box(0, 255, (84, 84, 1), uint8),  # or (stack_size, 84, 84, 1) if stacked
+    'global_view': Box(0, 255, (176, 100, 1), uint8),  # or (stack_size, 176, 100, 1) if stacked
     
     # State vectors (MLPs)
-    'game_state': Box(-1, 1, (26,), float32),
+    'game_state': Box(-1, 1, (26,), float32),  # or (stack_size, 26) if stacked
     'reachability_features': Box(0, 1, (8,), float32),
     'entity_positions': Box(0, 1, (6,), float32),
     'switch_states': Box(0, 1, (25,), float32),
@@ -114,6 +114,37 @@ python tools/validate_observations.py --episodes 3
 ```
 
 **Full documentation:** [OBSERVATION_SPACE_README.md](OBSERVATION_SPACE_README.md)
+
+### Frame Stacking
+
+Frame stacking provides temporal information to the policy by stacking consecutive observations. This technique, popularized by DQN (Mnih et al., 2015), allows the agent to infer velocity, acceleration, and motion dynamics.
+
+**Configuration:**
+
+```python
+from nclone.gym_environment import create_training_env, EnvironmentConfig, FrameStackConfig
+
+# Enable frame stacking
+config = EnvironmentConfig.for_training()
+config.frame_stack = FrameStackConfig(
+    enable_visual_frame_stacking=True,
+    visual_stack_size=4,  # Stack 4 visual frames
+    enable_state_stacking=True,
+    state_stack_size=4,  # Stack 4 game states
+    padding_type="zero"  # or "repeat"
+)
+
+env = create_training_env(config)
+```
+
+**Key Features:**
+- **Independent stacking**: Visual frames and game states can be stacked independently with different stack sizes (2-12 frames)
+- **Consistent augmentation**: When frame augmentation is enabled, the same transform is applied across all frames in the stack to maintain temporal coherence
+- **Configurable padding**: Choose between zero padding or repeating the initial frame
+
+**References:**
+- Mnih et al. (2015). "Human-level control through deep reinforcement learning." *Nature* 518, 529-533. https://doi.org/10.1038/nature14236
+- Machado et al. (2018). "Revisiting the Arcade Learning Environment." *IJCAI* 61, 523-562.
 
 ### Reward Structure
 

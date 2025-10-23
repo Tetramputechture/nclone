@@ -26,7 +26,7 @@ References:
 
 import numpy as np
 import albumentations as A
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 import functools
 import cv2
 
