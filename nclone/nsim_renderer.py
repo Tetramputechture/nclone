@@ -138,6 +138,9 @@ class NSimRenderer:
         Blit a colored surface (BGRA from Cairo) onto the grayscale screen,
         converting colors to grayscale and respecting alpha transparency.
         
+        OPTIMIZED VERSION: Only processes non-transparent bounding regions
+        and uses integer math for grayscale conversion.
+        
         Args:
             source_surface: The BGRA surface to blit (typically from entity_renderer)
             offset: (x, y) offset for blitting
@@ -145,32 +148,53 @@ class NSimRenderer:
         offset_x, offset_y = int(offset[0]), int(offset[1])
         
         try:
-            # Get RGB and alpha data from source surface
-            rgb_array = pygame.surfarray.array3d(source_surface)  # (W, H, 3)
-            alpha_array = pygame.surfarray.array_alpha(source_surface)  # (W, H)
+            # OPTIMIZATION 1: Get bounding rect of non-transparent pixels
+            # This dramatically reduces the number of pixels to process
+            bounding_rect = source_surface.get_bounding_rect()
+            if bounding_rect.width == 0 or bounding_rect.height == 0:
+                return  # Nothing visible to draw
             
-            # Convert to grayscale
+            # OPTIMIZATION 2: Only extract the bounding region, not the entire surface
+            # Create a view of just the bounding rect
+            if bounding_rect.width < source_surface.get_width() or bounding_rect.height < source_surface.get_height():
+                # Only process the bounding rect
+                clipped_surface = source_surface.subsurface(bounding_rect)
+                # Adjust offset to account for clipped region
+                adjusted_offset_x = offset_x + bounding_rect.x
+                adjusted_offset_y = offset_y + bounding_rect.y
+            else:
+                # Entire surface is visible, use as-is
+                clipped_surface = source_surface
+                adjusted_offset_x = offset_x
+                adjusted_offset_y = offset_y
+            
+            # Get RGB and alpha data from clipped surface (much smaller!)
+            rgb_array = pygame.surfarray.array3d(clipped_surface)  # (W, H, 3)
+            alpha_array = pygame.surfarray.array_alpha(clipped_surface)  # (W, H)
+            
+            # OPTIMIZATION 3: Use integer math for grayscale conversion
+            # gray = (77*R + 150*G + 29*B) >> 8 is faster than float multiplication
+            # This approximates 0.299*R + 0.587*G + 0.114*B with integers
             gray_wh = (
-                0.2989 * rgb_array[:, :, 0] + 
-                0.5870 * rgb_array[:, :, 1] + 
-                0.1140 * rgb_array[:, :, 2]
+                (77 * rgb_array[:, :, 0].astype(np.int32) + 
+                 150 * rgb_array[:, :, 1].astype(np.int32) + 
+                 29 * rgb_array[:, :, 2].astype(np.int32)) >> 8
             ).astype(np.uint8)
             
             # Get screen pixel array
             screen_pixels = pygame.surfarray.pixels2d(self.screen)
             
-            src_width, src_height = source_surface.get_size()
+            src_width, src_height = clipped_surface.get_size()
             screen_width, screen_height = self.screen.get_size()
             
             # Calculate the region to copy
-            # Handle cases where source might extend beyond screen boundaries
-            src_x_start = max(0, -offset_x)
-            src_y_start = max(0, -offset_y)
-            src_x_end = min(src_width, screen_width - offset_x)
-            src_y_end = min(src_height, screen_height - offset_y)
+            src_x_start = max(0, -adjusted_offset_x)
+            src_y_start = max(0, -adjusted_offset_y)
+            src_x_end = min(src_width, screen_width - adjusted_offset_x)
+            src_y_end = min(src_height, screen_height - adjusted_offset_y)
             
-            dst_x_start = max(0, offset_x)
-            dst_y_start = max(0, offset_y)
+            dst_x_start = max(0, adjusted_offset_x)
+            dst_y_start = max(0, adjusted_offset_y)
             dst_x_end = dst_x_start + (src_x_end - src_x_start)
             dst_y_end = dst_y_start + (src_y_end - src_y_start)
             
@@ -182,18 +206,18 @@ class NSimRenderer:
                 # Get the destination region
                 dst_region = screen_pixels[dst_x_start:dst_x_end, dst_y_start:dst_y_end]
                 
-                # Alpha blend: only draw where alpha > 0
-                # For alpha = 255, use entity color; for alpha = 0, keep background
-                alpha_mask = src_alpha_region > 0
-                alpha_normalized = src_alpha_region.astype(np.float32) / 255.0
+                # OPTIMIZATION 4: Use vectorized integer alpha blending
+                # result = (src * alpha + dst * (255 - alpha)) / 255
+                alpha_int = src_alpha_region.astype(np.int32)
+                inv_alpha = 255 - alpha_int
                 
-                # Blend: result = src * alpha + dst * (1 - alpha)
                 blended = (
-                    src_gray_region * alpha_normalized + 
-                    dst_region * (1 - alpha_normalized)
+                    (src_gray_region.astype(np.int32) * alpha_int + 
+                     dst_region.astype(np.int32) * inv_alpha) >> 8  # Divide by 256 (close to 255)
                 ).astype(np.uint8)
                 
-                # Apply only where there's some alpha
+                # Only update pixels with non-zero alpha
+                alpha_mask = src_alpha_region > 0
                 dst_region[:] = np.where(alpha_mask, blended, dst_region)
             
             del screen_pixels  # Unlock the surface
