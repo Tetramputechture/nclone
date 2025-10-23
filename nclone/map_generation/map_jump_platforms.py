@@ -28,7 +28,7 @@ class MapJumpPlatforms(Map):
 
     # Platform spacing constants
     MIN_PLATFORM_SPACING = 8
-    MAX_PLATFORM_SPACING = 12
+    MAX_PLATFORM_SPACING = 10
     MAX_Y_OFFSET = 3
 
     # Mine spacing (0.5 tile widths means ~1.5 tiles between mine centers)
