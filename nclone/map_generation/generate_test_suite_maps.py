@@ -985,9 +985,9 @@ class TestSuiteGenerator:
         map_gen.MAX_HEIGHT = 22  # MAP_TILE_HEIGHT - 1 to stay within bounds
 
         # Wider platform spacing for more challenging jumps
-        map_gen.MIN_PLATFORM_SPACING = 10
-        map_gen.MAX_PLATFORM_SPACING = 14
-        map_gen.MAX_Y_OFFSET = 4
+        map_gen.MIN_PLATFORM_SPACING = 8
+        map_gen.MAX_PLATFORM_SPACING = 10
+        map_gen.MAX_Y_OFFSET = 3
 
         # Tighter mine spacing for more obstacles
         map_gen.MINE_SPACING = 1.0
