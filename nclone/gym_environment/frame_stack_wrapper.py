@@ -155,41 +155,41 @@ class FrameStackWrapper(ObservationWrapper):
         else:  # repeat
             return obs_value.copy()
     
-    def reset(self, **kwargs) -> tuple:
-        """Reset environment and initialize frame stacks."""
+    def reset(self, **kwargs) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Reset environment and initialize frame stacks.
+        
+        Note: Initializes buffers with (stack_size - 1) padding frames,
+        then calls observation() which appends the real first frame.
+        This prevents the double-append bug where the first frame would
+        appear twice in the initial stack.
+        """
         obs, info = self.env.reset(**kwargs)
         
-        # Initialize buffers with padding
+        # Initialize buffers with padding (stack_size - 1 frames)
+        # The observation() call will add the real frame as the last element
         if "player_frame" in obs and self.enable_visual_stacking:
             padding = self._get_padding_value("player_frame", obs["player_frame"])
             self.player_frame_buffer.clear()
-            for _ in range(self.visual_stack_size):
+            for _ in range(self.visual_stack_size - 1):
                 self.player_frame_buffer.append(padding)
-            # Replace last with actual observation
-            self.player_frame_buffer[-1] = obs["player_frame"]
         elif "player_frame" in obs:
             self.player_frame_buffer.clear()
-            self.player_frame_buffer.append(obs["player_frame"])
         
         if "global_view" in obs and self.enable_visual_stacking:
             padding = self._get_padding_value("global_view", obs["global_view"])
             self.global_view_buffer.clear()
-            for _ in range(self.visual_stack_size):
+            for _ in range(self.visual_stack_size - 1):
                 self.global_view_buffer.append(padding)
-            self.global_view_buffer[-1] = obs["global_view"]
         elif "global_view" in obs:
             self.global_view_buffer.clear()
-            self.global_view_buffer.append(obs["global_view"])
         
         if "game_state" in obs and self.enable_state_stacking:
             padding = self._get_padding_value("game_state", obs["game_state"])
             self.game_state_buffer.clear()
-            for _ in range(self.state_stack_size):
+            for _ in range(self.state_stack_size - 1):
                 self.game_state_buffer.append(padding)
-            self.game_state_buffer[-1] = obs["game_state"]
         elif "game_state" in obs:
             self.game_state_buffer.clear()
-            self.game_state_buffer.append(obs["game_state"])
         
         return self.observation(obs), info
     
@@ -220,14 +220,14 @@ class FrameStackWrapper(ObservationWrapper):
         if "player_frame" in observation:
             if self.enable_visual_stacking and len(self.player_frame_buffer) > 0:
                 # Stack frames along first dimension: (stack_size, H, W, C)
-                stacked_obs["player_frame"] = np.stack(list(self.player_frame_buffer), axis=0)
+                stacked_obs["player_frame"] = np.stack(self.player_frame_buffer, axis=0)
             else:
                 stacked_obs["player_frame"] = observation["player_frame"]
         
         if "global_view" in observation:
             if self.enable_visual_stacking and len(self.global_view_buffer) > 0:
                 # Stack frames along first dimension: (stack_size, H, W, C)
-                stacked_obs["global_view"] = np.stack(list(self.global_view_buffer), axis=0)
+                stacked_obs["global_view"] = np.stack(self.global_view_buffer, axis=0)
             else:
                 stacked_obs["global_view"] = observation["global_view"]
         
@@ -235,7 +235,7 @@ class FrameStackWrapper(ObservationWrapper):
         if "game_state" in observation:
             if self.enable_state_stacking and len(self.game_state_buffer) > 0:
                 # Stack states along first dimension: (stack_size, state_dim)
-                stacked_obs["game_state"] = np.stack(list(self.game_state_buffer), axis=0)
+                stacked_obs["game_state"] = np.stack(self.game_state_buffer, axis=0)
             else:
                 stacked_obs["game_state"] = observation["game_state"]
         
