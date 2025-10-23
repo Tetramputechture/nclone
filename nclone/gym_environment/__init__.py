@@ -3,6 +3,18 @@
 # Main environment class with integrated functionality
 from .npp_environment import NppEnvironment
 
+# Configuration classes
+from .config import (
+    EnvironmentConfig,
+    FrameStackConfig,
+    AugmentationConfig,
+    RenderConfig,
+    PBRSConfig,
+    GraphConfig,
+    ReachabilityConfig,
+    HierarchicalConfig,
+)
+
 # Factory functions for easy environment creation
 from .environment_factory import (
     create_training_env,
@@ -20,6 +32,16 @@ from .environment_factory import (
 __all__ = [
     # Main environment
     "NppEnvironment",
+    # Configuration
+    "EnvironmentConfig",
+    "FrameStackConfig",
+    "AugmentationConfig",
+    "RenderConfig",
+    "PBRSConfig",
+    "GraphConfig",
+    "ReachabilityConfig",
+    "HierarchicalConfig",
+    # Factory functions
     "create_training_env",
     "create_evaluation_env",
     "create_research_env",
