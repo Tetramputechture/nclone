@@ -28,7 +28,7 @@ References:
 
 import numpy as np
 from collections import deque
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from gymnasium import ObservationWrapper
 from gymnasium.spaces import Box, Dict as SpacesDict
 import gymnasium as gym
@@ -65,6 +65,15 @@ class FrameStackWrapper(ObservationWrapper):
         enable_visual_stacking: Whether to stack visual frames
         enable_state_stacking: Whether to stack game states
         padding_type: "zero" or "repeat" for initial frame padding
+        enable_augmentation: Whether to apply visual augmentation to frames
+        augmentation_config: Configuration dict for augmentation (p, intensity, disable_validation)
+                           If None, uses default: {"p": 0.5, "intensity": "medium", "disable_validation": False}
+                           
+    Note:
+        When enable_augmentation=True and enable_visual_stacking=True, the SAME
+        augmentation is applied to all frames in the stack to maintain temporal
+        coherence. This prevents the critical bug where each frame gets a different
+        random augmentation, breaking visual continuity between frames.
     """
     
     def __init__(
@@ -75,6 +84,8 @@ class FrameStackWrapper(ObservationWrapper):
         enable_visual_stacking: bool = True,
         enable_state_stacking: bool = True,
         padding_type: str = "zero",
+        enable_augmentation: bool = False,
+        augmentation_config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(env)
         
@@ -83,6 +94,10 @@ class FrameStackWrapper(ObservationWrapper):
         self.enable_visual_stacking = enable_visual_stacking
         self.enable_state_stacking = enable_state_stacking
         self.padding_type = padding_type
+        
+        # Augmentation settings - applied consistently across frame stack
+        self.enable_augmentation = enable_augmentation
+        self.augmentation_config = augmentation_config or {"p": 0.5, "intensity": "medium", "disable_validation": False}
         
         # Validate configuration
         if visual_stack_size < 1 or visual_stack_size > 12:
@@ -197,11 +212,16 @@ class FrameStackWrapper(ObservationWrapper):
         """
         Transform observation by stacking frames.
         
+        CRITICAL: When augmentation is enabled and visual stacking is enabled,
+        applies the SAME augmentation to all frames in the stack to maintain
+        temporal coherence. This prevents the bug where each frame gets a 
+        different random augmentation, breaking visual continuity.
+        
         Args:
             observation: Current observation dict from environment
             
         Returns:
-            Observation dict with stacked frames
+            Observation dict with stacked frames (augmented if enabled)
         """
         # Update buffers with new observations
         if "player_frame" in observation:
@@ -216,20 +236,40 @@ class FrameStackWrapper(ObservationWrapper):
         # Build stacked observation
         stacked_obs = {}
         
-        # Stack visual frames if enabled
+        # Stack visual frames if enabled, with consistent augmentation
         if "player_frame" in observation:
             if self.enable_visual_stacking and len(self.player_frame_buffer) > 0:
                 # Stack frames along first dimension: (stack_size, H, W, C)
-                stacked_obs["player_frame"] = np.stack(self.player_frame_buffer, axis=0)
+                stacked_frames = np.stack(self.player_frame_buffer, axis=0)
+                
+                # Apply consistent augmentation to all frames in the stack
+                if self.enable_augmentation:
+                    stacked_frames = self._apply_consistent_augmentation(stacked_frames)
+                
+                stacked_obs["player_frame"] = stacked_frames
             else:
-                stacked_obs["player_frame"] = observation["player_frame"]
+                frame = observation["player_frame"]
+                # Apply augmentation to single frame
+                if self.enable_augmentation:
+                    frame = self._apply_augmentation_to_frame(frame)
+                stacked_obs["player_frame"] = frame
         
         if "global_view" in observation:
             if self.enable_visual_stacking and len(self.global_view_buffer) > 0:
                 # Stack frames along first dimension: (stack_size, H, W, C)
-                stacked_obs["global_view"] = np.stack(self.global_view_buffer, axis=0)
+                stacked_frames = np.stack(self.global_view_buffer, axis=0)
+                
+                # Apply consistent augmentation to all frames in the stack
+                if self.enable_augmentation:
+                    stacked_frames = self._apply_consistent_augmentation(stacked_frames)
+                
+                stacked_obs["global_view"] = stacked_frames
             else:
-                stacked_obs["global_view"] = observation["global_view"]
+                frame = observation["global_view"]
+                # Apply augmentation to single frame
+                if self.enable_augmentation:
+                    frame = self._apply_augmentation_to_frame(frame)
+                stacked_obs["global_view"] = frame
         
         # Stack game state if enabled
         if "game_state" in observation:
@@ -245,3 +285,56 @@ class FrameStackWrapper(ObservationWrapper):
                 stacked_obs[key] = value
         
         return stacked_obs
+    
+    def _apply_augmentation_to_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Apply augmentation to a single frame."""
+        from .frame_augmentation import apply_augmentation
+        
+        return apply_augmentation(
+            frame,
+            p=self.augmentation_config.get("p", 0.5),
+            intensity=self.augmentation_config.get("intensity", "medium"),
+            disable_validation=self.augmentation_config.get("disable_validation", False),
+            return_replay=False,
+        )
+    
+    def _apply_consistent_augmentation(self, stacked_frames: np.ndarray) -> np.ndarray:
+        """Apply the SAME augmentation to all frames in a stack.
+        
+        This is critical for maintaining temporal coherence. All frames must
+        receive the same random transformation (rotation, crop, brightness, etc.)
+        so that the stack represents a consistent visual sequence.
+        
+        Args:
+            stacked_frames: Array of shape (stack_size, H, W, C)
+            
+        Returns:
+            Augmented frames with same shape, all with consistent augmentation
+        """
+        from .frame_augmentation import apply_augmentation, apply_augmentation_with_replay
+        
+        stack_size = stacked_frames.shape[0]
+        
+        # Apply augmentation to first frame and get replay data
+        first_frame_aug, replay_data = apply_augmentation(
+            stacked_frames[0],
+            p=self.augmentation_config.get("p", 0.5),
+            intensity=self.augmentation_config.get("intensity", "medium"),
+            disable_validation=self.augmentation_config.get("disable_validation", False),
+            return_replay=True,
+        )
+        
+        # Apply the same augmentation to all other frames
+        augmented_frames = [first_frame_aug]
+        for i in range(1, stack_size):
+            aug_frame = apply_augmentation_with_replay(
+                stacked_frames[i],
+                replay_data,
+                p=self.augmentation_config.get("p", 0.5),
+                intensity=self.augmentation_config.get("intensity", "medium"),
+                disable_validation=self.augmentation_config.get("disable_validation", False),
+            )
+            augmented_frames.append(aug_frame)
+        
+        # Stack back into array
+        return np.stack(augmented_frames, axis=0)

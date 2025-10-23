@@ -521,16 +521,10 @@ class ObservationProcessor:
         if len(player_frame.shape) == 2:
             player_frame = player_frame[..., np.newaxis]
 
-        # Apply augmentation to the single frame if enabled
-        if self.enable_augmentation:
-            player_frame = apply_augmentation(
-                player_frame,
-                p=self.augmentation_config.get("p", 0.5),
-                intensity=self.augmentation_config.get("intensity", "medium"),
-                disable_validation=self.augmentation_config.get(
-                    "disable_validation", False
-                ),
-            )
+        # NOTE: Augmentation is now handled by FrameStackWrapper to ensure
+        # consistent augmentation across all frames in a stack. This prevents
+        # the critical bug where each frame gets a different random augmentation.
+        # ObservationProcessor no longer applies augmentation directly.
 
         # MEMORY OPTIMIZATION: Return views/references to buffers where safe
         # game_state needs to be a new array since it's computed fresh
