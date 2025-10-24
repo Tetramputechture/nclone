@@ -230,7 +230,11 @@ class BaseNppEnvironment(gymnasium.Env):
         return hoz_input, jump_input
 
     def step(self, action: int):
-        """Execute one environment step with enhanced episode info."""
+        """Execute one environment step with enhanced episode info.
+        
+        Template method that defines the step execution flow with hooks
+        for subclasses to extend behavior at specific points.
+        """
         # Get previous observation
         prev_obs = self._get_observation()
 
@@ -238,12 +242,22 @@ class BaseNppEnvironment(gymnasium.Env):
         action_hoz, action_jump = self._actions_to_execute(action)
         self.nplay_headless.tick(action_hoz, action_jump)
 
+        # Hook: After action execution, before observation
+        self._post_action_hook()
+
         # Get current observation
         curr_obs = self._get_observation()
         terminated, truncated, player_won = self._check_termination()
 
+        # Hook: After observation, before reward calculation
+        self._pre_reward_hook(curr_obs, player_won)
+
         # Calculate reward
         reward = self._calculate_reward(curr_obs, prev_obs)
+        
+        # Hook: Modify reward if needed
+        reward = self._modify_reward_hook(reward, curr_obs, player_won, terminated)
+        
         self.current_ep_reward += reward
 
         # Process observation for training
@@ -251,8 +265,56 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Build episode info
         info = self._build_episode_info(player_won)
+        
+        # Hook: Add additional info fields
+        self._extend_info_hook(info)
 
         return processed_obs, reward, terminated, truncated, info
+    
+    def _post_action_hook(self):
+        """Hook called after action execution, before getting observation.
+        
+        Subclasses can override this to inject behavior at this point.
+        """
+        pass
+    
+    def _pre_reward_hook(self, curr_obs: Dict[str, Any], player_won: bool):
+        """Hook called after observation, before reward calculation.
+        
+        Args:
+            curr_obs: Current observation dictionary
+            player_won: Whether the player won
+            
+        Subclasses can override this to inject behavior at this point.
+        """
+        pass
+    
+    def _modify_reward_hook(self, reward: float, curr_obs: Dict[str, Any], 
+                           player_won: bool, terminated: bool) -> float:
+        """Hook to modify reward after base calculation.
+        
+        Args:
+            reward: Base reward value
+            curr_obs: Current observation dictionary
+            player_won: Whether the player won
+            terminated: Whether episode terminated
+            
+        Returns:
+            Modified reward value
+            
+        Subclasses can override this to add reward shaping.
+        """
+        return reward
+    
+    def _extend_info_hook(self, info: Dict[str, Any]):
+        """Hook to add additional fields to info dictionary.
+        
+        Args:
+            info: Info dictionary to extend (modified in place)
+            
+        Subclasses can override this to add custom info fields.
+        """
+        pass
     
     def _build_episode_info(self, player_won: bool) -> Dict[str, Any]:
         """Build the base episode info dictionary.
