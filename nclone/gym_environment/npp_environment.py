@@ -182,20 +182,8 @@ class NppEnvironment(
 
         return SpacesDict(obs_spaces)
 
-    def step(self, action: int):
-        """Execute one environment step with enhanced episode info.
-        
-        This extends the base step() with graph updates, hierarchical reward shaping,
-        and additional performance metrics.
-        """
-        # Get previous observation
-        prev_obs = self._get_observation()
-
-        # Execute action
-        action_hoz, action_jump = self._actions_to_execute(action)
-        self.nplay_headless.tick(action_hoz, action_jump)
-
-        # Update graph if needed (NppEnvironment-specific)
+    def _post_action_hook(self):
+        """Update graph after action execution if needed."""
         if self.enable_graph_updates and self._should_update_graph():
             start_time = time.time()
             self._update_graph_from_env_state()
@@ -206,47 +194,37 @@ class NppEnvironment(
 
             if self.debug:
                 self.logger.debug(f"Graph updated in {update_time:.2f}ms")
-
-        # Get current observation
-        curr_obs = self._get_observation()
-        terminated, truncated, player_won = self._check_termination()
-
-        # Update hierarchical state before reward calculation (if enabled)
-        current_subtask = None
+    
+    def _pre_reward_hook(self, curr_obs: Dict[str, Any], player_won: bool):
+        """Update hierarchical state before reward calculation."""
         if self.enable_hierarchical:
-            current_subtask = self._get_current_subtask(curr_obs, {"is_success": player_won})
+            # Store current subtask for reward modification
+            self._current_subtask = self._get_current_subtask(curr_obs, {"is_success": player_won})
             self._update_hierarchical_state(curr_obs, {"is_success": player_won})
-
-        # Calculate base reward
-        reward = self._calculate_reward(curr_obs, prev_obs)
-
-        # Add hierarchical reward shaping if enabled (NppEnvironment-specific)
-        if self.enable_hierarchical and current_subtask is not None:
+        else:
+            self._current_subtask = None
+    
+    def _modify_reward_hook(self, reward: float, curr_obs: Dict[str, Any], 
+                           player_won: bool, terminated: bool) -> float:
+        """Add hierarchical reward shaping if enabled."""
+        if self.enable_hierarchical and self._current_subtask is not None:
             hierarchical_reward = self._calculate_subtask_reward(
-                current_subtask, curr_obs, {"is_success": player_won}, terminated
+                self._current_subtask, curr_obs, {"is_success": player_won}, terminated
             )
-            reward += (
-                hierarchical_reward * self.config.hierarchical.subtask_reward_scale
-            )
-
-        self.current_ep_reward += reward
-
-        # Process observation for training
-        processed_obs = self._process_observation(curr_obs)
-
-        # Build episode info using base method, then add NppEnvironment-specific fields
-        info = self._build_episode_info(player_won)
-
-        # Add reachability performance info if enabled (NppEnvironment-specific)
+            reward += hierarchical_reward * self.config.hierarchical.subtask_reward_scale
+        
+        return reward
+    
+    def _extend_info_hook(self, info: Dict[str, Any]):
+        """Add NppEnvironment-specific info fields."""
+        # Add reachability performance info if enabled
         if self.enable_reachability and self.reachability_times:
             avg_time = np.mean(self.reachability_times[-10:])  # Last 10 samples
             info["reachability_time_ms"] = avg_time * 1000
 
-        # Add hierarchical info if enabled (NppEnvironment-specific)
+        # Add hierarchical info if enabled
         if self.enable_hierarchical:
             info["hierarchical"] = self._get_hierarchical_info()
-
-        return processed_obs, reward, terminated, truncated, info
 
     def reset(self, seed=None, options=None):
         """Reset the environment with planning components and visualization."""
