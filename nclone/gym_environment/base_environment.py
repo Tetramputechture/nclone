@@ -344,7 +344,15 @@ class BaseNppEnvironment(gymnasium.Env):
         return info
 
     def reset(self, seed=None, options=None):
-        """Reset the environment."""
+        """Reset the environment.
+        
+        Args:
+            seed: Random seed (optional)
+            options: Dictionary of reset options. Supported keys:
+                - skip_map_load (bool): If True, skip loading a new map.
+                  Use this when map has already been loaded externally
+                  (e.g., by curriculum wrapper).
+        """
         # Handle reinitialization after unpickling
         if hasattr(self, "_needs_reinit") and self._needs_reinit:
             # Reinitialize components that may have been affected by pickling
@@ -364,9 +372,16 @@ class BaseNppEnvironment(gymnasium.Env):
         # Reset episode reward
         self.current_ep_reward = 0
 
-        # Reset level and load map
+        # Reset level and load map (unless externally loaded)
         self.nplay_headless.reset()
-        self.map_loader.load_map()
+        
+        # Check if map loading should be skipped (e.g., curriculum already loaded one)
+        skip_map_load = False
+        if options is not None and isinstance(options, dict):
+            skip_map_load = options.get("skip_map_load", False)
+        
+        if not skip_map_load:
+            self.map_loader.load_map()
 
         # Get initial observation and process it
         initial_obs = self._get_observation()
