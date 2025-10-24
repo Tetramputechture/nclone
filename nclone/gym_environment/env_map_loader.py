@@ -6,6 +6,7 @@ This module contains logic for loading different types of maps in the N++ enviro
 
 import json
 import os
+import numpy as np
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -91,7 +92,6 @@ class EnvMapLoader:
 
     def load_map(self):
         """Load the map specified by custom_map_path or follow default logic."""
-        # If a custom map path is provided, use that instead of default behavior
         if self.custom_map_path:
             # Extract map name from path for display purposes
             map_name = os.path.basename(self.custom_map_path)
@@ -143,7 +143,8 @@ class EnvMapLoader:
             # Randomly select difficulty category for training diversity
             # Use weighted sampling to favor simpler levels early in training
             categories = [
-                "very_simple",
+                "simplest",
+                "simpler",
                 "simple",
                 "medium",
                 "complex",
@@ -168,11 +169,20 @@ class EnvMapLoader:
         seed = self._train_seed_counter
 
         # Generate map based on category using available generator methods
-        if category == "very_simple":
-            # Very simple levels
+        if category == "simplest":
+            # Extremely simple levels (no jump, width 3)
             # Minimal simple level takes an index parameter
             def map_func(seed):
                 return self._train_generator._create_minimal_simple_level(seed, 0)
+
+            map_gen = map_func(seed)
+        if category == "simpler":
+            # Very simple levels
+            # Minimal simple level takes an index parameter
+            def map_func(seed):
+                return self._train_generator._create_minimal_simple_level(
+                    seed, self.rng.randint(0, 100000)
+                )
 
             map_gen = map_func(seed)
         elif category == "simple":
@@ -338,7 +348,7 @@ class EnvMapLoader:
             ValueError: If stage is invalid
         """
         valid_stages = [
-            "very_simple",
+            "simpler",
             "simple",
             "medium",
             "complex",
@@ -372,7 +382,8 @@ class EnvMapLoader:
             ValueError: If weights are invalid
         """
         categories = [
-            "very_simple",
+            "simplest",
+            "simpler",
             "simple",
             "medium",
             "complex",
@@ -403,7 +414,7 @@ class EnvMapLoader:
             List of weights for [simple, medium, complex, mine_heavy, exploration]
         """
         # Default weights: favor simpler levels
-        return [30, 30, 20, 10, 10, 10]
+        return [10, 10, 30, 30, 20, 10, 10]
 
     def reset_curriculum_weights(self) -> None:
         """Reset curriculum weights to default values."""
@@ -417,7 +428,8 @@ class EnvMapLoader:
             Dictionary with curriculum settings
         """
         categories = [
-            "very_simple",
+            "simplest",
+            "simpler",
             "simple",
             "medium",
             "complex",

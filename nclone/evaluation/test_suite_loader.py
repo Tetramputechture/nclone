@@ -33,7 +33,8 @@ class TestSuiteLoader:
     """Loader for NPP-RL test suite maps."""
 
     CATEGORIES = [
-        "very_simple",
+        "simplest",
+        "simpler",
         "simple",
         "medium",
         "complex",

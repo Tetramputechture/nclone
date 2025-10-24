@@ -57,9 +57,9 @@ python scripts/validate_replays.py bc_replays/ --verbose
 The script provides real-time progress with clear indicators:
 
 ```
-[  1/31] 20251022_142001_train_very_simple_100001.replay... ✅ VALID
+[  1/31] 20251022_142001_train_simpler_100001.replay... ✅ VALID
 [  2/31] 20251022_142003_train_mine_heavy_100002.replay... ✅ VALID
-[  3/31] 20251022_142009_train_very_simple_100003.replay... ✅ VALID
+[  3/31] 20251022_142009_train_simpler_100003.replay... ✅ VALID
 ...
 ```
 
