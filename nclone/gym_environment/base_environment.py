@@ -250,6 +250,21 @@ class BaseNppEnvironment(gymnasium.Env):
         processed_obs = self._process_observation(curr_obs)
 
         # Build episode info
+        info = self._build_episode_info(player_won)
+
+        return processed_obs, reward, terminated, truncated, info
+    
+    def _build_episode_info(self, player_won: bool) -> Dict[str, Any]:
+        """Build the base episode info dictionary.
+        
+        This method can be extended by subclasses to add additional info fields.
+        
+        Args:
+            player_won: Whether the player successfully completed the level
+            
+        Returns:
+            Dictionary containing episode information
+        """
         info = {"is_success": player_won}
 
         # Add configuration flags to episode info
@@ -264,7 +279,7 @@ class BaseNppEnvironment(gymnasium.Env):
         if hasattr(self.reward_calculator, "last_pbrs_components"):
             info["pbrs_components"] = self.reward_calculator.last_pbrs_components.copy()
 
-        return processed_obs, reward, terminated, truncated, info
+        return info
 
     def reset(self, seed=None, options=None):
         """Reset the environment."""
