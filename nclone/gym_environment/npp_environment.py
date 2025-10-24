@@ -183,7 +183,11 @@ class NppEnvironment(
         return SpacesDict(obs_spaces)
 
     def step(self, action: int):
-        """Execute one environment step with enhanced episode info."""
+        """Execute one environment step with enhanced episode info.
+        
+        This extends the base step() with graph updates, hierarchical reward shaping,
+        and additional performance metrics.
+        """
         # Get previous observation
         prev_obs = self._get_observation()
 
@@ -191,7 +195,7 @@ class NppEnvironment(
         action_hoz, action_jump = self._actions_to_execute(action)
         self.nplay_headless.tick(action_hoz, action_jump)
 
-        # Update graph if needed
+        # Update graph if needed (NppEnvironment-specific)
         if self.enable_graph_updates and self._should_update_graph():
             start_time = time.time()
             self._update_graph_from_env_state()
@@ -207,22 +211,19 @@ class NppEnvironment(
         curr_obs = self._get_observation()
         terminated, truncated, player_won = self._check_termination()
 
-        # Build initial episode info
-        info = {"is_success": player_won}
-
-        # Update hierarchical state and get current subtask
+        # Update hierarchical state before reward calculation (if enabled)
         current_subtask = None
         if self.enable_hierarchical:
-            current_subtask = self._get_current_subtask(curr_obs, info)
-            self._update_hierarchical_state(curr_obs, info)
+            current_subtask = self._get_current_subtask(curr_obs, {"is_success": player_won})
+            self._update_hierarchical_state(curr_obs, {"is_success": player_won})
 
-        # Calculate reward
+        # Calculate base reward
         reward = self._calculate_reward(curr_obs, prev_obs)
 
-        # Add hierarchical reward shaping if enabled
+        # Add hierarchical reward shaping if enabled (NppEnvironment-specific)
         if self.enable_hierarchical and current_subtask is not None:
             hierarchical_reward = self._calculate_subtask_reward(
-                current_subtask, curr_obs, info, terminated
+                current_subtask, curr_obs, {"is_success": player_won}, terminated
             )
             reward += (
                 hierarchical_reward * self.config.hierarchical.subtask_reward_scale
@@ -233,24 +234,15 @@ class NppEnvironment(
         # Process observation for training
         processed_obs = self._process_observation(curr_obs)
 
-        # Add configuration flags to episode info
-        info.update(
-            {
-                "config_flags": self.config_flags.copy(),
-                "pbrs_enabled": self.config_flags["enable_pbrs"],
-            }
-        )
+        # Build episode info using base method, then add NppEnvironment-specific fields
+        info = self._build_episode_info(player_won)
 
-        # Add PBRS component rewards if available
-        if hasattr(self.reward_calculator, "last_pbrs_components"):
-            info["pbrs_components"] = self.reward_calculator.last_pbrs_components.copy()
-
-        # Add reachability performance info if enabled
+        # Add reachability performance info if enabled (NppEnvironment-specific)
         if self.enable_reachability and self.reachability_times:
             avg_time = np.mean(self.reachability_times[-10:])  # Last 10 samples
             info["reachability_time_ms"] = avg_time * 1000
 
-        # Add hierarchical info if enabled
+        # Add hierarchical info if enabled (NppEnvironment-specific)
         if self.enable_hierarchical:
             info["hierarchical"] = self._get_hierarchical_info()
 
