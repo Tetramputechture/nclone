@@ -2,7 +2,7 @@
 Generate comprehensive train and test suite maps for NPP-RL (Task 3.3).
 
 This script creates deterministic datasets of N++ levels across 6 complexity categories:
-- 200 very_simple levels (minimal chambers: ninja -> exit switch -> door)
+- 200 simpler levels (minimal chambers: ninja -> exit switch -> door)
 - 200 simple levels (single switch, direct path, includes tiny mazes)
 - 400 medium levels (includes medium-sized mazes and jump-required levels)
 - 200 complex levels (multi-chamber, large mazes)
@@ -51,7 +51,8 @@ class TestSuiteGenerator:
     """Generator for comprehensive NPP-RL train and test suites."""
 
     # Base seeds for TEST set (500-9999 range)
-    TEST_VERY_SIMPLE_BASE_SEED = 500
+    TEST_SIMPLEST_BASE_SEED = 100
+    TEST_SIMPLER_BASE_SEED = 500
     TEST_SIMPLE_BASE_SEED = 1000
     TEST_MEDIUM_BASE_SEED = 2000
     TEST_COMPLEX_BASE_SEED = 4000
@@ -59,7 +60,8 @@ class TestSuiteGenerator:
     TEST_EXPLORATION_BASE_SEED = 7000
 
     # Base seeds for TRAIN set (5000-99999 range)
-    TRAIN_VERY_SIMPLE_BASE_SEED = 5000
+    TRAIN_SIMPLEST_BASE_SEED = 1000
+    TRAIN_SIMPLER_BASE_SEED = 5000
     TRAIN_SIMPLE_BASE_SEED = 10000
     TRAIN_MEDIUM_BASE_SEED = 20000
     TRAIN_COMPLEX_BASE_SEED = 40000
@@ -69,7 +71,15 @@ class TestSuiteGenerator:
     # Maximum attempts to generate a unique map before giving up
     MAX_REGENERATION_ATTEMPTS = 1000
 
-    def __init__(self, base_output_dir: str = "./datasets"):
+    RATIO_SIMPLEST = 0.1
+    RATIO_SIMPLER = 0.1
+    RATIO_SIMPLE = 0.2
+    RATIO_MEDIUM = 0.4
+    RATIO_COMPLEX = 0.2
+    RATIO_MINE_HEAVY = 0.1
+    RATIO_EXPLORATION = 0.1
+
+    def __init__(self, base_output_dir: str = "./datasets", map_count: int = 2000):
         """Initialize the test suite generator.
 
         Args:
@@ -80,7 +90,8 @@ class TestSuiteGenerator:
 
         # Track generated levels for both train and test
         self.train_levels: Dict[str, List[Dict[str, Any]]] = {
-            "very_simple": [],
+            "simplest": [],
+            "simpler": [],
             "simple": [],
             "medium": [],
             "complex": [],
@@ -88,13 +99,22 @@ class TestSuiteGenerator:
             "exploration": [],
         }
         self.test_levels: Dict[str, List[Dict[str, Any]]] = {
-            "very_simple": [],
+            "simplest": [],
+            "simpler": [],
             "simple": [],
             "medium": [],
             "complex": [],
             "mine_heavy": [],
             "exploration": [],
         }
+        self.map_count = map_count
+        self.simplest_count = int(self.map_count * self.RATIO_SIMPLEST)
+        self.simpler_count = int(self.map_count * self.RATIO_SIMPLER)
+        self.simple_count = int(self.map_count * self.RATIO_SIMPLE)
+        self.medium_count = int(self.map_count * self.RATIO_MEDIUM)
+        self.complex_count = int(self.map_count * self.RATIO_COMPLEX)
+        self.mine_heavy_count = int(self.map_count * self.RATIO_MINE_HEAVY)
+        self.exploration_count = int(self.map_count * self.RATIO_EXPLORATION)
 
         # Track unique maps by their data hash to prevent duplicates across both sets
         self.seen_maps: set = set()
@@ -181,7 +201,53 @@ class TestSuiteGenerator:
             f"after {self.MAX_REGENERATION_ATTEMPTS} attempts"
         )
 
-    def generate_very_simple_levels(self, count: int = 200, mode: str = "test") -> None:
+    def generate_simplest_levels(self, count: int = 200, mode: str = "test") -> None:
+        """Generate simplest levels: minimal chambers with ninja -> switch -> door. (no jump)
+        These are the most basic levels for foundational learning.
+        All maps use the minimal_simple_level generator exclusively.
+
+        Args:
+            count: Number of very simple levels to generate
+            mode: 'train' or 'test' to determine seed range and output location
+        """
+        print(f"Generating {count} simplest levels ({mode} set)...")
+
+        base_seed_start = (
+            self.TRAIN_SIMPLEST_BASE_SEED
+            if mode == "train"
+            else self.TEST_SIMPLEST_BASE_SEED
+        )
+        levels_dict = self.train_levels if mode == "train" else self.test_levels
+
+        for i in range(count):
+            base_seed = base_seed_start + i
+
+            # Create a closure that properly captures the current value of i
+            def make_generator(index):
+                return lambda seed: self._create_minimal_simple_level(seed, 0)
+
+            generator_func = make_generator(i)
+
+            map_gen = self._generate_unique_map(
+                generator_func, base_seed, i, f"simplest-{mode}"
+            )
+
+            level_data = {
+                "level_id": f"simplest_{i:03d}",
+                "seed": base_seed,
+                "category": "simplest",
+                "map_data": map_gen.map_data(),
+                "metadata": {
+                    "description": "Minimal chamber: ninja -> exit switch -> door (no jump)",
+                    "difficulty_tier": 1,
+                    "split": mode,
+                },
+            }
+            levels_dict["simplest"].append(level_data)
+
+        print(f"✓ Generated {count} extremely simple levels ({mode} set)")
+
+    def generate_simpler_levels(self, count: int = 200, mode: str = "test") -> None:
         """Generate very simple levels: minimal chambers with ninja -> switch -> door.
 
         These are the most basic levels for foundational learning.
@@ -194,9 +260,9 @@ class TestSuiteGenerator:
         print(f"Generating {count} very simple levels ({mode} set)...")
 
         base_seed_start = (
-            self.TRAIN_VERY_SIMPLE_BASE_SEED
+            self.TRAIN_SIMPLER_BASE_SEED
             if mode == "train"
-            else self.TEST_VERY_SIMPLE_BASE_SEED
+            else self.TEST_SIMPLER_BASE_SEED
         )
         levels_dict = self.train_levels if mode == "train" else self.test_levels
 
@@ -210,16 +276,16 @@ class TestSuiteGenerator:
             generator_func = make_generator(i)
 
             map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, f"very_simple-{mode}"
+                generator_func, base_seed, i, f"simpler-{mode}"
             )
 
             # Calculate difficulty tier dynamically (4 tiers)
             difficulty_tier = min(4, (i * 4 // count) + 1)
 
             level_data = {
-                "level_id": f"very_simple_{i:03d}",
+                "level_id": f"simpler_{i:03d}",
                 "seed": base_seed,
-                "category": "very_simple",
+                "category": "simpler",
                 "map_data": map_gen.map_data(),
                 "metadata": {
                     "description": "Minimal chamber: ninja -> exit switch -> door",
@@ -227,7 +293,7 @@ class TestSuiteGenerator:
                     "split": mode,
                 },
             }
-            levels_dict["very_simple"].append(level_data)
+            levels_dict["simpler"].append(level_data)
 
         print(f"✓ Generated {count} very simple levels ({mode} set)")
 
@@ -868,12 +934,12 @@ class TestSuiteGenerator:
         map_gen = MultiChamberGenerator(seed=seed)
 
         # More chambers
-        map_gen.MIN_CHAMBERS = 3
+        map_gen.MIN_CHAMBERS = 2
         map_gen.MAX_CHAMBERS = 4
 
         # Larger chambers
-        map_gen.MIN_CHAMBER_WIDTH = 6
-        map_gen.MAX_CHAMBER_WIDTH = 12
+        map_gen.MIN_CHAMBER_WIDTH = 5
+        map_gen.MAX_CHAMBER_WIDTH = 10
         map_gen.MIN_CHAMBER_HEIGHT = 5
         map_gen.MAX_CHAMBER_HEIGHT = 8
 
@@ -1158,14 +1224,14 @@ class TestSuiteGenerator:
         map_gen = MultiChamberGenerator(seed=seed)
 
         # Maximum chambers
-        map_gen.MIN_CHAMBERS = 3
-        map_gen.MAX_CHAMBERS = 5
+        map_gen.MIN_CHAMBERS = 2
+        map_gen.MAX_CHAMBERS = 3
 
         # Larger chambers spread out
         map_gen.MIN_CHAMBER_WIDTH = 5
-        map_gen.MAX_CHAMBER_WIDTH = 14
+        map_gen.MAX_CHAMBER_WIDTH = 9
         map_gen.MIN_CHAMBER_HEIGHT = 5
-        map_gen.MAX_CHAMBER_HEIGHT = 9
+        map_gen.MAX_CHAMBER_HEIGHT = 10
 
         # Long corridors for exploration feel
         map_gen.MIN_CORRIDOR_LENGTH = 3
@@ -1264,12 +1330,13 @@ class TestSuiteGenerator:
             print(f"Generating {gen_mode.upper()} dataset")
             print(f"{'=' * 70}\n")
 
-            self.generate_very_simple_levels(200, mode=gen_mode)
-            self.generate_simple_levels(200, mode=gen_mode)
-            self.generate_medium_levels(400, mode=gen_mode)
-            self.generate_complex_levels(200, mode=gen_mode)
-            self.generate_mine_heavy_levels(120, mode=gen_mode)
-            self.generate_exploration_levels(80, mode=gen_mode)
+            self.generate_simplest_levels(self.simplest_count, mode=gen_mode)
+            self.generate_simpler_levels(self.simpler_count, mode=gen_mode)
+            self.generate_simple_levels(self.simple_count, mode=gen_mode)
+            self.generate_medium_levels(self.medium_count, mode=gen_mode)
+            self.generate_complex_levels(self.complex_count, mode=gen_mode)
+            self.generate_mine_heavy_levels(self.mine_heavy_count, mode=gen_mode)
+            self.generate_exploration_levels(self.exploration_count, mode=gen_mode)
 
         self.save_dataset(mode)
 
@@ -1313,10 +1380,17 @@ Examples:
         help="Base output directory for datasets (default: ./datasets). Train and test subdirectories will be created automatically.",
     )
 
+    parser.add_argument(
+        "--map_count",
+        type=int,
+        default=2000,
+        help="Total number of maps to generate (default: 2000).",
+    )
+
     args = parser.parse_args()
 
     # Generate the datasets
-    generator = TestSuiteGenerator(args.output_dir)
+    generator = TestSuiteGenerator(args.output_dir, args.map_count)
     generator.generate_all(mode=args.mode)
 
     return 0
