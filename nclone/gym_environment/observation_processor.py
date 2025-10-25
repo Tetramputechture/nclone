@@ -50,7 +50,7 @@ from .constants import (
     RENDERED_VIEW_HEIGHT,
 )
 from ..constants.physics_constants import MAX_HOR_SPEED
-from .frame_augmentation import apply_augmentation, get_recommended_config
+from .frame_augmentation import get_recommended_config
 from .mine_state_processor import MineStateProcessor
 
 # Entity position array indices

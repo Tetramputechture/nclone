@@ -6,7 +6,6 @@ This module contains logic for loading different types of maps in the N++ enviro
 
 import json
 import os
-import numpy as np
 import uuid
 from pathlib import Path
 from typing import Optional
