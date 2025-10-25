@@ -231,7 +231,7 @@ class BaseNppEnvironment(gymnasium.Env):
 
     def step(self, action: int):
         """Execute one environment step with enhanced episode info.
-        
+
         Template method that defines the step execution flow with hooks
         for subclasses to extend behavior at specific points.
         """
@@ -254,10 +254,10 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Calculate reward
         reward = self._calculate_reward(curr_obs, prev_obs)
-        
+
         # Hook: Modify reward if needed
         reward = self._modify_reward_hook(reward, curr_obs, player_won, terminated)
-        
+
         self.current_ep_reward += reward
 
         # Process observation for training
@@ -265,65 +265,70 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Build episode info
         info = self._build_episode_info(player_won)
-        
+
         # Hook: Add additional info fields
         self._extend_info_hook(info)
 
         return processed_obs, reward, terminated, truncated, info
-    
+
     def _post_action_hook(self):
         """Hook called after action execution, before getting observation.
-        
+
         Subclasses can override this to inject behavior at this point.
         """
         pass
-    
+
     def _pre_reward_hook(self, curr_obs: Dict[str, Any], player_won: bool):
         """Hook called after observation, before reward calculation.
-        
+
         Args:
             curr_obs: Current observation dictionary
             player_won: Whether the player won
-            
+
         Subclasses can override this to inject behavior at this point.
         """
         pass
-    
-    def _modify_reward_hook(self, reward: float, curr_obs: Dict[str, Any], 
-                           player_won: bool, terminated: bool) -> float:
+
+    def _modify_reward_hook(
+        self,
+        reward: float,
+        curr_obs: Dict[str, Any],
+        player_won: bool,
+        terminated: bool,
+    ) -> float:
         """Hook to modify reward after base calculation.
-        
+
         Args:
             reward: Base reward value
             curr_obs: Current observation dictionary
             player_won: Whether the player won
             terminated: Whether episode terminated
-            
+
         Returns:
             Modified reward value
-            
+
         Subclasses can override this to add reward shaping.
         """
         return reward
-    
+
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Hook to add additional fields to info dictionary.
-        
+
         Args:
             info: Info dictionary to extend (modified in place)
-            
+
         Subclasses can override this to add custom info fields.
         """
         pass
-    
+
     def _build_episode_info(self, player_won: bool) -> Dict[str, Any]:
         """Build the base episode info dictionary.
-        
+
         This method can be extended by subclasses to add additional info fields.
-        
+
         Args:
             player_won: Whether the player successfully completed the level
-            
+
         Returns:
             Dictionary containing episode information
         """
@@ -345,7 +350,7 @@ class BaseNppEnvironment(gymnasium.Env):
 
     def reset(self, seed=None, options=None):
         """Reset the environment.
-        
+
         Args:
             seed: Random seed (optional)
             options: Dictionary of reset options. Supported keys:
@@ -374,12 +379,12 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Reset level and load map (unless externally loaded)
         self.nplay_headless.reset()
-        
+
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
         if options is not None and isinstance(options, dict):
             skip_map_load = options.get("skip_map_load", False)
-        
+
         if not skip_map_load:
             self.map_loader.load_map()
 
@@ -403,7 +408,7 @@ class BaseNppEnvironment(gymnasium.Env):
         ) / MAX_TIME_IN_FRAMES
 
         ninja_state = self.nplay_headless.get_ninja_state()
-        
+
         # game_state contains only ninja_state (26 features)
         # Entity counts removed - not needed for training
         game_state = ninja_state
