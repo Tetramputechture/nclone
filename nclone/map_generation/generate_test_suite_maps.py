@@ -45,6 +45,7 @@ from .map_hills import MapHills
 from .map_vertical_corridor import MapVerticalCorridor
 from .map_jump_platforms import MapJumpPlatforms
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
+from .constants import VALID_TILE_TYPES
 
 
 class TestSuiteGenerator:
@@ -386,8 +387,28 @@ class TestSuiteGenerator:
         )
         print(f"  Distribution: {dist_summary}")
 
-    def _create_minimal_simple_level(self, seed: int, index: int) -> Map:
+    def _create_minimal_simple_level_vertical_corridor(
+        self, seed: int, index: int
+    ) -> Map:
+        """Create a single vertical corridor that the ninja falls down from the top to the bottom.
+        The exit is at the bottom of the corridor.
+        The corridor is always 1 tile wide.
+        """
+        map_gen = MapVerticalCorridor(seed=seed)
+        height = 3 + (index % 10)
+        map_gen.generate(
+            seed=seed,
+            swap_top_and_bottom=True,
+            door_at_top=True,
+            width=1,
+            height=height,
+        )
+        return map_gen
+
+    def _create_minimal_simple_level_horizontal(self, seed: int, index: int) -> Map:
         """Create a minimal simple level (1-3 tiles high, 3-12 tiles wide).
+
+        If index is 0: width is 3, height is 1
 
         For 1-tile high and 5+ tiles wide levels, adds a locked door between ninja and exit switch.
         """
@@ -407,12 +428,11 @@ class TestSuiteGenerator:
         start_x = rng.randint(1, max_start_x)
         start_y = rng.randint(1, max_start_y)
 
-        # Fill everything with walls first (using type 1 - full solid)
-        should_fill_walls = rng.choice([True, False])
-        if should_fill_walls:
-            for y in range(MAP_TILE_HEIGHT):
-                for x in range(MAP_TILE_WIDTH):
-                    map_gen.set_tile(x, y, 1)
+        tile_types = [
+            rng.randint(0, VALID_TILE_TYPES)
+            for _ in range(MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
+        ]
+        map_gen.set_tiles_bulk(tile_types)
 
         # Create empty chamber
         for y in range(start_y, start_y + height):
@@ -801,7 +821,7 @@ class TestSuiteGenerator:
         map_gen.MIN_HEIGHT = 14
         map_gen.MAX_HEIGHT = 22
 
-        map_gen.generate(seed=seed)
+        map_gen.generate(seed=seed, swap_top_and_bottom=True)
         return map_gen
 
     def _create_medium_jump_platforms(self, seed: int) -> Map:

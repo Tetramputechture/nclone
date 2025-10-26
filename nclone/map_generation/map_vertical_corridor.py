@@ -7,6 +7,7 @@ placed at regular intervals to increase difficulty.
 
 from .map import Map
 from typing import Optional
+from .constants import VALID_TILE_TYPES
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
@@ -23,11 +24,24 @@ class MapVerticalCorridor(Map):
     MIN_MINE_SPACING = 2  # Minimum vertical spacing between mines (tiles)
     MAX_MINE_SPACING = 5  # Maximum vertical spacing between mines (tiles)
 
-    def generate(self, seed: Optional[int] = None) -> Map:
+    def generate(
+        self,
+        seed: Optional[int] = None,
+        swap_top_and_bottom: bool = False,
+        door_at_top: bool = False,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> Map:
         """Generate a vertical corridor level with exit at the top.
 
         Args:
             seed: Random seed for reproducible generation
+            swap_top_and_bottom: If True, swap the top and bottom of the corridor, so that the
+                exit is at the bottom and the ninja starts at the top. Defaults to False.
+            door_at_top: If True, the exit door will always be at the topmost tile of the corridor.
+                Defaults to False. Respects swap_top_and_bottom.
+            width: Width of the corridor. Defaults to None, in which case a random width is chosen.
+            height: Height of the corridor. Defaults to None, in which case a random height is chosen.
 
         Returns:
             Map: A Map instance with the generated level
@@ -38,8 +52,10 @@ class MapVerticalCorridor(Map):
         self.reset()
 
         # Step 1: Determine chamber dimensions
-        width = self.rng.randint(self.MIN_WIDTH, self.MAX_WIDTH)
-        height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
+        if width is None:
+            width = self.rng.randint(self.MIN_WIDTH, self.MAX_WIDTH)
+        if height is None:
+            height = self.rng.randint(self.MIN_HEIGHT, self.MAX_HEIGHT)
 
         # Step 2: Calculate chamber position (centered with some randomness)
         max_start_x = MAP_TILE_WIDTH - width - 2
@@ -47,11 +63,11 @@ class MapVerticalCorridor(Map):
         chamber_x = self.rng.randint(2, max(2, max_start_x))
         chamber_y = self.rng.randint(2, max(2, max_start_y))
 
-        # Step 3: Fill map with solid tiles
-        # For vertical corridors, we always start with solid and carve out the passage
-        for y in range(MAP_TILE_HEIGHT):
-            for x in range(MAP_TILE_WIDTH):
-                self.set_tile(x, y, 1)
+        tile_types = [
+            self.rng.randint(0, VALID_TILE_TYPES)
+            for _ in range(MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
+        ]
+        self.set_tiles_bulk(tile_types)
 
         # Step 4: Carve out empty chamber
         for y in range(chamber_y, chamber_y + height):
@@ -95,9 +111,17 @@ class MapVerticalCorridor(Map):
 
         # Random Y position between top and midpoint of chamber
         midpoint_y = chamber_y + height // 2
-        exit_y = self.rng.randint(chamber_y, midpoint_y)
-        switch_y = self.rng.randint(chamber_y, exit_y)
-        door_y = exit_y
+        if door_at_top:
+            door_y = chamber_y
+        else:
+            door_y = self.rng.randint(chamber_y, midpoint_y)
+        switch_y = self.rng.randint(chamber_y, door_y)
+
+        # If swapping  top and bottom, the exit door and ninja positions need to be swapped
+        if swap_top_and_bottom:
+            tmp_door_y = door_y
+            door_y = ninja_y
+            ninja_y = tmp_door_y
 
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
