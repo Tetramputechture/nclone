@@ -14,16 +14,16 @@ from . import terrain_utils
 # Valid entity types that can be randomly placed
 VALID_RANDOM_ENTITIES = [
     1,  # Toggle mine
-    2,  # Gold
-    10,  # Launch pad
-    11,  # One way platform
-    14,  # Drone zap
-    17,  # Bounce block,
+    # 2,  # Gold
+    # 10,  # Launch pad
+    # 11,  # One way platform
+    # 14,  # Drone zap
+    # 17,  # Bounce block,
     21,  # Toggle mine (toggled)
-    20,  # Thwump
-    24,  # Boost pad
-    25,  # Death ball
-    26,  # Mini drone
+    # 20,  # Thwump
+    # 24,  # Boost pad
+    # 25,  # Death ball
+    # 26,  # Mini drone
 ]
 
 

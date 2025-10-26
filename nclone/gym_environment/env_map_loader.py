@@ -169,23 +169,32 @@ class EnvMapLoader:
 
         # Generate map based on category using available generator methods
         if category == "simplest":
-            # Extremely simple levels (no jump, width 3)
-            # Minimal simple level takes an index parameter
-            def map_func(seed):
-                return self._train_generator._create_minimal_simple_level(seed, 0)
 
-            map_gen = map_func(seed)
+            def map_func_one(seed):
+                return self._train_generator._create_minimal_simple_level_vertical_corridor(
+                    seed, 0
+                )
+
+            def map_func_two(seed):
+                return self._train_generator._create_minimal_simple_level_horizontal(
+                    seed, 0
+                )
+
+            map_gen = self.rng.choice([map_func_one(seed), map_func_two(seed)])
         if category == "simpler":
-            # Very simple levels
-            # Minimal simple level takes an index parameter
-            def map_func(seed):
-                return self._train_generator._create_minimal_simple_level(
+
+            def map_func_one(seed):
+                return self._train_generator._create_minimal_simple_level_horizontal(
                     seed, self.rng.randint(0, 100000)
                 )
 
-            map_gen = map_func(seed)
+            def map_func_two(seed):
+                return self._train_generator._create_minimal_simple_level_vertical_corridor(
+                    seed, self.rng.randint(0, 100000)
+                )
+
+            map_gen = self.rng.choice([map_func_one(seed), map_func_two(seed)])
         elif category == "simple":
-            # Randomly select from simple level generators
             generators = [
                 self._train_generator._create_simple_jump_level,
                 self._train_generator._create_simple_hills_level,
@@ -193,7 +202,6 @@ class EnvMapLoader:
             ]
             map_gen = self.rng.choice(generators)(seed)
         elif category == "medium":
-            # Randomly select from medium level generators
             generators = [
                 self._train_generator._create_medium_jump_level,
                 self._train_generator._create_medium_hills_level,
@@ -202,7 +210,6 @@ class EnvMapLoader:
             ]
             map_gen = self.rng.choice(generators)(seed)
         elif category == "complex":
-            # Randomly select from complex level generators
             generators = [
                 self._train_generator._create_complex_mine_maze,
                 self._train_generator._create_complex_jump_level,
@@ -211,19 +218,23 @@ class EnvMapLoader:
             ]
             map_gen = self.rng.choice(generators)(seed)
         elif category == "mine_heavy":
-            # Heavy mine levels
             generators = [
                 self._train_generator._create_heavy_mine_maze,
                 self._train_generator._create_heavy_mine_jump,
             ]
             map_gen = self.rng.choice(generators)(seed)
         else:  # exploration
-            # Exploration levels
             generators = [
                 self._train_generator._create_exploration_maze,
                 self._train_generator._create_exploration_multi_chamber,
             ]
             map_gen = self.rng.choice(generators)(seed)
+
+        # To override, uncomment this and assign map_gen to the desired map generator
+        # if True:
+        #     map_gen = self._train_generator._create_minimal_simple_level_horizontal(
+        #         seed, 0
+        #     )
 
         # Load the generated map
         self.nplay_headless.load_map_from_map_data(map_gen.map_data())
