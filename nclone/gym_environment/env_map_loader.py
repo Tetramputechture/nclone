@@ -1,7 +1,8 @@
 """
 Map loading utilities for N++ environment.
 
-This module contains logic for loading different types of maps in the N++ environment.
+This module handles map loading for training and evaluation, with support for
+curriculum learning and procedural generation.
 """
 
 import json
@@ -12,12 +13,20 @@ from typing import Optional
 
 from ..evaluation import TestSuiteLoader
 from ..map_generation.generate_test_suite_maps import TestSuiteGenerator
-
-
-# Path to the map categorization JSON file
-MAP_CATEGORIZATION_PATH = (
-    Path(__file__).parent.parent.parent / "map_categorization.json"
+from .curriculum_config import (
+    CATEGORIES,
+    CATEGORY_NAMES,
+    get_default_weights,
+    get_category,
+    validate_category,
+    validate_weights,
 )
+from .generator_registry import GeneratorRegistry
+
+
+# Constants
+TRAIN_SEED_START = 100000  # Starting seed for training map generation
+MAP_CATEGORIZATION_PATH = Path(__file__).parent.parent.parent / "map_categorization.json"
 
 
 class EnvMapLoader:
@@ -36,16 +45,15 @@ class EnvMapLoader:
         custom_map_path: Optional[str] = None,
         curriculum_stage: Optional[str] = None,
     ):
-        """
-        Initialize the map loader.
+        """Initialize the map loader.
 
         Args:
-            nplay_headless: The NPlayHeadless instance to load maps into
+            nplay_headless: NPlayHeadless instance to load maps into
             rng: Random number generator for map selection
-            eval_mode: Whether to use evaluation maps
-            custom_map_path: Path to custom map file
-            curriculum_stage: Current curriculum stage for difficulty control (optional)
-                             Options: 'simple', 'medium', 'complex', 'mine_heavy', 'exploration'
+            eval_mode: Whether to use evaluation maps (sequential)
+            custom_map_path: Path to custom map file (overrides all other loading)
+            curriculum_stage: Current curriculum difficulty stage (optional)
+                             See curriculum_config.CATEGORY_NAMES for options
         """
         self.nplay_headless = nplay_headless
         self.rng = rng
@@ -53,23 +61,24 @@ class EnvMapLoader:
         self.custom_map_path = custom_map_path
         self.curriculum_stage = curriculum_stage
 
-        # Map state
+        # Current map state
         self.current_map_name = None
         self.random_map_type = None
 
-        # Load map categorization data
+        # Map categorization data (for legacy categorized map loading)
         self._map_categories = self._load_map_categorization()
 
         # Test suite for evaluation (sequential loading)
         self._test_suite_levels = self._load_test_suite_levels()
         self._test_suite_index = 0
 
-        # Test suite generator for training (random map generation)
-        self._train_generator = None  # Lazy initialization
-        self._train_seed_counter = 100000  # Start from high seed range for training
+        # Training map generation (lazy initialization)
+        self._train_generator = None
+        self._generator_registry = None
+        self._train_seed_counter = TRAIN_SEED_START
 
-        # Curriculum learning weights (can be dynamically adjusted)
-        self._curriculum_weights = self._get_default_curriculum_weights()
+        # Curriculum weights (category name -> relative weight)
+        self._curriculum_weights = get_default_weights()
 
     def load_initial_map(self):
         """Load the first map based on configuration."""
@@ -129,112 +138,19 @@ class EnvMapLoader:
             )
             return
 
-        # Load training maps using Test Suite Generator
-        # This ensures diverse, procedurally generated levels for robust training
+        # Load training maps using procedural generation
+        # Lazy initialization of generator and registry
         if self._train_generator is None:
             self._train_generator = TestSuiteGenerator("datasets/train_runtime")
+            self._generator_registry = GeneratorRegistry(self._train_generator, self.rng)
 
-        # Determine difficulty category based on curriculum stage or weighted sampling
-        if self.curriculum_stage:
-            # Use curriculum stage directly if specified
-            category = self.curriculum_stage
-        else:
-            # Randomly select difficulty category for training diversity
-            # Use weighted sampling to favor simpler levels early in training
-            categories = [
-                "simplest",
-                "simpler",
-                "simple",
-                "medium",
-                "complex",
-                "mine_heavy",
-                "exploration",
-            ]
-            category_weights = self._curriculum_weights
+        # Select difficulty category
+        category = self._select_category()
 
-            # Convert to cumulative weights for random.choices
-            import random
-
-            if isinstance(self.rng, random.Random):
-                category = self.rng.choices(categories, weights=category_weights, k=1)[
-                    0
-                ]
-            else:
-                # Fallback to simple choice if not using random.Random
-                category = self.rng.choice(categories)
-
-        # Generate a map from the selected category
+        # Generate map using registry
         self._train_seed_counter += 1
         seed = self._train_seed_counter
-
-        # Generate map based on category using available generator methods
-        if category == "simplest":
-
-            def map_func_one(seed):
-                return self._train_generator._create_minimal_simple_level_vertical_corridor(
-                    seed, 0
-                )
-
-            def map_func_two(seed):
-                return self._train_generator._create_minimal_simple_level_horizontal(
-                    seed, 0
-                )
-
-            map_gen = self.rng.choice([map_func_one(seed), map_func_two(seed)])
-        if category == "simpler":
-
-            def map_func_one(seed):
-                return self._train_generator._create_minimal_simple_level_horizontal(
-                    seed, self.rng.randint(0, 100000)
-                )
-
-            def map_func_two(seed):
-                return self._train_generator._create_minimal_simple_level_vertical_corridor(
-                    seed, self.rng.randint(0, 100000)
-                )
-
-            map_gen = self.rng.choice([map_func_one(seed), map_func_two(seed)])
-        elif category == "simple":
-            generators = [
-                self._train_generator._create_simple_jump_level,
-                self._train_generator._create_simple_hills_level,
-                self._train_generator._create_simple_vertical_corridor,
-            ]
-            map_gen = self.rng.choice(generators)(seed)
-        elif category == "medium":
-            generators = [
-                self._train_generator._create_medium_jump_level,
-                self._train_generator._create_medium_hills_level,
-                self._train_generator._create_medium_vertical_corridor,
-                self._train_generator._create_medium_jump_platforms,
-            ]
-            map_gen = self.rng.choice(generators)(seed)
-        elif category == "complex":
-            generators = [
-                self._train_generator._create_complex_mine_maze,
-                self._train_generator._create_complex_jump_level,
-                self._train_generator._create_complex_hills_level,
-                self._train_generator._create_complex_islands_map,
-            ]
-            map_gen = self.rng.choice(generators)(seed)
-        elif category == "mine_heavy":
-            generators = [
-                self._train_generator._create_heavy_mine_maze,
-                self._train_generator._create_heavy_mine_jump,
-            ]
-            map_gen = self.rng.choice(generators)(seed)
-        else:  # exploration
-            generators = [
-                self._train_generator._create_exploration_maze,
-                self._train_generator._create_exploration_multi_chamber,
-            ]
-            map_gen = self.rng.choice(generators)(seed)
-
-        # To override, uncomment this and assign map_gen to the desired map generator
-        # if True:
-        #     map_gen = self._train_generator._create_minimal_simple_level_horizontal(
-        #         seed, 0
-        #     )
+        map_gen = self._generator_registry.get_map(category, seed)
 
         # Load the generated map
         self.nplay_headless.load_map_from_map_data(map_gen.map_data())
@@ -242,6 +158,34 @@ class EnvMapLoader:
         # Update state
         self.current_map_name = f"train_{category}_{seed}"
         self.random_map_type = None
+
+    def _select_category(self) -> str:
+        """Select a difficulty category for map generation.
+        
+        Uses curriculum stage if set, otherwise samples based on weights.
+        
+        Returns:
+            Category name
+        """
+        # Use curriculum stage if explicitly set
+        if self.curriculum_stage:
+            return self.curriculum_stage
+        
+        # Otherwise, use weighted random sampling
+        import random
+        
+        if isinstance(self.rng, random.Random):
+            # Use weighted sampling for training diversity
+            category = self.rng.choices(
+                CATEGORY_NAMES,
+                weights=self._curriculum_weights,
+                k=1
+            )[0]
+        else:
+            # Fallback to uniform sampling if RNG doesn't support choices
+            category = self.rng.choice(CATEGORY_NAMES)
+        
+        return category
 
     def get_map_display_name(self) -> str:
         """Get the display name for the current map."""
@@ -352,22 +296,14 @@ class EnvMapLoader:
         """Set the current curriculum stage for map selection.
 
         Args:
-            stage: Curriculum stage name ('simple', 'medium', 'complex', 'mine_heavy', 'exploration')
+            stage: Curriculum stage name (see curriculum_config.CATEGORY_NAMES)
 
         Raises:
             ValueError: If stage is invalid
         """
-        valid_stages = [
-            "simpler",
-            "simple",
-            "medium",
-            "complex",
-            "mine_heavy",
-            "exploration",
-        ]
-        if stage not in valid_stages:
+        if not validate_category(stage):
             raise ValueError(
-                f"Invalid curriculum stage '{stage}'. Must be one of: {valid_stages}"
+                f"Invalid curriculum stage '{stage}'. Must be one of: {CATEGORY_NAMES}"
             )
 
         self.curriculum_stage = stage
@@ -386,68 +322,34 @@ class EnvMapLoader:
 
         Args:
             weights: Dictionary mapping category names to relative weights
-                    Example: {'simple': 50, 'medium': 30, 'complex': 15, 'mine_heavy': 5, 'exploration': 0}
+                    Example: {'simplest': 10, 'simple': 50, 'medium': 30, ...}
 
         Raises:
             ValueError: If weights are invalid
         """
-        categories = [
-            "simplest",
-            "simpler",
-            "simple",
-            "medium",
-            "complex",
-            "mine_heavy",
-            "exploration",
-        ]
+        # Validate weights using centralized validation
+        is_valid, error_msg = validate_weights(weights)
+        if not is_valid:
+            raise ValueError(error_msg)
 
-        # Validate all categories are present
-        for cat in categories:
-            if cat not in weights:
-                raise ValueError(f"Missing weight for category '{cat}'")
-
-        # Validate all weights are non-negative
-        for cat, weight in weights.items():
-            if weight < 0:
-                raise ValueError(
-                    f"Weight for '{cat}' must be non-negative, got {weight}"
-                )
-
-        # Update weights
-        self._curriculum_weights = [weights[cat] for cat in categories]
+        # Update weights (convert dict to list in category order)
+        self._curriculum_weights = [weights[cat] for cat in CATEGORY_NAMES]
         print(f"Curriculum weights updated: {weights}")
-
-    def _get_default_curriculum_weights(self) -> list:
-        """Get default curriculum weights for training.
-
-        Returns:
-            List of weights for [simple, medium, complex, mine_heavy, exploration]
-        """
-        # Default weights: favor simpler levels
-        return [10, 10, 30, 30, 20, 10, 10]
 
     def reset_curriculum_weights(self) -> None:
         """Reset curriculum weights to default values."""
-        self._curriculum_weights = self._get_default_curriculum_weights()
+        self._curriculum_weights = get_default_weights()
         print("Curriculum weights reset to default")
 
     def get_curriculum_info(self) -> dict:
         """Get curriculum learning configuration info.
 
         Returns:
-            Dictionary with curriculum settings
+            Dictionary with curriculum settings including weights and stage
         """
-        categories = [
-            "simplest",
-            "simpler",
-            "simple",
-            "medium",
-            "complex",
-            "mine_heavy",
-            "exploration",
-        ]
+        # Create weights dictionary from current weights list
         weights_dict = {
-            cat: weight for cat, weight in zip(categories, self._curriculum_weights)
+            cat: weight for cat, weight in zip(CATEGORY_NAMES, self._curriculum_weights)
         }
 
         return {
