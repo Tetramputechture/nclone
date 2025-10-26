@@ -60,3 +60,6 @@ nclone/_version.py
 datasets/
 
 .ruff_cache/validation_results.json
+
+
+*.mp4
