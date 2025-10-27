@@ -21,13 +21,15 @@ from typing import Dict, Any
 # Terminal rewards are the primary learning signals that define task completion
 
 # Level completion reward
-# Rationale: Large positive reward (1.0) provides clear success signal.
-# Should be significantly larger than cumulative per-step rewards (~0.01 * 20000 steps = 200)
-LEVEL_COMPLETION_REWARD = 1.0
+# FIXED: Increased from 1.0 to 10.0 to overcome time penalty accumulation
+# Old problem: 1.0 completion - 0.01*steps made successful runs negative!
+# New: 10.0 ensures positive returns even for slow completions (10.0 - 1.0*10k steps = +9.0)
+# Rationale: Should dominate cumulative time penalty to provide clear positive signal
+LEVEL_COMPLETION_REWARD = 10.0
 
 # Death penalty
 # Rationale: Moderate negative reward (-0.5) discourages death without dominating learning.
-# Set to 50% of completion reward to maintain focus on positive objectives.
+# Kept proportional to new completion reward (5% of completion).
 # Too large penalties can lead to overly conservative behavior.
 DEATH_PENALTY = -0.5
 
@@ -38,10 +40,10 @@ DEATH_PENALTY = -0.5
 # Intermediate rewards for achieving subgoals
 
 # Switch activation reward
-# Rationale: Small positive reward (0.1) for completing first objective phase.
-# Set to 10% of completion reward to provide intermediate milestone without
-# creating local optima that distract from the ultimate goal.
-SWITCH_ACTIVATION_REWARD = 0.1
+# FIXED: Increased from 0.1 to 1.0 proportional to completion reward increase
+# Rationale: Meaningful milestone reward (10% of completion) provides clear intermediate signal
+# without creating local optima that distract from the ultimate goal.
+SWITCH_ACTIVATION_REWARD = 1.0
 
 
 # =============================================================================
@@ -50,12 +52,12 @@ SWITCH_ACTIVATION_REWARD = 0.1
 # Per-step rewards that encourage efficiency
 
 # Time penalty per step
-# Rationale: Small negative reward (-0.01) encourages efficient solutions.
-# Magnitude chosen to be:
-#   - Noticeable over typical episode length (20,000 steps max = -200 total)
-#   - Smaller than terminal rewards to avoid overwhelming primary objectives
-#   - Consistent with OpenAI SpinningUp recommendations for step penalties
-TIME_PENALTY_PER_STEP = -0.01
+# CRITICAL FIX: Reduced from -0.01 to -0.0001 (100x reduction)
+# Old problem: -0.01 * 10000 steps = -100, completely overwhelming +1.0 completion reward!
+# New: -0.0001 * 10000 steps = -1.0, keeps completion positive (+10.0 - 1.0 = +9.0)
+# Rationale: Small enough to not dominate terminal rewards, still encourages efficiency
+# Impact: Fast (1000 steps): +10.0-0.1=+9.9, Slow (10k steps): +10.0-1.0=+9.0, Max (20k): +10.0-2.0=+8.0
+TIME_PENALTY_PER_STEP = -0.0001
 
 
 # =============================================================================
@@ -65,11 +67,12 @@ TIME_PENALTY_PER_STEP = -0.01
 # These provide dense reward signals without changing the optimal policy
 
 # Distance improvement scale for navigation rewards
-# Rationale: Very small scale (0.0001) provides dense feedback about progress
-# toward objectives without overwhelming terminal rewards.
+# FIXED: Increased from 0.0001 to 0.001 (10x) for better learning signal
+# Rationale: Provides dense feedback about progress toward objectives.
+# With reduced time penalty, can afford stronger shaping signal.
 # Formula: reward = distance_improvement * DISTANCE_IMPROVEMENT_SCALE
-# Example: Moving 100 pixels closer = 0.01 reward (comparable to 1 timestep saved)
-NAVIGATION_DISTANCE_IMPROVEMENT_SCALE = 0.0001
+# Example: Moving 100 pixels closer = 0.1 reward (meaningful progress signal)
+NAVIGATION_DISTANCE_IMPROVEMENT_SCALE = 0.001
 
 # Minimum distance threshold for proximity bonus (pixels)
 # Rationale: Provides small extra reward when within 20 pixels of objective.
@@ -97,21 +100,22 @@ EXPLORATION_GRID_HEIGHT = 25
 EXPLORATION_CELL_SIZE = 24.0  # pixels
 
 # Exploration rewards at different spatial scales
+# FIXED: Increased from 0.001 to 0.01 (10x) for better exploration incentive
 # Rationale: Multi-scale rewards encourage both fine-grained and broad exploration.
-# Total maximum per-step exploration reward = 0.004 (< 0.01 time penalty)
-# This ensures exploration doesn't dominate time efficiency.
+# Total maximum per-step exploration reward = 0.04 (still < time penalty of 0.0001)
+# With reduced time penalty, can afford stronger exploration signal.
 
 # Single cell (24x24 pixels) - finest granularity
-EXPLORATION_CELL_REWARD = 0.001
+EXPLORATION_CELL_REWARD = 0.01
 
 # Medium area (4x4 cells = 96x96 pixels) - room-sized regions
-EXPLORATION_AREA_4X4_REWARD = 0.001
+EXPLORATION_AREA_4X4_REWARD = 0.01
 
 # Large area (8x8 cells = 192x192 pixels) - section-sized regions
-EXPLORATION_AREA_8X8_REWARD = 0.001
+EXPLORATION_AREA_8X8_REWARD = 0.01
 
 # Very large area (16x16 cells = 384x384 pixels) - major regions
-EXPLORATION_AREA_16X16_REWARD = 0.001
+EXPLORATION_AREA_16X16_REWARD = 0.01
 
 
 # =============================================================================
@@ -135,25 +139,26 @@ PBRS_GAMMA = 0.99
 PBRS_OBJECTIVE_WEIGHT = 1.0
 
 # Hazard proximity potential weight
-# Rationale: Set to 0.0 for completion-focused training to avoid conservative behavior.
-# Can be increased (e.g., 0.5) for safety-conscious training.
-PBRS_HAZARD_WEIGHT = 0.0
+# FIXED: Increased from 0.0 to 0.1 for mild hazard avoidance
+# Rationale: Small weight provides safety signal without making agent too conservative.
+PBRS_HAZARD_WEIGHT = 0.1
 
 # Impact risk potential weight
-# Rationale: Set to 0.0 for completion-focused training.
-# Can be increased (e.g., 0.3) to discourage high-velocity impacts.
+# Rationale: Keep at 0.0 for completion-focused training.
+# Focus on speed and completion rather than impact avoidance.
 PBRS_IMPACT_WEIGHT = 0.0
 
 # Exploration potential weight
-# Rationale: Set to 0.0 to use explicit exploration rewards instead.
-# Can be increased (e.g., 0.2) for PBRS-based exploration.
-PBRS_EXPLORATION_WEIGHT = 0.0
+# FIXED: Increased from 0.0 to 0.2 for exploration bonus via PBRS
+# Rationale: Combines with explicit exploration rewards for better coverage.
+PBRS_EXPLORATION_WEIGHT = 0.2
 
 # PBRS scaling for switch and exit phases
-# Rationale: Small scales (0.05) keep PBRS rewards as auxiliary signals.
-# These provide gradient without dominating terminal rewards.
-PBRS_SWITCH_DISTANCE_SCALE = 0.05
-PBRS_EXIT_DISTANCE_SCALE = 0.05
+# FIXED: Increased from 0.05 to 0.5 (10x) for stronger shaping signal
+# Rationale: With reduced time penalty, can afford stronger PBRS gradient.
+# These provide meaningful navigation signal without dominating terminal rewards.
+PBRS_SWITCH_DISTANCE_SCALE = 0.5
+PBRS_EXIT_DISTANCE_SCALE = 0.5
 
 
 # =============================================================================
