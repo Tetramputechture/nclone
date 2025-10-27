@@ -1,16 +1,15 @@
 """Navigation reward calculator for evaluating objective-based movement and progress."""
 
 from typing import Dict, Any, Tuple
-import numpy as np
-from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
+from ..constants import LEVEL_DIAGONAL
 from ..util.util import calculate_distance
 from .reward_constants import (
     NAVIGATION_DISTANCE_IMPROVEMENT_SCALE,
     NAVIGATION_POTENTIAL_SCALE,
     NAVIGATION_MIN_DISTANCE_THRESHOLD,
-    PBRS_SWITCH_DISTANCE_SCALE,
-    PBRS_EXIT_DISTANCE_SCALE,
 )
+
+PBRS_DISTANCE_SCALE = LEVEL_DIAGONAL / 4
 
 
 class NavigationRewardCalculator:
@@ -31,13 +30,6 @@ class NavigationRewardCalculator:
     def __init__(self):
         """Initialize navigation reward calculator."""
         super().__init__()
-        # Initialize reward constants
-        self.POTENTIAL_SCALE = NAVIGATION_POTENTIAL_SCALE
-        self.MIN_DISTANCE_THRESHOLD = NAVIGATION_MIN_DISTANCE_THRESHOLD
-        self.SWITCH_DISTANCE_SCALE = PBRS_SWITCH_DISTANCE_SCALE
-        self.EXIT_DISTANCE_SCALE = PBRS_EXIT_DISTANCE_SCALE
-        
-        # Initialize state tracking
         self.closest_distance_to_switch = float("inf")
         self.closest_distance_to_exit = float("inf")
         self.prev_potential = None
@@ -77,10 +69,6 @@ class NavigationRewardCalculator:
 
     def calculate_potential(self, state: Dict[str, Any]) -> float:
         """Calculate state potential for reward shaping."""
-        # Scale based on level size
-        level_diagonal = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
-        distance_scale = level_diagonal / 4
-
         if not state["switch_activated"]:
             distance_to_switch = calculate_distance(
                 state["player_x"],
@@ -89,13 +77,13 @@ class NavigationRewardCalculator:
                 state["switch_y"],
             )
             # Potential based on normalized distance to switch
-            potential = self.POTENTIAL_SCALE * (
-                1.0 - distance_to_switch / distance_scale
+            potential = NAVIGATION_POTENTIAL_SCALE * (
+                1.0 - distance_to_switch / PBRS_DISTANCE_SCALE
             )
 
             # Small bonus for being very close to switch
-            if distance_to_switch < self.MIN_DISTANCE_THRESHOLD:
-                potential += self.POTENTIAL_SCALE * 0.5
+            if distance_to_switch < NAVIGATION_MIN_DISTANCE_THRESHOLD:
+                potential += NAVIGATION_POTENTIAL_SCALE * 0.5
 
             return potential
         else:
@@ -106,11 +94,13 @@ class NavigationRewardCalculator:
                 state["exit_door_y"],
             )
             # Potential based on normalized distance to exit
-            potential = self.POTENTIAL_SCALE * (1.0 - distance_to_exit / distance_scale)
+            potential = NAVIGATION_POTENTIAL_SCALE * (
+                1.0 - distance_to_exit / PBRS_DISTANCE_SCALE
+            )
 
             # Small bonus for being very close to exit
-            if distance_to_exit < self.MIN_DISTANCE_THRESHOLD:
-                potential += self.POTENTIAL_SCALE * 0.5
+            if distance_to_exit < NAVIGATION_MIN_DISTANCE_THRESHOLD:
+                potential += NAVIGATION_POTENTIAL_SCALE * 0.5
 
             return potential
 

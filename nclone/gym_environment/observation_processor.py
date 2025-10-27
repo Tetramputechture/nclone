@@ -42,6 +42,7 @@ import numpy as np
 import cv2
 from typing import Dict, Any, Tuple, Optional
 from .constants import (
+    LEVEL_DIAGONAL,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
     LEVEL_WIDTH,
@@ -183,8 +184,6 @@ def compute_hazard_from_entity_states(
     Returns:
         Tuple of (nearest_hazard_distance_pixels, hazard_threat_score)
     """
-    from ..constants.render_utils import SRCWIDTH, SRCHEIGHT
-
     if len(entity_states) < 1:
         return (float("inf"), 0.0)
 
@@ -200,9 +199,6 @@ def compute_hazard_from_entity_states(
 
     if mine_count == 0:
         return (float("inf"), 0.0)
-
-    # Screen diagonal for denormalization
-    screen_diagonal = (SRCWIDTH**2 + SRCHEIGHT**2) ** 0.5
 
     # Find nearest active mine
     nearest_dist = float("inf")
@@ -227,7 +223,7 @@ def compute_hazard_from_entity_states(
             continue
 
         # Denormalize distance
-        distance = dist_norm * screen_diagonal
+        distance = dist_norm * LEVEL_DIAGONAL
 
         if distance < nearest_dist:
             nearest_dist = distance
@@ -380,7 +376,7 @@ class ObservationProcessor:
             self.mine_processor.update_mine_states(entities)
 
         # Calculate nearest hazard distance (normalized by screen diagonal)
-        screen_diagonal = (LEVEL_WIDTH**2 + LEVEL_HEIGHT**2) ** 0.5
+        screen_diagonal = LEVEL_DIAGONAL
         nearest_hazard_dist = screen_diagonal  # Start with max distance
         hazard_threat = 0.0
 

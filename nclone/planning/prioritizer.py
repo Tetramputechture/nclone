@@ -8,7 +8,7 @@ strategic value and intrinsic curiosity-driven reachability analysis.
 import math
 from typing import List, Tuple
 
-
+from ..gym_environment.constants import LEVEL_DIAGONAL
 from .subgoals import (
     Subgoal,
     EntityInteractionSubgoal,
@@ -102,7 +102,7 @@ class SubgoalPrioritizer:
             (ninja_pos[0] - target_pos[0]) ** 2 + (ninja_pos[1] - target_pos[1]) ** 2
         )
         distance_factor = max(
-            0.1, 1.0 - distance / 500.0
+            0.1, 1.0 - distance / LEVEL_DIAGONAL
         )  # Normalize by max reasonable distance
 
         # Reachability bonus from nclone's analysis

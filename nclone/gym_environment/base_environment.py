@@ -332,15 +332,14 @@ class BaseNppEnvironment(gymnasium.Env):
         Returns:
             Dictionary containing episode information
         """
-        info = {"is_success": player_won}
-
-        # Add configuration flags to episode info
-        info.update(
-            {
-                "config_flags": self.config_flags.copy(),
-                "pbrs_enabled": self.config_flags["enable_pbrs"],
-            }
-        )
+        info = {
+            "is_success": player_won,
+            "r": self.current_ep_reward,
+            "l": self.nplay_headless.sim.frame,
+            "level_id": self.map_loader.current_map_name,
+            "config_flags": self.config_flags.copy(),
+            "pbrs_enabled": self.config_flags["enable_pbrs"],
+        }
 
         # Add PBRS component rewards if available
         if hasattr(self.reward_calculator, "last_pbrs_components"):
