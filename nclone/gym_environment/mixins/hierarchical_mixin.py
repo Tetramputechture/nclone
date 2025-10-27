@@ -13,6 +13,7 @@ from enum import Enum
 
 from ...planning.completion_planner import LevelCompletionPlanner
 from ..config import HierarchicalConfig
+from ..constants import LEVEL_DIAGONAL
 
 
 class Subtask(Enum):
@@ -499,16 +500,17 @@ class HierarchicalMixin:
             switch_x, switch_y = self.nplay_headless.exit_switch_position()
             exit_x, exit_y = self.nplay_headless.exit_door_position()
 
-            max_dist = np.sqrt(1056**2 + 600**2)
             dist_to_switch = np.sqrt(
                 (ninja_x - switch_x) ** 2 + (ninja_y - switch_y) ** 2
             )
             dist_to_exit = np.sqrt((ninja_x - exit_x) ** 2 + (ninja_y - exit_y) ** 2)
 
             features[1] = 1.0 - min(
-                dist_to_switch / max_dist, 1.0
+                dist_to_switch / LEVEL_DIAGONAL, 1.0
             )  # Distance to switch
-            features[2] = 1.0 - min(dist_to_exit / max_dist, 1.0)  # Distance to exit
+            features[2] = 1.0 - min(
+                dist_to_exit / LEVEL_DIAGONAL, 1.0
+            )  # Distance to exit
             features[6] = (
                 1.0 if self.nplay_headless.exit_switch_activated() else 0.0
             )  # Exit reachable

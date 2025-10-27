@@ -6,7 +6,7 @@ and map generation categories, making it easy to extend and modify difficulty le
 """
 
 from dataclasses import dataclass
-from typing import List, Callable, Optional
+from typing import List, Optional
 
 
 @dataclass

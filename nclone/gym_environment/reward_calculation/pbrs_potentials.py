@@ -18,7 +18,7 @@ All constants defined in reward_constants.py with full documentation.
 
 import numpy as np
 from typing import Dict, Any, List, Tuple
-from ..constants import LEVEL_WIDTH, LEVEL_HEIGHT
+from ..constants import LEVEL_DIAGONAL
 from ..util.util import calculate_distance
 from .reward_constants import (
     PBRS_MAX_VELOCITY,
@@ -41,9 +41,6 @@ class PBRSPotentials:
     - impact_risk_potential: Risk of high-velocity collisions
     - exploration_potential: Novelty of current state
     """
-
-    # Import normalization constants from centralized module
-    LEVEL_DIAGONAL = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
 
     @staticmethod
     def objective_distance_potential(state: Dict[str, Any]) -> float:
@@ -77,7 +74,7 @@ class PBRSPotentials:
             )
 
         # Normalize distance to [0, 1] range, inverted so closer = higher potential
-        normalized_distance = min(1.0, distance / PBRSPotentials.LEVEL_DIAGONAL)
+        normalized_distance = min(1.0, distance / LEVEL_DIAGONAL)
         return 1.0 - normalized_distance
 
     @staticmethod

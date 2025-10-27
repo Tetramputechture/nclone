@@ -50,37 +50,37 @@ from .constants import VALID_TILE_TYPES
 
 class TestSuiteGenerator:
     """Generator for comprehensive NPP-RL train and test suites.
-    
+
     This class generates procedural maps across 7 difficulty categories:
-    
+
     SIMPLEST: Minimal direct paths (ninja -> switch -> door -> exit)
         - _create_minimal_simple_level_vertical_corridor() - Single vertical drop
         - _create_minimal_simple_level_horizontal() - Minimal horizontal corridor
-    
+
     SIMPLER: Simple paths with slight layout variations
         - Uses same generators as SIMPLEST with varied parameters
-    
+
     SIMPLE: Basic platforming with small obstacles
         - _create_simple_jump_level() - Basic jumps
         - _create_simple_hills_level() - Hill terrain
         - _create_simple_vertical_corridor() - Vertical navigation
-    
+
     MEDIUM: Multi-chamber and medium mazes
         - _create_medium_jump_level() - More complex jumps
         - _create_medium_hills_level() - Varied terrain
         - _create_medium_vertical_corridor() - Longer vertical sections
         - _create_medium_jump_platforms() - Platform navigation
-    
+
     COMPLEX: Large mazes and advanced navigation
         - _create_complex_mine_maze() - Maze with mines
         - _create_complex_jump_level() - Advanced jumps
         - _create_complex_hills_level() - Complex terrain
         - _create_complex_islands_map() - Island hopping
-    
+
     MINE_HEAVY: High mine density requiring careful movement
         - _create_heavy_mine_maze() - Maze with heavy mines
         - _create_heavy_mine_jump() - Jumps with mine obstacles
-    
+
     EXPLORATION: Large areas requiring extensive exploration
         - _create_exploration_maze() - Large exploration mazes
         - _create_exploration_multi_chamber() - Multi-chamber exploration
@@ -257,17 +257,25 @@ class TestSuiteGenerator:
         )
         levels_dict = self.train_levels if mode == "train" else self.test_levels
 
+        map_gen = Map(seed=base_seed_start)
+        rng = map_gen.rng
         for i in range(count):
             base_seed = base_seed_start + i
 
             # Create a closure that properly captures the current value of i
-            def make_generator(index):
-                return lambda seed: self._create_minimal_simple_level(seed, 0)
+            def make_generator_one(index):
+                return lambda seed: self._create_minimal_simple_level_vertical_corridor(
+                    seed, 0
+                )
 
-            generator_func = make_generator(i)
+            def make_generator_two(index):
+                return lambda seed: self._create_minimal_simple_level_horizontal(
+                    seed, 0
+                )
 
+            map_gen = rng.choice([make_generator_one(i), make_generator_two(i)])
             map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, f"simplest-{mode}"
+                map_gen, base_seed, i, f"simplest-{mode}"
             )
 
             level_data = {
@@ -304,17 +312,26 @@ class TestSuiteGenerator:
         )
         levels_dict = self.train_levels if mode == "train" else self.test_levels
 
+        map_gen = Map(seed=base_seed_start)
+        rng = map_gen.rng
+
         for i in range(count):
             base_seed = base_seed_start + i
 
             # Create a closure that properly captures the current value of i
-            def make_generator(index):
-                return lambda seed: self._create_minimal_simple_level(seed, index)
+            def make_generator_one(index):
+                return lambda seed: self._create_minimal_simple_level_vertical_corridor(
+                    seed, index
+                )
 
-            generator_func = make_generator(i)
+            def make_generator_two(index):
+                return lambda seed: self._create_minimal_simple_level_horizontal(
+                    seed, index
+                )
 
+            map_gen = rng.choice([make_generator_one(i), make_generator_two(i)])
             map_gen = self._generate_unique_map(
-                generator_func, base_seed, i, f"simpler-{mode}"
+                map_gen, base_seed, i, f"simplest-{mode}"
             )
 
             # Calculate difficulty tier dynamically (4 tiers)

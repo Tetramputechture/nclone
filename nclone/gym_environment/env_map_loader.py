@@ -14,10 +14,8 @@ from typing import Optional
 from ..evaluation import TestSuiteLoader
 from ..map_generation.generate_test_suite_maps import TestSuiteGenerator
 from .curriculum_config import (
-    CATEGORIES,
     CATEGORY_NAMES,
     get_default_weights,
-    get_category,
     validate_category,
     validate_weights,
 )

@@ -194,27 +194,36 @@ class NppEnvironment(
 
             if self.debug:
                 self.logger.debug(f"Graph updated in {update_time:.2f}ms")
-    
+
     def _pre_reward_hook(self, curr_obs: Dict[str, Any], player_won: bool):
         """Update hierarchical state before reward calculation."""
         if self.enable_hierarchical:
             # Store current subtask for reward modification
-            self._current_subtask = self._get_current_subtask(curr_obs, {"is_success": player_won})
+            self._current_subtask = self._get_current_subtask(
+                curr_obs, {"is_success": player_won}
+            )
             self._update_hierarchical_state(curr_obs, {"is_success": player_won})
         else:
             self._current_subtask = None
-    
-    def _modify_reward_hook(self, reward: float, curr_obs: Dict[str, Any], 
-                           player_won: bool, terminated: bool) -> float:
+
+    def _modify_reward_hook(
+        self,
+        reward: float,
+        curr_obs: Dict[str, Any],
+        player_won: bool,
+        terminated: bool,
+    ) -> float:
         """Add hierarchical reward shaping if enabled."""
         if self.enable_hierarchical and self._current_subtask is not None:
             hierarchical_reward = self._calculate_subtask_reward(
                 self._current_subtask, curr_obs, {"is_success": player_won}, terminated
             )
-            reward += hierarchical_reward * self.config.hierarchical.subtask_reward_scale
-        
+            reward += (
+                hierarchical_reward * self.config.hierarchical.subtask_reward_scale
+            )
+
         return reward
-    
+
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Add NppEnvironment-specific info fields."""
         # Add reachability performance info if enabled
@@ -284,30 +293,30 @@ class NppEnvironment(
     def _build_switch_states_array(self, obs: Dict[str, Any]) -> np.ndarray:
         """
         Build switch states array with detailed locked door information.
-        
+
         Format per door (5 features):
         - switch_x_norm: Normalized X position of switch (0-1)
         - switch_y_norm: Normalized Y position of switch (0-1)
         - door_x_norm: Normalized X position of door (0-1)
         - door_y_norm: Normalized Y position of door (0-1)
         - collected: 1.0 if switch collected (door open), 0.0 otherwise (door closed)
-        
+
         Note: collected state represents both switch collection AND door open state
         since they are always synchronized (collected switch = open door).
-        
+
         Returns:
             Array of shape (25,) for up to 5 locked doors
         """
         from ..constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
-        
+
         switch_states_array = np.zeros(25, dtype=np.float32)
-        
+
         # Get locked door entities
         locked_doors = obs.get("locked_doors", [])
-        
+
         for i, locked_door in enumerate(locked_doors[:5]):  # Max 5 doors
             base_idx = i * 5
-            
+
             # Get door segment position (stored before position is updated to switch position)
             # The door entity stores the door segment coordinates
             # Note: entity.segment contains the door position, entity.xpos/ypos is switch position
@@ -320,31 +329,35 @@ class NppEnvironment(
                 # Fallback: use entity position (which is actually switch position after init)
                 door_x = getattr(locked_door, "xpos", 0.0)
                 door_y = getattr(locked_door, "ypos", 0.0)
-            
+
             # Switch position (stored in sw_xpos, sw_ypos OR in xpos, ypos)
-            switch_x = getattr(locked_door, "sw_xpos", getattr(locked_door, "xpos", 0.0))
-            switch_y = getattr(locked_door, "sw_ypos", getattr(locked_door, "ypos", 0.0))
-            
+            switch_x = getattr(
+                locked_door, "sw_xpos", getattr(locked_door, "xpos", 0.0)
+            )
+            switch_y = getattr(
+                locked_door, "sw_ypos", getattr(locked_door, "ypos", 0.0)
+            )
+
             # Normalize positions to [0, 1]
             switch_x_norm = switch_x / LEVEL_WIDTH_PX
             switch_y_norm = switch_y / LEVEL_HEIGHT_PX
             door_x_norm = door_x / LEVEL_WIDTH_PX
             door_y_norm = door_y / LEVEL_HEIGHT_PX
-            
+
             # Switch collected state (also represents door open state - they're synchronized)
             # active=True means switch not yet collected (door closed)
             # active=False means collected (door open)
             switch_collected = 0.0 if getattr(locked_door, "active", True) else 1.0
-            
+
             # Store in array
             switch_states_array[base_idx + 0] = np.clip(switch_x_norm, 0.0, 1.0)
             switch_states_array[base_idx + 1] = np.clip(switch_y_norm, 0.0, 1.0)
             switch_states_array[base_idx + 2] = np.clip(door_x_norm, 0.0, 1.0)
             switch_states_array[base_idx + 3] = np.clip(door_y_norm, 0.0, 1.0)
             switch_states_array[base_idx + 4] = switch_collected
-        
+
         return switch_states_array
-    
+
     def _process_observation(self, obs):
         """Process the observation from the environment."""
         processed_obs = super()._process_observation(obs)

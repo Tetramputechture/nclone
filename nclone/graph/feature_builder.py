@@ -24,6 +24,8 @@ Feature dimensions: 56 total (reduced from 61 by removing unused entity indices)
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
+
+from nclone.gym_environment.constants import LEVEL_DIAGONAL
 from ..constants.entity_types import EntityType
 from ..constants.physics_constants import (
     FULL_MAP_WIDTH_PX,
@@ -50,8 +52,6 @@ class NodeFeatureBuilder:
 
     def __init__(self):
         """Initialize the node feature builder."""
-        self.screen_diagonal = np.sqrt(FULL_MAP_WIDTH_PX**2 + FULL_MAP_HEIGHT_PX**2)
-
         # Feature index boundaries
         self.SPATIAL_START = 0
         self.SPATIAL_END = 3
@@ -124,13 +124,13 @@ class NodeFeatureBuilder:
             dx = node_pos[0] - ninja_pos[0]
             dy = node_pos[1] - ninja_pos[1]
             dist = np.sqrt(dx**2 + dy**2)
-            features[self.PROXIMITY_START] = min(dist / self.screen_diagonal, 1.0)
+            features[self.PROXIMITY_START] = min(dist / LEVEL_DIAGONAL, 1.0)
 
         if goal_pos is not None:
             dx = node_pos[0] - goal_pos[0]
             dy = node_pos[1] - goal_pos[1]
             dist = np.sqrt(dx**2 + dy**2)
-            features[self.PROXIMITY_START + 1] = min(dist / self.screen_diagonal, 1.0)
+            features[self.PROXIMITY_START + 1] = min(dist / LEVEL_DIAGONAL, 1.0)
 
         return features
 

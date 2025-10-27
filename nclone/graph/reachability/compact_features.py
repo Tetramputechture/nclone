@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from .reachability_types import ReachabilityApproximation
 from ...planning import LevelCompletionPlanner
+from ...gym_environment.constants import LEVEL_DIAGONAL
 
 
 @dataclass
@@ -92,7 +93,9 @@ class CompactReachabilityFeatures:
         features = np.zeros(self.config.total_features, dtype=np.float32)
 
         # [0] Reachable area ratio
-        features[0] = self._calculate_reachable_area_ratio(reachability_result, level_data)
+        features[0] = self._calculate_reachable_area_ratio(
+            reachability_result, level_data
+        )
 
         # [1] Current objective distance
         features[1] = self._calculate_objective_distance(
@@ -105,9 +108,7 @@ class CompactReachabilityFeatures:
         )
 
         # [3] Exit accessibility
-        features[3] = self._calculate_exit_accessibility(
-            reachability_result, entities
-        )
+        features[3] = self._calculate_exit_accessibility(reachability_result, entities)
 
         # [4] Hazard proximity
         features[4] = self._calculate_hazard_proximity(
@@ -134,16 +135,16 @@ class CompactReachabilityFeatures:
     ) -> float:
         """Calculate the ratio of reachable area to total traversable area."""
         reachable_count = len(reachability_result.reachable_positions)
-        
+
         # Estimate total traversable area
-        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
+        tiles = level_data.tiles if hasattr(level_data, "tiles") else level_data
         if hasattr(tiles, "shape"):
             total_area = tiles.shape[0] * tiles.shape[1]
             # Rough estimate: assume 60% of tiles are traversable
             traversable_area = total_area * 0.6
         else:
             traversable_area = 1000  # Default fallback
-        
+
         return min(reachable_count / traversable_area, 1.0)
 
     def _calculate_objective_distance(
@@ -159,17 +160,18 @@ class CompactReachabilityFeatures:
         current_objective = self.completion_planner.get_next_objective(
             ninja_position, level_data, entities, switch_states
         )
-        
+
         if not current_objective:
             return 1.0  # No objective found
-        
+
         # Check if objective is reachable
-        if not self._is_position_reachable(current_objective.position, reachability_result):
+        if not self._is_position_reachable(
+            current_objective.position, reachability_result
+        ):
             return 1.0  # Unreachable
-        
+
         # Calculate normalized distance
-        level_diagonal = self._get_level_diagonal(level_data)
-        normalized_distance = current_objective.distance / level_diagonal
+        normalized_distance = current_objective.distance / LEVEL_DIAGONAL
         return min(normalized_distance, 1.0)
 
     def _calculate_switch_accessibility(
@@ -182,23 +184,25 @@ class CompactReachabilityFeatures:
         switches = self._get_switches_from_entities(entities)
         if not switches:
             return 1.0  # No switches to worry about
-        
+
         accessible_switches = 0
         important_switches = 0
-        
+
         for switch_info in switches:
             switch_id = switch_info.get("id")
             position = switch_info.get("position")
-            
+
             # Check if this is an important switch (not already activated)
             if switch_id and not switch_states.get(switch_id, False):
                 important_switches += 1
-                if position and self._is_position_reachable(position, reachability_result):
+                if position and self._is_position_reachable(
+                    position, reachability_result
+                ):
                     accessible_switches += 1
-        
+
         if important_switches == 0:
             return 1.0  # All switches activated
-        
+
         return accessible_switches / important_switches
 
     def _calculate_exit_accessibility(
@@ -206,21 +210,25 @@ class CompactReachabilityFeatures:
     ) -> float:
         """Calculate accessibility of exit."""
         # Find exit entities
-        exits = [e for e in entities if hasattr(e, "entity_type") and "exit" in str(e.entity_type).lower()]
-        
+        exits = [
+            e
+            for e in entities
+            if hasattr(e, "entity_type") and "exit" in str(e.entity_type).lower()
+        ]
+
         if not exits:
             return 0.0  # No exit found
-        
+
         # Check if any exit is reachable
         for exit_entity in exits:
             if hasattr(exit_entity, "x") and hasattr(exit_entity, "y"):
                 exit_pos = (exit_entity.x, exit_entity.y)
             else:
                 exit_pos = (exit_entity.get("x", 0), exit_entity.get("y", 0))
-            
+
             if self._is_position_reachable(exit_pos, reachability_result):
                 return 1.0  # Exit is reachable
-        
+
         return 0.0  # No reachable exit
 
     def _calculate_hazard_proximity(
@@ -231,38 +239,42 @@ class CompactReachabilityFeatures:
     ) -> float:
         """
         Calculate proximity to nearest hazard with mine state awareness.
-        
+
         For toggle mines, only TOGGLED state (0) is dangerous.
         UNTOGGLED (1) and TOGGLING (2) are safe states.
         """
-        hazards = [e for e in entities if hasattr(e, "entity_type") and self._is_hazard_type(str(e.entity_type))]
-        
+        hazards = [
+            e
+            for e in entities
+            if hasattr(e, "entity_type") and self._is_hazard_type(str(e.entity_type))
+        ]
+
         if not hazards:
             return 0.0  # No hazards
-        
-        min_distance = float('inf')
+
+        min_distance = float("inf")
         for hazard in hazards:
             if hasattr(hazard, "x") and hasattr(hazard, "y"):
                 hazard_pos = (hazard.x, hazard.y)
             else:
                 hazard_pos = (hazard.get("x", 0), hazard.get("y", 0))
-            
+
             # For toggle mines, check state - only TOGGLED (0) is dangerous
             if self._is_mine_entity(hazard):
-                mine_state = getattr(hazard, 'state', 1)  # Default to untoggled (safe)
+                mine_state = getattr(hazard, "state", 1)  # Default to untoggled (safe)
                 # Only consider TOGGLED mines (state=0) as dangerous
                 # UNTOGGLED (1) and TOGGLING (2) are safe
                 if mine_state != 0:
                     continue
-            
+
             # Only consider reachable hazards as threats
             if self._is_position_reachable(hazard_pos, reachability_result):
                 distance = self._calculate_distance(ninja_position, hazard_pos)
                 min_distance = min(min_distance, distance)
-        
-        if min_distance == float('inf'):
+
+        if min_distance == float("inf"):
             return 0.0  # No reachable hazards
-        
+
         # Convert to proximity score (closer = higher score)
         threat_radius = 72.0  # 3 tiles
         if min_distance <= threat_radius:
@@ -275,34 +287,13 @@ class CompactReachabilityFeatures:
     ) -> float:
         """Calculate overall connectivity score based on reachable positions."""
         reachable_count = len(reachability_result.reachable_positions)
-        
+
         # Simple connectivity score based on number of reachable positions
         # More reachable positions = better connectivity
         if reachable_count < 100:
             return reachable_count / 100.0
         else:
             return 1.0
-
-    # Helper methods (simplified versions)
-    
-    def _get_level_diagonal(self, level_data: Any) -> float:
-        """Get level diagonal for distance normalization."""
-        tiles = level_data.tiles if hasattr(level_data, 'tiles') else level_data
-        if hasattr(tiles, "shape"):
-            height, width = tiles.shape
-        else:
-            width = getattr(level_data, "width", 42)
-            height = getattr(level_data, "height", 23)
-
-        # Convert to pixels (24 pixels per tile)
-        pixel_width = width * 24
-        pixel_height = height * 24
-        diagonal = math.sqrt(pixel_width**2 + pixel_height**2)
-
-        # Cache for efficiency
-        cache_key = (width, height)
-        self._level_diagonal_cache[cache_key] = diagonal
-        return diagonal
 
     def _calculate_distance(
         self, pos1: Tuple[float, float], pos2: Tuple[float, float]
@@ -311,7 +302,9 @@ class CompactReachabilityFeatures:
         return math.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
 
     def _is_position_reachable(
-        self, position: Tuple[float, float], reachability_result: ReachabilityApproximation
+        self,
+        position: Tuple[float, float],
+        reachability_result: ReachabilityApproximation,
     ) -> bool:
         """Check if a position is reachable according to reachability analysis."""
         # Convert position to tile coordinates for comparison
@@ -324,30 +317,35 @@ class CompactReachabilityFeatures:
         """Extract switch information from entities."""
         switches = []
         for entity in entities:
-            if hasattr(entity, "entity_type") and "switch" in str(entity.entity_type).lower():
+            if (
+                hasattr(entity, "entity_type")
+                and "switch" in str(entity.entity_type).lower()
+            ):
                 if hasattr(entity, "x") and hasattr(entity, "y"):
                     position = (entity.x, entity.y)
                     entity_id = getattr(entity, "id", None)
                 else:
                     position = (entity.get("x", 0), entity.get("y", 0))
                     entity_id = entity.get("id", None)
-                
-                switches.append({
-                    "position": position,
-                    "type": str(entity.entity_type),
-                    "id": entity_id,
-                    "entity": entity,
-                })
+
+                switches.append(
+                    {
+                        "position": position,
+                        "type": str(entity.entity_type),
+                        "id": entity_id,
+                        "entity": entity,
+                    }
+                )
         return switches
 
     def _is_hazard_type(self, entity_type: str) -> bool:
         """Check if entity type represents a hazard."""
         hazard_types = ["drone", "mine", "thwump", "laser", "rocket", "chaingun"]
         return any(hazard in entity_type.lower() for hazard in hazard_types)
-    
+
     def _is_mine_entity(self, entity: Any) -> bool:
         """Check if entity is a toggle mine."""
-        if not hasattr(entity, 'entity_type'):
+        if not hasattr(entity, "entity_type"):
             return False
         entity_type_str = str(entity.entity_type).lower()
         return "mine" in entity_type_str
@@ -377,11 +375,10 @@ class CompactReachabilityFeatures:
         return [
             "reachable_area_ratio",
             "objective_distance",
-            "switch_accessibility", 
+            "switch_accessibility",
             "exit_accessibility",
             "hazard_proximity",
             "connectivity_score",
             "analysis_confidence",
-            "computation_time"
+            "computation_time",
         ]
-

@@ -1,5 +1,7 @@
 """Constants for the gym environment."""
 
+import numpy as np
+
 # Max time in frames per level before episode truncation
 MAX_TIME_IN_FRAMES = 20000
 
@@ -15,6 +17,6 @@ RENDERED_VIEW_CHANNELS = 1  # Grayscale
 
 GAME_STATE_CHANNELS = 26
 
-# LEVEL_WIDTH and LEVEL_HEIGHT
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0
+LEVEL_DIAGONAL = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
