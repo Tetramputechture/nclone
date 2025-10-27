@@ -13,39 +13,39 @@ import logging
 @dataclass
 class FrameStackConfig:
     """Configuration for frame stacking to capture temporal information.
-    
+
     Frame stacking is a technique commonly used in Deep RL (especially DQN and its variants)
     to provide temporal information to the policy network. By stacking consecutive frames,
     the agent can infer velocity, acceleration, and motion patterns.
-    
+
     References:
     - Mnih et al. (2015). "Human-level control through deep reinforcement learning." Nature.
       Original DQN paper using 4-frame stacking for Atari games.
     - Machado et al. (2018). "Revisiting the Arcade Learning Environment." IJCAI.
       Analysis of frame stacking and preprocessing techniques.
-    
+
     Visual frames (player_frame, global_view) and game state can be stacked independently
     to capture different temporal scales. For example:
     - Visual frames: capture recent motion (2-4 frames typical)
     - Game state: capture physics trends (2-12 frames possible)
     """
-    
+
     enable_visual_frame_stacking: bool = False
     visual_stack_size: int = 4  # Number of frames to stack (2-12)
-    
+
     enable_state_stacking: bool = False
     state_stack_size: int = 4  # Number of game states to stack (2-12)
-    
+
     padding_type: str = "zero"  # "zero", "repeat" - padding for initial frames
-    
+
     def __post_init__(self):
         """Validate frame stacking configuration."""
         if self.visual_stack_size < 1 or self.visual_stack_size > 12:
             raise ValueError("visual_stack_size must be between 1 and 12")
-        
+
         if self.state_stack_size < 1 or self.state_stack_size > 12:
             raise ValueError("state_stack_size must be between 1 and 12")
-        
+
         valid_padding = ["zero", "repeat"]
         if self.padding_type not in valid_padding:
             raise ValueError(f"padding_type must be one of {valid_padding}")
@@ -57,7 +57,7 @@ class AugmentationConfig:
 
     Augmentation represents ~45% of runtime in profiling analysis.
     Disabling validation can save ~12% of total execution time.
-    
+
     Note: When frame stacking is enabled with augmentation, augmentation is applied
     consistently across the entire stack to maintain temporal coherence.
     """
@@ -236,9 +236,9 @@ class EnvironmentConfig:
                 enable_animation=False,
             ),
             pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(enable_graph_updates=True),
+            graph=GraphConfig(enable_graph_updates=False),
             reachability=ReachabilityConfig(enable_reachability=True),
-            enable_short_episode_truncation=True,
+            enable_short_episode_truncation=False,
             **kwargs,
         )
         return config
@@ -261,7 +261,7 @@ class EnvironmentConfig:
             ),
             render=RenderConfig(render_mode="grayscale_array"),
             pbrs=PBRSConfig(enable_pbrs=False),
-            graph=GraphConfig(enable_graph_updates=True),
+            graph=GraphConfig(enable_graph_updates=False),
             reachability=ReachabilityConfig(enable_reachability=True),
             eval_mode=True,
             enable_short_episode_truncation=False,  # Let episodes run to completion
