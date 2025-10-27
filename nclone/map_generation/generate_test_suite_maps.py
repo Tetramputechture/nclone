@@ -326,7 +326,7 @@ class TestSuiteGenerator:
 
             def make_generator_two(index):
                 return lambda seed: self._create_minimal_simple_level_horizontal(
-                    seed, index
+                    seed, index, height=1
                 )
 
             map_gen = rng.choice([make_generator_one(i), make_generator_two(i)])
@@ -450,16 +450,19 @@ class TestSuiteGenerator:
         """
         map_gen = MapVerticalCorridor(seed=seed)
         height = 3 + (index % 10)
+        swap_top_and_bottom = map_gen.rng.choice([True, False])
         map_gen.generate(
             seed=seed,
-            swap_top_and_bottom=True,
+            swap_top_and_bottom=swap_top_and_bottom,
             door_at_top=True,
             width=1,
             height=height,
         )
         return map_gen
 
-    def _create_minimal_simple_level_horizontal(self, seed: int, index: int) -> Map:
+    def _create_minimal_simple_level_horizontal(
+        self, seed: int, index: int, height: int = None
+    ) -> Map:
         """Create a minimal simple level (1-3 tiles high, 3-12 tiles wide).
 
         If index is 0: width is 3, height is 1
@@ -473,7 +476,8 @@ class TestSuiteGenerator:
         max_width = 3 + (index % 20)  # 3-20 tiles wide
         max_height = 1 + (index % 5)  # 1-5 tiles high
         width = rng.randint(3, max_width)
-        height = rng.randint(1, max_height)
+        if height is None:
+            height = rng.randint(1, max_height)
 
         # Random offset for the chamber, ensuring walls fit within map bounds
         # Need space for: wall (-1), chamber (width/height), wall (+width/+height)
