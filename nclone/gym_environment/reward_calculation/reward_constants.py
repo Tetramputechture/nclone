@@ -138,11 +138,12 @@ EXPLORATION_AREA_16X16_REWARD = 0.01
 # Ensures policy invariance while providing dense reward signal
 
 # PBRS discount factor
-# Rationale: MUST match PPO gamma (0.999) for PBRS policy invariance guarantee.
+# Rationale: MUST match PPO gamma (0.995) for PBRS policy invariance guarantee.
 # According to Ng et al. (1999), F(s,s') = γ * Φ(s') - Φ(s) requires the same
 # γ as the RL algorithm to maintain optimal policy invariance.
 # CRITICAL: If changing PPO gamma, this MUST be updated to match!
-PBRS_GAMMA = 0.999
+# UPDATED Oct 28, 2025: Changed from 0.999 to 0.995 to match new PPO gamma
+PBRS_GAMMA = 0.995
 
 # PBRS component weights (default configuration)
 # Rationale: Weights control relative importance of different potential functions.
