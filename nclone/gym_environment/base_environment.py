@@ -60,6 +60,7 @@ class BaseNppEnvironment(gymnasium.Env):
         enable_short_episode_truncation: bool = False,
         seed: Optional[int] = None,
         eval_mode: bool = False,
+        reward_config: Optional[Dict[str, Any]] = None,
         enable_pbrs: bool = True,
         pbrs_weights: Optional[dict] = None,
         pbrs_gamma: float = 0.99,
@@ -78,9 +79,10 @@ class BaseNppEnvironment(gymnasium.Env):
             enable_short_episode_truncation: Enable episode truncation on lack of progress
             seed: Random seed for reproducibility
             eval_mode: Use evaluation maps instead of training maps
-            enable_pbrs: Enable potential-based reward shaping
-            pbrs_weights: PBRS component weights dictionary
-            pbrs_gamma: PBRS discount factor
+            reward_config: Complete reward configuration dict (overrides individual reward params)
+            enable_pbrs: Enable potential-based reward shaping (legacy, use reward_config instead)
+            pbrs_weights: PBRS component weights dictionary (legacy, use reward_config instead)
+            pbrs_gamma: PBRS discount factor (legacy, use reward_config instead)
             custom_map_path: Path to custom map file
             enable_augmentation: Enable frame augmentation
             augmentation_config: Augmentation configuration dictionary
@@ -129,10 +131,14 @@ class BaseNppEnvironment(gymnasium.Env):
             training_mode=not eval_mode,  # Disable validation in training mode
         )
 
-        # Initialize reward calculator with PBRS configuration
-        self.reward_calculator = RewardCalculator(
-            enable_pbrs=enable_pbrs, pbrs_weights=pbrs_weights, pbrs_gamma=pbrs_gamma
-        )
+        # Initialize reward calculator with configuration
+        if reward_config is not None:
+            self.reward_calculator = RewardCalculator(reward_config=reward_config)
+        else:
+            # Legacy mode: use individual parameters
+            self.reward_calculator = RewardCalculator(
+                enable_pbrs=enable_pbrs, pbrs_weights=pbrs_weights, pbrs_gamma=pbrs_gamma
+            )
 
         # Initialize truncation checker
         self.truncation_checker = TruncationChecker(

@@ -9,6 +9,13 @@ from .reward_constants import (
     DEATH_PENALTY,
     SWITCH_ACTIVATION_REWARD,
     TIME_PENALTY_PER_STEP,
+    TIME_PENALTY_EARLY,
+    TIME_PENALTY_MIDDLE,
+    TIME_PENALTY_LATE,
+    TIME_PENALTY_EARLY_THRESHOLD,
+    TIME_PENALTY_LATE_THRESHOLD,
+    COMPLETION_TIME_BONUS_MAX,
+    COMPLETION_TIME_TARGET,
     PBRS_GAMMA,
     PBRS_OBJECTIVE_WEIGHT,
     PBRS_HAZARD_WEIGHT,
@@ -34,20 +41,65 @@ class RewardCalculator:
 
     def __init__(
         self,
+        reward_config: Optional[Dict[str, Any]] = None,
         enable_pbrs: bool = True,
         pbrs_weights: Optional[Dict[str, float]] = None,
         pbrs_gamma: float = PBRS_GAMMA,
+        time_penalty_mode: str = "fixed",
+        time_penalty_early: float = TIME_PENALTY_EARLY,
+        time_penalty_middle: float = TIME_PENALTY_MIDDLE,
+        time_penalty_late: float = TIME_PENALTY_LATE,
+        enable_completion_bonus: bool = False,
+        completion_bonus_max: float = COMPLETION_TIME_BONUS_MAX,
+        completion_bonus_target: int = COMPLETION_TIME_TARGET,
+        max_episode_steps: int = 20000,
     ):
         """Initialize reward calculator with all components.
 
         Args:
+            reward_config: Complete reward configuration dict (overrides individual params if provided)
             enable_pbrs: Whether to enable potential-based reward shaping
             pbrs_weights: Weights for PBRS components (objective, hazard, impact, exploration)
             pbrs_gamma: Discount factor for PBRS (γ in r_shaped = r_env + γ * Φ(s') - Φ(s))
+            time_penalty_mode: "fixed" or "progressive" time penalty
+            time_penalty_early: Early phase penalty (for progressive mode)
+            time_penalty_middle: Middle phase penalty (for progressive mode)
+            time_penalty_late: Late phase penalty (for progressive mode)
+            enable_completion_bonus: Whether to give bonus for fast completion
+            completion_bonus_max: Maximum completion time bonus
+            completion_bonus_target: Target steps for full bonus
+            max_episode_steps: Maximum episode length (for progressive penalty phases)
         """
+        # If reward_config provided, extract parameters from it
+        if reward_config is not None:
+            enable_pbrs = reward_config.get("enable_pbrs", enable_pbrs)
+            pbrs_weights = reward_config.get("pbrs_weights", pbrs_weights)
+            pbrs_gamma = reward_config.get("pbrs_gamma", pbrs_gamma)
+            time_penalty_mode = reward_config.get("time_penalty_mode", time_penalty_mode)
+            time_penalty_early = reward_config.get("time_penalty_early", time_penalty_early)
+            time_penalty_middle = reward_config.get("time_penalty_middle", time_penalty_middle)
+            time_penalty_late = reward_config.get("time_penalty_late", time_penalty_late)
+            enable_completion_bonus = reward_config.get("enable_completion_bonus", enable_completion_bonus)
+            completion_bonus_max = reward_config.get("completion_bonus_max", completion_bonus_max)
+            completion_bonus_target = reward_config.get("completion_bonus_target", completion_bonus_target)
+            max_episode_steps = reward_config.get("max_episode_steps", max_episode_steps)
+        
+
         self.navigation_calculator = NavigationRewardCalculator()
         self.exploration_calculator = ExplorationRewardCalculator()
         self.steps_taken = 0
+
+        # Time penalty configuration
+        self.time_penalty_mode = time_penalty_mode
+        self.time_penalty_early = time_penalty_early
+        self.time_penalty_middle = time_penalty_middle
+        self.time_penalty_late = time_penalty_late
+        self.max_episode_steps = max_episode_steps
+        
+        # Completion bonus configuration
+        self.enable_completion_bonus = enable_completion_bonus
+        self.completion_bonus_max = completion_bonus_max
+        self.completion_bonus_target = completion_bonus_target
 
         # PBRS configuration
         self.enable_pbrs = enable_pbrs
@@ -83,7 +135,7 @@ class RewardCalculator:
             return DEATH_PENALTY
 
         # Initialize reward with time penalty to encourage efficiency
-        reward = TIME_PENALTY_PER_STEP
+        reward = self._calculate_time_penalty()
 
         # Switch activation reward
         if obs.get("switch_activated", False) and not prev_obs.get(
@@ -94,6 +146,11 @@ class RewardCalculator:
         # Exit completion reward (terminal)
         if obs.get("player_won", False):
             reward += LEVEL_COMPLETION_REWARD
+            
+            # Add completion time bonus if enabled
+            if self.enable_completion_bonus:
+                bonus = self._calculate_completion_bonus(self.steps_taken)
+                reward += bonus
 
         # Navigation reward (distance-based shaping)
         navigation_reward, switch_active_changed = (
@@ -167,3 +224,42 @@ class RewardCalculator:
             )
 
         return components
+
+    def _calculate_time_penalty(self) -> float:
+        """Calculate time penalty based on configured mode.
+        
+        Returns:
+            float: Time penalty for current step
+        """
+        if self.time_penalty_mode == "progressive":
+            # Progressive penalty increases pressure over episode duration
+            progress = self.steps_taken / self.max_episode_steps
+            
+            if progress < TIME_PENALTY_EARLY_THRESHOLD:
+                return self.time_penalty_early
+            elif progress < TIME_PENALTY_LATE_THRESHOLD:
+                return self.time_penalty_middle
+            else:
+                return self.time_penalty_late
+        else:
+            # Fixed penalty mode (default)
+            return TIME_PENALTY_PER_STEP
+
+    def _calculate_completion_bonus(self, completion_steps: int) -> float:
+        """Calculate bonus reward for fast completion.
+        
+        Bonus linearly decreases from max to zero as completion time increases.
+        
+        Args:
+            completion_steps: Number of steps taken to complete level
+            
+        Returns:
+            float: Completion time bonus (0.0 to completion_bonus_max)
+        """
+        if completion_steps <= self.completion_bonus_target:
+            # Linear interpolation: full bonus at 0 steps, zero bonus at target
+            progress = completion_steps / self.completion_bonus_target
+            return self.completion_bonus_max * (1.0 - progress)
+        else:
+            # No bonus for completion slower than target
+            return 0.0
