@@ -57,6 +57,7 @@ class EntityDoorBase(Entity):
         self.sw_xpos = 6 * sw_xcoord
         self.sw_ypos = 6 * sw_ycoord
         self.is_vertical = orientation in (0, 4)
+
         vec = map_orientation_to_vector(orientation)
         # Find the cell that the door is in for the grid segment.
         door_xcell = math.floor((self.xpos - self.DOOR_RADIUS * vec[0]) / 24)
@@ -87,7 +88,10 @@ class EntityDoorBase(Entity):
             self.grid_edges.append((door_half_xcell - 1, door_half_ycell))
             for grid_edge in self.grid_edges:
                 sim.hor_grid_edge_dic[grid_edge] += 1
-        sim.segment_dic[door_cell].append(self.segment)
+
+            cell_list = sim.segment_dic[door_cell]
+            cell_list.append(self.segment)
+
         # Update position and cell so it corresponds to the switch and not the door.
         self.xpos = self.sw_xpos
         self.ypos = self.sw_ypos
@@ -97,6 +101,7 @@ class EntityDoorBase(Entity):
         """Change the state of the door from closed to open or from open to closed."""
         self.closed = closed
         self.segment.active = closed
+
         self.log_collision(0 if closed else 1)
         for grid_edge in self.grid_edges:
             if self.is_vertical:

@@ -37,6 +37,16 @@ class Simulator:
 
         self.reset()  # Resets entities and ninja
 
+        # Debug: Count door segments after loading
+        door_seg_count_after_load = 0
+        for cell, segs in self.segment_dic.items():
+            for seg in segs:
+                if hasattr(seg, "oriented") and not seg.oriented:
+                    door_seg_count_after_load += 1
+        print(
+            f"[NSIM LOAD END] Total door segments in segment_dic: {door_seg_count_after_load}"
+        )
+
     def load_from_created(self, created_map):
         """Load a map that was manually constructed using the Map class."""
         self.load(created_map.map_data())

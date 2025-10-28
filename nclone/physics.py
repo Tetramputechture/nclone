@@ -62,12 +62,31 @@ def gather_segments_from_region(sim, x1, y1, x2, y2):
     # Optimization: use list comprehension for better performance
     segments = []
     segment_dic = sim.segment_dic
+    inactive_door_segments = 0
+    active_door_segments = 0
+
     for xcell in range(min_cell_x, max_cell_x + 1):
         for ycell in range(min_cell_y, max_cell_y + 1):
             cell_key = (xcell, ycell)
             if cell_key in segment_dic:
                 # Inline the active check for better performance
-                segments.extend(seg for seg in segment_dic[cell_key] if seg.active)
+                for seg in segment_dic[cell_key]:
+                    if seg.active:
+                        segments.append(seg)
+                        if (
+                            hasattr(seg, "oriented") and not seg.oriented
+                        ):  # Door segments are non-oriented
+                            active_door_segments += 1
+                    else:
+                        if hasattr(seg, "oriented") and not seg.oriented:
+                            inactive_door_segments += 1
+
+    # Debug output for door segments
+    if inactive_door_segments > 0 or active_door_segments > 0:
+        print(
+            f"[PHYSICS] gather_segments: {active_door_segments} active door segs, {inactive_door_segments} inactive door segs"
+        )
+
     return segments
 
 

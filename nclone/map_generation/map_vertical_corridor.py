@@ -24,6 +24,10 @@ class MapVerticalCorridor(Map):
     MIN_MINE_SPACING = 2  # Minimum vertical spacing between mines (tiles)
     MAX_MINE_SPACING = 5  # Maximum vertical spacing between mines (tiles)
 
+    # Optional features
+    ADD_PLATFORMS = False
+    ADD_MID_MINES = False
+
     def generate(
         self,
         seed: Optional[int] = None,
@@ -31,6 +35,8 @@ class MapVerticalCorridor(Map):
         door_at_top: bool = False,
         width: Optional[int] = None,
         height: Optional[int] = None,
+        add_platforms: Optional[bool] = None,
+        add_mid_mines: Optional[bool] = None,
     ) -> Map:
         """Generate a vertical corridor level with exit at the top.
 
@@ -42,6 +48,8 @@ class MapVerticalCorridor(Map):
                 Defaults to False. Respects swap_top_and_bottom.
             width: Width of the corridor. Defaults to None, in which case a random width is chosen.
             height: Height of the corridor. Defaults to None, in which case a random height is chosen.
+            add_platforms: Add 1-2 horizontal platforms jutting from walls (only if width > 1, defaults to class attribute).
+            add_mid_mines: Place mines at mid-height floating positions (defaults to class attribute).
 
         Returns:
             Map: A Map instance with the generated level
@@ -50,6 +58,12 @@ class MapVerticalCorridor(Map):
             self.rng.seed(seed)
 
         self.reset()
+
+        # Use class attributes as defaults if parameters not provided
+        if add_platforms is None:
+            add_platforms = self.ADD_PLATFORMS
+        if add_mid_mines is None:
+            add_mid_mines = self.ADD_MID_MINES
 
         # Step 1: Determine chamber dimensions
         if width is None:
@@ -125,6 +139,47 @@ class MapVerticalCorridor(Map):
 
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
+
+        # Add optional platforms and mines
+        if add_platforms and width > 1:
+            # Add 1-2 horizontal platforms jutting from walls
+            num_platforms = self.rng.randint(1, 2)
+            # Place platforms in middle third of corridor height
+            min_plat_y = chamber_y + height // 3
+            max_plat_y = chamber_y + 2 * height // 3
+
+            for _ in range(num_platforms):
+                plat_y = self.rng.randint(min_plat_y, max_plat_y)
+                # Choose which wall to jut from
+                from_left = self.rng.choice([True, False])
+
+                if from_left:
+                    # Platform jutting from left wall
+                    plat_x = chamber_x
+                    tile_type = self.rng.randint(1, 33)
+                    self.set_tile(plat_x, plat_y, tile_type)
+                else:
+                    # Platform jutting from right wall
+                    plat_x = chamber_x + width - 1
+                    tile_type = self.rng.randint(1, 33)
+                    self.set_tile(plat_x, plat_y, tile_type)
+
+        if add_mid_mines:
+            # Place 2-4 mines floating in middle of corridor at various heights
+            num_mines = self.rng.randint(2, min(4, height - 4))
+            # Distribute mines across the height
+            mine_spacing = height // (num_mines + 1)
+
+            for i in range(num_mines):
+                mine_y = chamber_y + (i + 1) * mine_spacing
+                # Place in middle of corridor width
+                if width == 1:
+                    mine_x = chamber_x
+                else:
+                    mine_x = chamber_x + width // 2
+
+                mine_type = self.rng.choice([1, 21])
+                self.add_entity(mine_type, mine_x, mine_y)
 
         return self
 
