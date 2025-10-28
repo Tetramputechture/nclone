@@ -370,9 +370,90 @@ parser.add_argument(
     help="Output directory for recorded replays",
 )
 
+# Test suite loading arguments
+parser.add_argument(
+    "--test-suite",
+    action="store_true",
+    help="Load and validate test suite levels sequentially",
+)
+parser.add_argument(
+    "--test-dataset-path",
+    type=str,
+    default="datasets/test",
+    help="Path to test dataset directory (default: datasets/test)",
+)
+parser.add_argument(
+    "--start-level",
+    type=int,
+    default=0,
+    help="Start from this level index in test suite (default: 0)",
+)
+parser.add_argument(
+    "--auto-advance",
+    action="store_true",
+    help="Auto-advance to next level on completion (for validation)",
+)
+
+# Generator testing arguments
+parser.add_argument(
+    "--test-generators",
+    action="store_true",
+    help="Enable generator testing mode - dynamically generate levels from categories",
+)
+parser.add_argument(
+    "--generator-category",
+    type=str,
+    default=None,
+    help="Test specific category (e.g., 'simple', 'medium', 'complex'). If not specified, cycles through all categories.",
+)
+parser.add_argument(
+    "--generator-seed-start",
+    type=int,
+    default=10000,
+    help="Starting seed for generator testing (default: 10000)",
+)
+
 args = parser.parse_args()
 
 print(f"Headless: {args.headless}")
+
+# Display help information for generator testing
+if args.test_generators:
+    print("\n" + "=" * 60)
+    print("GENERATOR TESTING MODE")
+    print("=" * 60)
+    if args.generator_category:
+        print(f"• Testing category: {args.generator_category}")
+    else:
+        print("• Testing all categories (cycling)")
+    print(f"• Starting seed: {args.generator_seed_start}")
+    print("\nControls:")
+    print("  R - Reset (generate new map from current generator)")
+    print("  G - Next generator in category")
+    print("  Shift+G - Previous generator in category")
+    print("  K - Next category")
+    print("  Shift+K - Previous category")
+    print("  L - List all generators in current category")
+    print("  1-9 - Jump to generator number in category")
+    print("  V - Toggle ASCII visualization output")
+    print("=" * 60 + "\n")
+
+# Display help information for test suite loading
+if args.test_suite:
+    print("\n" + "=" * 60)
+    print("TEST SUITE VALIDATION MODE")
+    print("=" * 60)
+    print(f"• Dataset path: {args.test_dataset_path}")
+    print(f"• Starting from level index: {args.start_level}")
+    if args.auto_advance:
+        print("• Auto-advance enabled: next level loads on completion")
+    else:
+        print("• Manual advance: press 'N' to load next level")
+    print("\nControls:")
+    print("  R - Reset current level")
+    print("  N - Load next level")
+    print("  P - Load previous level")
+    print("=" * 60 + "\n")
 
 # Display help information for graph visualization
 if args.visualize_graph or args.standalone_graph or args.interactive_graph:
@@ -504,7 +585,209 @@ else:
     )
     env = create_visual_testing_env(config=config)
 
-env.reset()
+# Initialize generator testing if enabled
+generator_tester = None
+show_ascii_on_reset = False
+
+if args.test_generators:
+    try:
+        from nclone.map_generation.generator_configs import CATEGORIES
+        from nclone.map_generation.generator_factory import GeneratorFactory
+
+        class GeneratorTester:
+            """Manages cycling through categories and generators for testing."""
+
+            def __init__(self, start_seed=10000, specific_category=None):
+                self.categories = CATEGORIES
+                self.category_names = list(self.categories.keys())
+                self.current_seed = start_seed
+
+                if specific_category:
+                    if specific_category not in self.category_names:
+                        print(
+                            f"Warning: Category '{specific_category}' not found. Available: {self.category_names}"
+                        )
+                        self.current_category_idx = 0
+                    else:
+                        self.current_category_idx = self.category_names.index(
+                            specific_category
+                        )
+                else:
+                    self.current_category_idx = 0
+
+                self.current_generator_idx = 0
+                self.specific_category = specific_category
+
+            def get_current_category(self):
+                """Get current category config."""
+                return self.categories[self.category_names[self.current_category_idx]]
+
+            def get_current_generator_info(self):
+                """Get current generator type and preset."""
+                category = self.get_current_category()
+                generators = category.generators
+                return generators[self.current_generator_idx]
+
+            def next_generator(self):
+                """Move to next generator in current category."""
+                category = self.get_current_category()
+                self.current_generator_idx = (self.current_generator_idx + 1) % len(
+                    category.generators
+                )
+                return self.get_current_generator_info()
+
+            def prev_generator(self):
+                """Move to previous generator in current category."""
+                category = self.get_current_category()
+                self.current_generator_idx = (self.current_generator_idx - 1) % len(
+                    category.generators
+                )
+                return self.get_current_generator_info()
+
+            def next_category(self):
+                """Move to next category."""
+                if not self.specific_category:
+                    self.current_category_idx = (self.current_category_idx + 1) % len(
+                        self.category_names
+                    )
+                    self.current_generator_idx = 0
+                return self.category_names[self.current_category_idx]
+
+            def prev_category(self):
+                """Move to previous category."""
+                if not self.specific_category:
+                    self.current_category_idx = (self.current_category_idx - 1) % len(
+                        self.category_names
+                    )
+                    self.current_generator_idx = 0
+                return self.category_names[self.current_category_idx]
+
+            def generate_map(self):
+                """Generate a new map using current generator."""
+                gen_type, preset = self.get_current_generator_info()
+
+                # Special handling for horizontal generator
+                if gen_type == "horizontal":
+                    from nclone.map_generation.generate_test_suite_maps import (
+                        TestSuiteGenerator,
+                    )
+
+                    test_gen = TestSuiteGenerator()
+                    map_obj = test_gen._create_minimal_simple_level_horizontal(
+                        self.current_seed,
+                        8 if preset == "minimal" else self.current_generator_idx,
+                        height=1 if preset == "minimal" else None,
+                    )
+                else:
+                    map_obj = GeneratorFactory.create_from_preset(
+                        gen_type, preset, seed=self.current_seed
+                    )
+                    map_obj.generate(seed=self.current_seed)
+
+                # Increment seed for next generation
+                self.current_seed += 1
+
+                return map_obj
+
+            def get_info_string(self):
+                """Get current state info string."""
+                category_name = self.category_names[self.current_category_idx]
+                category = self.get_current_category()
+                gen_type, preset = self.get_current_generator_info()
+
+                return (
+                    f"Category: {category_name} "
+                    f"({self.current_generator_idx + 1}/{len(category.generators)}) | "
+                    f"Generator: {gen_type}:{preset} | "
+                    f"Seed: {self.current_seed}"
+                )
+
+            def list_generators(self):
+                """Print all generators in current category."""
+                category_name = self.category_names[self.current_category_idx]
+                category = self.get_current_category()
+
+                print("\n" + "=" * 60)
+                print(f"GENERATORS IN CATEGORY: {category_name}")
+                print("=" * 60)
+                print(f"Description: {category.description}")
+                print(f"Total generators: {len(category.generators)}\n")
+
+                for idx, (gen_type, preset) in enumerate(category.generators, 1):
+                    marker = "→" if idx - 1 == self.current_generator_idx else " "
+                    print(f"{marker} {idx}. {gen_type}:{preset}")
+
+                print("=" * 60 + "\n")
+
+            def jump_to_generator(self, index):
+                """Jump to a specific generator by index (0-based)."""
+                category = self.get_current_category()
+                if 0 <= index < len(category.generators):
+                    self.current_generator_idx = index
+                    return True
+                return False
+
+        generator_tester = GeneratorTester(
+            start_seed=args.generator_seed_start,
+            specific_category=args.generator_category,
+        )
+
+        # Generate initial map
+        initial_map = generator_tester.generate_map()
+        env.nplay_headless.load_map_from_map_data(initial_map.map_data())
+
+        print("Generator Testing Initialized")
+        print(f"  {generator_tester.get_info_string()}")
+
+    except Exception as e:
+        print(f"Error initializing generator testing: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+# Initialize test suite loader if test suite mode is enabled
+test_suite_loader = None
+test_suite_level_ids = []
+current_level_idx = 0
+
+if args.test_suite:
+    try:
+        from nclone.evaluation.test_suite_loader import TestSuiteLoader
+
+        test_suite_loader = TestSuiteLoader(args.test_dataset_path)
+        test_suite_level_ids = test_suite_loader.get_all_level_ids()
+        current_level_idx = args.start_level
+
+        if current_level_idx >= len(test_suite_level_ids):
+            print(
+                f"Error: Start level {current_level_idx} exceeds available levels ({len(test_suite_level_ids)})"
+            )
+            sys.exit(1)
+
+        # Load first level from test suite
+        level_id = test_suite_level_ids[current_level_idx]
+        level = test_suite_loader.get_level(level_id)
+        env.nplay_headless.load_map_from_map_data(level["map_data"])
+
+        print(
+            f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
+        )
+        print(f"Category: {level.get('category', 'unknown')}")
+        print(f"Description: {level.get('metadata', {}).get('description', 'N/A')}\n")
+
+        # Reset environment after loading test suite map
+        env.reset()
+    except Exception as e:
+        print(f"Error loading test suite: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+# Normal environment initialization - call reset only if not in special modes
+if not args.test_generators and not args.test_suite:
+    env.reset()
 
 # Initialize replay recorder if enabled
 recorder = None
@@ -968,8 +1251,41 @@ while running:
                         player_won = env.nplay_headless.ninja_has_won()
                         recorder.stop_recording(success=player_won, save=player_won)
 
-                    # Reset environment
-                    observation, info = env.reset()
+                    # Generator testing mode: generate new map from current generator
+                    if generator_tester is not None:
+                        try:
+                            new_map = generator_tester.generate_map()
+                            env.nplay_headless.load_map_from_map_data(
+                                new_map.map_data()
+                            )
+
+                            # Manually reset physics without reloading map
+                            env.observation_processor.reset()
+                            env.reward_calculator.reset()
+                            env.truncation_checker.reset()
+                            env.current_ep_reward = 0
+                            env.nplay_headless.reset()
+
+                            # Get initial observation
+                            initial_obs = env._get_observation()
+                            observation = env._process_observation(initial_obs)
+
+                            print(
+                                f"Generated new map: {generator_tester.get_info_string()}"
+                            )
+
+                            if show_ascii_on_reset:
+                                print("\nASCII Visualization:")
+                                print(new_map.to_ascii(show_coords=False))
+                                print()
+                        except Exception as e:
+                            print(f"Error generating map: {e}")
+                            import traceback
+
+                            traceback.print_exc()
+                    else:
+                        # Normal reset for non-generator-testing mode
+                        observation, info = env.reset()
 
                 if event.key == pygame.K_b and recorder is not None:
                     # Start recording
@@ -1008,11 +1324,43 @@ while running:
                     else:
                         print("Already recording!")
 
-                if event.key == pygame.K_n and recorder is not None:
-                    # Stop recording without saving
-                    if recorder.is_recording:
+                if event.key == pygame.K_n:
+                    # Test suite navigation or recording control
+                    if test_suite_loader is not None and test_suite_level_ids:
+                        # Load next level in test suite
+                        current_level_idx = (current_level_idx + 1) % len(
+                            test_suite_level_ids
+                        )
+                        level_id = test_suite_level_ids[current_level_idx]
+                        level = test_suite_loader.get_level(level_id)
+                        env.nplay_headless.load_map_from_map_data(level["map_data"])
+                        env.reset()
+                        print(
+                            f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
+                        )
+                        print(f"Category: {level.get('category', 'unknown')}")
+                    elif recorder is not None and recorder.is_recording:
+                        # Stop recording without saving
                         recorder.stop_recording(success=False, save=False)
                         print("Recording stopped (not saved)")
+
+                if (
+                    event.key == pygame.K_p
+                    and test_suite_loader is not None
+                    and test_suite_level_ids
+                ):
+                    # Load previous level in test suite
+                    current_level_idx = (current_level_idx - 1) % len(
+                        test_suite_level_ids
+                    )
+                    level_id = test_suite_level_ids[current_level_idx]
+                    level = test_suite_loader.get_level(level_id)
+                    env.nplay_headless.load_map_from_map_data(level["map_data"])
+                    env.reset()
+                    print(
+                        f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
+                    )
+                    print(f"Category: {level.get('category', 'unknown')}")
 
                 if event.key == pygame.K_e:
                     # Toggle exploration debug overlay
@@ -1049,6 +1397,141 @@ while running:
                         )
                     except Exception as e:
                         print(f"Could not toggle tile type overlay: {e}")
+
+                # Generator testing controls
+                if event.key == pygame.K_g and generator_tester is not None:
+                    # Next/previous generator
+                    mods = pygame.key.get_mods()
+                    try:
+                        if mods & pygame.KMOD_SHIFT:
+                            # Shift+G: Previous generator
+                            generator_tester.prev_generator()
+                        else:
+                            # G: Next generator
+                            generator_tester.next_generator()
+
+                        # Generate new map with new generator
+                        new_map = generator_tester.generate_map()
+                        env.nplay_headless.load_map_from_map_data(new_map.map_data())
+
+                        # Manually reset physics without reloading map
+                        env.observation_processor.reset()
+                        env.reward_calculator.reset()
+                        env.truncation_checker.reset()
+                        env.current_ep_reward = 0
+                        env.nplay_headless.reset()
+
+                        # Get initial observation
+                        initial_obs = env._get_observation()
+                        observation = env._process_observation(initial_obs)
+
+                        print(
+                            f"Switched generator: {generator_tester.get_info_string()}"
+                        )
+
+                        if show_ascii_on_reset:
+                            print("\nASCII Visualization:")
+                            print(new_map.to_ascii(show_coords=False))
+                            print()
+                    except Exception as e:
+                        print(f"Error switching generator: {e}")
+
+                if event.key == pygame.K_k and generator_tester is not None:
+                    # Next/previous category
+                    mods = pygame.key.get_mods()
+                    try:
+                        if mods & pygame.KMOD_SHIFT:
+                            # Shift+K: Previous category
+                            category_name = generator_tester.prev_category()
+                        else:
+                            # K: Next category
+                            category_name = generator_tester.next_category()
+
+                        # Generate new map from first generator in new category
+                        new_map = generator_tester.generate_map()
+                        env.nplay_headless.load_map_from_map_data(new_map.map_data())
+
+                        # Manually reset physics without reloading map
+                        env.observation_processor.reset()
+                        env.reward_calculator.reset()
+                        env.truncation_checker.reset()
+                        env.current_ep_reward = 0
+                        env.nplay_headless.reset()
+
+                        # Get initial observation
+                        initial_obs = env._get_observation()
+                        observation = env._process_observation(initial_obs)
+
+                        print(
+                            f"Switched category: {generator_tester.get_info_string()}"
+                        )
+
+                        if show_ascii_on_reset:
+                            print("\nASCII Visualization:")
+                            print(new_map.to_ascii(show_coords=False))
+                            print()
+                    except Exception as e:
+                        print(f"Error switching category: {e}")
+
+                if event.key == pygame.K_v and generator_tester is not None:
+                    # Toggle ASCII visualization on reset
+                    show_ascii_on_reset = not show_ascii_on_reset
+                    print(
+                        f"ASCII visualization on reset: {'ON' if show_ascii_on_reset else 'OFF'}"
+                    )
+
+                if event.key == pygame.K_l and generator_tester is not None:
+                    # List all generators in current category
+                    generator_tester.list_generators()
+
+                # Number keys 1-9 to jump to specific generator
+                if generator_tester is not None:
+                    number_key_map = {
+                        pygame.K_1: 0,
+                        pygame.K_2: 1,
+                        pygame.K_3: 2,
+                        pygame.K_4: 3,
+                        pygame.K_5: 4,
+                        pygame.K_6: 5,
+                        pygame.K_7: 6,
+                        pygame.K_8: 7,
+                        pygame.K_9: 8,
+                    }
+                    if event.key in number_key_map:
+                        target_idx = number_key_map[event.key]
+                        if generator_tester.jump_to_generator(target_idx):
+                            try:
+                                # Generate new map with selected generator
+                                new_map = generator_tester.generate_map()
+                                env.nplay_headless.load_map_from_map_data(
+                                    new_map.map_data()
+                                )
+
+                                # Manually reset physics without reloading map
+                                env.observation_processor.reset()
+                                env.reward_calculator.reset()
+                                env.truncation_checker.reset()
+                                env.current_ep_reward = 0
+                                env.nplay_headless.reset()
+
+                                # Get initial observation
+                                initial_obs = env._get_observation()
+                                observation = env._process_observation(initial_obs)
+
+                                print(
+                                    f"Jumped to generator: {generator_tester.get_info_string()}"
+                                )
+
+                                if show_ascii_on_reset:
+                                    print("\nASCII Visualization:")
+                                    print(new_map.to_ascii(show_coords=False))
+                                    print()
+                            except Exception as e:
+                                print(f"Error jumping to generator: {e}")
+                        else:
+                            print(
+                                f"Generator #{target_idx + 1} does not exist in current category"
+                            )
 
                 # Reachability visualization controls
                 if event.key == pygame.K_t:
@@ -1369,7 +1852,55 @@ while running:
             player_won = env.nplay_headless.ninja_has_won()
             recorder.stop_recording(success=player_won, save=player_won)
 
-        observation, info = env.reset()
+        # Auto-advance to next level if in test suite mode with auto-advance enabled
+        if args.test_suite and args.auto_advance and test_suite_loader is not None:
+            player_won = env.nplay_headless.ninja_has_won()
+            result_str = "✓ Success" if player_won else "✗ Failed"
+            print(
+                f"{result_str} - Level {current_level_idx + 1}: {test_suite_level_ids[current_level_idx]}"
+            )
+
+            # Load next level
+            current_level_idx = (current_level_idx + 1) % len(test_suite_level_ids)
+            level_id = test_suite_level_ids[current_level_idx]
+            level = test_suite_loader.get_level(level_id)
+            env.nplay_headless.load_map_from_map_data(level["map_data"])
+            print(
+                f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
+            )
+
+        # Generate new map in generator testing mode, otherwise normal reset
+        if generator_tester is not None:
+            try:
+                new_map = generator_tester.generate_map()
+                env.nplay_headless.load_map_from_map_data(new_map.map_data())
+
+                # Manually reset physics without reloading map
+                env.observation_processor.reset()
+                env.reward_calculator.reset()
+                env.truncation_checker.reset()
+                env.current_ep_reward = 0
+                env.nplay_headless.reset()
+
+                # Get initial observation
+                initial_obs = env._get_observation()
+                observation = env._process_observation(initial_obs)
+
+                print(
+                    f"Episode complete! Generated new map: {generator_tester.get_info_string()}"
+                )
+
+                if show_ascii_on_reset:
+                    print("\nASCII Visualization:")
+                    print(new_map.to_ascii(show_coords=False))
+                    print()
+            except Exception as e:
+                print(f"Error generating new map on episode end: {e}")
+                import traceback
+
+                traceback.print_exc()
+        else:
+            observation, info = env.reset()
 
     current_time = time.perf_counter()
     if args.log_frametimes:

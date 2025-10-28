@@ -198,7 +198,7 @@ class Map:
         elif entity_type == 2:
             units_x += GOLD_OFFSET_UNITS
             units_y += GOLD_OFFSET_UNITS
-        elif entity_type == 6:
+        elif entity_type in (6, 8):  # Locked door and trap door
             units_x += LOCKED_DOOR_OFFSET_UNITS
             units_y += LOCKED_DOOR_OFFSET_UNITS
 
@@ -223,16 +223,20 @@ class Map:
         elif entity_type in (6, 8):  # Locked door or trap door
             if switch_x is None or switch_y is None:
                 raise ValueError(f"Door type {entity_type} requires switch coordinates")
-            # Add entity data and switch coordinates with offset
+            # Add entity data and switch coordinates
             # Use 9-byte format to match existing map files:
-            # [type, x, y, orientation, mode, padding, switch_x, switch_y, padding]
+            # [type, x, y, orientation, mode, 7, switch_x, switch_y, 0]
+            # Switch coordinates must be at index+6 and index+7 for entity loader
+            # Byte 5 is always 7 in real N++ maps (compatibility/format identifier)
+            # Note: No offset applied to door position (already done above as "pass")
+            # but switch still gets offset for proper positioning
             self.entity_data.extend(entity_data)
             self.entity_data.extend(
                 [
-                    orientation,  # padding byte (copy of orientation)
-                    switch_units_x + SWITCH_OFFSET_UNITS,
-                    switch_units_y + SWITCH_OFFSET_UNITS,
-                    orientation,  # padding byte (copy of orientation)
+                    7,  # format byte at index+5 (always 7 in real maps)
+                    switch_units_x + SWITCH_OFFSET_UNITS,  # switch_x at index+6
+                    switch_units_y + SWITCH_OFFSET_UNITS,  # switch_y at index+7
+                    0,  # padding byte at index+8
                 ]
             )
         else:
@@ -544,3 +548,16 @@ class Map:
             min_y=min_y,
             max_y=max_y,
         )
+
+    def to_ascii(self, show_coords: bool = True) -> str:
+        """Generate ASCII visualization of this map for debugging.
+
+        Args:
+            show_coords: Whether to show coordinate labels
+
+        Returns:
+            String containing ASCII art representation of the map
+        """
+        from .map_visualizer import visualize_map
+
+        return visualize_map(self.map_data(), show_coords=show_coords)

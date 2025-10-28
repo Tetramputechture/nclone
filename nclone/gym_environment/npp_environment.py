@@ -227,6 +227,18 @@ class NppEnvironment(
 
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Add NppEnvironment-specific info fields."""
+        # Add raw position fields for wrappers that need them (e.g., HierarchicalRewardWrapper)
+        # These fields are removed during observation processing but needed for reward calculation
+        info["player_x"] = self.nplay_headless.ninja_position()[0]
+        info["player_y"] = self.nplay_headless.ninja_position()[1]
+        info["switch_x"] = self.nplay_headless.exit_switch_position()[0]
+        info["switch_y"] = self.nplay_headless.exit_switch_position()[1]
+        info["switch_activated"] = self.nplay_headless.exit_switch_activated()
+        info["exit_door_x"] = self.nplay_headless.exit_door_position()[0]
+        info["exit_door_y"] = self.nplay_headless.exit_door_position()[1]
+        info["player_dead"] = self.nplay_headless.ninja_has_died()
+        info["player_won"] = self.nplay_headless.ninja_has_won()
+
         # Add reachability performance info if enabled
         if self.enable_reachability and self.reachability_times:
             avg_time = np.mean(self.reachability_times[-10:])  # Last 10 samples

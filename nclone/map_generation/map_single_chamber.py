@@ -16,6 +16,10 @@ class SingleChamberGenerator(Map):
     MAX_HEIGHT = 10
     GLOBAL_MAX_UP_DEVIATION = 5
     GLOBAL_MAX_DOWN_DEVIATION = 1
+    ADD_CENTER_OBSTACLE = False
+    ADD_FLOOR_MINES = False
+    ADD_PLATFORM_GAP = False
+    ADD_CEILING_OBSTACLES = False
 
     def set_empty_rectangle(self, x1: int, y1: int, x2: int, y2: int):
         """Set a rectangular region of the map to empty space."""
@@ -23,11 +27,22 @@ class SingleChamberGenerator(Map):
             for x in range(x1, x2 + 1):
                 self.set_tile(x, y, 0)
 
-    def generate(self, seed: Optional[int] = None) -> Map:
+    def generate(
+        self,
+        seed: Optional[int] = None,
+        add_center_obstacle: Optional[bool] = None,
+        add_floor_mines: Optional[bool] = None,
+        add_platform_gap: Optional[bool] = None,
+        add_ceiling_obstacles: Optional[bool] = None,
+    ) -> Map:
         """Generate a simple horizontal level with no backtracking required.
 
         Args:
             seed: Random seed for reproducible generation
+            add_center_obstacle: Add single tile outcropping in middle (defaults to class attribute)
+            add_floor_mines: Scatter mines on floor (defaults to class attribute)
+            add_platform_gap: Create small gap requiring jump (defaults to class attribute)
+            add_ceiling_obstacles: Add hanging obstacles from ceiling (defaults to class attribute)
 
         Returns:
             Map: A Map instance with the generated level
@@ -36,6 +51,16 @@ class SingleChamberGenerator(Map):
             self.rng.seed(seed)
 
         self.reset()
+
+        # Use class attributes as defaults if parameters not provided
+        if add_center_obstacle is None:
+            add_center_obstacle = self.ADD_CENTER_OBSTACLE
+        if add_floor_mines is None:
+            add_floor_mines = self.ADD_FLOOR_MINES
+        if add_platform_gap is None:
+            add_platform_gap = self.ADD_PLATFORM_GAP
+        if add_ceiling_obstacles is None:
+            add_ceiling_obstacles = self.ADD_CEILING_OBSTACLES
 
         # Generate random dimensions for play space
         width = self.rng.randint(self.MIN_WIDTH, self.MAX_WIDTH)
@@ -133,6 +158,63 @@ class SingleChamberGenerator(Map):
         # Convert to screen coordinates and place entities
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
+
+        # Add optional obstacles/hazards
+        reserved_positions = {ninja_x, door_x, switch_x}
+
+        if add_center_obstacle and actual_width >= 2:
+            # Place obstacle in middle of chamber, 1 tile high from floor
+            center_x = play_x1 + actual_width // 2
+            if center_x not in reserved_positions:
+                obstacle_y = play_y2 - 1
+                # Randomly choose between solid tile or mine entity
+                if self.rng.choice([True, False]):
+                    # Solid tile (randomly choose from 1-33)
+                    tile_type = self.rng.randint(1, 33)
+                    self.set_tile(center_x, obstacle_y, tile_type)
+                else:
+                    # Mine entity (type 1 or 21)
+                    mine_type = self.rng.choice([1, 21])
+                    self.add_entity(mine_type, center_x, obstacle_y)
+
+        if add_floor_mines:
+            # Scatter 2-5 mines at floor level
+            num_mines = self.rng.randint(2, min(5, actual_width - 3))
+            available_x = [
+                x for x in range(play_x1 + 1, play_x2) if x not in reserved_positions
+            ]
+            if len(available_x) >= num_mines:
+                mine_positions = self.rng.sample(available_x, num_mines)
+                for mine_x in mine_positions:
+                    mine_y = play_y2 - deviations.get(mine_x, 0)
+                    mine_type = self.rng.choice([1, 21])
+                    self.add_entity(mine_type, mine_x, mine_y)
+
+        if add_platform_gap and actual_width >= 6:
+            # Remove 2-3 floor tiles in middle section to create gap
+            gap_width = self.rng.randint(2, 3)
+            gap_center = play_x1 + actual_width // 2
+            gap_start = max(play_x1 + 2, gap_center - gap_width // 2)
+            gap_end = min(play_x2 - 2, gap_start + gap_width)
+
+            # Make sure gap doesn't overlap with entity positions
+            if not any(x in reserved_positions for x in range(gap_start, gap_end)):
+                for x in range(gap_start, gap_end):
+                    self.set_tile(x, play_y2, 0)
+                    self.set_tile(x, play_y2 + 1, 0)
+
+        if add_ceiling_obstacles and actual_height >= 4:
+            # Add 1-2 tiles hanging from ceiling
+            num_obstacles = self.rng.randint(1, 2)
+            available_x = [
+                x for x in range(play_x1 + 1, play_x2) if x not in reserved_positions
+            ]
+            if len(available_x) >= num_obstacles:
+                obstacle_positions = self.rng.sample(available_x, num_obstacles)
+                for obs_x in obstacle_positions:
+                    obs_y = play_y1
+                    tile_type = self.rng.randint(1, 33)
+                    self.set_tile(obs_x, obs_y, tile_type)
 
         # Add random entities outside playspace
         playspace = (play_x1 - 4, play_y1 - 4, play_x2 + 4, play_y2 + 4)
