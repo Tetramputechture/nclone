@@ -49,11 +49,32 @@ SWITCH_ACTIVATION_REWARD = 1.0
 # =============================================================================
 # Per-step rewards that encourage efficiency
 
-# Time penalty per step
+# Time penalty per step (default/fixed mode)
 # Rationale: Encourages efficiency without overwhelming terminal rewards.
 # At -0.0001 per step, even episodes at max length (20k steps) maintain positive
 # returns when successful: +10.0 completion - 2.0 penalty = +8.0.
 TIME_PENALTY_PER_STEP = -0.0001
+
+# Progressive time penalty schedule (for speed optimization)
+# Rationale: Allows early exploration while increasing pressure for efficiency
+# over episode duration. Phased approach supports curriculum learning:
+# - Early phase: minimal penalty, encourage exploration
+# - Middle phase: moderate penalty, find solutions
+# - Late phase: high penalty, optimize routes
+TIME_PENALTY_EARLY = -0.00005     # Steps 0-30%: exploration phase
+TIME_PENALTY_MIDDLE = -0.0002     # Steps 30-70%: solution phase  
+TIME_PENALTY_LATE = -0.0005       # Steps 70-100%: optimization phase
+
+# Phase thresholds (as fraction of max episode length)
+TIME_PENALTY_EARLY_THRESHOLD = 0.3    # 30% of episode
+TIME_PENALTY_LATE_THRESHOLD = 0.7     # 70% of episode
+
+# Completion time bonus (for fine-tuning speed optimization)
+# Rationale: Explicitly rewards fast completion without punishing slow solutions.
+# Bonus linearly decreases from maximum to zero as completion time increases.
+# Compatible with curriculum: train for completion first, then fine-tune for speed.
+COMPLETION_TIME_BONUS_MAX = 2.0      # Maximum bonus (instant completion)
+COMPLETION_TIME_TARGET = 5000        # Target steps for full bonus (adjust per level difficulty)
 
 
 # =============================================================================
@@ -371,6 +392,68 @@ def get_minimal_shaping_config() -> Dict[str, Any]:
         },
         
         # Exploration disabled
+        "enable_exploration_rewards": False,
+        "exploration_scales": {
+            "cell_reward": 0.0,
+            "area_4x4_reward": 0.0,
+            "area_8x8_reward": 0.0,
+            "area_16x16_reward": 0.0,
+        }
+    }
+
+
+def get_speed_optimized_config() -> Dict[str, Any]:
+    """Get reward configuration for learning optimal, efficient routes.
+    
+    This configuration encourages fast level completion while maintaining
+    completion as the primary goal. Designed for fine-tuning after initial
+    training has achieved reliable completion.
+    
+    Key features:
+    - Progressive time penalty (increasing pressure over episode)
+    - Completion time bonus (rewards fast solutions)
+    - Strong navigation shaping (efficient routing)
+    - Minimal exploration (assumes agent knows how to complete)
+    
+    Training curriculum:
+    1. Initial training: Use completion_focused_config
+    2. Fine-tuning: Switch to speed_optimized_config
+    
+    Best for: Speedrunning, route optimization, fine-tuning
+    
+    Returns:
+        dict: Reward configuration parameters
+    """
+    return {
+        # Terminal rewards
+        "level_completion_reward": LEVEL_COMPLETION_REWARD,
+        "death_penalty": DEATH_PENALTY,
+        "switch_activation_reward": SWITCH_ACTIVATION_REWARD,
+        
+        # Progressive time penalty
+        "time_penalty_mode": "progressive",  # vs "fixed"
+        "time_penalty_early": TIME_PENALTY_EARLY,
+        "time_penalty_middle": TIME_PENALTY_MIDDLE,
+        "time_penalty_late": TIME_PENALTY_LATE,
+        "time_penalty_early_threshold": TIME_PENALTY_EARLY_THRESHOLD,
+        "time_penalty_late_threshold": TIME_PENALTY_LATE_THRESHOLD,
+        
+        # Completion time bonus
+        "enable_completion_bonus": True,
+        "completion_bonus_max": COMPLETION_TIME_BONUS_MAX,
+        "completion_bonus_target": COMPLETION_TIME_TARGET,
+        
+        # PBRS (focus on efficient navigation)
+        "enable_pbrs": True,
+        "pbrs_gamma": PBRS_GAMMA,
+        "pbrs_weights": {
+            "objective_weight": PBRS_OBJECTIVE_WEIGHT * 1.5,  # Stronger nav signal
+            "hazard_weight": 0.0,  # Speed over safety
+            "impact_weight": 0.0,  # Speed over caution
+            "exploration_weight": 0.0,  # Minimal exploration in fine-tuning
+        },
+        
+        # Reduced exploration (agent already knows how to complete)
         "enable_exploration_rewards": False,
         "exploration_scales": {
             "cell_reward": 0.0,
