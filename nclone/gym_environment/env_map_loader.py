@@ -24,7 +24,9 @@ from .generator_registry import GeneratorRegistry
 
 # Constants
 TRAIN_SEED_START = 100000  # Starting seed for training map generation
-MAP_CATEGORIZATION_PATH = Path(__file__).parent.parent.parent / "map_categorization.json"
+MAP_CATEGORIZATION_PATH = (
+    Path(__file__).parent.parent.parent / "map_categorization.json"
+)
 
 
 class EnvMapLoader:
@@ -42,6 +44,7 @@ class EnvMapLoader:
         eval_mode: bool = False,
         custom_map_path: Optional[str] = None,
         curriculum_stage: Optional[str] = None,
+        test_dataset_path: Optional[str] = None,
     ):
         """Initialize the map loader.
 
@@ -52,12 +55,14 @@ class EnvMapLoader:
             custom_map_path: Path to custom map file (overrides all other loading)
             curriculum_stage: Current curriculum difficulty stage (optional)
                              See curriculum_config.CATEGORY_NAMES for options
+            test_dataset_path: Path to test dataset directory for evaluation (defaults to "datasets/test")
         """
         self.nplay_headless = nplay_headless
         self.rng = rng
         self.eval_mode = eval_mode
         self.custom_map_path = custom_map_path
         self.curriculum_stage = curriculum_stage
+        self.test_dataset_path = test_dataset_path or "datasets/test"
 
         # Current map state
         self.current_map_name = None
@@ -122,7 +127,7 @@ class EnvMapLoader:
 
             # Get the current level ID and load it
             level_id = self._test_suite_levels[self._test_suite_index]
-            loader = TestSuiteLoader("datasets/test")
+            loader = TestSuiteLoader(self.test_dataset_path)
             level = loader.get_level(level_id)
             self.nplay_headless.load_map_from_map_data(level["map_data"])
 
@@ -140,7 +145,9 @@ class EnvMapLoader:
         # Lazy initialization of generator and registry
         if self._train_generator is None:
             self._train_generator = TestSuiteGenerator("datasets/train_runtime")
-            self._generator_registry = GeneratorRegistry(self._train_generator, self.rng)
+            self._generator_registry = GeneratorRegistry(
+                self._train_generator, self.rng
+            )
 
         # Select difficulty category
         category = self._select_category()
@@ -159,30 +166,28 @@ class EnvMapLoader:
 
     def _select_category(self) -> str:
         """Select a difficulty category for map generation.
-        
+
         Uses curriculum stage if set, otherwise samples based on weights.
-        
+
         Returns:
             Category name
         """
         # Use curriculum stage if explicitly set
         if self.curriculum_stage:
             return self.curriculum_stage
-        
+
         # Otherwise, use weighted random sampling
         import random
-        
+
         if isinstance(self.rng, random.Random):
             # Use weighted sampling for training diversity
             category = self.rng.choices(
-                CATEGORY_NAMES,
-                weights=self._curriculum_weights,
-                k=1
+                CATEGORY_NAMES, weights=self._curriculum_weights, k=1
             )[0]
         else:
             # Fallback to uniform sampling if RNG doesn't support choices
             category = self.rng.choice(CATEGORY_NAMES)
-        
+
         return category
 
     def get_map_display_name(self) -> str:
@@ -217,12 +222,7 @@ class EnvMapLoader:
         Returns:
             Ordered list of level IDs starting with simple levels
         """
-        metadata_path = (
-            Path(__file__).parent.parent.parent
-            / "datasets"
-            / "test"
-            / "test_metadata.json"
-        )
+        metadata_path = Path(self.test_dataset_path) / "test_metadata.json"
 
         if not metadata_path.exists():
             print(f"Warning: Test suite metadata not found at {metadata_path}")

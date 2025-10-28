@@ -189,6 +189,7 @@ class EnvironmentConfig:
     seed: Optional[int] = None
     eval_mode: bool = False
     custom_map_path: Optional[str] = None
+    test_dataset_path: Optional[str] = None  # Path to test dataset for evaluation
     enable_logging: bool = False
     enable_short_episode_truncation: bool = False
 
