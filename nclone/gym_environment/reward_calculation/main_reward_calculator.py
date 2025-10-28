@@ -41,6 +41,7 @@ class RewardCalculator:
 
     def __init__(
         self,
+        reward_config: Optional[Dict[str, Any]] = None,
         enable_pbrs: bool = True,
         pbrs_weights: Optional[Dict[str, float]] = None,
         pbrs_gamma: float = PBRS_GAMMA,
@@ -56,6 +57,7 @@ class RewardCalculator:
         """Initialize reward calculator with all components.
 
         Args:
+            reward_config: Complete reward configuration dict (overrides individual params if provided)
             enable_pbrs: Whether to enable potential-based reward shaping
             pbrs_weights: Weights for PBRS components (objective, hazard, impact, exploration)
             pbrs_gamma: Discount factor for PBRS (γ in r_shaped = r_env + γ * Φ(s') - Φ(s))
@@ -68,6 +70,21 @@ class RewardCalculator:
             completion_bonus_target: Target steps for full bonus
             max_episode_steps: Maximum episode length (for progressive penalty phases)
         """
+        # If reward_config provided, extract parameters from it
+        if reward_config is not None:
+            enable_pbrs = reward_config.get("enable_pbrs", enable_pbrs)
+            pbrs_weights = reward_config.get("pbrs_weights", pbrs_weights)
+            pbrs_gamma = reward_config.get("pbrs_gamma", pbrs_gamma)
+            time_penalty_mode = reward_config.get("time_penalty_mode", time_penalty_mode)
+            time_penalty_early = reward_config.get("time_penalty_early", time_penalty_early)
+            time_penalty_middle = reward_config.get("time_penalty_middle", time_penalty_middle)
+            time_penalty_late = reward_config.get("time_penalty_late", time_penalty_late)
+            enable_completion_bonus = reward_config.get("enable_completion_bonus", enable_completion_bonus)
+            completion_bonus_max = reward_config.get("completion_bonus_max", completion_bonus_max)
+            completion_bonus_target = reward_config.get("completion_bonus_target", completion_bonus_target)
+            max_episode_steps = reward_config.get("max_episode_steps", max_episode_steps)
+        
+
         self.navigation_calculator = NavigationRewardCalculator()
         self.exploration_calculator = ExplorationRewardCalculator()
         self.steps_taken = 0

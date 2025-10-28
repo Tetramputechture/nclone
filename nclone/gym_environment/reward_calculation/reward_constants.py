@@ -234,195 +234,21 @@ ICM_LEARNING_RATE = 1e-3
 
 
 # =============================================================================
-# REWARD CONFIGURATION PRESETS
+# REWARD CONFIGURATION
 # =============================================================================
-# Pre-configured reward settings for common training scenarios
 
-def get_completion_focused_config() -> Dict[str, Any]:
-    """Get reward configuration optimized for level completion.
+def get_default_reward_config(enable_speed_optimization: bool = False) -> Dict[str, Any]:
+    """Get default reward configuration for N++ RL training.
     
-    This configuration prioritizes:
-    - Fast level completion (high terminal rewards)
-    - Efficient solutions (time penalties)
-    - Minimal safety constraints
+    Goal: Generalized level completion across diverse unseen levels.
+    Fine-tuning: Optional speed optimization for specific levels.
     
-    Best for: Initial training, speed-running objectives
+    Args:
+        enable_speed_optimization: Enable progressive time penalties and completion 
+                                   bonus for speed fine-tuning after reliable completion
     
     Returns:
-        dict: Reward configuration parameters
-    """
-    return {
-        # Terminal rewards
-        "level_completion_reward": LEVEL_COMPLETION_REWARD,
-        "death_penalty": DEATH_PENALTY,
-        "switch_activation_reward": SWITCH_ACTIVATION_REWARD,
-        "time_penalty": TIME_PENALTY_PER_STEP,
-        
-        # PBRS configuration
-        "enable_pbrs": True,
-        "pbrs_gamma": PBRS_GAMMA,
-        "pbrs_weights": {
-            "objective_weight": PBRS_OBJECTIVE_WEIGHT,
-            "hazard_weight": 0.0,  # Disabled for completion focus
-            "impact_weight": 0.0,  # Disabled for completion focus
-            "exploration_weight": 0.0,  # Use explicit exploration instead
-        },
-        
-        # Exploration configuration
-        "enable_exploration_rewards": True,
-        "exploration_scales": {
-            "cell_reward": EXPLORATION_CELL_REWARD,
-            "area_4x4_reward": EXPLORATION_AREA_4X4_REWARD,
-            "area_8x8_reward": EXPLORATION_AREA_8X8_REWARD,
-            "area_16x16_reward": EXPLORATION_AREA_16X16_REWARD,
-        }
-    }
-
-
-def get_safe_navigation_config() -> Dict[str, Any]:
-    """Get reward configuration for safe, cautious navigation.
-    
-    This configuration prioritizes:
-    - Level completion with safety constraints
-    - Hazard avoidance
-    - Impact risk minimization
-    
-    Best for: Deployment scenarios, safety-critical applications
-    
-    Returns:
-        dict: Reward configuration parameters
-    """
-    return {
-        # Terminal rewards (same as completion-focused)
-        "level_completion_reward": LEVEL_COMPLETION_REWARD,
-        "death_penalty": DEATH_PENALTY * 2.0,  # Double penalty for safety
-        "switch_activation_reward": SWITCH_ACTIVATION_REWARD,
-        "time_penalty": TIME_PENALTY_PER_STEP * 0.5,  # Reduced time pressure
-        
-        # PBRS configuration (with safety potentials enabled)
-        "enable_pbrs": True,
-        "pbrs_gamma": PBRS_GAMMA,
-        "pbrs_weights": {
-            "objective_weight": PBRS_OBJECTIVE_WEIGHT,
-            "hazard_weight": 0.5,  # Enable hazard avoidance
-            "impact_weight": 0.3,  # Enable impact risk avoidance
-            "exploration_weight": 0.0,
-        },
-        
-        # Exploration configuration (reduced for safety)
-        "enable_exploration_rewards": True,
-        "exploration_scales": {
-            "cell_reward": EXPLORATION_CELL_REWARD * 0.5,
-            "area_4x4_reward": EXPLORATION_AREA_4X4_REWARD * 0.5,
-            "area_8x8_reward": EXPLORATION_AREA_8X8_REWARD * 0.5,
-            "area_16x16_reward": EXPLORATION_AREA_16X16_REWARD * 0.5,
-        }
-    }
-
-
-def get_exploration_focused_config() -> Dict[str, Any]:
-    """Get reward configuration for maximum exploration.
-    
-    This configuration prioritizes:
-    - Comprehensive map coverage
-    - Discovery of all areas
-    - Balanced with completion objectives
-    
-    Best for: Curriculum learning, discovery phases
-    
-    Returns:
-        dict: Reward configuration parameters
-    """
-    return {
-        # Terminal rewards (reduced to encourage exploration over speed)
-        "level_completion_reward": LEVEL_COMPLETION_REWARD,
-        "death_penalty": DEATH_PENALTY * 0.5,  # Reduced to encourage risk-taking
-        "switch_activation_reward": SWITCH_ACTIVATION_REWARD,
-        "time_penalty": TIME_PENALTY_PER_STEP * 0.1,  # Minimal time pressure
-        
-        # PBRS configuration
-        "enable_pbrs": True,
-        "pbrs_gamma": PBRS_GAMMA,
-        "pbrs_weights": {
-            "objective_weight": PBRS_OBJECTIVE_WEIGHT * 0.5,  # Reduced objective focus
-            "hazard_weight": 0.0,
-            "impact_weight": 0.0,
-            "exploration_weight": 0.5,  # Enable PBRS exploration
-        },
-        
-        # Exploration configuration (boosted)
-        "enable_exploration_rewards": True,
-        "exploration_scales": {
-            "cell_reward": EXPLORATION_CELL_REWARD * 3.0,
-            "area_4x4_reward": EXPLORATION_AREA_4X4_REWARD * 3.0,
-            "area_8x8_reward": EXPLORATION_AREA_8X8_REWARD * 3.0,
-            "area_16x16_reward": EXPLORATION_AREA_16X16_REWARD * 3.0,
-        }
-    }
-
-
-def get_minimal_shaping_config() -> Dict[str, Any]:
-    """Get minimal reward configuration with only terminal rewards.
-    
-    This configuration includes:
-    - Only terminal rewards (completion, death)
-    - No reward shaping or exploration bonuses
-    - Pure sparse reward signal
-    
-    Best for: Baseline comparisons, studying sparse reward learning
-    
-    Returns:
-        dict: Reward configuration parameters
-    """
-    return {
-        # Terminal rewards only
-        "level_completion_reward": LEVEL_COMPLETION_REWARD,
-        "death_penalty": DEATH_PENALTY,
-        "switch_activation_reward": SWITCH_ACTIVATION_REWARD,
-        "time_penalty": 0.0,  # No time penalty
-        
-        # All shaping disabled
-        "enable_pbrs": False,
-        "pbrs_gamma": PBRS_GAMMA,
-        "pbrs_weights": {
-            "objective_weight": 0.0,
-            "hazard_weight": 0.0,
-            "impact_weight": 0.0,
-            "exploration_weight": 0.0,
-        },
-        
-        # Exploration disabled
-        "enable_exploration_rewards": False,
-        "exploration_scales": {
-            "cell_reward": 0.0,
-            "area_4x4_reward": 0.0,
-            "area_8x8_reward": 0.0,
-            "area_16x16_reward": 0.0,
-        }
-    }
-
-
-def get_speed_optimized_config() -> Dict[str, Any]:
-    """Get reward configuration for learning optimal, efficient routes.
-    
-    This configuration encourages fast level completion while maintaining
-    completion as the primary goal. Designed for fine-tuning after initial
-    training has achieved reliable completion.
-    
-    Key features:
-    - Progressive time penalty (increasing pressure over episode)
-    - Completion time bonus (rewards fast solutions)
-    - Strong navigation shaping (efficient routing)
-    - Minimal exploration (assumes agent knows how to complete)
-    
-    Training curriculum:
-    1. Initial training: Use completion_focused_config
-    2. Fine-tuning: Switch to speed_optimized_config
-    
-    Best for: Speedrunning, route optimization, fine-tuning
-    
-    Returns:
-        dict: Reward configuration parameters
+        dict: Complete reward configuration for RewardCalculator
     """
     return {
         # Terminal rewards
@@ -430,37 +256,41 @@ def get_speed_optimized_config() -> Dict[str, Any]:
         "death_penalty": DEATH_PENALTY,
         "switch_activation_reward": SWITCH_ACTIVATION_REWARD,
         
-        # Progressive time penalty
-        "time_penalty_mode": "progressive",  # vs "fixed"
+        # Time penalty
+        "time_penalty_mode": "progressive" if enable_speed_optimization else "fixed",
+        "time_penalty_fixed": TIME_PENALTY_PER_STEP,
         "time_penalty_early": TIME_PENALTY_EARLY,
         "time_penalty_middle": TIME_PENALTY_MIDDLE,
         "time_penalty_late": TIME_PENALTY_LATE,
         "time_penalty_early_threshold": TIME_PENALTY_EARLY_THRESHOLD,
         "time_penalty_late_threshold": TIME_PENALTY_LATE_THRESHOLD,
         
-        # Completion time bonus
-        "enable_completion_bonus": True,
+        # Completion bonus (for speed fine-tuning)
+        "enable_completion_bonus": enable_speed_optimization,
         "completion_bonus_max": COMPLETION_TIME_BONUS_MAX,
         "completion_bonus_target": COMPLETION_TIME_TARGET,
         
-        # PBRS (focus on efficient navigation)
+        # PBRS (navigation shaping)
         "enable_pbrs": True,
         "pbrs_gamma": PBRS_GAMMA,
         "pbrs_weights": {
-            "objective_weight": PBRS_OBJECTIVE_WEIGHT * 1.5,  # Stronger nav signal
-            "hazard_weight": 0.0,  # Speed over safety
-            "impact_weight": 0.0,  # Speed over caution
-            "exploration_weight": 0.0,  # Minimal exploration in fine-tuning
+            "objective_weight": PBRS_OBJECTIVE_WEIGHT,
+            "hazard_weight": 0.0,
+            "impact_weight": 0.0,
+            "exploration_weight": 0.0,
         },
         
-        # Reduced exploration (agent already knows how to complete)
-        "enable_exploration_rewards": False,
+        # Exploration rewards
+        "enable_exploration_rewards": True,
         "exploration_scales": {
-            "cell_reward": 0.0,
-            "area_4x4_reward": 0.0,
-            "area_8x8_reward": 0.0,
-            "area_16x16_reward": 0.0,
-        }
+            "cell_reward": EXPLORATION_CELL_REWARD,
+            "area_4x4_reward": EXPLORATION_AREA_4X4_REWARD,
+            "area_8x8_reward": EXPLORATION_AREA_8X8_REWARD,
+            "area_16x16_reward": EXPLORATION_AREA_16X16_REWARD,
+        },
+        
+        # Episode config
+        "max_episode_steps": MAX_TIME_IN_FRAMES,
     }
 
 
