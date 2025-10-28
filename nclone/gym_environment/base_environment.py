@@ -65,6 +65,7 @@ class BaseNppEnvironment(gymnasium.Env):
         pbrs_weights: Optional[dict] = None,
         pbrs_gamma: float = 0.99,
         custom_map_path: Optional[str] = None,
+        test_dataset_path: Optional[str] = None,
         enable_augmentation: bool = True,
         augmentation_config: Optional[Dict[str, Any]] = None,
     ):
@@ -84,6 +85,7 @@ class BaseNppEnvironment(gymnasium.Env):
             pbrs_weights: PBRS component weights dictionary (legacy, use reward_config instead)
             pbrs_gamma: PBRS discount factor (legacy, use reward_config instead)
             custom_map_path: Path to custom map file
+            test_dataset_path: Path to test dataset directory for evaluation
             enable_augmentation: Enable frame augmentation
             augmentation_config: Augmentation configuration dictionary
         """
@@ -94,6 +96,7 @@ class BaseNppEnvironment(gymnasium.Env):
         self.enable_animation = enable_animation
         self.enable_logging = enable_logging
         self.custom_map_path = custom_map_path
+        self.test_dataset_path = test_dataset_path
         self.eval_mode = eval_mode
 
         # Initialize core game interface
@@ -120,7 +123,11 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Initialize map loader
         self.map_loader = EnvMapLoader(
-            self.nplay_headless, self.rng, eval_mode, custom_map_path
+            self.nplay_headless,
+            self.rng,
+            eval_mode,
+            custom_map_path,
+            test_dataset_path=test_dataset_path,
         )
 
         # Initialize observation processor with performance optimizations
@@ -137,7 +144,9 @@ class BaseNppEnvironment(gymnasium.Env):
         else:
             # Legacy mode: use individual parameters
             self.reward_calculator = RewardCalculator(
-                enable_pbrs=enable_pbrs, pbrs_weights=pbrs_weights, pbrs_gamma=pbrs_gamma
+                enable_pbrs=enable_pbrs,
+                pbrs_weights=pbrs_weights,
+                pbrs_gamma=pbrs_gamma,
             )
 
         # Initialize truncation checker
@@ -652,6 +661,7 @@ class BaseNppEnvironment(gymnasium.Env):
                 getattr(self, "rng", None),
                 getattr(self, "eval_mode", False),
                 getattr(self, "custom_map_path", None),
+                test_dataset_path=getattr(self, "test_dataset_path", None),
             )
 
         # Mark that we need to reinitialize on next reset

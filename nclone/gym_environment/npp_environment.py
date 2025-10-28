@@ -66,6 +66,7 @@ class NppEnvironment(
             pbrs_weights=self.config.pbrs.pbrs_weights,
             pbrs_gamma=self.config.pbrs.pbrs_gamma,
             custom_map_path=self.config.custom_map_path,
+            test_dataset_path=self.config.test_dataset_path,
             enable_augmentation=self.config.augmentation.enable_augmentation,
             augmentation_config={
                 "p": self.config.augmentation.p,
