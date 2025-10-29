@@ -158,7 +158,7 @@ class TestSuiteGenerator:
                 )
             else:
                 return self._create_minimal_simple_level_horizontal(
-                    seed, index, height=1, random_edge_tiles=True
+                    seed, index, random_edge_tiles=True
                 )
 
         # Use factory for standard generators

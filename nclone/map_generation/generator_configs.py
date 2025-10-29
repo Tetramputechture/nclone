@@ -60,6 +60,8 @@ class VerticalCorridorConfig:
     max_mine_spacing: int = 5
     add_platforms: bool = False
     add_mid_mines: bool = False
+    add_chaotic_walls: bool = False
+    add_wall_mines: bool = False
 
 
 @dataclass
@@ -244,17 +246,39 @@ GENERATOR_PRESETS = {
             min_width=1,
             max_width=1,
             min_height=3,
-            max_height=12,
+            max_height=6,
+            add_wall_mines=False,
+        ),
+        "simpler": VerticalCorridorConfig(
+            min_width=1,
+            max_width=4,
+            min_height=5,
+            max_height=8,
             min_mine_spacing=2,
             max_mine_spacing=5,
+            add_chaotic_walls=True,
+            add_wall_mines=False,
+        ),
+        "simpler_with_mines": VerticalCorridorConfig(
+            min_width=1,
+            max_width=4,
+            min_height=5,
+            max_height=8,
+            min_mine_spacing=2,
+            max_mine_spacing=5,
+            add_chaotic_walls=True,
+            add_wall_mines=True,
         ),
         "simple": VerticalCorridorConfig(
             min_width=1,
             max_width=4,
             min_height=8,
-            max_height=14,
-            min_mine_spacing=2,
-            max_mine_spacing=5,
+            max_height=12,
+            min_mine_spacing=3,
+            max_mine_spacing=6,
+            add_platforms=True,
+            add_chaotic_walls=True,
+            add_wall_mines=True,
         ),
         "medium": VerticalCorridorConfig(
             min_width=2,
@@ -496,8 +520,9 @@ CATEGORIES = {
         seed_base_test=500,
         seed_base_train=5000,
         generators=[
-            ("vertical_corridor", "simple"),
+            ("vertical_corridor", "simpler"),
             ("horizontal", "simple"),
+            ("vertical_corridor", "simpler_with_mines"),
         ],
     ),
     "simple": CategoryConfig(
