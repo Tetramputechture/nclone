@@ -32,20 +32,9 @@ class Simulator:
     def load(self, map_data):
         """From the given map data, initiate the level geometry, the entities and the ninja."""
         self.map_data = map_data
-        self.reset_map_tile_data()  # Clears segment_dic
-        self.map_loader.load_map_tiles()  # Loads segments into segment_dic and tiles into tile_dic
-
-        self.reset()  # Resets entities and ninja
-
-        # Debug: Count door segments after loading
-        door_seg_count_after_load = 0
-        for cell, segs in self.segment_dic.items():
-            for seg in segs:
-                if hasattr(seg, "oriented") and not seg.oriented:
-                    door_seg_count_after_load += 1
-        print(
-            f"[NSIM LOAD END] Total door segments in segment_dic: {door_seg_count_after_load}"
-        )
+        self.reset_map_tile_data()
+        self.map_loader.load_map_tiles()
+        self.reset()
 
     def load_from_created(self, created_map):
         """Load a map that was manually constructed using the Map class."""
@@ -58,7 +47,7 @@ class Simulator:
         self.collisionlog = []
         self.ninja = None
         self.reset_map_entity_data()
-        self.map_loader.load_map_entities()  # Use MapLoader
+        self.map_loader.load_map_entities()
 
     def reset_map_entity_data(self):
         """Reset the map entity data. This is used when a new map is loaded or when the map is reset."""
@@ -73,8 +62,8 @@ class Simulator:
     def reset_map_tile_data(self):
         """Reset the map cell data. This is used when a new map is loaded."""
         self.segment_dic = {}
-        for x in range(45):  # map_width_tiles + a buffer often
-            for y in range(26):  # map_height_tiles + a buffer often
+        for x in range(44):  # map_width_tiles + a buffer often
+            for y in range(25):  # map_height_tiles + a buffer often
                 self.segment_dic[(x, y)] = []
 
         self.tile_dic = {}  # Clear tile_dic as well
