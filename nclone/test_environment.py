@@ -677,6 +677,7 @@ if args.test_generators:
                         self.current_seed,
                         8 if preset == "minimal" else self.current_generator_idx,
                         height=1 if preset == "minimal" else None,
+                        random_edge_tiles=True if preset != "minimal" else False,
                     )
                 else:
                     map_obj = GeneratorFactory.create_from_preset(

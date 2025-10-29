@@ -137,7 +137,7 @@ class MapVerticalCorridor(Map):
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
 
-        can_add_platforms = height > 8
+        can_add_platforms = height > 8 and width > 2
 
         # Add optional platforms and mines
         if can_add_platforms and add_platforms and width > 1:

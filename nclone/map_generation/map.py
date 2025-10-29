@@ -10,6 +10,7 @@ from .constants import (
 )
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from . import terrain_utils
+from .constants import VALID_TILE_TYPES
 
 # Valid entity types that can be randomly placed
 VALID_RANDOM_ENTITIES = [
@@ -291,7 +292,15 @@ class Map:
             end_idx = x2 + 1 + y * MAP_TILE_WIDTH
             self.tile_data[start_idx:end_idx] = [0] * (x2 - x1 + 1)
 
-    def set_hollow_rectangle(self, x1, y1, x2, y2, use_random_tiles_type: bool = False):
+    def set_hollow_rectangle(
+        self,
+        x1,
+        y1,
+        x2,
+        y2,
+        use_random_tiles_type: bool = False,
+        chaotic_random_tiles: bool = False,
+    ):
         """Set a hollow rectangle border with wall-appropriate tile types.
 
         When use_random_tiles_type is True, each wall uses tiles with appropriate
@@ -311,28 +320,36 @@ class Map:
 
         # Top wall
         for x in range(x1, x2 + 1):
-            if use_random_tiles_type:
+            if chaotic_random_tiles:
+                self.set_tile(x, y1, self.rng.randint(1, VALID_TILE_TYPES))
+            elif use_random_tiles_type:
                 self.set_tile(x, y1, self.rng.choice(TOP_WALL_TILES))
             else:
                 self.set_tile(x, y1, 1)
 
         # Bottom wall
         for x in range(x1, x2 + 1):
-            if use_random_tiles_type:
+            if chaotic_random_tiles:
+                self.set_tile(x, y2, self.rng.randint(1, VALID_TILE_TYPES))
+            elif use_random_tiles_type:
                 self.set_tile(x, y2, self.rng.choice(BOTTOM_WALL_TILES))
             else:
                 self.set_tile(x, y2, 1)
 
         # Left wall (excluding corners already set)
         for y in range(y1 + 1, y2):
-            if use_random_tiles_type:
+            if chaotic_random_tiles:
+                self.set_tile(x1, y, self.rng.randint(1, VALID_TILE_TYPES))
+            elif use_random_tiles_type:
                 self.set_tile(x1, y, self.rng.choice(LEFT_WALL_TILES))
             else:
                 self.set_tile(x1, y, 1)
 
         # Right wall (excluding corners already set)
         for y in range(y1 + 1, y2):
-            if use_random_tiles_type:
+            if chaotic_random_tiles:
+                self.set_tile(x2, y, self.rng.randint(1, VALID_TILE_TYPES))
+            elif use_random_tiles_type:
                 self.set_tile(x2, y, self.rng.choice(RIGHT_WALL_TILES))
             else:
                 self.set_tile(x2, y, 1)

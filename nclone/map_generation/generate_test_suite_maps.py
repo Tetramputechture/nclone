@@ -151,10 +151,14 @@ class TestSuiteGenerator:
         # Special handling for horizontal generator (uses custom logic)
         if generator_type == "horizontal":
             if preset == "minimal":
-                return self._create_minimal_simple_level_horizontal(seed, 8, height=1)
+                return self._create_minimal_simple_level_horizontal(
+                    seed,
+                    8,
+                    height=1,
+                )
             else:
                 return self._create_minimal_simple_level_horizontal(
-                    seed, index, height=1
+                    seed, index, height=1, random_edge_tiles=True
                 )
 
         # Use factory for standard generators
@@ -234,7 +238,7 @@ class TestSuiteGenerator:
         print(f"  Distribution: {dist_summary}")
 
     def _create_minimal_simple_level_horizontal(
-        self, seed: int, index: int, height: int = None
+        self, seed: int, index: int, height: int = None, random_edge_tiles: bool = False
     ) -> Map:
         """Create a minimal horizontal level (special case for 'horizontal' generator).
 
@@ -282,6 +286,7 @@ class TestSuiteGenerator:
             start_x + width,
             start_y + height,
             use_random_tiles_type=use_random_tiles_type,
+            chaotic_random_tiles=random_edge_tiles,
         )
 
         # Randomly choose ninja starting side
@@ -427,6 +432,14 @@ class TestSuiteGenerator:
                 exit_switch_x,
                 exit_switch_y,
             )
+
+        # Add random entities outside the playspace
+        map_gen.add_random_entities_outside_playspace(
+            start_x - 2,
+            start_y - 2,
+            start_x + width + 1,
+            start_y + height + 1,
+        )
 
         return map_gen
 
