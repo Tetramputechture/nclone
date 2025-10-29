@@ -31,8 +31,6 @@ class MapVerticalCorridor(Map):
     def generate(
         self,
         seed: Optional[int] = None,
-        swap_top_and_bottom: bool = False,
-        door_at_top: bool = False,
         width: Optional[int] = None,
         height: Optional[int] = None,
         add_platforms: Optional[bool] = None,
@@ -42,10 +40,6 @@ class MapVerticalCorridor(Map):
 
         Args:
             seed: Random seed for reproducible generation
-            swap_top_and_bottom: If True, swap the top and bottom of the corridor, so that the
-                exit is at the bottom and the ninja starts at the top. Defaults to False.
-            door_at_top: If True, the exit door will always be at the topmost tile of the corridor.
-                Defaults to False. Respects swap_top_and_bottom.
             width: Width of the corridor. Defaults to None, in which case a random width is chosen.
             height: Height of the corridor. Defaults to None, in which case a random height is chosen.
             add_platforms: Add 1-2 horizontal platforms jutting from walls (only if width > 1, defaults to class attribute).
@@ -125,11 +119,14 @@ class MapVerticalCorridor(Map):
 
         # Random Y position between top and midpoint of chamber
         midpoint_y = chamber_y + height // 2
+        door_at_top = self.rng.choice([True, False])
         if door_at_top:
             door_y = chamber_y
         else:
             door_y = self.rng.randint(chamber_y, midpoint_y)
         switch_y = self.rng.randint(chamber_y, door_y)
+
+        swap_top_and_bottom = self.rng.choice([True, False])
 
         # If swapping  top and bottom, the exit door and ninja positions need to be swapped
         if swap_top_and_bottom:
@@ -140,29 +137,43 @@ class MapVerticalCorridor(Map):
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
 
+        can_add_platforms = height > 8
+
         # Add optional platforms and mines
-        if add_platforms and width > 1:
+        if can_add_platforms and add_platforms and width > 1:
             # Add 1-2 horizontal platforms jutting from walls
-            num_platforms = self.rng.randint(1, 2)
+            num_platforms = self.rng.randint(1, max(2, height // 3))
             # Place platforms in middle third of corridor height
             min_plat_y = chamber_y + height // 3
             max_plat_y = chamber_y + 2 * height // 3
 
-            for _ in range(num_platforms):
-                plat_y = self.rng.randint(min_plat_y, max_plat_y)
-                # Choose which wall to jut from
-                from_left = self.rng.choice([True, False])
+            # platforms should not be placed on the same y position as the switch,
+            # door, ninja, or any other platform += 1 vertical
+            invalid_positions = [switch_y, door_y, ninja_y]
 
-                if from_left:
-                    # Platform jutting from left wall
-                    plat_x = chamber_x
-                    tile_type = self.rng.randint(1, 33)
-                    self.set_tile(plat_x, plat_y, tile_type)
-                else:
-                    # Platform jutting from right wall
-                    plat_x = chamber_x + width - 1
-                    tile_type = self.rng.randint(1, 33)
-                    self.set_tile(plat_x, plat_y, tile_type)
+            for _ in range(num_platforms):
+                placement_attempts = 0
+                while placement_attempts < 10:
+                    plat_y = self.rng.randint(min_plat_y, max_plat_y)
+                    if plat_y not in invalid_positions:
+                        break
+                    placement_attempts += 1
+
+                if plat_y not in invalid_positions:
+                    invalid_positions += [plat_y + 1, plat_y, plat_y - 1]
+                    # Choose which wall to jut from
+                    from_left = self.rng.choice([True, False])
+
+                    if from_left:
+                        # Platform jutting from left wall
+                        plat_x = chamber_x
+                        tile_type = self.rng.randint(1, 33)
+                        self.set_tile(plat_x, plat_y, tile_type)
+                    else:
+                        # Platform jutting from right wall
+                        plat_x = chamber_x + width - 1
+                        tile_type = self.rng.randint(1, 33)
+                        self.set_tile(plat_x, plat_y, tile_type)
 
         if add_mid_mines:
             # Place 2-4 mines floating in middle of corridor at various heights
@@ -173,13 +184,20 @@ class MapVerticalCorridor(Map):
             for i in range(num_mines):
                 mine_y = chamber_y + (i + 1) * mine_spacing
                 # Place in middle of corridor width
-                if width == 1:
-                    mine_x = chamber_x
-                else:
-                    mine_x = chamber_x + width // 2
-
+                mine_x = chamber_x + width // 2
                 mine_type = self.rng.choice([1, 21])
                 self.add_entity(mine_type, mine_x, mine_y)
+
+        # add random entities outside the playspace
+        playspace = (
+            chamber_x - 1,
+            chamber_y - 1,
+            chamber_x + width + 1,
+            chamber_y + height + 1,
+        )
+        self.add_random_entities_outside_playspace(
+            playspace[0], playspace[1], playspace[2], playspace[3]
+        )
 
         return self
 
@@ -222,7 +240,7 @@ class MapVerticalCorridor(Map):
 
         # Place mines on left wall
         if place_on_left and width >= 1:
-            mine_x = chamber_x - 1  # Position mine in wall/air boundary
+            mine_x = chamber_x + 1  # Position mine in wall/air boundary
             current_y = min_y
             while current_y <= max_y:
                 # Convert to grid position for mine placement

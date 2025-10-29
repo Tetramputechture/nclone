@@ -756,7 +756,7 @@ if args.test_suite:
         from nclone.evaluation.test_suite_loader import TestSuiteLoader
 
         test_suite_loader = TestSuiteLoader(args.test_dataset_path)
-        test_suite_level_ids = test_suite_loader.get_all_level_ids()
+        test_suite_level_ids = test_suite_loader.get_all_levels()
         current_level_idx = args.start_level
 
         if current_level_idx >= len(test_suite_level_ids):
@@ -1264,7 +1264,7 @@ while running:
                             env.reward_calculator.reset()
                             env.truncation_checker.reset()
                             env.current_ep_reward = 0
-                            env.nplay_headless.reset()
+                            # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                             # Get initial observation
                             initial_obs = env._get_observation()
@@ -1419,7 +1419,7 @@ while running:
                         env.reward_calculator.reset()
                         env.truncation_checker.reset()
                         env.current_ep_reward = 0
-                        env.nplay_headless.reset()
+                        # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                         # Get initial observation
                         initial_obs = env._get_observation()
@@ -1456,7 +1456,7 @@ while running:
                         env.reward_calculator.reset()
                         env.truncation_checker.reset()
                         env.current_ep_reward = 0
-                        env.nplay_headless.reset()
+                        # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                         # Get initial observation
                         initial_obs = env._get_observation()
@@ -1512,7 +1512,7 @@ while running:
                                 env.reward_calculator.reset()
                                 env.truncation_checker.reset()
                                 env.current_ep_reward = 0
-                                env.nplay_headless.reset()
+                                # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                                 # Get initial observation
                                 initial_obs = env._get_observation()
@@ -1880,7 +1880,7 @@ while running:
                 env.reward_calculator.reset()
                 env.truncation_checker.reset()
                 env.current_ep_reward = 0
-                env.nplay_headless.reset()
+                # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                 # Get initial observation
                 initial_obs = env._get_observation()

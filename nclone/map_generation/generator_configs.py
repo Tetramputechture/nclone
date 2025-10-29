@@ -397,14 +397,14 @@ GENERATOR_PRESETS = {
         "exploration": MultiChamberConfig(
             min_chambers=2,
             max_chambers=3,
-            min_chamber_width=5,
+            min_chamber_width=4,
             max_chamber_width=9,
             min_chamber_height=5,
-            max_chamber_height=10,
+            max_chamber_height=9,
             min_corridor_length=3,
-            max_corridor_length=8,
+            max_corridor_length=9,
             min_corridor_width=1,
-            max_corridor_width=3,
+            max_corridor_width=4,
         ),
     },
     "single_chamber": {
