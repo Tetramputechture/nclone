@@ -95,14 +95,14 @@ class SingleChamberGenerator(Map):
         # Create the empty play space
         self.set_empty_rectangle(play_x1, play_y1, play_x2, play_y2)
 
-        # Create boundary tiles
-        for x in range(play_x1, play_x2 + 1):
-            self.set_tile(x, play_y2 + 1, 1)
-            self.set_tile(x, play_y1 - 1, 1)
-
-        for y in range(play_y1, play_y2 + 1):
-            self.set_tile(play_x1 - 1, y, 1)
-            self.set_tile(play_x2 + 1, y, 1)
+        # Create boundary tiles with random tile types
+        self.set_hollow_rectangle(
+            play_x1 - 1,
+            play_y1 - 1,
+            play_x2 + 1,
+            play_y2 + 1,
+            chaotic_random_tiles=True,
+        )
 
         # Calculate entity positions
         usable_width = actual_width - 2
