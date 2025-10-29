@@ -27,6 +27,8 @@ class MapVerticalCorridor(Map):
     # Optional features
     ADD_PLATFORMS = False
     ADD_MID_MINES = False
+    ADD_CHAOTIC_WALLS = False
+    ADD_WALL_MINES = False
 
     def generate(
         self,
@@ -35,6 +37,8 @@ class MapVerticalCorridor(Map):
         height: Optional[int] = None,
         add_platforms: Optional[bool] = None,
         add_mid_mines: Optional[bool] = None,
+        add_wall_mines: Optional[bool] = None,
+        add_chaotic_walls: Optional[bool] = None,
     ) -> Map:
         """Generate a vertical corridor level with exit at the top.
 
@@ -58,6 +62,10 @@ class MapVerticalCorridor(Map):
             add_platforms = self.ADD_PLATFORMS
         if add_mid_mines is None:
             add_mid_mines = self.ADD_MID_MINES
+        if add_chaotic_walls is None:
+            add_chaotic_walls = self.ADD_CHAOTIC_WALLS
+        if add_wall_mines is None:
+            add_wall_mines = self.ADD_WALL_MINES
 
         # Step 1: Determine chamber dimensions
         if width is None:
@@ -90,10 +98,13 @@ class MapVerticalCorridor(Map):
             chamber_x + width,
             chamber_y + height,
             use_random_tiles_type=use_random_tiles,
+            chaotic_random_tiles=add_chaotic_walls,
         )
 
         # Step 6: Place mines on walls
-        should_place_mines = width > 1 and self.rng.choice([True, False])
+        should_place_mines = (
+            add_wall_mines and width > 1 and self.rng.choice([True, False])
+        )
         if should_place_mines:
             self._place_wall_mines(chamber_x, chamber_y, width, height)
 

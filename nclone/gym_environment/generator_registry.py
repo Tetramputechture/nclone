@@ -64,7 +64,6 @@ class GeneratorRegistry:
                 return gen._create_minimal_simple_level_horizontal(
                     seed,
                     index,
-                    height=1,
                     random_edge_tiles=True,
                 )
 
