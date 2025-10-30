@@ -2140,6 +2140,7 @@ while running:
         and path_aware_system is not None
         and (path_distances_debug_enabled or adjacency_graph_debug_enabled)
     ):
+        global cached_graph_data, cached_level_hash
         try:
             # Get ninja position
             ninja_pos = _get_ninja_position(env)
@@ -2149,10 +2150,13 @@ while running:
             if current_level_hash != cached_level_hash:
                 # Level changed, rebuild graph
                 try:
+                    print(f"Debug: Rebuilding graph (hash changed from {cached_level_hash} to {current_level_hash})")
                     graph_builder = path_aware_system["graph_builder"]
                     cached_graph_data = graph_builder.build_graph(env.level_data)
                     cached_level_hash = current_level_hash
+                    print(f"Debug: Graph built successfully, cached_graph_data is not None: {cached_graph_data is not None}")
                 except Exception as e:
+                    print(f"Debug: Graph building failed: {e}")
                     cached_graph_data = None
 
             # Access debug overlay renderer
@@ -2184,7 +2188,7 @@ while running:
                             )
                             screen.blit(overlay_surface, (0, 0))
                         except Exception as e:
-                            pass  # Silently fail if distances can't be calculated
+                            print(f"Debug: Path distance visualization error: {e}")
 
                     if adjacency_graph_debug_enabled and cached_graph_data is not None:
                         # Prepare visualization data using cached graph
@@ -2236,12 +2240,12 @@ while running:
                             )
                             screen.blit(overlay_surface, (0, 0))
                         except Exception as e:
-                            pass  # Silently fail if graph can't be visualized
+                            print(f"Debug: Adjacency graph visualization error: {e}")
 
                     # Update display
                     pygame.display.flip()
         except Exception as e:
-            pass  # Silently ignore any visualization errors
+            print(f"Debug: Visualization system error: {e}")
 
     # Memory profiling snapshot
     if (
