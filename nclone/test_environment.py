@@ -62,45 +62,42 @@ def _get_ninja_position(env):
 def _get_level_hash(env):
     """
     Get a hash representing the current level state for graph caching.
-    
+
     Only hashes static level structure (tiles, entity types/IDs) to avoid
     rebuilding the graph every frame when dynamic state changes (positions, switch states).
     """
     try:
         if hasattr(env, "level_data"):
             import hashlib
-            
+
             # Hash only static structure to avoid cache invalidation on every frame
             # - tiles: static level geometry
             # - entity types/IDs: static entity placement (not positions)
             # - level_id: unique identifier
-            
+
             level_data = env.level_data
             hash_components = []
-            
+
             # Add tiles hash (static geometry)
-            if hasattr(level_data, 'tiles'):
+            if hasattr(level_data, "tiles"):
                 tiles_bytes = level_data.tiles.tobytes()
                 hash_components.append(hashlib.md5(tiles_bytes).hexdigest())
-            
+
             # Add entity types and IDs (not positions which are dynamic)
-            if hasattr(level_data, 'entities'):
+            if hasattr(level_data, "entities"):
                 entity_static = []
                 for entity in level_data.entities:
                     # Only include type and ID, not position or state
-                    entity_type = entity.get('type', '')
-                    entity_id = entity.get('id', '')
+                    entity_type = entity.get("type", "")
+                    entity_id = entity.get("id", "")
                     entity_static.append(f"{entity_type}:{entity_id}")
-                entity_str = ','.join(sorted(entity_static))
-                hash_components.append(hashlib.md5(entity_str.encode()).hexdigest())
-            
-            # Add level_id if available
-            if hasattr(level_data, 'level_id') and level_data.level_id:
-                hash_components.append(level_data.level_id)
-            
+                entity_str = ",".join(sorted(entity_static))
+                entity_hash = hashlib.md5(entity_str.encode()).hexdigest()
+                hash_components.append(entity_hash)
             # Combine all components
-            combined = '|'.join(hash_components)
-            return hashlib.md5(combined.encode()).hexdigest()
+            combined = "|".join(hash_components)
+            result_hash = hashlib.md5(combined.encode()).hexdigest()
+            return result_hash
     except Exception as e:
         print(f"Warning: Failed to compute level hash: {e}")
         pass
@@ -1087,6 +1084,24 @@ blocked_entities_debug_enabled = False
 cached_graph_data = None
 cached_level_hash = None
 
+
+# Overlay caching to prevent flicker
+class OverlayCache:
+    def __init__(self):
+        self.cached_path_overlay = None
+        self.cached_graph_overlay = None
+        self.last_ninja_pos = None
+        self.overlay_cache_frame = -1
+
+    def clear(self):
+        self.cached_path_overlay = None
+        self.cached_graph_overlay = None
+        self.last_ninja_pos = None
+        self.overlay_cache_frame = -1
+
+
+overlay_cache = OverlayCache()
+
 if (
     args.test_path_aware
     or args.show_path_distances
@@ -2021,7 +2036,9 @@ while running:
                                 start = time_module.perf_counter()
                                 # Convert LevelData to dictionary format
                                 level_data_dict = env.level_data.to_dict()
-                                level_data_dict['switch_states'] = env.level_data.switch_states
+                                level_data_dict["switch_states"] = (
+                                    env.level_data.switch_states
+                                )
                                 graph_data = path_aware_system[
                                     "graph_builder"
                                 ].build_graph(level_data_dict)
@@ -2124,7 +2141,14 @@ while running:
                             filename = f"path_analysis_export_{timestamp}.png"
                             # Get current frame
                             frame = env.render()
-                            if frame is not None and isinstance(frame, np.ndarray):
+                            # handle pygame surface
+                            if isinstance(frame, pygame.Surface):
+                                # save pygame surface to file and quit
+                                pygame.image.save(frame, filename)
+                                print(
+                                    f"✅ Path analysis screenshot saved to {filename}"
+                                )
+                            elif frame is not None and isinstance(frame, np.ndarray):
                                 image = Image.fromarray(
                                     frame.astype(np.uint8), mode="RGB"
                                 )
@@ -2189,21 +2213,30 @@ while running:
                     if cached_level_hash is None:
                         print("[Path Viz] Building navigation graph for first time...")
                     else:
-                        print("[Path Viz] Level changed, rebuilding navigation graph...")
-                    
+                        print(
+                            "[Path Viz] Level changed, rebuilding navigation graph..."
+                        )
+
                     graph_builder = path_aware_system["graph_builder"]
-                    
+
                     # Convert LevelData object to dictionary format expected by graph builder
                     level_data_dict = env.level_data.to_dict()
                     # Add switch_states which is not included in to_dict()
-                    level_data_dict['switch_states'] = env.level_data.switch_states
-                    
+                    level_data_dict["switch_states"] = env.level_data.switch_states
+
                     cached_graph_data = graph_builder.build_graph(level_data_dict)
                     cached_level_hash = current_level_hash
-                    print(f"[Path Viz] Graph built successfully with {len(cached_graph_data.get('adjacency', {}))} nodes")
+
+                    # Clear overlay cache when level changes
+                    overlay_cache.clear()
+
+                    print(
+                        f"[Path Viz] Graph built successfully with {len(cached_graph_data.get('adjacency', {}))} nodes"
+                    )
                 except Exception as e:
                     print(f"[Path Viz] ERROR: Graph building failed: {e}")
                     import traceback
+
                     traceback.print_exc()
                     cached_graph_data = None
 
@@ -2220,105 +2253,158 @@ while running:
                 ):
                     screen = env.nplay_headless.sim_renderer.screen
 
-                    if path_distances_debug_enabled and cached_graph_data is not None:
-                        # Calculate path distances using cached graph
-                        try:
-                            path_calculator = path_aware_system["path_calculator"]
-                            adjacency = cached_graph_data.get('adjacency', {})
-                            
-                            # Calculate distances to objectives
-                            distances = {
-                                'switch_distance': float('inf'),
-                                'exit_distance': float('inf')
-                            }
-                            
-                            # Find nearest switch
-                            for entity in env.level_data.entities:
-                                entity_type = entity.get('type', '')
-                                if entity_type in ['switch', 'exit_switch']:
-                                    entity_pos = (entity.get('x', 0), entity.get('y', 0))
-                                    try:
-                                        dist = path_calculator.get_distance(
-                                            ninja_pos, entity_pos, adjacency, cache_key='switch'
-                                        )
-                                        distances['switch_distance'] = min(distances['switch_distance'], dist)
-                                    except:
-                                        pass
-                            
-                            # Find nearest exit
-                            for entity in env.level_data.entities:
-                                entity_type = entity.get('type', '')
-                                if entity_type in ['exit', 'exit_door']:
-                                    entity_pos = (entity.get('x', 0), entity.get('y', 0))
-                                    try:
-                                        dist = path_calculator.get_distance(
-                                            ninja_pos, entity_pos, adjacency, cache_key='exit'
-                                        )
-                                        distances['exit_distance'] = min(distances['exit_distance'], dist)
-                                    except:
-                                        pass
+                    # Check if we need to update overlay (position changed significantly or cache expired)
+                    pos_changed = (
+                        overlay_cache.last_ninja_pos is None
+                        or abs(ninja_pos[0] - overlay_cache.last_ninja_pos[0]) > 5
+                        or abs(ninja_pos[1] - overlay_cache.last_ninja_pos[1]) > 5
+                    )
+                    cache_expired = (
+                        frame_counter - overlay_cache.overlay_cache_frame
+                    ) > 30  # Update every 30 frames
 
-                            # Draw overlay
-                            overlay_surface = renderer.draw_path_distances(
-                                distances, ninja_pos
-                            )
-                            screen.blit(overlay_surface, (0, 0))
-                        except Exception as e:
-                            print(f"[Path Viz] ERROR: Path distance visualization failed: {e}")
-                            import traceback
-                            traceback.print_exc()
+                    if path_distances_debug_enabled and cached_graph_data is not None:
+                        if (
+                            pos_changed
+                            or cache_expired
+                            or overlay_cache.cached_path_overlay is None
+                        ):
+                            # Calculate path distances using cached graph
+                            try:
+                                path_calculator = path_aware_system["path_calculator"]
+                                adjacency = cached_graph_data.get("adjacency", {})
+
+                                # Calculate distances to objectives
+                                distances = {
+                                    "switch_distance": float("inf"),
+                                    "exit_distance": float("inf"),
+                                }
+
+                                # Find nearest switch
+                                for entity in env.level_data.entities:
+                                    entity_type = entity.get("type", "")
+                                    if entity_type in ["switch", "exit_switch"]:
+                                        entity_pos = (
+                                            entity.get("x", 0),
+                                            entity.get("y", 0),
+                                        )
+                                        try:
+                                            dist = path_calculator.get_distance(
+                                                ninja_pos,
+                                                entity_pos,
+                                                adjacency,
+                                                cache_key="switch",
+                                            )
+                                            distances["switch_distance"] = min(
+                                                distances["switch_distance"], dist
+                                            )
+                                        except:
+                                            pass
+
+                                # Find nearest exit
+                                for entity in env.level_data.entities:
+                                    entity_type = entity.get("type", "")
+                                    if entity_type in ["exit", "exit_door"]:
+                                        entity_pos = (
+                                            entity.get("x", 0),
+                                            entity.get("y", 0),
+                                        )
+                                        try:
+                                            dist = path_calculator.get_distance(
+                                                ninja_pos,
+                                                entity_pos,
+                                                adjacency,
+                                                cache_key="exit",
+                                            )
+                                            distances["exit_distance"] = min(
+                                                distances["exit_distance"], dist
+                                            )
+                                        except:
+                                            pass
+
+                                # Draw and cache overlay
+                                overlay_cache.cached_path_overlay = (
+                                    renderer.draw_path_distances(distances, ninja_pos)
+                                )
+                                overlay_cache.last_ninja_pos = ninja_pos
+                                overlay_cache.overlay_cache_frame = frame_counter
+
+                            except Exception as e:
+                                print(
+                                    f"[Path Viz] ERROR: Path distance visualization failed: {e}"
+                                )
+                                import traceback
+
+                                traceback.print_exc()
+
+                        # Draw cached overlay
+                        if overlay_cache.cached_path_overlay is not None:
+                            screen.blit(overlay_cache.cached_path_overlay, (0, 0))
 
                     if adjacency_graph_debug_enabled and cached_graph_data is not None:
-                        # Prepare visualization data using cached graph
-                        try:
-                            # Convert graph to visualization format
-                            viz_data = {"nodes": [], "edges": []}
+                        if (
+                            pos_changed
+                            or cache_expired
+                            or overlay_cache.cached_graph_overlay is None
+                        ):
+                            # Prepare visualization data using cached graph
+                            try:
+                                # Convert graph to visualization format
+                                viz_data = {"nodes": [], "edges": []}
 
-                            # Add nodes
-                            if (
-                                hasattr(cached_graph_data, "graph")
-                                and cached_graph_data.graph
-                            ):
-                                for (
-                                    node_id,
-                                    node_data,
-                                ) in cached_graph_data.graph.nodes.items():
-                                    if hasattr(node_data, "position"):
-                                        viz_data["nodes"].append(
-                                            {
-                                                "pos": node_data.position,
-                                                "type": "normal",
-                                            }
-                                        )
+                                # Add nodes
+                                if (
+                                    hasattr(cached_graph_data, "graph")
+                                    and cached_graph_data.graph
+                                ):
+                                    for (
+                                        node_id,
+                                        node_data,
+                                    ) in cached_graph_data.graph.nodes.items():
+                                        if hasattr(node_data, "position"):
+                                            viz_data["nodes"].append(
+                                                {
+                                                    "pos": node_data.position,
+                                                    "type": "normal",
+                                                }
+                                            )
 
-                                # Add edges
-                                for (
-                                    node_id,
-                                    neighbors,
-                                ) in cached_graph_data.graph.adjacency_list.items():
-                                    node_pos = cached_graph_data.graph.nodes[
-                                        node_id
-                                    ].position
-                                    for neighbor_id in neighbors:
-                                        neighbor_pos = cached_graph_data.graph.nodes[
-                                            neighbor_id
+                                    # Add edges
+                                    for (
+                                        node_id,
+                                        neighbors,
+                                    ) in cached_graph_data.graph.adjacency_list.items():
+                                        node_pos = cached_graph_data.graph.nodes[
+                                            node_id
                                         ].position
-                                        viz_data["edges"].append(
-                                            {"pos1": node_pos, "pos2": neighbor_pos}
-                                        )
+                                        for neighbor_id in neighbors:
+                                            neighbor_pos = (
+                                                cached_graph_data.graph.nodes[
+                                                    neighbor_id
+                                                ].position
+                                            )
+                                            viz_data["edges"].append(
+                                                {"pos1": node_pos, "pos2": neighbor_pos}
+                                            )
 
-                            # Add ninja node
-                            viz_data["nodes"].append(
-                                {"pos": ninja_pos, "type": "ninja"}
-                            )
+                                # Add ninja node
+                                viz_data["nodes"].append(
+                                    {"pos": ninja_pos, "type": "ninja"}
+                                )
 
-                            # Draw overlay
-                            overlay_surface = renderer.draw_adjacency_graph(
-                                viz_data, ninja_pos
-                            )
-                            screen.blit(overlay_surface, (0, 0))
-                        except Exception as e:
-                            print(f"[Path Viz] ERROR: Adjacency graph visualization failed: {e}")
+                                # Draw and cache overlay
+                                overlay_cache.cached_graph_overlay = (
+                                    renderer.draw_adjacency_graph(viz_data, ninja_pos)
+                                )
+
+                            except Exception as e:
+                                print(
+                                    f"[Path Viz] ERROR: Adjacency graph visualization failed: {e}"
+                                )
+
+                        # Draw cached overlay
+                        if overlay_cache.cached_graph_overlay is not None:
+                            screen.blit(overlay_cache.cached_graph_overlay, (0, 0))
 
                     # Update display
                     pygame.display.flip()
