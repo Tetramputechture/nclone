@@ -6,17 +6,19 @@ with preset configurations. It acts as the bridge between configuration
 and generator implementation.
 """
 
-from typing import Dict, Type, Callable
+from typing import Dict, Type
 from .map import Map
 from .map_maze import MazeGenerator
 from .map_jump_required import MapJumpRequired
 from .map_hills import MapHills
 from .map_vertical_corridor import MapVerticalCorridor
+from .map_horizontal_corridor import MapHorizontalCorridor
 from .map_mine_maze import MapMineMaze
 from .map_islands import MapIslands
 from .map_jump_platforms import MapJumpPlatforms
 from .map_multi_chamber import MultiChamberGenerator
 from .map_single_chamber import SingleChamberGenerator
+from .map_corridors import MapCorridors
 from .generator_configs import GENERATOR_PRESETS
 
 
@@ -25,11 +27,13 @@ GENERATOR_REGISTRY: Dict[str, Type[Map]] = {
     "jump_required": MapJumpRequired,
     "hills": MapHills,
     "vertical_corridor": MapVerticalCorridor,
+    "horizontal_corridor": MapHorizontalCorridor,
     "mine_maze": MapMineMaze,
     "islands": MapIslands,
     "jump_platforms": MapJumpPlatforms,
     "multi_chamber": MultiChamberGenerator,
     "single_chamber": SingleChamberGenerator,
+    "corridors": MapCorridors,
 }
 
 
@@ -96,29 +100,3 @@ class GeneratorFactory:
 
         config = GENERATOR_PRESETS[generator_type][preset]
         return GeneratorFactory.create_generator(generator_type, config, seed)
-
-
-def create_horizontal_generator(
-    seed: int, index: int, height: int = None
-) -> Callable[[int], Map]:
-    """Create a horizontal level generator function.
-
-    This is a special case for horizontal minimal levels that use the base Map class
-    with custom generation logic from TestSuiteGenerator.
-
-    Args:
-        seed: Random seed
-        index: Level index for parameter variation
-        height: Optional fixed height
-
-    Returns:
-        Generator function that creates a horizontal level
-    """
-
-    def generator(s: int) -> Map:
-        from .generate_test_suite_maps import TestSuiteGenerator
-
-        gen = TestSuiteGenerator()
-        return gen._create_minimal_simple_level_horizontal(s, index, height)
-
-    return generator

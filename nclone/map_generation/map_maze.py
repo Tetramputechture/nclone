@@ -44,13 +44,12 @@ class MazeGenerator(Map):
         self._fill_with_walls()
 
         # Add solid walls around maze boundaries (scaled by cell_size)
-        use_random_tiles_type = self.rng.choice([True, False])
         self.set_hollow_rectangle(
             self.start_x - self.cell_size,
             self.start_y - self.cell_size,
             self.start_x + self.width * self.cell_size,
             self.start_y + self.height * self.cell_size,
-            use_random_tiles_type=use_random_tiles_type,
+            use_random_tiles_type=True,
         )
 
     def _fill_with_walls(self):

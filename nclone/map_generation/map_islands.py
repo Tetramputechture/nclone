@@ -67,14 +67,12 @@ class MapIslands(Map):
         # Carve out empty chamber
         self.set_empty_rectangle(chamber_x1, chamber_y1, chamber_x2, chamber_y2)
 
-        # Add boundary walls around chamber
-        use_random_border = self.rng.choice([True, False])
         self.set_hollow_rectangle(
             chamber_x1 - 1,
             chamber_y1 - 1,
             chamber_x2 + 1,
             chamber_y2 + 1,
-            use_random_tiles_type=use_random_border,
+            use_random_tiles_type=True,
         )
 
         # Calculate valid area for island placement (respecting border distance)

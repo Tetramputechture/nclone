@@ -139,6 +139,36 @@ class SingleChamberConfig:
     add_ceiling_obstacles: bool = False
 
 
+@dataclass
+class HorizontalCorridorConfig:
+    """Configuration for horizontal corridor generator."""
+
+    min_width: int = 3
+    max_width: int = 23
+    min_height: int = 1
+    max_height: int = 5
+    random_edge_tiles: bool = False
+    fixed_height: int = None
+
+
+@dataclass
+class CorridorsConfig:
+    """Configuration for corridors generator."""
+
+    min_corridors: int = 2
+    max_corridors: int = 5
+    min_horizontal_width: int = 8
+    max_horizontal_width: int = 25
+    min_horizontal_height: int = 1
+    max_horizontal_height: int = 3
+    min_vertical_width: int = 1
+    max_vertical_width: int = 6
+    min_vertical_height: int = 6
+    max_vertical_height: int = 15
+    add_zig_zag_drops: bool = False
+    add_chaotic_walls: bool = False
+
+
 # Generator presets organized by difficulty
 GENERATOR_PRESETS = {
     "maze": {
@@ -485,6 +515,78 @@ GENERATOR_PRESETS = {
             add_ceiling_obstacles=True,
         ),
     },
+    "horizontal_corridor": {
+        "minimal": HorizontalCorridorConfig(
+            min_width=3,
+            max_width=23,
+            min_height=1,
+            max_height=1,
+            random_edge_tiles=False,
+            fixed_height=1,
+        ),
+        "simple": HorizontalCorridorConfig(
+            min_width=3,
+            max_width=23,
+            min_height=1,
+            max_height=5,
+            random_edge_tiles=True,
+            fixed_height=None,
+        ),
+    },
+    "corridors": {
+        "simplest": CorridorsConfig(
+            min_corridors=2,
+            max_corridors=2,
+            min_horizontal_width=3,
+            max_horizontal_width=5,
+            max_horizontal_height=1,
+            min_vertical_width=1,
+            max_vertical_width=1,
+            min_vertical_height=2,
+            max_vertical_height=3,
+            add_zig_zag_drops=True,
+            add_chaotic_walls=False,
+        ),
+        "simple": CorridorsConfig(
+            min_corridors=2,
+            max_corridors=3,
+            min_horizontal_width=8,
+            max_horizontal_width=15,
+            max_horizontal_height=2,
+            min_vertical_width=1,
+            max_vertical_width=3,
+            min_vertical_height=6,
+            max_vertical_height=10,
+            add_zig_zag_drops=True,
+            add_chaotic_walls=True,
+        ),
+        "medium": CorridorsConfig(
+            min_corridors=3,
+            max_corridors=4,
+            min_horizontal_width=10,
+            max_horizontal_width=20,
+            max_horizontal_height=3,
+            min_vertical_width=2,
+            max_vertical_width=4,
+            min_vertical_height=8,
+            max_vertical_height=15,
+            add_zig_zag_drops=True,
+            add_chaotic_walls=True,
+        ),
+        "complex": CorridorsConfig(
+            min_corridors=4,
+            max_corridors=5,
+            min_horizontal_width=15,
+            max_horizontal_width=25,
+            max_horizontal_height=3,
+            min_vertical_width=3,
+            max_vertical_width=6,
+            min_vertical_height=10,
+            max_vertical_height=15,
+            add_zig_zag_drops=True,
+            add_chaotic_walls=True,
+        ),
+    },
 }
 
 
@@ -510,7 +612,8 @@ CATEGORIES = {
         seed_base_train=1000,
         generators=[
             ("vertical_corridor", "minimal"),
-            ("horizontal", "minimal"),
+            ("horizontal_corridor", "minimal"),
+            ("corridors", "simplest"),
         ],
     ),
     "simpler": CategoryConfig(
@@ -521,8 +624,9 @@ CATEGORIES = {
         seed_base_train=5000,
         generators=[
             ("vertical_corridor", "simpler"),
-            ("horizontal", "simple"),
+            ("horizontal_corridor", "simple"),
             ("vertical_corridor", "simpler_with_mines"),
+            ("corridors", "simple"),
         ],
     ),
     "simple": CategoryConfig(
@@ -539,6 +643,7 @@ CATEGORIES = {
             ("single_chamber", "obstacle"),
             ("single_chamber", "gap"),
             ("vertical_corridor", "platforms"),
+            ("corridors", "simple"),
         ],
     ),
     "medium": CategoryConfig(
@@ -559,6 +664,7 @@ CATEGORIES = {
             ("single_chamber", "mines"),
             ("single_chamber", "ceiling_hazard"),
             ("vertical_corridor", "mine_gauntlet"),
+            ("corridors", "medium"),
         ],
     ),
     "complex": CategoryConfig(
@@ -576,6 +682,7 @@ CATEGORIES = {
             ("vertical_corridor", "complex"),
             ("islands", "complex"),
             ("jump_platforms", "complex"),
+            ("corridors", "complex"),
         ],
     ),
     "mine_heavy": CategoryConfig(

@@ -3,7 +3,7 @@
 import numpy as np
 
 # Max time in frames per level before episode truncation
-MAX_TIME_IN_FRAMES = 20000
+MAX_TIME_IN_FRAMES = 5000
 
 # Player frame size
 PLAYER_FRAME_WIDTH = 84

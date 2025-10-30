@@ -127,6 +127,12 @@ class FrameStackWrapper(ObservationWrapper):
             maxlen=state_stack_size if enable_state_stacking else 1
         )
 
+        # Pre-allocate stacking buffers to avoid np.stack() copies
+        # These buffers are reused and updated in-place
+        self._player_frame_stack_buffer = None
+        self._game_state_stack_buffer = None
+        self._initialized_buffers = False
+
         # Update observation space
         self.observation_space = self._build_stacked_observation_space()
 
@@ -193,6 +199,9 @@ class FrameStackWrapper(ObservationWrapper):
         """
         obs, info = self.env.reset(**kwargs)
 
+        # Reset buffer initialization flag to reinitialize on first observation
+        self._initialized_buffers = False
+
         # Initialize buffers with padding (stack_size - 1 frames)
         # The observation() call will add the real frame as the last element
         if "player_frame" in obs and self.enable_visual_stacking:
@@ -213,6 +222,53 @@ class FrameStackWrapper(ObservationWrapper):
 
         return self.observation(obs), info
 
+    def _init_stack_buffers(self, observation: Dict[str, Any]) -> None:
+        """Initialize pre-allocated stacking buffers from observation shapes."""
+        if self._initialized_buffers:
+            return
+
+        # Initialize player frame stack buffer if needed
+        if (
+            self.enable_visual_stacking
+            and "player_frame" in observation
+            and self._player_frame_stack_buffer is None
+        ):
+            frame_shape = observation["player_frame"].shape  # (H, W, C)
+            stack_shape = (self.visual_stack_size,) + frame_shape
+            self._player_frame_stack_buffer = np.zeros(
+                stack_shape, dtype=observation["player_frame"].dtype
+            )
+
+        # Initialize game state stack buffer if needed
+        if (
+            self.enable_state_stacking
+            and "game_state" in observation
+            and self._game_state_stack_buffer is None
+        ):
+            state_shape = observation["game_state"].shape  # (state_dim,)
+            stack_shape = (self.state_stack_size,) + state_shape
+            self._game_state_stack_buffer = np.zeros(
+                stack_shape, dtype=observation["game_state"].dtype
+            )
+
+        self._initialized_buffers = True
+
+    def _copy_frames_to_buffer(
+        self, buffer: deque, target_buffer: np.ndarray
+    ) -> np.ndarray:
+        """Copy frames from deque to pre-allocated buffer without creating new array.
+
+        Args:
+            buffer: Deque containing frames
+            target_buffer: Pre-allocated buffer to copy into
+
+        Returns:
+            Reference to target_buffer (same array, updated in-place)
+        """
+        for i, frame in enumerate(buffer):
+            target_buffer[i] = frame
+        return target_buffer
+
     def observation(self, observation: Dict[str, Any]) -> Dict[str, Any]:
         """
         Transform observation by stacking frames.
@@ -230,6 +286,9 @@ class FrameStackWrapper(ObservationWrapper):
         Returns:
             Observation dict with stacked player frames (augmented if enabled)
         """
+        # Initialize buffers on first observation
+        self._init_stack_buffers(observation)
+
         # Update buffers with new observations
         if "player_frame" in observation:
             self.player_frame_buffer.append(observation["player_frame"])
@@ -242,13 +301,23 @@ class FrameStackWrapper(ObservationWrapper):
 
         # Stack player frame if enabled, with consistent augmentation
         if "player_frame" in observation:
-            if self.enable_visual_stacking and len(self.player_frame_buffer) > 0:
-                # Stack frames along first dimension: (stack_size, H, W, C)
-                stacked_frames = np.stack(self.player_frame_buffer, axis=0)
+            if (
+                self.enable_visual_stacking
+                and len(self.player_frame_buffer) > 0
+                and self._player_frame_stack_buffer is not None
+            ):
+                # Copy frames to pre-allocated buffer (avoids np.stack() copy)
+                stacked_frames = self._copy_frames_to_buffer(
+                    self.player_frame_buffer, self._player_frame_stack_buffer
+                )
 
                 # Apply consistent augmentation to all frames in the stack
                 if self.enable_augmentation:
                     stacked_frames = self._apply_consistent_augmentation(stacked_frames)
+                else:
+                    # If no augmentation, need to copy buffer to avoid mutation issues
+                    # when observation is stored (e.g., in rollout buffers)
+                    stacked_frames = stacked_frames.copy()
 
                 stacked_obs["player_frame"] = stacked_frames
             else:
@@ -268,9 +337,17 @@ class FrameStackWrapper(ObservationWrapper):
 
         # Stack game state if enabled
         if "game_state" in observation:
-            if self.enable_state_stacking and len(self.game_state_buffer) > 0:
-                # Stack states along first dimension: (stack_size, state_dim)
-                stacked_obs["game_state"] = np.stack(self.game_state_buffer, axis=0)
+            if (
+                self.enable_state_stacking
+                and len(self.game_state_buffer) > 0
+                and self._game_state_stack_buffer is not None
+            ):
+                # Copy states to pre-allocated buffer (avoids np.stack() copy)
+                stacked_states = self._copy_frames_to_buffer(
+                    self.game_state_buffer, self._game_state_stack_buffer
+                )
+                # Need to copy buffer to avoid mutation issues when observation is stored
+                stacked_obs["game_state"] = stacked_states.copy()
             else:
                 stacked_obs["game_state"] = observation["game_state"]
 

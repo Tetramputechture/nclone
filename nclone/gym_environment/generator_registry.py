@@ -52,22 +52,7 @@ class GeneratorRegistry:
         # Select random generator from category's generator list
         gen_type, preset = self.rng.choice(config.generators)
 
-        # Special handling for horizontal generator
-        if gen_type == "horizontal":
-            from ..map_generation.generate_test_suite_maps import TestSuiteGenerator
-
-            gen = TestSuiteGenerator()
-            index = self.rng.randint(0, 100)
-            if preset == "minimal":
-                return gen._create_minimal_simple_level_horizontal(seed, 8, height=1)
-            else:
-                return gen._create_minimal_simple_level_horizontal(
-                    seed,
-                    index,
-                    random_edge_tiles=True,
-                )
-
-        # Use factory for standard generators
+        # Use factory for all generators
         map_gen = GeneratorFactory.create_from_preset(gen_type, preset, seed)
         map_gen.generate(seed=seed)
         return map_gen

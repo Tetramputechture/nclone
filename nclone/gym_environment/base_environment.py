@@ -9,7 +9,7 @@ import gymnasium
 from gymnasium.spaces import box, discrete, Dict as SpacesDict
 import random
 import numpy as np
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 
 # Core nclone imports
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
@@ -279,7 +279,7 @@ class BaseNppEnvironment(gymnasium.Env):
         processed_obs = self._process_observation(curr_obs)
 
         # Build episode info
-        info = self._build_episode_info(player_won)
+        info = self._build_episode_info(player_won, terminated, truncated)
 
         # Hook: Add additional info fields
         self._extend_info_hook(info)
@@ -336,7 +336,9 @@ class BaseNppEnvironment(gymnasium.Env):
         """
         pass
 
-    def _build_episode_info(self, player_won: bool) -> Dict[str, Any]:
+    def _build_episode_info(
+        self, player_won: bool, terminated: bool, truncated: bool
+    ) -> Dict[str, Any]:
         """Build the base episode info dictionary.
 
         This method can be extended by subclasses to add additional info fields.
@@ -349,6 +351,8 @@ class BaseNppEnvironment(gymnasium.Env):
         """
         info = {
             "is_success": player_won,
+            "terminated": terminated,
+            "truncated": truncated,
             "r": self.current_ep_reward,
             "l": self.nplay_headless.sim.frame,
             "level_id": self.map_loader.current_map_name,
@@ -595,6 +599,122 @@ class BaseNppEnvironment(gymnasium.Env):
     def current_map_name(self) -> str:
         """Get the current map name."""
         return self.map_loader.current_map_name
+
+    def get_route_visualization_tile_data(self) -> Dict[Tuple[int, int], int]:
+        """Get tile data for route visualization.
+
+        This method is callable via env_method from SubprocVecEnv to access
+        tile data from remote environments.
+
+        Returns:
+            Dictionary mapping (x, y) grid coordinates to tile type values
+        """
+        tile_dic = self.nplay_headless.get_tile_data()
+        return dict(tile_dic)  # Make a copy
+
+    def get_route_visualization_mine_data(self) -> List[Dict[str, Any]]:
+        """Get mine data for route visualization.
+
+        This method is callable via env_method from SubprocVecEnv to access
+        mine data from remote environments.
+
+        Returns:
+            List of mine dictionaries with keys: x, y, state, radius
+        """
+        mines = []
+        entity_dic = self.nplay_headless.sim.entity_dic
+
+        if 1 in entity_dic:
+            toggle_mines = entity_dic[1]
+
+            # Import mine radius constants
+            try:
+                from ..constants import TOGGLE_MINE_RADII
+            except ImportError:
+                # Fallback to default values if import fails
+                TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}
+
+            for mine in toggle_mines:
+                if hasattr(mine, "xpos") and hasattr(mine, "ypos"):
+                    state = getattr(mine, "state", 1)
+                    radius = TOGGLE_MINE_RADII.get(state, 4.0)
+
+                    mines.append(
+                        {
+                            "x": float(mine.xpos),
+                            "y": float(mine.ypos),
+                            "state": int(state),
+                            "radius": float(radius),
+                        }
+                    )
+
+        return mines
+
+    def get_route_visualization_locked_door_data(self) -> List[Dict[str, Any]]:
+        """Get locked door data for route visualization.
+
+        This method is callable via env_method from SubprocVecEnv to access
+        locked door data from remote environments.
+
+        Returns:
+            List of locked door dictionaries with keys:
+            - switch_x, switch_y: Switch position
+            - door_x, door_y: Door segment center position
+            - segment_x1, segment_y1, segment_x2, segment_y2: Door segment endpoints
+            - closed: Whether door is closed (True) or open (False)
+            - active: Whether switch is still collectible (True = not collected, door closed)
+            - switch_radius: Switch radius
+        """
+        locked_doors = []
+        locked_door_entities = self.nplay_headless.locked_doors()
+
+        # Import door constants
+        try:
+            from ..entity_classes.entity_door_locked import EntityDoorLocked
+        except ImportError:
+            # Fallback to default values if import fails
+            EntityDoorLocked = type("EntityDoorLocked", (), {"RADIUS": 5})
+
+        for door_entity in locked_door_entities:
+            # Get switch position (entity position)
+            switch_x = float(getattr(door_entity, "xpos", 0.0))
+            switch_y = float(getattr(door_entity, "ypos", 0.0))
+
+            # Get door segment
+            segment = getattr(door_entity, "segment", None)
+            if segment:
+                segment_x1 = float(getattr(segment, "x1", 0.0))
+                segment_y1 = float(getattr(segment, "y1", 0.0))
+                segment_x2 = float(getattr(segment, "x2", 0.0))
+                segment_y2 = float(getattr(segment, "y2", 0.0))
+                door_x = (segment_x1 + segment_x2) * 0.5
+                door_y = (segment_y1 + segment_y2) * 0.5
+            else:
+                # Fallback if segment not available
+                segment_x1 = segment_y1 = segment_x2 = segment_y2 = 0.0
+                door_x = door_y = 0.0
+
+            # Get door state
+            closed = bool(getattr(door_entity, "closed", True))
+            active = bool(getattr(door_entity, "active", True))
+
+            locked_doors.append(
+                {
+                    "switch_x": switch_x,
+                    "switch_y": switch_y,
+                    "door_x": door_x,
+                    "door_y": door_y,
+                    "segment_x1": segment_x1,
+                    "segment_y1": segment_y1,
+                    "segment_x2": segment_x2,
+                    "segment_y2": segment_y2,
+                    "closed": closed,
+                    "active": active,
+                    "switch_radius": float(EntityDoorLocked.RADIUS),
+                }
+            )
+
+        return locked_doors
 
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects and support vectorization."""

@@ -61,20 +61,22 @@ TIME_PENALTY_PER_STEP = -0.0001
 # - Early phase: minimal penalty, encourage exploration
 # - Middle phase: moderate penalty, find solutions
 # - Late phase: high penalty, optimize routes
-TIME_PENALTY_EARLY = -0.00005     # Steps 0-30%: exploration phase
-TIME_PENALTY_MIDDLE = -0.0002     # Steps 30-70%: solution phase  
-TIME_PENALTY_LATE = -0.0005       # Steps 70-100%: optimization phase
+TIME_PENALTY_EARLY = -0.00005  # Steps 0-30%: exploration phase
+TIME_PENALTY_MIDDLE = -0.0002  # Steps 30-70%: solution phase
+TIME_PENALTY_LATE = -0.0005  # Steps 70-100%: optimization phase
 
 # Phase thresholds (as fraction of max episode length)
-TIME_PENALTY_EARLY_THRESHOLD = 0.3    # 30% of episode
-TIME_PENALTY_LATE_THRESHOLD = 0.7     # 70% of episode
+TIME_PENALTY_EARLY_THRESHOLD = 0.3  # 30% of episode
+TIME_PENALTY_LATE_THRESHOLD = 0.7  # 70% of episode
 
 # Completion time bonus (for fine-tuning speed optimization)
 # Rationale: Explicitly rewards fast completion without punishing slow solutions.
 # Bonus linearly decreases from maximum to zero as completion time increases.
 # Compatible with curriculum: train for completion first, then fine-tune for speed.
-COMPLETION_TIME_BONUS_MAX = 2.0      # Maximum bonus (instant completion)
-COMPLETION_TIME_TARGET = 5000        # Target steps for full bonus (adjust per level difficulty)
+COMPLETION_TIME_BONUS_MAX = 2.0  # Maximum bonus (instant completion)
+COMPLETION_TIME_TARGET = (
+    5000  # Target steps for full bonus (adjust per level difficulty)
+)
 
 
 # =============================================================================
@@ -232,167 +234,3 @@ ICM_INVERSE_LOSS_WEIGHT = 0.1
 # Rationale: Moderate learning rate (1e-3) for ICM network training.
 # Higher than policy network (3e-4) as ICM learns faster auxiliary task.
 ICM_LEARNING_RATE = 1e-3
-
-
-# =============================================================================
-# REWARD CONFIGURATION
-# =============================================================================
-
-def get_default_reward_config(enable_speed_optimization: bool = False) -> Dict[str, Any]:
-    """Get default reward configuration for N++ RL training.
-    
-    Goal: Generalized level completion across diverse unseen levels.
-    Fine-tuning: Optional speed optimization for specific levels.
-    
-    Args:
-        enable_speed_optimization: Enable progressive time penalties and completion 
-                                   bonus for speed fine-tuning after reliable completion
-    
-    Returns:
-        dict: Complete reward configuration for RewardCalculator
-    """
-    return {
-        # Terminal rewards
-        "level_completion_reward": LEVEL_COMPLETION_REWARD,
-        "death_penalty": DEATH_PENALTY,
-        "switch_activation_reward": SWITCH_ACTIVATION_REWARD,
-        
-        # Time penalty
-        "time_penalty_mode": "progressive" if enable_speed_optimization else "fixed",
-        "time_penalty_fixed": TIME_PENALTY_PER_STEP,
-        "time_penalty_early": TIME_PENALTY_EARLY,
-        "time_penalty_middle": TIME_PENALTY_MIDDLE,
-        "time_penalty_late": TIME_PENALTY_LATE,
-        "time_penalty_early_threshold": TIME_PENALTY_EARLY_THRESHOLD,
-        "time_penalty_late_threshold": TIME_PENALTY_LATE_THRESHOLD,
-        
-        # Completion bonus (for speed fine-tuning)
-        "enable_completion_bonus": enable_speed_optimization,
-        "completion_bonus_max": COMPLETION_TIME_BONUS_MAX,
-        "completion_bonus_target": COMPLETION_TIME_TARGET,
-        
-        # PBRS (navigation shaping)
-        "enable_pbrs": True,
-        "pbrs_gamma": PBRS_GAMMA,
-        "pbrs_weights": {
-            "objective_weight": PBRS_OBJECTIVE_WEIGHT,
-            "hazard_weight": 0.0,
-            "impact_weight": 0.0,
-            "exploration_weight": 0.0,
-        },
-        
-        # Exploration rewards
-        "enable_exploration_rewards": True,
-        "exploration_scales": {
-            "cell_reward": EXPLORATION_CELL_REWARD,
-            "area_4x4_reward": EXPLORATION_AREA_4X4_REWARD,
-            "area_8x8_reward": EXPLORATION_AREA_8X8_REWARD,
-            "area_16x16_reward": EXPLORATION_AREA_16X16_REWARD,
-        },
-        
-        # Episode config
-        "max_episode_steps": MAX_TIME_IN_FRAMES,
-    }
-
-
-# =============================================================================
-# REWARD VALIDATION AND SANITY CHECKS
-# =============================================================================
-
-def validate_reward_config(config: Dict[str, Any]) -> bool:
-    """Validate reward configuration for common pitfalls.
-    
-    Checks for:
-    - Terminal rewards dominating time penalties
-    - PBRS weights in reasonable ranges
-    - Exploration rewards not overwhelming primary objectives
-    
-    Args:
-        config: Reward configuration dictionary
-        
-    Returns:
-        bool: True if configuration passes validation
-        
-    Raises:
-        ValueError: If configuration has critical issues
-    """
-    max_episode_steps = 20000  # N++ default
-    
-    # Check terminal reward magnitudes
-    completion = config.get("level_completion_reward", LEVEL_COMPLETION_REWARD)
-    death = config.get("death_penalty", DEATH_PENALTY)
-    time_penalty = config.get("time_penalty", TIME_PENALTY_PER_STEP)
-    
-    # Terminal rewards should dominate cumulative time penalties
-    max_time_penalty = abs(time_penalty) * max_episode_steps
-    if completion < max_time_penalty:
-        raise ValueError(
-            f"Completion reward ({completion}) is smaller than maximum "
-            f"cumulative time penalty ({max_time_penalty}). This can cause "
-            f"the agent to optimize for death over completion."
-        )
-    
-    # Death penalty should be meaningful but not overwhelming
-    if abs(death) > abs(completion):
-        print(
-            "WARNING: Death penalty magnitude exceeds completion reward. "
-            "This may lead to overly conservative behavior."
-        )
-    
-    # PBRS weights should be moderate
-    pbrs_weights = config.get("pbrs_weights", {})
-    for key, value in pbrs_weights.items():
-        if value > 5.0:
-            print(
-                f"WARNING: PBRS weight '{key}' = {value} is unusually large. "
-                f"This may overwhelm terminal rewards."
-            )
-    
-    # Exploration rewards should be modest
-    exploration_scales = config.get("exploration_scales", {})
-    total_exploration = sum(exploration_scales.values())
-    if total_exploration > abs(time_penalty):
-        print(
-            f"WARNING: Total exploration reward ({total_exploration}) exceeds "
-            f"time penalty magnitude ({abs(time_penalty)}). This may "
-            f"encourage aimless wandering."
-        )
-    
-    return True
-
-
-def print_reward_summary(config: Dict[str, Any]) -> None:
-    """Print human-readable summary of reward configuration.
-    
-    Args:
-        config: Reward configuration dictionary
-    """
-    print("=" * 70)
-    print("REWARD CONFIGURATION SUMMARY")
-    print("=" * 70)
-    
-    print("\nTerminal Rewards:")
-    print(f"  Level Completion: +{config.get('level_completion_reward', 0)}")
-    print(f"  Death Penalty:    {config.get('death_penalty', 0)}")
-    print(f"  Switch Activation: +{config.get('switch_activation_reward', 0)}")
-    print(f"  Time Penalty:     {config.get('time_penalty', 0)} per step")
-    
-    print("\nPBRS Configuration:")
-    print(f"  Enabled: {config.get('enable_pbrs', False)}")
-    if config.get('enable_pbrs', False):
-        weights = config.get('pbrs_weights', {})
-        print(f"  Objective Weight:    {weights.get('objective_weight', 0)}")
-        print(f"  Hazard Weight:       {weights.get('hazard_weight', 0)}")
-        print(f"  Impact Weight:       {weights.get('impact_weight', 0)}")
-        print(f"  Exploration Weight:  {weights.get('exploration_weight', 0)}")
-    
-    print("\nExploration Rewards:")
-    print(f"  Enabled: {config.get('enable_exploration_rewards', False)}")
-    if config.get('enable_exploration_rewards', False):
-        scales = config.get('exploration_scales', {})
-        print(f"  Cell (24x24):        {scales.get('cell_reward', 0)}")
-        print(f"  Area (96x96):        {scales.get('area_4x4_reward', 0)}")
-        print(f"  Area (192x192):      {scales.get('area_8x8_reward', 0)}")
-        print(f"  Area (384x384):      {scales.get('area_16x16_reward', 0)}")
-    
-    print("=" * 70)

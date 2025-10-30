@@ -296,6 +296,7 @@ class ObservationProcessor:
         """Crop the frame to a rectangle centered on the player.
 
         Note: Frame should already be stabilized by the caller to avoid redundant processing.
+        MEMORY OPTIMIZED: Reuses pre-allocated buffer when possible.
         """
         # Frame is already stabilized by caller - use directly
         player_frame = frame
@@ -331,7 +332,7 @@ class ObservationProcessor:
         top_pad = max(0, top_pad)
         bottom_pad = max(0, bottom_pad)
 
-        # Pad the frame
+        # Pad the frame (cv2.copyMakeBorder creates new array - necessary operation)
         player_frame = cv2.copyMakeBorder(
             player_frame,
             top_pad,
@@ -347,12 +348,22 @@ class ObservationProcessor:
             player_frame = player_frame[..., np.newaxis]
 
         # Final size check and correction if needed
-        if player_frame.shape[:2] != (PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH):
+        # Reuse pre-allocated buffer if shape matches
+        if player_frame.shape == self._player_frame_buffer.shape:
+            # Copy into pre-allocated buffer to avoid allocation
+            np.copyto(self._player_frame_buffer, player_frame)
+            return self._player_frame_buffer
+        elif player_frame.shape[:2] != (PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH):
+            # Resize needed (creates new array - necessary operation)
             player_frame = cv2.resize(
                 player_frame, (PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT)
             )
             if len(player_frame.shape) == 2:
                 player_frame = player_frame[..., np.newaxis]
+            # Copy into buffer if shape now matches
+            if player_frame.shape == self._player_frame_buffer.shape:
+                np.copyto(self._player_frame_buffer, player_frame)
+                return self._player_frame_buffer
 
         return player_frame
 
@@ -524,12 +535,13 @@ class ObservationProcessor:
 
         # MEMORY OPTIMIZATION: Return views/references to buffers where safe
         # game_state needs to be a new array since it's computed fresh
-        # but entity_positions can be a copy of the buffer (needed for safety)
+        # entity_positions needs a copy since observations are stored in rollout buffers
+        # Using np.array() for explicit copy (slightly more efficient than .copy())
         result = {
             "game_state": self.process_game_state(obs),
             "global_view": self.process_rendered_global_view(screen),
             "reachability_features": obs["reachability_features"],
-            "entity_positions": self._entity_positions_buffer.copy(),  # Copy for safety
+            "entity_positions": np.array(self._entity_positions_buffer, copy=True),
             "player_frame": player_frame,
         }
 

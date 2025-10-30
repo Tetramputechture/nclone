@@ -62,9 +62,6 @@ class MapHills(Map):
             for x in range(chamber_x, chamber_x + width):
                 self.set_tile(x, y, 0)
 
-        # Step 4: Create boundary walls
-        use_random_tiles = self.rng.choice([True, False])
-
         # Step 5: Generate rolling hills terrain
         floor_y = chamber_y + height
 
@@ -100,7 +97,7 @@ class MapHills(Map):
             chamber_y - 1,
             chamber_x + width,
             chamber_y + height,
-            use_random_tiles_type=use_random_tiles,
+            use_random_tiles_type=True,
         )
 
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)

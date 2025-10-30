@@ -666,24 +666,11 @@ if args.test_generators:
                 """Generate a new map using current generator."""
                 gen_type, preset = self.get_current_generator_info()
 
-                # Special handling for horizontal generator
-                if gen_type == "horizontal":
-                    from nclone.map_generation.generate_test_suite_maps import (
-                        TestSuiteGenerator,
-                    )
-
-                    test_gen = TestSuiteGenerator()
-                    map_obj = test_gen._create_minimal_simple_level_horizontal(
-                        self.current_seed,
-                        8 if preset == "minimal" else self.current_generator_idx,
-                        height=1 if preset == "minimal" else None,
-                        random_edge_tiles=True if preset != "minimal" else False,
-                    )
-                else:
-                    map_obj = GeneratorFactory.create_from_preset(
-                        gen_type, preset, seed=self.current_seed
-                    )
-                    map_obj.generate(seed=self.current_seed)
+                # Use factory for all generators
+                map_obj = GeneratorFactory.create_from_preset(
+                    gen_type, preset, seed=self.current_seed
+                )
+                map_obj.generate(seed=self.current_seed)
 
                 # Increment seed for next generation
                 self.current_seed += 1
