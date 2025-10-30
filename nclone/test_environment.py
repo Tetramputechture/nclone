@@ -582,12 +582,13 @@ if (
         print("• Performance benchmarking enabled")
 
     print("\nRuntime Controls:")
-    print("  P - Toggle path distance display")
+    print("  D - Toggle path distance display")
     print("  A - Toggle adjacency graph visualization")
     print("  B - Toggle blocked entity highlighting")
     print("  T - Run pathfinding benchmark at current position")
     print("  X - Export path analysis screenshot")
     print("  R - Reset environment")
+    print("  Arrow Keys/WASD - Move ninja")
 
     print("\nPerformance Targets:")
     print("  • Graph build (first call): < 5ms")
@@ -1919,13 +1920,12 @@ while running:
 
                 # Path-aware reward shaping controls
                 if path_aware_system is not None:
-                    if event.key == pygame.K_p and not (event.mod & pygame.KMOD_CTRL):
-                        # Toggle path distance display (only if not subgoal mode)
-                        if not subgoal_debug_enabled:
-                            path_distances_debug_enabled = not path_distances_debug_enabled
-                            print(
-                                f"Path distance display: {'ON' if path_distances_debug_enabled else 'OFF'}"
-                            )
+                    if event.key == pygame.K_d and not (keys[pygame.K_RIGHT] or keys[pygame.K_d]):
+                        # Toggle path distance display (no conflict with movement)
+                        path_distances_debug_enabled = not path_distances_debug_enabled
+                        print(
+                            f"Path distance display: {'ON' if path_distances_debug_enabled else 'OFF'}"
+                        )
                     
                     if event.key == pygame.K_a and not (keys[pygame.K_LEFT] or keys[pygame.K_a]):
                         # Toggle adjacency graph visualization (only if not moving)
@@ -2072,6 +2072,85 @@ while running:
 
     # Step the environment
     observation, reward, terminated, truncated, info = env.step(action)
+    
+    # Path-aware visualization overlays (only in human render mode)
+    if not args.headless and path_aware_system is not None and (path_distances_debug_enabled or adjacency_graph_debug_enabled):
+        try:
+            # Get ninja position
+            ninja_pos = _get_ninja_position(env)
+            
+            # Access debug overlay renderer
+            if hasattr(env, 'debug_overlay_renderer') and env.debug_overlay_renderer is not None:
+                renderer = env.debug_overlay_renderer
+                
+                # Get the pygame screen from the sim renderer
+                if hasattr(env, 'nplay_headless') and hasattr(env.nplay_headless, 'sim_renderer'):
+                    screen = env.nplay_headless.sim_renderer.screen
+                    
+                    if path_distances_debug_enabled:
+                        # Calculate path distances
+                        try:
+                            path_calculator = path_aware_system['path_calculator']
+                            graph_data = path_aware_system['graph_builder'].build_graph(env.level_data)
+                            
+                            # Get distances
+                            distances = path_calculator.get_distances_to_objectives(
+                                ninja_pos, env.level_data, graph_data
+                            )
+                            
+                            # Draw overlay
+                            overlay_surface = renderer.draw_path_distances(distances, ninja_pos)
+                            screen.blit(overlay_surface, (0, 0))
+                        except Exception as e:
+                            pass  # Silently fail if distances can't be calculated
+                    
+                    if adjacency_graph_debug_enabled:
+                        # Build graph and prepare visualization data
+                        try:
+                            graph_builder = path_aware_system['graph_builder']
+                            graph_data = graph_builder.build_graph(env.level_data)
+                            
+                            # Convert graph to visualization format
+                            viz_data = {
+                                'nodes': [],
+                                'edges': []
+                            }
+                            
+                            # Add nodes
+                            if hasattr(graph_data, 'graph') and graph_data.graph:
+                                for node_id, node_data in graph_data.graph.nodes.items():
+                                    if hasattr(node_data, 'position'):
+                                        viz_data['nodes'].append({
+                                            'pos': node_data.position,
+                                            'type': 'normal'
+                                        })
+                                
+                                # Add edges
+                                for node_id, neighbors in graph_data.graph.adjacency_list.items():
+                                    node_pos = graph_data.graph.nodes[node_id].position
+                                    for neighbor_id in neighbors:
+                                        neighbor_pos = graph_data.graph.nodes[neighbor_id].position
+                                        viz_data['edges'].append({
+                                            'pos1': node_pos,
+                                            'pos2': neighbor_pos
+                                        })
+                            
+                            # Add ninja node
+                            viz_data['nodes'].append({
+                                'pos': ninja_pos,
+                                'type': 'ninja'
+                            })
+                            
+                            # Draw overlay
+                            overlay_surface = renderer.draw_adjacency_graph(viz_data, ninja_pos)
+                            screen.blit(overlay_surface, (0, 0))
+                        except Exception as e:
+                            pass  # Silently fail if graph can't be visualized
+                    
+                    # Update display
+                    pygame.display.flip()
+        except Exception as e:
+            pass  # Silently ignore any visualization errors
 
     # Memory profiling snapshot
     if (

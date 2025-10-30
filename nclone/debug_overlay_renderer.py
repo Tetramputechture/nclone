@@ -531,3 +531,140 @@ class DebugOverlayRenderer:
 
         if mode_name in mode_map:
             self.subgoal_visualizer.set_mode(mode_map[mode_name])
+    
+    def draw_path_distances(self, path_distances: dict, ninja_pos: Tuple[float, float]) -> pygame.Surface:
+        """
+        Draw path distance overlay showing distances to objectives.
+        
+        Args:
+            path_distances: Dict with 'switch_distance' and 'exit_distance' keys
+            ninja_pos: Current ninja position (x, y)
+        
+        Returns:
+            Surface with path distance visualization
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        font = pygame.font.SysFont('monospace', 16, bold=True)
+        
+        # Draw distances at ninja position
+        if path_distances:
+            switch_dist = path_distances.get('switch_distance', float('inf'))
+            exit_dist = path_distances.get('exit_distance', float('inf'))
+            
+            # Convert ninja position to screen coordinates
+            screen_x = int(ninja_pos[0] * self.adjust) + self.tile_x_offset
+            screen_y = int(ninja_pos[1] * self.adjust) + self.tile_y_offset
+            
+            # Draw background box
+            box_width = 200
+            box_height = 60
+            box_x = screen_x + 20
+            box_y = screen_y - 40
+            
+            # Keep box on screen
+            if box_x + box_width > self.screen.get_width():
+                box_x = screen_x - box_width - 20
+            if box_y < 0:
+                box_y = screen_y + 20
+            
+            pygame.draw.rect(surface, (0, 0, 0, 200), (box_x, box_y, box_width, box_height), border_radius=5)
+            pygame.draw.rect(surface, (100, 200, 255, 255), (box_x, box_y, box_width, box_height), 2, border_radius=5)
+            
+            # Draw text
+            switch_text = f"Switch: {switch_dist if switch_dist != float('inf') else '∞'}"
+            exit_text = f"Exit: {exit_dist if exit_dist != float('inf') else '∞'}"
+            
+            switch_surf = font.render(switch_text, True, (100, 255, 100))
+            exit_surf = font.render(exit_text, True, (255, 200, 100))
+            
+            surface.blit(switch_surf, (box_x + 10, box_y + 10))
+            surface.blit(exit_surf, (box_x + 10, box_y + 35))
+        
+        return surface
+    
+    def draw_adjacency_graph(self, graph_data: dict, ninja_pos: Tuple[float, float]) -> pygame.Surface:
+        """
+        Draw adjacency graph overlay showing tile connectivity.
+        
+        Args:
+            graph_data: Dict with 'nodes' and 'edges' keys
+            ninja_pos: Current ninja position (x, y)
+        
+        Returns:
+            Surface with adjacency graph visualization
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        
+        if not graph_data or 'nodes' not in graph_data or 'edges' not in graph_data:
+            return surface
+        
+        nodes = graph_data['nodes']
+        edges = graph_data['edges']
+        
+        # Draw edges first (so nodes are on top)
+        for edge in edges:
+            pos1 = edge.get('pos1')
+            pos2 = edge.get('pos2')
+            if pos1 and pos2:
+                screen_x1 = int(pos1[0] * self.adjust) + self.tile_x_offset
+                screen_y1 = int(pos1[1] * self.adjust) + self.tile_y_offset
+                screen_x2 = int(pos2[0] * self.adjust) + self.tile_x_offset
+                screen_y2 = int(pos2[1] * self.adjust) + self.tile_y_offset
+                
+                # Draw edge line
+                pygame.draw.line(surface, (150, 150, 255, 100), 
+                               (screen_x1, screen_y1), (screen_x2, screen_y2), 2)
+        
+        # Draw nodes
+        for node in nodes:
+            pos = node.get('pos')
+            node_type = node.get('type', 'normal')
+            
+            if pos:
+                screen_x = int(pos[0] * self.adjust) + self.tile_x_offset
+                screen_y = int(pos[1] * self.adjust) + self.tile_y_offset
+                
+                # Choose color based on node type
+                if node_type == 'ninja':
+                    color = (60, 220, 255, 255)
+                    radius = 8
+                elif node_type == 'switch':
+                    color = (100, 255, 100, 255)
+                    radius = 6
+                elif node_type == 'exit':
+                    color = (255, 200, 100, 255)
+                    radius = 6
+                else:
+                    color = (200, 200, 255, 180)
+                    radius = 4
+                
+                # Draw node
+                pygame.draw.circle(surface, color, (screen_x, screen_y), radius)
+                pygame.draw.circle(surface, (255, 255, 255, 255), (screen_x, screen_y), radius, 1)
+        
+        # Draw legend
+        font = pygame.font.SysFont('monospace', 14)
+        legend_x = 10
+        legend_y = self.screen.get_height() - 120
+        
+        pygame.draw.rect(surface, (0, 0, 0, 200), (legend_x, legend_y, 180, 110), border_radius=5)
+        pygame.draw.rect(surface, (100, 200, 255, 255), (legend_x, legend_y, 180, 110), 2, border_radius=5)
+        
+        title = font.render("Adjacency Graph:", True, (255, 255, 255))
+        surface.blit(title, (legend_x + 10, legend_y + 5))
+        
+        # Legend items
+        legend_items = [
+            ((60, 220, 255), "Ninja"),
+            ((100, 255, 100), "Switch"),
+            ((255, 200, 100), "Exit"),
+            ((200, 200, 255), "Tile"),
+        ]
+        
+        for i, (color, label) in enumerate(legend_items):
+            y_pos = legend_y + 25 + i * 20
+            pygame.draw.circle(surface, color, (legend_x + 20, y_pos + 7), 5)
+            text = font.render(label, True, (255, 255, 255))
+            surface.blit(text, (legend_x + 35, y_pos))
+        
+        return surface
