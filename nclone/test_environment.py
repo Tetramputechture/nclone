@@ -60,15 +60,49 @@ def _get_ninja_position(env):
 
 
 def _get_level_hash(env):
-    """Get a hash representing the current level state for graph caching."""
+    """
+    Get a hash representing the current level state for graph caching.
+    
+    Only hashes static level structure (tiles, entity types/IDs) to avoid
+    rebuilding the graph every frame when dynamic state changes (positions, switch states).
+    """
     try:
         if hasattr(env, "level_data"):
-            # Create a simple hash from level data
             import hashlib
-
-            level_str = str(env.level_data)
-            return hashlib.md5(level_str.encode()).hexdigest()
-    except:
+            
+            # Hash only static structure to avoid cache invalidation on every frame
+            # - tiles: static level geometry
+            # - entity types/IDs: static entity placement (not positions)
+            # - level_id: unique identifier
+            
+            level_data = env.level_data
+            hash_components = []
+            
+            # Add tiles hash (static geometry)
+            if hasattr(level_data, 'tiles'):
+                tiles_bytes = level_data.tiles.tobytes()
+                hash_components.append(hashlib.md5(tiles_bytes).hexdigest())
+            
+            # Add entity types and IDs (not positions which are dynamic)
+            if hasattr(level_data, 'entities'):
+                entity_static = []
+                for entity in level_data.entities:
+                    # Only include type and ID, not position or state
+                    entity_type = entity.get('type', '')
+                    entity_id = entity.get('id', '')
+                    entity_static.append(f"{entity_type}:{entity_id}")
+                entity_str = ','.join(sorted(entity_static))
+                hash_components.append(hashlib.md5(entity_str.encode()).hexdigest())
+            
+            # Add level_id if available
+            if hasattr(level_data, 'level_id') and level_data.level_id:
+                hash_components.append(level_data.level_id)
+            
+            # Combine all components
+            combined = '|'.join(hash_components)
+            return hashlib.md5(combined.encode()).hexdigest()
+    except Exception as e:
+        print(f"Warning: Failed to compute level hash: {e}")
         pass
     return None
 
@@ -1985,9 +2019,12 @@ while running:
                                 import time as time_module
 
                                 start = time_module.perf_counter()
+                                # Convert LevelData to dictionary format
+                                level_data_dict = env.level_data.to_dict()
+                                level_data_dict['switch_states'] = env.level_data.switch_states
                                 graph_data = path_aware_system[
                                     "graph_builder"
-                                ].build_graph(env.level_data)
+                                ].build_graph(level_data_dict)
                                 graph_build_time = (
                                     time_module.perf_counter() - start
                                 ) * 1000
@@ -2149,7 +2186,11 @@ while running:
             if current_level_hash != cached_level_hash:
                 # Level changed, rebuild graph
                 try:
-                    print(f"Debug: Rebuilding graph (hash changed from {cached_level_hash} to {current_level_hash})")
+                    if cached_level_hash is None:
+                        print("[Path Viz] Building navigation graph for first time...")
+                    else:
+                        print("[Path Viz] Level changed, rebuilding navigation graph...")
+                    
                     graph_builder = path_aware_system["graph_builder"]
                     
                     # Convert LevelData object to dictionary format expected by graph builder
@@ -2159,9 +2200,9 @@ while running:
                     
                     cached_graph_data = graph_builder.build_graph(level_data_dict)
                     cached_level_hash = current_level_hash
-                    print(f"Debug: Graph built successfully, cached_graph_data is not None: {cached_graph_data is not None}")
+                    print(f"[Path Viz] Graph built successfully with {len(cached_graph_data.get('adjacency', {}))} nodes")
                 except Exception as e:
-                    print(f"Debug: Graph building failed: {e}")
+                    print(f"[Path Viz] ERROR: Graph building failed: {e}")
                     import traceback
                     traceback.print_exc()
                     cached_graph_data = None
@@ -2223,7 +2264,7 @@ while running:
                             )
                             screen.blit(overlay_surface, (0, 0))
                         except Exception as e:
-                            print(f"Debug: Path distance visualization error: {e}")
+                            print(f"[Path Viz] ERROR: Path distance visualization failed: {e}")
                             import traceback
                             traceback.print_exc()
 
@@ -2277,12 +2318,12 @@ while running:
                             )
                             screen.blit(overlay_surface, (0, 0))
                         except Exception as e:
-                            print(f"Debug: Adjacency graph visualization error: {e}")
+                            print(f"[Path Viz] ERROR: Adjacency graph visualization failed: {e}")
 
                     # Update display
                     pygame.display.flip()
         except Exception as e:
-            print(f"Debug: Visualization system error: {e}")
+            print(f"[Path Viz] ERROR: Visualization system error: {e}")
 
     # Memory profiling snapshot
     if (
