@@ -56,6 +56,25 @@ class ReachabilityMixin:
         if enable_reachability:
             self._reachability_system = ReachabilitySystem()
             self._reachability_extractor = ReachabilityFeatureExtractor()
+            
+            # NEW: Initialize path-aware components
+            try:
+                from ...graph.reachability.fast_graph_builder import FastGraphBuilder
+                from ...graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
+                
+                self._graph_builder = FastGraphBuilder()
+                self._path_calculator = CachedPathDistanceCalculator(max_cache_size=200, use_astar=True)
+                self._current_graph = None
+                self._graph_cache_valid = False
+                self._use_path_aware = True
+                
+                if self.debug:
+                    print("[ReachabilityMixin] Path-aware reward shaping enabled")
+            except ImportError as e:
+                if self.debug:
+                    print(f"[ReachabilityMixin] Could not load path-aware components: {e}")
+                    print("[ReachabilityMixin] Falling back to Euclidean distances")
+                self._use_path_aware = False
 
         # Initialize logging if debug is enabled
         if self.debug:
@@ -66,6 +85,13 @@ class ReachabilityMixin:
         """Reset reachability state during environment reset."""
         if self.enable_reachability:
             self._clear_reachability_cache()
+            
+            # Clear path-aware caches
+            if self._use_path_aware:
+                if hasattr(self, '_path_calculator'):
+                    self._path_calculator.clear_cache()
+                self._current_graph = None
+                self._graph_cache_valid = False
 
     def _get_reachability_features(self) -> np.ndarray:
         """Get 8-dimensional reachability features."""
@@ -245,6 +271,28 @@ class ReachabilityMixin:
         level_data: Dict[str, Any],
     ) -> np.ndarray:
         """Compute 8-dimensional reachability feature vector."""
+        # Build graph if path-aware system is available
+        if self._use_path_aware and hasattr(self, '_graph_builder'):
+            try:
+                if not self._graph_cache_valid or self._current_graph is None:
+                    # Build graph with level data
+                    self._current_graph = self._graph_builder.build_graph(
+                        level_data, ninja_pos=ninja_pos
+                    )
+                    self._graph_cache_valid = True
+                    
+                    if self.debug:
+                        stats = self._graph_builder.get_statistics()
+                        print(f"[ReachabilityMixin] Graph built: {stats}")
+                
+                # Use reachable positions from graph if available
+                if 'reachable' in self._current_graph:
+                    reachable_positions = self._current_graph['reachable']
+            except Exception as e:
+                if self.debug:
+                    print(f"[ReachabilityMixin] Graph building failed: {e}")
+                # Continue with provided reachable_positions
+        
         # Total level area (approximate)
         total_area = (FULL_MAP_WIDTH_PX // TILE_PIXEL_SIZE) * (
             FULL_MAP_HEIGHT_PX // TILE_PIXEL_SIZE
@@ -315,16 +363,33 @@ class ReachabilityMixin:
     def _get_distance_to_entity_type(
         self, pos: Tuple[int, int], entities: list, entity_type: str
     ) -> float:
-        """Get distance to nearest entity of specified type."""
+        """Get distance to nearest entity of specified type (path-aware if available)."""
         min_distance = 1000.0  # Default large distance
 
         for entity in entities:
             if self._get_entity_type_for_reachability(entity) == entity_type:
                 entity_pos = self._get_entity_position_for_reachability(entity)
                 if entity_pos:
-                    distance = np.sqrt(
-                        (pos[0] - entity_pos[0]) ** 2 + (pos[1] - entity_pos[1]) ** 2
-                    )
+                    # Use path distance if path-aware system is available
+                    if self._use_path_aware and hasattr(self, '_current_graph') and self._current_graph:
+                        try:
+                            adjacency = self._current_graph.get('adjacency', {})
+                            distance = self._path_calculator.get_distance(
+                                pos, entity_pos, adjacency, cache_key=entity_type
+                            )
+                        except Exception as e:
+                            if self.debug:
+                                print(f"[ReachabilityMixin] Path calculation failed, using Euclidean: {e}")
+                            # Fallback to Euclidean
+                            distance = np.sqrt(
+                                (pos[0] - entity_pos[0]) ** 2 + (pos[1] - entity_pos[1]) ** 2
+                            )
+                    else:
+                        # Fallback to Euclidean distance
+                        distance = np.sqrt(
+                            (pos[0] - entity_pos[0]) ** 2 + (pos[1] - entity_pos[1]) ** 2
+                        )
+                    
                     min_distance = min(min_distance, distance)
 
         return min_distance
