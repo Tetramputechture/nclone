@@ -2151,11 +2151,19 @@ while running:
                 try:
                     print(f"Debug: Rebuilding graph (hash changed from {cached_level_hash} to {current_level_hash})")
                     graph_builder = path_aware_system["graph_builder"]
-                    cached_graph_data = graph_builder.build_graph(env.level_data)
+                    
+                    # Convert LevelData object to dictionary format expected by graph builder
+                    level_data_dict = env.level_data.to_dict()
+                    # Add switch_states which is not included in to_dict()
+                    level_data_dict['switch_states'] = env.level_data.switch_states
+                    
+                    cached_graph_data = graph_builder.build_graph(level_data_dict)
                     cached_level_hash = current_level_hash
                     print(f"Debug: Graph built successfully, cached_graph_data is not None: {cached_graph_data is not None}")
                 except Exception as e:
                     print(f"Debug: Graph building failed: {e}")
+                    import traceback
+                    traceback.print_exc()
                     cached_graph_data = None
 
             # Access debug overlay renderer
@@ -2175,11 +2183,39 @@ while running:
                         # Calculate path distances using cached graph
                         try:
                             path_calculator = path_aware_system["path_calculator"]
-
-                            # Get distances
-                            distances = path_calculator.get_distances_to_objectives(
-                                ninja_pos, env.level_data, cached_graph_data
-                            )
+                            adjacency = cached_graph_data.get('adjacency', {})
+                            
+                            # Calculate distances to objectives
+                            distances = {
+                                'switch_distance': float('inf'),
+                                'exit_distance': float('inf')
+                            }
+                            
+                            # Find nearest switch
+                            for entity in env.level_data.entities:
+                                entity_type = entity.get('type', '')
+                                if entity_type in ['switch', 'exit_switch']:
+                                    entity_pos = (entity.get('x', 0), entity.get('y', 0))
+                                    try:
+                                        dist = path_calculator.get_distance(
+                                            ninja_pos, entity_pos, adjacency, cache_key='switch'
+                                        )
+                                        distances['switch_distance'] = min(distances['switch_distance'], dist)
+                                    except:
+                                        pass
+                            
+                            # Find nearest exit
+                            for entity in env.level_data.entities:
+                                entity_type = entity.get('type', '')
+                                if entity_type in ['exit', 'exit_door']:
+                                    entity_pos = (entity.get('x', 0), entity.get('y', 0))
+                                    try:
+                                        dist = path_calculator.get_distance(
+                                            ninja_pos, entity_pos, adjacency, cache_key='exit'
+                                        )
+                                        distances['exit_distance'] = min(distances['exit_distance'], dist)
+                                    except:
+                                        pass
 
                             # Draw overlay
                             overlay_surface = renderer.draw_path_distances(
@@ -2188,6 +2224,8 @@ while running:
                             screen.blit(overlay_surface, (0, 0))
                         except Exception as e:
                             print(f"Debug: Path distance visualization error: {e}")
+                            import traceback
+                            traceback.print_exc()
 
                     if adjacency_graph_debug_enabled and cached_graph_data is not None:
                         # Prepare visualization data using cached graph
