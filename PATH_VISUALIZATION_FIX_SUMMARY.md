@@ -5,12 +5,53 @@ Path visualization (debug mode) was not rendering when toggled with 'D' (path di
 
 ## Root Causes Identified
 
+### Issue 0: Visualization Flickering (NEW)
+**Symptom**: Path visualization and adjacency graph flickering on/off every frame
+
+**Root Cause**: The `_get_level_hash()` function was hashing the entire LevelData object (including dynamic state like player position, entity positions, and switch states). This caused the hash to change every single frame, triggering a graph rebuild every frame, which caused the visualization to flicker.
+
+**Location**: `test_environment.py` line ~69 (original)
+```python
+level_str = str(env.level_data)  # Wrong! Includes dynamic state
+return hashlib.md5(level_str.encode()).hexdigest()
+```
+
+**Fix**: Only hash the static level structure (tiles, entity types/IDs) and exclude dynamic state:
+```python
+# Hash only static structure
+hash_components = []
+
+# Add tiles hash (static geometry)
+tiles_bytes = level_data.tiles.tobytes()
+hash_components.append(hashlib.md5(tiles_bytes).hexdigest())
+
+# Add entity types and IDs (NOT positions)
+entity_static = []
+for entity in level_data.entities:
+    entity_type = entity.get('type', '')
+    entity_id = entity.get('id', '')
+    entity_static.append(f"{entity_type}:{entity_id}")
+entity_str = ','.join(sorted(entity_static))
+hash_components.append(hashlib.md5(entity_str.encode()).hexdigest())
+
+# Add level_id
+if level_data.level_id:
+    hash_components.append(level_data.level_id)
+
+combined = '|'.join(hash_components)
+return hashlib.md5(combined.encode()).hexdigest()
+```
+
+**Result**: Graph is now only rebuilt when the level structure actually changes (e.g., when transitioning to a new level), not on every frame.
+
 ### Issue 1: LevelData Type Mismatch
 **Error**: `'LevelData' object is not subscriptable`
 
 **Cause**: The `graph_builder.build_graph()` method expected a dictionary with keys like `'tiles'`, `'entities'`, `'switch_states'`, but was receiving a `LevelData` dataclass object instead.
 
-**Location**: `test_environment.py` line ~2160 (original)
+**Locations**: 
+- `test_environment.py` line ~2160 (visualization section)
+- `test_environment.py` line ~1990 (pathfinding benchmark section)
 ```python
 cached_graph_data = graph_builder.build_graph(env.level_data)  # Wrong!
 ```
@@ -122,8 +163,10 @@ If issues occur, you'll now see full tracebacks instead of silent failures.
 - `nclone/debug_overlay_renderer.py` - Pygame rendering
 
 ## Commits
+- c4d2749: "Fix: Pathfinding benchmark error and visualization flickering"
 - efd34e4: "Fix: LevelData subscriptable error and implement distance calculations"
 - e9b2e9b: "Fix: Remove incorrect global declaration (syntax error)"
 - 6c56d05: "Fix: Path visualization not rendering due to missing global declarations"
 
 Branch: `fix/path-visualization-controls`
+PR: #51
