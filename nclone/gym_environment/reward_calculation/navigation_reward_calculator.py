@@ -9,7 +9,11 @@ from .reward_constants import (
     NAVIGATION_MIN_DISTANCE_THRESHOLD,
 )
 
-PBRS_DISTANCE_SCALE = LEVEL_DIAGONAL / 4
+# Use full level diagonal for normalization - handles all valid distances within level
+# LEVEL_DIAGONAL = 1214.55, ensures any position within [0,1056]x[0,600] normalizes correctly
+# Previous value (LEVEL_DIAGONAL / 4 = 303.64) was too small, causing negative potentials
+# when distance > 303.64 pixels, which is common in mazes and large levels
+PBRS_DISTANCE_SCALE = LEVEL_DIAGONAL
 
 
 class NavigationRewardCalculator:
@@ -68,41 +72,47 @@ class NavigationRewardCalculator:
             return 0.5 + max(0.0, min(0.5, progress * 0.5))
 
     def calculate_potential(self, state: Dict[str, Any]) -> float:
-        """Calculate state potential for reward shaping."""
+        """Calculate state potential with proper normalization.
+
+        Uses full LEVEL_DIAGONAL normalization to guarantee non-negative potentials
+        for all valid positions within level bounds.
+
+        Returns:
+            float: Potential value, guaranteed to be >= 0.0
+        """
+        # Determine objective position based on switch state
         if not state["switch_activated"]:
-            distance_to_switch = calculate_distance(
+            distance = calculate_distance(
                 state["player_x"],
                 state["player_y"],
                 state["switch_x"],
                 state["switch_y"],
             )
-            # Potential based on normalized distance to switch
-            potential = NAVIGATION_POTENTIAL_SCALE * (
-                1.0 - distance_to_switch / PBRS_DISTANCE_SCALE
-            )
-
-            # Small bonus for being very close to switch
-            if distance_to_switch < NAVIGATION_MIN_DISTANCE_THRESHOLD:
-                potential += NAVIGATION_POTENTIAL_SCALE * 0.5
-
-            return potential
         else:
-            distance_to_exit = calculate_distance(
+            distance = calculate_distance(
                 state["player_x"],
                 state["player_y"],
                 state["exit_door_x"],
                 state["exit_door_y"],
             )
-            # Potential based on normalized distance to exit
-            potential = NAVIGATION_POTENTIAL_SCALE * (
-                1.0 - distance_to_exit / PBRS_DISTANCE_SCALE
-            )
 
-            # Small bonus for being very close to exit
-            if distance_to_exit < NAVIGATION_MIN_DISTANCE_THRESHOLD:
-                potential += NAVIGATION_POTENTIAL_SCALE * 0.5
+        # Normalize distance using FULL level diagonal (not /4)
+        # This ensures distance/scale <= 1.0 for all valid positions
+        normalized_dist = min(1.0, distance / PBRS_DISTANCE_SCALE)
 
-            return potential
+        # Base potential: higher when closer (always non-negative now)
+        base_potential = NAVIGATION_POTENTIAL_SCALE * (1.0 - normalized_dist)
+
+        # Proximity bonus for being very close to objective
+        proximity_bonus = 0.0
+        if distance < NAVIGATION_MIN_DISTANCE_THRESHOLD:
+            proximity_bonus = NAVIGATION_POTENTIAL_SCALE * 0.5
+
+        # Total potential (guaranteed >= 0 with correct normalization)
+        total_potential = base_potential + proximity_bonus
+
+        # Defensive: ensure non-negative (should always be true with correct scale)
+        return max(0.0, total_potential)
 
     def calculate_navigation_reward(
         self, curr_state: Dict[str, Any], prev_state: Dict[str, Any]

@@ -274,7 +274,7 @@ GENERATOR_PRESETS = {
     "vertical_corridor": {
         "minimal": VerticalCorridorConfig(
             min_width=1,
-            max_width=1,
+            max_width=2,
             min_height=3,
             max_height=6,
             add_wall_mines=False,
@@ -282,8 +282,8 @@ GENERATOR_PRESETS = {
         "simpler": VerticalCorridorConfig(
             min_width=1,
             max_width=4,
-            min_height=5,
-            max_height=8,
+            min_height=4,
+            max_height=7,
             min_mine_spacing=2,
             max_mine_spacing=5,
             add_chaotic_walls=True,
@@ -520,9 +520,8 @@ GENERATOR_PRESETS = {
             min_width=3,
             max_width=23,
             min_height=1,
-            max_height=1,
+            max_height=2,
             random_edge_tiles=False,
-            fixed_height=1,
         ),
         "simple": HorizontalCorridorConfig(
             min_width=3,

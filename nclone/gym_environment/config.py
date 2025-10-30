@@ -255,7 +255,7 @@ class EnvironmentConfig:
         """
         config = cls(
             augmentation=AugmentationConfig(
-                enable_augmentation=True,
+                enable_augmentation=False,
                 disable_validation=True,
                 intensity="medium",
                 p=0.5,

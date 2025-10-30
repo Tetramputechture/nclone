@@ -50,6 +50,8 @@ class PBRSPotentials:
         - Switch when inactive
         - Exit when switch is active
 
+        Guaranteed to return value in [0.0, 1.0] range with defensive clamping.
+
         Args:
             state: Game state dictionary
 
@@ -73,9 +75,13 @@ class PBRSPotentials:
                 state["exit_door_y"],
             )
 
-        # Normalize distance to [0, 1] range, inverted so closer = higher potential
+        # Normalize distance to [0, 1], clamping to handle edge cases
         normalized_distance = min(1.0, distance / LEVEL_DIAGONAL)
-        return 1.0 - normalized_distance
+        potential = 1.0 - normalized_distance
+
+        # Defensive: explicit bounds checking
+        # Should always be in range, but defensive against floating point edge cases
+        return max(0.0, min(1.0, potential))
 
     @staticmethod
     def hazard_proximity_potential(state: Dict[str, Any]) -> float:

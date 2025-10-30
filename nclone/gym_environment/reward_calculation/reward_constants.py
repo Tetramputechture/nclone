@@ -12,8 +12,6 @@ References:
 - Sutton & Barto (2018): "Reinforcement Learning: An Introduction" (reward scaling)
 """
 
-from typing import Dict, Any
-
 
 # =============================================================================
 # TERMINAL REWARD CONSTANTS
@@ -77,6 +75,12 @@ COMPLETION_TIME_BONUS_MAX = 2.0  # Maximum bonus (instant completion)
 COMPLETION_TIME_TARGET = (
     5000  # Target steps for full bonus (adjust per level difficulty)
 )
+
+# NOOP action penalty
+# Rationale: Small penalty (-0.01) discourages standing still without overwhelming
+# other reward signals. Encourages active exploration and movement toward objectives.
+# Without this, agents can exploit doing nothing to avoid negative outcomes.
+NOOP_ACTION_PENALTY = -0.01
 
 
 # =============================================================================
