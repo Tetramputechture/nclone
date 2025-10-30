@@ -267,8 +267,8 @@ class BaseNppEnvironment(gymnasium.Env):
         # Hook: After observation, before reward calculation
         self._pre_reward_hook(curr_obs, player_won)
 
-        # Calculate reward
-        reward = self._calculate_reward(curr_obs, prev_obs)
+        # Calculate reward (pass action for NOOP penalty)
+        reward = self._calculate_reward(curr_obs, prev_obs, action)
 
         # Hook: Modify reward if needed
         reward = self._modify_reward_hook(reward, curr_obs, player_won, terminated)
@@ -334,7 +334,11 @@ class BaseNppEnvironment(gymnasium.Env):
 
         Subclasses can override this to add custom info fields.
         """
-        pass
+        # Generate comprehensive diagnostic metrics for TensorBoard
+        curr_obs = self._get_observation()
+        diagnostic_metrics = self.reward_calculator.get_diagnostic_metrics(curr_obs)
+        # Add to info dict for callback to log
+        info["diagnostic_metrics"] = diagnostic_metrics
 
     def _build_episode_info(
         self, player_won: bool, terminated: bool, truncated: bool
@@ -507,9 +511,9 @@ class BaseNppEnvironment(gymnasium.Env):
         # learn from the episode, since our time remaining is in our observation
         return terminated or should_truncate, False, player_won
 
-    def _calculate_reward(self, curr_obs, prev_obs):
+    def _calculate_reward(self, curr_obs, prev_obs, action=None):
         """Calculate the reward for the environment."""
-        return self.reward_calculator.calculate_reward(curr_obs, prev_obs)
+        return self.reward_calculator.calculate_reward(curr_obs, prev_obs, action)
 
     def _process_observation(self, obs):
         """Process the observation from the environment."""

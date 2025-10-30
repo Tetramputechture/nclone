@@ -21,6 +21,7 @@ from .reward_constants import (
     PBRS_HAZARD_WEIGHT,
     PBRS_IMPACT_WEIGHT,
     PBRS_EXPLORATION_WEIGHT,
+    NOOP_ACTION_PENALTY,
 )
 
 
@@ -75,15 +76,30 @@ class RewardCalculator:
             enable_pbrs = reward_config.get("enable_pbrs", enable_pbrs)
             pbrs_weights = reward_config.get("pbrs_weights", pbrs_weights)
             pbrs_gamma = reward_config.get("pbrs_gamma", pbrs_gamma)
-            time_penalty_mode = reward_config.get("time_penalty_mode", time_penalty_mode)
-            time_penalty_early = reward_config.get("time_penalty_early", time_penalty_early)
-            time_penalty_middle = reward_config.get("time_penalty_middle", time_penalty_middle)
-            time_penalty_late = reward_config.get("time_penalty_late", time_penalty_late)
-            enable_completion_bonus = reward_config.get("enable_completion_bonus", enable_completion_bonus)
-            completion_bonus_max = reward_config.get("completion_bonus_max", completion_bonus_max)
-            completion_bonus_target = reward_config.get("completion_bonus_target", completion_bonus_target)
-            max_episode_steps = reward_config.get("max_episode_steps", max_episode_steps)
-        
+            time_penalty_mode = reward_config.get(
+                "time_penalty_mode", time_penalty_mode
+            )
+            time_penalty_early = reward_config.get(
+                "time_penalty_early", time_penalty_early
+            )
+            time_penalty_middle = reward_config.get(
+                "time_penalty_middle", time_penalty_middle
+            )
+            time_penalty_late = reward_config.get(
+                "time_penalty_late", time_penalty_late
+            )
+            enable_completion_bonus = reward_config.get(
+                "enable_completion_bonus", enable_completion_bonus
+            )
+            completion_bonus_max = reward_config.get(
+                "completion_bonus_max", completion_bonus_max
+            )
+            completion_bonus_target = reward_config.get(
+                "completion_bonus_target", completion_bonus_target
+            )
+            max_episode_steps = reward_config.get(
+                "max_episode_steps", max_episode_steps
+            )
 
         self.navigation_calculator = NavigationRewardCalculator()
         self.exploration_calculator = ExplorationRewardCalculator()
@@ -95,7 +111,7 @@ class RewardCalculator:
         self.time_penalty_middle = time_penalty_middle
         self.time_penalty_late = time_penalty_late
         self.max_episode_steps = max_episode_steps
-        
+
         # Completion bonus configuration
         self.enable_completion_bonus = enable_completion_bonus
         self.completion_bonus_max = completion_bonus_max
@@ -118,12 +134,18 @@ class RewardCalculator:
 
         self.pbrs_calculator = PBRSCalculator(**pbrs_weights) if enable_pbrs else None
 
-    def calculate_reward(self, obs: Dict[str, Any], prev_obs: Dict[str, Any]) -> float:
+    def calculate_reward(
+        self,
+        obs: Dict[str, Any],
+        prev_obs: Dict[str, Any],
+        action: Optional[int] = None,
+    ) -> float:
         """Calculate completion-focused reward.
 
         Args:
             obs: Current game state
             prev_obs: Previous game state
+            action: Action taken (0=NOOP, 1=Left, 2=Right, 3=Jump, 4=Jump+Left, 5=Jump+Right)
 
         Returns:
             float: Total reward for the transition
@@ -137,6 +159,12 @@ class RewardCalculator:
         # Initialize reward with time penalty to encourage efficiency
         reward = self._calculate_time_penalty()
 
+        # NOOP action penalty (discourage standing still)
+        noop_penalty = 0.0
+        if action is not None and action == 0:
+            noop_penalty = NOOP_ACTION_PENALTY
+            reward += noop_penalty
+
         # Switch activation reward
         if obs.get("switch_activated", False) and not prev_obs.get(
             "switch_activated", False
@@ -146,7 +174,7 @@ class RewardCalculator:
         # Exit completion reward (terminal)
         if obs.get("player_won", False):
             reward += LEVEL_COMPLETION_REWARD
-            
+
             # Add completion time bonus if enabled
             if self.enable_completion_bonus:
                 bonus = self._calculate_completion_bonus(self.steps_taken)
@@ -189,6 +217,7 @@ class RewardCalculator:
             "navigation_reward": navigation_reward,
             "exploration_reward": exploration_reward,
             "pbrs_reward": pbrs_reward,
+            "noop_penalty": noop_penalty,
             "pbrs_components": pbrs_components,
             "total_reward": reward,
         }
@@ -225,16 +254,123 @@ class RewardCalculator:
 
         return components
 
+    def get_diagnostic_metrics(self, obs: Dict[str, Any]) -> Dict[str, float]:
+        """Generate comprehensive diagnostic metrics for TensorBoard.
+
+        Returns detailed breakdowns of distances, potentials, and reward components
+        to enable deep diagnosis of training issues.
+
+        Args:
+            obs: Current game state dictionary
+
+        Returns:
+            dict: Comprehensive metrics for TensorBoard logging
+        """
+        from ..util.util import calculate_distance
+        from ..constants import LEVEL_DIAGONAL
+        from .navigation_reward_calculator import PBRS_DISTANCE_SCALE
+
+        metrics = {}
+
+        # === DISTANCE METRICS ===
+        # Track raw distances to objectives
+        distance_to_switch = calculate_distance(
+            obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
+        )
+        distance_to_exit = calculate_distance(
+            obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
+        )
+
+        # Current objective distance
+        if not obs.get("switch_activated", False):
+            metrics["distance/to_current_objective"] = distance_to_switch
+            metrics["distance/to_switch"] = distance_to_switch
+        else:
+            metrics["distance/to_current_objective"] = distance_to_exit
+            metrics["distance/to_exit"] = distance_to_exit
+
+        # Normalized distances (for understanding potential calculations)
+        metrics["distance/normalized_to_objective"] = min(
+            1.0, metrics["distance/to_current_objective"] / LEVEL_DIAGONAL
+        )
+
+        # Distance relative to normalization scale (KEY DIAGNOSTIC)
+        metrics["distance/relative_to_scale"] = (
+            metrics["distance/to_current_objective"] / PBRS_DISTANCE_SCALE
+        )
+
+        # === POTENTIAL METRICS ===
+        if self.enable_pbrs and self.pbrs_calculator is not None:
+            current_potential = self.pbrs_calculator.calculate_combined_potential(obs)
+            metrics["pbrs/current_potential"] = current_potential
+
+            if self.prev_potential is not None:
+                metrics["pbrs/prev_potential"] = self.prev_potential
+                potential_delta = current_potential - self.prev_potential
+                metrics["pbrs/potential_delta"] = potential_delta
+
+                # PBRS reward (before and after gamma)
+                pbrs_reward_before_gamma = potential_delta
+                pbrs_reward_after_gamma = (
+                    self.pbrs_gamma * current_potential - self.prev_potential
+                )
+                metrics["pbrs/reward_before_gamma"] = pbrs_reward_before_gamma
+                metrics["pbrs/reward_after_gamma"] = pbrs_reward_after_gamma
+
+                # Flag potential issues
+                metrics["pbrs/is_negative"] = (
+                    1.0 if pbrs_reward_after_gamma < 0 else 0.0
+                )
+                metrics["pbrs/is_positive"] = (
+                    1.0 if pbrs_reward_after_gamma > 0 else 0.0
+                )
+
+            # Component breakdown
+            pbrs_components = self.pbrs_calculator.get_potential_components(obs)
+            for comp_name, comp_value in pbrs_components.items():
+                metrics[f"pbrs/component_{comp_name}"] = comp_value
+
+        # === NAVIGATION METRICS ===
+        nav_potential = self.navigation_calculator.calculate_potential(obs)
+        metrics["navigation/potential"] = nav_potential
+
+        # Track closest distances achieved (progress tracking)
+        metrics["navigation/closest_to_switch"] = (
+            self.navigation_calculator.closest_distance_to_switch
+            if self.navigation_calculator.closest_distance_to_switch != float("inf")
+            else distance_to_switch
+        )
+        metrics["navigation/closest_to_exit"] = (
+            self.navigation_calculator.closest_distance_to_exit
+            if self.navigation_calculator.closest_distance_to_exit != float("inf")
+            else distance_to_exit
+        )
+
+        # === REWARD COMPONENT BREAKDOWN ===
+        if hasattr(self, "last_reward_components"):
+            components = self.last_reward_components
+            for comp_name, comp_value in components.items():
+                if isinstance(comp_value, (int, float)):
+                    metrics[f"reward_components/{comp_name}"] = comp_value
+
+        # === EFFICIENCY METRICS ===
+        metrics["episode/steps_taken"] = self.steps_taken
+        metrics["episode/switch_activated"] = (
+            1.0 if obs.get("switch_activated") else 0.0
+        )
+
+        return metrics
+
     def _calculate_time_penalty(self) -> float:
         """Calculate time penalty based on configured mode.
-        
+
         Returns:
             float: Time penalty for current step
         """
         if self.time_penalty_mode == "progressive":
             # Progressive penalty increases pressure over episode duration
             progress = self.steps_taken / self.max_episode_steps
-            
+
             if progress < TIME_PENALTY_EARLY_THRESHOLD:
                 return self.time_penalty_early
             elif progress < TIME_PENALTY_LATE_THRESHOLD:
@@ -247,12 +383,12 @@ class RewardCalculator:
 
     def _calculate_completion_bonus(self, completion_steps: int) -> float:
         """Calculate bonus reward for fast completion.
-        
+
         Bonus linearly decreases from max to zero as completion time increases.
-        
+
         Args:
             completion_steps: Number of steps taken to complete level
-            
+
         Returns:
             float: Completion time bonus (0.0 to completion_bonus_max)
         """
