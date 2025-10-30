@@ -65,6 +65,7 @@ def _get_level_hash(env):
         if hasattr(env, "level_data"):
             # Create a simple hash from level data
             import hashlib
+
             level_str = str(env.level_data)
             return hashlib.md5(level_str.encode()).hexdigest()
     except:
@@ -609,7 +610,7 @@ if (
     print("  • Path distance (BFS): 2-3ms")
     print("  • Path distance (A*): 1-2ms")
     print("  • Path distance (cached): < 0.1ms")
-    
+
     print("=" * 60 + "\n")
 
 if args.interactive_graph and args.headless:
@@ -618,7 +619,7 @@ if args.interactive_graph and args.headless:
 
 # Create environment
 render_mode = "grayscale_array" if args.headless else "human"
-debug_overlay_enabled = False  # Disable overlay in headless mode
+debug_overlay_enabled = True  # Disable overlay in headless mode
 
 # Create environment configuration with custom map path if provided
 if args.map:
@@ -1064,33 +1065,39 @@ if (
 
     try:
         from nclone.graph.reachability.fast_graph_builder import FastGraphBuilder
-        from nclone.graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
+        from nclone.graph.reachability.path_distance_calculator import (
+            CachedPathDistanceCalculator,
+        )
         from nclone.graph.reachability.entity_mask import EntityMask
-        from nclone.graph.reachability.tile_connectivity_loader import TileConnectivityLoader
-        
+        from nclone.graph.reachability.tile_connectivity_loader import (
+            TileConnectivityLoader,
+        )
+
         # Initialize components
         graph_builder = FastGraphBuilder()
         path_calculator = CachedPathDistanceCalculator()
         connectivity_loader = TileConnectivityLoader()
-        
+
         # Store in dict for easy access
         path_aware_system = {
-            'graph_builder': graph_builder,
-            'path_calculator': path_calculator,
-            'connectivity_loader': connectivity_loader,
-            'current_graph': None,
-            'current_entity_mask': None,
-            'level_id': None
+            "graph_builder": graph_builder,
+            "path_calculator": path_calculator,
+            "connectivity_loader": connectivity_loader,
+            "current_graph": None,
+            "current_entity_mask": None,
+            "level_id": None,
         }
-        
+
         # Set initial debug states
         path_distances_debug_enabled = args.show_path_distances
         adjacency_graph_debug_enabled = args.visualize_adjacency_graph
         blocked_entities_debug_enabled = args.show_blocked_entities
-        
+
         print("✅ Path-aware reward shaping system initialized successfully")
         print(f"   - Connectivity table shape: {connectivity_loader.table_shape}")
-        print(f"   - Connectivity table size: {connectivity_loader.table_size_kb:.2f} KB")
+        print(
+            f"   - Connectivity table size: {connectivity_loader.table_size_kb:.2f} KB"
+        )
         print(f"   - Path distance display: {path_distances_debug_enabled}")
         print(f"   - Adjacency graph display: {adjacency_graph_debug_enabled}")
         print(f"   - Blocked entities display: {blocked_entities_debug_enabled}")
@@ -1943,21 +1950,25 @@ while running:
                         print(
                             f"Path distance display: {'ON' if path_distances_debug_enabled else 'OFF'}"
                         )
-                    
+
                     if event.key == pygame.K_a:
                         # Toggle adjacency graph visualization
-                        adjacency_graph_debug_enabled = not adjacency_graph_debug_enabled
+                        adjacency_graph_debug_enabled = (
+                            not adjacency_graph_debug_enabled
+                        )
                         print(
                             f"Adjacency graph visualization: {'ON' if adjacency_graph_debug_enabled else 'OFF'}"
                         )
-                    
+
                     if event.key == pygame.K_b and recorder is None:
                         # Toggle blocked entities display (only if not in recording mode)
-                        blocked_entities_debug_enabled = not blocked_entities_debug_enabled
+                        blocked_entities_debug_enabled = (
+                            not blocked_entities_debug_enabled
+                        )
                         print(
                             f"Blocked entities display: {'ON' if blocked_entities_debug_enabled else 'OFF'}"
                         )
-                    
+
                     if event.key == pygame.K_t and not (event.mod & pygame.KMOD_CTRL):
                         # Run pathfinding benchmark
                         try:
@@ -1966,80 +1977,109 @@ while running:
                                 print("\n" + "=" * 60)
                                 print("PATHFINDING BENCHMARK")
                                 print("=" * 60)
-                                print(f"Ninja position: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})")
-                                
+                                print(
+                                    f"Ninja position: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})"
+                                )
+
                                 # Build/get graph
                                 import time as time_module
+
                                 start = time_module.perf_counter()
-                                graph_data = path_aware_system['graph_builder'].build_graph(
-                                    env.level_data
-                                )
-                                graph_build_time = (time_module.perf_counter() - start) * 1000
-                                
+                                graph_data = path_aware_system[
+                                    "graph_builder"
+                                ].build_graph(env.level_data)
+                                graph_build_time = (
+                                    time_module.perf_counter() - start
+                                ) * 1000
+
                                 print(f"\nGraph build time: {graph_build_time:.3f} ms")
                                 print(f"  - Nodes: {len(graph_data['adjacency'])}")
-                                print(f"  - Edges: {sum(len(neighbors) for neighbors in graph_data['adjacency'].values())}")
-                                
+                                print(
+                                    f"  - Edges: {sum(len(neighbors) for neighbors in graph_data['adjacency'].values())}"
+                                )
+
                                 # Get entities
-                                entities = env.level_data.get("entities", [])
+                                entities = env.level_data.entities
                                 switch_pos = None
                                 exit_pos = None
-                                
+
                                 for entity in entities:
-                                    if hasattr(entity, 'entity_type'):
-                                        from nclone.constants.entity_types import EntityType
+                                    if hasattr(entity, "entity_type"):
+                                        from nclone.constants.entity_types import (
+                                            EntityType,
+                                        )
+
                                         if entity.entity_type == EntityType.SWITCH:
                                             switch_pos = (int(entity.x), int(entity.y))
                                         elif entity.entity_type == EntityType.EXIT:
                                             exit_pos = (int(entity.x), int(entity.y))
-                                
+
                                 if switch_pos:
                                     # Benchmark path to switch
                                     start = time_module.perf_counter()
-                                    dist = path_aware_system['path_calculator'].calculator.calculate_distance(
+                                    dist = path_aware_system[
+                                        "path_calculator"
+                                    ].calculator.calculate_distance(
                                         (int(ninja_pos[0]), int(ninja_pos[1])),
                                         switch_pos,
-                                        graph_data['adjacency']
+                                        graph_data["adjacency"],
                                     )
-                                    path_time = (time_module.perf_counter() - start) * 1000
-                                    
+                                    path_time = (
+                                        time_module.perf_counter() - start
+                                    ) * 1000
+
                                     print(f"\nPath to switch:")
                                     print(f"  - Position: {switch_pos}")
                                     print(f"  - Distance: {dist:.1f} px")
                                     print(f"  - Calculation time: {path_time:.3f} ms")
-                                
+
                                 if exit_pos:
                                     # Benchmark path to exit
                                     start = time_module.perf_counter()
-                                    dist = path_aware_system['path_calculator'].calculator.calculate_distance(
+                                    dist = path_aware_system[
+                                        "path_calculator"
+                                    ].calculator.calculate_distance(
                                         (int(ninja_pos[0]), int(ninja_pos[1])),
                                         exit_pos,
-                                        graph_data['adjacency']
+                                        graph_data["adjacency"],
                                     )
-                                    path_time = (time_module.perf_counter() - start) * 1000
-                                    
+                                    path_time = (
+                                        time_module.perf_counter() - start
+                                    ) * 1000
+
                                     print(f"\nPath to exit:")
                                     print(f"  - Position: {exit_pos}")
                                     print(f"  - Distance: {dist:.1f} px")
                                     print(f"  - Calculation time: {path_time:.3f} ms")
-                                
+
                                 # Show cache stats
                                 print(f"\nCache statistics:")
-                                print(f"  - Hits: {path_aware_system['path_calculator'].hits}")
-                                print(f"  - Misses: {path_aware_system['path_calculator'].misses}")
-                                if path_aware_system['path_calculator'].misses > 0:
-                                    hit_rate = path_aware_system['path_calculator'].hits / (
-                                        path_aware_system['path_calculator'].hits + 
-                                        path_aware_system['path_calculator'].misses
-                                    ) * 100
+                                print(
+                                    f"  - Hits: {path_aware_system['path_calculator'].hits}"
+                                )
+                                print(
+                                    f"  - Misses: {path_aware_system['path_calculator'].misses}"
+                                )
+                                if path_aware_system["path_calculator"].misses > 0:
+                                    hit_rate = (
+                                        path_aware_system["path_calculator"].hits
+                                        / (
+                                            path_aware_system["path_calculator"].hits
+                                            + path_aware_system[
+                                                "path_calculator"
+                                            ].misses
+                                        )
+                                        * 100
+                                    )
                                     print(f"  - Hit rate: {hit_rate:.1f}%")
-                                
+
                                 print("=" * 60 + "\n")
                         except Exception as e:
                             print(f"Pathfinding benchmark error: {e}")
                             import traceback
+
                             traceback.print_exc()
-                    
+
                     if event.key == pygame.K_x and not (event.mod & pygame.KMOD_CTRL):
                         # Export path analysis screenshot
                         try:
@@ -2048,9 +2088,13 @@ while running:
                             # Get current frame
                             frame = env.render()
                             if frame is not None and isinstance(frame, np.ndarray):
-                                image = Image.fromarray(frame.astype(np.uint8), mode="RGB")
+                                image = Image.fromarray(
+                                    frame.astype(np.uint8), mode="RGB"
+                                )
                                 image.save(filename)
-                                print(f"✅ Path analysis screenshot saved to {filename}")
+                                print(
+                                    f"✅ Path analysis screenshot saved to {filename}"
+                                )
                             else:
                                 print("❌ Failed to export path analysis screenshot")
                         except Exception as e:
@@ -2089,88 +2133,111 @@ while running:
 
     # Step the environment
     observation, reward, terminated, truncated, info = env.step(action)
-    
+
     # Path-aware visualization overlays (only in human render mode)
-    if not args.headless and path_aware_system is not None and (path_distances_debug_enabled or adjacency_graph_debug_enabled):
+    if (
+        not args.headless
+        and path_aware_system is not None
+        and (path_distances_debug_enabled or adjacency_graph_debug_enabled)
+    ):
         try:
             # Get ninja position
             ninja_pos = _get_ninja_position(env)
-            
+
             # Check if we need to rebuild the graph (cache invalidation on level change)
             current_level_hash = _get_level_hash(env)
             if current_level_hash != cached_level_hash:
                 # Level changed, rebuild graph
                 try:
-                    graph_builder = path_aware_system['graph_builder']
+                    graph_builder = path_aware_system["graph_builder"]
                     cached_graph_data = graph_builder.build_graph(env.level_data)
                     cached_level_hash = current_level_hash
                 except Exception as e:
                     cached_graph_data = None
-            
+
             # Access debug overlay renderer
-            if hasattr(env, 'debug_overlay_renderer') and env.debug_overlay_renderer is not None:
+            if (
+                hasattr(env, "debug_overlay_renderer")
+                and env.debug_overlay_renderer is not None
+            ):
                 renderer = env.debug_overlay_renderer
-                
+
                 # Get the pygame screen from the sim renderer
-                if hasattr(env, 'nplay_headless') and hasattr(env.nplay_headless, 'sim_renderer'):
+                if hasattr(env, "nplay_headless") and hasattr(
+                    env.nplay_headless, "sim_renderer"
+                ):
                     screen = env.nplay_headless.sim_renderer.screen
-                    
+
                     if path_distances_debug_enabled and cached_graph_data is not None:
                         # Calculate path distances using cached graph
                         try:
-                            path_calculator = path_aware_system['path_calculator']
-                            
+                            path_calculator = path_aware_system["path_calculator"]
+
                             # Get distances
                             distances = path_calculator.get_distances_to_objectives(
                                 ninja_pos, env.level_data, cached_graph_data
                             )
-                            
+
                             # Draw overlay
-                            overlay_surface = renderer.draw_path_distances(distances, ninja_pos)
+                            overlay_surface = renderer.draw_path_distances(
+                                distances, ninja_pos
+                            )
                             screen.blit(overlay_surface, (0, 0))
                         except Exception as e:
                             pass  # Silently fail if distances can't be calculated
-                    
+
                     if adjacency_graph_debug_enabled and cached_graph_data is not None:
                         # Prepare visualization data using cached graph
                         try:
                             # Convert graph to visualization format
-                            viz_data = {
-                                'nodes': [],
-                                'edges': []
-                            }
-                            
+                            viz_data = {"nodes": [], "edges": []}
+
                             # Add nodes
-                            if hasattr(cached_graph_data, 'graph') and cached_graph_data.graph:
-                                for node_id, node_data in cached_graph_data.graph.nodes.items():
-                                    if hasattr(node_data, 'position'):
-                                        viz_data['nodes'].append({
-                                            'pos': node_data.position,
-                                            'type': 'normal'
-                                        })
-                                
+                            if (
+                                hasattr(cached_graph_data, "graph")
+                                and cached_graph_data.graph
+                            ):
+                                for (
+                                    node_id,
+                                    node_data,
+                                ) in cached_graph_data.graph.nodes.items():
+                                    if hasattr(node_data, "position"):
+                                        viz_data["nodes"].append(
+                                            {
+                                                "pos": node_data.position,
+                                                "type": "normal",
+                                            }
+                                        )
+
                                 # Add edges
-                                for node_id, neighbors in cached_graph_data.graph.adjacency_list.items():
-                                    node_pos = cached_graph_data.graph.nodes[node_id].position
+                                for (
+                                    node_id,
+                                    neighbors,
+                                ) in cached_graph_data.graph.adjacency_list.items():
+                                    node_pos = cached_graph_data.graph.nodes[
+                                        node_id
+                                    ].position
                                     for neighbor_id in neighbors:
-                                        neighbor_pos = cached_graph_data.graph.nodes[neighbor_id].position
-                                        viz_data['edges'].append({
-                                            'pos1': node_pos,
-                                            'pos2': neighbor_pos
-                                        })
-                            
+                                        neighbor_pos = cached_graph_data.graph.nodes[
+                                            neighbor_id
+                                        ].position
+                                        viz_data["edges"].append(
+                                            {"pos1": node_pos, "pos2": neighbor_pos}
+                                        )
+
                             # Add ninja node
-                            viz_data['nodes'].append({
-                                'pos': ninja_pos,
-                                'type': 'ninja'
-                            })
-                            
+                            viz_data["nodes"].append(
+                                {"pos": ninja_pos, "type": "ninja"}
+                            )
+
                             # Draw overlay
-                            overlay_surface = renderer.draw_adjacency_graph(viz_data, ninja_pos)
+                            overlay_surface = renderer.draw_adjacency_graph(
+                                viz_data, ninja_pos
+                            )
                             screen.blit(overlay_surface, (0, 0))
                         except Exception as e:
                             pass  # Silently fail if graph can't be visualized
-                    
+
                     # Update display
                     pygame.display.flip()
         except Exception as e:
