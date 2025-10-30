@@ -2140,7 +2140,6 @@ while running:
         and path_aware_system is not None
         and (path_distances_debug_enabled or adjacency_graph_debug_enabled)
     ):
-        global cached_graph_data, cached_level_hash
         try:
             # Get ninja position
             ninja_pos = _get_ninja_position(env)
