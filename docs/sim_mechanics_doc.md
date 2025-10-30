@@ -22,6 +22,12 @@ This ensures your code remains synchronized with any physics updates and makes t
 - **Coordinate System**: Origin at top-left, X increases rightward, Y increases downward
 - **Visibility**: The entire level is always visible to the player
 
+### Tile Data Coordinate System
+- **1-Tile Padding**: During simulation, levels have a 1-tile border of solid (type 1) tiles around the playable area
+- **Tile Data Offset**: Tile data arrays exclude this padding, so coordinates are offset by -1 tile (-24 pixels) from map_data coordinates
+- **Coordinate Conversion**: When converting from map_data coordinates (e.g., ninja spawn at `map_data[1231]*6, map_data[1232]*6`) to tile data coordinates, subtract 24 pixels (1 tile) from both x and y
+- **Reason**: This allows graph construction and pathfinding to work with the inner playable area without accounting for the padding
+
 ### Time Limit
 - **Maximum Duration**: 20,000 frames per level
 - **Frame Rate**: 60 FPS (standard game speed)
@@ -31,7 +37,9 @@ This ensures your code remains synchronized with any physics updates and makes t
 
 ### Physical Properties
 - **Radius**: 10 pixels (circular collision shape) - see `NINJA_RADIUS` in physics_constants.py
-- **Spawn Position**: Defined by map data at coordinates `(map_data[1231]*6, map_data[1232]*6)`
+- **Spawn Position**: Defined by map data at coordinates `(map_data[1231]*6, map_data[1232]*6)` in full map space
+  - To convert to tile data coordinate space: subtract 24 pixels (1 tile) from both x and y coordinates
+  - This accounts for the 1-tile solid padding around the level during simulation
 
 ### Movement States
 The ninja has 9 distinct movement states with specific transition conditions:

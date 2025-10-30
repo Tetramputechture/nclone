@@ -9,7 +9,7 @@ mixins for better code organization and maintainability.
 import logging
 import numpy as np
 from gymnasium.spaces import box, Dict as SpacesDict
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import time
 
 from ..graph.common import N_MAX_NODES, E_MAX_EDGES
@@ -62,8 +62,6 @@ class NppEnvironment(
             enable_short_episode_truncation=self.config.enable_short_episode_truncation,
             seed=self.config.seed,
             eval_mode=self.config.eval_mode,
-            enable_pbrs=self.config.pbrs.enable_pbrs,
-            pbrs_weights=self.config.pbrs.pbrs_weights,
             pbrs_gamma=self.config.pbrs.pbrs_gamma,
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
@@ -77,7 +75,8 @@ class NppEnvironment(
 
         # Initialize mixin systems using config
         self._init_graph_system(
-            self.config.graph.enable_graph_updates, self.config.graph.debug
+            enable_graph_for_observations=self.config.graph.enable_graph_for_observations,
+            debug=self.config.graph.debug,
         )
         self._init_reachability_system(
             self.config.reachability.enable_reachability, self.config.reachability.debug
@@ -88,7 +87,7 @@ class NppEnvironment(
         # Update configuration flags with new options
         self.config_flags.update(
             {
-                "enable_graph_updates": self.config.graph.enable_graph_updates,
+                "enable_graph_for_observations": self.config.graph.enable_graph_for_observations,
                 "enable_reachability": self.config.reachability.enable_reachability,
                 "enable_hierarchical": self.config.hierarchical.enable_hierarchical,
                 "debug": self.config.graph.debug
@@ -99,18 +98,16 @@ class NppEnvironment(
 
         # Extend observation space with graph, reachability, and hierarchical features
         self.observation_space = self._build_extended_observation_space(
-            self.config.graph.enable_graph_updates,
+            self.config.graph.enable_graph_for_observations,
             self.config.reachability.enable_reachability,
             self.config.hierarchical.enable_hierarchical,
         )
 
-        # Initialize graph state if enabled
-        if self.config.graph.enable_graph_updates:
-            self._update_graph_from_env_state()
+        self._update_graph_from_env_state()
 
     def _build_extended_observation_space(
         self,
-        enable_graph_updates: bool,
+        enable_graph_for_observations: bool,
         enable_reachability: bool,
         enable_hierarchical: bool,
     ) -> SpacesDict:
@@ -144,8 +141,8 @@ class NppEnvironment(
                 low=0.0, high=1.0, shape=(4,), dtype=np.float32
             )
 
-        # Add graph observation spaces if graph updates are enabled
-        if enable_graph_updates:
+        # Add graph observation spaces if graph observations are enabled
+        if enable_graph_for_observations:
             from ..graph.common import NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
             # Graph node features: comprehensive features from graph builder
@@ -185,7 +182,8 @@ class NppEnvironment(
 
     def _post_action_hook(self):
         """Update graph after action execution if needed."""
-        if self.enable_graph_updates and self._should_update_graph():
+        # Graph building happens if either flag is True
+        if self._should_update_graph():
             start_time = time.time()
             self._update_graph_from_env_state()
             update_time = (time.time() - start_time) * 1000  # Convert to ms
@@ -259,9 +257,8 @@ class NppEnvironment(
         if self.enable_hierarchical:
             self._reset_hierarchical_state()
 
-        # Build initial graph if enabled
-        if self.enable_graph_updates:
-            self._update_graph_from_env_state()
+        # Build initial graph
+        self._update_graph_from_env_state()
 
         return result
 
@@ -277,7 +274,7 @@ class NppEnvironment(
             obs["reachability_features"] = np.zeros(8, dtype=np.float32)
 
         # Add graph observations if enabled
-        if self.enable_graph_updates:
+        if self.enable_graph_for_observations:
             obs.update(self._get_graph_observations())
 
         # Add hierarchical features if enabled
@@ -301,7 +298,26 @@ class NppEnvironment(
         # This is needed by ICM and reachability-aware exploration
         obs["level_data"] = self._extract_level_data()
 
+        # Add adjacency graph and full graph data for PBRS path-aware reward shaping
+        adjacency = self._get_adjacency_for_rewards()
+        if adjacency is None:
+            raise RuntimeError("Adjacency graph not available. Graph building failed.")
+        obs["_adjacency_graph"] = adjacency
+        # Include full graph_data for spatial indexing (contains spatial_hash)
+        obs["_graph_data"] = self.current_graph_data
+
         return obs
+
+    def _get_adjacency_for_rewards(self) -> Optional[Dict]:
+        """Get adjacency graph for reward calculation.
+
+        Returns adjacency graph from current_graph_data if available.
+        This is used by PBRS path-aware reward shaping.
+
+        Returns:
+            Adjacency dictionary, or None if not available
+        """
+        return self.current_graph_data["adjacency"]
 
     def _build_switch_states_array(self, obs: Dict[str, Any]) -> np.ndarray:
         """
@@ -382,7 +398,7 @@ class NppEnvironment(
             )
 
         # Add graph observations if enabled and not already added
-        if self.enable_graph_updates:
+        if self.enable_graph_for_observations:
             graph_obs = self._get_graph_observations()
             for key, value in graph_obs.items():
                 if key not in processed_obs:

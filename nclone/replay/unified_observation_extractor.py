@@ -19,7 +19,7 @@ from ..nplay_headless import NPlayHeadless
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..constants.entity_types import EntityType
 from ..constants.physics_constants import NINJA_RADIUS
-from ..graph.level_data import LevelData
+from ..graph.level_data import LevelData, extract_start_position_from_map_data
 from ..graph.reachability.feature_extractor import ReachabilityFeatureExtractor
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,11 @@ class UnifiedObservationExtractor:
         # Extract entities
         entities = self._extract_graph_entities(sim)
 
+        # Extract ninja spawn position from map_data
+        start_position = extract_start_position_from_map_data(sim.map_data)
+
         return LevelData(
+            start_position=start_position,
             tiles=tiles,
             entities=entities,
             level_id=f"level_{getattr(sim, 'frame', 0)}",

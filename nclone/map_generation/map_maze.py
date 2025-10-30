@@ -16,6 +16,8 @@ class MazeGenerator(Map):
     MAX_HEIGHT = 10
     MAX_CELL_SIZE = 4
 
+    USE_RANDOM_WALL_TILES = False
+
     def __init__(self, seed: Optional[int] = None):
         """Initialize the maze generator.
 
@@ -59,10 +61,13 @@ class MazeGenerator(Map):
             for x in range(self.width * self.cell_size):
                 tile_x = self.start_x + x
                 tile_y = self.start_y + y
-                random_tile = self.rng.randint(1, VALID_TILE_TYPES)
+                if self.USE_RANDOM_WALL_TILES:
+                    wall_tile_type = self.rng.randint(1, VALID_TILE_TYPES)
+                else:
+                    wall_tile_type = 1
                 # Ensure we're within map boundaries
                 if 0 <= tile_x < MAP_TILE_WIDTH and 0 <= tile_y < MAP_TILE_HEIGHT:
-                    self.set_tile(tile_x, tile_y, random_tile)
+                    self.set_tile(tile_x, tile_y, wall_tile_type)
 
     def _is_valid_cell(self, x: int, y: int) -> bool:
         """Check if coordinates are within maze bounds."""
