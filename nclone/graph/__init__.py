@@ -2,11 +2,6 @@
 Graph-based structural representations for N++ environments.
 """
 
-from .hierarchical_builder import (
-    HierarchicalGraphBuilder,
-    HierarchicalGraphData,
-    ResolutionLevel,
-)
 # Note: FeatureExtractor moved to npp-rl project
 # from .feature_extraction import FeatureExtractor
 from .edge_building import EdgeBuilder
@@ -23,10 +18,6 @@ from .common import (
 )
 
 __all__ = [
-    "HierarchicalGraphBuilder",
-    "HierarchicalGraphData",
-    "ResolutionLevel",
-    # "FeatureExtractor",  # Moved to npp-rl
     "EdgeBuilder",
     "LevelData",
     "ensure_level_data",

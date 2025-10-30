@@ -134,18 +134,36 @@ class MapVerticalCorridor(Map):
             door_y = chamber_y
         else:
             door_y = self.rng.randint(chamber_y, midpoint_y)
-        switch_y = self.rng.randint(chamber_y, door_y)
 
         swap_top_and_bottom = self.rng.choice([True, False])
 
-        # If swapping  top and bottom, the exit door and ninja positions need to be swapped
+        # If swapping top and bottom, the exit door and ninja positions need to be swapped
         if swap_top_and_bottom:
             tmp_door_y = door_y
             door_y = ninja_y
             ninja_y = tmp_door_y
 
+        # Place switch evenly between ninja and door
+        # Ensure switch is between ninja and door (not outside that range)
+        min_y = min(ninja_y, door_y)
+        max_y = max(ninja_y, door_y)
+        # Calculate midpoint, ensuring it's between min and max
+        switch_y = (ninja_y + door_y) // 2
+        # Clamp to valid range in case of edge cases
+        switch_y = max(min_y + 1, min(switch_y, max_y - 1))
+
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
+
+        # Add ceiling mines at the top of the corridor
+        self._place_corridor_ceiling_mines(
+            chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
+        )
+
+        # Add floor mines if corridor is tall enough
+        self._place_corridor_floor_mines(
+            chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
+        )
 
         can_add_platforms = height > 8 and width > 2
 

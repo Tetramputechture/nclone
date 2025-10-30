@@ -227,7 +227,8 @@ def main():
     
     # Create environment
     config = EnvironmentConfig()
-    config.graph.enable_graph_updates = False
+    config.graph.enable_graph_for_pbrs = False
+    config.graph.enable_graph_for_observations = False
     env = NppEnvironment(config)
     
     # Run validation episodes

@@ -5,6 +5,7 @@ These are among the simplest level types in the game.
 """
 
 from typing import Optional
+
 from .map import Map
 from .constants import VALID_TILE_TYPES, GRID_SIZE_FACTOR
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
@@ -102,6 +103,7 @@ class MapHorizontalCorridor(Map):
             for pos in available_positions
             if pos > start_x + 0.25 and pos < start_x + width - 0.25
         ]
+        # Exclude positions too close to ninja spawn (minimum 1 tile distance)
         available_positions = [
             pos for pos in available_positions if abs(pos - ninja_x) >= 1
         ]
@@ -121,6 +123,9 @@ class MapHorizontalCorridor(Map):
 
             # For each door, find valid switch positions
             switch_available = [p for p in available_positions if p not in door_pos]
+
+            # Exclude switch positions too close to ninja (minimum 1 tile distance)
+            switch_available = [p for p in switch_available if abs(p - ninja_x) >= 1]
 
             # Check if we have enough switch positions between ninja and doors
             if ninja_on_left:
@@ -183,11 +188,19 @@ class MapHorizontalCorridor(Map):
             )
         else:
             # Exit door only - use integer positions for door
-            if len(door_positions) >= 2:
-                positions = sorted(self.rng.sample(door_positions, k=2))
+            # Filter door positions to exclude those too close to ninja (minimum 1 tile distance)
+            filtered_door_positions = [
+                p for p in door_positions if abs(p - ninja_x) >= 1
+            ]
+            filtered_available_positions = [
+                p for p in available_positions if abs(p - ninja_x) >= 1
+            ]
+
+            if len(filtered_door_positions) >= 2:
+                positions = sorted(self.rng.sample(filtered_door_positions, k=2))
             else:
                 # Fallback if not enough integer positions
-                positions = sorted(self.rng.sample(available_positions, k=2))
+                positions = sorted(self.rng.sample(filtered_available_positions, k=2))
 
             if not ninja_on_left:
                 positions = positions[::-1]
@@ -211,12 +224,24 @@ class MapHorizontalCorridor(Map):
                 exit_switch_y,
             )
 
+        # Situations where height is 1 and random edge tiles are almost impossible to achieve at first.
+        if not (self.RANDOM_EDGE_TILES and height == 1):
+            # Add ceiling mines (skip if height == 2)
+            self._place_corridor_ceiling_mines(
+                start_x, start_y, width, height, "horizontal", ninja_x, ninja_y
+            )
+
+            # Add floor mines (if height >= 2)
+            self._place_corridor_floor_mines(
+                start_x, start_y, width, height, "horizontal", ninja_x, ninja_y
+            )
+
         # Add random entities outside the playspace
         self.add_random_entities_outside_playspace(
             start_x - 2,
             start_y - 2,
-            start_x + width + 1,
-            start_y + height + 1,
+            start_x + width + 2,
+            start_y + height + 2,
         )
 
         return self

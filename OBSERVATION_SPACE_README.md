@@ -28,7 +28,7 @@ observation_space = SpacesDict({
     'entity_positions': Box(0, 1, (6,), np.float32),
     'switch_states': Box(0, 1, (25,), np.float32),
     
-    # Graph (optional, config.graph.enable_graph_updates=True)
+    # Graph (optional, config.graph.enable_graph_for_observations=True)
     'graph_node_feats': Box(-inf, inf, (max_nodes, 55), np.float32),
     'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), np.int32),
     'graph_edge_feats': Box(0, 1, (max_edges, 6), np.float32),
@@ -127,7 +127,11 @@ door_2 = switch_states[10:15]
 
 ## Graph Observations (Optional)
 
-Enable with `config.graph.enable_graph_updates = True`.
+Enable with `config.graph.enable_graph_for_observations = True`.
+
+Note: Graph building for PBRS path distance calculations is controlled separately
+via `config.graph.enable_graph_for_pbrs`. You can enable graph for PBRS without
+adding graph observations to the observation space.
 
 ### `graph_node_feats`
 `(max_nodes, 55)` float32

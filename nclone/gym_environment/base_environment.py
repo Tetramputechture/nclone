@@ -16,7 +16,7 @@ from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..nplay_headless import NPlayHeadless
 
 # Graph and level data imports
-from ..graph.level_data import LevelData
+from ..graph.level_data import LevelData, extract_start_position_from_map_data
 
 from .constants import (
     GAME_STATE_CHANNELS,
@@ -31,6 +31,7 @@ from .observation_processor import ObservationProcessor
 from .truncation_checker import TruncationChecker
 from .entity_extractor import EntityExtractor
 from .env_map_loader import EnvMapLoader
+from .reward_calculation.reward_constants import PBRS_GAMMA
 
 
 class BaseNppEnvironment(gymnasium.Env):
@@ -60,14 +61,11 @@ class BaseNppEnvironment(gymnasium.Env):
         enable_short_episode_truncation: bool = False,
         seed: Optional[int] = None,
         eval_mode: bool = False,
-        reward_config: Optional[Dict[str, Any]] = None,
-        enable_pbrs: bool = True,
-        pbrs_weights: Optional[dict] = None,
-        pbrs_gamma: float = 0.99,
         custom_map_path: Optional[str] = None,
         test_dataset_path: Optional[str] = None,
         enable_augmentation: bool = True,
         augmentation_config: Optional[Dict[str, Any]] = None,
+        pbrs_gamma: float = PBRS_GAMMA,
     ):
         """
         Initialize the base N++ environment.
@@ -80,14 +78,11 @@ class BaseNppEnvironment(gymnasium.Env):
             enable_short_episode_truncation: Enable episode truncation on lack of progress
             seed: Random seed for reproducibility
             eval_mode: Use evaluation maps instead of training maps
-            reward_config: Complete reward configuration dict (overrides individual reward params)
-            enable_pbrs: Enable potential-based reward shaping (legacy, use reward_config instead)
-            pbrs_weights: PBRS component weights dictionary (legacy, use reward_config instead)
-            pbrs_gamma: PBRS discount factor (legacy, use reward_config instead)
             custom_map_path: Path to custom map file
             test_dataset_path: Path to test dataset directory for evaluation
             enable_augmentation: Enable frame augmentation
             augmentation_config: Augmentation configuration dictionary
+            pbrs_gamma: PBRS discount factor
         """
         super().__init__()
 
@@ -138,16 +133,7 @@ class BaseNppEnvironment(gymnasium.Env):
             training_mode=not eval_mode,  # Disable validation in training mode
         )
 
-        # Initialize reward calculator with configuration
-        if reward_config is not None:
-            self.reward_calculator = RewardCalculator(reward_config=reward_config)
-        else:
-            # Legacy mode: use individual parameters
-            self.reward_calculator = RewardCalculator(
-                enable_pbrs=enable_pbrs,
-                pbrs_weights=pbrs_weights,
-                pbrs_gamma=pbrs_gamma,
-            )
+        self.reward_calculator = RewardCalculator(pbrs_gamma=pbrs_gamma)
 
         # Initialize truncation checker
         self.truncation_checker = TruncationChecker(
@@ -162,8 +148,6 @@ class BaseNppEnvironment(gymnasium.Env):
             "enable_debug_overlay": enable_debug_overlay,
             "enable_short_episode_truncation": enable_short_episode_truncation,
             "eval_mode": eval_mode,
-            "enable_pbrs": enable_pbrs,
-            "pbrs_weights": pbrs_weights,
             "pbrs_gamma": pbrs_gamma,
         }
 
@@ -361,7 +345,6 @@ class BaseNppEnvironment(gymnasium.Env):
             "l": self.nplay_headless.sim.frame,
             "level_id": self.map_loader.current_map_name,
             "config_flags": self.config_flags.copy(),
-            "pbrs_enabled": self.config_flags["enable_pbrs"],
         }
 
         # Add PBRS component rewards if available
@@ -573,10 +556,15 @@ class BaseNppEnvironment(gymnasium.Env):
         # Extract entities
         entities = self.entity_extractor.extract_graph_entities()
 
+        # Extract ninja spawn position from map_data
+        start_position = extract_start_position_from_map_data(
+            self.nplay_headless.sim.map_data
+        )
+
         return LevelData(
+            start_position=start_position,
             tiles=tiles,
             entities=entities,
-            level_id=f"level_{getattr(self.nplay_headless.sim, 'frame', 0)}",
         )
 
     @property

@@ -57,7 +57,9 @@ from nclone import NppEnvironment
 env = NppEnvironment(
     render_mode="grayscale_array",  # Headless for training
     dataset_dir="datasets/train",
-    enable_graph_updates=True,  # Graph observations
+    config=EnvironmentConfig(
+        graph=GraphConfig(enable_graph_for_pbrs=True, enable_graph_for_observations=True)  # Graph for PBRS and observations
+    ),
     curriculum_level=0  # Difficulty level
 )
 
@@ -242,7 +244,9 @@ Enable structural level understanding:
 
 ```python
 env = NPPEnvironment(
-    enable_graph_updates=True,
+    config=EnvironmentConfig(
+        graph=GraphConfig(enable_graph_for_pbrs=True, enable_graph_for_observations=True)
+    ),
     graph_config={
         'node_features': 56,    # Comprehensive node features (reduced from 61)
         'edge_features': 6,     # Comprehensive edge features
