@@ -91,13 +91,12 @@ class MapVerticalCorridor(Map):
                 self.set_tile(x, y, 0)
 
         # Step 5: Create boundary walls
-        use_random_tiles = self.rng.choice([True, False])
         self.set_hollow_rectangle(
             chamber_x - 1,
             chamber_y - 1,
             chamber_x + width,
             chamber_y + height,
-            use_random_tiles_type=use_random_tiles,
+            use_random_tiles_type=True,
             chaotic_random_tiles=add_chaotic_walls,
         )
 

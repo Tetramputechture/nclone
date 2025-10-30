@@ -145,9 +145,7 @@ class EnvMapLoader:
         # Lazy initialization of generator and registry
         if self._train_generator is None:
             self._train_generator = TestSuiteGenerator("datasets/train_runtime")
-            self._generator_registry = GeneratorRegistry(
-                self._train_generator, self.rng
-            )
+            self._generator_registry = GeneratorRegistry(self.rng)
 
         # Select difficulty category
         category = self._select_category()

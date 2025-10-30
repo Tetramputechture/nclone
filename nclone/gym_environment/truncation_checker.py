@@ -13,7 +13,7 @@ from typing import Tuple
 
 
 class TruncationChecker:
-    MAX_FRAMES = 20000
+    MAX_FRAMES = 5000
     SHORT_EPISODE_MAX_FRAMES = 2000
 
     def __init__(self, env, enable_short_episode_truncation: bool = False):

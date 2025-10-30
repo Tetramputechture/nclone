@@ -25,8 +25,6 @@ from typing import Dict, List, Any, Callable
 from .map import Map
 from .generator_factory import GeneratorFactory
 from .generator_configs import CATEGORIES
-from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
-from .constants import VALID_TILE_TYPES
 
 
 class TestSuiteGenerator:
@@ -134,34 +132,18 @@ class TestSuiteGenerator:
             f"after {self.MAX_REGENERATION_ATTEMPTS} attempts"
         )
 
-    def _generate_level(
-        self, generator_type: str, preset: str, seed: int, index: int = 0
-    ) -> Map:
+    def _generate_level(self, generator_type: str, preset: str, seed: int) -> Map:
         """Generate a single level using generator type and preset.
 
         Args:
             generator_type: Type of generator (from GENERATOR_REGISTRY)
             preset: Preset name (from GENERATOR_PRESETS)
             seed: Random seed
-            index: Level index (used for special generators like horizontal)
 
         Returns:
             Generated Map
         """
-        # Special handling for horizontal generator (uses custom logic)
-        if generator_type == "horizontal":
-            if preset == "minimal":
-                return self._create_minimal_simple_level_horizontal(
-                    seed,
-                    8,
-                    height=1,
-                )
-            else:
-                return self._create_minimal_simple_level_horizontal(
-                    seed, index, random_edge_tiles=True
-                )
-
-        # Use factory for standard generators
+        # Use factory for all generators
         map_gen = GeneratorFactory.create_from_preset(generator_type, preset, seed)
         map_gen.generate(seed=seed)
         return map_gen
@@ -202,7 +184,7 @@ class TestSuiteGenerator:
 
                 # Generate with deduplication
                 map_gen = self._generate_unique_map(
-                    lambda s: self._generate_level(gen_type, preset, s, i),
+                    lambda s: self._generate_level(gen_type, preset, s),
                     seed,
                     i,
                     f"{category}-{mode}",
@@ -236,212 +218,6 @@ class TestSuiteGenerator:
             for i in range(num_generators)
         )
         print(f"  Distribution: {dist_summary}")
-
-    def _create_minimal_simple_level_horizontal(
-        self, seed: int, index: int, height: int = None, random_edge_tiles: bool = False
-    ) -> Map:
-        """Create a minimal horizontal level (special case for 'horizontal' generator).
-
-        Args:
-            seed: Random seed
-            index: Level index for parameter variation
-            height: Optional fixed height (default: random 1-5 tiles high)
-
-        Returns:
-            Generated Map
-        """
-        map_gen = Map(seed=seed)
-        rng = map_gen.rng
-
-        # Very small dimensions for simplest levels
-        max_width = 3 + (index % 20)
-        max_height = 1 + (index % 5)
-        width = rng.randint(3, max_width)
-        if height is None:
-            height = rng.randint(1, max_height)
-
-        # Random offset for the chamber
-        max_start_x = MAP_TILE_WIDTH - width - 1
-        max_start_y = MAP_TILE_HEIGHT - height - 1
-        start_x = rng.randint(1, max_start_x)
-        start_y = rng.randint(1, max_start_y)
-
-        # Fill with random tiles
-        tile_types = [
-            rng.randint(0, VALID_TILE_TYPES)
-            for _ in range(MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
-        ]
-        map_gen.set_tiles_bulk(tile_types)
-
-        # Create empty chamber
-        for y in range(start_y, start_y + height):
-            for x in range(start_x, start_x + width):
-                map_gen.set_tile(x, y, 0)
-
-        # Add decorative walls on chamber edges
-        use_random_tiles_type = rng.choice([True, False])
-        map_gen.set_hollow_rectangle(
-            start_x - 1,
-            start_y - 1,
-            start_x + width,
-            start_y + height,
-            use_random_tiles_type=use_random_tiles_type,
-            chaotic_random_tiles=random_edge_tiles,
-        )
-
-        # Randomly choose ninja starting side
-        ninja_on_left = rng.choice([True, False])
-
-        if ninja_on_left:
-            ninja_x = start_x
-            ninja_orientation = 1
-        else:
-            ninja_x = start_x + width - 1
-            ninja_orientation = -1
-
-        ninja_y = start_y + height - 1
-
-        # Check if we should add a locked door
-        can_add_locked_door = height == 1 and width >= 4
-        add_locked_door = can_add_locked_door and rng.choice([True, False])
-
-        # Generate positions with quarter-tile increments
-        num_positions = (width - 1) * 4
-        available_positions = [start_x + i * 0.25 for i in range(num_positions)]
-
-        # Filter positions
-        available_positions = [
-            pos
-            for pos in available_positions
-            if pos > start_x + 0.25 and pos < start_x + width - 0.25
-        ]
-        available_positions = [
-            pos for pos in available_positions if abs(pos - ninja_x) >= 1
-        ]
-
-        # For doors, filter to only integer positions (doors must be at 24-pixel tile boundaries)
-        door_positions = [pos for pos in available_positions if pos == int(pos)]
-
-        # Place entities based on layout complexity
-        # Try to add locked door with proper switch placement
-        locked_door_viable = False
-        if (
-            add_locked_door
-            and len(door_positions) >= 2
-            and len(available_positions) >= 4
-        ):
-            # Sample 2 door positions (must be integers for 24-pixel alignment)
-            door_pos = sorted(rng.sample(door_positions, k=2))
-
-            # For each door, find valid switch positions (between ninja and door)
-            switch_available = [p for p in available_positions if p not in door_pos]
-
-            # Check if we have enough switch positions between ninja and doors
-            if ninja_on_left:
-                locked_switch_candidates = [
-                    p for p in switch_available if p < door_pos[0]
-                ]
-                exit_switch_candidates = [
-                    p for p in switch_available if door_pos[0] < p < door_pos[1]
-                ]
-            else:
-                locked_switch_candidates = [
-                    p for p in switch_available if p > door_pos[1]
-                ]
-                exit_switch_candidates = [
-                    p for p in switch_available if door_pos[0] < p < door_pos[1]
-                ]
-
-            # Only proceed if we have valid switch positions
-            if locked_switch_candidates and exit_switch_candidates:
-                locked_door_viable = True
-                if ninja_on_left:
-                    locked_switch_x = rng.choice(locked_switch_candidates)
-                    exit_switch_x = rng.choice(exit_switch_candidates)
-                    locked_door_x = door_pos[0]
-                    exit_door_x = door_pos[1]
-                else:
-                    locked_switch_x = rng.choice(locked_switch_candidates)
-                    exit_switch_x = rng.choice(exit_switch_candidates)
-                    locked_door_x = door_pos[1]
-                    exit_door_x = door_pos[0]
-                entity_y = start_y
-
-        if locked_door_viable:
-            # Place locked door and exit door
-
-            map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=ninja_orientation)
-            # Doors must be integers (24-pixel boundaries)
-            # Switches can be fractional - multiply by GRID_SIZE_FACTOR before int() to preserve fractional grid positions
-            from nclone.map_generation.constants import GRID_SIZE_FACTOR
-
-            # Convert switch positions preserving fractional coordinates
-            # Multiply by GRID_SIZE_FACTOR, then int(), then divide back
-            # This preserves fractional grid positions (e.g., 7.75 * 4 = 31, int(31) = 31, 31 / 4 = 7.75)
-            locked_switch_grid = (
-                int(locked_switch_x * GRID_SIZE_FACTOR) / GRID_SIZE_FACTOR
-            )
-            exit_switch_grid = int(exit_switch_x * GRID_SIZE_FACTOR) / GRID_SIZE_FACTOR
-
-            map_gen.add_entity(
-                6,
-                int(locked_door_x),
-                entity_y,
-                4,
-                0,
-                locked_switch_grid,
-                entity_y,
-            )
-            map_gen.add_entity(
-                3,
-                int(exit_door_x),
-                entity_y,
-                0,
-                0,
-                exit_switch_grid,
-                entity_y,
-            )
-        else:
-            # Exit door only - use integer positions for door, can use any for switch
-            if len(door_positions) >= 2:
-                # Use integer positions for door entities
-                positions = sorted(rng.sample(door_positions, k=2))
-            else:
-                # Fallback if not enough integer positions
-                positions = sorted(rng.sample(available_positions, k=2))
-
-            if not ninja_on_left:
-                positions = positions[::-1]
-
-            exit_switch_x, exit_door_x = positions
-            exit_switch_y = start_y
-            exit_door_y = start_y
-
-            if height > 1:
-                exit_switch_y = start_y + rng.randint(1, height - 1) * 0.25
-                exit_door_y = start_y + rng.randint(1, height - 1) * 0.25
-
-            map_gen.set_ninja_spawn(ninja_x, ninja_y, orientation=ninja_orientation)
-            # Ensure positions are integers for door entities
-            map_gen.add_entity(
-                3,
-                exit_door_x,
-                exit_door_y,
-                0,
-                0,
-                exit_switch_x,
-                exit_switch_y,
-            )
-
-        # Add random entities outside the playspace
-        map_gen.add_random_entities_outside_playspace(
-            start_x - 2,
-            start_y - 2,
-            start_x + width + 1,
-            start_y + height + 1,
-        )
-
-        return map_gen
 
     def save_dataset(self, mode: str = "both") -> None:
         """Save the generated datasets to disk.
