@@ -35,6 +35,13 @@ class DebugMixin:
         self._reachability_state = None
         self._reachability_subgoals = []
         self._reachability_frontiers = []
+        
+        # Path-aware debug visualization state
+        self._path_distances_debug_enabled: bool = False
+        self._adjacency_graph_debug_enabled: bool = False
+        self._blocked_entities_debug_enabled: bool = False
+        self._path_aware_graph_data = None
+        self._path_aware_entity_mask = None
 
     def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
@@ -58,6 +65,17 @@ class DebugMixin:
                 "state": self._reachability_state,
                 "subgoals": self._reachability_subgoals,
                 "frontiers": self._reachability_frontiers,
+            }
+        
+        # Add path-aware visualization payload if enabled (independent of general debug overlay)
+        if self._path_distances_debug_enabled or self._adjacency_graph_debug_enabled or self._blocked_entities_debug_enabled:
+            info["path_aware"] = {
+                "show_distances": self._path_distances_debug_enabled,
+                "show_adjacency": self._adjacency_graph_debug_enabled,
+                "show_blocked": self._blocked_entities_debug_enabled,
+                "graph_data": self._path_aware_graph_data,
+                "entity_mask": self._path_aware_entity_mask,
+                "ninja_position": self.nplay_headless.ninja_position(),
             }
 
         # Add other debug info only if general debug overlay is enabled
@@ -186,3 +204,20 @@ class DebugMixin:
         if renderer:
             return renderer.export_subgoal_visualization(filename)
         return False
+    
+    def set_path_distances_debug_enabled(self, enabled: bool):
+        """Enable/disable path distance debug visualization."""
+        self._path_distances_debug_enabled = bool(enabled)
+    
+    def set_adjacency_graph_debug_enabled(self, enabled: bool):
+        """Enable/disable adjacency graph debug visualization."""
+        self._adjacency_graph_debug_enabled = bool(enabled)
+    
+    def set_blocked_entities_debug_enabled(self, enabled: bool):
+        """Enable/disable blocked entities debug visualization."""
+        self._blocked_entities_debug_enabled = bool(enabled)
+    
+    def set_path_aware_data(self, graph_data=None, entity_mask=None):
+        """Set path-aware graph and entity mask data for visualization."""
+        self._path_aware_graph_data = graph_data
+        self._path_aware_entity_mask = entity_mask

@@ -288,6 +288,143 @@ class DebugOverlayRenderer:
                 surface.blit(text_surf, text_rect)
 
         return surface
+    
+    def _draw_path_aware(self, path_aware_info: dict) -> Optional[pygame.Surface]:
+        """Draw path-aware debugging information (adjacency graph, path distances, blocked entities).
+        
+        Args:
+            path_aware_info: Dictionary containing:
+                - show_distances: bool - whether to show path distances
+                - show_adjacency: bool - whether to show adjacency graph
+                - show_blocked: bool - whether to show blocked entities
+                - graph_data: dict - graph adjacency data
+                - entity_mask: EntityMask - entity blocking data
+                - ninja_position: tuple - current ninja position
+        
+        Returns:
+            pygame.Surface with path-aware visualization, or None if no graph data available
+        """
+        if not path_aware_info.get('graph_data'):
+            return None
+        
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        graph_data = path_aware_info['graph_data']
+        adjacency = graph_data.get('adjacency', {})
+        ninja_pos = path_aware_info.get('ninja_position', (0, 0))
+        
+        show_adjacency = path_aware_info.get('show_adjacency', False)
+        show_distances = path_aware_info.get('show_distances', False)
+        show_blocked = path_aware_info.get('show_blocked', False)
+        
+        # Colors for visualization
+        NODE_COLOR = (100, 255, 100, 180)  # Green nodes
+        EDGE_COLOR = (255, 255, 100, 100)  # Yellow edges
+        BLOCKED_NODE_COLOR = (255, 50, 50, 180)  # Red for blocked
+        NINJA_NODE_COLOR = (100, 150, 255, 255)  # Blue for ninja position
+        TEXT_COLOR = (255, 255, 255, 255)  # White text
+        
+        # Get blocked positions if available
+        blocked_positions = set()
+        blocked_edges = set()
+        if show_blocked and graph_data.get('blocked_positions'):
+            blocked_positions = graph_data['blocked_positions']
+        if show_blocked and graph_data.get('blocked_edges'):
+            blocked_edges = graph_data['blocked_edges']
+        
+        # Draw adjacency graph edges first (so they appear behind nodes)
+        if show_adjacency:
+            for pos, neighbors in adjacency.items():
+                if not neighbors:
+                    continue
+                x1, y1 = pos
+                screen_x1 = int(x1 * self.adjust + self.tile_x_offset)
+                screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
+                
+                for neighbor_info in neighbors:
+                    # neighbor_info is ((x, y), cost)
+                    neighbor_pos, cost = neighbor_info
+                    x2, y2 = neighbor_pos
+                    screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
+                    screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
+                    
+                    # Check if edge is blocked
+                    edge_blocked = (pos, neighbor_pos) in blocked_edges or (neighbor_pos, pos) in blocked_edges
+                    edge_color = (255, 0, 0, 80) if edge_blocked else EDGE_COLOR
+                    
+                    # Draw line
+                    pygame.draw.line(surface, edge_color, (screen_x1, screen_y1), (screen_x2, screen_y2), 1)
+        
+        # Draw nodes
+        if show_adjacency or show_blocked:
+            try:
+                font = pygame.font.Font(None, 16)
+            except pygame.error:
+                font = pygame.font.SysFont("arial", 14)
+            
+            for pos in adjacency.keys():
+                x, y = pos
+                screen_x = int(x * self.adjust + self.tile_x_offset)
+                screen_y = int(y * self.adjust + self.tile_y_offset)
+                
+                # Determine node color
+                if pos in blocked_positions:
+                    node_color = BLOCKED_NODE_COLOR
+                elif abs(x - ninja_pos[0]) < 5 and abs(y - ninja_pos[1]) < 5:
+                    node_color = NINJA_NODE_COLOR
+                else:
+                    node_color = NODE_COLOR
+                
+                # Draw node circle
+                pygame.draw.circle(surface, node_color, (screen_x, screen_y), 3)
+        
+        # Draw path distances from ninja position
+        if show_distances and ninja_pos:
+            try:
+                font = pygame.font.Font(None, 16)
+            except pygame.error:
+                font = pygame.font.SysFont("arial", 14)
+            
+            # Find closest node to ninja position
+            ninja_x, ninja_y = ninja_pos
+            closest_node = None
+            min_dist = float('inf')
+            for pos in adjacency.keys():
+                x, y = pos
+                dist = ((x - ninja_x)**2 + (y - ninja_y)**2)**0.5
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_node = pos
+            
+            if closest_node and min_dist < 50:  # Only if ninja is close to a node
+                # Use simple BFS to calculate distances
+                from collections import deque
+                distances = {closest_node: 0}
+                queue = deque([closest_node])
+                
+                while queue:
+                    current = queue.popleft()
+                    current_dist = distances[current]
+                    
+                    neighbors = adjacency.get(current, [])
+                    for neighbor_info in neighbors:
+                        neighbor_pos, cost = neighbor_info
+                        if neighbor_pos not in distances:
+                            distances[neighbor_pos] = current_dist + cost
+                            queue.append(neighbor_pos)
+                
+                # Draw distances on screen
+                for pos, dist in distances.items():
+                    if dist > 1000:  # Don't show very far nodes
+                        continue
+                    x, y = pos
+                    screen_x = int(x * self.adjust + self.tile_x_offset)
+                    screen_y = int(y * self.adjust + self.tile_y_offset)
+                    
+                    # Draw distance text
+                    text = font.render(f"{int(dist)}", True, TEXT_COLOR)
+                    surface.blit(text, (screen_x + 5, screen_y - 10))
+        
+        return surface
 
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
@@ -316,6 +453,12 @@ class DebugOverlayRenderer:
         if debug_info and "tile_types" in debug_info:
             tile_types_surface = self._draw_tile_types()
             surface.blit(tile_types_surface, (0, 0))
+        
+        # Draw path-aware visualization if provided
+        if debug_info and "path_aware" in debug_info:
+            path_aware_surface = self._draw_path_aware(debug_info["path_aware"])
+            if path_aware_surface:
+                surface.blit(path_aware_surface, (0, 0))
 
         # Draw subgoal visualization if enabled
         if self.subgoal_debug_enabled:

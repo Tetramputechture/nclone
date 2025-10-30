@@ -1150,6 +1150,12 @@ if (
         print(f"   - Path distance display: {path_distances_debug_enabled}")
         print(f"   - Adjacency graph display: {adjacency_graph_debug_enabled}")
         print(f"   - Blocked entities display: {blocked_entities_debug_enabled}")
+        
+        # Set initial flags on environment if any are enabled
+        if path_distances_debug_enabled or adjacency_graph_debug_enabled or blocked_entities_debug_enabled:
+            env.set_path_distances_debug_enabled(path_distances_debug_enabled)
+            env.set_adjacency_graph_debug_enabled(adjacency_graph_debug_enabled)
+            env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
 
     except Exception as e:
         print(f"Warning: Could not initialize path-aware system: {e}")
@@ -2191,6 +2197,32 @@ while running:
     # Record action if recording is active
     if recorder is not None and recorder.is_recording:
         recorder.record_action(action)
+    
+    # Update path-aware visualization if enabled
+    if path_aware_system is not None and (path_distances_debug_enabled or adjacency_graph_debug_enabled or blocked_entities_debug_enabled):
+        # Build/update graph if any path visualization is enabled
+        if path_aware_system['current_graph'] is None or path_aware_system.get('level_id') != env.current_map_name:
+            # Rebuild graph for new level
+            # Convert LevelData to dict format for fast_graph_builder
+            level_data_dict = env.level_data.to_dict() if hasattr(env.level_data, 'to_dict') else env.level_data
+            path_aware_system['current_graph'] = path_aware_system['graph_builder'].build_graph(level_data_dict)
+            path_aware_system['level_id'] = env.current_map_name
+        
+        # Set debug flags on environment
+        env.set_path_distances_debug_enabled(path_distances_debug_enabled)
+        env.set_adjacency_graph_debug_enabled(adjacency_graph_debug_enabled)
+        env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
+        
+        # Pass graph data to environment for visualization
+        env.set_path_aware_data(
+            graph_data=path_aware_system['current_graph'],
+            entity_mask=path_aware_system.get('current_entity_mask')
+        )
+    elif path_aware_system is not None:
+        # Turn off all path-aware debug flags when none are enabled
+        env.set_path_distances_debug_enabled(False)
+        env.set_adjacency_graph_debug_enabled(False)
+        env.set_blocked_entities_debug_enabled(False)
 
     # Step the environment
     observation, reward, terminated, truncated, info = env.step(action)
