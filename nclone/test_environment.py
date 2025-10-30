@@ -59,6 +59,19 @@ def _get_ninja_position(env):
         return (100, 100)  # Fallback
 
 
+def _get_level_hash(env):
+    """Get a hash representing the current level state for graph caching."""
+    try:
+        if hasattr(env, "level_data"):
+            # Create a simple hash from level data
+            import hashlib
+            level_str = str(env.level_data)
+            return hashlib.md5(level_str.encode()).hexdigest()
+    except:
+        pass
+    return None
+
+
 class MemoryProfiler:
     """Memory profiling utility for environment memory analysis."""
 
@@ -588,7 +601,7 @@ if (
     print("  T - Run pathfinding benchmark at current position")
     print("  X - Export path analysis screenshot")
     print("  R - Reset environment")
-    print("  Arrow Keys/WASD - Move ninja")
+    print("  Arrow Keys - Move ninja")
 
     print("\nPerformance Targets:")
     print("  • Graph build (first call): < 5ms")
@@ -1034,6 +1047,10 @@ path_aware_system = None
 path_distances_debug_enabled = False
 adjacency_graph_debug_enabled = False
 blocked_entities_debug_enabled = False
+
+# Graph caching to avoid rebuilding every frame
+cached_graph_data = None
+cached_level_hash = None
 
 if (
     args.test_path_aware
@@ -1920,15 +1937,15 @@ while running:
 
                 # Path-aware reward shaping controls
                 if path_aware_system is not None:
-                    if event.key == pygame.K_d and not (keys[pygame.K_RIGHT] or keys[pygame.K_d]):
-                        # Toggle path distance display (no conflict with movement)
+                    if event.key == pygame.K_d:
+                        # Toggle path distance display
                         path_distances_debug_enabled = not path_distances_debug_enabled
                         print(
                             f"Path distance display: {'ON' if path_distances_debug_enabled else 'OFF'}"
                         )
                     
-                    if event.key == pygame.K_a and not (keys[pygame.K_LEFT] or keys[pygame.K_a]):
-                        # Toggle adjacency graph visualization (only if not moving)
+                    if event.key == pygame.K_a:
+                        # Toggle adjacency graph visualization
                         adjacency_graph_debug_enabled = not adjacency_graph_debug_enabled
                         print(
                             f"Adjacency graph visualization: {'ON' if adjacency_graph_debug_enabled else 'OFF'}"
@@ -2044,21 +2061,21 @@ while running:
             if event.type == pygame.QUIT:
                 running = False
 
-    # Map keyboard inputs to environment actions
+    # Map keyboard inputs to environment actions (arrow keys only)
     action = 0  # Default to NOOP
     if not args.headless:  # Only process keyboard inputs if not in headless mode
         keys = pygame.key.get_pressed()
-        if keys[pygame.K_SPACE] or keys[pygame.K_UP]:
-            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+        if keys[pygame.K_UP]:
+            if keys[pygame.K_LEFT]:
                 action = 4  # Jump + Left
-            elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            elif keys[pygame.K_RIGHT]:
                 action = 5  # Jump + Right
             else:
                 action = 3  # Jump only
         else:
-            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            if keys[pygame.K_LEFT]:
                 action = 1  # Left
-            elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            elif keys[pygame.K_RIGHT]:
                 action = 2  # Right
     else:
         # In headless mode, we can choose to send a default action or no action
@@ -2079,6 +2096,17 @@ while running:
             # Get ninja position
             ninja_pos = _get_ninja_position(env)
             
+            # Check if we need to rebuild the graph (cache invalidation on level change)
+            current_level_hash = _get_level_hash(env)
+            if current_level_hash != cached_level_hash:
+                # Level changed, rebuild graph
+                try:
+                    graph_builder = path_aware_system['graph_builder']
+                    cached_graph_data = graph_builder.build_graph(env.level_data)
+                    cached_level_hash = current_level_hash
+                except Exception as e:
+                    cached_graph_data = None
+            
             # Access debug overlay renderer
             if hasattr(env, 'debug_overlay_renderer') and env.debug_overlay_renderer is not None:
                 renderer = env.debug_overlay_renderer
@@ -2087,15 +2115,14 @@ while running:
                 if hasattr(env, 'nplay_headless') and hasattr(env.nplay_headless, 'sim_renderer'):
                     screen = env.nplay_headless.sim_renderer.screen
                     
-                    if path_distances_debug_enabled:
-                        # Calculate path distances
+                    if path_distances_debug_enabled and cached_graph_data is not None:
+                        # Calculate path distances using cached graph
                         try:
                             path_calculator = path_aware_system['path_calculator']
-                            graph_data = path_aware_system['graph_builder'].build_graph(env.level_data)
                             
                             # Get distances
                             distances = path_calculator.get_distances_to_objectives(
-                                ninja_pos, env.level_data, graph_data
+                                ninja_pos, env.level_data, cached_graph_data
                             )
                             
                             # Draw overlay
@@ -2104,12 +2131,9 @@ while running:
                         except Exception as e:
                             pass  # Silently fail if distances can't be calculated
                     
-                    if adjacency_graph_debug_enabled:
-                        # Build graph and prepare visualization data
+                    if adjacency_graph_debug_enabled and cached_graph_data is not None:
+                        # Prepare visualization data using cached graph
                         try:
-                            graph_builder = path_aware_system['graph_builder']
-                            graph_data = graph_builder.build_graph(env.level_data)
-                            
                             # Convert graph to visualization format
                             viz_data = {
                                 'nodes': [],
@@ -2117,8 +2141,8 @@ while running:
                             }
                             
                             # Add nodes
-                            if hasattr(graph_data, 'graph') and graph_data.graph:
-                                for node_id, node_data in graph_data.graph.nodes.items():
+                            if hasattr(cached_graph_data, 'graph') and cached_graph_data.graph:
+                                for node_id, node_data in cached_graph_data.graph.nodes.items():
                                     if hasattr(node_data, 'position'):
                                         viz_data['nodes'].append({
                                             'pos': node_data.position,
@@ -2126,10 +2150,10 @@ while running:
                                         })
                                 
                                 # Add edges
-                                for node_id, neighbors in graph_data.graph.adjacency_list.items():
-                                    node_pos = graph_data.graph.nodes[node_id].position
+                                for node_id, neighbors in cached_graph_data.graph.adjacency_list.items():
+                                    node_pos = cached_graph_data.graph.nodes[node_id].position
                                     for neighbor_id in neighbors:
-                                        neighbor_pos = graph_data.graph.nodes[neighbor_id].position
+                                        neighbor_pos = cached_graph_data.graph.nodes[neighbor_id].position
                                         viz_data['edges'].append({
                                             'pos1': node_pos,
                                             'pos2': neighbor_pos
