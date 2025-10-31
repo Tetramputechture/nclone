@@ -32,7 +32,6 @@ import gc
 import psutil
 import os
 
-from nclone.graph.hierarchical_builder import HierarchicalGraphBuilder
 from nclone.graph.reachability.reachability_system import ReachabilitySystem
 from nclone.replay.gameplay_recorder import GameplayRecorder
 
@@ -915,50 +914,6 @@ if args.record:
     print("  • Only complete episodes are saved for training")
     print("=" * 60 + "\n")
 
-if (
-    args.visualize_graph
-    or args.standalone_graph
-    or args.interactive_graph
-    or args.save_graph
-):
-    print("Initializing graph visualization system...")
-
-    # Build graph data
-    try:
-        print("Building graph data...")
-        import time
-
-        start_time = time.time()
-
-        graph_builder = HierarchicalGraphBuilder()
-        level_data = getattr(env, "level_data", None)
-        ninja_pos = (
-            env.nplay_headless.ninja_position()
-            if hasattr(env, "nplay_headless")
-            else (0.0, 0.0)
-        )
-
-        if level_data:
-            hierarchical_data = graph_builder.build_graph(level_data, ninja_pos)
-            graph_data = hierarchical_data.sub_cell_graph
-
-            build_time = time.time() - start_time
-            print(
-                f"Graph built successfully in {build_time:.2f}s ({graph_data.num_nodes} nodes, {graph_data.num_edges} edges)"
-            )
-        else:
-            print("Warning: No level data available for graph construction")
-    except Exception as e:
-        print(f"Warning: Could not build graph: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-    # Create standalone window if requested
-    if args.standalone_graph and not args.headless:
-        standalone_window = pygame.display.set_mode((1200, 800))
-        pygame.display.set_caption("N++ Graph Visualization")
-
 graph_debug_enabled = False
 exploration_debug_enabled = False
 grid_debug_enabled = False
@@ -1130,9 +1085,13 @@ if (
         print(f"   - Path distance display: {path_distances_debug_enabled}")
         print(f"   - Adjacency graph display: {adjacency_graph_debug_enabled}")
         print(f"   - Blocked entities display: {blocked_entities_debug_enabled}")
-        
+
         # Set initial flags on environment if any are enabled
-        if path_distances_debug_enabled or adjacency_graph_debug_enabled or blocked_entities_debug_enabled:
+        if (
+            path_distances_debug_enabled
+            or adjacency_graph_debug_enabled
+            or blocked_entities_debug_enabled
+        ):
             env.set_path_distances_debug_enabled(path_distances_debug_enabled)
             env.set_adjacency_graph_debug_enabled(adjacency_graph_debug_enabled)
             env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
@@ -2184,27 +2143,40 @@ while running:
     # Record action if recording is active
     if recorder is not None and recorder.is_recording:
         recorder.record_action(action)
-    
+
     # Update path-aware visualization if enabled
-    if path_aware_system is not None and (path_distances_debug_enabled or adjacency_graph_debug_enabled or blocked_entities_debug_enabled):
+    if path_aware_system is not None and (
+        path_distances_debug_enabled
+        or adjacency_graph_debug_enabled
+        or blocked_entities_debug_enabled
+    ):
         # Build/update graph if any path visualization is enabled
-        if path_aware_system['current_graph'] is None or path_aware_system.get('level_id') != env.current_map_name:
+        if (
+            path_aware_system["current_graph"] is None
+            or path_aware_system.get("level_id") != env.current_map_name
+        ):
             # Rebuild graph for new level
             # Convert LevelData to dict format for fast_graph_builder
-            level_data_dict = env.level_data.to_dict() if hasattr(env.level_data, 'to_dict') else env.level_data
-            path_aware_system['current_graph'] = path_aware_system['graph_builder'].build_graph(level_data_dict)
-            path_aware_system['level_id'] = env.current_map_name
-        
+            level_data_dict = (
+                env.level_data.to_dict()
+                if hasattr(env.level_data, "to_dict")
+                else env.level_data
+            )
+            path_aware_system["current_graph"] = path_aware_system[
+                "graph_builder"
+            ].build_graph(level_data_dict)
+            path_aware_system["level_id"] = env.current_map_name
+
         # Set debug flags on environment
         env.set_path_distances_debug_enabled(path_distances_debug_enabled)
         env.set_adjacency_graph_debug_enabled(adjacency_graph_debug_enabled)
         env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
         env.set_show_paths_to_goals(show_paths_to_goals)
-        
+
         # Pass graph data to environment for visualization
         env.set_path_aware_data(
-            graph_data=path_aware_system['current_graph'],
-            entity_mask=path_aware_system.get('current_entity_mask')
+            graph_data=path_aware_system["current_graph"],
+            entity_mask=path_aware_system.get("current_entity_mask"),
         )
     elif path_aware_system is not None:
         # Turn off all path-aware debug flags when none are enabled

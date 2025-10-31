@@ -7,7 +7,6 @@ from .constants.physics_constants import (
     FULL_MAP_WIDTH,
     FULL_MAP_HEIGHT,
 )
-from .graph.hierarchical_builder import HierarchicalGraphBuilder
 from .graph.subgoal_visualizer import SubgoalVisualizer
 from .planning import Subgoal, SubgoalPlan
 
@@ -29,7 +28,6 @@ class DebugOverlayRenderer:
         self.GRAPH_NODE_COLOR_ENTITY = (255, 90, 90, 240)
         self.GRAPH_NODE_COLOR_NINJA = (60, 220, 255, 255)
         self.GRAPH_BG_DIM = (0, 0, 0, 140)
-        self._graph_builder_for_dims = HierarchicalGraphBuilder()
 
         # Initialize subgoal visualizer
         self.subgoal_visualizer = SubgoalVisualizer()
@@ -288,10 +286,10 @@ class DebugOverlayRenderer:
                 surface.blit(text_surf, text_rect)
 
         return surface
-    
+
     def _draw_path_aware(self, path_aware_info: dict) -> Optional[pygame.Surface]:
         """Draw path-aware debugging information (adjacency graph, path distances, blocked entities).
-        
+
         Args:
             path_aware_info: Dictionary containing:
                 - show_distances: bool - whether to show path distances
@@ -301,24 +299,24 @@ class DebugOverlayRenderer:
                 - entity_mask: EntityMask - entity blocking data
                 - ninja_position: tuple - current ninja position
                 - entities: list - level entities for switch/exit location
-        
+
         Returns:
             pygame.Surface with path-aware visualization, or None if no graph data available
         """
-        if not path_aware_info.get('graph_data'):
+        if not path_aware_info.get("graph_data"):
             return None
-        
+
         surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        graph_data = path_aware_info['graph_data']
-        adjacency = graph_data.get('adjacency', {})
-        ninja_pos = path_aware_info.get('ninja_position', (0, 0))
-        entities = path_aware_info.get('entities', [])
-        
-        show_adjacency = path_aware_info.get('show_adjacency', False)
-        show_distances = path_aware_info.get('show_distances', False)
-        show_blocked = path_aware_info.get('show_blocked', False)
-        show_paths = path_aware_info.get('show_paths', False)
-        
+        graph_data = path_aware_info["graph_data"]
+        adjacency = graph_data.get("adjacency", {})
+        ninja_pos = path_aware_info.get("ninja_position", (0, 0))
+        entities = path_aware_info.get("entities", [])
+
+        show_adjacency = path_aware_info.get("show_adjacency", False)
+        show_distances = path_aware_info.get("show_distances", False)
+        show_blocked = path_aware_info.get("show_blocked", False)
+        show_paths = path_aware_info.get("show_paths", False)
+
         # Colors for visualization
         NODE_COLOR = (100, 255, 100, 180)  # Green nodes
         EDGE_COLOR = (255, 255, 100, 100)  # Yellow edges
@@ -329,108 +327,136 @@ class DebugOverlayRenderer:
         SWITCH_PATH_COLOR = (50, 255, 50, 220)  # Bright green path to switch
         EXIT_PATH_COLOR = (255, 180, 50, 220)  # Bright orange path to exit
         TEXT_COLOR = (255, 255, 255, 255)  # White text
-        
+
+        # Get reachable set if available (computed from flood fill)
+        reachable = graph_data.get("reachable", None)
+
         # Get blocked positions if available
         blocked_positions = set()
         blocked_edges = set()
-        if show_blocked and graph_data.get('blocked_positions'):
-            blocked_positions = graph_data['blocked_positions']
-        if show_blocked and graph_data.get('blocked_edges'):
-            blocked_edges = graph_data['blocked_edges']
-        
+        if show_blocked and graph_data.get("blocked_positions"):
+            blocked_positions = graph_data["blocked_positions"]
+        if show_blocked and graph_data.get("blocked_edges"):
+            blocked_edges = graph_data["blocked_edges"]
+
         # Draw adjacency graph edges first (so they appear behind nodes)
         if show_adjacency:
             for pos, neighbors in adjacency.items():
+                # Skip unreachable nodes
+                if reachable is not None and pos not in reachable:
+                    continue
                 if not neighbors:
                     continue
                 x1, y1 = pos
-                screen_x1 = int(x1 * self.adjust + self.tile_x_offset)
-                screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
-                
+                screen_x1 = int(x1 * self.adjust + self.tile_x_offset) + 24
+                screen_y1 = int(y1 * self.adjust + self.tile_y_offset) + 24
+
                 for neighbor_info in neighbors:
                     # neighbor_info is ((x, y), cost)
                     neighbor_pos, cost = neighbor_info
+                    # Skip edges to unreachable nodes
+                    if reachable is not None and neighbor_pos not in reachable:
+                        continue
                     x2, y2 = neighbor_pos
-                    screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
-                    screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
-                    
+                    screen_x2 = int(x2 * self.adjust + self.tile_x_offset) + 24
+                    screen_y2 = int(y2 * self.adjust + self.tile_y_offset) + 24
+
                     # Check if edge is blocked
-                    edge_blocked = (pos, neighbor_pos) in blocked_edges or (neighbor_pos, pos) in blocked_edges
+                    edge_blocked = (pos, neighbor_pos) in blocked_edges or (
+                        neighbor_pos,
+                        pos,
+                    ) in blocked_edges
                     edge_color = (255, 0, 0, 80) if edge_blocked else EDGE_COLOR
-                    
+
                     # Draw line
-                    pygame.draw.line(surface, edge_color, (screen_x1, screen_y1), (screen_x2, screen_y2), 1)
-        
+                    pygame.draw.line(
+                        surface,
+                        edge_color,
+                        (screen_x1, screen_y1),
+                        (screen_x2, screen_y2),
+                        1,
+                    )
+
         # Draw nodes
         if show_adjacency or show_blocked:
             try:
                 font = pygame.font.Font(None, 16)
             except pygame.error:
                 font = pygame.font.SysFont("arial", 14)
-            
+
             for pos in adjacency.keys():
+                # Skip unreachable nodes
+                if reachable is not None and pos not in reachable:
+                    continue
                 x, y = pos
-                screen_x = int(x * self.adjust + self.tile_x_offset)
-                screen_y = int(y * self.adjust + self.tile_y_offset)
-                
+                screen_x = int(x * self.adjust + self.tile_x_offset) + 24
+                screen_y = int(y * self.adjust + self.tile_y_offset) + 24
+
                 # Determine node color
                 if pos in blocked_positions:
                     node_color = BLOCKED_NODE_COLOR
-                elif abs(x - ninja_pos[0]) < 5 and abs(y - ninja_pos[1]) < 5:
+                elif abs(x + 24 - ninja_pos[0]) < 5 and abs(y + 24 - ninja_pos[1]) < 5:
                     node_color = NINJA_NODE_COLOR
                 else:
                     node_color = NODE_COLOR
-                
+
                 # Draw node circle
                 pygame.draw.circle(surface, node_color, (screen_x, screen_y), 3)
-        
+
         # Draw path distances from ninja position
         if show_distances and ninja_pos:
             try:
                 font = pygame.font.Font(None, 16)
             except pygame.error:
                 font = pygame.font.SysFont("arial", 14)
-            
-            # Find closest node to ninja position
+
+            # Find closest node to ninja position (only consider reachable nodes)
             ninja_x, ninja_y = ninja_pos
             closest_node = None
-            min_dist = float('inf')
+            min_dist = float("inf")
             for pos in adjacency.keys():
+                # Skip unreachable nodes
+                if reachable is not None and pos not in reachable:
+                    continue
                 x, y = pos
-                dist = ((x - ninja_x)**2 + (y - ninja_y)**2)**0.5
+                dist = ((x - ninja_x) ** 2 + (y - ninja_y) ** 2) ** 0.5
                 if dist < min_dist:
                     min_dist = dist
                     closest_node = pos
-            
+
             if closest_node and min_dist < 50:  # Only if ninja is close to a node
                 # Use simple BFS to calculate distances
                 from collections import deque
+
                 distances = {closest_node: 0}
                 queue = deque([closest_node])
-                
+
                 while queue:
                     current = queue.popleft()
                     current_dist = distances[current]
-                    
+
                     neighbors = adjacency.get(current, [])
                     for neighbor_info in neighbors:
                         neighbor_pos, cost = neighbor_info
                         if neighbor_pos not in distances:
                             distances[neighbor_pos] = current_dist + cost
                             queue.append(neighbor_pos)
-                
-                # Draw distances on screen
+
+                # Draw distances on screen (only for reachable nodes)
                 for pos, dist in distances.items():
+                    # Skip unreachable nodes
+                    if reachable is not None and pos not in reachable:
+                        continue
                     if dist > 1000:  # Don't show very far nodes
                         continue
                     x, y = pos
                     screen_x = int(x * self.adjust + self.tile_x_offset)
                     screen_y = int(y * self.adjust + self.tile_y_offset)
-                    
+
                     # Draw distance text
                     text = font.render(f"{int(dist)}", True, TEXT_COLOR)
                     surface.blit(text, (screen_x + 5, screen_y - 10))
-        
+
         # Find and visualize switches and exits
         switch_positions = []
         exit_positions = []
@@ -440,7 +466,7 @@ class DebugOverlayRenderer:
                 switch_positions.append((entity.get("x", 0), entity.get("y", 0)))
             elif entity_type in ["exit", "exit_door"]:
                 exit_positions.append((entity.get("x", 0), entity.get("y", 0)))
-        
+
         # Draw switch and exit markers on graph
         if show_adjacency and (switch_positions or exit_positions):
             for switch_pos in switch_positions:
@@ -449,30 +475,30 @@ class DebugOverlayRenderer:
                 screen_y = int(y * self.adjust + self.tile_y_offset)
                 pygame.draw.circle(surface, SWITCH_NODE_COLOR, (screen_x, screen_y), 6)
                 pygame.draw.circle(surface, (0, 0, 0, 255), (screen_x, screen_y), 6, 2)
-            
+
             for exit_pos in exit_positions:
                 x, y = exit_pos
                 screen_x = int(x * self.adjust + self.tile_x_offset)
                 screen_y = int(y * self.adjust + self.tile_y_offset)
                 pygame.draw.circle(surface, EXIT_NODE_COLOR, (screen_x, screen_y), 6)
                 pygame.draw.circle(surface, (0, 0, 0, 255), (screen_x, screen_y), 6, 2)
-        
+
         # Helper function to find shortest path using BFS
         def find_shortest_path(start_node, end_node, adjacency):
             """Find shortest path from start to end node using BFS.
             Returns (path, distance) where path is list of nodes."""
             from collections import deque
-            
+
             if start_node == end_node:
                 return [start_node], 0
-            
+
             distances = {start_node: 0}
             parents = {start_node: None}
             queue = deque([start_node])
-            
+
             while queue:
                 current = queue.popleft()
-                
+
                 if current == end_node:
                     # Reconstruct path
                     path = []
@@ -482,7 +508,7 @@ class DebugOverlayRenderer:
                         node = parents.get(node)
                     path.reverse()
                     return path, distances[end_node]
-                
+
                 current_dist = distances[current]
                 neighbors = adjacency.get(current, [])
                 for neighbor_info in neighbors:
@@ -491,39 +517,41 @@ class DebugOverlayRenderer:
                         distances[neighbor_pos] = current_dist + cost
                         parents[neighbor_pos] = current
                         queue.append(neighbor_pos)
-            
-            return None, float('inf')
-        
+
+            return None, float("inf")
+
         # Draw paths to goals if enabled
         if show_paths and ninja_pos and adjacency:
             from collections import deque
-            
+
             # Find closest node to ninja
             ninja_x, ninja_y = ninja_pos
             closest_node = None
-            min_dist = float('inf')
+            min_dist = float("inf")
             for pos in adjacency.keys():
                 x, y = pos
-                dist = ((x - ninja_x)**2 + (y - ninja_y)**2)**0.5
+                dist = ((x - ninja_x) ** 2 + (y - ninja_y) ** 2) ** 0.5
                 if dist < min_dist:
                     min_dist = dist
                     closest_node = pos
-            
+
             if closest_node and min_dist < 50:
                 # Draw path to nearest switch
                 for switch_pos in switch_positions:
                     switch_x, switch_y = switch_pos
                     switch_node = None
-                    min_switch_dist = float('inf')
+                    min_switch_dist = float("inf")
                     for pos in adjacency.keys():
                         x, y = pos
-                        dist = ((x - switch_x)**2 + (y - switch_y)**2)**0.5
+                        dist = ((x - switch_x) ** 2 + (y - switch_y) ** 2) ** 0.5
                         if dist < min_switch_dist:
                             min_switch_dist = dist
                             switch_node = pos
-                    
+
                     if switch_node and min_switch_dist < 50:
-                        path, _ = find_shortest_path(closest_node, switch_node, adjacency)
+                        path, _ = find_shortest_path(
+                            closest_node, switch_node, adjacency
+                        )
                         if path:
                             # Draw path as thick line connecting nodes
                             for i in range(len(path) - 1):
@@ -533,21 +561,27 @@ class DebugOverlayRenderer:
                                 screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
                                 screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
                                 screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
-                                pygame.draw.line(surface, SWITCH_PATH_COLOR, (screen_x1, screen_y1), (screen_x2, screen_y2), 3)
+                                pygame.draw.line(
+                                    surface,
+                                    SWITCH_PATH_COLOR,
+                                    (screen_x1, screen_y1),
+                                    (screen_x2, screen_y2),
+                                    3,
+                                )
                             break  # Only draw path to nearest switch
-                
+
                 # Draw path to nearest exit
                 for exit_pos in exit_positions:
                     exit_x, exit_y = exit_pos
                     exit_node = None
-                    min_exit_dist = float('inf')
+                    min_exit_dist = float("inf")
                     for pos in adjacency.keys():
                         x, y = pos
-                        dist = ((x - exit_x)**2 + (y - exit_y)**2)**0.5
+                        dist = ((x - exit_x) ** 2 + (y - exit_y) ** 2) ** 0.5
                         if dist < min_exit_dist:
                             min_exit_dist = dist
                             exit_node = pos
-                    
+
                     if exit_node and min_exit_dist < 50:
                         path, _ = find_shortest_path(closest_node, exit_node, adjacency)
                         if path:
@@ -559,145 +593,175 @@ class DebugOverlayRenderer:
                                 screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
                                 screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
                                 screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
-                                pygame.draw.line(surface, EXIT_PATH_COLOR, (screen_x1, screen_y1), (screen_x2, screen_y2), 3)
+                                pygame.draw.line(
+                                    surface,
+                                    EXIT_PATH_COLOR,
+                                    (screen_x1, screen_y1),
+                                    (screen_x2, screen_y2),
+                                    3,
+                                )
                             break  # Only draw path to nearest exit
-        
+
         # Calculate and display switch/exit distances
         if show_distances and ninja_pos and adjacency:
             from collections import deque
-            
+
             # Find closest node to ninja
             ninja_x, ninja_y = ninja_pos
             closest_node = None
-            min_dist = float('inf')
+            min_dist = float("inf")
             for pos in adjacency.keys():
                 x, y = pos
-                dist = ((x - ninja_x)**2 + (y - ninja_y)**2)**0.5
+                dist = ((x - ninja_x) ** 2 + (y - ninja_y) ** 2) ** 0.5
                 if dist < min_dist:
                     min_dist = dist
                     closest_node = pos
-            
+
             if closest_node and min_dist < 50:
                 # Calculate distance to nearest switch
-                switch_dist = float('inf')
+                switch_dist = float("inf")
                 for switch_pos in switch_positions:
                     # Find closest node to switch
                     switch_x, switch_y = switch_pos
                     switch_node = None
-                    min_switch_dist = float('inf')
+                    min_switch_dist = float("inf")
                     for pos in adjacency.keys():
                         x, y = pos
-                        dist = ((x - switch_x)**2 + (y - switch_y)**2)**0.5
+                        dist = ((x - switch_x) ** 2 + (y - switch_y) ** 2) ** 0.5
                         if dist < min_switch_dist:
                             min_switch_dist = dist
                             switch_node = pos
-                    
+
                     if switch_node and min_switch_dist < 50:
                         # BFS from ninja to switch
                         distances = {closest_node: 0}
                         queue = deque([closest_node])
-                        
+
                         while queue and switch_node not in distances:
                             current = queue.popleft()
                             current_dist = distances[current]
-                            
+
                             neighbors = adjacency.get(current, [])
                             for neighbor_info in neighbors:
                                 neighbor_pos, cost = neighbor_info
                                 if neighbor_pos not in distances:
                                     distances[neighbor_pos] = current_dist + cost
                                     queue.append(neighbor_pos)
-                        
+
                         if switch_node in distances:
                             switch_dist = min(switch_dist, distances[switch_node])
-                
+
                 # Calculate distance to nearest exit
-                exit_dist = float('inf')
+                exit_dist = float("inf")
                 for exit_pos in exit_positions:
                     # Find closest node to exit
                     exit_x, exit_y = exit_pos
                     exit_node = None
-                    min_exit_dist = float('inf')
+                    min_exit_dist = float("inf")
                     for pos in adjacency.keys():
                         x, y = pos
-                        dist = ((x - exit_x)**2 + (y - exit_y)**2)**0.5
+                        dist = ((x - exit_x) ** 2 + (y - exit_y) ** 2) ** 0.5
                         if dist < min_exit_dist:
                             min_exit_dist = dist
                             exit_node = pos
-                    
+
                     if exit_node and min_exit_dist < 50:
                         # BFS from ninja to exit
                         distances = {closest_node: 0}
                         queue = deque([closest_node])
-                        
+
                         while queue and exit_node not in distances:
                             current = queue.popleft()
                             current_dist = distances[current]
-                            
+
                             neighbors = adjacency.get(current, [])
                             for neighbor_info in neighbors:
                                 neighbor_pos, cost = neighbor_info
                                 if neighbor_pos not in distances:
                                     distances[neighbor_pos] = current_dist + cost
                                     queue.append(neighbor_pos)
-                        
+
                         if exit_node in distances:
                             exit_dist = min(exit_dist, distances[exit_node])
-                
+
                 # Draw info box with switch/exit distances
                 try:
                     box_font = pygame.font.Font(None, 20)
                 except pygame.error:
                     box_font = pygame.font.SysFont("monospace", 16, bold=True)
-                
+
                 ninja_screen_x = int(ninja_x * self.adjust + self.tile_x_offset)
                 ninja_screen_y = int(ninja_y * self.adjust + self.tile_y_offset)
-                
+
                 # Draw background box
                 box_width = 180
                 box_height = 60
                 box_x = ninja_screen_x + 20
                 box_y = ninja_screen_y - 40
-                
+
                 # Keep box on screen
                 if box_x + box_width > self.screen.get_width():
                     box_x = ninja_screen_x - box_width - 20
                 if box_y < 0:
                     box_y = ninja_screen_y + 20
-                
-                pygame.draw.rect(surface, (0, 0, 0, 200), (box_x, box_y, box_width, box_height), border_radius=5)
-                pygame.draw.rect(surface, (100, 200, 255, 255), (box_x, box_y, box_width, box_height), 2, border_radius=5)
-                
+
+                pygame.draw.rect(
+                    surface,
+                    (0, 0, 0, 200),
+                    (box_x, box_y, box_width, box_height),
+                    border_radius=5,
+                )
+                pygame.draw.rect(
+                    surface,
+                    (100, 200, 255, 255),
+                    (box_x, box_y, box_width, box_height),
+                    2,
+                    border_radius=5,
+                )
+
                 # Draw text
                 switch_text = f"Switch: {int(switch_dist) if switch_dist != float('inf') else '∞'}"
-                exit_text = f"Exit: {int(exit_dist) if exit_dist != float('inf') else '∞'}"
-                
+                exit_text = (
+                    f"Exit: {int(exit_dist) if exit_dist != float('inf') else '∞'}"
+                )
+
                 switch_surf = box_font.render(switch_text, True, SWITCH_NODE_COLOR)
                 exit_surf = box_font.render(exit_text, True, EXIT_NODE_COLOR)
-                
+
                 surface.blit(switch_surf, (box_x + 10, box_y + 10))
                 surface.blit(exit_surf, (box_x + 10, box_y + 35))
-        
+
         # Draw legend
         if show_adjacency:
             try:
                 legend_font = pygame.font.Font(None, 18)
             except pygame.error:
                 legend_font = pygame.font.SysFont("arial", 14)
-            
+
             legend_x = 20
             legend_y = 20
             legend_width = 180
             legend_height = 110
-            
+
             # Background
-            pygame.draw.rect(surface, (0, 0, 0, 200), (legend_x, legend_y, legend_width, legend_height), border_radius=5)
-            pygame.draw.rect(surface, (100, 200, 255, 255), (legend_x, legend_y, legend_width, legend_height), 2, border_radius=5)
-            
+            pygame.draw.rect(
+                surface,
+                (0, 0, 0, 200),
+                (legend_x, legend_y, legend_width, legend_height),
+                border_radius=5,
+            )
+            pygame.draw.rect(
+                surface,
+                (100, 200, 255, 255),
+                (legend_x, legend_y, legend_width, legend_height),
+                2,
+                border_radius=5,
+            )
+
             # Title
             title_surf = legend_font.render("Adjacency Graph:", True, TEXT_COLOR)
             surface.blit(title_surf, (legend_x + 10, legend_y + 10))
-            
+
             # Legend items
             legend_items = [
                 ("● Ninja", NINJA_NODE_COLOR),
@@ -705,13 +769,13 @@ class DebugOverlayRenderer:
                 ("● Exit", EXIT_NODE_COLOR),
                 ("● Tile", NODE_COLOR),
             ]
-            
+
             y_offset = legend_y + 35
             for text, color in legend_items:
                 text_surf = legend_font.render(text, True, color)
                 surface.blit(text_surf, (legend_x + 10, y_offset))
                 y_offset += 20
-        
+
         return surface
 
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
@@ -741,7 +805,7 @@ class DebugOverlayRenderer:
         if debug_info and "tile_types" in debug_info:
             tile_types_surface = self._draw_tile_types()
             surface.blit(tile_types_surface, (0, 0))
-        
+
         # Draw path-aware visualization if provided
         if debug_info and "path_aware" in debug_info:
             path_aware_surface = self._draw_path_aware(debug_info["path_aware"])
@@ -789,6 +853,8 @@ class DebugOverlayRenderer:
                 if (
                     key == "tile_types"
                 ):  # Don't count tile types dict for text height, it's visual
+                    continue
+                if key == "path_aware":
                     continue
                 height += line_height
                 if isinstance(value, dict):
@@ -962,128 +1028,160 @@ class DebugOverlayRenderer:
 
         if mode_name in mode_map:
             self.subgoal_visualizer.set_mode(mode_map[mode_name])
-    
-    def draw_path_distances(self, path_distances: dict, ninja_pos: Tuple[float, float]) -> pygame.Surface:
+
+    def draw_path_distances(
+        self, path_distances: dict, ninja_pos: Tuple[float, float]
+    ) -> pygame.Surface:
         """
         Draw path distance overlay showing distances to objectives.
-        
+
         Args:
             path_distances: Dict with 'switch_distance' and 'exit_distance' keys
             ninja_pos: Current ninja position (x, y)
-        
+
         Returns:
             Surface with path distance visualization
         """
         surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        font = pygame.font.SysFont('monospace', 16, bold=True)
-        
+        font = pygame.font.SysFont("monospace", 16, bold=True)
+
         # Draw distances at ninja position
         if path_distances:
-            switch_dist = path_distances.get('switch_distance', float('inf'))
-            exit_dist = path_distances.get('exit_distance', float('inf'))
-            
+            switch_dist = path_distances.get("switch_distance", float("inf"))
+            exit_dist = path_distances.get("exit_distance", float("inf"))
+
             # Convert ninja position to screen coordinates
             screen_x = int(ninja_pos[0] * self.adjust) + self.tile_x_offset
             screen_y = int(ninja_pos[1] * self.adjust) + self.tile_y_offset
-            
+
             # Draw background box
             box_width = 200
             box_height = 60
             box_x = screen_x + 20
             box_y = screen_y - 40
-            
+
             # Keep box on screen
             if box_x + box_width > self.screen.get_width():
                 box_x = screen_x - box_width - 20
             if box_y < 0:
                 box_y = screen_y + 20
-            
-            pygame.draw.rect(surface, (0, 0, 0, 200), (box_x, box_y, box_width, box_height), border_radius=5)
-            pygame.draw.rect(surface, (100, 200, 255, 255), (box_x, box_y, box_width, box_height), 2, border_radius=5)
-            
+
+            pygame.draw.rect(
+                surface,
+                (0, 0, 0, 200),
+                (box_x, box_y, box_width, box_height),
+                border_radius=5,
+            )
+            pygame.draw.rect(
+                surface,
+                (100, 200, 255, 255),
+                (box_x, box_y, box_width, box_height),
+                2,
+                border_radius=5,
+            )
+
             # Draw text
-            switch_text = f"Switch: {switch_dist if switch_dist != float('inf') else '∞'}"
+            switch_text = (
+                f"Switch: {switch_dist if switch_dist != float('inf') else '∞'}"
+            )
             exit_text = f"Exit: {exit_dist if exit_dist != float('inf') else '∞'}"
-            
+
             switch_surf = font.render(switch_text, True, (100, 255, 100))
             exit_surf = font.render(exit_text, True, (255, 200, 100))
-            
+
             surface.blit(switch_surf, (box_x + 10, box_y + 10))
             surface.blit(exit_surf, (box_x + 10, box_y + 35))
-        
+
         return surface
-    
-    def draw_adjacency_graph(self, graph_data: dict, ninja_pos: Tuple[float, float]) -> pygame.Surface:
+
+    def draw_adjacency_graph(
+        self, graph_data: dict, ninja_pos: Tuple[float, float]
+    ) -> pygame.Surface:
         """
         Draw adjacency graph overlay showing tile connectivity.
-        
+
         Args:
             graph_data: Dict with 'nodes' and 'edges' keys
             ninja_pos: Current ninja position (x, y)
-        
+
         Returns:
             Surface with adjacency graph visualization
         """
         surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        
-        if not graph_data or 'nodes' not in graph_data or 'edges' not in graph_data:
+
+        if not graph_data or "nodes" not in graph_data or "edges" not in graph_data:
             return surface
-        
-        nodes = graph_data['nodes']
-        edges = graph_data['edges']
-        
+
+        nodes = graph_data["nodes"]
+        edges = graph_data["edges"]
+
         # Draw edges first (so nodes are on top)
         for edge in edges:
-            pos1 = edge.get('pos1')
-            pos2 = edge.get('pos2')
+            pos1 = edge.get("pos1")
+            pos2 = edge.get("pos2")
             if pos1 and pos2:
                 screen_x1 = int(pos1[0] * self.adjust) + self.tile_x_offset
                 screen_y1 = int(pos1[1] * self.adjust) + self.tile_y_offset
                 screen_x2 = int(pos2[0] * self.adjust) + self.tile_x_offset
                 screen_y2 = int(pos2[1] * self.adjust) + self.tile_y_offset
-                
+
                 # Draw edge line
-                pygame.draw.line(surface, (150, 150, 255, 100), 
-                               (screen_x1, screen_y1), (screen_x2, screen_y2), 2)
-        
+                pygame.draw.line(
+                    surface,
+                    (150, 150, 255, 100),
+                    (screen_x1, screen_y1),
+                    (screen_x2, screen_y2),
+                    2,
+                )
+
         # Draw nodes
         for node in nodes:
-            pos = node.get('pos')
-            node_type = node.get('type', 'normal')
-            
+            pos = node.get("pos")
+            node_type = node.get("type", "normal")
+
             if pos:
                 screen_x = int(pos[0] * self.adjust) + self.tile_x_offset
                 screen_y = int(pos[1] * self.adjust) + self.tile_y_offset
-                
+
                 # Choose color based on node type
-                if node_type == 'ninja':
+                if node_type == "ninja":
                     color = (60, 220, 255, 255)
                     radius = 8
-                elif node_type == 'switch':
+                elif node_type == "switch":
                     color = (100, 255, 100, 255)
                     radius = 6
-                elif node_type == 'exit':
+                elif node_type == "exit":
                     color = (255, 200, 100, 255)
                     radius = 6
                 else:
                     color = (200, 200, 255, 180)
                     radius = 4
-                
+
                 # Draw node
                 pygame.draw.circle(surface, color, (screen_x, screen_y), radius)
-                pygame.draw.circle(surface, (255, 255, 255, 255), (screen_x, screen_y), radius, 1)
-        
+                pygame.draw.circle(
+                    surface, (255, 255, 255, 255), (screen_x, screen_y), radius, 1
+                )
+
         # Draw legend
-        font = pygame.font.SysFont('monospace', 14)
+        font = pygame.font.SysFont("monospace", 14)
         legend_x = 10
         legend_y = self.screen.get_height() - 120
-        
-        pygame.draw.rect(surface, (0, 0, 0, 200), (legend_x, legend_y, 180, 110), border_radius=5)
-        pygame.draw.rect(surface, (100, 200, 255, 255), (legend_x, legend_y, 180, 110), 2, border_radius=5)
-        
+
+        pygame.draw.rect(
+            surface, (0, 0, 0, 200), (legend_x, legend_y, 180, 110), border_radius=5
+        )
+        pygame.draw.rect(
+            surface,
+            (100, 200, 255, 255),
+            (legend_x, legend_y, 180, 110),
+            2,
+            border_radius=5,
+        )
+
         title = font.render("Adjacency Graph:", True, (255, 255, 255))
         surface.blit(title, (legend_x + 10, legend_y + 5))
-        
+
         # Legend items
         legend_items = [
             ((60, 220, 255), "Ninja"),
@@ -1091,11 +1189,11 @@ class DebugOverlayRenderer:
             ((255, 200, 100), "Exit"),
             ((200, 200, 255), "Tile"),
         ]
-        
+
         for i, (color, label) in enumerate(legend_items):
             y_pos = legend_y + 25 + i * 20
             pygame.draw.circle(surface, color, (legend_x + 20, y_pos + 7), 5)
             text = font.render(label, True, (255, 255, 255))
             surface.blit(text, (legend_x + 35, y_pos))
-        
+
         return surface

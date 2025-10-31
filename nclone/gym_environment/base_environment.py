@@ -16,7 +16,7 @@ from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..nplay_headless import NPlayHeadless
 
 # Graph and level data imports
-from ..graph.level_data import LevelData
+from ..graph.level_data import LevelData, extract_start_position_from_map_data
 
 from .constants import (
     GAME_STATE_CHANNELS,
@@ -573,7 +573,13 @@ class BaseNppEnvironment(gymnasium.Env):
         # Extract entities
         entities = self.entity_extractor.extract_graph_entities()
 
+        # Extract ninja spawn position from map_data
+        start_position = extract_start_position_from_map_data(
+            self.nplay_headless.sim.map_data
+        )
+
         return LevelData(
+            start_position=start_position,
             tiles=tiles,
             entities=entities,
             level_id=f"level_{getattr(self.nplay_headless.sim, 'frame', 0)}",

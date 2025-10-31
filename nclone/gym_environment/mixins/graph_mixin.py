@@ -11,7 +11,6 @@ import numpy as np
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
-from ...graph.hierarchical_builder import HierarchicalGraphBuilder
 from ...graph.level_data import LevelData
 from ...graph.common import (
     GraphData,
@@ -20,6 +19,7 @@ from ...graph.common import (
     NODE_FEATURE_DIM,
     EDGE_FEATURE_DIM,
 )
+from ...graph.reachability.fast_graph_builder import FastGraphBuilder
 
 
 @dataclass
@@ -55,9 +55,9 @@ class GraphMixin:
         self.debug = debug
 
         # Initialize graph system
-        self.graph_builder = HierarchicalGraphBuilder(debug=debug)
+        self.graph_builder = FastGraphBuilder()
         self.current_graph: Optional[GraphData] = None
-        self.current_hierarchical_graph = None
+        self.current_fast_graph_data: Optional[Dict[str, Any]] = None
         self.last_switch_states: Dict[int, bool] = {}
         self.last_update_time = 0.0
 
@@ -70,8 +70,8 @@ class GraphMixin:
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
-        self._graph_builder: Optional[HierarchicalGraphBuilder] = None
-        self._graph_debug_cache: Optional[GraphData] = None
+        self._graph_builder: Optional[FastGraphBuilder] = None
+        self._graph_debug_cache: Optional[Dict[str, Any]] = None
 
         # Initialize logging if debug is enabled
         if self.debug:
@@ -82,9 +82,12 @@ class GraphMixin:
         """Reset graph state during environment reset."""
         if self.enable_graph_updates:
             self.current_graph = None
-            self.current_hierarchical_graph = None
+            self.current_fast_graph_data = None
             self.last_switch_states.clear()
             self.last_update_time = time.time()
+            # Clear FastGraphBuilder cache on reset
+            if hasattr(self.graph_builder, "clear_cache"):
+                self.graph_builder.clear_cache()
 
     def _should_update_graph(self) -> bool:
         """
@@ -156,41 +159,46 @@ class GraphMixin:
 
     def _update_graph_from_env_state(self):
         """
-        Update graph using nclone's graph builder (simple approach).
+        Update graph using FastGraphBuilder (simple approach).
 
-        This uses nclone's hierarchical graph builder to create updated
-        connectivity based on current game state. No complex event processing.
+        This uses FastGraphBuilder to create updated connectivity based on current game state.
+        FastGraphBuilder returns a dict with adjacency information for pathfinding.
         """
         # Get level data from environment
         level_data = self._get_level_data_from_env()
         if level_data is None:
             return
 
-        # Use nclone's graph builder - proper abstraction
+        # Get ninja position for reachability analysis
+        ninja_pos = None
+        if hasattr(self, "nplay_headless") and self.nplay_headless:
+            ninja_pos_tuple = self.nplay_headless.ninja_position()
+            if ninja_pos_tuple:
+                ninja_pos = (int(ninja_pos_tuple[0]), int(ninja_pos_tuple[1]))
+
+        # Use FastGraphBuilder - proper abstraction
         start_time = time.time()
-        self.current_hierarchical_graph = self.graph_builder.build_graph(level_data)
+        self.current_fast_graph_data = self.graph_builder.build_graph(
+            level_data, ninja_pos=ninja_pos
+        )
         build_time = (time.time() - start_time) * 1000
 
-        # Extract the fine-resolution graph as the primary graph for compatibility
-        if self.current_hierarchical_graph:
-            self.current_graph = self.current_hierarchical_graph.fine_graph
-        else:
-            self.current_graph = None
+        # FastGraphBuilder returns dict with 'adjacency', 'reachable', etc.
+        # For ML models that need GraphData, we leave current_graph as None for now
+        # (conversion to GraphData can be done separately if needed)
+        self.current_graph = None
 
         # Update switch state tracking
         self.last_switch_states = self._get_switch_states_from_env()
 
         # Update simple statistics
-        total_nodes = (
-            self.current_hierarchical_graph.total_nodes
-            if self.current_hierarchical_graph
-            else 0
+        adjacency = (
+            self.current_fast_graph_data.get("adjacency", {})
+            if self.current_fast_graph_data
+            else {}
         )
-        total_edges = (
-            self.current_hierarchical_graph.total_edges
-            if self.current_hierarchical_graph
-            else 0
-        )
+        total_nodes = len(adjacency)
+        total_edges = sum(len(neighbors) for neighbors in adjacency.values())
 
         update_info = GraphUpdateInfo(
             nodes_updated=total_nodes,
@@ -202,22 +210,13 @@ class GraphMixin:
 
         if self.debug:
             self.logger.debug(
-                f"Hierarchical graph rebuilt: {total_nodes} total nodes, "
-                f"{total_edges} total edges in {build_time:.2f}ms"
+                f"Fast graph rebuilt: {total_nodes} nodes, "
+                f"{total_edges} edges in {build_time:.2f}ms"
             )
-            if self.current_hierarchical_graph:
-                self.logger.debug(
-                    f"  Fine: {self.current_hierarchical_graph.fine_graph.num_nodes} nodes, "
-                    f"{self.current_hierarchical_graph.fine_graph.num_edges} edges"
-                )
-                self.logger.debug(
-                    f"  Medium: {self.current_hierarchical_graph.medium_graph.num_nodes} nodes, "
-                    f"{self.current_hierarchical_graph.medium_graph.num_edges} edges"
-                )
-                self.logger.debug(
-                    f"  Coarse: {self.current_hierarchical_graph.coarse_graph.num_nodes} nodes, "
-                    f"{self.current_hierarchical_graph.coarse_graph.num_edges} edges"
-                )
+            if self.current_fast_graph_data:
+                reachable = self.current_fast_graph_data.get("reachable", set())
+                if reachable:
+                    self.logger.debug(f"  Reachable positions: {len(reachable)}")
 
     def _get_level_data_from_env(self) -> Optional[LevelData]:
         """Extract level data from environment for graph building."""
@@ -290,9 +289,14 @@ class GraphMixin:
 
         return graph_obs
 
+    def get_fast_graph_data(self):
+        """Get the fast graph data (adjacency dict) for pathfinding/reachability."""
+        return self.current_fast_graph_data
+
     def get_hierarchical_graph_data(self):
-        """Get the full hierarchical graph data for advanced processing."""
-        return self.current_hierarchical_graph
+        """Get the full hierarchical graph data for advanced processing (deprecated, use get_fast_graph_data)."""
+        # Deprecated: kept for backward compatibility
+        return self.current_fast_graph_data
 
     def _update_graph_performance_stats(self, update_time_ms: float):
         """Update simple performance statistics."""
@@ -325,8 +329,8 @@ class GraphMixin:
         # Invalidate cache so next render rebuilds with current state
         self._graph_debug_cache = None
 
-    def _maybe_build_graph_debug(self) -> Optional[GraphData]:
-        """Build GraphData for the current state, with dynamic caching that considers door states."""
+    def _maybe_build_graph_debug(self) -> Optional[Dict[str, Any]]:
+        """Build graph data for debug visualization, with dynamic caching that considers door states."""
         # Enhanced cache that considers door states and ninja position
         sim_frame = getattr(self.nplay_headless.sim, "frame", None)
         cached_frame = getattr(self, "_graph_debug_cached_frame", None)
@@ -337,6 +341,7 @@ class GraphMixin:
 
         # Get ninja position for cache invalidation (sub-cell level precision)
         ninja_pos = self.nplay_headless.ninja_position()
+        ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
         ninja_sub_cell = (
             int(ninja_pos[1] // 12),
             int(ninja_pos[0] // 12),
@@ -356,21 +361,27 @@ class GraphMixin:
         if cache_valid:
             return self._graph_debug_cache
 
-        # Use centralized extraction logic
-        level_data = self._extract_level_data()
+        # Initialize graph builder if needed
+        if self._graph_builder is None:
+            self._graph_builder = FastGraphBuilder()
 
-        hierarchical_data = self._graph_builder.build_graph(level_data, ninja_pos)
+        # Use level data extraction method
+        level_data = self._get_level_data_from_env()
+        if level_data is None:
+            return None
 
-        # Extract sub-cell graph for debug visualization (maintains backward compatibility)
-        graph = hierarchical_data.sub_cell_graph
+        # Build graph using FastGraphBuilder
+        graph_data = self._graph_builder.build_graph(
+            level_data, ninja_pos=ninja_pos_int
+        )
 
         # Update cache with all relevant state
-        self._graph_debug_cache = graph
+        self._graph_debug_cache = graph_data
         setattr(self, "_graph_debug_cached_frame", sim_frame)
         setattr(self, "_graph_debug_cached_door_states", current_door_states)
         setattr(self, "_graph_debug_cached_ninja_sub_cell", ninja_sub_cell)
 
-        return graph
+        return graph_data
 
     def _get_door_states_signature(self) -> Tuple:
         """
@@ -406,4 +417,4 @@ class GraphMixin:
     def _reinit_graph_system_after_unpickling(self, debug: bool = False):
         """Reinitialize graph system components after unpickling."""
         if self.enable_graph_updates and not hasattr(self, "graph_builder"):
-            self.graph_builder = HierarchicalGraphBuilder(debug=debug)
+            self.graph_builder = FastGraphBuilder()

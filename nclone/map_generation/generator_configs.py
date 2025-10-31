@@ -19,6 +19,7 @@ class MazeConfig:
     min_height: int = 6
     max_height: int = 10
     max_cell_size: int = 4
+    use_random_wall_tiles: bool = False
 
 
 @dataclass
@@ -178,6 +179,7 @@ GENERATOR_PRESETS = {
             min_height=4,
             max_height=7,
             max_cell_size=1,
+            use_random_wall_tiles=False,
         ),
         "small": MazeConfig(
             min_width=14,
