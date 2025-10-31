@@ -76,6 +76,7 @@ class DebugMixin:
                 "graph_data": self._path_aware_graph_data,
                 "entity_mask": self._path_aware_entity_mask,
                 "ninja_position": self.nplay_headless.ninja_position(),
+                "entities": self.level_data.entities if hasattr(self, 'level_data') else [],
             }
 
         # Add other debug info only if general debug overlay is enabled

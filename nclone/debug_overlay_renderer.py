@@ -300,6 +300,7 @@ class DebugOverlayRenderer:
                 - graph_data: dict - graph adjacency data
                 - entity_mask: EntityMask - entity blocking data
                 - ninja_position: tuple - current ninja position
+                - entities: list - level entities for switch/exit location
         
         Returns:
             pygame.Surface with path-aware visualization, or None if no graph data available
@@ -311,6 +312,7 @@ class DebugOverlayRenderer:
         graph_data = path_aware_info['graph_data']
         adjacency = graph_data.get('adjacency', {})
         ninja_pos = path_aware_info.get('ninja_position', (0, 0))
+        entities = path_aware_info.get('entities', [])
         
         show_adjacency = path_aware_info.get('show_adjacency', False)
         show_distances = path_aware_info.get('show_distances', False)
@@ -321,6 +323,8 @@ class DebugOverlayRenderer:
         EDGE_COLOR = (255, 255, 100, 100)  # Yellow edges
         BLOCKED_NODE_COLOR = (255, 50, 50, 180)  # Red for blocked
         NINJA_NODE_COLOR = (100, 150, 255, 255)  # Blue for ninja position
+        SWITCH_NODE_COLOR = (100, 255, 100, 255)  # Bright green for switches
+        EXIT_NODE_COLOR = (255, 200, 100, 255)  # Orange for exits
         TEXT_COLOR = (255, 255, 255, 255)  # White text
         
         # Get blocked positions if available
@@ -423,6 +427,182 @@ class DebugOverlayRenderer:
                     # Draw distance text
                     text = font.render(f"{int(dist)}", True, TEXT_COLOR)
                     surface.blit(text, (screen_x + 5, screen_y - 10))
+        
+        # Find and visualize switches and exits
+        switch_positions = []
+        exit_positions = []
+        for entity in entities:
+            entity_type = entity.get("type", "")
+            if entity_type in ["switch", "exit_switch"]:
+                switch_positions.append((entity.get("x", 0), entity.get("y", 0)))
+            elif entity_type in ["exit", "exit_door"]:
+                exit_positions.append((entity.get("x", 0), entity.get("y", 0)))
+        
+        # Draw switch and exit markers on graph
+        if show_adjacency and (switch_positions or exit_positions):
+            for switch_pos in switch_positions:
+                x, y = switch_pos
+                screen_x = int(x * self.adjust + self.tile_x_offset)
+                screen_y = int(y * self.adjust + self.tile_y_offset)
+                pygame.draw.circle(surface, SWITCH_NODE_COLOR, (screen_x, screen_y), 6)
+                pygame.draw.circle(surface, (0, 0, 0, 255), (screen_x, screen_y), 6, 2)
+            
+            for exit_pos in exit_positions:
+                x, y = exit_pos
+                screen_x = int(x * self.adjust + self.tile_x_offset)
+                screen_y = int(y * self.adjust + self.tile_y_offset)
+                pygame.draw.circle(surface, EXIT_NODE_COLOR, (screen_x, screen_y), 6)
+                pygame.draw.circle(surface, (0, 0, 0, 255), (screen_x, screen_y), 6, 2)
+        
+        # Calculate and display switch/exit distances
+        if show_distances and ninja_pos and adjacency:
+            from collections import deque
+            
+            # Find closest node to ninja
+            ninja_x, ninja_y = ninja_pos
+            closest_node = None
+            min_dist = float('inf')
+            for pos in adjacency.keys():
+                x, y = pos
+                dist = ((x - ninja_x)**2 + (y - ninja_y)**2)**0.5
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_node = pos
+            
+            if closest_node and min_dist < 50:
+                # Calculate distance to nearest switch
+                switch_dist = float('inf')
+                for switch_pos in switch_positions:
+                    # Find closest node to switch
+                    switch_x, switch_y = switch_pos
+                    switch_node = None
+                    min_switch_dist = float('inf')
+                    for pos in adjacency.keys():
+                        x, y = pos
+                        dist = ((x - switch_x)**2 + (y - switch_y)**2)**0.5
+                        if dist < min_switch_dist:
+                            min_switch_dist = dist
+                            switch_node = pos
+                    
+                    if switch_node and min_switch_dist < 50:
+                        # BFS from ninja to switch
+                        distances = {closest_node: 0}
+                        queue = deque([closest_node])
+                        
+                        while queue and switch_node not in distances:
+                            current = queue.popleft()
+                            current_dist = distances[current]
+                            
+                            neighbors = adjacency.get(current, [])
+                            for neighbor_info in neighbors:
+                                neighbor_pos, cost = neighbor_info
+                                if neighbor_pos not in distances:
+                                    distances[neighbor_pos] = current_dist + cost
+                                    queue.append(neighbor_pos)
+                        
+                        if switch_node in distances:
+                            switch_dist = min(switch_dist, distances[switch_node])
+                
+                # Calculate distance to nearest exit
+                exit_dist = float('inf')
+                for exit_pos in exit_positions:
+                    # Find closest node to exit
+                    exit_x, exit_y = exit_pos
+                    exit_node = None
+                    min_exit_dist = float('inf')
+                    for pos in adjacency.keys():
+                        x, y = pos
+                        dist = ((x - exit_x)**2 + (y - exit_y)**2)**0.5
+                        if dist < min_exit_dist:
+                            min_exit_dist = dist
+                            exit_node = pos
+                    
+                    if exit_node and min_exit_dist < 50:
+                        # BFS from ninja to exit
+                        distances = {closest_node: 0}
+                        queue = deque([closest_node])
+                        
+                        while queue and exit_node not in distances:
+                            current = queue.popleft()
+                            current_dist = distances[current]
+                            
+                            neighbors = adjacency.get(current, [])
+                            for neighbor_info in neighbors:
+                                neighbor_pos, cost = neighbor_info
+                                if neighbor_pos not in distances:
+                                    distances[neighbor_pos] = current_dist + cost
+                                    queue.append(neighbor_pos)
+                        
+                        if exit_node in distances:
+                            exit_dist = min(exit_dist, distances[exit_node])
+                
+                # Draw info box with switch/exit distances
+                try:
+                    box_font = pygame.font.Font(None, 20)
+                except pygame.error:
+                    box_font = pygame.font.SysFont("monospace", 16, bold=True)
+                
+                ninja_screen_x = int(ninja_x * self.adjust + self.tile_x_offset)
+                ninja_screen_y = int(ninja_y * self.adjust + self.tile_y_offset)
+                
+                # Draw background box
+                box_width = 180
+                box_height = 60
+                box_x = ninja_screen_x + 20
+                box_y = ninja_screen_y - 40
+                
+                # Keep box on screen
+                if box_x + box_width > self.screen.get_width():
+                    box_x = ninja_screen_x - box_width - 20
+                if box_y < 0:
+                    box_y = ninja_screen_y + 20
+                
+                pygame.draw.rect(surface, (0, 0, 0, 200), (box_x, box_y, box_width, box_height), border_radius=5)
+                pygame.draw.rect(surface, (100, 200, 255, 255), (box_x, box_y, box_width, box_height), 2, border_radius=5)
+                
+                # Draw text
+                switch_text = f"Switch: {int(switch_dist) if switch_dist != float('inf') else '∞'}"
+                exit_text = f"Exit: {int(exit_dist) if exit_dist != float('inf') else '∞'}"
+                
+                switch_surf = box_font.render(switch_text, True, SWITCH_NODE_COLOR)
+                exit_surf = box_font.render(exit_text, True, EXIT_NODE_COLOR)
+                
+                surface.blit(switch_surf, (box_x + 10, box_y + 10))
+                surface.blit(exit_surf, (box_x + 10, box_y + 35))
+        
+        # Draw legend
+        if show_adjacency:
+            try:
+                legend_font = pygame.font.Font(None, 18)
+            except pygame.error:
+                legend_font = pygame.font.SysFont("arial", 14)
+            
+            legend_x = 20
+            legend_y = 20
+            legend_width = 180
+            legend_height = 110
+            
+            # Background
+            pygame.draw.rect(surface, (0, 0, 0, 200), (legend_x, legend_y, legend_width, legend_height), border_radius=5)
+            pygame.draw.rect(surface, (100, 200, 255, 255), (legend_x, legend_y, legend_width, legend_height), 2, border_radius=5)
+            
+            # Title
+            title_surf = legend_font.render("Adjacency Graph:", True, TEXT_COLOR)
+            surface.blit(title_surf, (legend_x + 10, legend_y + 10))
+            
+            # Legend items
+            legend_items = [
+                ("● Ninja", NINJA_NODE_COLOR),
+                ("● Switch", SWITCH_NODE_COLOR),
+                ("● Exit", EXIT_NODE_COLOR),
+                ("● Tile", NODE_COLOR),
+            ]
+            
+            y_offset = legend_y + 35
+            for text, color in legend_items:
+                text_surf = legend_font.render(text, True, color)
+                surface.blit(text_surf, (legend_x + 10, y_offset))
+                y_offset += 20
         
         return surface
 
