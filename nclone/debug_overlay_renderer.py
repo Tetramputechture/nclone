@@ -317,6 +317,7 @@ class DebugOverlayRenderer:
         show_adjacency = path_aware_info.get('show_adjacency', False)
         show_distances = path_aware_info.get('show_distances', False)
         show_blocked = path_aware_info.get('show_blocked', False)
+        show_paths = path_aware_info.get('show_paths', False)
         
         # Colors for visualization
         NODE_COLOR = (100, 255, 100, 180)  # Green nodes
@@ -325,6 +326,8 @@ class DebugOverlayRenderer:
         NINJA_NODE_COLOR = (100, 150, 255, 255)  # Blue for ninja position
         SWITCH_NODE_COLOR = (100, 255, 100, 255)  # Bright green for switches
         EXIT_NODE_COLOR = (255, 200, 100, 255)  # Orange for exits
+        SWITCH_PATH_COLOR = (50, 255, 50, 220)  # Bright green path to switch
+        EXIT_PATH_COLOR = (255, 180, 50, 220)  # Bright orange path to exit
         TEXT_COLOR = (255, 255, 255, 255)  # White text
         
         # Get blocked positions if available
@@ -453,6 +456,111 @@ class DebugOverlayRenderer:
                 screen_y = int(y * self.adjust + self.tile_y_offset)
                 pygame.draw.circle(surface, EXIT_NODE_COLOR, (screen_x, screen_y), 6)
                 pygame.draw.circle(surface, (0, 0, 0, 255), (screen_x, screen_y), 6, 2)
+        
+        # Helper function to find shortest path using BFS
+        def find_shortest_path(start_node, end_node, adjacency):
+            """Find shortest path from start to end node using BFS.
+            Returns (path, distance) where path is list of nodes."""
+            from collections import deque
+            
+            if start_node == end_node:
+                return [start_node], 0
+            
+            distances = {start_node: 0}
+            parents = {start_node: None}
+            queue = deque([start_node])
+            
+            while queue:
+                current = queue.popleft()
+                
+                if current == end_node:
+                    # Reconstruct path
+                    path = []
+                    node = end_node
+                    while node is not None:
+                        path.append(node)
+                        node = parents.get(node)
+                    path.reverse()
+                    return path, distances[end_node]
+                
+                current_dist = distances[current]
+                neighbors = adjacency.get(current, [])
+                for neighbor_info in neighbors:
+                    neighbor_pos, cost = neighbor_info
+                    if neighbor_pos not in distances:
+                        distances[neighbor_pos] = current_dist + cost
+                        parents[neighbor_pos] = current
+                        queue.append(neighbor_pos)
+            
+            return None, float('inf')
+        
+        # Draw paths to goals if enabled
+        if show_paths and ninja_pos and adjacency:
+            from collections import deque
+            
+            # Find closest node to ninja
+            ninja_x, ninja_y = ninja_pos
+            closest_node = None
+            min_dist = float('inf')
+            for pos in adjacency.keys():
+                x, y = pos
+                dist = ((x - ninja_x)**2 + (y - ninja_y)**2)**0.5
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_node = pos
+            
+            if closest_node and min_dist < 50:
+                # Draw path to nearest switch
+                for switch_pos in switch_positions:
+                    switch_x, switch_y = switch_pos
+                    switch_node = None
+                    min_switch_dist = float('inf')
+                    for pos in adjacency.keys():
+                        x, y = pos
+                        dist = ((x - switch_x)**2 + (y - switch_y)**2)**0.5
+                        if dist < min_switch_dist:
+                            min_switch_dist = dist
+                            switch_node = pos
+                    
+                    if switch_node and min_switch_dist < 50:
+                        path, _ = find_shortest_path(closest_node, switch_node, adjacency)
+                        if path:
+                            # Draw path as thick line connecting nodes
+                            for i in range(len(path) - 1):
+                                x1, y1 = path[i]
+                                x2, y2 = path[i + 1]
+                                screen_x1 = int(x1 * self.adjust + self.tile_x_offset)
+                                screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
+                                screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
+                                screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
+                                pygame.draw.line(surface, SWITCH_PATH_COLOR, (screen_x1, screen_y1), (screen_x2, screen_y2), 3)
+                            break  # Only draw path to nearest switch
+                
+                # Draw path to nearest exit
+                for exit_pos in exit_positions:
+                    exit_x, exit_y = exit_pos
+                    exit_node = None
+                    min_exit_dist = float('inf')
+                    for pos in adjacency.keys():
+                        x, y = pos
+                        dist = ((x - exit_x)**2 + (y - exit_y)**2)**0.5
+                        if dist < min_exit_dist:
+                            min_exit_dist = dist
+                            exit_node = pos
+                    
+                    if exit_node and min_exit_dist < 50:
+                        path, _ = find_shortest_path(closest_node, exit_node, adjacency)
+                        if path:
+                            # Draw path as thick line connecting nodes
+                            for i in range(len(path) - 1):
+                                x1, y1 = path[i]
+                                x2, y2 = path[i + 1]
+                                screen_x1 = int(x1 * self.adjust + self.tile_x_offset)
+                                screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
+                                screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
+                                screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
+                                pygame.draw.line(surface, EXIT_PATH_COLOR, (screen_x1, screen_y1), (screen_x2, screen_y2), 3)
+                            break  # Only draw path to nearest exit
         
         # Calculate and display switch/exit distances
         if show_distances and ninja_pos and adjacency:

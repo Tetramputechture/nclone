@@ -630,6 +630,7 @@ if (
     print("  D - Toggle path distance display")
     print("  A - Toggle adjacency graph visualization")
     print("  B - Toggle blocked entity highlighting")
+    print("  P - Toggle path to goals visualization (shows shortest paths)")
     print("  T - Run pathfinding benchmark at current position")
     print("  X - Export path analysis screenshot")
     print("  R - Reset environment")
@@ -1079,6 +1080,7 @@ path_aware_system = None
 path_distances_debug_enabled = False
 adjacency_graph_debug_enabled = False
 blocked_entities_debug_enabled = False
+show_paths_to_goals = False
 
 if (
     args.test_path_aware
@@ -2002,6 +2004,13 @@ while running:
                             f"Blocked entities display: {'ON' if blocked_entities_debug_enabled else 'OFF'}"
                         )
 
+                    if event.key == pygame.K_p:
+                        # Toggle path to goals visualization
+                        show_paths_to_goals = not show_paths_to_goals
+                        print(
+                            f"Path to goals visualization: {'ON' if show_paths_to_goals else 'OFF'}"
+                        )
+
                     if event.key == pygame.K_t and not (event.mod & pygame.KMOD_CTRL):
                         # Run pathfinding benchmark
                         try:
@@ -2190,6 +2199,7 @@ while running:
         env.set_path_distances_debug_enabled(path_distances_debug_enabled)
         env.set_adjacency_graph_debug_enabled(adjacency_graph_debug_enabled)
         env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
+        env.set_show_paths_to_goals(show_paths_to_goals)
         
         # Pass graph data to environment for visualization
         env.set_path_aware_data(
@@ -2201,6 +2211,7 @@ while running:
         env.set_path_distances_debug_enabled(False)
         env.set_adjacency_graph_debug_enabled(False)
         env.set_blocked_entities_debug_enabled(False)
+        env.set_show_paths_to_goals(False)
 
     # Step the environment
     observation, reward, terminated, truncated, info = env.step(action)
