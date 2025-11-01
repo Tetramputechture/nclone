@@ -9,7 +9,7 @@ import numpy as np
 # Add parent to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from nclone.graph.reachability.fast_graph_builder import FastGraphBuilder
+from nclone.graph.reachability.graph_builder import GraphBuilder
 from nclone.map_loader import MapLoader
 
 
@@ -36,7 +36,7 @@ def debug_graph_for_map(map_id: int):
         print(f"  Type {tile_type:2}: {count:5} tiles ({pct:5.2f}%)")
     
     # Build graph with debug
-    builder = FastGraphBuilder(debug=True)
+    builder = GraphBuilder(debug=True)
     
     # Use player start position
     start_pos = level_data.get("start_position", (100, 100))
@@ -65,7 +65,7 @@ def debug_graph_for_map(map_id: int):
                 tt = tiles[ty, tx]
                 nodes_by_type[tt] = nodes_by_type.get(tt, 0) + 1
         
-        print(f"\nNodes by tile type:")
+        print("\nNodes by tile type:")
         for tt in sorted(nodes_by_type.keys()):
             print(f"  Type {tt:2}: {nodes_by_type[tt]:4} nodes")
         
@@ -101,7 +101,7 @@ def debug_graph_for_map(map_id: int):
                 elif dx_pix < 0 and dy_pix < 0:
                     edge_directions['NW'] += 1
         
-        print(f"\nEdges by direction:")
+        print("\nEdges by direction:")
         for direction, count in edge_directions.items():
             print(f"  {direction:4}: {count:5} edges")
     

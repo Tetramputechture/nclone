@@ -582,7 +582,6 @@ class BaseNppEnvironment(gymnasium.Env):
             start_position=start_position,
             tiles=tiles,
             entities=entities,
-            level_id=f"level_{getattr(self.nplay_headless.sim, 'frame', 0)}",
         )
 
     @property

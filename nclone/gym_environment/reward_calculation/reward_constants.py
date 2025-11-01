@@ -12,6 +12,8 @@ References:
 - Sutton & Barto (2018): "Reinforcement Learning: An Introduction" (reward scaling)
 """
 
+from ..constants import LEVEL_DIAGONAL
+
 
 # =============================================================================
 # TERMINAL REWARD CONSTANTS
@@ -208,6 +210,16 @@ PBRS_EXPLORATION_VISIT_THRESHOLD = 25.0
 # Rationale: Distance (30 pixels) defining "unexplored" regions for exploration potential.
 # Slightly larger than visit threshold to encourage broad coverage.
 PBRS_EXPLORATION_RADIUS = 30.0
+
+# Fallback distance scale for PBRS adaptive normalization
+# Rationale: Used when adaptive scaling cannot be computed (e.g., no reachable nodes).
+# Adaptive scaling computes maximum reachable distance per level using BFS flood fill,
+# but falls back to LEVEL_DIAGONAL if no reachable area found or max distance is 0.
+# This ensures proper normalization even in edge cases.
+# NOTE: Actual normalization scale is computed dynamically per level based on reachable area.
+PBRS_FALLBACK_DISTANCE_SCALE = (
+    LEVEL_DIAGONAL  # Fallback when adaptive scaling unavailable
+)
 
 
 # =============================================================================

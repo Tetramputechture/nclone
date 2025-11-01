@@ -132,7 +132,28 @@ class RewardCalculator:
                 "exploration_weight": PBRS_EXPLORATION_WEIGHT,
             }
 
-        self.pbrs_calculator = PBRSCalculator(**pbrs_weights) if enable_pbrs else None
+        # Initialize path calculator for PBRS if enabled
+        path_calculator = None
+        if enable_pbrs:
+            try:
+                from ...graph.reachability.path_distance_calculator import (
+                    CachedPathDistanceCalculator,
+                )
+
+                path_calculator = CachedPathDistanceCalculator(
+                    max_cache_size=200, use_astar=True
+                )
+            except ImportError as e:
+                raise RuntimeError(
+                    f"Failed to import CachedPathDistanceCalculator for PBRS: {e}. "
+                    "Ensure graph reachability modules are available."
+                ) from e
+
+        self.pbrs_calculator = (
+            PBRSCalculator(path_calculator=path_calculator, **pbrs_weights)
+            if enable_pbrs
+            else None
+        )
 
     def calculate_reward(
         self,
@@ -200,10 +221,32 @@ class RewardCalculator:
         pbrs_reward = 0.0
         pbrs_components = {}
         if self.enable_pbrs and self.pbrs_calculator is not None:
-            current_potential = self.pbrs_calculator.calculate_combined_potential(obs)
+            # Extract adjacency graph, level_data, and graph_data from observation
+            # These are required for path-aware PBRS calculations with spatial indexing
+            adjacency = obs.get("_adjacency_graph")
+            level_data = obs.get("level_data")
+            graph_data = obs.get("_graph_data")  # Contains spatial_hash for O(1) lookup
+
+            # STRICT: Validate required data
+            if adjacency is None:
+                raise ValueError(
+                    "PBRS enabled but adjacency graph not found in observation. "
+                    "Ensure graph updates are enabled and adjacency is provided."
+                )
+            if level_data is None:
+                raise ValueError(
+                    "PBRS enabled but level_data not found in observation. "
+                    "Ensure level_data is included in observation dict."
+                )
+
+            current_potential = self.pbrs_calculator.calculate_combined_potential(
+                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+            )
 
             # Get individual potential components for logging
-            pbrs_components = self.pbrs_calculator.get_potential_components(obs)
+            pbrs_components = self.pbrs_calculator.get_potential_components(
+                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+            )
 
             if self.prev_potential is not None:
                 # r_shaped = r_env + γ * Φ(s') - Φ(s)
@@ -247,9 +290,24 @@ class RewardCalculator:
         components = {}
 
         if self.enable_pbrs and self.pbrs_calculator is not None:
-            components.update(self.pbrs_calculator.get_potential_components(obs))
+            adjacency = obs.get("_adjacency_graph")
+            level_data = obs.get("level_data")
+            graph_data = obs.get("_graph_data")
+            components.update(
+                self.pbrs_calculator.get_potential_components(
+                    obs,
+                    adjacency=adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                )
+            )
             components["combined_potential"] = (
-                self.pbrs_calculator.calculate_combined_potential(obs)
+                self.pbrs_calculator.calculate_combined_potential(
+                    obs,
+                    adjacency=adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                )
             )
 
         return components
@@ -301,7 +359,15 @@ class RewardCalculator:
 
         # === POTENTIAL METRICS ===
         if self.enable_pbrs and self.pbrs_calculator is not None:
-            current_potential = self.pbrs_calculator.calculate_combined_potential(obs)
+            # Extract adjacency graph, level_data, and graph_data for PBRS calculations
+            adjacency = obs.get("_adjacency_graph")
+            level_data = obs.get("level_data")
+            graph_data = obs.get("_graph_data")
+
+            # Calculate current potential with required parameters
+            current_potential = self.pbrs_calculator.calculate_combined_potential(
+                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+            )
             metrics["pbrs/current_potential"] = current_potential
 
             if self.prev_potential is not None:
@@ -326,7 +392,9 @@ class RewardCalculator:
                 )
 
             # Component breakdown
-            pbrs_components = self.pbrs_calculator.get_potential_components(obs)
+            pbrs_components = self.pbrs_calculator.get_potential_components(
+                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+            )
             for comp_name, comp_value in pbrs_components.items():
                 metrics[f"pbrs/component_{comp_name}"] = comp_value
 

@@ -17,7 +17,7 @@ All constants defined in reward_constants.py with full documentation.
 """
 
 import numpy as np
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from ..constants import LEVEL_DIAGONAL
 from ..util.util import calculate_distance
 from .reward_constants import (
@@ -26,6 +26,7 @@ from .reward_constants import (
     PBRS_EXPLORATION_RADIUS,
     PBRS_SWITCH_DISTANCE_SCALE,
     PBRS_EXIT_DISTANCE_SCALE,
+    PBRS_FALLBACK_DISTANCE_SCALE,
 )
 
 
@@ -43,40 +44,114 @@ class PBRSPotentials:
     """
 
     @staticmethod
-    def objective_distance_potential(state: Dict[str, Any]) -> float:
-        """Potential based on distance to nearest objective.
+    def objective_distance_potential(
+        state: Dict[str, Any],
+        adjacency: Optional[
+            Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+        ] = None,
+        level_data: Optional[Any] = None,
+        path_calculator: Optional[Any] = None,
+        graph_data: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Potential based on shortest path distance to nearest objective.
 
         Returns higher potential when closer to the current objective:
         - Switch when inactive
         - Exit when switch is active
 
+        Uses shortest path distance instead of Euclidean to respect level geometry.
+        REQUIRES: adjacency graph and level_data must be provided when path_calculator is available.
+
         Guaranteed to return value in [0.0, 1.0] range with defensive clamping.
 
         Args:
             state: Game state dictionary
+            adjacency: Graph adjacency structure (REQUIRED if path_calculator provided)
+            level_data: Level data object (REQUIRED if path_calculator provided)
+            path_calculator: CachedPathDistanceCalculator instance (optional)
+            graph_data: Graph data dict with spatial_hash for O(1) node lookup (optional)
 
         Returns:
             float: Potential in range [0.0, 1.0], higher when closer to objective
+
+        Raises:
+            RuntimeError: If path_calculator provided but adjacency or level_data missing
         """
+        # Determine goal position
         if not state["switch_activated"]:
             # Phase 1: Navigate to switch
-            distance = calculate_distance(
-                state["player_x"],
-                state["player_y"],
-                state["switch_x"],
-                state["switch_y"],
-            )
+            goal_pos = (int(state["switch_x"]), int(state["switch_y"]))
+            cache_key = "switch"
         else:
             # Phase 2: Navigate to exit
-            distance = calculate_distance(
-                state["player_x"],
-                state["player_y"],
-                state["exit_door_x"],
-                state["exit_door_y"],
-            )
+            goal_pos = (int(state["exit_door_x"]), int(state["exit_door_y"]))
+            cache_key = "exit"
 
-        # Normalize distance to [0, 1], clamping to handle edge cases
-        normalized_distance = min(1.0, distance / LEVEL_DIAGONAL)
+        player_pos = (int(state["player_x"]), int(state["player_y"]))
+
+        # Use path distance if calculator available
+        if path_calculator is not None:
+            # STRICT: Validate required data
+            if adjacency is None:
+                raise RuntimeError(
+                    "PBRS path distance calculation requires adjacency graph. "
+                    "Graph data must be available when PBRS is enabled."
+                )
+            if level_data is None:
+                raise RuntimeError(
+                    "PBRS path distance calculation requires level_data. "
+                    "Level data must be available when PBRS is enabled."
+                )
+
+            try:
+                # Calculate shortest path distance with graph_data for spatial indexing
+                distance = path_calculator.get_distance(
+                    player_pos,
+                    goal_pos,
+                    adjacency,
+                    cache_key=cache_key,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                )
+
+                # Get adaptive scale for normalization
+                # This will be computed and cached per level by PBRSCalculator
+                adaptive_scale = state.get(
+                    "_pbrs_adaptive_scale", PBRS_FALLBACK_DISTANCE_SCALE
+                )
+
+                # Handle unreachable goals (returns inf)
+                if distance == float("inf"):
+                    # Use adaptive scale for normalization (sets potential to 0.0)
+                    normalized_distance = 1.0
+                else:
+                    # Normalize path distance to [0, 1] using adaptive scale
+                    normalized_distance = min(1.0, distance / adaptive_scale)
+            except Exception as e:
+                raise RuntimeError(
+                    f"PBRS path distance calculation failed: {e}. "
+                    "Ensure graph data is properly initialized and accessible."
+                ) from e
+        else:
+            # Fallback to Euclidean (should not happen in production)
+            # This path exists only for backward compatibility during transition
+            if not state["switch_activated"]:
+                distance = calculate_distance(
+                    state["player_x"],
+                    state["player_y"],
+                    state["switch_x"],
+                    state["switch_y"],
+                )
+            else:
+                distance = calculate_distance(
+                    state["player_x"],
+                    state["player_y"],
+                    state["exit_door_x"],
+                    state["exit_door_y"],
+                )
+            # Normalize Euclidean distance to [0, 1]
+            normalized_distance = min(1.0, distance / LEVEL_DIAGONAL)
+
         potential = 1.0 - normalized_distance
 
         # Defensive: explicit bounds checking
@@ -207,6 +282,10 @@ class PBRSCalculator:
     a composite potential function. The calculator maintains state across
     steps and computes the shaping reward: F(s,s') = γ * Φ(s') - Φ(s)
 
+    Uses shortest path distances for objective distance calculations, respecting
+    level geometry and obstacles. REQUIRES adjacency graph and level_data when
+    calculating potentials.
+
     All constants imported from reward_constants.py for consistency.
     """
 
@@ -220,6 +299,7 @@ class PBRSCalculator:
         hazard_weight: float = 0.0,  # Disabled for completion focus
         impact_weight: float = 0.0,  # Disabled for completion focus
         exploration_weight: float = 0.0,  # Disabled for completion focus
+        path_calculator: Optional[Any] = None,
     ):
         """Initialize PBRS calculator for completion-focused training.
 
@@ -228,27 +308,156 @@ class PBRSCalculator:
             hazard_weight: Weight for hazard proximity potential (0.0 = disabled)
             impact_weight: Weight for impact risk potential (0.0 = disabled)
             exploration_weight: Weight for exploration potential (0.0 = disabled)
+            path_calculator: CachedPathDistanceCalculator instance for path-aware distances
         """
         self.objective_weight = objective_weight
         self.hazard_weight = hazard_weight
         self.impact_weight = impact_weight
         self.exploration_weight = exploration_weight
 
+        # Initialize path distance calculator for path-aware reward shaping
+        self.path_calculator = path_calculator
+
+        # Cache for adaptive scaling per level
+        self._cached_scale: Optional[float] = None
+        self._cached_level_id: Optional[str] = None
+
         # Track visited positions for exploration potential (minimal usage)
         self.visited_positions: List[Tuple[float, float]] = []
         self.visit_threshold = PBRS_EXPLORATION_VISIT_THRESHOLD
 
-    def calculate_combined_potential(self, state: Dict[str, Any]) -> float:
+    def _compute_max_reachable_distance(
+        self,
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        level_data: Any,
+        graph_data: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Compute maximum reachable distance for adaptive scaling.
+
+        Uses BFS flood fill from start position to find maximum distance
+        to any reachable node. This provides adaptive normalization per level.
+
+        Args:
+            adjacency: Graph adjacency structure
+            level_data: Level data object with start_position
+            graph_data: Optional graph data dict with spatial_hash for fast lookup
+
+        Returns:
+            Maximum reachable distance, or fallback scale if computation fails
+        """
+        if not adjacency:
+            return PBRS_FALLBACK_DISTANCE_SCALE
+
+        # Get start position from level data
+        start_pos = level_data.start_position
+        if start_pos is None:
+            return PBRS_FALLBACK_DISTANCE_SCALE
+
+        # Find closest node to start position
+        from ...graph.reachability.pathfinding_utils import (
+            find_closest_node_to_position,
+            extract_spatial_lookups_from_graph_data,
+        )
+
+        # Extract spatial hash and subcell lookup from graph_data if available
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
+        )
+
+        start_node = find_closest_node_to_position(
+            start_pos,
+            adjacency,
+            threshold=50.0,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+        )
+        if start_node is None or start_node not in adjacency:
+            return PBRS_FALLBACK_DISTANCE_SCALE
+
+        # Use BFS to compute distances to all reachable nodes
+        from ...graph.reachability.pathfinding_utils import bfs_distance_from_start
+
+        distances, _ = bfs_distance_from_start(start_node, None, adjacency)
+
+        if not distances:
+            return PBRS_FALLBACK_DISTANCE_SCALE
+
+        # Find maximum distance
+        max_distance = max(distances.values())
+
+        # Use max distance or fallback, whichever is larger
+        # This ensures scale is at least LEVEL_DIAGONAL for consistency
+        return max(max_distance, PBRS_FALLBACK_DISTANCE_SCALE)
+
+    def calculate_combined_potential(
+        self,
+        state: Dict[str, Any],
+        adjacency: Optional[
+            Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+        ] = None,
+        level_data: Optional[Any] = None,
+        graph_data: Optional[Dict[str, Any]] = None,
+    ) -> float:
         """Calculate completion-focused potential from switch/exit distance only.
+
+        Computes adaptive scaling per level and uses it for path distance normalization.
+        Caches scale per level to avoid recomputation.
 
         Args:
             state: Game state dictionary
+            adjacency: Graph adjacency structure (REQUIRED if path_calculator provided)
+            level_data: Level data object (REQUIRED if path_calculator provided)
+            graph_data: Graph data dict with spatial_hash for O(1) node lookup (optional)
 
         Returns:
             float: Combined potential value focused on completion objectives
+
+        Raises:
+            RuntimeError: If path_calculator provided but adjacency or level_data missing
         """
-        # Calculate only objective distance potential (switch/exit focus)
-        objective_pot = PBRSPotentials.objective_distance_potential(state)
+        # Compute adaptive scale if path calculator is available
+        adaptive_scale = PBRS_FALLBACK_DISTANCE_SCALE
+
+        if self.path_calculator is not None:
+            # STRICT: Validate required data
+            if adjacency is None:
+                raise RuntimeError(
+                    "PBRS path distance calculation requires adjacency graph. "
+                    "Graph data must be available when PBRS is enabled."
+                )
+            if level_data is None:
+                raise RuntimeError(
+                    "PBRS path distance calculation requires level_data. "
+                    "Level data must be available when PBRS is enabled."
+                )
+
+            # Check if we need to recompute adaptive scale
+            # Use level_id if available, otherwise use start_position as identifier
+            level_id = getattr(level_data, "level_id", None)
+            if level_id is None:
+                level_id = str(getattr(level_data, "start_position", "unknown"))
+
+            if self._cached_level_id != level_id or self._cached_scale is None:
+                # Compute and cache adaptive scale
+                self._cached_scale = self._compute_max_reachable_distance(
+                    adjacency, level_data, graph_data
+                )
+                self._cached_level_id = level_id
+
+            adaptive_scale = self._cached_scale
+
+        # Add adaptive scale to state for use in objective_distance_potential
+        state_with_scale = dict(state)
+        state_with_scale["_pbrs_adaptive_scale"] = adaptive_scale
+
+        # Calculate objective distance potential with adaptive scaling
+        objective_pot = PBRSPotentials.objective_distance_potential(
+            state_with_scale,
+            adjacency=adjacency,
+            level_data=level_data,
+            path_calculator=self.path_calculator,
+            graph_data=graph_data,
+        )
 
         # Apply completion-focused scaling
         if not state.get("switch_activated", False):
@@ -275,16 +484,55 @@ class PBRSCalculator:
         if len(self.visited_positions) > max_positions:
             self.visited_positions = self.visited_positions[-max_positions:]
 
-    def get_potential_components(self, state: Dict[str, Any]) -> Dict[str, float]:
+    def get_potential_components(
+        self,
+        state: Dict[str, Any],
+        adjacency: Optional[
+            Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+        ] = None,
+        level_data: Optional[Any] = None,
+        graph_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, float]:
         """Get individual potential components for debugging/logging.
 
         Args:
             state: Game state dictionary
+            adjacency: Graph adjacency structure (REQUIRED if path_calculator provided)
+            level_data: Level data object (REQUIRED if path_calculator provided)
+            graph_data: Graph data dict with spatial_hash for O(1) node lookup (optional)
 
         Returns:
             dict: Dictionary of potential component values (completion-focused)
         """
-        objective_pot = PBRSPotentials.objective_distance_potential(state)
+        # Compute adaptive scale if needed
+        adaptive_scale = PBRS_FALLBACK_DISTANCE_SCALE
+        if (
+            self.path_calculator is not None
+            and adjacency is not None
+            and level_data is not None
+        ):
+            level_id = getattr(level_data, "level_id", None)
+            if level_id is None:
+                level_id = str(getattr(level_data, "start_position", "unknown"))
+
+            if self._cached_level_id != level_id or self._cached_scale is None:
+                self._cached_scale = self._compute_max_reachable_distance(
+                    adjacency, level_data, graph_data
+                )
+                self._cached_level_id = level_id
+
+            adaptive_scale = self._cached_scale
+
+        state_with_scale = dict(state)
+        state_with_scale["_pbrs_adaptive_scale"] = adaptive_scale
+
+        objective_pot = PBRSPotentials.objective_distance_potential(
+            state_with_scale,
+            adjacency=adjacency,
+            level_data=level_data,
+            path_calculator=self.path_calculator,
+            graph_data=graph_data,
+        )
         return {
             "objective": objective_pot,
             "switch_distance_potential": self.PBRS_SWITCH_DISTANCE * objective_pot
@@ -293,6 +541,7 @@ class PBRSCalculator:
             "exit_distance_potential": self.PBRS_EXIT_DISTANCE * objective_pot
             if state.get("switch_activated", False)
             else 0.0,
+            "adaptive_scale": adaptive_scale,
             "hazard": 0.0,  # Disabled for completion focus
             "impact": 0.0,  # Disabled for completion focus
             "exploration": 0.0,  # Disabled for completion focus
@@ -301,3 +550,5 @@ class PBRSCalculator:
     def reset(self) -> None:
         """Reset calculator state for new episode."""
         self.visited_positions.clear()
+        # Keep adaptive scale cache - it's per level, not per episode
+        # Will be invalidated when level_data changes

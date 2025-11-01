@@ -16,9 +16,12 @@ def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
     if config is None:
         config = EnvironmentConfig.for_training()
     env = NppEnvironment(config)
-    
+
     # Apply frame stacking wrapper if enabled
-    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+    if (
+        config.frame_stack.enable_visual_frame_stacking
+        or config.frame_stack.enable_state_stacking
+    ):
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -27,7 +30,7 @@ def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
             enable_state_stacking=config.frame_stack.enable_state_stacking,
             padding_type=config.frame_stack.padding_type,
         )
-    
+
     return env
 
 
@@ -36,9 +39,12 @@ def create_evaluation_env(config: Optional[EnvironmentConfig] = None) -> NppEnvi
     if config is None:
         config = EnvironmentConfig.for_evaluation()
     env = NppEnvironment(config)
-    
+
     # Apply frame stacking wrapper if enabled
-    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+    if (
+        config.frame_stack.enable_visual_frame_stacking
+        or config.frame_stack.enable_state_stacking
+    ):
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -47,7 +53,7 @@ def create_evaluation_env(config: Optional[EnvironmentConfig] = None) -> NppEnvi
             enable_state_stacking=config.frame_stack.enable_state_stacking,
             padding_type=config.frame_stack.padding_type,
         )
-    
+
     return env
 
 
@@ -56,9 +62,12 @@ def create_research_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
     if config is None:
         config = EnvironmentConfig.for_research()
     env = NppEnvironment(config)
-    
+
     # Apply frame stacking wrapper if enabled
-    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+    if (
+        config.frame_stack.enable_visual_frame_stacking
+        or config.frame_stack.enable_state_stacking
+    ):
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -67,7 +76,7 @@ def create_research_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
             enable_state_stacking=config.frame_stack.enable_state_stacking,
             padding_type=config.frame_stack.padding_type,
         )
-    
+
     return env
 
 
@@ -78,9 +87,12 @@ def create_visual_testing_env(
     if config is None:
         config = EnvironmentConfig.for_visual_testing()
     env = NppEnvironment(config)
-    
+
     # Apply frame stacking wrapper if enabled
-    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+    if (
+        config.frame_stack.enable_visual_frame_stacking
+        or config.frame_stack.enable_state_stacking
+    ):
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -89,7 +101,7 @@ def create_visual_testing_env(
             enable_state_stacking=config.frame_stack.enable_state_stacking,
             padding_type=config.frame_stack.padding_type,
         )
-    
+
     return env
 
 
@@ -98,9 +110,12 @@ def create_minimal_env(config: Optional[EnvironmentConfig] = None) -> NppEnviron
     if config is None:
         config = EnvironmentConfig.minimal()
     env = NppEnvironment(config)
-    
+
     # Apply frame stacking wrapper if enabled
-    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+    if (
+        config.frame_stack.enable_visual_frame_stacking
+        or config.frame_stack.enable_state_stacking
+    ):
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -109,7 +124,7 @@ def create_minimal_env(config: Optional[EnvironmentConfig] = None) -> NppEnviron
             enable_state_stacking=config.frame_stack.enable_state_stacking,
             padding_type=config.frame_stack.padding_type,
         )
-    
+
     return env
 
 
@@ -138,7 +153,8 @@ def make_vectorizable_env(
 def create_vectorized_training_envs(
     num_envs: int = 4,
     env_kwargs: Optional[Dict[str, Any]] = None,
-    enable_graph_updates: bool = True,
+    enable_graph_for_pbrs: bool = True,
+    enable_graph_for_observations: bool = True,
     enable_reachability: bool = True,
     debug: bool = False,
 ) -> list:
@@ -148,7 +164,8 @@ def create_vectorized_training_envs(
     Args:
         num_envs: Number of environments to create
         env_kwargs: Environment configuration parameters
-        enable_graph_updates: Whether to enable dynamic graph updates
+        enable_graph_for_pbrs: Whether to enable graph building for PBRS path distance calculations
+        enable_graph_for_observations: Whether to enable graph observations in observation space
         enable_reachability: Whether to enable reachability analysis
         debug: Enable debug logging for graph operations
 
@@ -158,24 +175,33 @@ def create_vectorized_training_envs(
     env_factories = []
 
     for i in range(num_envs):
-        # Create a copy of env_kwargs for each environment
-        local_env_kwargs = env_kwargs.copy() if env_kwargs else None
+        # Create config with specified graph settings
+        config = EnvironmentConfig.for_training()
+        config.graph.enable_graph_for_pbrs = enable_graph_for_pbrs
+        config.graph.enable_graph_for_observations = enable_graph_for_observations
+        config.graph.debug = debug
+        config.reachability.enable_reachability = enable_reachability
 
         # Add a unique seed for each environment
-        if local_env_kwargs is None:
-            local_env_kwargs = {}
-        local_env_kwargs["seed"] = i
+        if env_kwargs and "seed" in env_kwargs:
+            config.seed = env_kwargs["seed"]
+        else:
+            config.seed = i
 
-        # Create factory function
-        def make_env(kwargs=local_env_kwargs):
-            return create_training_env(
-                env_kwargs=kwargs,
-                enable_graph_updates=enable_graph_updates,
-                enable_reachability=enable_reachability,
-                debug=debug,
-            )
+        # Create factory function with proper closure
+        def make_env_factory(seed_value):
+            def make_env():
+                cfg = EnvironmentConfig.for_training()
+                cfg.graph.enable_graph_for_pbrs = enable_graph_for_pbrs
+                cfg.graph.enable_graph_for_observations = enable_graph_for_observations
+                cfg.graph.debug = debug
+                cfg.reachability.enable_reachability = enable_reachability
+                cfg.seed = seed_value
+                return create_training_env(config=cfg)
 
-        env_factories.append(make_vectorizable_env(make_env))
+            return make_env
+
+        env_factories.append(make_vectorizable_env(make_env_factory(i)))
 
     return env_factories
 
@@ -192,9 +218,12 @@ def create_hierarchical_env(
     elif completion_planner is not None:
         config.hierarchical.completion_planner = completion_planner
     env = NppEnvironment(config)
-    
+
     # Apply frame stacking wrapper if enabled
-    if config.frame_stack.enable_visual_frame_stacking or config.frame_stack.enable_state_stacking:
+    if (
+        config.frame_stack.enable_visual_frame_stacking
+        or config.frame_stack.enable_state_stacking
+    ):
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -203,7 +232,7 @@ def create_hierarchical_env(
             enable_state_stacking=config.frame_stack.enable_state_stacking,
             padding_type=config.frame_stack.padding_type,
         )
-    
+
     return env
 
 

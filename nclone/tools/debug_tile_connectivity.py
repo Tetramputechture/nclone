@@ -10,7 +10,6 @@ This tool helps identify issues with tile-to-tile connectivity by:
 import pickle
 import gzip
 import numpy as np
-from typing import Dict, Tuple, List
 import os
 
 

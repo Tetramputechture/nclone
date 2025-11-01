@@ -109,9 +109,10 @@ class LevelData:
         tiles: 2D NumPy array representing the tile layout [height, width]
         entities: List of entity dictionaries with position and state information
         player: Current player state information (optional for backward compatibility)
-        level_id: Optional unique identifier for caching purposes
         metadata: Optional dictionary for additional level information
         switch_states: Current state of all switches in the level
+        entity_start_positions: List of starting positions for each entity, used for
+                               equality checking and caching
     """
 
     start_position: Tuple[int, int]
@@ -121,6 +122,7 @@ class LevelData:
     level_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     switch_states: Dict[str, bool] = field(default_factory=dict)
+    entity_start_positions: List[Tuple[float, float]] = field(default_factory=list)
 
     def __post_init__(self):
         """Validate the data structure after initialization."""
@@ -133,9 +135,16 @@ class LevelData:
         if not isinstance(self.entities, list):
             raise TypeError("entities must be a list")
 
+        # Extract and store entity starting positions if not already set
+        if not self.entity_start_positions:
+            self.entity_start_positions = [
+                (float(entity.get("x", 0.0)), float(entity.get("y", 0.0)))
+                for entity in self.entities
+            ]
+
         # Generate level_id if not provided
         if self.level_id is None:
-            self.level_id = f"level_{id(self.tiles)}"
+            self.level_id = f"level_{len(self.tiles)}_{len(self.entities)}_{self.start_position[0]}_{self.start_position[1]}"
 
     @property
     def height(self) -> int:
@@ -269,6 +278,7 @@ class LevelData:
             ],
             level_id=self.level_id,
             metadata=self.metadata.copy() if self.metadata else None,
+            entity_start_positions=list(self.entity_start_positions),
         )
 
     @classmethod
@@ -286,6 +296,7 @@ class LevelData:
         entities = data.get("entities", [])
         level_id = data.get("level_id", None)
         start_position = data.get("start_position", None)
+        entity_start_positions = data.get("entity_start_positions", None)
 
         # Handle case where tiles might be a list
         if isinstance(tiles, list):
@@ -312,7 +323,8 @@ class LevelData:
                 else:
                     start_position = (0, 0)
 
-        return cls(
+        # Create instance and let __post_init__ extract entity_start_positions if not provided
+        instance = cls(
             start_position=start_position,
             tiles=tiles,
             entities=entities,
@@ -320,9 +332,22 @@ class LevelData:
             metadata={
                 k: v
                 for k, v in data.items()
-                if k not in ["tiles", "entities", "level_id", "start_position"]
+                if k
+                not in [
+                    "tiles",
+                    "entities",
+                    "level_id",
+                    "start_position",
+                    "entity_start_positions",
+                ]
             },
         )
+
+        # Override entity_start_positions if explicitly provided
+        if entity_start_positions is not None:
+            instance.entity_start_positions = list(entity_start_positions)
+
+        return instance
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -336,6 +361,7 @@ class LevelData:
             "entities": self.entities,
             "level_id": self.level_id,
             "start_position": self.start_position,
+            "entity_start_positions": self.entity_start_positions,
         }
 
         if self.metadata:
@@ -350,26 +376,108 @@ class LevelData:
             f"level_id='{self.level_id}')"
         )
 
+    def _normalize_entities_for_comparison(
+        self, entities: List[Dict[str, Any]], start_positions: List[Tuple[float, float]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Normalize entities for comparison by replacing current positions with start positions.
+
+        Excludes NINJA entities (type 0) from comparison as they are player spawn points
+        and shouldn't affect level equality for caching purposes.
+
+        This ensures equality checking uses starting positions rather than current positions,
+        which is important for caching since entities may move during gameplay.
+
+        Args:
+            entities: List of entity dictionaries (should already exclude NINJA entities)
+            start_positions: List of starting positions corresponding to entities
+
+        Returns:
+            List of normalized entity dictionaries with start positions (excluding NINJA entities)
+        """
+        normalized = []
+        for entity, start_pos in zip(entities, start_positions):
+            # Skip NINJA entities (type 0) as a safety check
+            entity_type = entity.get("type")
+            if entity_type == EntityType.NINJA:
+                continue
+
+            entity_copy = entity.copy()
+            entity_copy["x"] = start_pos[0]
+            entity_copy["y"] = start_pos[1]
+            normalized.append(entity_copy)
+        return normalized
+
     def __eq__(self, other) -> bool:
         """
         Check equality with another LevelData instance.
 
         Two LevelData instances are considered equal if they have:
         - Same tile data
-        - Same entities with same attributes
+        - Same entities with same attributes (using starting positions, not current positions)
         - Same start position
+        - Same entity starting positions (excluding NINJA entities)
 
         All other attributes (level_id, player state, metadata, switch_states) are
         considered emergent from these fundamental properties and don't affect equality.
+
+        Note: NINJA entities (type 0) are excluded from comparison as they are player spawn
+        points and shouldn't affect level equality for caching purposes.
+
+        Note: Entity positions are compared using their starting positions, not current
+        positions. This ensures that two LevelData instances representing the same level
+        configuration are considered equal even if entities have moved during gameplay.
         """
         if not isinstance(other, LevelData):
             return False
 
-        return (
+        # Compare tiles and start position
+        if not (
             np.array_equal(self.tiles, other.tiles)
-            and self.entities == other.entities
             and self.start_position == other.start_position
+        ):
+            return False
+
+        # Filter out NINJA entities and their start positions for comparison
+        self_non_ninja_entities = [
+            (entity, pos)
+            for entity, pos in zip(self.entities, self.entity_start_positions)
+            if entity.get("type") != EntityType.NINJA
+        ]
+        other_non_ninja_entities = [
+            (entity, pos)
+            for entity, pos in zip(other.entities, other.entity_start_positions)
+            if entity.get("type") != EntityType.NINJA
+        ]
+
+        # Compare entity starting positions (excluding NINJA)
+        if len(self_non_ninja_entities) != len(other_non_ninja_entities):
+            print(
+                f"Entity start positions length mismatch (excluding NINJA): {len(self_non_ninja_entities)} != {len(other_non_ninja_entities)}"
+            )
+            return False
+
+        # Compare starting positions
+        self_start_positions = [pos for _, pos in self_non_ninja_entities]
+        other_start_positions = [pos for _, pos in other_non_ninja_entities]
+        if self_start_positions != other_start_positions:
+            # Print the exact values that are different
+            print(
+                f"Entity start positions mismatch (excluding NINJA): {self_start_positions} != {other_start_positions}"
+            )
+            return False
+
+        # Compare entities using normalized versions (with starting positions, excluding NINJA)
+        self_entities_only = [entity for entity, _ in self_non_ninja_entities]
+        other_entities_only = [entity for entity, _ in other_non_ninja_entities]
+        self_normalized = self._normalize_entities_for_comparison(
+            self_entities_only, self_start_positions
         )
+        other_normalized = self._normalize_entities_for_comparison(
+            other_entities_only, other_start_positions
+        )
+
+        return self_normalized == other_normalized
 
 
 def ensure_level_data(
@@ -419,6 +527,11 @@ def ensure_level_data(
     # Update entities if provided
     if entities is not None:
         level_data.entities = entities
+        # Update entity_start_positions to match new entities
+        level_data.entity_start_positions = [
+            (float(entity.get("x", 0.0)), float(entity.get("y", 0.0)))
+            for entity in entities
+        ]
 
     return level_data
 

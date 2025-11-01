@@ -37,14 +37,12 @@ class DebugOverlayRenderer:
         self.current_subgoal_plan = None
         self.current_reachable_positions = None
 
-        # Pathfinding cache: only recompute if ninja moved >= 12px
-        self._cached_ninja_pos = None
-        self._cached_path_data = (
-            None  # Stores: closest_node, switch_path, exit_path, switch_node, exit_node
+        # Pathfinding cache: use shared visualization cache
+        from nclone.graph.reachability.path_visualization_cache import (
+            PathVisualizationCache,
         )
-        self._cached_adjacency_signature = (
-            None  # Hash of adjacency keys to detect level changes
-        )
+
+        self._path_visualization_cache = PathVisualizationCache()
 
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         self.adjust = adjust
@@ -53,9 +51,8 @@ class DebugOverlayRenderer:
 
     def clear_pathfinding_cache(self):
         """Clear pathfinding cache. Call this when level changes or ninja position resets."""
-        self._cached_ninja_pos = None
-        self._cached_path_data = None
-        self._cached_adjacency_signature = None
+        if hasattr(self, "_path_visualization_cache"):
+            self._path_visualization_cache.clear_cache()
 
     def _get_area_color(
         self,
@@ -328,6 +325,19 @@ class DebugOverlayRenderer:
         ninja_pos = path_aware_info.get("ninja_position", (0, 0))
         entities = path_aware_info.get("entities", [])
 
+        # Import shared utilities from pathfinding modules
+        from nclone.graph.reachability.pathfinding_utils import (
+            find_closest_node_to_position,
+            bfs_distance_from_start,
+            find_shortest_path_with_parents,
+            extract_spatial_lookups_from_graph_data,
+        )
+
+        # Extract spatial hash and subcell lookup from graph_data if available
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
+        )
+
         show_adjacency = path_aware_info.get("show_adjacency", False)
         show_distances = path_aware_info.get("show_distances", False)
         show_blocked = path_aware_info.get("show_blocked", False)
@@ -344,33 +354,28 @@ class DebugOverlayRenderer:
         EXIT_PATH_COLOR = (255, 180, 50, 220)  # Bright orange path to exit
         TEXT_COLOR = (255, 255, 255, 255)  # White text
 
-        # Helper to find ninja node using same logic as blue highlighting
+        # Helper to find ninja node using shared utility
         def find_ninja_node(ninja_pos, adjacency):
             """Find the node that represents the ninja's current position.
-            Uses the same logic as the blue node highlighting."""
+            Uses shared utility function for consistency."""
             if not ninja_pos or not adjacency:
                 return None
 
-            # Find node using same logic as blue highlighting: abs(x + 24 - ninja_pos[0]) < 5
+            # Use shared utility with tight threshold for ninja node finding
+            # First try exact match (within 5 pixels)
             for pos in adjacency.keys():
                 x, y = pos
                 if abs(x + 24 - ninja_pos[0]) < 5 and abs(y + 24 - ninja_pos[1]) < 5:
                     return pos
 
-            # Fallback: find closest node (accounting for 24px padding)
-            closest_node = None
-            min_dist = float("inf")
-            for pos in adjacency.keys():
-                x, y = pos
-                # Account for 24px padding when calculating distance
-                dist = (
-                    (x + 24 - ninja_pos[0]) ** 2 + (y + 24 - ninja_pos[1]) ** 2
-                ) ** 0.5
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_node = pos
-
-            return closest_node
+            # Fallback: use shared utility with relaxed threshold
+            return find_closest_node_to_position(
+                ninja_pos,
+                adjacency,
+                threshold=50.0,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+            )
 
         # Compute reachable set dynamically from current ninja position
         def compute_reachability_from_position(start_pos, adjacency):
@@ -491,22 +496,8 @@ class DebugOverlayRenderer:
 
             # Only proceed if we found a valid ninja node and it's reachable
             if closest_node and (reachable is None or closest_node in reachable):
-                # Use simple BFS to calculate distances
-                from collections import deque
-
-                distances = {closest_node: 0}
-                queue = deque([closest_node])
-
-                while queue:
-                    current = queue.popleft()
-                    current_dist = distances[current]
-
-                    neighbors = adjacency.get(current, [])
-                    for neighbor_info in neighbors:
-                        neighbor_pos, cost = neighbor_info
-                        if neighbor_pos not in distances:
-                            distances[neighbor_pos] = current_dist + cost
-                            queue.append(neighbor_pos)
+                # Use shared BFS utility to calculate distances
+                distances, _ = bfs_distance_from_start(closest_node, None, adjacency)
 
                 # Draw distances on screen (only for reachable nodes)
                 for pos, dist in distances.items():
@@ -560,170 +551,128 @@ class DebugOverlayRenderer:
                 pygame.draw.circle(surface, EXIT_NODE_COLOR, (screen_x, screen_y), 6)
                 pygame.draw.circle(surface, (0, 0, 0, 255), (screen_x, screen_y), 6, 2)
 
-        # Helper function to find shortest path using BFS
-        def find_shortest_path(start_node, end_node, adjacency):
-            """Find shortest path from start to end node using BFS.
-            Returns (path, distance) where path is list of nodes."""
-            from collections import deque
-
-            if start_node == end_node:
-                return [start_node], 0
-
-            distances = {start_node: 0}
-            parents = {start_node: None}
-            queue = deque([start_node])
-
-            while queue:
-                current = queue.popleft()
-
-                if current == end_node:
-                    # Reconstruct path
-                    path = []
-                    node = end_node
-                    while node is not None:
-                        path.append(node)
-                        node = parents.get(node)
-                    path.reverse()
-                    return path, distances[end_node]
-
-                current_dist = distances[current]
-                neighbors = adjacency.get(current, [])
-                for neighbor_info in neighbors:
-                    neighbor_pos, cost = neighbor_info
-                    if neighbor_pos not in distances:
-                        distances[neighbor_pos] = current_dist + cost
-                        parents[neighbor_pos] = current
-                        queue.append(neighbor_pos)
-
-            return None, float("inf")
+        # Use shared pathfinding function
+        find_shortest_path = find_shortest_path_with_parents
 
         # Draw paths to goals if enabled
         if show_paths and ninja_pos and adjacency and reachable:
-            from collections import deque
+            # Get level data for cache validation
+            from nclone.graph.level_data import LevelData
 
-            # Check if we need to recompute paths
-            should_recompute = False
+            # Try to get level_data from path_aware_info, fallback to creating from entities
+            level_data = path_aware_info.get("level_data")
+            if level_data is None and entities:
+                # Create minimal LevelData for cache validation if not provided
+                import numpy as np
 
-            # Always recompute if cache is empty (first frame or cache cleared)
-            if self._cached_ninja_pos is None or self._cached_path_data is None:
-                should_recompute = True
-            else:
-                # Check if adjacency graph changed (new level loaded)
-                # Use hash of adjacency keys as signature to detect level changes
-                adjacency_signature = hash(tuple(sorted(adjacency.keys())))
-                if adjacency_signature != self._cached_adjacency_signature:
-                    should_recompute = True
-                else:
-                    # Calculate distance moved from cached position
-                    dx = ninja_pos[0] - self._cached_ninja_pos[0]
-                    dy = ninja_pos[1] - self._cached_ninja_pos[1]
-                    dist_moved = (dx**2 + dy**2) ** 0.5
-                    if dist_moved >= 12.0:
-                        should_recompute = True
+                level_data = LevelData(
+                    tiles=np.zeros((1, 1), dtype=np.int32),
+                    entities=entities,
+                    start_position=(0, 0),
+                )
 
-                    # Also check if entities changed (switches/exits affect paths)
-                    entity_signature = (
-                        tuple(switch_positions),
-                        tuple(exit_positions),
-                        exit_switch_activated,
-                    )
-                    cached_entity_signature = (
-                        self._cached_path_data.get("entity_signature")
-                        if self._cached_path_data
-                        else None
-                    )
-                    if entity_signature != cached_entity_signature:
-                        should_recompute = True
-
-            if should_recompute:
-                # Use the same logic as blue node highlighting to find starting node
-                closest_node = find_ninja_node(ninja_pos, adjacency)
-
-                # Create entity signature for cache
-                entity_signature = (
-                    tuple(switch_positions),
-                    tuple(exit_positions),
+            # Try to get cached paths
+            cached_data = None
+            if level_data and hasattr(self, "_path_visualization_cache"):
+                cached_data = self._path_visualization_cache.get_cached_paths(
+                    ninja_pos,
+                    adjacency,
+                    level_data,
+                    switch_positions,
+                    exit_positions,
                     exit_switch_activated,
                 )
 
-                # Cache the results
-                self._cached_ninja_pos = ninja_pos
-                adjacency_signature = hash(tuple(sorted(adjacency.keys())))
-                self._cached_adjacency_signature = adjacency_signature
-                self._cached_path_data = {
-                    "closest_node": closest_node,
-                    "entity_signature": entity_signature,
-                    "switch_path": None,
-                    "exit_path": None,
-                    "switch_node": None,
-                    "exit_node": None,
-                }
+            if cached_data is None:
+                # Need to recompute paths
+                closest_node = find_ninja_node(ninja_pos, adjacency)
+                switch_path = None
+                exit_path = None
+                switch_node = None
+                exit_node = None
 
                 # Only proceed if we found a valid ninja node and it's reachable
                 if closest_node and closest_node in reachable:
                     # Draw path to nearest switch (if not yet activated)
                     if switch_positions:  # Only if there are uncollected switches
                         for switch_pos in switch_positions:
-                            switch_x, switch_y = switch_pos
-                            switch_node = None
-                            min_switch_dist = float("inf")
-                            # Only consider REACHABLE nodes near the switch
-                            for pos in reachable:
-                                if pos not in adjacency:
-                                    continue
-                                x, y = pos
-                                # Convert node coords to world coords (+24) for comparison with entity position
-                                dist = (
-                                    (x + 24 - switch_x) ** 2 + (y + 24 - switch_y) ** 2
-                                ) ** 0.5
-                                if dist < min_switch_dist:
-                                    min_switch_dist = dist
-                                    switch_node = pos
+                            # Find closest REACHABLE node to switch using shared utility
+                            # Filter adjacency to only reachable nodes first
+                            reachable_adjacency = {
+                                k: v for k, v in adjacency.items() if k in reachable
+                            }
+                            switch_node = find_closest_node_to_position(
+                                switch_pos,
+                                reachable_adjacency,
+                                threshold=50.0,
+                                spatial_hash=spatial_hash,
+                                subcell_lookup=subcell_lookup,
+                            )
 
-                            if switch_node and min_switch_dist < 50:
+                            if switch_node:
                                 path, _ = find_shortest_path(
                                     closest_node, switch_node, adjacency
                                 )
                                 if path:
-                                    self._cached_path_data["switch_path"] = path
-                                    self._cached_path_data["switch_node"] = switch_node
-                                break  # Only draw path to nearest switch
+                                    switch_path = path
+                                    break  # Only draw path to nearest switch
 
                     # Draw path to nearest exit ONLY if switch has been activated
                     if exit_switch_activated and exit_positions:
                         for exit_pos in exit_positions:
-                            exit_x, exit_y = exit_pos
-                            exit_node = None
-                            min_exit_dist = float("inf")
-                            # Only consider REACHABLE nodes near the exit
-                            for pos in reachable:
-                                if pos not in adjacency:
-                                    continue
-                                x, y = pos
-                                # Convert node coords to world coords (+24) for comparison with entity position
-                                dist = (
-                                    (x + 24 - exit_x) ** 2 + (y + 24 - exit_y) ** 2
-                                ) ** 0.5
-                                if dist < min_exit_dist:
-                                    min_exit_dist = dist
-                                    exit_node = pos
+                            # Find closest REACHABLE node to exit using shared utility
+                            # Filter adjacency to only reachable nodes first
+                            reachable_adjacency = {
+                                k: v for k, v in adjacency.items() if k in reachable
+                            }
+                            exit_node = find_closest_node_to_position(
+                                exit_pos,
+                                reachable_adjacency,
+                                threshold=50.0,
+                                spatial_hash=spatial_hash,
+                                subcell_lookup=subcell_lookup,
+                            )
 
-                            if exit_node and min_exit_dist < 50:
+                            if exit_node:
                                 path, _ = find_shortest_path(
                                     closest_node, exit_node, adjacency
                                 )
                                 if path:
-                                    self._cached_path_data["exit_path"] = path
-                                    self._cached_path_data["exit_node"] = exit_node
-                                break  # Only draw path to nearest exit
-            else:
-                # Use cached path data
-                closest_node = self._cached_path_data.get("closest_node")
+                                    exit_path = path
+                                    break  # Only draw path to nearest exit
+
+                # Cache the computed paths
+                if level_data and hasattr(self, "_path_visualization_cache"):
+                    self._path_visualization_cache.cache_paths(
+                        ninja_pos,
+                        adjacency,
+                        level_data,
+                        switch_positions,
+                        exit_positions,
+                        exit_switch_activated,
+                        closest_node,
+                        switch_path,
+                        exit_path,
+                        switch_node,
+                        exit_node,
+                    )
+
+                cached_data = {
+                    "closest_node": closest_node,
+                    "switch_path": switch_path,
+                    "exit_path": exit_path,
+                    "switch_node": switch_node,
+                    "exit_node": exit_node,
+                }
+
+            # Extract cached data
+            closest_node = cached_data.get("closest_node")
+            switch_path = cached_data.get("switch_path")
+            exit_path = cached_data.get("exit_path")
 
             # Draw paths (from cache or newly computed)
-            if closest_node and self._cached_path_data:
+            if closest_node and cached_data:
                 # Draw switch path
-                switch_path = self._cached_path_data.get("switch_path")
                 if switch_path:
                     for i in range(len(switch_path) - 1):
                         node1 = switch_path[i]
@@ -750,7 +699,6 @@ class DebugOverlayRenderer:
                             )
 
                 # Draw exit path
-                exit_path = self._cached_path_data.get("exit_path")
                 if exit_path:
                     for i in range(len(exit_path) - 1):
                         node1 = exit_path[i]
@@ -778,8 +726,6 @@ class DebugOverlayRenderer:
 
         # Calculate and display switch/exit distances
         if show_distances and ninja_pos and adjacency:
-            from collections import deque
-
             # Extract ninja position for screen coordinates
             ninja_x, ninja_y = ninja_pos
 
@@ -787,75 +733,47 @@ class DebugOverlayRenderer:
             closest_node = find_ninja_node(ninja_pos, adjacency)
 
             if closest_node:
-                # Calculate distance to nearest switch
+                # Calculate distance to nearest switch using shared utilities
                 switch_dist = float("inf")
                 for switch_pos in switch_positions:
-                    # Find closest node to switch
-                    switch_x, switch_y = switch_pos
-                    switch_node = None
-                    min_switch_dist = float("inf")
-                    for pos in adjacency.keys():
-                        x, y = pos
-                        # Convert node coords to world coords (+24) for comparison with entity position
-                        dist = (
-                            (x + 24 - switch_x) ** 2 + (y + 24 - switch_y) ** 2
-                        ) ** 0.5
-                        if dist < min_switch_dist:
-                            min_switch_dist = dist
-                            switch_node = pos
+                    # Find closest node to switch using shared utility
+                    switch_node = find_closest_node_to_position(
+                        switch_pos,
+                        adjacency,
+                        threshold=50.0,
+                        spatial_hash=spatial_hash,
+                        subcell_lookup=subcell_lookup,
+                    )
 
-                    if switch_node and min_switch_dist < 50:
-                        # BFS from ninja to switch
-                        distances = {closest_node: 0}
-                        queue = deque([closest_node])
+                    if switch_node is not None:
+                        # BFS from ninja to switch using shared utility
+                        distances, target_dist = bfs_distance_from_start(
+                            closest_node, switch_node, adjacency
+                        )
 
-                        while queue and switch_node not in distances:
-                            current = queue.popleft()
-                            current_dist = distances[current]
+                        if target_dist is not None:
+                            switch_dist = min(switch_dist, target_dist)
 
-                            neighbors = adjacency.get(current, [])
-                            for neighbor_info in neighbors:
-                                neighbor_pos, cost = neighbor_info
-                                if neighbor_pos not in distances:
-                                    distances[neighbor_pos] = current_dist + cost
-                                    queue.append(neighbor_pos)
-
-                        if switch_node in distances:
-                            switch_dist = min(switch_dist, distances[switch_node])
-
-                # Calculate distance to nearest exit
+                # Calculate distance to nearest exit using shared utilities
                 exit_dist = float("inf")
                 for exit_pos in exit_positions:
-                    # Find closest node to exit
-                    exit_x, exit_y = exit_pos
-                    exit_node = None
-                    min_exit_dist = float("inf")
-                    for pos in adjacency.keys():
-                        x, y = pos
-                        # Convert node coords to world coords (+24) for comparison with entity position
-                        dist = ((x + 24 - exit_x) ** 2 + (y + 24 - exit_y) ** 2) ** 0.5
-                        if dist < min_exit_dist:
-                            min_exit_dist = dist
-                            exit_node = pos
+                    # Find closest node to exit using shared utility
+                    exit_node = find_closest_node_to_position(
+                        exit_pos,
+                        adjacency,
+                        threshold=50.0,
+                        spatial_hash=spatial_hash,
+                        subcell_lookup=subcell_lookup,
+                    )
 
-                    if exit_node and min_exit_dist < 50:
-                        # BFS from ninja to exit
-                        distances = {closest_node: 0}
-                        queue = deque([closest_node])
+                    if exit_node is not None:
+                        # BFS from ninja to exit using shared utility
+                        distances, target_dist = bfs_distance_from_start(
+                            closest_node, exit_node, adjacency
+                        )
 
-                        while queue and exit_node not in distances:
-                            current = queue.popleft()
-                            current_dist = distances[current]
-
-                            neighbors = adjacency.get(current, [])
-                            for neighbor_info in neighbors:
-                                neighbor_pos, cost = neighbor_info
-                                if neighbor_pos not in distances:
-                                    distances[neighbor_pos] = current_dist + cost
-                                    queue.append(neighbor_pos)
-
-                        if exit_node in distances:
-                            exit_dist = min(exit_dist, distances[exit_node])
+                        if target_dist is not None:
+                            exit_dist = min(exit_dist, target_dist)
 
                 # Draw info box with switch/exit distances
                 try:
@@ -1071,6 +989,10 @@ class DebugOverlayRenderer:
                 if key == "grid_outline":  # Skip rendering grid outline data as text
                     continue
                 if key == "tile_types":  # Skip rendering tile types data as text
+                    continue
+                if key == "path_aware":
+                    continue
+                if key == "graph_data":
                     continue
                 if isinstance(value, dict):
                     # Render dictionary key as a header

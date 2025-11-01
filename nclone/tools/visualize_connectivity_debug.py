@@ -7,16 +7,13 @@ Creates detailed visualizations showing:
 3. Why specific connections are allowed/blocked
 """
 
-import numpy as np
-import pygame
-from typing import Dict, Tuple, Set, List
 import sys
 import os
 
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from nclone.graph.reachability.fast_graph_builder import FastGraphBuilder
+from nclone.graph.reachability.graph_builder import GraphBuilder
 from nclone.level_loader import LevelLoader
 
 
@@ -34,12 +31,12 @@ def visualize_graph_debug(map_id: int = 0):
     print(f"Tiles shape: {tiles.shape}")
     
     # Build graph with debug enabled
-    builder = FastGraphBuilder(debug=True)
+    builder = GraphBuilder(debug=True)
     graph_data = builder.build_graph(level_data, ninja_pos=(100, 100))
     
     adjacency = graph_data["adjacency"]
     
-    print(f"\nGraph Statistics:")
+    print("\nGraph Statistics:")
     print(f"  Total nodes: {len(adjacency)}")
     
     total_edges = sum(len(neighbors) for neighbors in adjacency.values())
@@ -141,7 +138,7 @@ def create_detailed_edge_report(map_id: int = 0, output_file: str = "edge_debug_
     level_data = loader.load_level(map_id)
     tiles = level_data.tiles
     
-    builder = FastGraphBuilder(debug=True)
+    builder = GraphBuilder(debug=True)
     graph_data = builder.build_graph(level_data, ninja_pos=(100, 100))
     adjacency = graph_data["adjacency"]
     
@@ -197,7 +194,7 @@ def create_detailed_edge_report(map_id: int = 0, output_file: str = "edge_debug_
                         
                         f.write(f"  → {neighbor_pos} | Tile: ({dst_tile_x},{dst_tile_y}) Type {dst_tile_type} | Sub: ({dst_sub_x},{dst_sub_y}) | Dir: {direction} | Cost: {cost:.2f}\n")
             else:
-                f.write(f"  (No neighbors)\n")
+                f.write("  (No neighbors)\n")
             
             f.write("\n")
     

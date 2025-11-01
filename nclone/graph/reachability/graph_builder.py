@@ -18,6 +18,7 @@ from collections import deque
 
 from .tile_connectivity_loader import TileConnectivityLoader
 from .entity_mask import EntityMask
+from .spatial_hash import SpatialHash
 
 # Hardcoded cell size as per N++ constants
 CELL_SIZE = 24
@@ -413,7 +414,7 @@ def _precompute_within_tile_connectivity() -> Dict[
 WITHIN_TILE_CONNECTIVITY = _precompute_within_tile_connectivity()
 
 
-class FastGraphBuilder:
+class GraphBuilder:
     """
     Builds level traversability graph using precomputed tile connectivity.
 
@@ -462,7 +463,7 @@ class FastGraphBuilder:
     def _debug_log(self, message: str):
         """Log debug message if debug mode is enabled."""
         if self.debug:
-            print(f"[FastGraphBuilder DEBUG] {message}")
+            print(f"[GraphBuilder DEBUG] {message}")
 
     def _debug_log_traversability_decision(
         self,
@@ -523,15 +524,21 @@ class FastGraphBuilder:
         """
         Build complete traversability graph for level.
 
+        The adjacency graph is filtered to only include nodes reachable from the initial
+        player position (from LevelData.start_position). This ensures path caching only
+        calculates distances for reachable areas, preventing caching of unreachable or
+        isolated regions.
+
         Args:
             level_data: Level data with tiles, entities, switch_states, start_position
                        Can be a dict or LevelData object
-            ninja_pos: Optional ninja position for reachability analysis
+            ninja_pos: Optional ninja position for reachability analysis (current position)
             level_id: Optional level identifier for caching
 
         Returns:
             Dictionary containing:
             - 'adjacency': Dict mapping (x, y) -> List[(neighbor_x, neighbor_y, cost)]
+                          Filtered to only include nodes reachable from initial player position
             - 'reachable': Set of reachable positions from ninja_pos (if provided)
             - 'blocked_positions': Set of blocked positions (by entities)
             - 'blocked_edges': Set of blocked edges
@@ -580,14 +587,30 @@ class FastGraphBuilder:
             base_graph["adjacency"], blocked_positions, blocked_edges
         )
 
+        # Filter adjacency to only include nodes reachable from initial player position
+        # This ensures path caching only operates on reachable areas
+        initial_player_pos = self._find_player_spawn(level_data_dict, tiles)
+        reachable_nodes = self._flood_fill_from_graph(initial_player_pos, adjacency)
+
+        # Filter adjacency to only reachable nodes
+        # Critical: This ensures all cached distances are for reachable areas only
+        adjacency = self._filter_adjacency_to_reachable(adjacency, reachable_nodes)
+
+        # Build spatial hash for O(1) node lookup
+        spatial_hash = SpatialHash(cell_size=CELL_SIZE)
+        spatial_hash.build(list(adjacency.keys()))
+
         result = {
             "adjacency": adjacency,
             "blocked_positions": blocked_positions,
             "blocked_edges": blocked_edges,
             "base_graph_cached": level_id in self._level_graph_cache,
+            "spatial_hash": spatial_hash,  # For fast node lookup
+            "reachable_node_count": len(adjacency),  # For adaptive caching strategy
         }
 
-        # If ninja position provided, compute reachable set
+        # If ninja position provided, compute reachable set for that position
+        # Note: This may differ from initial_player_pos if ninja has moved
         if ninja_pos is not None:
             reachable = self._flood_fill_from_graph(ninja_pos, adjacency)
             result["reachable"] = reachable
@@ -603,11 +626,14 @@ class FastGraphBuilder:
         """
         Build base graph from tile layout with sub-tile nodes (cached per level).
 
+        Note: This builds adjacency for ALL traversable nodes. Filtering to only
+        reachable nodes from initial player position is done in build_graph() after
+        applying entity masks.
+
         Key improvements:
         1. Each 24px tile → 4 sub-nodes at 12px resolution (2x2 grid)
         2. Respects tile types (type 0=empty OK, type 1=solid blocked)
-        3. Only builds graph for reachable nodes from player spawn
-        4. More accurate collision detection with 10px player radius
+        3. More accurate collision detection with 10px player radius
         """
         height, width = tiles.shape
 
@@ -752,10 +778,19 @@ class FastGraphBuilder:
         player_spawn: Tuple[int, int],
     ) -> Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]:
         """
-        Build full adjacency graph for all valid sub-nodes.
+        Build adjacency graph for all valid sub-nodes.
 
-        No player-position filtering - builds complete graph since reachability
-        is determined by level geometry and entity states, not player position.
+        Note: This builds adjacency for ALL traversable nodes. Filtering to only
+        reachable nodes from initial player position is done in build_graph() after
+        applying entity masks and flood fill from player spawn.
+
+        Args:
+            tiles: 2D numpy array of tile types
+            all_sub_nodes: Dict mapping node positions to (tile_x, tile_y, sub_x, sub_y)
+            player_spawn: Player spawn position (used for naming, filtering done later)
+
+        Returns:
+            Adjacency dictionary for all traversable sub-nodes
         """
         adjacency = {}
 
@@ -1235,6 +1270,46 @@ class FastGraphBuilder:
 
         return filtered
 
+    def _filter_adjacency_to_reachable(
+        self,
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        reachable_nodes: Set[Tuple[int, int]],
+    ) -> Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]:
+        """
+        Filter adjacency graph to only include nodes reachable from initial player position.
+
+        This ensures path caching only operates on areas reachable from the starting position,
+        preventing caching of distances for isolated or unreachable areas.
+
+        Args:
+            adjacency: Full adjacency graph (may include unreachable nodes)
+            reachable_nodes: Set of node positions reachable from initial player position
+
+        Returns:
+            Filtered adjacency graph containing only reachable nodes and edges between them
+        """
+        filtered = {}
+        for pos, neighbors in adjacency.items():
+            # Only include nodes that are reachable
+            if pos not in reachable_nodes:
+                continue
+
+            # Filter neighbors to only include reachable nodes
+            valid_neighbors = [
+                (neighbor_pos, cost)
+                for neighbor_pos, cost in neighbors
+                if neighbor_pos in reachable_nodes
+            ]
+
+            # Only add node if it has valid neighbors (or if it's isolated but reachable)
+            if valid_neighbors:
+                filtered[pos] = valid_neighbors
+            elif pos in reachable_nodes:
+                # Include isolated reachable nodes (no neighbors but still reachable)
+                filtered[pos] = []
+
+        return filtered
+
     def _flood_fill_from_graph(
         self,
         start: Tuple[int, int],
@@ -1264,8 +1339,9 @@ class FastGraphBuilder:
             start_node = self._find_closest_node(
                 start, {pos: None for pos in adjacency.keys()}
             )
-        if start_node is None or start_node not in adjacency:
-            return set()
+            if start_node is None or start_node not in adjacency:
+                return set()
+            start_nodes = [start_node]
 
         # Filter to only valid nodes in adjacency
         start_nodes = [node for node in start_nodes if node in adjacency]

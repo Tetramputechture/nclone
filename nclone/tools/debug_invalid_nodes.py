@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import numpy as np
 from nclone.gym_environment.environment_factory import create_visual_testing_env
 from nclone.gym_environment.config import EnvironmentConfig
-from nclone.graph.reachability.fast_graph_builder import FastGraphBuilder
+from nclone.graph.reachability.graph_builder import GraphBuilder
 
 
 def debug_invalid_nodes(map_id: int):
@@ -38,17 +38,17 @@ def debug_invalid_nodes(map_id: int):
     
     # Count tiles by type
     unique, counts = np.unique(tiles, return_counts=True)
-    print(f"\nTile distribution:")
+    print("\nTile distribution:")
     for tt, count in zip(unique, counts):
         pct = 100 * count / tiles.size
         print(f"  Type {tt:2}: {count:5} tiles ({pct:5.2f}%)")
     
     # Build graph
-    builder = FastGraphBuilder(debug=True)
+    builder = GraphBuilder(debug=True)
     ninja_pos = env.nplay_headless.ninja_position()
     ninja_pos = (int(ninja_pos[0]), int(ninja_pos[1]))
     
-    print(f"\nBuilding graph...")
+    print("\nBuilding graph...")
     graph_data = builder.build_graph(level_data, ninja_pos=ninja_pos)
     
     adjacency = graph_data["adjacency"]
@@ -90,7 +90,7 @@ def debug_invalid_nodes(map_id: int):
                 'tile_type': tile_type
             })
     
-    print(f"\nNodes by tile type:")
+    print("\nNodes by tile type:")
     for tt in sorted(nodes_by_tile_type.keys()):
         count = nodes_by_tile_type[tt]
         print(f"  Type {tt:2}: {count:5} nodes")

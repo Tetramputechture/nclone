@@ -73,7 +73,7 @@ Extract subsystem-specific initialization and management:
 **File**: `nclone/test_env/path_aware_manager.py`
 
 **Responsibilities**:
-- Initialize FastGraphBuilder and connectivity loader
+- Initialize GraphBuilder and connectivity loader
 - Manage graph caching and rebuilding
 - Handle path visualization state
 - Coordinate with environment for rendering

@@ -43,6 +43,7 @@ class DebugMixin:
         self._show_paths_to_goals: bool = False
         self._path_aware_graph_data = None
         self._path_aware_entity_mask = None
+        self._path_aware_level_data = None
 
     def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
@@ -70,6 +71,8 @@ class DebugMixin:
                 "show_paths": self._show_paths_to_goals,
                 "graph_data": self._path_aware_graph_data,
                 "entity_mask": self._path_aware_entity_mask,
+                "level_data": self._path_aware_level_data
+                or (self.level_data if hasattr(self, "level_data") else None),
                 "ninja_position": self.nplay_headless.ninja_position(),
                 "entities": self.level_data.entities
                 if hasattr(self, "level_data")
@@ -219,7 +222,8 @@ class DebugMixin:
         """Enable/disable path to goals visualization."""
         self._show_paths_to_goals = bool(enabled)
 
-    def set_path_aware_data(self, graph_data=None, entity_mask=None):
+    def set_path_aware_data(self, graph_data=None, entity_mask=None, level_data=None):
         """Set path-aware graph and entity mask data for visualization."""
         self._path_aware_graph_data = graph_data
         self._path_aware_entity_mask = entity_mask
+        self._path_aware_level_data = level_data

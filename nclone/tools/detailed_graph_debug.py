@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import numpy as np
 from nclone.gym_environment.environment_factory import create_visual_testing_env
-from nclone.graph.reachability.fast_graph_builder import FastGraphBuilder
+from nclone.graph.reachability.graph_builder import GraphBuilder
 
 
 def analyze_graph_building(map_id: int, verbose: bool = True):
@@ -24,7 +24,8 @@ def analyze_graph_building(map_id: int, verbose: bool = True):
     config = EnvironmentConfig.for_visual_testing()
     config.starting_map = map_id
     config.headless = True
-    config.enable_graph_updates = True
+    config.graph.enable_graph_for_pbrs = True
+    config.graph.enable_graph_for_observations = True
     
     env = create_visual_testing_env(config=config)
     
@@ -40,7 +41,7 @@ def analyze_graph_building(map_id: int, verbose: bool = True):
     
     # Count tiles
     unique, counts = np.unique(tiles, return_counts=True)
-    print(f"\nTile distribution:")
+    print("\nTile distribution:")
     for tt, count in zip(unique, counts):
         pct = 100 * count / tiles.size
         print(f"  Type {tt:2}: {count:5} ({pct:5.2f}%)")
@@ -51,8 +52,8 @@ def analyze_graph_building(map_id: int, verbose: bool = True):
     print(f"\nNinja start position: {ninja_pos}")
     
     # Build graph with debug enabled
-    print(f"\nBuilding graph with debug enabled...")
-    builder = FastGraphBuilder(debug=True)
+    print("\nBuilding graph with debug enabled...")
+    builder = GraphBuilder(debug=True)
     graph_data = builder.build_graph(level_data, ninja_pos=ninja_pos)
     
     adjacency = graph_data["adjacency"]
@@ -107,7 +108,7 @@ def analyze_graph_building(map_id: int, verbose: bool = True):
         print(f"Cross-tile edges: {len(cross_tile_edges)}")
         
         # Analyze cross-tile edges by tile types
-        print(f"\nCross-tile edges by tile type pairs:")
+        print("\nCross-tile edges by tile type pairs:")
         tile_pair_counts = {}
         for edge in cross_tile_edges:
             src_tx, src_ty = edge['src_tile']

@@ -9,7 +9,6 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-import numpy as np
 from PIL import Image, ImageDraw
 from nclone.tile_renderer import render_tile_to_array
 
@@ -156,7 +155,7 @@ def visualize_sample_points_for_connection(
     img.save(output_file)
     
     print(f"\n{'='*70}")
-    print(f"SAMPLE POINT VISUALIZATION")
+    print("SAMPLE POINT VISUALIZATION")
     print(f"{'='*70}")
     print(f"Tile A: {tile_a}")
     print(f"Tile B: {tile_b}")
@@ -170,8 +169,8 @@ def visualize_sample_points_for_connection(
     for i, (px, py) in enumerate(points_b):
         print(f"  {i+1}. ({px}, {py})")
     print(f"\nVisualization saved to: {output_file}")
-    print(f"  Green circles = sub-node centers")
-    print(f"  Red squares = sample points")
+    print("  Green circles = sub-node centers")
+    print("  Red squares = sample points")
     print(f"{'='*70}\n")
 
 

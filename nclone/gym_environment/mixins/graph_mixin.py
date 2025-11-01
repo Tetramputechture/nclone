@@ -19,7 +19,7 @@ from ...graph.common import (
     NODE_FEATURE_DIM,
     EDGE_FEATURE_DIM,
 )
-from ...graph.reachability.fast_graph_builder import FastGraphBuilder
+from ...graph.reachability.graph_builder import GraphBuilder
 
 
 @dataclass
@@ -48,16 +48,26 @@ class GraphMixin:
     """
 
     def _init_graph_system(
-        self, enable_graph_updates: bool = True, debug: bool = False
+        self,
+        enable_graph_for_pbrs: bool = True,
+        enable_graph_for_observations: bool = True,
+        debug: bool = False,
     ):
-        """Initialize the graph system components."""
-        self.enable_graph_updates = enable_graph_updates
+        """Initialize the graph system components.
+
+        Args:
+            enable_graph_for_pbrs: Build graph for PBRS path distance calculations (doesn't affect observation space)
+            enable_graph_for_observations: Add graph observations to observation space (doesn't affect PBRS)
+            debug: Enable debug logging
+        """
+        self.enable_graph_for_pbrs = enable_graph_for_pbrs
+        self.enable_graph_for_observations = enable_graph_for_observations
         self.debug = debug
 
         # Initialize graph system
-        self.graph_builder = FastGraphBuilder()
+        self.graph_builder = GraphBuilder()
         self.current_graph: Optional[GraphData] = None
-        self.current_fast_graph_data: Optional[Dict[str, Any]] = None
+        self.current_graph_data: Optional[Dict[str, Any]] = None
         self.last_switch_states: Dict[int, bool] = {}
         self.last_update_time = 0.0
 
@@ -70,7 +80,7 @@ class GraphMixin:
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
-        self._graph_builder: Optional[FastGraphBuilder] = None
+        self._graph_builder: Optional[GraphBuilder] = None
         self._graph_debug_cache: Optional[Dict[str, Any]] = None
 
         # Initialize logging if debug is enabled
@@ -80,12 +90,13 @@ class GraphMixin:
 
     def _reset_graph_state(self):
         """Reset graph state during environment reset."""
-        if self.enable_graph_updates:
+        # Graph building happens if either flag is True
+        if self.enable_graph_for_pbrs or self.enable_graph_for_observations:
             self.current_graph = None
-            self.current_fast_graph_data = None
+            self.current_graph_data = None
             self.last_switch_states.clear()
             self.last_update_time = time.time()
-            # Clear FastGraphBuilder cache on reset
+            # Clear GraphBuilder cache on reset
             if hasattr(self.graph_builder, "clear_cache"):
                 self.graph_builder.clear_cache()
 
@@ -135,34 +146,14 @@ class GraphMixin:
                     elif hasattr(entity, "activated"):
                         switch_states[f"door_{i}"] = bool(entity.activated)
 
-            # One-way platforms (entity_dic key 5)
-            if 5 in entity_dic:
-                platform_entities = entity_dic[5]
-                for i, entity in enumerate(platform_entities):
-                    if hasattr(entity, "activated"):
-                        switch_states[f"platform_{i}"] = bool(entity.activated)
-
-            # Other interactive entities
-            for entity_type_id, entities in entity_dic.items():
-                if entity_type_id not in [3, 4, 5]:  # Skip already processed types
-                    for i, entity in enumerate(entities):
-                        if hasattr(entity, "activated"):
-                            switch_states[f"entity_{entity_type_id}_{i}"] = bool(
-                                entity.activated
-                            )
-                        elif hasattr(entity, "open"):
-                            switch_states[f"entity_{entity_type_id}_{i}"] = bool(
-                                entity.open
-                            )
-
         return switch_states
 
     def _update_graph_from_env_state(self):
         """
-        Update graph using FastGraphBuilder (simple approach).
+        Update graph using GraphBuilder (simple approach).
 
-        This uses FastGraphBuilder to create updated connectivity based on current game state.
-        FastGraphBuilder returns a dict with adjacency information for pathfinding.
+        This uses GraphBuilder to create updated connectivity based on current game state.
+        GraphBuilder returns a dict with adjacency information for pathfinding.
         """
         # Get level data from environment
         level_data = self._get_level_data_from_env()
@@ -176,25 +167,39 @@ class GraphMixin:
             if ninja_pos_tuple:
                 ninja_pos = (int(ninja_pos_tuple[0]), int(ninja_pos_tuple[1]))
 
-        # Use FastGraphBuilder - proper abstraction
+        # Use GraphBuilder - proper abstraction
         start_time = time.time()
-        self.current_fast_graph_data = self.graph_builder.build_graph(
+        self.current_graph_data = self.graph_builder.build_graph(
             level_data, ninja_pos=ninja_pos
         )
         build_time = (time.time() - start_time) * 1000
 
-        # FastGraphBuilder returns dict with 'adjacency', 'reachable', etc.
+        # GraphBuilder returns dict with 'adjacency', 'reachable', etc.
         # For ML models that need GraphData, we leave current_graph as None for now
         # (conversion to GraphData can be done separately if needed)
         self.current_graph = None
+
+        # Build level cache for path distances if path calculator is available
+        if hasattr(self, "path_calculator") and self.path_calculator is not None:
+            adjacency = (
+                self.current_graph_data.get("adjacency", {})
+                if self.current_graph_data
+                else {}
+            )
+            if adjacency:
+                cache_start_time = time.time()
+                self.path_calculator.build_level_cache(level_data, adjacency)
+                cache_time = (time.time() - cache_start_time) * 1000
+                if self.debug:
+                    self.logger.debug(f"Level cache built in {cache_time:.2f}ms")
 
         # Update switch state tracking
         self.last_switch_states = self._get_switch_states_from_env()
 
         # Update simple statistics
         adjacency = (
-            self.current_fast_graph_data.get("adjacency", {})
-            if self.current_fast_graph_data
+            self.current_graph_data.get("adjacency", {})
+            if self.current_graph_data
             else {}
         )
         total_nodes = len(adjacency)
@@ -213,8 +218,8 @@ class GraphMixin:
                 f"Fast graph rebuilt: {total_nodes} nodes, "
                 f"{total_edges} edges in {build_time:.2f}ms"
             )
-            if self.current_fast_graph_data:
-                reachable = self.current_fast_graph_data.get("reachable", set())
+            if self.current_graph_data:
+                reachable = self.current_graph_data.get("reachable", set())
                 if reachable:
                     self.logger.debug(f"  Reachable positions: {len(reachable)}")
 
@@ -289,14 +294,14 @@ class GraphMixin:
 
         return graph_obs
 
-    def get_fast_graph_data(self):
+    def get_graph_data(self):
         """Get the fast graph data (adjacency dict) for pathfinding/reachability."""
-        return self.current_fast_graph_data
+        return self.current_graph_data
 
     def get_hierarchical_graph_data(self):
-        """Get the full hierarchical graph data for advanced processing (deprecated, use get_fast_graph_data)."""
+        """Get the full hierarchical graph data for advanced processing (deprecated, use get_graph_data)."""
         # Deprecated: kept for backward compatibility
-        return self.current_fast_graph_data
+        return self.current_graph_data
 
     def _update_graph_performance_stats(self, update_time_ms: float):
         """Update simple performance statistics."""
@@ -319,7 +324,8 @@ class GraphMixin:
 
     def force_graph_update(self):
         """Force a graph update (for testing/debugging)."""
-        if self.enable_graph_updates:
+        # Graph building happens if either flag is True
+        if self.enable_graph_for_pbrs or self.enable_graph_for_observations:
             self._update_graph_from_env_state()
 
     # Graph debug visualization methods
@@ -363,14 +369,14 @@ class GraphMixin:
 
         # Initialize graph builder if needed
         if self._graph_builder is None:
-            self._graph_builder = FastGraphBuilder()
+            self._graph_builder = GraphBuilder()
 
         # Use level data extraction method
         level_data = self._get_level_data_from_env()
         if level_data is None:
             return None
 
-        # Build graph using FastGraphBuilder
+        # Build graph using GraphBuilder
         graph_data = self._graph_builder.build_graph(
             level_data, ninja_pos=ninja_pos_int
         )
@@ -416,5 +422,8 @@ class GraphMixin:
 
     def _reinit_graph_system_after_unpickling(self, debug: bool = False):
         """Reinitialize graph system components after unpickling."""
-        if self.enable_graph_updates and not hasattr(self, "graph_builder"):
-            self.graph_builder = FastGraphBuilder()
+        # Graph building happens if either flag is True
+        if (
+            self.enable_graph_for_pbrs or self.enable_graph_for_observations
+        ) and not hasattr(self, "graph_builder"):
+            self.graph_builder = GraphBuilder()

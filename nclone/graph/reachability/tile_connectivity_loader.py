@@ -8,6 +8,7 @@ with O(1) query performance (~10-20 nanoseconds per lookup).
 import os
 import pickle
 import gzip
+import io
 from typing import Dict, List
 
 
@@ -64,15 +65,60 @@ class TileConnectivityLoader:
                 f"Please run tile_connectivity_precomputer.py first to generate it."
             )
 
-        # Load compressed data
+        # Load compressed data with numpy version compatibility handling
+        # Read data into memory first so we can retry with compatibility fix if needed
         with gzip.open(data_path, "rb") as f:
-            self._connectivity_table = pickle.load(f)
+            data = f.read()
+
+        try:
+            self._connectivity_table = pickle.loads(data)
+        except ModuleNotFoundError as e:
+            if "numpy._core" in str(e):
+                # Handle numpy 2.x -> 1.x compatibility issue
+                # The pickle file was created with numpy 2.x but we're running numpy 1.x
+                self._connectivity_table = self._load_with_compatibility_fix(data)
+            else:
+                raise
 
         print(
             f"[TileConnectivityLoader] Loaded connectivity table: "
             f"shape {self._connectivity_table.shape}, "
             f"size {self._connectivity_table.nbytes / 1024:.2f} KB"
         )
+
+    def _load_with_compatibility_fix(self, data):
+        """
+        Load pickle data with numpy 2.x -> 1.x compatibility fix.
+
+        This handles the case where pickle files were created with numpy 2.x
+        (which uses numpy._core.*) but are being loaded with numpy 1.x.
+        """
+        import numpy as np
+
+        # Create a custom unpickler that maps numpy 2.x module paths to 1.x equivalents
+        class NumpyCompatibilityUnpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                # Map numpy 2.x _core paths to numpy 1.x equivalents
+                if module.startswith("numpy._core"):
+                    # Map numpy._core.numeric -> numpy.core.numeric
+                    new_module = module.replace("numpy._core", "numpy.core")
+                    try:
+                        return super().find_class(new_module, name)
+                    except (AttributeError, ImportError):
+                        # Fallback: try importing from numpy directly
+                        if name == "numeric":
+                            return np.core.numeric
+                        elif name == "multiarray":
+                            return np.core.multiarray
+                        elif name == "umath":
+                            return np.core.umath
+                        # Try the original path as last resort
+                        return super().find_class(module, name)
+                return super().find_class(module, name)
+
+        # Use custom unpickler with data from memory
+        unpickler = NumpyCompatibilityUnpickler(io.BytesIO(data))
+        return unpickler.load()
 
     def is_traversable(
         self,
@@ -115,7 +161,7 @@ class TileConnectivityLoader:
         dir_idx = self.DIR_TO_IDX[direction]
 
         # NOTE: The precomputed table is 3D (tile-level only): [tile_a, tile_b, dir_idx]
-        # Sub-node parameters are ignored since fast_graph_builder handles sub-node
+        # Sub-node parameters are ignored since graph_builder handles sub-node
         # validity checks directly using _check_subnode_validity_simple()
         return bool(self._connectivity_table[tile_a, tile_b, dir_idx])
 

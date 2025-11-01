@@ -7,18 +7,16 @@ Creates PNG images showing all tile types with sub-node validity and geometry.
 import sys
 import os
 import math
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from nclone.graph.reachability.fast_graph_builder import (
+from nclone.graph.reachability.graph_builder import (
     _check_subnode_validity_simple,
     SUB_NODE_OFFSETS,
     SUB_NODE_COORDS,
     SUBNODE_VALIDITY_TABLE,
-    WITHIN_TILE_CONNECTIVITY,
 )
 from nclone.tile_definitions import TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_CIRCULAR_MAP
 

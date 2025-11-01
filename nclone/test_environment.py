@@ -673,7 +673,11 @@ if args.map:
         enable_logging=False,
         render=render_config,
         pbrs=PBRSConfig(enable_pbrs=False),
-        graph=GraphConfig(enable_graph_updates=False, debug=False),
+        graph=GraphConfig(
+            enable_graph_for_pbrs=False,
+            enable_graph_for_observations=False,
+            debug=False,
+        ),
         reachability=ReachabilityConfig(enable_reachability=False, debug=False),
     )
     env = create_visual_testing_env(config=config)
@@ -697,7 +701,11 @@ else:
         enable_logging=False,
         render=render_config,
         pbrs=PBRSConfig(enable_pbrs=False),
-        graph=GraphConfig(enable_graph_updates=False, debug=False),
+        graph=GraphConfig(
+            enable_graph_for_pbrs=False,
+            enable_graph_for_observations=False,
+            debug=False,
+        ),
         reachability=ReachabilityConfig(enable_reachability=False, debug=False),
     )
     env = create_visual_testing_env(config=config)
@@ -1048,17 +1056,16 @@ if (
     print("Initializing path-aware reward shaping system...")
 
     try:
-        from nclone.graph.reachability.fast_graph_builder import FastGraphBuilder
+        from nclone.graph.reachability.graph_builder import GraphBuilder
         from nclone.graph.reachability.path_distance_calculator import (
             CachedPathDistanceCalculator,
         )
-        from nclone.graph.reachability.entity_mask import EntityMask
         from nclone.graph.reachability.tile_connectivity_loader import (
             TileConnectivityLoader,
         )
 
         # Initialize components
-        graph_builder = FastGraphBuilder()
+        graph_builder = GraphBuilder()
         path_calculator = CachedPathDistanceCalculator()
         connectivity_loader = TileConnectivityLoader()
 
@@ -2004,80 +2011,118 @@ while running:
                                     f"  - Edges: {sum(len(neighbors) for neighbors in graph_data['adjacency'].values())}"
                                 )
 
+                                # Build level cache
+                                cache_start = time_module.perf_counter()
+                                cache_rebuilt = path_aware_system[
+                                    "path_calculator"
+                                ].build_level_cache(
+                                    env.level_data, graph_data["adjacency"], graph_data
+                                )
+                                cache_build_time = (
+                                    time_module.perf_counter() - cache_start
+                                ) * 1000
+
+                                print(
+                                    f"\nLevel cache build time: {cache_build_time:.3f} ms"
+                                )
+                                print(
+                                    f"  - Cache rebuilt: {'Yes' if cache_rebuilt else 'No'}"
+                                )
+                                level_cache_stats = path_aware_system[
+                                    "path_calculator"
+                                ].get_level_cache_statistics()
+                                if level_cache_stats:
+                                    print(
+                                        f"  - Cache size: {level_cache_stats['cache_size']} entries"
+                                    )
+
                                 # Get entities
+                                from nclone.constants.entity_types import EntityType
+
                                 entities = env.level_data.entities
                                 switch_pos = None
                                 exit_pos = None
 
                                 for entity in entities:
-                                    if hasattr(entity, "entity_type"):
-                                        from nclone.constants.entity_types import (
-                                            EntityType,
+                                    entity_type = entity.get("type")
+                                    if entity_type == EntityType.EXIT_SWITCH:
+                                        switch_pos = (
+                                            int(entity.get("x", 0)),
+                                            int(entity.get("y", 0)),
+                                        )
+                                    elif entity_type == EntityType.EXIT_DOOR:
+                                        exit_pos = (
+                                            int(entity.get("x", 0)),
+                                            int(entity.get("y", 0)),
                                         )
 
-                                        if entity.entity_type == EntityType.SWITCH:
-                                            switch_pos = (int(entity.x), int(entity.y))
-                                        elif entity.entity_type == EntityType.EXIT:
-                                            exit_pos = (int(entity.x), int(entity.y))
-
                                 if switch_pos:
-                                    # Benchmark path to switch
+                                    # Benchmark path to switch using cached calculator
                                     start = time_module.perf_counter()
                                     dist = path_aware_system[
                                         "path_calculator"
-                                    ].calculator.calculate_distance(
+                                    ].get_distance(
                                         (int(ninja_pos[0]), int(ninja_pos[1])),
                                         switch_pos,
                                         graph_data["adjacency"],
+                                        level_data=env.level_data,
+                                        graph_data=graph_data,
                                     )
                                     path_time = (
                                         time_module.perf_counter() - start
                                     ) * 1000
 
-                                    print(f"\nPath to switch:")
+                                    print("\nPath to switch:")
                                     print(f"  - Position: {switch_pos}")
                                     print(f"  - Distance: {dist:.1f} px")
                                     print(f"  - Calculation time: {path_time:.3f} ms")
 
                                 if exit_pos:
-                                    # Benchmark path to exit
+                                    # Benchmark path to exit using cached calculator
                                     start = time_module.perf_counter()
                                     dist = path_aware_system[
                                         "path_calculator"
-                                    ].calculator.calculate_distance(
+                                    ].get_distance(
                                         (int(ninja_pos[0]), int(ninja_pos[1])),
                                         exit_pos,
                                         graph_data["adjacency"],
+                                        level_data=env.level_data,
+                                        graph_data=graph_data,
                                     )
                                     path_time = (
                                         time_module.perf_counter() - start
                                     ) * 1000
 
-                                    print(f"\nPath to exit:")
+                                    print("\nPath to exit:")
                                     print(f"  - Position: {exit_pos}")
                                     print(f"  - Distance: {dist:.1f} px")
                                     print(f"  - Calculation time: {path_time:.3f} ms")
 
                                 # Show cache stats
-                                print(f"\nCache statistics:")
-                                print(
-                                    f"  - Hits: {path_aware_system['path_calculator'].hits}"
-                                )
-                                print(
-                                    f"  - Misses: {path_aware_system['path_calculator'].misses}"
-                                )
-                                if path_aware_system["path_calculator"].misses > 0:
-                                    hit_rate = (
-                                        path_aware_system["path_calculator"].hits
-                                        / (
-                                            path_aware_system["path_calculator"].hits
-                                            + path_aware_system[
-                                                "path_calculator"
-                                            ].misses
-                                        )
-                                        * 100
+                                print("\nCache statistics:")
+                                stats = path_aware_system[
+                                    "path_calculator"
+                                ].get_statistics()
+                                print(f"  - Query cache hits: {stats['hits']}")
+                                print(f"  - Query cache misses: {stats['misses']}")
+                                if stats["total_queries"] > 0:
+                                    print(
+                                        f"  - Query cache hit rate: {stats['hit_rate'] * 100:.1f}%"
                                     )
-                                    print(f"  - Hit rate: {hit_rate:.1f}%")
+
+                                # Show level cache stats
+                                if "level_cache" in stats:
+                                    level_stats = stats["level_cache"]
+                                    print("\nLevel cache statistics:")
+                                    print(f"  - Hits: {level_stats['hits']}")
+                                    print(f"  - Misses: {level_stats['misses']}")
+                                    if level_stats["total_queries"] > 0:
+                                        print(
+                                            f"  - Hit rate: {level_stats['hit_rate'] * 100:.1f}%"
+                                        )
+                                    print(
+                                        f"  - Cache size: {level_stats['cache_size']} entries"
+                                    )
 
                                 print("=" * 60 + "\n")
                         except Exception as e:
@@ -2161,7 +2206,7 @@ while running:
             or path_aware_system["cached_level_data"] != level_data
         ):
             # Rebuild graph for new level
-            # Convert LevelData to dict format for fast_graph_builder
+            # Convert LevelData to dict format for graph_builder
             level_data_dict = (
                 level_data.to_dict() if hasattr(level_data, "to_dict") else level_data
             )
@@ -2169,6 +2214,14 @@ while running:
             path_aware_system["current_graph"] = path_aware_system[
                 "graph_builder"
             ].build_graph(level_data_dict)
+            # Build level cache for path distances
+            if (
+                path_aware_system["current_graph"]
+                and "adjacency" in path_aware_system["current_graph"]
+            ):
+                path_aware_system["path_calculator"].build_level_cache(
+                    level_data, path_aware_system["current_graph"]["adjacency"]
+                )
             # Cache the level data for comparison on next frame
             path_aware_system["cached_level_data"] = level_data
 
@@ -2182,6 +2235,7 @@ while running:
         env.set_path_aware_data(
             graph_data=path_aware_system["current_graph"],
             entity_mask=path_aware_system.get("current_entity_mask"),
+            level_data=level_data,
         )
     elif path_aware_system is not None:
         # Turn off all path-aware debug flags when none are enabled

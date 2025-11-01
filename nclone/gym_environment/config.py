@@ -126,9 +126,15 @@ class PBRSConfig:
 
 @dataclass
 class GraphConfig:
-    """Configuration for graph-based features."""
+    """Configuration for graph-based features.
 
-    enable_graph_updates: bool = True
+    Two independent flags control graph functionality:
+    - enable_graph_for_pbrs: Build graph for PBRS path distance calculations (doesn't affect observation space)
+    - enable_graph_for_observations: Add graph observations to observation space (doesn't affect PBRS)
+    """
+
+    enable_graph_for_pbrs: bool = True
+    enable_graph_for_observations: bool = True
     debug: bool = False
 
     def __post_init__(self):
@@ -237,7 +243,9 @@ class EnvironmentConfig:
                 enable_animation=False,
             ),
             pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(enable_graph_updates=False),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=True, enable_graph_for_observations=False
+            ),
             reachability=ReachabilityConfig(enable_reachability=True),
             enable_short_episode_truncation=False,
             **kwargs,
@@ -261,8 +269,10 @@ class EnvironmentConfig:
                 p=0.5,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            pbrs=PBRSConfig(enable_pbrs=False),
-            graph=GraphConfig(enable_graph_updates=False),
+            pbrs=PBRSConfig(enable_pbrs=True),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=True, enable_graph_for_observations=False
+            ),
             reachability=ReachabilityConfig(enable_reachability=True),
             eval_mode=True,
             enable_short_episode_truncation=False,  # Let episodes run to completion
@@ -288,7 +298,11 @@ class EnvironmentConfig:
                 render_mode="human", enable_animation=True, enable_debug_overlay=True
             ),
             pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(enable_graph_updates=True, debug=True),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=True,
+                enable_graph_for_observations=True,
+                debug=True,
+            ),
             reachability=ReachabilityConfig(enable_reachability=True, debug=True),
             enable_logging=True,
             **kwargs,
@@ -304,7 +318,11 @@ class EnvironmentConfig:
                 render_mode="human", enable_animation=True, enable_debug_overlay=False
             ),
             pbrs=PBRSConfig(enable_pbrs=False),
-            graph=GraphConfig(enable_graph_updates=False, debug=False),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=False,
+                enable_graph_for_observations=False,
+                debug=False,
+            ),
             reachability=ReachabilityConfig(enable_reachability=False, debug=False),
             **kwargs,
         )
@@ -327,7 +345,9 @@ class EnvironmentConfig:
             ),
             render=RenderConfig(render_mode="grayscale_array"),
             pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(enable_graph_updates=True),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=True, enable_graph_for_observations=True
+            ),
             reachability=ReachabilityConfig(enable_reachability=True),
             hierarchical=HierarchicalConfig(
                 enable_hierarchical=True,
@@ -354,7 +374,9 @@ class EnvironmentConfig:
             ),
             render=RenderConfig(render_mode="grayscale_array"),
             pbrs=PBRSConfig(enable_pbrs=False),
-            graph=GraphConfig(enable_graph_updates=False),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=False, enable_graph_for_observations=False
+            ),
             reachability=ReachabilityConfig(enable_reachability=False),
             hierarchical=HierarchicalConfig(enable_hierarchical=False),
             **kwargs,
@@ -390,7 +412,8 @@ class EnvironmentConfig:
             "pbrs_weights": self.pbrs.pbrs_weights,
             "pbrs_gamma": self.pbrs.pbrs_gamma,
             # Graph settings
-            "enable_graph_updates": self.graph.enable_graph_updates,
+            "enable_graph_for_pbrs": self.graph.enable_graph_for_pbrs,
+            "enable_graph_for_observations": self.graph.enable_graph_for_observations,
             # Reachability settings
             "enable_reachability": self.reachability.enable_reachability,
             # Hierarchical settings

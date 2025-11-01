@@ -11,11 +11,10 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-import numpy as np
 from nclone.gym_environment.environment_factory import create_visual_testing_env
 from nclone.gym_environment.config import EnvironmentConfig
-from nclone.graph.reachability.fast_graph_builder import FastGraphBuilder
-from typing import Dict, Tuple, Set
+from nclone.graph.reachability.graph_builder import GraphBuilder
+from typing import Dict, Tuple
 
 
 def visualize_tile_edges(map_id: int):
@@ -37,7 +36,7 @@ def visualize_tile_edges(map_id: int):
     tiles = level_data.tiles
     
     # Build graph
-    builder = FastGraphBuilder(debug=False)
+    builder = GraphBuilder(debug=False)
     ninja_pos = env.nplay_headless.ninja_position()
     ninja_pos = (int(ninja_pos[0]), int(ninja_pos[1]))
     graph_data = builder.build_graph(level_data, ninja_pos=ninja_pos)

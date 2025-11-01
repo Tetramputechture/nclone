@@ -10,8 +10,7 @@ import time
 import numpy as np
 import pickle
 import gzip
-from typing import Dict, Tuple, List, Any, Set
-from collections import defaultdict
+from typing import Dict, Tuple
 
 from ...tile_definitions import (
     TILE_GRID_EDGE_MAP,

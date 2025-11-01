@@ -1,7 +1,6 @@
 """Configuration and argument parsing for test environment."""
 
 import argparse
-import sys
 from dataclasses import dataclass
 from typing import Optional, List
 
