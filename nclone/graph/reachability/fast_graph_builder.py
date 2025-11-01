@@ -759,16 +759,12 @@ class FastGraphBuilder:
         """
         adjacency = {}
 
-        # Direction mappings for 8-connectivity
+        # Direction mappings for 4-connectivity (cardinal directions only, no diagonals)
         directions = {
             "N": (0, -12),
-            "NE": (12, -12),
             "E": (12, 0),
-            "SE": (12, 12),
             "S": (0, 12),
-            "SW": (-12, 12),
             "W": (-12, 0),
-            "NW": (-12, -12),
         }
 
         # Build adjacency for all nodes
@@ -806,8 +802,8 @@ class FastGraphBuilder:
                     neighbor_x,
                     neighbor_y,
                 ):
-                    # Calculate cost (Euclidean distance)
-                    cost = (dx**2 + dy**2) ** 0.5
+                    # All edges have equal weight for physics-agnostic pathfinding
+                    cost = 1.0
                     neighbors.append((neighbor_pos, cost))
 
             adjacency[current_pos] = neighbors
@@ -862,6 +858,53 @@ class FastGraphBuilder:
 
         return closest_node
 
+    def _find_nodes_within_radius(
+        self,
+        pos: Tuple[int, int],
+        sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],
+        radius: float = PLAYER_RADIUS,
+    ) -> List[Tuple[int, int]]:
+        """
+        Find all sub-nodes within radius of given position.
+
+        This accounts for the 10px player circle - any node within the player's
+        collision radius should be considered a valid starting position.
+
+        Args:
+            pos: Center position (player position)
+            sub_nodes: Dictionary of all sub-nodes
+            radius: Search radius in pixels (default: PLAYER_RADIUS = 10px)
+
+        Returns:
+            List of node positions within radius, sorted by distance
+        """
+        if not sub_nodes:
+            return []
+
+        px, py = pos
+        radius_sq = radius * radius
+        nodes_within_radius = []
+
+        # Fast grid-based search: only check sub-nodes in nearby tiles
+        # Player radius is 10px, sub-nodes are 12px apart
+        # So we need to check within ceil(10/12) = 1 tile in each direction
+        snap_x = round((px - 6) / 12) * 12 + 6
+        snap_y = round((py - 6) / 12) * 12 + 6
+
+        # Check 5x5 grid around snapped position (covers 60x60px area)
+        for dx in [-24, -12, 0, 12, 24]:
+            for dy in [-24, -12, 0, 12, 24]:
+                candidate = (snap_x + dx, snap_y + dy)
+                if candidate in sub_nodes:
+                    nx, ny = candidate
+                    dist_sq = (nx - px) ** 2 + (ny - py) ** 2
+                    if dist_sq <= radius_sq:
+                        nodes_within_radius.append((candidate, dist_sq))
+
+        # Sort by distance (closest first)
+        nodes_within_radius.sort(key=lambda x: x[1])
+        return [node for node, _ in nodes_within_radius]
+
     def _is_sub_node_traversable(
         self,
         src_tile_type: int,
@@ -880,7 +923,7 @@ class FastGraphBuilder:
         """
         Check if movement from source sub-node to destination sub-node is traversable.
 
-        Uses precomputed 8-connectivity for tile-to-tile movement and verifies
+        Uses precomputed 4-connectivity (cardinal directions only) for tile-to-tile movement and verifies
         both sub-nodes are in dark grey (non-solid) areas.
         """
         # Track debug stats
@@ -1210,17 +1253,29 @@ class FastGraphBuilder:
         if not adjacency:
             return set()
 
-        # Find closest node to start position (ninja_pos may not be exact node position)
-        start_node = self._find_closest_node(
-            start, {pos: None for pos in adjacency.keys()}
+        # Find ALL nodes within player radius (10px) - any node covered by the
+        # player circle should be considered a valid starting position
+        start_nodes = self._find_nodes_within_radius(
+            start, {pos: None for pos in adjacency.keys()}, radius=PLAYER_RADIUS
         )
 
+        # Fallback to closest node if no nodes within radius
+        if not start_nodes:
+            start_node = self._find_closest_node(
+                start, {pos: None for pos in adjacency.keys()}
+            )
         if start_node is None or start_node not in adjacency:
             return set()
 
+        # Filter to only valid nodes in adjacency
+        start_nodes = [node for node in start_nodes if node in adjacency]
+        if not start_nodes:
+            return set()
+
+        # Flood fill from all starting nodes
         reachable = set()
-        queue = deque([start_node])
-        visited = {start_node}
+        queue = deque(start_nodes)
+        visited = set(start_nodes)
 
         while queue:
             current = queue.popleft()

@@ -7,6 +7,7 @@ from .constants.physics_constants import (
     FULL_MAP_WIDTH,
     FULL_MAP_HEIGHT,
 )
+from .constants.entity_types import EntityType
 from .graph.subgoal_visualizer import SubgoalVisualizer
 from .planning import Subgoal, SubgoalPlan
 
@@ -36,10 +37,25 @@ class DebugOverlayRenderer:
         self.current_subgoal_plan = None
         self.current_reachable_positions = None
 
+        # Pathfinding cache: only recompute if ninja moved >= 12px
+        self._cached_ninja_pos = None
+        self._cached_path_data = (
+            None  # Stores: closest_node, switch_path, exit_path, switch_node, exit_node
+        )
+        self._cached_adjacency_signature = (
+            None  # Hash of adjacency keys to detect level changes
+        )
+
     def update_params(self, adjust, tile_x_offset, tile_y_offset):
         self.adjust = adjust
         self.tile_x_offset = tile_x_offset
         self.tile_y_offset = tile_y_offset
+
+    def clear_pathfinding_cache(self):
+        """Clear pathfinding cache. Call this when level changes or ninja position resets."""
+        self._cached_ninja_pos = None
+        self._cached_path_data = None
+        self._cached_adjacency_signature = None
 
     def _get_area_color(
         self,
@@ -328,8 +344,68 @@ class DebugOverlayRenderer:
         EXIT_PATH_COLOR = (255, 180, 50, 220)  # Bright orange path to exit
         TEXT_COLOR = (255, 255, 255, 255)  # White text
 
-        # Get reachable set if available (computed from flood fill)
-        reachable = graph_data.get("reachable", None)
+        # Helper to find ninja node using same logic as blue highlighting
+        def find_ninja_node(ninja_pos, adjacency):
+            """Find the node that represents the ninja's current position.
+            Uses the same logic as the blue node highlighting."""
+            if not ninja_pos or not adjacency:
+                return None
+
+            # Find node using same logic as blue highlighting: abs(x + 24 - ninja_pos[0]) < 5
+            for pos in adjacency.keys():
+                x, y = pos
+                if abs(x + 24 - ninja_pos[0]) < 5 and abs(y + 24 - ninja_pos[1]) < 5:
+                    return pos
+
+            # Fallback: find closest node (accounting for 24px padding)
+            closest_node = None
+            min_dist = float("inf")
+            for pos in adjacency.keys():
+                x, y = pos
+                # Account for 24px padding when calculating distance
+                dist = (
+                    (x + 24 - ninja_pos[0]) ** 2 + (y + 24 - ninja_pos[1]) ** 2
+                ) ** 0.5
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_node = pos
+
+            return closest_node
+
+        # Compute reachable set dynamically from current ninja position
+        def compute_reachability_from_position(start_pos, adjacency):
+            """Compute reachable nodes from a starting position via flood-fill."""
+            from collections import deque
+
+            # Use the same logic as blue node highlighting to find starting node
+            start_node = find_ninja_node(start_pos, adjacency)
+
+            if not start_node:
+                return None
+
+            # Flood-fill from ninja node
+            reachable = set()
+            visited = {start_node}
+            queue = deque([start_node])
+            reachable.add(start_node)
+
+            while queue:
+                current = queue.popleft()
+                neighbors = adjacency.get(current, [])
+                for neighbor_pos, _ in neighbors:
+                    if neighbor_pos not in visited:
+                        visited.add(neighbor_pos)
+                        reachable.add(neighbor_pos)
+                        queue.append(neighbor_pos)
+
+            return reachable
+
+        # Compute reachability from current ninja position
+        reachable = (
+            compute_reachability_from_position(ninja_pos, adjacency)
+            if ninja_pos
+            else None
+        )
 
         # Get blocked positions if available
         blocked_positions = set()
@@ -410,21 +486,11 @@ class DebugOverlayRenderer:
             except pygame.error:
                 font = pygame.font.SysFont("arial", 14)
 
-            # Find closest node to ninja position (only consider reachable nodes)
-            ninja_x, ninja_y = ninja_pos
-            closest_node = None
-            min_dist = float("inf")
-            for pos in adjacency.keys():
-                # Skip unreachable nodes
-                if reachable is not None and pos not in reachable:
-                    continue
-                x, y = pos
-                dist = ((x - ninja_x) ** 2 + (y - ninja_y) ** 2) ** 0.5
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_node = pos
+            # Use the same logic as blue node highlighting to find starting node
+            closest_node = find_ninja_node(ninja_pos, adjacency)
 
-            if closest_node and min_dist < 50:  # Only if ninja is close to a node
+            # Only proceed if we found a valid ninja node and it's reachable
+            if closest_node and (reachable is None or closest_node in reachable):
                 # Use simple BFS to calculate distances
                 from collections import deque
 
@@ -460,11 +526,22 @@ class DebugOverlayRenderer:
         # Find and visualize switches and exits
         switch_positions = []
         exit_positions = []
+        exit_switch_activated = False
+
         for entity in entities:
-            entity_type = entity.get("type", "")
-            if entity_type in ["switch", "exit_switch"]:
-                switch_positions.append((entity.get("x", 0), entity.get("y", 0)))
-            elif entity_type in ["exit", "exit_door"]:
+            entity_type = entity.get("type")
+            if entity_type == EntityType.EXIT_SWITCH:
+                switch_pos = (entity.get("x", 0), entity.get("y", 0))
+                # Check if switch is still active (not collected)
+                # In nclone: active=True means NOT collected, active=False means collected
+                is_active = entity.get("active", True)
+                if is_active:
+                    # Switch not yet collected - add as goal
+                    switch_positions.append(switch_pos)
+                else:
+                    # Switch has been collected
+                    exit_switch_activated = True
+            elif entity_type == EntityType.EXIT_DOOR:
                 exit_positions.append((entity.get("x", 0), entity.get("y", 0)))
 
         # Draw switch and exit markers on graph
@@ -521,103 +598,195 @@ class DebugOverlayRenderer:
             return None, float("inf")
 
         # Draw paths to goals if enabled
-        if show_paths and ninja_pos and adjacency:
+        if show_paths and ninja_pos and adjacency and reachable:
             from collections import deque
 
-            # Find closest node to ninja
-            ninja_x, ninja_y = ninja_pos
-            closest_node = None
-            min_dist = float("inf")
-            for pos in adjacency.keys():
-                x, y = pos
-                dist = ((x - ninja_x) ** 2 + (y - ninja_y) ** 2) ** 0.5
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_node = pos
+            # Check if we need to recompute paths
+            should_recompute = False
 
-            if closest_node and min_dist < 50:
-                # Draw path to nearest switch
-                for switch_pos in switch_positions:
-                    switch_x, switch_y = switch_pos
-                    switch_node = None
-                    min_switch_dist = float("inf")
-                    for pos in adjacency.keys():
-                        x, y = pos
-                        dist = ((x - switch_x) ** 2 + (y - switch_y) ** 2) ** 0.5
-                        if dist < min_switch_dist:
-                            min_switch_dist = dist
-                            switch_node = pos
+            # Always recompute if cache is empty (first frame or cache cleared)
+            if self._cached_ninja_pos is None or self._cached_path_data is None:
+                should_recompute = True
+            else:
+                # Check if adjacency graph changed (new level loaded)
+                # Use hash of adjacency keys as signature to detect level changes
+                adjacency_signature = hash(tuple(sorted(adjacency.keys())))
+                if adjacency_signature != self._cached_adjacency_signature:
+                    should_recompute = True
+                else:
+                    # Calculate distance moved from cached position
+                    dx = ninja_pos[0] - self._cached_ninja_pos[0]
+                    dy = ninja_pos[1] - self._cached_ninja_pos[1]
+                    dist_moved = (dx**2 + dy**2) ** 0.5
+                    if dist_moved >= 12.0:
+                        should_recompute = True
 
-                    if switch_node and min_switch_dist < 50:
-                        path, _ = find_shortest_path(
-                            closest_node, switch_node, adjacency
-                        )
-                        if path:
-                            # Draw path as thick line connecting nodes
-                            for i in range(len(path) - 1):
-                                x1, y1 = path[i]
-                                x2, y2 = path[i + 1]
-                                screen_x1 = int(x1 * self.adjust + self.tile_x_offset)
-                                screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
-                                screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
-                                screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
-                                pygame.draw.line(
-                                    surface,
-                                    SWITCH_PATH_COLOR,
-                                    (screen_x1, screen_y1),
-                                    (screen_x2, screen_y2),
-                                    3,
+                    # Also check if entities changed (switches/exits affect paths)
+                    entity_signature = (
+                        tuple(switch_positions),
+                        tuple(exit_positions),
+                        exit_switch_activated,
+                    )
+                    cached_entity_signature = (
+                        self._cached_path_data.get("entity_signature")
+                        if self._cached_path_data
+                        else None
+                    )
+                    if entity_signature != cached_entity_signature:
+                        should_recompute = True
+
+            if should_recompute:
+                # Use the same logic as blue node highlighting to find starting node
+                closest_node = find_ninja_node(ninja_pos, adjacency)
+
+                # Create entity signature for cache
+                entity_signature = (
+                    tuple(switch_positions),
+                    tuple(exit_positions),
+                    exit_switch_activated,
+                )
+
+                # Cache the results
+                self._cached_ninja_pos = ninja_pos
+                adjacency_signature = hash(tuple(sorted(adjacency.keys())))
+                self._cached_adjacency_signature = adjacency_signature
+                self._cached_path_data = {
+                    "closest_node": closest_node,
+                    "entity_signature": entity_signature,
+                    "switch_path": None,
+                    "exit_path": None,
+                    "switch_node": None,
+                    "exit_node": None,
+                }
+
+                # Only proceed if we found a valid ninja node and it's reachable
+                if closest_node and closest_node in reachable:
+                    # Draw path to nearest switch (if not yet activated)
+                    if switch_positions:  # Only if there are uncollected switches
+                        for switch_pos in switch_positions:
+                            switch_x, switch_y = switch_pos
+                            switch_node = None
+                            min_switch_dist = float("inf")
+                            # Only consider REACHABLE nodes near the switch
+                            for pos in reachable:
+                                if pos not in adjacency:
+                                    continue
+                                x, y = pos
+                                # Convert node coords to world coords (+24) for comparison with entity position
+                                dist = (
+                                    (x + 24 - switch_x) ** 2 + (y + 24 - switch_y) ** 2
+                                ) ** 0.5
+                                if dist < min_switch_dist:
+                                    min_switch_dist = dist
+                                    switch_node = pos
+
+                            if switch_node and min_switch_dist < 50:
+                                path, _ = find_shortest_path(
+                                    closest_node, switch_node, adjacency
                                 )
-                            break  # Only draw path to nearest switch
+                                if path:
+                                    self._cached_path_data["switch_path"] = path
+                                    self._cached_path_data["switch_node"] = switch_node
+                                break  # Only draw path to nearest switch
 
-                # Draw path to nearest exit
-                for exit_pos in exit_positions:
-                    exit_x, exit_y = exit_pos
-                    exit_node = None
-                    min_exit_dist = float("inf")
-                    for pos in adjacency.keys():
-                        x, y = pos
-                        dist = ((x - exit_x) ** 2 + (y - exit_y) ** 2) ** 0.5
-                        if dist < min_exit_dist:
-                            min_exit_dist = dist
-                            exit_node = pos
+                    # Draw path to nearest exit ONLY if switch has been activated
+                    if exit_switch_activated and exit_positions:
+                        for exit_pos in exit_positions:
+                            exit_x, exit_y = exit_pos
+                            exit_node = None
+                            min_exit_dist = float("inf")
+                            # Only consider REACHABLE nodes near the exit
+                            for pos in reachable:
+                                if pos not in adjacency:
+                                    continue
+                                x, y = pos
+                                # Convert node coords to world coords (+24) for comparison with entity position
+                                dist = (
+                                    (x + 24 - exit_x) ** 2 + (y + 24 - exit_y) ** 2
+                                ) ** 0.5
+                                if dist < min_exit_dist:
+                                    min_exit_dist = dist
+                                    exit_node = pos
 
-                    if exit_node and min_exit_dist < 50:
-                        path, _ = find_shortest_path(closest_node, exit_node, adjacency)
-                        if path:
-                            # Draw path as thick line connecting nodes
-                            for i in range(len(path) - 1):
-                                x1, y1 = path[i]
-                                x2, y2 = path[i + 1]
-                                screen_x1 = int(x1 * self.adjust + self.tile_x_offset)
-                                screen_y1 = int(y1 * self.adjust + self.tile_y_offset)
-                                screen_x2 = int(x2 * self.adjust + self.tile_x_offset)
-                                screen_y2 = int(y2 * self.adjust + self.tile_y_offset)
-                                pygame.draw.line(
-                                    surface,
-                                    EXIT_PATH_COLOR,
-                                    (screen_x1, screen_y1),
-                                    (screen_x2, screen_y2),
-                                    3,
+                            if exit_node and min_exit_dist < 50:
+                                path, _ = find_shortest_path(
+                                    closest_node, exit_node, adjacency
                                 )
-                            break  # Only draw path to nearest exit
+                                if path:
+                                    self._cached_path_data["exit_path"] = path
+                                    self._cached_path_data["exit_node"] = exit_node
+                                break  # Only draw path to nearest exit
+            else:
+                # Use cached path data
+                closest_node = self._cached_path_data.get("closest_node")
+
+            # Draw paths (from cache or newly computed)
+            if closest_node and self._cached_path_data:
+                # Draw switch path
+                switch_path = self._cached_path_data.get("switch_path")
+                if switch_path:
+                    for i in range(len(switch_path) - 1):
+                        node1 = switch_path[i]
+                        node2 = switch_path[i + 1]
+
+                        # Verify nodes are adjacent in the graph
+                        neighbors = adjacency.get(node1, [])
+                        is_adjacent = any(n[0] == node2 for n in neighbors)
+
+                        if is_adjacent:
+                            x1, y1 = node1
+                            x2, y2 = node2
+                            # Add +24 offset to match node visualization (accounts for tile padding)
+                            screen_x1 = int(x1 * self.adjust + self.tile_x_offset) + 24
+                            screen_y1 = int(y1 * self.adjust + self.tile_y_offset) + 24
+                            screen_x2 = int(x2 * self.adjust + self.tile_x_offset) + 24
+                            screen_y2 = int(y2 * self.adjust + self.tile_y_offset) + 24
+                            pygame.draw.line(
+                                surface,
+                                SWITCH_PATH_COLOR,
+                                (screen_x1, screen_y1),
+                                (screen_x2, screen_y2),
+                                3,
+                            )
+
+                # Draw exit path
+                exit_path = self._cached_path_data.get("exit_path")
+                if exit_path:
+                    for i in range(len(exit_path) - 1):
+                        node1 = exit_path[i]
+                        node2 = exit_path[i + 1]
+
+                        # Verify nodes are adjacent in the graph
+                        neighbors = adjacency.get(node1, [])
+                        is_adjacent = any(n[0] == node2 for n in neighbors)
+
+                        if is_adjacent:
+                            x1, y1 = node1
+                            x2, y2 = node2
+                            # Add +24 offset to match node visualization (accounts for tile padding)
+                            screen_x1 = int(x1 * self.adjust + self.tile_x_offset) + 24
+                            screen_y1 = int(y1 * self.adjust + self.tile_y_offset) + 24
+                            screen_x2 = int(x2 * self.adjust + self.tile_x_offset) + 24
+                            screen_y2 = int(y2 * self.adjust + self.tile_y_offset) + 24
+                            pygame.draw.line(
+                                surface,
+                                EXIT_PATH_COLOR,
+                                (screen_x1, screen_y1),
+                                (screen_x2, screen_y2),
+                                3,
+                            )
 
         # Calculate and display switch/exit distances
         if show_distances and ninja_pos and adjacency:
             from collections import deque
 
-            # Find closest node to ninja
+            # Extract ninja position for screen coordinates
             ninja_x, ninja_y = ninja_pos
-            closest_node = None
-            min_dist = float("inf")
-            for pos in adjacency.keys():
-                x, y = pos
-                dist = ((x - ninja_x) ** 2 + (y - ninja_y) ** 2) ** 0.5
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_node = pos
 
-            if closest_node and min_dist < 50:
+            # Use the same logic as blue node highlighting to find starting node
+            closest_node = find_ninja_node(ninja_pos, adjacency)
+
+            if closest_node:
                 # Calculate distance to nearest switch
                 switch_dist = float("inf")
                 for switch_pos in switch_positions:
@@ -627,7 +796,10 @@ class DebugOverlayRenderer:
                     min_switch_dist = float("inf")
                     for pos in adjacency.keys():
                         x, y = pos
-                        dist = ((x - switch_x) ** 2 + (y - switch_y) ** 2) ** 0.5
+                        # Convert node coords to world coords (+24) for comparison with entity position
+                        dist = (
+                            (x + 24 - switch_x) ** 2 + (y + 24 - switch_y) ** 2
+                        ) ** 0.5
                         if dist < min_switch_dist:
                             min_switch_dist = dist
                             switch_node = pos
@@ -660,7 +832,8 @@ class DebugOverlayRenderer:
                     min_exit_dist = float("inf")
                     for pos in adjacency.keys():
                         x, y = pos
-                        dist = ((x - exit_x) ** 2 + (y - exit_y) ** 2) ** 0.5
+                        # Convert node coords to world coords (+24) for comparison with entity position
+                        dist = ((x + 24 - exit_x) ** 2 + (y + 24 - exit_y) ** 2) ** 0.5
                         if dist < min_exit_dist:
                             min_exit_dist = dist
                             exit_node = pos
@@ -855,6 +1028,8 @@ class DebugOverlayRenderer:
                 ):  # Don't count tile types dict for text height, it's visual
                     continue
                 if key == "path_aware":
+                    continue
+                if key == "graph_data":
                     continue
                 height += line_height
                 if isinstance(value, dict):

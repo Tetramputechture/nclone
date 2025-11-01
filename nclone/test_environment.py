@@ -1069,7 +1069,7 @@ if (
             "connectivity_loader": connectivity_loader,
             "current_graph": None,
             "current_entity_mask": None,
-            "level_id": None,
+            "cached_level_data": None,
         }
 
         # Set initial debug states
@@ -2149,23 +2149,28 @@ while running:
         path_distances_debug_enabled
         or adjacency_graph_debug_enabled
         or blocked_entities_debug_enabled
+        or show_paths_to_goals
     ):
-        # Build/update graph if any path visualization is enabled
+        # Get current level data
+        level_data = env.level_data
+
+        # Build/update graph if level has changed (uses LevelData.__eq__ comparison)
         if (
             path_aware_system["current_graph"] is None
-            or path_aware_system.get("level_id") != env.current_map_name
+            or path_aware_system.get("cached_level_data") is None
+            or path_aware_system["cached_level_data"] != level_data
         ):
             # Rebuild graph for new level
             # Convert LevelData to dict format for fast_graph_builder
             level_data_dict = (
-                env.level_data.to_dict()
-                if hasattr(env.level_data, "to_dict")
-                else env.level_data
+                level_data.to_dict() if hasattr(level_data, "to_dict") else level_data
             )
+            # Build static adjacency graph (reachability computed dynamically during visualization)
             path_aware_system["current_graph"] = path_aware_system[
                 "graph_builder"
             ].build_graph(level_data_dict)
-            path_aware_system["level_id"] = env.current_map_name
+            # Cache the level data for comparison on next frame
+            path_aware_system["cached_level_data"] = level_data
 
         # Set debug flags on environment
         env.set_path_distances_debug_enabled(path_distances_debug_enabled)
