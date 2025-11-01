@@ -153,7 +153,6 @@ def make_vectorizable_env(
 def create_vectorized_training_envs(
     num_envs: int = 4,
     env_kwargs: Optional[Dict[str, Any]] = None,
-    enable_graph_for_pbrs: bool = True,
     enable_graph_for_observations: bool = True,
     enable_reachability: bool = True,
     debug: bool = False,
@@ -164,7 +163,6 @@ def create_vectorized_training_envs(
     Args:
         num_envs: Number of environments to create
         env_kwargs: Environment configuration parameters
-        enable_graph_for_pbrs: Whether to enable graph building for PBRS path distance calculations
         enable_graph_for_observations: Whether to enable graph observations in observation space
         enable_reachability: Whether to enable reachability analysis
         debug: Enable debug logging for graph operations
@@ -177,7 +175,6 @@ def create_vectorized_training_envs(
     for i in range(num_envs):
         # Create config with specified graph settings
         config = EnvironmentConfig.for_training()
-        config.graph.enable_graph_for_pbrs = enable_graph_for_pbrs
         config.graph.enable_graph_for_observations = enable_graph_for_observations
         config.graph.debug = debug
         config.reachability.enable_reachability = enable_reachability
@@ -192,7 +189,6 @@ def create_vectorized_training_envs(
         def make_env_factory(seed_value):
             def make_env():
                 cfg = EnvironmentConfig.for_training()
-                cfg.graph.enable_graph_for_pbrs = enable_graph_for_pbrs
                 cfg.graph.enable_graph_for_observations = enable_graph_for_observations
                 cfg.graph.debug = debug
                 cfg.reachability.enable_reachability = enable_reachability

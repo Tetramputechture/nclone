@@ -62,8 +62,6 @@ class NppEnvironment(
             enable_short_episode_truncation=self.config.enable_short_episode_truncation,
             seed=self.config.seed,
             eval_mode=self.config.eval_mode,
-            enable_pbrs=self.config.pbrs.enable_pbrs,
-            pbrs_weights=self.config.pbrs.pbrs_weights,
             pbrs_gamma=self.config.pbrs.pbrs_gamma,
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
@@ -75,16 +73,8 @@ class NppEnvironment(
             },
         )
 
-        # STRICT: Validate that PBRS requires graph for PBRS
-        if self.config.pbrs.enable_pbrs and not self.config.graph.enable_graph_for_pbrs:
-            raise ValueError(
-                "PBRS requires graph for PBRS to be enabled. "
-                "Set config.graph.enable_graph_for_pbrs=True when using PBRS."
-            )
-
         # Initialize mixin systems using config
         self._init_graph_system(
-            enable_graph_for_pbrs=self.config.graph.enable_graph_for_pbrs,
             enable_graph_for_observations=self.config.graph.enable_graph_for_observations,
             debug=self.config.graph.debug,
         )
@@ -97,7 +87,6 @@ class NppEnvironment(
         # Update configuration flags with new options
         self.config_flags.update(
             {
-                "enable_graph_for_pbrs": self.config.graph.enable_graph_for_pbrs,
                 "enable_graph_for_observations": self.config.graph.enable_graph_for_observations,
                 "enable_reachability": self.config.reachability.enable_reachability,
                 "enable_hierarchical": self.config.hierarchical.enable_hierarchical,
@@ -114,12 +103,7 @@ class NppEnvironment(
             self.config.hierarchical.enable_hierarchical,
         )
 
-        # Initialize graph state if graph building is needed (either flag True)
-        if (
-            self.config.graph.enable_graph_for_pbrs
-            or self.config.graph.enable_graph_for_observations
-        ):
-            self._update_graph_from_env_state()
+        self._update_graph_from_env_state()
 
     def _build_extended_observation_space(
         self,
@@ -199,9 +183,7 @@ class NppEnvironment(
     def _post_action_hook(self):
         """Update graph after action execution if needed."""
         # Graph building happens if either flag is True
-        if (
-            self.enable_graph_for_pbrs or self.enable_graph_for_observations
-        ) and self._should_update_graph():
+        if self._should_update_graph():
             start_time = time.time()
             self._update_graph_from_env_state()
             update_time = (time.time() - start_time) * 1000  # Convert to ms
@@ -275,9 +257,8 @@ class NppEnvironment(
         if self.enable_hierarchical:
             self._reset_hierarchical_state()
 
-        # Build initial graph if graph building is needed (either flag True)
-        if self.enable_graph_for_pbrs or self.enable_graph_for_observations:
-            self._update_graph_from_env_state()
+        # Build initial graph
+        self._update_graph_from_env_state()
 
         return result
 
@@ -318,17 +299,12 @@ class NppEnvironment(
         obs["level_data"] = self._extract_level_data()
 
         # Add adjacency graph and full graph data for PBRS path-aware reward shaping
-        # STRICT: Required when PBRS is enabled
-        if self.config.pbrs.enable_pbrs and self.config.graph.enable_graph_for_pbrs:
-            adjacency = self._get_adjacency_for_rewards()
-            if adjacency is None:
-                raise RuntimeError(
-                    "PBRS enabled but adjacency graph not available. "
-                    "Ensure graph for PBRS is enabled and graph has been built."
-                )
-            obs["_adjacency_graph"] = adjacency
-            # Include full graph_data for spatial indexing (contains spatial_hash)
-            obs["_graph_data"] = self.current_graph_data
+        adjacency = self._get_adjacency_for_rewards()
+        if adjacency is None:
+            raise RuntimeError("Adjacency graph not available. Graph building failed.")
+        obs["_adjacency_graph"] = adjacency
+        # Include full graph_data for spatial indexing (contains spatial_hash)
+        obs["_graph_data"] = self.current_graph_data
 
         return obs
 
@@ -341,9 +317,7 @@ class NppEnvironment(
         Returns:
             Adjacency dictionary, or None if not available
         """
-        if hasattr(self, "current_graph_data") and self.current_graph_data:
-            return self.current_graph_data.get("adjacency")
-        return None
+        return self.current_graph_data["adjacency"]
 
     def _build_switch_states_array(self, obs: Dict[str, Any]) -> np.ndarray:
         """

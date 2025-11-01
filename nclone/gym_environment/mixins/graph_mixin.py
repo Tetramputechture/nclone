@@ -49,18 +49,15 @@ class GraphMixin:
 
     def _init_graph_system(
         self,
-        enable_graph_for_pbrs: bool = True,
         enable_graph_for_observations: bool = True,
         debug: bool = False,
     ):
         """Initialize the graph system components.
 
         Args:
-            enable_graph_for_pbrs: Build graph for PBRS path distance calculations (doesn't affect observation space)
-            enable_graph_for_observations: Add graph observations to observation space (doesn't affect PBRS)
+            enable_graph_for_observations: Add graph observations to observation space
             debug: Enable debug logging
         """
-        self.enable_graph_for_pbrs = enable_graph_for_pbrs
         self.enable_graph_for_observations = enable_graph_for_observations
         self.debug = debug
 
@@ -90,15 +87,13 @@ class GraphMixin:
 
     def _reset_graph_state(self):
         """Reset graph state during environment reset."""
-        # Graph building happens if either flag is True
-        if self.enable_graph_for_pbrs or self.enable_graph_for_observations:
-            self.current_graph = None
-            self.current_graph_data = None
-            self.last_switch_states.clear()
-            self.last_update_time = time.time()
-            # Clear GraphBuilder cache on reset
-            if hasattr(self.graph_builder, "clear_cache"):
-                self.graph_builder.clear_cache()
+        self.current_graph = None
+        self.current_graph_data = None
+        self.last_switch_states.clear()
+        self.last_update_time = time.time()
+        # Clear GraphBuilder cache on reset
+        if hasattr(self.graph_builder, "clear_cache"):
+            self.graph_builder.clear_cache()
 
     def _should_update_graph(self) -> bool:
         """
@@ -324,9 +319,7 @@ class GraphMixin:
 
     def force_graph_update(self):
         """Force a graph update (for testing/debugging)."""
-        # Graph building happens if either flag is True
-        if self.enable_graph_for_pbrs or self.enable_graph_for_observations:
-            self._update_graph_from_env_state()
+        self._update_graph_from_env_state()
 
     # Graph debug visualization methods
     def set_graph_debug_enabled(self, enabled: bool):

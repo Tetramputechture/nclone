@@ -5,6 +5,8 @@ These are among the simplest level types in the game.
 """
 
 from typing import Optional
+import numpy as np
+
 from .map import Map
 from .constants import VALID_TILE_TYPES, GRID_SIZE_FACTOR
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
@@ -211,12 +213,47 @@ class MapHorizontalCorridor(Map):
                 exit_switch_y,
             )
 
+        # Situations where height is 1 and random edge tiles are almost impossible to achieve at first.
+        if not (self.RANDOM_EDGE_TILES and height == 1) and (
+            not self.RANDOM_EDGE_TILES and height != 2
+        ):
+            # Add mines evenly spaced along the ceiling of the corridor to discourage random jumping.
+            min_mines = min(1, width - 1)
+            max_mines = max(1, width - 1)
+            num_mines = self.rng.randint(min_mines, max_mines)
+
+            mine_y = start_y + 1
+
+            if width >= 4:
+                x_start = start_x + 0.5
+                x_end = start_x + width + 0.5
+                if ninja_on_left:
+                    mine_x_positions = np.linspace(x_start, x_end, num=num_mines)
+                else:
+                    mine_x_positions = np.linspace(x_end, x_start, num=num_mines)
+            else:
+                # fallback: just pack them left to right (or right to left) for very narrow corridors
+                if ninja_on_left:
+                    mine_x_positions = [start_x + i + 2 for i in range(num_mines)]
+                else:
+                    mine_x_positions = [
+                        start_x + width - 2 - i for i in range(num_mines)
+                    ]
+
+            # make sure no mine x is within 12px of ninja_x
+            mine_x_positions = [
+                x for x in mine_x_positions if abs(x - ninja_x - 1) >= 1
+            ]
+
+            for mine_x in mine_x_positions:
+                self.add_entity(1, float(mine_x), mine_y)
+
         # Add random entities outside the playspace
         self.add_random_entities_outside_playspace(
             start_x - 2,
             start_y - 2,
-            start_x + width + 1,
-            start_y + height + 1,
+            start_x + width + 2,
+            start_y + height + 2,
         )
 
         return self

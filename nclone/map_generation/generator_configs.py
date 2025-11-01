@@ -179,7 +179,6 @@ GENERATOR_PRESETS = {
             min_height=4,
             max_height=7,
             max_cell_size=1,
-            use_random_wall_tiles=False,
         ),
         "small": MazeConfig(
             min_width=14,

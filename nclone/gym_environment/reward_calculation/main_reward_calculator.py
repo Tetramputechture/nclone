@@ -1,7 +1,6 @@
 """Main reward calculator that orchestrates all reward components."""
 
 from typing import Dict, Any, Optional
-from .navigation_reward_calculator import NavigationRewardCalculator
 from .exploration_reward_calculator import ExplorationRewardCalculator
 from .pbrs_potentials import PBRSCalculator
 from .reward_constants import (
@@ -17,34 +16,33 @@ from .reward_constants import (
     COMPLETION_TIME_BONUS_MAX,
     COMPLETION_TIME_TARGET,
     PBRS_GAMMA,
-    PBRS_OBJECTIVE_WEIGHT,
-    PBRS_HAZARD_WEIGHT,
-    PBRS_IMPACT_WEIGHT,
-    PBRS_EXPLORATION_WEIGHT,
     NOOP_ACTION_PENALTY,
 )
+from ...graph.reachability.path_distance_calculator import (
+    CachedPathDistanceCalculator,
+)
+
+from ..constants import LEVEL_DIAGONAL as PBRS_DISTANCE_SCALE
 
 
 class RewardCalculator:
     """Main reward calculator for completion-focused training.
 
-    Orchestrates multiple reward components:
-    - Terminal rewards (completion, death)
-    - Milestone rewards (switch activation)
-    - Time-based penalties (efficiency)
-    - Navigation shaping (PBRS-based distance rewards)
+        Orchestrates multiple reward components:
+        - Terminal rewards (completion, death)
+        - Milestone rewards (switch activation)
+        - Time-based penalties (efficiency)
+        - Navigation shaping (PBRS-based distance rewards)
     - Exploration rewards (multi-scale spatial coverage)
-    - PBRS potentials (policy-invariant shaping)
+        - PBRS potentials (policy-invariant shaping)
 
-    All constants are defined in reward_constants.py to eliminate magic numbers
-    and provide clear documentation of reward design decisions.
+        All constants are defined in reward_constants.py to eliminate magic numbers
+        and provide clear documentation of reward design decisions.
     """
 
     def __init__(
         self,
         reward_config: Optional[Dict[str, Any]] = None,
-        enable_pbrs: bool = True,
-        pbrs_weights: Optional[Dict[str, float]] = None,
         pbrs_gamma: float = PBRS_GAMMA,
         time_penalty_mode: str = "fixed",
         time_penalty_early: float = TIME_PENALTY_EARLY,
@@ -59,8 +57,6 @@ class RewardCalculator:
 
         Args:
             reward_config: Complete reward configuration dict (overrides individual params if provided)
-            enable_pbrs: Whether to enable potential-based reward shaping
-            pbrs_weights: Weights for PBRS components (objective, hazard, impact, exploration)
             pbrs_gamma: Discount factor for PBRS (γ in r_shaped = r_env + γ * Φ(s') - Φ(s))
             time_penalty_mode: "fixed" or "progressive" time penalty
             time_penalty_early: Early phase penalty (for progressive mode)
@@ -73,8 +69,6 @@ class RewardCalculator:
         """
         # If reward_config provided, extract parameters from it
         if reward_config is not None:
-            enable_pbrs = reward_config.get("enable_pbrs", enable_pbrs)
-            pbrs_weights = reward_config.get("pbrs_weights", pbrs_weights)
             pbrs_gamma = reward_config.get("pbrs_gamma", pbrs_gamma)
             time_penalty_mode = reward_config.get(
                 "time_penalty_mode", time_penalty_mode
@@ -101,9 +95,13 @@ class RewardCalculator:
                 "max_episode_steps", max_episode_steps
             )
 
-        self.navigation_calculator = NavigationRewardCalculator()
         self.exploration_calculator = ExplorationRewardCalculator()
         self.steps_taken = 0
+
+        # Track closest distances for diagnostic metrics
+        # PBRS handles all reward shaping, but we track progress for diagnostics
+        self.closest_distance_to_switch = float("inf")
+        self.closest_distance_to_exit = float("inf")
 
         # Time penalty configuration
         self.time_penalty_mode = time_penalty_mode
@@ -118,42 +116,14 @@ class RewardCalculator:
         self.completion_bonus_target = completion_bonus_target
 
         # PBRS configuration
-        self.enable_pbrs = enable_pbrs
         self.pbrs_gamma = pbrs_gamma if pbrs_gamma is not None else PBRS_GAMMA
         self.prev_potential = None
 
-        # Initialize PBRS calculator with weights
-        # Use centralized defaults if no custom weights provided
-        if pbrs_weights is None:
-            pbrs_weights = {
-                "objective_weight": PBRS_OBJECTIVE_WEIGHT,
-                "hazard_weight": PBRS_HAZARD_WEIGHT,
-                "impact_weight": PBRS_IMPACT_WEIGHT,
-                "exploration_weight": PBRS_EXPLORATION_WEIGHT,
-            }
-
-        # Initialize path calculator for PBRS if enabled
-        path_calculator = None
-        if enable_pbrs:
-            try:
-                from ...graph.reachability.path_distance_calculator import (
-                    CachedPathDistanceCalculator,
-                )
-
-                path_calculator = CachedPathDistanceCalculator(
-                    max_cache_size=200, use_astar=True
-                )
-            except ImportError as e:
-                raise RuntimeError(
-                    f"Failed to import CachedPathDistanceCalculator for PBRS: {e}. "
-                    "Ensure graph reachability modules are available."
-                ) from e
-
-        self.pbrs_calculator = (
-            PBRSCalculator(path_calculator=path_calculator, **pbrs_weights)
-            if enable_pbrs
-            else None
+        path_calculator = CachedPathDistanceCalculator(
+            max_cache_size=200, use_astar=True
         )
+
+        self.pbrs_calculator = PBRSCalculator(path_calculator=path_calculator)
 
     def calculate_reward(
         self,
@@ -201,15 +171,32 @@ class RewardCalculator:
                 bonus = self._calculate_completion_bonus(self.steps_taken)
                 reward += bonus
 
-        # Navigation reward (distance-based shaping)
-        navigation_reward, switch_active_changed = (
-            self.navigation_calculator.calculate_navigation_reward(obs, prev_obs)
-        )
-        reward += navigation_reward
+        # Track closest distances for diagnostic metrics
+        from ..util.util import calculate_distance
 
-        # Reset exploration when switch is activated to encourage re-exploration
+        distance_to_switch = calculate_distance(
+            obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
+        )
+        distance_to_exit = calculate_distance(
+            obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
+        )
+
+        if distance_to_switch < self.closest_distance_to_switch:
+            self.closest_distance_to_switch = distance_to_switch
+
+        # Detect switch activation and reset exploration when switch is activated
+        switch_active_changed = obs.get("switch_activated", False) and not prev_obs.get(
+            "switch_activated", False
+        )
+
         if switch_active_changed:
             self.exploration_calculator.reset()
+            # Reset closest distance tracking for exit phase
+            self.closest_distance_to_exit = distance_to_exit
+        elif obs.get("switch_activated", False):
+            # Track closest distance to exit during exit phase
+            if distance_to_exit < self.closest_distance_to_exit:
+                self.closest_distance_to_exit = distance_to_exit
 
         # Exploration reward (focused on switch/exit discovery)
         exploration_reward = self.exploration_calculator.calculate_exploration_reward(
@@ -220,44 +207,56 @@ class RewardCalculator:
         # Add PBRS shaping reward if enabled (focused on switch/exit objectives)
         pbrs_reward = 0.0
         pbrs_components = {}
-        if self.enable_pbrs and self.pbrs_calculator is not None:
-            # Extract adjacency graph, level_data, and graph_data from observation
-            # These are required for path-aware PBRS calculations with spatial indexing
-            adjacency = obs.get("_adjacency_graph")
-            level_data = obs.get("level_data")
-            graph_data = obs.get("_graph_data")  # Contains spatial_hash for O(1) lookup
+        # Extract adjacency graph, level_data, and graph_data from observation
+        # These are required for path-aware PBRS calculations with spatial indexing
+        adjacency = obs.get("_adjacency_graph")
+        level_data = obs.get("level_data")
+        graph_data = obs.get("_graph_data")  # Contains spatial_hash for O(1) lookup
 
-            # STRICT: Validate required data
-            if adjacency is None:
-                raise ValueError(
-                    "PBRS enabled but adjacency graph not found in observation. "
-                    "Ensure graph updates are enabled and adjacency is provided."
-                )
-            if level_data is None:
-                raise ValueError(
-                    "PBRS enabled but level_data not found in observation. "
-                    "Ensure level_data is included in observation dict."
-                )
-
-            current_potential = self.pbrs_calculator.calculate_combined_potential(
-                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+        # STRICT: Validate required data
+        if adjacency is None:
+            raise ValueError(
+                "PBRS enabled but adjacency graph not found in observation. "
+                "Ensure graph updates are enabled and adjacency is provided."
+            )
+        if level_data is None:
+            raise ValueError(
+                "PBRS enabled but level_data not found in observation. "
+                "Ensure level_data is included in observation dict."
             )
 
-            # Get individual potential components for logging
-            pbrs_components = self.pbrs_calculator.get_potential_components(
-                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
-            )
+        current_potential = self.pbrs_calculator.calculate_combined_potential(
+            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+        )
 
-            if self.prev_potential is not None:
-                # r_shaped = r_env + γ * Φ(s') - Φ(s)
-                pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
-                reward += pbrs_reward
+        # Get individual potential components for logging
+        pbrs_components = self.pbrs_calculator.get_potential_components(
+            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+        )
 
-            self.prev_potential = current_potential
+        if self.prev_potential is not None:
+            # PBRS formula: F(s,s') = γ * Φ(s') - Φ(s)
+            # This ensures policy invariance (Ng et al., 1999) while providing
+            # dense reward signal. Positive reward when moving closer (increasing potential),
+            # negative when moving away (decreasing potential).
+            #
+            # When switch activates, potential switches from switch to exit calculation.
+            # This is handled naturally by the formula - the transition reward reflects
+            # the change in potential, which appropriately rewards reaching the switch.
+            pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
+            reward += pbrs_reward
+        else:
+            # First step: initialize potential but don't add reward (no previous state)
+            # This ensures PBRS starts correctly on second step
+            pass
+
+        # Update previous potential for next step
+        # Note: Even if switch just activated, we update to exit potential smoothly
+        # The PBRS formula handles the transition correctly
+        self.prev_potential = current_potential
 
         # Store component rewards for episode info
         self.last_pbrs_components = {
-            "navigation_reward": navigation_reward,
             "exploration_reward": exploration_reward,
             "pbrs_reward": pbrs_reward,
             "noop_penalty": noop_penalty,
@@ -269,9 +268,12 @@ class RewardCalculator:
 
     def reset(self):
         """Reset all components for new episode."""
-        self.navigation_calculator.reset()
         self.exploration_calculator.reset()
         self.steps_taken = 0
+
+        # Reset progress tracking for diagnostics
+        self.closest_distance_to_switch = float("inf")
+        self.closest_distance_to_exit = float("inf")
 
         # Reset PBRS state
         self.prev_potential = None
@@ -289,26 +291,25 @@ class RewardCalculator:
         """
         components = {}
 
-        if self.enable_pbrs and self.pbrs_calculator is not None:
-            adjacency = obs.get("_adjacency_graph")
-            level_data = obs.get("level_data")
-            graph_data = obs.get("_graph_data")
-            components.update(
-                self.pbrs_calculator.get_potential_components(
-                    obs,
-                    adjacency=adjacency,
-                    level_data=level_data,
-                    graph_data=graph_data,
-                )
+        adjacency = obs.get("_adjacency_graph")
+        level_data = obs.get("level_data")
+        graph_data = obs.get("_graph_data")
+        components.update(
+            self.pbrs_calculator.get_potential_components(
+                obs,
+                adjacency=adjacency,
+                level_data=level_data,
+                graph_data=graph_data,
             )
-            components["combined_potential"] = (
-                self.pbrs_calculator.calculate_combined_potential(
-                    obs,
-                    adjacency=adjacency,
-                    level_data=level_data,
-                    graph_data=graph_data,
-                )
+        )
+        components["combined_potential"] = (
+            self.pbrs_calculator.calculate_combined_potential(
+                obs,
+                adjacency=adjacency,
+                level_data=level_data,
+                graph_data=graph_data,
             )
+        )
 
         return components
 
@@ -326,7 +327,6 @@ class RewardCalculator:
         """
         from ..util.util import calculate_distance
         from ..constants import LEVEL_DIAGONAL
-        from .navigation_reward_calculator import PBRS_DISTANCE_SCALE
 
         metrics = {}
 
@@ -352,71 +352,61 @@ class RewardCalculator:
             1.0, metrics["distance/to_current_objective"] / LEVEL_DIAGONAL
         )
 
-        # Distance relative to normalization scale (KEY DIAGNOSTIC)
         metrics["distance/relative_to_scale"] = (
             metrics["distance/to_current_objective"] / PBRS_DISTANCE_SCALE
         )
 
         # === POTENTIAL METRICS ===
-        if self.enable_pbrs and self.pbrs_calculator is not None:
-            # Extract adjacency graph, level_data, and graph_data for PBRS calculations
-            adjacency = obs.get("_adjacency_graph")
-            level_data = obs.get("level_data")
-            graph_data = obs.get("_graph_data")
+        # Extract adjacency graph, level_data, and graph_data for PBRS calculations
+        adjacency = obs.get("_adjacency_graph")
+        level_data = obs.get("level_data")
+        graph_data = obs.get("_graph_data")
 
-            # Calculate current potential with required parameters
-            current_potential = self.pbrs_calculator.calculate_combined_potential(
-                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+        # Calculate current potential with required parameters
+        current_potential = self.pbrs_calculator.calculate_combined_potential(
+            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+        )
+        metrics["pbrs/current_potential"] = current_potential
+
+        if self.prev_potential is not None:
+            metrics["pbrs/prev_potential"] = self.prev_potential
+            potential_delta = current_potential - self.prev_potential
+            metrics["pbrs/potential_delta"] = potential_delta
+
+            # PBRS reward (before and after gamma)
+            pbrs_reward_before_gamma = potential_delta
+            pbrs_reward_after_gamma = (
+                self.pbrs_gamma * current_potential - self.prev_potential
             )
-            metrics["pbrs/current_potential"] = current_potential
+            metrics["pbrs/reward_before_gamma"] = pbrs_reward_before_gamma
+            metrics["pbrs/reward_after_gamma"] = pbrs_reward_after_gamma
 
-            if self.prev_potential is not None:
-                metrics["pbrs/prev_potential"] = self.prev_potential
-                potential_delta = current_potential - self.prev_potential
-                metrics["pbrs/potential_delta"] = potential_delta
+            # Flag potential issues
+            metrics["pbrs/is_negative"] = 1.0 if pbrs_reward_after_gamma < 0 else 0.0
+            metrics["pbrs/is_positive"] = 1.0 if pbrs_reward_after_gamma > 0 else 0.0
 
-                # PBRS reward (before and after gamma)
-                pbrs_reward_before_gamma = potential_delta
-                pbrs_reward_after_gamma = (
-                    self.pbrs_gamma * current_potential - self.prev_potential
-                )
-                metrics["pbrs/reward_before_gamma"] = pbrs_reward_before_gamma
-                metrics["pbrs/reward_after_gamma"] = pbrs_reward_after_gamma
-
-                # Flag potential issues
-                metrics["pbrs/is_negative"] = (
-                    1.0 if pbrs_reward_after_gamma < 0 else 0.0
-                )
-                metrics["pbrs/is_positive"] = (
-                    1.0 if pbrs_reward_after_gamma > 0 else 0.0
-                )
-
-            # Component breakdown
-            pbrs_components = self.pbrs_calculator.get_potential_components(
-                obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
-            )
-            for comp_name, comp_value in pbrs_components.items():
-                metrics[f"pbrs/component_{comp_name}"] = comp_value
-
-        # === NAVIGATION METRICS ===
-        nav_potential = self.navigation_calculator.calculate_potential(obs)
-        metrics["navigation/potential"] = nav_potential
+        # Component breakdown
+        pbrs_components = self.pbrs_calculator.get_potential_components(
+            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
+        )
+        for comp_name, comp_value in pbrs_components.items():
+            metrics[f"pbrs/component_{comp_name}"] = comp_value
 
         # Track closest distances achieved (progress tracking)
         metrics["navigation/closest_to_switch"] = (
-            self.navigation_calculator.closest_distance_to_switch
-            if self.navigation_calculator.closest_distance_to_switch != float("inf")
+            self.closest_distance_to_switch
+            if self.closest_distance_to_switch != float("inf")
             else distance_to_switch
         )
         metrics["navigation/closest_to_exit"] = (
-            self.navigation_calculator.closest_distance_to_exit
-            if self.navigation_calculator.closest_distance_to_exit != float("inf")
+            self.closest_distance_to_exit
+            if self.closest_distance_to_exit != float("inf")
             else distance_to_exit
         )
 
         # === REWARD COMPONENT BREAKDOWN ===
-        if hasattr(self, "last_reward_components"):
-            components = self.last_reward_components
+        if hasattr(self, "last_pbrs_components"):
+            components = self.last_pbrs_components
             for comp_name, comp_value in components.items():
                 if isinstance(comp_value, (int, float)):
                     metrics[f"reward_components/{comp_name}"] = comp_value

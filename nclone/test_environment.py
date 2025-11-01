@@ -657,7 +657,6 @@ if args.map:
     from nclone.gym_environment.config import (
         EnvironmentConfig,
         RenderConfig,
-        PBRSConfig,
         GraphConfig,
         ReachabilityConfig,
     )
@@ -672,9 +671,7 @@ if args.map:
         custom_map_path=args.map,
         enable_logging=False,
         render=render_config,
-        pbrs=PBRSConfig(enable_pbrs=False),
         graph=GraphConfig(
-            enable_graph_for_pbrs=False,
             enable_graph_for_observations=False,
             debug=False,
         ),
@@ -686,7 +683,6 @@ else:
     from nclone.gym_environment.config import (
         EnvironmentConfig,
         RenderConfig,
-        PBRSConfig,
         GraphConfig,
         ReachabilityConfig,
     )
@@ -700,9 +696,7 @@ else:
     config = EnvironmentConfig(
         enable_logging=False,
         render=render_config,
-        pbrs=PBRSConfig(enable_pbrs=False),
         graph=GraphConfig(
-            enable_graph_for_pbrs=False,
             enable_graph_for_observations=False,
             debug=False,
         ),
