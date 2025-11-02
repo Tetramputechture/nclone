@@ -82,7 +82,7 @@ COMPLETION_TIME_TARGET = (
 # Rationale: Small penalty (-0.01) discourages standing still without overwhelming
 # other reward signals. Encourages active exploration and movement toward objectives.
 # Without this, agents can exploit doing nothing to avoid negative outcomes.
-NOOP_ACTION_PENALTY = -0.01
+NOOP_ACTION_PENALTY = -0.02
 
 
 # =============================================================================
@@ -103,16 +103,16 @@ EXPLORATION_CELL_SIZE = 24.0  # pixels
 # Total maximum per-step exploration reward = 0.04
 
 # Single cell (24x24 pixels) - finest granularity
-EXPLORATION_CELL_REWARD = 0.001
+EXPLORATION_CELL_REWARD = 0.005
 
 # Medium area (4x4 cells = 96x96 pixels) - room-sized regions
-EXPLORATION_AREA_4X4_REWARD = 0.001
+EXPLORATION_AREA_4X4_REWARD = 0.005
 
 # Large area (8x8 cells = 192x192 pixels) - section-sized regions
-EXPLORATION_AREA_8X8_REWARD = 0.001
+EXPLORATION_AREA_8X8_REWARD = 0.005
 
 # Very large area (16x16 cells = 384x384 pixels) - major regions
-EXPLORATION_AREA_16X16_REWARD = 0.001
+EXPLORATION_AREA_16X16_REWARD = 0.005
 
 
 # =============================================================================
