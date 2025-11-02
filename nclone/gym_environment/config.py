@@ -96,15 +96,6 @@ class RenderConfig:
 class PBRSConfig:
     """Configuration for Potential-Based Reward Shaping."""
 
-    enable_pbrs: bool = True
-    pbrs_weights: Dict[str, float] = field(
-        default_factory=lambda: {
-            "objective_weight": 1.0,
-            "hazard_weight": 0.5,
-            "impact_weight": 0.3,
-            "exploration_weight": 0.2,
-        }
-    )
     pbrs_gamma: float = 0.99
 
     def __post_init__(self):
@@ -112,23 +103,15 @@ class PBRSConfig:
         if self.pbrs_gamma < 0 or self.pbrs_gamma > 1:
             raise ValueError("pbrs_gamma must be between 0 and 1")
 
-        required_weights = [
-            "objective_weight",
-            "hazard_weight",
-            "impact_weight",
-            "exploration_weight",
-        ]
-        for weight in required_weights:
-            if weight not in self.pbrs_weights:
-                logging.warning(f"Missing PBRS weight: {weight}, using default 0.0")
-                self.pbrs_weights[weight] = 0.0
-
 
 @dataclass
 class GraphConfig:
-    """Configuration for graph-based features."""
+    """Configuration for graph-based features.
 
-    enable_graph_updates: bool = True
+    - enable_graph_for_observations: Add graph observations to observation space
+    """
+
+    enable_graph_for_observations: bool = True
     debug: bool = False
 
     def __post_init__(self):
@@ -236,8 +219,9 @@ class EnvironmentConfig:
                 render_mode="grayscale_array",
                 enable_animation=False,
             ),
-            pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(enable_graph_updates=False),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=True, enable_graph_for_observations=False
+            ),
             reachability=ReachabilityConfig(enable_reachability=True),
             enable_short_episode_truncation=False,
             **kwargs,
@@ -261,8 +245,10 @@ class EnvironmentConfig:
                 p=0.5,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            pbrs=PBRSConfig(enable_pbrs=False),
-            graph=GraphConfig(enable_graph_updates=False),
+            pbrs=PBRSConfig(enable_pbrs=True),
+            graph=GraphConfig(
+                enable_graph_for_pbrs=True, enable_graph_for_observations=False
+            ),
             reachability=ReachabilityConfig(enable_reachability=True),
             eval_mode=True,
             enable_short_episode_truncation=False,  # Let episodes run to completion
@@ -287,8 +273,10 @@ class EnvironmentConfig:
             render=RenderConfig(
                 render_mode="human", enable_animation=True, enable_debug_overlay=True
             ),
-            pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(enable_graph_updates=True, debug=True),
+            graph=GraphConfig(
+                enable_graph_for_observations=True,
+                debug=True,
+            ),
             reachability=ReachabilityConfig(enable_reachability=True, debug=True),
             enable_logging=True,
             **kwargs,
@@ -303,8 +291,10 @@ class EnvironmentConfig:
             render=RenderConfig(
                 render_mode="human", enable_animation=True, enable_debug_overlay=False
             ),
-            pbrs=PBRSConfig(enable_pbrs=False),
-            graph=GraphConfig(enable_graph_updates=False, debug=False),
+            graph=GraphConfig(
+                enable_graph_for_observations=False,
+                debug=False,
+            ),
             reachability=ReachabilityConfig(enable_reachability=False, debug=False),
             **kwargs,
         )
@@ -326,8 +316,7 @@ class EnvironmentConfig:
                 p=0.5,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(enable_graph_updates=True),
+            graph=GraphConfig(enable_graph_for_observations=True),
             reachability=ReachabilityConfig(enable_reachability=True),
             hierarchical=HierarchicalConfig(
                 enable_hierarchical=True,
@@ -353,8 +342,7 @@ class EnvironmentConfig:
                 p=0.0,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            pbrs=PBRSConfig(enable_pbrs=False),
-            graph=GraphConfig(enable_graph_updates=False),
+            graph=GraphConfig(enable_graph_for_observations=False),
             reachability=ReachabilityConfig(enable_reachability=False),
             hierarchical=HierarchicalConfig(enable_hierarchical=False),
             **kwargs,
@@ -386,11 +374,9 @@ class EnvironmentConfig:
             "enable_animation": self.render.enable_animation,
             "enable_debug_overlay": self.render.enable_debug_overlay,
             # PBRS settings
-            "enable_pbrs": self.pbrs.enable_pbrs,
-            "pbrs_weights": self.pbrs.pbrs_weights,
             "pbrs_gamma": self.pbrs.pbrs_gamma,
             # Graph settings
-            "enable_graph_updates": self.graph.enable_graph_updates,
+            "enable_graph_for_observations": self.graph.enable_graph_for_observations,
             # Reachability settings
             "enable_reachability": self.reachability.enable_reachability,
             # Hierarchical settings

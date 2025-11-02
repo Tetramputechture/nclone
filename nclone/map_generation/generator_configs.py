@@ -2,8 +2,7 @@
 Configuration system for procedural map generation.
 
 This module centralizes all generator parameters, presets, and category
-configurations for the test suite generation system. Adding new categories
-or generator types requires only configuration changes, not code changes.
+configurations for the test suite generation system.
 """
 
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ class MazeConfig:
     min_height: int = 6
     max_height: int = 10
     max_cell_size: int = 4
+    use_random_wall_tiles: bool = False
 
 
 @dataclass
@@ -535,20 +535,20 @@ GENERATOR_PRESETS = {
     "corridors": {
         "simplest": CorridorsConfig(
             min_corridors=2,
-            max_corridors=2,
+            max_corridors=3,
             min_horizontal_width=3,
-            max_horizontal_width=5,
+            max_horizontal_width=8,
             max_horizontal_height=1,
             min_vertical_width=1,
             max_vertical_width=1,
             min_vertical_height=2,
-            max_vertical_height=3,
+            max_vertical_height=4,
             add_zig_zag_drops=True,
             add_chaotic_walls=False,
         ),
         "simple": CorridorsConfig(
             min_corridors=2,
-            max_corridors=3,
+            max_corridors=4,
             min_horizontal_width=8,
             max_horizontal_width=15,
             max_horizontal_height=2,
@@ -561,7 +561,7 @@ GENERATOR_PRESETS = {
         ),
         "medium": CorridorsConfig(
             min_corridors=3,
-            max_corridors=4,
+            max_corridors=5,
             min_horizontal_width=10,
             max_horizontal_width=20,
             max_horizontal_height=3,

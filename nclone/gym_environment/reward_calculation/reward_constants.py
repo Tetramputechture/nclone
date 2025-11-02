@@ -12,6 +12,8 @@ References:
 - Sutton & Barto (2018): "Reinforcement Learning: An Introduction" (reward scaling)
 """
 
+from ..constants import LEVEL_DIAGONAL
+
 
 # =============================================================================
 # TERMINAL REWARD CONSTANTS
@@ -84,30 +86,6 @@ NOOP_ACTION_PENALTY = -0.01
 
 
 # =============================================================================
-# NAVIGATION REWARD SHAPING CONSTANTS
-# =============================================================================
-# Constants for potential-based reward shaping (Ng et al., 1999)
-# These provide dense reward signals without changing the optimal policy
-
-# Distance improvement scale for navigation rewards
-# Rationale: Provides dense feedback about progress toward objectives.
-# Formula: reward = distance_improvement * DISTANCE_IMPROVEMENT_SCALE
-# Example: Moving 100 pixels closer = 0.1 reward
-NAVIGATION_DISTANCE_IMPROVEMENT_SCALE = 0.001
-
-# Minimum distance threshold for proximity bonus (pixels)
-# Rationale: Provides small extra reward when within 20 pixels of objective.
-# Encourages precise navigation in final approach phase.
-NAVIGATION_MIN_DISTANCE_THRESHOLD = 20.0
-
-# Potential-based shaping scale
-# Rationale: Scale factor (0.0005) for continuous potential-based shaping.
-# Keeps shaping rewards smaller than main terminal rewards while providing
-# meaningful gradient for learning.
-NAVIGATION_POTENTIAL_SCALE = 0.0005
-
-
-# =============================================================================
 # EXPLORATION REWARD CONSTANTS
 # =============================================================================
 # Multi-scale spatial exploration rewards following count-based methods
@@ -125,16 +103,16 @@ EXPLORATION_CELL_SIZE = 24.0  # pixels
 # Total maximum per-step exploration reward = 0.04
 
 # Single cell (24x24 pixels) - finest granularity
-EXPLORATION_CELL_REWARD = 0.01
+EXPLORATION_CELL_REWARD = 0.001
 
 # Medium area (4x4 cells = 96x96 pixels) - room-sized regions
-EXPLORATION_AREA_4X4_REWARD = 0.01
+EXPLORATION_AREA_4X4_REWARD = 0.001
 
 # Large area (8x8 cells = 192x192 pixels) - section-sized regions
-EXPLORATION_AREA_8X8_REWARD = 0.01
+EXPLORATION_AREA_8X8_REWARD = 0.001
 
 # Very large area (16x16 cells = 384x384 pixels) - major regions
-EXPLORATION_AREA_16X16_REWARD = 0.01
+EXPLORATION_AREA_16X16_REWARD = 0.001
 
 
 # =============================================================================
@@ -144,11 +122,9 @@ EXPLORATION_AREA_16X16_REWARD = 0.01
 # Ensures policy invariance while providing dense reward signal
 
 # PBRS discount factor
-# Rationale: MUST match PPO gamma (0.995) for PBRS policy invariance guarantee.
 # According to Ng et al. (1999), F(s,s') = γ * Φ(s') - Φ(s) requires the same
 # γ as the RL algorithm to maintain optimal policy invariance.
-# CRITICAL: If changing PPO gamma, this MUST be updated to match!
-# UPDATED Oct 28, 2025: Changed from 0.999 to 0.995 to match new PPO gamma
+# MUST match PPO gamma for PBRS policy invariance guarantee.
 PBRS_GAMMA = 0.995
 
 # PBRS component weights (default configuration)
@@ -174,9 +150,14 @@ PBRS_IMPACT_WEIGHT = 0.0
 PBRS_EXPLORATION_WEIGHT = 0.2
 
 # PBRS scaling for switch and exit phases
-# Rationale: Provides meaningful navigation signal without dominating terminal rewards.
-PBRS_SWITCH_DISTANCE_SCALE = 0.5
-PBRS_EXIT_DISTANCE_SCALE = 0.5
+# Rationale: Scale of 1.0 ensures PBRS rewards are effective and guide learning.
+# With γ=0.995, moving closer (increasing potential) always yields positive reward:
+# F(s,s') = γ * Φ(s') - Φ(s) > 0 when Φ(s') > Φ(s)/γ ≈ Φ(s)
+# Previous value (0.5) was too conservative, making PBRS rewards too small to effectively guide learning.
+# PBRS rewards need to be large enough to provide meaningful gradient while still being
+# smaller than terminal rewards (10.0 completion, 1.0 switch activation).
+PBRS_SWITCH_DISTANCE_SCALE = 1.0
+PBRS_EXIT_DISTANCE_SCALE = 1.0
 
 
 # =============================================================================
@@ -208,6 +189,16 @@ PBRS_EXPLORATION_VISIT_THRESHOLD = 25.0
 # Rationale: Distance (30 pixels) defining "unexplored" regions for exploration potential.
 # Slightly larger than visit threshold to encourage broad coverage.
 PBRS_EXPLORATION_RADIUS = 30.0
+
+# Fallback distance scale for PBRS adaptive normalization
+# Rationale: Used when adaptive scaling cannot be computed (e.g., no reachable nodes).
+# Adaptive scaling computes maximum reachable distance per level using BFS flood fill,
+# but falls back to LEVEL_DIAGONAL if no reachable area found or max distance is 0.
+# This ensures proper normalization even in edge cases.
+# NOTE: Actual normalization scale is computed dynamically per level based on reachable area.
+PBRS_FALLBACK_DISTANCE_SCALE = (
+    LEVEL_DIAGONAL  # Fallback when adaptive scaling unavailable
+)
 
 
 # =============================================================================

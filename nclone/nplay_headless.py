@@ -146,6 +146,11 @@ class NPlayHeadless:
         """
         self.sim.load(map_data)
         self.current_map_data = map_data
+        # Clear pathfinding cache when map changes
+        if hasattr(self, "sim_renderer") and hasattr(
+            self.sim_renderer, "debug_overlay_renderer"
+        ):
+            self.sim_renderer.debug_overlay_renderer.clear_pathfinding_cache()
 
     def load_map(self, map_path: str):
         """
@@ -199,6 +204,11 @@ class NPlayHeadless:
         self.last_rendered_tick = -1
         self.cached_render_surface = None
         self.cached_render_buffer = None
+        # Clear pathfinding cache when ninja resets (position changes)
+        if hasattr(self, "sim_renderer") and hasattr(
+            self.sim_renderer, "debug_overlay_renderer"
+        ):
+            self.sim_renderer.debug_overlay_renderer.clear_pathfinding_cache()
 
     def tick(self, horizontal_input: int, jump_input: int):
         """
