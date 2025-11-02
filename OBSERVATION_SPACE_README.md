@@ -129,10 +129,6 @@ door_2 = switch_states[10:15]
 
 Enable with `config.graph.enable_graph_for_observations = True`.
 
-Note: Graph building for PBRS path distance calculations is controlled separately
-via `config.graph.enable_graph_for_pbrs`. You can enable graph for PBRS without
-adding graph observations to the observation space.
-
 ### `graph_node_feats`
 `(max_nodes, 55)` float32
 

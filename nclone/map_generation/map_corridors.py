@@ -101,6 +101,7 @@ class MapCorridors(Map):
     # Optional features
     ADD_ZIG_ZAG_DROPS = False
     ADD_CHAOTIC_WALLS = False
+    ADD_MINES = False
 
     def __init__(self, seed: Optional[int] = None):
         """Initialize the corridors generator.
@@ -181,8 +182,8 @@ class MapCorridors(Map):
         # Place entities
         ninja_x, ninja_y = self._place_entities()
 
-        # Add ceiling mines to horizontal corridors
-        self._add_ceiling_mines(ninja_x, ninja_y)
+        if self.ADD_MINES:
+            self._add_ceiling_mines(ninja_x, ninja_y)
 
         # Add random entities outside playspace
         self._add_random_entities_outside()
@@ -479,45 +480,65 @@ class MapCorridors(Map):
         if last_corridor.orientation == "horizontal":
             door_x = end_point[0]
             door_y = last_corridor.y + last_corridor.height - 1
-            # Generate candidate switch positions and filter to exclude those too close to ninja
-            switch_candidates = [
-                max(last_corridor.x, door_x - offset) for offset in range(2, 5)
-            ]
-            # Exclude switch positions too close to ninja (minimum 1 tile distance)
-            switch_candidates = [x for x in switch_candidates if abs(x - ninja_x) >= 1]
-            if switch_candidates:
-                switch_x = self.rng.choice(switch_candidates)
-            else:
-                # Fallback: use original logic if no valid candidates
-                switch_x = max(last_corridor.x, door_x - self.rng.randint(2, 4))
-            switch_y = door_y
         else:
             door_x = last_corridor.x + last_corridor.width // 2
             door_y = end_point[1]
-            switch_x = door_x
-            # Generate candidate switch y positions and filter to exclude those too close to ninja
-            switch_y_candidates = [
-                min(
-                    last_corridor.y + last_corridor.height - 1,
-                    door_y + offset,
-                )
-                for offset in range(2, 5)
-            ]
-            # Exclude switch positions too close to ninja (minimum 1 tile distance)
-            switch_y_candidates = [
-                y for y in switch_y_candidates if abs(y - ninja_y) >= 1
-            ]
-            if switch_y_candidates:
-                switch_y = self.rng.choice(switch_y_candidates)
+
+        # Ensure door position is valid
+        door_x, door_y = self._find_closest_valid_tile(door_x, door_y, tile_type=0)
+
+        # Place switch at a random distance between ninja and exit door
+        # Calculate the distance and direction from ninja to door
+        dx = door_x - ninja_x
+        dy = door_y - ninja_y
+
+        # Calculate distance
+        distance = max(
+            abs(dx), abs(dy)
+        )  # Use Chebyshev distance for tile-based movement
+
+        # Only place switch if there's meaningful distance (at least 3 tiles)
+        if distance < 3:
+            # Fallback: place switch near door but not on it
+            if last_corridor.orientation == "horizontal":
+                switch_x = max(last_corridor.x, door_x - self.rng.randint(2, 4))
+                switch_y = door_y
             else:
-                # Fallback: use original logic if no valid candidates
+                switch_x = door_x
                 switch_y = min(
                     last_corridor.y + last_corridor.height - 1,
                     door_y + self.rng.randint(2, 4),
                 )
+        else:
+            # Place switch at a random position between ninja and door
+            # Use a random fraction between 0.2 and 0.8 to avoid placing too close to either
+            fraction = self.rng.uniform(0.2, 0.8)
 
-        # Ensure positions are valid
-        door_x, door_y = self._find_closest_valid_tile(door_x, door_y, tile_type=0)
+            # Calculate switch position along the path
+            switch_x = int(ninja_x + dx * fraction)
+            switch_y = int(ninja_y + dy * fraction)
+
+            # Clamp to last corridor bounds
+            switch_x = max(
+                last_corridor.x,
+                min(switch_x, last_corridor.x + last_corridor.width - 1),
+            )
+            switch_y = max(
+                last_corridor.y,
+                min(switch_y, last_corridor.y + last_corridor.height - 1),
+            )
+
+            # Ensure switch is not at the door position
+            if switch_x == door_x and switch_y == door_y:
+                # Adjust slightly away from door
+                if last_corridor.orientation == "horizontal":
+                    switch_x = door_x - self.rng.randint(1, 3)
+                    switch_x = max(last_corridor.x, switch_x)
+                else:
+                    switch_y = door_y + self.rng.randint(1, 3)
+                    switch_y = min(last_corridor.y + last_corridor.height - 1, switch_y)
+
+        # Ensure switch position is valid
         switch_x, switch_y = self._find_closest_valid_tile(
             switch_x, switch_y, tile_type=0
         )

@@ -842,6 +842,12 @@ if args.test_generators:
         # Generate initial map
         initial_map = generator_tester.generate_map()
         env.nplay_headless.load_map_from_map_data(initial_map.map_data())
+        # Reset graph state to clear cached adjacency graph for new level
+        if hasattr(env, "_reset_graph_state"):
+            env._reset_graph_state()
+        # Force graph rebuild for new level
+        if hasattr(env, "_update_graph_from_env_state"):
+            env._update_graph_from_env_state()
 
         print("Generator Testing Initialized")
         print(f"  {generator_tester.get_info_string()}")
@@ -1398,6 +1404,12 @@ while running:
                             env.reward_calculator.reset()
                             env.truncation_checker.reset()
                             env.current_ep_reward = 0
+                            # Reset graph state to clear cached adjacency graph for new level
+                            if hasattr(env, "_reset_graph_state"):
+                                env._reset_graph_state()
+                            # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
+                            if hasattr(env, "_update_graph_from_env_state"):
+                                env._update_graph_from_env_state()
                             # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                             # Get initial observation
@@ -1553,6 +1565,12 @@ while running:
                         env.reward_calculator.reset()
                         env.truncation_checker.reset()
                         env.current_ep_reward = 0
+                        # Reset graph state to clear cached adjacency graph for new level
+                        if hasattr(env, "_reset_graph_state"):
+                            env._reset_graph_state()
+                        # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
+                        if hasattr(env, "_update_graph_from_env_state"):
+                            env._update_graph_from_env_state()
                         # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                         # Get initial observation
@@ -1590,6 +1608,12 @@ while running:
                         env.reward_calculator.reset()
                         env.truncation_checker.reset()
                         env.current_ep_reward = 0
+                        # Reset graph state to clear cached adjacency graph for new level
+                        if hasattr(env, "_reset_graph_state"):
+                            env._reset_graph_state()
+                        # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
+                        if hasattr(env, "_update_graph_from_env_state"):
+                            env._update_graph_from_env_state()
                         # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                         # Get initial observation
@@ -1646,6 +1670,12 @@ while running:
                                 env.reward_calculator.reset()
                                 env.truncation_checker.reset()
                                 env.current_ep_reward = 0
+                                # Reset graph state to clear cached adjacency graph for new level
+                                if hasattr(env, "_reset_graph_state"):
+                                    env._reset_graph_state()
+                                # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
+                                if hasattr(env, "_update_graph_from_env_state"):
+                                    env._update_graph_from_env_state()
                                 # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                                 # Get initial observation
@@ -2284,6 +2314,12 @@ while running:
                 env.reward_calculator.reset()
                 env.truncation_checker.reset()
                 env.current_ep_reward = 0
+                # Reset graph state to clear cached adjacency graph for new level
+                if hasattr(env, "_reset_graph_state"):
+                    env._reset_graph_state()
+                # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
+                if hasattr(env, "_update_graph_from_env_state"):
+                    env._update_graph_from_env_state()
                 # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
 
                 # Get initial observation

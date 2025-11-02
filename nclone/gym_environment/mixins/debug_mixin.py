@@ -91,6 +91,12 @@ class DebugMixin:
                 "ninja_position": self.nplay_headless.ninja_position(),
                 "ninja_velocity": self.nplay_headless.ninja_velocity(),
             }
+
+            # Add PBRS surface area if available
+            pbrs_surface_area = self._get_pbrs_surface_area()
+            if pbrs_surface_area is not None:
+                env_info["pbrs_surface_area"] = pbrs_surface_area
+
             info.update(env_info)
 
             # Add exploration debug info if enabled
@@ -107,6 +113,25 @@ class DebugMixin:
                 info["tile_types"] = True
 
         return info if info else None  # Return None if no debug info is to be shown
+
+    def _get_pbrs_surface_area(self) -> Optional[float]:
+        """Get PBRS calculated surface area if available.
+
+        Returns:
+            Surface area (number of reachable sub-nodes) if available, None otherwise.
+            Surface area is computed when PBRS potential is first calculated for a level.
+        """
+        try:
+            if hasattr(self, "reward_calculator") and hasattr(
+                self.reward_calculator, "pbrs_calculator"
+            ):
+                pbrs_calc = self.reward_calculator.pbrs_calculator
+                if hasattr(pbrs_calc, "_cached_surface_area"):
+                    return pbrs_calc._cached_surface_area
+        except Exception:
+            # Silently fail if PBRS calculator not available or not initialized
+            pass
+        return None
 
     def _get_exploration_debug_info(
         self, ninja_x: float, ninja_y: float

@@ -21,6 +21,7 @@ class MapHorizontalCorridor(Map):
     MAX_HEIGHT = 5
     RANDOM_EDGE_TILES = False
     FIXED_HEIGHT = None
+    ADD_MINES = False
 
     def generate(self, seed: Optional[int] = None) -> "MapHorizontalCorridor":
         """Generate a minimal horizontal corridor level.
@@ -225,7 +226,7 @@ class MapHorizontalCorridor(Map):
             )
 
         # Situations where height is 1 and random edge tiles are almost impossible to achieve at first.
-        if not (self.RANDOM_EDGE_TILES and height == 1):
+        if self.ADD_MINES and not (self.RANDOM_EDGE_TILES and height == 1):
             # Add ceiling mines (skip if height == 2)
             self._place_corridor_ceiling_mines(
                 start_x, start_y, width, height, "horizontal", ninja_x, ninja_y

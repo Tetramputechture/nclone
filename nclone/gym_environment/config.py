@@ -219,9 +219,7 @@ class EnvironmentConfig:
                 render_mode="grayscale_array",
                 enable_animation=False,
             ),
-            graph=GraphConfig(
-                enable_graph_for_pbrs=True, enable_graph_for_observations=False
-            ),
+            graph=GraphConfig(enable_graph_for_observations=False),
             reachability=ReachabilityConfig(enable_reachability=True),
             enable_short_episode_truncation=False,
             **kwargs,
@@ -245,10 +243,7 @@ class EnvironmentConfig:
                 p=0.5,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            pbrs=PBRSConfig(enable_pbrs=True),
-            graph=GraphConfig(
-                enable_graph_for_pbrs=True, enable_graph_for_observations=False
-            ),
+            graph=GraphConfig(enable_graph_for_observations=False),
             reachability=ReachabilityConfig(enable_reachability=True),
             eval_mode=True,
             enable_short_episode_truncation=False,  # Let episodes run to completion

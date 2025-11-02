@@ -58,7 +58,7 @@ env = NppEnvironment(
     render_mode="grayscale_array",  # Headless for training
     dataset_dir="datasets/train",
     config=EnvironmentConfig(
-        graph=GraphConfig(enable_graph_for_pbrs=True, enable_graph_for_observations=True)  # Graph for PBRS and observations
+        graph=GraphConfig(enable_graph_for_observations=True)  # Graph for PBRS and observations
     ),
     curriculum_level=0  # Difficulty level
 )
@@ -245,7 +245,7 @@ Enable structural level understanding:
 ```python
 env = NPPEnvironment(
     config=EnvironmentConfig(
-        graph=GraphConfig(enable_graph_for_pbrs=True, enable_graph_for_observations=True)
+        graph=GraphConfig(enable_graph_for_observations=True)
     ),
     graph_config={
         'node_features': 56,    # Comprehensive node features (reduced from 61)
