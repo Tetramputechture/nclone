@@ -89,7 +89,6 @@ class CachedPathDistanceCalculator:
         rebuilt = self.level_cache.build_cache(level_data, adjacency, graph_data)
         if rebuilt:
             self.level_data = level_data
-            print("Level cache built successfully")
 
         return rebuilt
 

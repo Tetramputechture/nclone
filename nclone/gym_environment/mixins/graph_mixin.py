@@ -416,7 +416,5 @@ class GraphMixin:
     def _reinit_graph_system_after_unpickling(self, debug: bool = False):
         """Reinitialize graph system components after unpickling."""
         # Graph building happens if either flag is True
-        if (
-            self.enable_graph_for_pbrs or self.enable_graph_for_observations
-        ) and not hasattr(self, "graph_builder"):
+        if not hasattr(self, "graph_builder"):
             self.graph_builder = GraphBuilder()

@@ -29,6 +29,7 @@ class MapVerticalCorridor(Map):
     ADD_MID_MINES = False
     ADD_CHAOTIC_WALLS = False
     ADD_WALL_MINES = False
+    ADD_BOUNDARY_MINES = False
 
     def generate(
         self,
@@ -156,14 +157,16 @@ class MapVerticalCorridor(Map):
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
 
         # Add ceiling mines at the top of the corridor
-        self._place_corridor_ceiling_mines(
-            chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
-        )
+        if self.ADD_BOUNDARY_MINES:
+            self._place_corridor_ceiling_mines(
+                chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
+            )
 
         # Add floor mines if corridor is tall enough
-        self._place_corridor_floor_mines(
-            chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
-        )
+        if self.ADD_BOUNDARY_MINES:
+            self._place_corridor_floor_mines(
+                chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
+            )
 
         can_add_platforms = height > 8 and width > 2
 

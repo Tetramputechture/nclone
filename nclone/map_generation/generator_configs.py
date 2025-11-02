@@ -62,6 +62,7 @@ class VerticalCorridorConfig:
     add_mid_mines: bool = False
     add_chaotic_walls: bool = False
     add_wall_mines: bool = False
+    add_boundary_mines: bool = False
 
 
 @dataclass
@@ -149,6 +150,7 @@ class HorizontalCorridorConfig:
     max_height: int = 5
     random_edge_tiles: bool = False
     fixed_height: int = None
+    add_mines: bool = False
 
 
 @dataclass
@@ -167,6 +169,7 @@ class CorridorsConfig:
     max_vertical_height: int = 15
     add_zig_zag_drops: bool = False
     add_chaotic_walls: bool = False
+    add_mines: bool = False
 
 
 # Generator presets organized by difficulty
@@ -279,6 +282,14 @@ GENERATOR_PRESETS = {
             max_height=6,
             add_wall_mines=False,
         ),
+        "minimal_with_mines": VerticalCorridorConfig(
+            min_width=1,
+            max_width=2,
+            min_height=3,
+            max_height=6,
+            add_wall_mines=False,
+            add_boundary_mines=True,
+        ),
         "simpler": VerticalCorridorConfig(
             min_width=1,
             max_width=4,
@@ -288,6 +299,7 @@ GENERATOR_PRESETS = {
             max_mine_spacing=5,
             add_chaotic_walls=True,
             add_wall_mines=False,
+            add_boundary_mines=False,
         ),
         "simpler_with_mines": VerticalCorridorConfig(
             min_width=1,
@@ -298,6 +310,7 @@ GENERATOR_PRESETS = {
             max_mine_spacing=5,
             add_chaotic_walls=True,
             add_wall_mines=True,
+            add_boundary_mines=True,
         ),
         "simple": VerticalCorridorConfig(
             min_width=1,
@@ -309,6 +322,7 @@ GENERATOR_PRESETS = {
             add_platforms=True,
             add_chaotic_walls=True,
             add_wall_mines=True,
+            add_boundary_mines=True,
         ),
         "medium": VerticalCorridorConfig(
             min_width=2,
@@ -317,6 +331,7 @@ GENERATOR_PRESETS = {
             max_height=22,
             min_mine_spacing=2,
             max_mine_spacing=5,
+            add_boundary_mines=True,
         ),
         "complex": VerticalCorridorConfig(
             min_width=3,
@@ -325,6 +340,7 @@ GENERATOR_PRESETS = {
             max_height=22,
             min_mine_spacing=2,
             max_mine_spacing=5,
+            add_boundary_mines=True,
         ),
         "platforms": VerticalCorridorConfig(
             min_width=2,
@@ -334,6 +350,7 @@ GENERATOR_PRESETS = {
             min_mine_spacing=2,
             max_mine_spacing=5,
             add_platforms=True,
+            add_boundary_mines=True,
         ),
         "mine_gauntlet": VerticalCorridorConfig(
             min_width=2,
@@ -343,6 +360,7 @@ GENERATOR_PRESETS = {
             min_mine_spacing=2,
             max_mine_spacing=5,
             add_mid_mines=True,
+            add_boundary_mines=True,
         ),
     },
     "mine_maze": {
@@ -518,22 +536,46 @@ GENERATOR_PRESETS = {
     "horizontal_corridor": {
         "minimal": HorizontalCorridorConfig(
             min_width=3,
+            max_width=18,
+            min_height=1,
+            max_height=2,
+            random_edge_tiles=False,
+            add_mines=False,
+        ),
+        "minimal_with_mines": HorizontalCorridorConfig(
+            min_width=3,
             max_width=23,
             min_height=1,
             max_height=2,
             random_edge_tiles=False,
+            add_mines=True,
         ),
         "simple": HorizontalCorridorConfig(
             min_width=3,
-            max_width=23,
+            max_width=30,
             min_height=1,
             max_height=5,
             random_edge_tiles=True,
             fixed_height=None,
+            add_mines=True,
         ),
     },
     "corridors": {
         "simplest": CorridorsConfig(
+            min_corridors=2,
+            max_corridors=2,
+            min_horizontal_width=3,
+            max_horizontal_width=8,
+            max_horizontal_height=1,
+            min_vertical_width=1,
+            max_vertical_width=1,
+            min_vertical_height=2,
+            max_vertical_height=5,
+            add_zig_zag_drops=True,
+            add_chaotic_walls=False,
+            add_mines=False,
+        ),
+        "simplest_with_mines": CorridorsConfig(
             min_corridors=2,
             max_corridors=3,
             min_horizontal_width=3,
@@ -545,6 +587,7 @@ GENERATOR_PRESETS = {
             max_vertical_height=4,
             add_zig_zag_drops=True,
             add_chaotic_walls=False,
+            add_mines=True,
         ),
         "simple": CorridorsConfig(
             min_corridors=2,
@@ -558,6 +601,7 @@ GENERATOR_PRESETS = {
             max_vertical_height=10,
             add_zig_zag_drops=True,
             add_chaotic_walls=True,
+            add_mines=True,
         ),
         "medium": CorridorsConfig(
             min_corridors=3,
@@ -571,6 +615,7 @@ GENERATOR_PRESETS = {
             max_vertical_height=15,
             add_zig_zag_drops=True,
             add_chaotic_walls=True,
+            add_mines=True,
         ),
         "complex": CorridorsConfig(
             min_corridors=4,
@@ -584,6 +629,7 @@ GENERATOR_PRESETS = {
             max_vertical_height=15,
             add_zig_zag_drops=True,
             add_chaotic_walls=True,
+            add_mines=True,
         ),
     },
 }
@@ -613,6 +659,18 @@ CATEGORIES = {
             ("vertical_corridor", "minimal"),
             ("horizontal_corridor", "minimal"),
             ("corridors", "simplest"),
+        ],
+    ),
+    "simplest_with_mines": CategoryConfig(
+        name="simplest_with_mines",
+        description="Minimal direct paths with mines (boundary_mines for vertical corridor)",
+        ratio=0.1,
+        seed_base_test=200,
+        seed_base_train=2000,
+        generators=[
+            ("vertical_corridor", "minimal_with_mines"),
+            ("horizontal_corridor", "minimal_with_mines"),
+            ("corridors", "simplest_with_mines"),
         ],
     ),
     "simpler": CategoryConfig(

@@ -17,7 +17,8 @@ All constants defined in reward_constants.py with full documentation.
 """
 
 import numpy as np
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Set
+from collections import deque
 from ..util.util import calculate_distance
 from .reward_constants import (
     PBRS_MAX_VELOCITY,
@@ -32,10 +33,85 @@ from .reward_constants import (
 )
 
 from ..observation_processor import compute_hazard_from_entity_states
+from ...graph.reachability.pathfinding_utils import (
+    find_closest_node_to_position,
+    extract_spatial_lookups_from_graph_data,
+)
 
 # Sub-node size for surface area calculations (from graph builder)
 # The graph builder creates a 2x2 grid of sub-nodes per 24px tile
 SUB_NODE_SIZE = 12  # pixels per sub-node
+PLAYER_RADIUS = 10  # Player collision radius in pixels (from graph_builder)
+
+
+def _flood_fill_reachable_nodes(
+    start_pos: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    graph_data: Optional[Dict[str, Any]] = None,
+) -> Set[Tuple[int, int]]:
+    """
+    Perform flood fill on adjacency graph to find reachable positions from start.
+
+    Reuses logic from graph_builder._flood_fill_from_graph to ensure consistency.
+    Uses lookup-based node finding (spatial_hash/subcell_lookup) for O(1) performance.
+    Finds all nodes reachable from the starting position using BFS.
+
+    Args:
+        start_pos: Starting position (pixel coordinates, in world space)
+        adjacency: Graph adjacency structure (keys in tile data space)
+        graph_data: Optional graph data dict with spatial_hash for O(1) lookup
+
+    Returns:
+        Set of reachable node positions from the starting position
+    """
+    if not adjacency:
+        return set()
+
+    # Extract spatial lookup mechanisms from graph_data
+    spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
+
+    # Use lookup-based method to find closest node(s) within player radius
+    # This uses O(1) spatial_hash or subcell_lookup when available
+    closest_node = find_closest_node_to_position(
+        start_pos,
+        adjacency,
+        threshold=PLAYER_RADIUS,
+        spatial_hash=spatial_hash,
+        subcell_lookup=subcell_lookup,
+    )
+
+    # If no node found within threshold, try with larger threshold for fallback
+    if closest_node is None:
+        closest_node = find_closest_node_to_position(
+            start_pos,
+            adjacency,
+            threshold=50.0,  # Relaxed threshold for fallback
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+        )
+
+    if closest_node is None or closest_node not in adjacency:
+        return set()
+
+    start_nodes = [closest_node]
+
+    # Flood fill from all starting nodes
+    reachable = set()
+    queue = deque(start_nodes)
+    visited = set(start_nodes)
+
+    while queue:
+        current = queue.popleft()
+        reachable.add(current)
+
+        # Get neighbors from adjacency
+        neighbors = adjacency.get(current, [])
+        for neighbor_pos, _ in neighbors:
+            if neighbor_pos not in visited:
+                visited.add(neighbor_pos)
+                queue.append(neighbor_pos)
+
+    return reachable
 
 
 class PBRSPotentials:
@@ -88,7 +164,6 @@ class PBRSPotentials:
             raise RuntimeError(
                 "PBRS objective_distance_potential requires adjacency graph.\n"
                 "Adjacency is None, which means graph building failed or is disabled.\n"
-                "Fix: Ensure 'enable_graph_for_pbrs: true' in environment config."
             )
 
         if level_data is None:
@@ -303,9 +378,10 @@ class PBRSCalculator:
         # Initialize path distance calculator for path-aware reward shaping
         self.path_calculator = path_calculator
 
-        # Cache for surface area per level
+        # Cache for surface area per level (invalidated when level or switch states change)
         self._cached_surface_area: Optional[float] = None
         self._cached_level_id: Optional[str] = None
+        self._cached_switch_states: Optional[Tuple[Tuple[str, bool], ...]] = None
 
         # Track visited positions for exploration potential (minimal usage)
         self.visited_positions: List[Tuple[float, float]] = []
@@ -315,14 +391,16 @@ class PBRSCalculator:
         self,
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         level_data: Any,
+        graph_data: Optional[Dict[str, Any]] = None,
     ) -> float:
         """Compute total reachable surface area as number of sub-nodes.
 
         STRICT - NO FALLBACKS: Throws error if adjacency is empty or None.
 
-        The adjacency graph is already filtered to only reachable nodes from
-        player spawn (done by GraphBuilder), so we just count total nodes.
-        This provides a natural measure of level complexity and navigable space.
+        Uses flood-fill from player start position to count only nodes actually
+        reachable from spawn, matching the behavior shown in debug overlay visualization.
+        This ensures surface area calculation respects actual navigable space,
+        not just all nodes in the adjacency graph.
 
         Surface area scaling rationale:
         - Small confined levels: fewer nodes → less normalization → stronger gradients
@@ -330,14 +408,15 @@ class PBRSCalculator:
         - Scale-invariant: gradient strength proportional to level complexity
 
         Args:
-            adjacency: Graph adjacency structure (filtered to reachable nodes only)
-            level_data: Level data object
+            adjacency: Graph adjacency structure (may include unreachable nodes)
+            level_data: Level data object (must have start_position attribute)
+            graph_data: Optional graph data dict with spatial_hash for O(1) node lookup
 
         Returns:
-            Total number of reachable sub-nodes (surface area metric)
+            Total number of reachable sub-nodes from start position (surface area metric)
 
         Raises:
-            RuntimeError: If adjacency is None or empty (graph building failed)
+            RuntimeError: If adjacency is None or empty, or start_position is missing
         """
         if not adjacency:
             raise RuntimeError(
@@ -347,15 +426,36 @@ class PBRSCalculator:
                 "  1. Graph building is not enabled in environment config\n"
                 "  2. Graph builder failed to create reachable nodes\n"
                 "  3. Level has no traversable space\n"
-                "Fix: Ensure 'enable_graph_for_pbrs: true' in environment config and verify level is valid."
             )
 
-        # Count total reachable nodes
-        total_reachable_nodes = len(adjacency)
+        # Get player start position from level_data
+        start_position = getattr(level_data, "start_position", None)
+        if start_position is None:
+            raise RuntimeError(
+                "PBRS surface area calculation failed: level_data missing start_position.\n"
+                "Surface area calculation requires player start position to compute reachability.\n"
+                "Verify that level_data.start_position is set correctly."
+            )
+
+        # Convert start position to integer tuple
+        # start_position is in tile data space, but _flood_fill_reachable_nodes
+        # expects world space coordinates (it uses find_closest_node_to_position which expects world space)
+        # Convert from tile data space to world space by adding NODE_WORLD_COORD_OFFSET (+24)
+        from ...graph.reachability.pathfinding_utils import NODE_WORLD_COORD_OFFSET
+
+        start_pos = (
+            int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
+            int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
+        )
+
+        # Use flood-fill to find all nodes reachable from start position
+        # Pass graph_data for O(1) lookup-based node finding
+        reachable_nodes = _flood_fill_reachable_nodes(start_pos, adjacency, graph_data)
+        total_reachable_nodes = len(reachable_nodes)
 
         if total_reachable_nodes == 0:
             raise RuntimeError(
-                "PBRS surface area calculation failed: adjacency graph has zero nodes.\n"
+                "PBRS surface area calculation failed: no nodes reachable from start position.\n"
                 "This means the level has no reachable space from player spawn.\n"
                 "Verify that:\n"
                 "  1. Level geometry allows player movement\n"
@@ -418,12 +518,27 @@ class PBRSCalculator:
         if level_id is None:
             level_id = str(getattr(level_data, "start_position", "unknown"))
 
-        # Compute and cache surface area per level
-        if self._cached_level_id != level_id or self._cached_surface_area is None:
+        # Get switch states signature for cache invalidation
+        switch_states = getattr(level_data, "switch_states", {})
+        # Create hashable signature: sorted tuple of (switch_id, activated) pairs
+        switch_states_signature = (
+            tuple(sorted(switch_states.items())) if switch_states else ()
+        )
+
+        # Check if cache needs invalidation (level changed or switch states changed)
+        cache_invalid = (
+            self._cached_level_id != level_id
+            or self._cached_switch_states != switch_states_signature
+            or self._cached_surface_area is None
+        )
+
+        # Compute and cache surface area per level (recalculate when level or switches change)
+        if cache_invalid:
             self._cached_surface_area = self._compute_reachable_surface_area(
-                adjacency, level_data
+                adjacency, level_data, graph_data
             )
             self._cached_level_id = level_id
+            self._cached_switch_states = switch_states_signature
 
         surface_area = self._cached_surface_area
 
@@ -487,20 +602,32 @@ class PBRSCalculator:
         Returns:
             dict: Dictionary of potential component values (completion-focused)
         """
-        # Compute surface area if needed
-        if (
-            self._cached_level_id != getattr(level_data, "level_id", None)
-            or self._cached_surface_area is None
-        ):
-            level_id = getattr(level_data, "level_id", None)
-            if level_id is None:
-                level_id = str(getattr(level_data, "start_position", "unknown"))
+        # Get or compute level ID for caching
+        level_id = getattr(level_data, "level_id", None)
+        if level_id is None:
+            level_id = str(getattr(level_data, "start_position", "unknown"))
 
-            if self._cached_level_id != level_id or self._cached_surface_area is None:
-                self._cached_surface_area = self._compute_reachable_surface_area(
-                    adjacency, level_data
-                )
-                self._cached_level_id = level_id
+        # Get switch states signature for cache invalidation
+        switch_states = getattr(level_data, "switch_states", {})
+        # Create hashable signature: sorted tuple of (switch_id, activated) pairs
+        switch_states_signature = (
+            tuple(sorted(switch_states.items())) if switch_states else ()
+        )
+
+        # Check if cache needs invalidation (level changed or switch states changed)
+        cache_invalid = (
+            self._cached_level_id != level_id
+            or self._cached_switch_states != switch_states_signature
+            or self._cached_surface_area is None
+        )
+
+        # Compute and cache surface area per level (recalculate when level or switches change)
+        if cache_invalid:
+            self._cached_surface_area = self._compute_reachable_surface_area(
+                adjacency, level_data, graph_data
+            )
+            self._cached_level_id = level_id
+            self._cached_switch_states = switch_states_signature
 
         surface_area = self._cached_surface_area
 
@@ -534,4 +661,4 @@ class PBRSCalculator:
         """Reset calculator state for new episode."""
         self.visited_positions.clear()
         # Keep surface area cache - it's per level, not per episode
-        # Will be invalidated when level_data changes
+        # Will be invalidated when level_data or switch_states change

@@ -424,8 +424,6 @@ class ObservationProcessor:
             ninja_state[22] = (
                 nearest_collectible_norm  # Feature 22: nearest collectible distance
             )
-            # REMOVED: hazard_threat_level (redundant - exponential decay of nearest_hazard)
-            # Feature 23 (interaction cooldown) is already computed in get_ninja_state
 
         # Calculate level progress features (features 24-25 in ninja state)
         # Switch activation progress

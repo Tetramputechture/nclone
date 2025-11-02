@@ -317,7 +317,9 @@ class NppEnvironment(
         Returns:
             Adjacency dictionary, or None if not available
         """
-        return self.current_graph_data["adjacency"]
+        if self.current_graph_data is None:
+            return None
+        return self.current_graph_data.get("adjacency")
 
     def _build_switch_states_array(self, obs: Dict[str, Any]) -> np.ndarray:
         """
