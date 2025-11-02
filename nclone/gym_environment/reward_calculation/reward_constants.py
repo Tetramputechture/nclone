@@ -79,10 +79,12 @@ COMPLETION_TIME_TARGET = (
 )
 
 # NOOP action penalty
-# Rationale: Small penalty (-0.01) discourages standing still without overwhelming
-# other reward signals. Encourages active exploration and movement toward objectives.
-# Without this, agents can exploit doing nothing to avoid negative outcomes.
-NOOP_ACTION_PENALTY = -0.01
+# UPDATED 2025-11-02: Increased from -0.01 to -0.02 based on training analysis
+# Rationale: Agent used NOOP 17.9% of time (too high - should be < 10%).
+# Small penalty (-0.01) was insufficient to discourage standing still. Doubled to -0.02
+# to encourage more active exploration and movement toward objectives.
+# Without stronger penalty, agents exploit doing nothing to avoid negative outcomes.
+NOOP_ACTION_PENALTY = -0.02  # Was -0.01 - MINOR FIX
 
 
 # =============================================================================
@@ -103,16 +105,20 @@ EXPLORATION_CELL_SIZE = 24.0  # pixels
 # Total maximum per-step exploration reward = 0.04
 
 # Single cell (24x24 pixels) - finest granularity
-EXPLORATION_CELL_REWARD = 0.001
+# UPDATED 2025-11-02: Increased from 0.001 to 0.005 (5x) based on training analysis
+# Rationale: Exploration rewards were effectively zero (mean ~0.0, max 0.0005) in training.
+# Too small to encourage spatial coverage vs time penalty (-0.0001). 5x increase balances
+# exploration with efficiency, preventing repetitive behaviors and promoting discovery.
+EXPLORATION_CELL_REWARD = 0.005  # Was 0.001 - CRITICAL FIX
 
 # Medium area (4x4 cells = 96x96 pixels) - room-sized regions
-EXPLORATION_AREA_4X4_REWARD = 0.001
+EXPLORATION_AREA_4X4_REWARD = 0.005  # Was 0.001 - CRITICAL FIX
 
 # Large area (8x8 cells = 192x192 pixels) - section-sized regions
-EXPLORATION_AREA_8X8_REWARD = 0.001
+EXPLORATION_AREA_8X8_REWARD = 0.005  # Was 0.001 - CRITICAL FIX
 
 # Very large area (16x16 cells = 384x384 pixels) - major regions
-EXPLORATION_AREA_16X16_REWARD = 0.001
+EXPLORATION_AREA_16X16_REWARD = 0.005  # Was 0.001 - CRITICAL FIX
 
 
 # =============================================================================
@@ -137,8 +143,11 @@ PBRS_GAMMA = 0.995
 PBRS_OBJECTIVE_WEIGHT = 1.0
 
 # Hazard proximity potential weight
-# Rationale: Small weight provides safety signal without making agent too conservative.
-PBRS_HAZARD_WEIGHT = 0.1
+# UPDATED 2025-11-02: Increased from 0.1 to 0.5 based on training analysis
+# Rationale: Agent struggled specifically with mine avoidance (60% success on simplest_with_mines
+# vs 82% on simplest without mines). Weight of 0.1 was too small to influence behavior.
+# Increased to 0.5 to provide stronger safety signal for hazard avoidance learning.
+PBRS_HAZARD_WEIGHT = 0.5  # Was 0.1 - IMPORTANT FIX for mine avoidance
 
 # Impact risk potential weight
 # Rationale: Keep at 0.0 for completion-focused training.
@@ -150,14 +159,16 @@ PBRS_IMPACT_WEIGHT = 0.0
 PBRS_EXPLORATION_WEIGHT = 0.2
 
 # PBRS scaling for switch and exit phases
-# Rationale: Scale of 1.0 ensures PBRS rewards are effective and guide learning.
-# With γ=0.995, moving closer (increasing potential) always yields positive reward:
-# F(s,s') = γ * Φ(s') - Φ(s) > 0 when Φ(s') > Φ(s)/γ ≈ Φ(s)
-# Previous value (0.5) was too conservative, making PBRS rewards too small to effectively guide learning.
-# PBRS rewards need to be large enough to provide meaningful gradient while still being
-# smaller than terminal rewards (10.0 completion, 1.0 switch activation).
-PBRS_SWITCH_DISTANCE_SCALE = 1.0
-PBRS_EXIT_DISTANCE_SCALE = 1.0
+# UPDATED 2025-11-02: Increased from 1.0 to 5.0 based on comprehensive training analysis
+# Rationale: Analysis of 1M training steps revealed PBRS rewards were ~0.009 per step,
+# which is 10-20x too small to provide effective guidance. Target PBRS range is ±0.05 to ±0.2.
+# With γ=0.995, moving closer (increasing potential) yields positive reward:
+# F(s,s') = γ * Φ(s') - Φ(s)
+# Scale of 5.0 amplifies rewards to ±0.045 range, providing meaningful gradient while
+# remaining smaller than terminal rewards (10.0 completion, 1.0 switch activation).
+# Previous value (1.0) was too conservative - agent experienced 97.5% negative rewards.
+PBRS_SWITCH_DISTANCE_SCALE = 5.0  # Was 1.0 - CRITICAL FIX
+PBRS_EXIT_DISTANCE_SCALE = 5.0    # Was 1.0 - CRITICAL FIX
 
 
 # =============================================================================
