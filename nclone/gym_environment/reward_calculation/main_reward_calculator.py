@@ -48,10 +48,10 @@ class RewardCalculator:
         time_penalty_early: float = TIME_PENALTY_EARLY,
         time_penalty_middle: float = TIME_PENALTY_MIDDLE,
         time_penalty_late: float = TIME_PENALTY_LATE,
-        enable_completion_bonus: bool = False,
+        enable_completion_bonus: bool = True,
         completion_bonus_max: float = COMPLETION_TIME_BONUS_MAX,
         completion_bonus_target: int = COMPLETION_TIME_TARGET,
-        max_episode_steps: int = 20000,
+        max_episode_steps: int = 5000,
     ):
         """Initialize reward calculator with all components.
 
