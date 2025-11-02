@@ -7,7 +7,6 @@ horizontal sections for more complex routing.
 
 from .map import Map
 from typing import Optional, List, Tuple
-import numpy as np
 from .constants import VALID_TILE_TYPES
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
@@ -115,16 +114,11 @@ class MapCorridors(Map):
     def generate(
         self,
         seed: Optional[int] = None,
-        num_corridors: Optional[int] = None,
     ) -> Map:
         """Generate a corridors level with alternating horizontal and vertical sections.
 
         Args:
             seed: Random seed for reproducible generation
-            num_corridors: Number of corridor segments to generate (defaults to class attribute)
-            add_zig_zag_drops: Enable zig-zag drop patterns (defaults to class attribute)
-            max_horizontal_height: Override max height for horizontal corridors (defaults to class attribute)
-            max_vertical_width: Override max width for vertical corridors (defaults to class attribute)
 
         Returns:
             Map: A Map instance with the generated level
@@ -184,13 +178,11 @@ class MapCorridors(Map):
         # Add boundary walls around all corridors
         self._add_boundary_walls()
 
-        # Add ceiling mines to horizontal corridors
-        # - When chaotic walls are disabled: always add mines (if height >= 2)
-        # - When chaotic walls are enabled: add mines only if height > 1
-        self._add_ceiling_mines()
-
         # Place entities
-        self._place_entities()
+        ninja_x, ninja_y = self._place_entities()
+
+        # Add ceiling mines to horizontal corridors
+        self._add_ceiling_mines(ninja_x, ninja_y)
 
         # Add random entities outside playspace
         self._add_random_entities_outside()
@@ -263,6 +255,7 @@ class MapCorridors(Map):
             )
 
             # Decide direction based on previous corridor and zig-zag setting
+            is_zig_zagging = False
             if allow_zig_zag and prev_corridor.orientation == "vertical":
                 # For zig-zag, alternate horizontal direction
                 if (
@@ -272,6 +265,7 @@ class MapCorridors(Map):
                     # Reverse direction from two corridors ago
                     prev_horizontal_dir = self.corridors[-2].direction
                     direction = "left" if prev_horizontal_dir == "right" else "right"
+                    is_zig_zagging = True
                 else:
                     direction = self.rng.choice(["right", "left"])
             else:
@@ -285,6 +279,27 @@ class MapCorridors(Map):
             else:
                 x = max(2, prev_end[0] - width + 1)
                 y = prev_end[1] - height // 2
+
+            # If zig-zagging, ensure at least 2 tiles height difference
+            if is_zig_zagging and len(self.corridors) >= 2:
+                prev_horizontal_corridor = self.corridors[-2]
+                # Calculate floor positions (y + height) for comparison
+                prev_floor_y = (
+                    prev_horizontal_corridor.y + prev_horizontal_corridor.height
+                )
+                new_floor_y = y + height
+                height_diff = abs(new_floor_y - prev_floor_y)
+
+                if height_diff < 2:
+                    # Adjust y to ensure at least 2 tiles difference
+                    # Prefer moving down (higher y values) for variety
+                    adjustment = 2 - height_diff
+                    if new_floor_y < prev_floor_y:
+                        # New corridor is above, move it down
+                        y += adjustment
+                    else:
+                        # New corridor is below, move it further down
+                        y += adjustment
 
             # Clamp to map bounds
             x = max(2, min(x, MAP_TILE_WIDTH - width - 2))
@@ -464,16 +479,42 @@ class MapCorridors(Map):
         if last_corridor.orientation == "horizontal":
             door_x = end_point[0]
             door_y = last_corridor.y + last_corridor.height - 1
-            switch_x = max(last_corridor.x, door_x - self.rng.randint(2, 4))
+            # Generate candidate switch positions and filter to exclude those too close to ninja
+            switch_candidates = [
+                max(last_corridor.x, door_x - offset) for offset in range(2, 5)
+            ]
+            # Exclude switch positions too close to ninja (minimum 1 tile distance)
+            switch_candidates = [x for x in switch_candidates if abs(x - ninja_x) >= 1]
+            if switch_candidates:
+                switch_x = self.rng.choice(switch_candidates)
+            else:
+                # Fallback: use original logic if no valid candidates
+                switch_x = max(last_corridor.x, door_x - self.rng.randint(2, 4))
             switch_y = door_y
         else:
             door_x = last_corridor.x + last_corridor.width // 2
             door_y = end_point[1]
             switch_x = door_x
-            switch_y = min(
-                last_corridor.y + last_corridor.height - 1,
-                door_y + self.rng.randint(2, 4),
-            )
+            # Generate candidate switch y positions and filter to exclude those too close to ninja
+            switch_y_candidates = [
+                min(
+                    last_corridor.y + last_corridor.height - 1,
+                    door_y + offset,
+                )
+                for offset in range(2, 5)
+            ]
+            # Exclude switch positions too close to ninja (minimum 1 tile distance)
+            switch_y_candidates = [
+                y for y in switch_y_candidates if abs(y - ninja_y) >= 1
+            ]
+            if switch_y_candidates:
+                switch_y = self.rng.choice(switch_y_candidates)
+            else:
+                # Fallback: use original logic if no valid candidates
+                switch_y = min(
+                    last_corridor.y + last_corridor.height - 1,
+                    door_y + self.rng.randint(2, 4),
+                )
 
         # Ensure positions are valid
         door_x, door_y = self._find_closest_valid_tile(door_x, door_y, tile_type=0)
@@ -484,142 +525,69 @@ class MapCorridors(Map):
         # Add exit door and switch
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
 
-    def _add_ceiling_mines(self) -> None:
-        """Add ceiling mines to horizontal corridors to discourage random jumping.
+        return ninja_x, ninja_y
 
-        Mines are placed one tile above the ceiling of each horizontal corridor,
-        evenly spaced along the corridor width. Mines are excluded from connection
-        points to other corridors.
+    def _add_ceiling_mines(
+        self,
+        ninja_x: int,
+        ninja_y: int,
+    ) -> None:
+        """Add ceiling and floor mines to corridors.
 
-        When ADD_CHAOTIC_WALLS is False, mines are added for all corridors with height >= 2.
-        When ADD_CHAOTIC_WALLS is True, mines are added only for corridors with height > 1.
-        """
-        if not self.corridors:
-            return
-
-        for corridor_idx, corridor in enumerate(self.corridors):
-            if corridor.orientation != "horizontal":
-                continue
-
-            # Skip if corridor is too narrow
-            if corridor.width < 2:
-                continue
-
-            if self.ADD_CHAOTIC_WALLS and corridor.height <= 2:
-                continue
-
-            # Get excluded x-coordinates at connection points
-            excluded_x_ranges = self._get_connection_x_ranges(corridor, corridor_idx)
-
-            # Calculate number of mines based on corridor width
-            # Place 1-3 mines per corridor, but not more than width - 1
-            min_mines = max(1, corridor.width - 1)
-            max_mines = min(1, corridor.width - 1)
-            if min_mines > max_mines:
-                continue
-
-            num_mines = self.rng.randint(min_mines, max_mines)
-
-            # Place mines along the ceiling of the corridor
-            # Following the pattern from MapHorizontalCorridor: mine_y = start_y + 1
-            # This places mines one tile below the top of the corridor
-            mine_y = corridor.y + 1
-
-            # Ensure mine_y is within map bounds and not below the corridor floor
-            if mine_y < 0 or mine_y >= corridor.y + corridor.height:
-                continue
-
-            # Calculate mine positions along the corridor width
-            # Use fractional coordinates for smoother spacing
-            if corridor.width >= 4:
-                x_start = corridor.x + 0.5
-                x_end = corridor.x + corridor.width - 0.5
-                mine_x_positions = np.linspace(x_start, x_end, num=num_mines)
-            else:
-                # For narrow corridors, space mines more evenly
-                spacing = corridor.width / (num_mines + 1)
-                mine_x_positions = [
-                    corridor.x + (i + 1) * spacing for i in range(num_mines)
-                ]
-
-            # Filter out mine positions that fall within connection areas
-            valid_mine_positions = []
-            for mine_x in mine_x_positions:
-                # Check if this position is within any excluded range
-                is_excluded = False
-                for excluded_start, excluded_end in excluded_x_ranges:
-                    if excluded_start <= mine_x <= excluded_end:
-                        is_excluded = True
-                        break
-
-                if not is_excluded:
-                    valid_mine_positions.append(mine_x)
-
-            # Place the mines
-            for mine_x in valid_mine_positions:
-                # Ensure mine_x is within map bounds
-                if 0 <= mine_x < MAP_TILE_WIDTH:
-                    self.add_entity(1, float(mine_x), float(mine_y))
-
-    def _get_connection_x_ranges(
-        self, corridor: CorridorSegment, corridor_idx: int
-    ) -> List[Tuple[float, float]]:
-        """Get x-coordinate ranges to exclude from mine placement due to connections.
+        Uses centralized mine placement logic from the Map base class.
 
         Args:
-            corridor: The horizontal corridor to check
-            corridor_idx: Index of the corridor in self.corridors list
-
-        Returns:
-            List of (start_x, end_x) tuples representing excluded ranges
+            ninja_x: X coordinate of ninja spawn
+            ninja_y: Y coordinate of ninja spawn
         """
-        excluded_ranges = []
+        # Collect all connection positions to exclude from mine placement
+        connection_positions = []
+        for i in range(len(self.corridors) - 1):
+            corridor1 = self.corridors[i]
+            corridor2 = self.corridors[i + 1]
+            end_point = corridor1.get_end_point()
+            start_point = corridor2.get_start_point()
+            connection_positions.append(end_point)
+            connection_positions.append(start_point)
 
-        # Check connection at start point (if not the first corridor)
-        if corridor_idx > 0:
-            prev_corridor = self.corridors[corridor_idx - 1]
-            start_point = corridor.get_start_point()
-
-            # Calculate connection width based on corridor types
-            # This matches the logic from _connect_corridors
-            if prev_corridor.orientation == "vertical":
-                connection_width = min(prev_corridor.width, corridor.height)
-            else:
-                # Shouldn't happen with alternating pattern, but handle it
-                connection_width = min(prev_corridor.height, corridor.height)
-
-            connection_width = max(1, connection_width)
-            offset = connection_width // 2
-
-            # Calculate excluded x-range around start point
-            # Add some padding (0.5 tiles) to ensure mines don't interfere
-            excluded_start_x = start_point[0] - offset - 0.5 + 1
-            excluded_end_x = start_point[0] + offset + 0.5 + 1
-            excluded_ranges.append((excluded_start_x, excluded_end_x))
-
-        # Check connection at end point (if not the last corridor)
-        if corridor_idx < len(self.corridors) - 1:
-            next_corridor = self.corridors[corridor_idx + 1]
-            end_point = corridor.get_end_point()
-
-            # Calculate connection width based on corridor types
-            # This matches the logic from _connect_corridors
-            if next_corridor.orientation == "vertical":
-                connection_width = min(next_corridor.width, corridor.height)
-            else:
-                # Shouldn't happen with alternating pattern, but handle it
-                connection_width = min(next_corridor.height, corridor.height)
-
-            connection_width = max(1, connection_width)
-            offset = connection_width // 2
-
-            # Calculate excluded x-range around end point
-            # Add some padding (0.5 tiles) to ensure mines don't interfere
-            excluded_start_x = end_point[0] - offset - 0.5 + 1
-            excluded_end_x = end_point[0] + offset + 0.5 + 1
-            excluded_ranges.append((excluded_start_x, excluded_end_x))
-
-        return excluded_ranges
+        # Place mines for each corridor using centralized logic
+        for corridor in self.corridors:
+            if corridor.orientation == "horizontal":
+                if not (self.ADD_CHAOTIC_WALLS and corridor.height == 1):
+                    # Add ceiling mines
+                    self._place_corridor_ceiling_mines(
+                        corridor.x,
+                        corridor.y,
+                        corridor.width,
+                        corridor.height,
+                        "horizontal",
+                        ninja_x,
+                        ninja_y,
+                        connection_positions,
+                    )
+                # Add floor mines
+                self._place_corridor_floor_mines(
+                    corridor.x,
+                    corridor.y,
+                    corridor.width,
+                    corridor.height,
+                    "horizontal",
+                    ninja_x,
+                    ninja_y,
+                    connection_positions,
+                )
+            elif corridor.orientation == "vertical":
+                # Add ceiling mines at the top
+                self._place_corridor_ceiling_mines(
+                    corridor.x,
+                    corridor.y,
+                    corridor.width,
+                    corridor.height,
+                    "vertical",
+                    ninja_x,
+                    ninja_y,
+                    connection_positions,
+                )
 
     def _add_random_entities_outside(self) -> None:
         """Add random entities outside the corridor playspace."""

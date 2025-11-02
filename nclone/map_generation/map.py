@@ -1,5 +1,6 @@
 from typing import Tuple, Optional, List
 import random
+import numpy as np
 from .constants import (
     GRID_SIZE_FACTOR,
     NINJA_SPAWN_OFFSET_UNITS,
@@ -248,6 +249,221 @@ class Map:
             self.entity_counts["gold"] += 1
         elif entity_type == 25:  # Death ball
             self.entity_counts["death_ball"] += 1
+
+    def _place_corridor_ceiling_mines(
+        self,
+        start_x: float,
+        start_y: float,
+        width: float,
+        height: float,
+        orientation: str,
+        ninja_x: float,
+        ninja_y: float,
+        excluded_positions: Optional[List[Tuple[float, float]]] = None,
+    ) -> None:
+        """Place ceiling mines in a corridor.
+
+        Mines are placed evenly along the ceiling (y = start_y + 1), filtered by
+        distance from ninja spawn and excluded positions (e.g., corridor connections).
+
+        IMPORTANT: Accounts for ninja spawn offset (1.5 tiles) when calculating distances.
+        The ninja spawn has NINJA_SPAWN_OFFSET_UNITS applied, but mines don't, causing
+        a 1.5 tile (36px) coordinate mismatch that must be compensated for.
+
+        Args:
+            start_x: Starting x coordinate of the corridor
+            start_y: Starting y coordinate of the corridor
+            width: Width of the corridor
+            height: Height of the corridor
+            orientation: "horizontal" or "vertical"
+            ninja_x: X coordinate of ninja spawn (grid coordinates)
+            ninja_y: Y coordinate of ninja spawn (grid coordinates)
+            excluded_positions: Optional list of (x, y) positions to avoid (e.g., connections)
+        """
+        # Skip ceiling mines for horizontal corridors that are exactly 2 tiles high
+        if orientation == "horizontal" and height == 2:
+            return
+
+        # Calculate mine y position (one tile below the top of the corridor)
+        mine_y = start_y + 1
+
+        # Ensure mine_y is within map bounds
+        if mine_y < 0 or mine_y >= MAP_TILE_HEIGHT:
+            return
+
+        # Calculate number of mines based on corridor width
+        num_mines = self.rng.randint(1, width)
+
+        # Calculate mine positions along the corridor width
+        # For vertical corridors, center mines properly without horizontal offset
+        # For horizontal corridors, apply offset to account for corridor layout
+        offset = 1
+
+        if width >= 4:
+            x_start = start_x + 0.5 + offset
+            x_end = start_x + width - 0.5 + offset
+            mine_x_positions = np.linspace(x_start, x_end, num=num_mines)
+        else:
+            # For narrow corridors, space mines more evenly
+            spacing = width / (num_mines + 1)
+            mine_x_positions = [
+                start_x + (i + 1) * spacing + offset for i in range(num_mines)
+            ]
+
+        # Filter mines by distance from ninja spawn and excluded positions
+        # CRITICAL: Account for ninja spawn offset!
+        # Ninja has 1.5 tile (36px) offset, mines have no offset
+        # Required safety: 18px = 0.75 tiles
+        # Total buffer in grid coordinates: 0.75 + 1.5 = 2.25 tiles
+        SPAWN_BUFFER_TILES = 1
+        CONNECTION_BUFFER_TILES = 2.5
+
+        filtered_positions = []
+        for mine_x in mine_x_positions:
+            # Check distance from ninja spawn
+            distance_to_ninja = (
+                (float(mine_x) - float(ninja_x + 1)) ** 2
+                + (float(mine_y) - float(ninja_y + 1)) ** 2
+            ) ** 0.5
+
+            if distance_to_ninja < SPAWN_BUFFER_TILES:
+                continue
+
+            # Check distance from excluded positions (e.g., connections)
+            if excluded_positions:
+                too_close_to_excluded = False
+                for exc_x, exc_y in excluded_positions:
+                    distance = (
+                        (float(mine_x) - float(exc_x)) ** 2
+                        + (float(mine_y) - float(exc_y)) ** 2
+                    ) ** 0.5
+                    if distance < CONNECTION_BUFFER_TILES:
+                        too_close_to_excluded = True
+                        break
+
+                if too_close_to_excluded:
+                    continue
+
+            filtered_positions.append(mine_x)
+
+        # Place all filtered mines
+        for mine_x in filtered_positions:
+            if 0 <= mine_x < MAP_TILE_WIDTH:
+                self.add_entity(1, float(mine_x), float(mine_y))
+
+    def _place_corridor_floor_mines(
+        self,
+        start_x: float,
+        start_y: float,
+        width: float,
+        height: float,
+        orientation: str,
+        ninja_x: float,
+        ninja_y: float,
+        excluded_positions: Optional[List[Tuple[float, float]]] = None,
+    ) -> None:
+        """Place floor mines in a corridor.
+
+        Mines are placed along the floor (y = start_y + height - 1) with minimum
+        1.5 tile (36px) separation, filtered by distance from ninja spawn and
+        excluded positions.
+
+        IMPORTANT: Accounts for ninja spawn offset (1.5 tiles) when calculating distances.
+        The ninja spawn has NINJA_SPAWN_OFFSET_UNITS applied, but mines don't, causing
+        a 1.5 tile (36px) coordinate mismatch that must be compensated for.
+
+        Args:
+            start_x: Starting x coordinate of the corridor
+            start_y: Starting y coordinate of the corridor
+            width: Width of the corridor
+            height: Height of the corridor
+            orientation: "horizontal" or "vertical"
+            ninja_x: X coordinate of ninja spawn (grid coordinates)
+            ninja_y: Y coordinate of ninja spawn (grid coordinates)
+            excluded_positions: Optional list of (x, y) positions to avoid (e.g., connections)
+        """
+        # Only place floor mines if corridor is at least 2 tiles high
+        if height < 2:
+            return
+
+        # Skip if corridor is too narrow
+        if width < 2:
+            return
+
+        # Calculate mine y position (floor of the corridor)
+        mine_y = start_y + height - 1
+
+        # Ensure mine_y is within map bounds
+        if mine_y < 0 or mine_y >= MAP_TILE_HEIGHT:
+            return
+
+        # Calculate number of mines with 1.5 tile (36px) minimum spacing
+        MIN_SEPARATION_TILES = 1.25
+        max_possible_mines = max(
+            1, int((width - MIN_SEPARATION_TILES) / MIN_SEPARATION_TILES) + 1
+        )
+
+        if max_possible_mines < 1:
+            return
+
+        # Random number of mines, but respecting spacing
+        num_mines = self.rng.randint(1, min(max_possible_mines, 5))
+
+        # Calculate mine positions with proper spacing
+        if num_mines == 1:
+            # Single mine in the middle
+            mine_x_positions = [start_x + width / 2]
+        else:
+            # Multiple mines evenly spaced with at least MIN_SEPARATION_TILES between them
+            usable_width = width - MIN_SEPARATION_TILES  # Leave margins
+            spacing = usable_width / (num_mines - 1) if num_mines > 1 else 0
+            mine_x_positions = [
+                start_x + MIN_SEPARATION_TILES / 2 + i * spacing
+                for i in range(num_mines)
+            ]
+
+        # Filter mines by distance from ninja spawn and excluded positions
+        # CRITICAL: Account for ninja spawn offset!
+        # Ninja has 1.5 tile (36px) offset, mines have no offset
+        # Required safety: 18px = 0.75 tiles
+        # Total buffer in grid coordinates: 0.75 + 1.5 = 2.25 tiles
+        SPAWN_BUFFER_TILES = (
+            2.25  # Accounts for 1.5 tile ninja offset + 0.75 tile (18px) safety
+        )
+        CONNECTION_BUFFER_TILES = 2.0
+
+        filtered_positions = []
+        for mine_x in mine_x_positions:
+            # Check distance from ninja spawn
+            distance_to_ninja = (
+                (float(mine_x) - float(ninja_x)) ** 2
+                + (float(mine_y) - float(ninja_y)) ** 2
+            ) ** 0.5
+
+            if distance_to_ninja < SPAWN_BUFFER_TILES:
+                continue
+
+            # Check distance from excluded positions (e.g., connections)
+            if excluded_positions:
+                too_close_to_excluded = False
+                for exc_x, exc_y in excluded_positions:
+                    distance = (
+                        (float(mine_x) - float(exc_x)) ** 2
+                        + (float(mine_y) - float(exc_y)) ** 2
+                    ) ** 0.5
+                    if distance < CONNECTION_BUFFER_TILES:
+                        too_close_to_excluded = True
+                        break
+
+                if too_close_to_excluded:
+                    continue
+
+            filtered_positions.append(mine_x)
+
+        # Place all filtered mines
+        for mine_x in filtered_positions:
+            if 0 <= mine_x < MAP_TILE_WIDTH:
+                self.add_entity(1, float(mine_x), float(mine_y + height))
 
     def map_data(self):
         """Generate the map data in the format expected by the simulator."""
