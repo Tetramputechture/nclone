@@ -24,8 +24,10 @@ def _get_subcell_lookup_loader():
     """
     Get or create SubcellNodeLookupLoader singleton instance.
 
+    Auto-generates the lookup file if it doesn't exist.
+
     Returns:
-        SubcellNodeLookupLoader instance if available, None otherwise
+        SubcellNodeLookupLoader instance (always returns a valid instance)
     """
     global _subcell_lookup_loader_cache
 
@@ -35,7 +37,10 @@ def _get_subcell_lookup_loader():
 
     # Try to load the singleton
     try:
-        from .subcell_node_lookup import SubcellNodeLookupLoader
+        from .subcell_node_lookup import (
+            SubcellNodeLookupLoader,
+            SubcellNodeLookupPrecomputer,
+        )
 
         loader = SubcellNodeLookupLoader()
         # Verify it's actually loaded
@@ -49,16 +54,54 @@ def _get_subcell_lookup_loader():
             return loader
         else:
             _logger.warning("Subcell lookup loader created but table is None")
-            return None
+            raise RuntimeError("Subcell lookup table is None")
     except FileNotFoundError as e:
-        _logger.debug(f"Subcell lookup file not found: {e}")
-        return None
+        # Auto-generate the lookup file if it doesn't exist
+        _logger.info(f"Subcell lookup file not found, auto-generating: {e}")
+        try:
+            import os
+            from .subcell_node_lookup import SubcellNodeLookupPrecomputer
+
+            # Get the data directory path (match path from subcell_node_lookup.py)
+            data_path = os.path.join(
+                os.path.dirname(__file__), "../../data/subcell_node_lookup.pkl.gz"
+            )
+            data_dir = os.path.dirname(data_path)
+
+            # Ensure data directory exists
+            os.makedirs(data_dir, exist_ok=True)
+
+            # Generate the lookup table
+            _logger.info("Precomputing subcell node lookup table...")
+            precomputer = SubcellNodeLookupPrecomputer()
+            lookup = precomputer.precompute_all(verbose=False)
+            precomputer.save_to_file(lookup, data_path, verbose=False)
+            _logger.info(f"Subcell lookup table generated successfully at {data_path}")
+
+            # Now try loading again
+            loader = SubcellNodeLookupLoader()
+            if loader._lookup_table is not None:
+                _subcell_lookup_loader_cache = loader
+                _logger.info(
+                    f"Subcell lookup loader initialized successfully: "
+                    f"shape={loader._lookup_table.shape}, "
+                    f"size={loader._lookup_table.nbytes / 1024:.2f} KB"
+                )
+                return loader
+            else:
+                raise RuntimeError("Failed to load generated lookup table")
+        except Exception as gen_error:
+            _logger.error(
+                f"Failed to auto-generate subcell lookup file: {gen_error}. "
+                f"Falling back to loader error."
+            )
+            raise
     except RuntimeError as e:
-        _logger.debug(f"Subcell lookup runtime error: {e}")
-        return None
+        _logger.error(f"Subcell lookup runtime error: {e}")
+        raise
     except Exception as e:
-        _logger.warning(f"Subcell lookup unexpected error: {type(e).__name__}: {e}")
-        return None
+        _logger.error(f"Subcell lookup unexpected error: {type(e).__name__}: {e}")
+        raise
 
 
 def extract_spatial_lookups_from_graph_data(
@@ -87,13 +130,13 @@ def extract_spatial_lookups_from_graph_data(
     else:
         _logger.debug("extract_spatial_lookups: graph_data is None")
 
-    # Always try to load subcell lookup (singleton, loads once)
-    subcell_lookup = _get_subcell_lookup_loader()
-
-    if subcell_lookup is not None:
+    # Always try to load subcell lookup (singleton, loads once, auto-generates if needed)
+    try:
+        subcell_lookup = _get_subcell_lookup_loader()
         _logger.debug("extract_spatial_lookups: subcell_lookup available")
-    else:
-        _logger.debug("extract_spatial_lookups: subcell_lookup not available")
+    except Exception as e:
+        _logger.error(f"Failed to load subcell lookup: {e}")
+        subcell_lookup = None
 
     return spatial_hash, subcell_lookup
 
@@ -137,6 +180,14 @@ def find_closest_node_to_position(
     query_x = world_x - NODE_WORLD_COORD_OFFSET
     query_y = world_y - NODE_WORLD_COORD_OFFSET
 
+    # Get subcell_lookup if not provided (auto-loads and auto-generates if needed)
+    if subcell_lookup is None:
+        try:
+            subcell_lookup = _get_subcell_lookup_loader()
+        except Exception as e:
+            _logger.warning(f"Failed to load subcell lookup: {e}")
+            subcell_lookup = None
+
     # Fastest path: Use precomputed subcell lookup if available (O(1) direct access)
     if subcell_lookup is not None:
         try:
@@ -144,50 +195,48 @@ def find_closest_node_to_position(
             closest_node = subcell_lookup.find_closest_node_position(
                 query_x, query_y, adjacency, max_radius=threshold
             )
-            return closest_node
-        except IndexError:
-            # Out of bounds - fall through to spatial_hash or linear search
-            _logger.warning(
-                f"Subcell lookup out of bounds for query ({query_x}, {query_y}), "
-                f"falling back to spatial_hash or linear search"
-            )
+            if closest_node is not None:
+                return closest_node
         except Exception as e:
             # Other errors (e.g., lookup table not loaded)
             _logger.warning(
-                f"Subcell lookup failed: {e}, falling back to spatial_hash or linear search"
+                f"Subcell lookup failed: {e}. Falling back to spatial hash or linear search."
             )
 
-    # Fast path: Use spatial hash if available (O(1))
+    # Fallback to spatial hash if available
     if spatial_hash is not None:
-        # Spatial hash operates in tile data space
-        closest_node = spatial_hash.find_closest(query_x, query_y, threshold)
-        return closest_node
+        try:
+            # Spatial hash lookup
+            candidates = spatial_hash.query(query_x, query_y, radius=threshold)
+            if candidates:
+                # Find closest candidate
+                min_dist = float("inf")
+                closest = None
+                for candidate in candidates:
+                    if candidate in adjacency:
+                        dist_sq = (candidate[0] - query_x) ** 2 + (
+                            candidate[1] - query_y
+                        ) ** 2
+                        if dist_sq < min_dist:
+                            min_dist = dist_sq
+                            closest = candidate
+                if closest is not None and min_dist <= threshold * threshold:
+                    return closest
+        except Exception as e:
+            _logger.debug(f"Spatial hash lookup failed: {e}")
 
-    # Fallback: Linear search for backward compatibility (O(N))
-    _logger.warning(
-        f"No spatial lookup available for query ({query_x}, {query_y}). "
-        f"subcell_lookup={subcell_lookup is not None} (type={type(subcell_lookup).__name__ if subcell_lookup is not None else 'None'}), "
-        f"spatial_hash={spatial_hash is not None} (type={type(spatial_hash).__name__ if spatial_hash is not None else 'None'}), "
-        f"adjacency size={len(adjacency)}. "
-        f"Using O(N) linear search - this is slow for large graphs."
-    )
-    closest_node = None
+    # Final fallback: Linear search (O(N))
     min_dist = float("inf")
+    closest = None
+    for node_pos in adjacency.keys():
+        nx, ny = node_pos
+        dist_sq = (nx - query_x) ** 2 + (ny - query_y) ** 2
+        if dist_sq < min_dist:
+            min_dist = dist_sq
+            closest = node_pos
 
-    for pos in adjacency.keys():
-        x, y = pos
-        # Convert node coords to world coords (+24) for comparison with entity position
-        dist = (
-            (x + NODE_WORLD_COORD_OFFSET - world_x) ** 2
-            + (y + NODE_WORLD_COORD_OFFSET - world_y) ** 2
-        ) ** 0.5
-        if dist < min_dist:
-            min_dist = dist
-            closest_node = pos
-
-    # Only return if within threshold
-    if closest_node is not None and min_dist < threshold:
-        return closest_node
+    if closest is not None and min_dist <= threshold * threshold:
+        return closest
 
     return None
 

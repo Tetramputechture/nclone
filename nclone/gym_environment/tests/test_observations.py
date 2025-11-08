@@ -52,13 +52,13 @@ class TestObservationProfiles(unittest.TestCase):
         rich_obs = self.env_rich.reset()[0]
 
         # Check feature vector size (should have at least ninja_state features)
-        # May include additional entity_states beyond the base 30 ninja features
+        # May include additional entity_states beyond the base ninja features
         self.assertGreaterEqual(len(rich_obs["game_state"]), GAME_STATE_CHANNELS)
 
         # Check that all features are finite
         self.assertTrue(np.all(np.isfinite(rich_obs["game_state"])))
 
-        # Check feature ranges for ninja_state (first 30 features should be normalized)
+        # Check feature ranges for ninja_state (all features should be normalized)
         ninja_state_features = rich_obs["game_state"][:GAME_STATE_CHANNELS]
 
         # Ninja state features should be normalized to reasonable ranges
@@ -158,22 +158,15 @@ class TestEntityFeatures(unittest.TestCase):
         game_state = obs["game_state"]
 
         # Rich profile should include ninja physics features
-        # Check that we have position, velocity, and physics state
-        ninja_features = game_state[:24]  # First 24 features are ninja physics
+        # Check that we have velocity, movement state, inputs, buffers, contact info, and physics
+        ninja_features = game_state[:GAME_STATE_CHANNELS]  # All ninja state features
 
-        # Position features should be reasonable
-        pos_x, pos_y = ninja_features[0], ninja_features[1]
-        self.assertTrue(np.isfinite(pos_x))
-        self.assertTrue(np.isfinite(pos_y))
+        # All features should be finite and normalized
+        self.assertTrue(np.all(np.isfinite(ninja_features)))
 
-        # Velocity features
-        vel_x, vel_y = ninja_features[2], ninja_features[3]
-        self.assertTrue(np.isfinite(vel_x))
-        self.assertTrue(np.isfinite(vel_y))
-
-        # Physics state features (normalized)
-        physics_features = ninja_features[4:24]
-        self.assertTrue(np.all(np.isfinite(physics_features)))
+        # Features should be in reasonable normalized range [-1, 1] (with some tolerance)
+        self.assertTrue(np.all(ninja_features >= -10.0))
+        self.assertTrue(np.all(ninja_features <= 10.0))
 
     def test_entity_distance_features(self):
         """Test entity distance and velocity features."""
@@ -181,7 +174,7 @@ class TestEntityFeatures(unittest.TestCase):
         game_state = obs["game_state"]
 
         # Entity features start after ninja features
-        entity_features = game_state[24:]
+        entity_features = game_state[GAME_STATE_CHANNELS:]
 
         # Should have distance and velocity features for entities
         self.assertTrue(len(entity_features) > 0)

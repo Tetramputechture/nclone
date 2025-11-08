@@ -298,7 +298,6 @@ class UnifiedObservationExtractor:
             "exit_door_y": nplay_wrapper.exit_door_position()[1],
             "time_remaining": time_remaining,
             "sim_frame": sim.frame,
-            "doors_opened": nplay_wrapper.get_doors_opened(),
             "entity_states": entity_states,  # Raw entity states for PBRS
             "reachability_features": self._get_reachability_features(sim, frame_number),
         }
@@ -417,7 +416,6 @@ class UnifiedObservationExtractor:
                 "ceiling": int(ninja.ceiling_count),
             },
             "game_state": ninja_state.tolist(),  # 26-feature array for npp-rl compatibility
-            "doors_opened": int(ninja.doors_opened),
         }
 
         # Extract entity data using existing logic (could be enhanced later)

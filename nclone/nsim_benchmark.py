@@ -12,8 +12,8 @@ from datetime import datetime
 
 def ensure_benchmark_dir():
     """Ensure benchmark directories exist."""
-    os.makedirs('benchmark', exist_ok=True)
-    os.makedirs('benchmark/renderer', exist_ok=True)
+    os.makedirs("benchmark", exist_ok=True)
+    os.makedirs("benchmark/renderer", exist_ok=True)
 
 
 def get_timestamp():
@@ -23,7 +23,7 @@ def get_timestamp():
 
 def save_stats(stats, filename):
     """Save stats to a file."""
-    with open(f'benchmark/{filename}', 'w') as f:
+    with open(f"benchmark/{filename}", "w") as f:
         s = io.StringIO()
         stats.stream = s
         stats.print_stats()
@@ -48,8 +48,7 @@ def benchmark_map_generation(num_maps=100):
 
     # Save cumulative stats
     save_stats(
-        stats.sort_stats('cumulative'),
-        f'map_generation_cumulative_{timestamp}.txt'
+        stats.sort_stats("cumulative"), f"map_generation_cumulative_{timestamp}.txt"
     )
 
     return stats
@@ -80,14 +79,8 @@ def run_simulation_benchmark(num_frames=1000):
     stats = pstats.Stats(profiler)
 
     # Save cumulative and time stats
-    save_stats(
-        stats.sort_stats('cumulative'),
-        f'simulation_cumulative_{timestamp}.txt'
-    )
-    save_stats(
-        stats.sort_stats('time'),
-        f'simulation_time_{timestamp}.txt'
-    )
+    save_stats(stats.sort_stats("cumulative"), f"simulation_cumulative_{timestamp}.txt")
+    save_stats(stats.sort_stats("time"), f"simulation_time_{timestamp}.txt")
 
     return stats
 
@@ -117,7 +110,7 @@ def analyze_specific_method(method_name, num_frames=1000):
     stats = pstats.Stats(profiler)
 
     # Save method-specific analysis
-    with open(f'benchmark/method_{method_name}_{timestamp}.txt', 'w') as f:
+    with open(f"benchmark/method_{method_name}_{timestamp}.txt", "w") as f:
         s = io.StringIO()
         stats.stream = s
         stats.print_callees(method_name)
@@ -152,39 +145,17 @@ def benchmark_renderer(num_frames=1000):
 
     # Save detailed rendering stats
     save_stats(
-        stats.sort_stats('cumulative'),
-        f'renderer/full_render_cumulative_{timestamp}.txt'
+        stats.sort_stats("cumulative"),
+        f"renderer/full_render_cumulative_{timestamp}.txt",
     )
-    save_stats(
-        stats.sort_stats('time'),
-        f'renderer/full_render_time_{timestamp}.txt'
-    )
-
-    # Profile collision map rendering
-    profiler = cProfile.Profile()
-    profiler.enable()
-
-    for frame_num in range(num_frames):
-        renderer.draw_collision_map(frame_num == 0)
-
-    profiler.disable()
-    stats = pstats.Stats(profiler)
-
-    save_stats(
-        stats.sort_stats('cumulative'),
-        f'renderer/collision_map_cumulative_{timestamp}.txt'
-    )
-    save_stats(
-        stats.sort_stats('time'),
-        f'renderer/collision_map_time_{timestamp}.txt'
-    )
+    save_stats(stats.sort_stats("time"), f"renderer/full_render_time_{timestamp}.txt")
 
     # Profile individual render components
     render_methods = [
-        '_update_screen_size',
-        '_update_tile_offsets',
-        '_draw_tiles',
-        '_draw_entities'
+        "_update_screen_size",
+        "_update_tile_offsets",
+        "_draw_tiles",
+        "_draw_entities",
     ]
 
     for method in render_methods:
@@ -193,9 +164,9 @@ def benchmark_renderer(num_frames=1000):
         profiler.enable()
 
         for frame_num in range(num_frames):
-            if method == '_draw_tiles':
+            if method == "_draw_tiles":
                 getattr(renderer, method)(frame_num == 0)
-            elif method == '_draw_entities':
+            elif method == "_draw_entities":
                 getattr(renderer, method)(frame_num == 0)
             else:
                 getattr(renderer, method)()
@@ -204,8 +175,7 @@ def benchmark_renderer(num_frames=1000):
         stats = pstats.Stats(profiler)
 
         save_stats(
-            stats.sort_stats('cumulative'),
-            f'renderer/method_{method}_{timestamp}.txt'
+            stats.sort_stats("cumulative"), f"renderer/method_{method}_{timestamp}.txt"
         )
 
     return stats
@@ -220,15 +190,15 @@ def main():
     benchmark_renderer(1000)  # Add renderer benchmark
 
     important_methods = [
-        'tick',
-        'move',
-        'think',
-        'integrate',
-        'pre_collision',
-        'collide_vs_objects',
-        'collide_vs_tiles',
-        'post_collision',
-        'update_graphics'
+        "tick",
+        "move",
+        "think",
+        "integrate",
+        "pre_collision",
+        "collide_vs_objects",
+        "collide_vs_tiles",
+        "post_collision",
+        "update_graphics",
     ]
 
     for method in important_methods:

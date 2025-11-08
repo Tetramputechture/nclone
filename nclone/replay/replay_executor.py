@@ -10,13 +10,14 @@ import numpy as np
 
 from ..nplay_headless import NPlayHeadless
 from ..gym_environment.observation_processor import ObservationProcessor
-from ..constants.physics_constants import (
-    MAX_HOR_SPEED,
-    GRAVITY_FALL,
-    DRAG_REGULAR,
-    FRICTION_GROUND,
-    MAX_JUMP_DURATION,
+from ..gym_environment.entity_extractor import EntityExtractor
+from ..graph.level_data import LevelData, extract_start_position_from_map_data
+from ..graph.reachability.graph_builder import GraphBuilder
+from ..graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
+from ..graph.reachability.feature_computation import (
+    compute_reachability_features_from_graph,
 )
+from ..constants.physics_constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 
 def map_input_to_action(input_byte: int) -> int:
@@ -95,6 +96,20 @@ class ReplayExecutor:
             enable_augmentation=False,  # No augmentation for replay
         )
 
+        # Initialize graph builder and path calculator for reachability features
+        self.graph_builder = GraphBuilder()
+        self.path_calculator = CachedPathDistanceCalculator(
+            max_cache_size=200, use_astar=True
+        )
+
+        # Entity extractor for level data extraction
+        self.entity_extractor = None  # Will be initialized when nplay_headless is ready
+
+        # Cache for graph and level data (only rebuild when level changes or entity states change)
+        self._cached_level_data = None
+        self._cached_graph_data = None
+        self._cached_level_id = None
+
     def execute_replay(
         self,
         map_data: bytes,
@@ -111,6 +126,34 @@ class ReplayExecutor:
         """
         # Load map
         self.nplay_headless.load_map_from_map_data(list(map_data))
+
+        # Initialize entity extractor now that map is loaded
+        if self.entity_extractor is None:
+            self.entity_extractor = EntityExtractor(self.nplay_headless)
+
+        # Extract level data and build graph once per replay
+        level_data = self._extract_level_data()
+        level_id = getattr(level_data, "level_id", None)
+
+        # Only rebuild graph if level changed
+        if level_id != self._cached_level_id or self._cached_graph_data is None:
+            # Build graph once for the entire replay
+            ninja_pos = (
+                int(self.nplay_headless.ninja_position()[0]),
+                int(self.nplay_headless.ninja_position()[1]),
+            )
+            self._cached_graph_data = self.graph_builder.build_graph(
+                level_data, ninja_pos=ninja_pos
+            )
+            self._cached_level_data = level_data
+            self._cached_level_id = level_id
+
+            # Build level cache once
+            adjacency = self._cached_graph_data.get("adjacency")
+            if adjacency:
+                self.path_calculator.build_level_cache(
+                    level_data, adjacency, self._cached_graph_data
+                )
 
         observations = []
 
@@ -154,7 +197,7 @@ class ReplayExecutor:
         - switch_x, switch_y: exit switch position
         - exit_door_x, exit_door_y: exit door position
         - switch_activated: whether switch has been activated
-        - game_state: concatenated ninja and entity state (26+ floats)
+        - game_state: ninja state (GAME_STATE_CHANNELS features)
         - reachability_features: 8-dimensional reachability vector
         - player_won: whether the player has won
         - player_dead: whether the player has died
@@ -165,16 +208,16 @@ class ReplayExecutor:
         # Get ninja position
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
 
-        # Get ninja state
-        ninja = self.nplay_headless.sim.ninja
-
         # Get entity positions
         switch_x, switch_y = self._get_switch_position()
         exit_door_x, exit_door_y = self._get_exit_door_position()
         switch_activated = self._is_switch_activated()
 
-        # Build game state array (26 features minimum)
-        game_state = self._build_game_state(ninja, ninja_x, ninja_y)
+        # Get game state using the standardized method (GAME_STATE_CHANNELS features)
+        game_state = self.nplay_headless.get_ninja_state()
+        # Convert to numpy array if needed
+        if not isinstance(game_state, np.ndarray):
+            game_state = np.array(game_state, dtype=np.float32)
 
         # Compute reachability features
         reachability_features = self._compute_reachability_features(
@@ -215,62 +258,41 @@ class ReplayExecutor:
         """Check if exit switch is activated."""
         return self.nplay_headless.exit_switch_activated()
 
-    def _build_game_state(self, ninja, ninja_x: float, ninja_y: float) -> np.ndarray:
-        """Build the game state array matching the format expected by observation processor.
-
-        The game state contains ninja physics state (12 values) + entity states.
-        Minimum 26 features to match observation processor expectations.
-
-        Ninja state (12 values):
-        - Position (x, y) normalized
-        - Speed (xspeed, yspeed) normalized
-        - Airborn boolean
-        - Walled boolean
-        - Jump duration normalized
-        - Applied gravity normalized
-        - Applied drag normalized
-        - Applied friction normalized
-        - State (movement state enum)
-        - Jump buffer normalized
+    def _extract_level_data(self) -> LevelData:
         """
+        Extract level structure data for graph construction.
 
-        # Normalize values
-        x_norm = ninja_x / 1056.0  # LEVEL_WIDTH
-        y_norm = ninja_y / 600.0  # LEVEL_HEIGHT
-        xspeed_norm = ninja.xspeed / MAX_HOR_SPEED
-        yspeed_norm = ninja.yspeed / 10.0  # Reasonable max vertical speed
-        jump_duration_norm = ninja.jump_duration / MAX_JUMP_DURATION
-        gravity_norm = ninja.applied_gravity / GRAVITY_FALL
-        drag_norm = ninja.applied_drag / DRAG_REGULAR
-        friction_norm = ninja.applied_friction / FRICTION_GROUND
-        state_norm = ninja.state / 5.0  # States are 0-5
-        jump_buffer_norm = max(ninja.jump_buffer, 0) / 5.0  # Buffer is -1 to 5
+        Returns:
+            LevelData object containing tiles and entities
+        """
+        if self.entity_extractor is None:
+            raise RuntimeError(
+                "Entity extractor not initialized. Map must be loaded first."
+            )
 
-        # Build ninja state array (12 values)
-        ninja_state = np.array(
-            [
-                x_norm,
-                y_norm,
-                xspeed_norm,
-                yspeed_norm,
-                float(not ninja.airborn),  # on_ground
-                float(ninja.walled),
-                jump_duration_norm,
-                gravity_norm,
-                drag_norm,
-                friction_norm,
-                state_norm,
-                jump_buffer_norm,
-            ],
-            dtype=np.float32,
+        # Build level tiles as a compact 2D array of inner playable area [23 x 42]
+        tile_dic = self.nplay_headless.get_tile_data()
+        tiles = np.zeros((MAP_TILE_HEIGHT, MAP_TILE_WIDTH), dtype=np.int32)
+        # Simulator tiles include a 1-tile border; map inner (1..42, 1..23) -> (0..41, 0..22)
+        for (x, y), tile_id in tile_dic.items():
+            inner_x = x - 1
+            inner_y = y - 1
+            if 0 <= inner_x < MAP_TILE_WIDTH and 0 <= inner_y < MAP_TILE_HEIGHT:
+                tiles[inner_y, inner_x] = int(tile_id)
+
+        # Extract entities
+        entities = self.entity_extractor.extract_graph_entities()
+
+        # Extract ninja spawn position from map_data
+        start_position = extract_start_position_from_map_data(
+            self.nplay_headless.sim.map_data
         )
 
-        # Pad to minimum 26 features (12 ninja + 14 padding for entity states)
-        # The observation processor will extract what it needs
-        padding = np.zeros(14, dtype=np.float32)
-        game_state = np.concatenate([ninja_state, padding])
-
-        return game_state
+        return LevelData(
+            start_position=start_position,
+            tiles=tiles,
+            entities=entities,
+        )
 
     def _compute_reachability_features(
         self,
@@ -282,62 +304,40 @@ class ReplayExecutor:
         exit_door_y: float,
     ) -> np.ndarray:
         """
-        Compute 8-dimensional reachability features.
+        Compute 8-dimensional reachability features using adjacency graph.
 
         Features:
-        1. Reachable area ratio (simplified: always 0.5 as we don't do flood fill)
-        2. Distance to nearest switch (normalized, inverted so closer = higher)
-        3. Distance to exit (normalized, inverted so closer = higher)
-        4. Reachable switches count (0 or 1 based on switch state)
-        5. Reachable hazards count (count of nearby mines, normalized)
-        6. Connectivity score (simplified: always 0.5)
-        7. Exit reachable flag (based on switch activation)
-        8. Switch-to-exit path exists (based on switch activation)
+        1. Reachable area ratio (0-1)
+        2. Distance to nearest switch (normalized)
+        3. Distance to exit (normalized)
+        4. Reachable switches count (normalized)
+        5. Reachable hazards count (normalized)
+        6. Connectivity score (0-1)
+        7. Exit reachable flag (0-1)
+        8. Switch-to-exit path exists (0-1)
         """
-        features = np.zeros(8, dtype=np.float32)
-
-        # Feature 1: Reachable area ratio (simplified, not computed in replay mode)
-        features[0] = 0.5
-
-        # Feature 2: Distance to nearest switch (normalized, inverted)
-        max_distance = np.sqrt(1056**2 + 600**2)  # Max level diagonal
-        dist_to_switch = np.sqrt((ninja_x - switch_x) ** 2 + (ninja_y - switch_y) ** 2)
-        features[1] = 1.0 - min(dist_to_switch / max_distance, 1.0)
-
-        # Feature 3: Distance to exit (normalized, inverted)
-        dist_to_exit = np.sqrt(
-            (ninja_x - exit_door_x) ** 2 + (ninja_y - exit_door_y) ** 2
-        )
-        features[2] = 1.0 - min(dist_to_exit / max_distance, 1.0)
-
-        # Feature 4: Reachable switches count (0 or 1 based on activation state)
-        switch_activated = self._is_switch_activated()
-        features[3] = (
-            1.0 if not switch_activated else 0.0
-        )  # 1 if still needs activation
-
-        # Feature 5: Reachable hazards count (count of nearby mines, normalized)
-        try:
-            mines = self.nplay_headless.mines()
-            # Count mines within reasonable distance (e.g., 200 pixels)
-            nearby_mines = sum(
-                1
-                for mine in mines
-                if np.sqrt((ninja_x - mine.xpos) ** 2 + (ninja_y - mine.ypos) ** 2)
-                < 200
+        # Use cached graph and level data (built once per replay)
+        if self._cached_graph_data is None or self._cached_level_data is None:
+            raise RuntimeError(
+                "Graph and level data not cached. Call execute_replay() first."
             )
-            features[4] = min(nearby_mines / 10.0, 1.0)  # Normalize by expected max
-        except:
-            features[4] = 0.0
 
-        # Feature 6: Connectivity score (simplified, not computed in replay mode)
-        features[5] = 0.5
+        # Get current ninja position
+        ninja_pos = (int(ninja_x), int(ninja_y))
 
-        # Feature 7: Exit reachable flag (based on switch activation)
-        features[6] = 1.0 if switch_activated else 0.0
+        # Extract adjacency from cached graph
+        adjacency = self._cached_graph_data.get("adjacency")
+        if adjacency is None:
+            raise RuntimeError("adjacency not found in cached graph_data")
 
-        # Feature 8: Switch-to-exit path exists (same as exit reachable)
-        features[7] = features[6]
+        # Compute features using shared function with cached data
+        features = compute_reachability_features_from_graph(
+            adjacency,
+            self._cached_graph_data,
+            self._cached_level_data,
+            ninja_pos,
+            self.path_calculator,
+        )
 
         return features
 

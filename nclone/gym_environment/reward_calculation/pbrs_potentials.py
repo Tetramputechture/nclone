@@ -19,20 +19,20 @@ All constants defined in reward_constants.py with full documentation.
 import numpy as np
 from typing import Dict, Any, List, Tuple, Optional, Set
 from collections import deque
+import heapq
 from ..util.util import calculate_distance
 from .reward_constants import (
-    PBRS_MAX_VELOCITY,
     PBRS_EXPLORATION_VISIT_THRESHOLD,
     PBRS_EXPLORATION_RADIUS,
     PBRS_SWITCH_DISTANCE_SCALE,
     PBRS_EXIT_DISTANCE_SCALE,
     PBRS_OBJECTIVE_WEIGHT,
-    PBRS_HAZARD_WEIGHT,
-    PBRS_IMPACT_WEIGHT,
+    PBRS_HAZARD_WEIGHT,  # Applied in calculate_combined_potential
+    PBRS_IMPACT_WEIGHT,  # Applied in calculate_combined_potential
     PBRS_EXPLORATION_WEIGHT,
 )
-
-from ..observation_processor import compute_hazard_from_entity_states
+from ...constants.physics_constants import MAX_SURVIVABLE_IMPACT
+from ...constants.entity_types import EntityType
 from ...graph.reachability.pathfinding_utils import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
@@ -235,81 +235,292 @@ class PBRSPotentials:
         return max(0.0, min(1.0, potential))
 
     @staticmethod
-    def hazard_proximity_potential(state: Dict[str, Any]) -> float:
-        """Potential penalty based on proximity to active hazards (mines).
+    def hazard_proximity_potential(
+        state: Dict[str, Any],
+        adjacency: Optional[
+            Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+        ] = None,
+        graph_data: Optional[Dict[str, Any]] = None,
+        reachable_mines_lookup: Optional[Dict[int, Tuple[float, float]]] = None,
+    ) -> float:
+        """Potential penalty based on proximity to dangerous toggle mines.
+
+        Only considers toggled mines (state 0) as hazards. Untoggled mines (state 1)
+        and toggling mines (state 2) are safe and ignored.
+
+        Optimized for performance with many mines:
+        - Only evaluates nearest 16 REACHABLE mines (using max-heap)
+        - Uses squared distances for faster comparison
+        - Early exit for very close mines (within collision distance)
+        - Filters unreachable mines using adjacency graph (behind walls, etc.)
+        - Dynamic search radius based on PBRS surface area (level-appropriate scaling)
 
         Returns lower potential when close to dangerous mines, encouraging
         the agent to maintain safe distance from hazards.
 
         Args:
-            state: Game state dictionary containing entity_states and player position
+            state: Game state dictionary containing entities and player position
+                (should contain '_pbrs_surface_area' for optimal performance)
+            adjacency: Graph adjacency structure for reachability checking (optional)
+            graph_data: Graph data dict with spatial_hash for O(1) lookup (optional)
+            reachable_mines_lookup: Pre-computed dict of entity id -> (xpos, ypos) for
+                reachable mines only. If provided, skips expensive reachability checks.
+                Significant performance optimization when provided (optional).
 
         Returns:
             float: Potential in range [0.0, 1.0], lower when close to hazards
         """
-        # Extract entity states if available
-        entity_states = state.get("entity_states", None)
-        if entity_states is None or len(entity_states) == 0:
-            return 1.0  # No entity data, assume safe
+        # Extract entity objects from state
+        entities = state.get("entities", [])
+        if not entities:
+            return 1.0  # No entities, assume safe
 
         player_x = state.get("player_x", 0.0)
         player_y = state.get("player_y", 0.0)
 
-        nearest_hazard_dist, hazard_threat = compute_hazard_from_entity_states(
-            entity_states, player_x, player_y
-        )
+        # Constants for optimization
+        MAX_NEAREST_MINES = 16  # Only consider nearest 16 mines
+        NINJA_RADIUS = 10.0  # Player collision radius
+        MINE_RADIUS = 4.0  # Toggled mine radius (worst case)
+        COLLISION_DISTANCE = NINJA_RADIUS + MINE_RADIUS  # ~14 pixels
+        # Reachability check threshold: mines must be within reasonable distance of graph node
+        REACHABILITY_THRESHOLD = 50.0  # pixels
+
+        # Calculate dynamic max search radius based on PBRS surface area
+        # Uses same area_scale formula as objective_distance_potential for consistency
+        # Multiplier of 2.0 ensures we capture threats across the entire level
+        surface_area = state.get("_pbrs_surface_area")
+        if surface_area is None or surface_area <= 0:
+            raise RuntimeError(
+                "PBRS hazard_proximity_potential requires '_pbrs_surface_area' in state.\n"
+                "This should be set by PBRSCalculator.calculate_combined_potential().\n"
+                "If you see this error, there's a bug in the PBRS calculation flow."
+            )
+        # Surface area scaling: sqrt converts 2D area to 1D distance scale
+        # Multiply by SUB_NODE_SIZE (12px) to get pixel distance equivalent
+        area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
+        # Use 2.0x multiplier to ensure we capture threats across the level
+        max_search_radius = area_scale * 2.0
+        MAX_SEARCH_RADIUS_SQ = max_search_radius**2  # Squared to avoid sqrt in loop
+
+        # Use max-heap to keep track of nearest mines (negative distance for max-heap)
+        # Format: (-distance_sq, id(e)) - we want smallest distances (largest negatives)
+        nearest_mines_heap = []
+
+        # Performance optimization: use pre-computed reachable mines lookup if available
+        # This eliminates ~29 calls to find_closest_node_to_position per invocation
+        if reachable_mines_lookup is not None:
+            # Fast path: iterate pre-filtered reachable mines from lookup table
+            for mine_id, (mine_x, mine_y) in reachable_mines_lookup.items():
+                # Calculate squared distance (faster than sqrt)
+                dx = player_x - mine_x
+                dy = player_y - mine_y
+                dist_sq = dx * dx + dy * dy
+
+                # Skip mines beyond max search radius (threat is negligible)
+                if dist_sq > MAX_SEARCH_RADIUS_SQ:
+                    continue
+
+                # Early exit: if mine is within collision distance, threat is maximum
+                if dist_sq <= COLLISION_DISTANCE * COLLISION_DISTANCE:
+                    # Direct collision threat - return minimum potential
+                    hazard_threat = 1.0
+                    return 1.0 - hazard_threat
+
+                # Maintain heap of nearest MAX_NEAREST_MINES mines
+                # Use mine_id as tie-breaker to avoid comparison errors when distances are equal
+                if len(nearest_mines_heap) < MAX_NEAREST_MINES:
+                    # Heap not full, add mine
+                    heapq.heappush(nearest_mines_heap, (-dist_sq, mine_id))
+                else:
+                    # Heap full, compare with farthest mine in heap
+                    if dist_sq < -nearest_mines_heap[0][0]:
+                        # This mine is closer than farthest in heap, replace it
+                        heapq.heapreplace(nearest_mines_heap, (-dist_sq, mine_id))
+        else:
+            # Slow path: iterate entities and check reachability (backward compatibility)
+            # Extract spatial lookups for O(1) reachability checking
+            spatial_hash = None
+            subcell_lookup = None
+            if graph_data is not None:
+                spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+                    graph_data
+                )
+
+            # Single pass: filter dangerous mines, check reachability, and compute distances
+            # Early exit if we find a mine within collision distance
+            for e in entities:
+                # Quick filter: check if it's a toggle mine first (fast attribute check)
+                if not (
+                    hasattr(e, "type")
+                    and hasattr(e, "state")
+                    and e.type
+                    in (EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED)
+                    and e.state == 0  # Only toggled mines are dangerous
+                ):
+                    continue
+
+                if not (hasattr(e, "xpos") and hasattr(e, "ypos")):
+                    continue
+
+                # Calculate squared distance (faster than sqrt)
+                dx = player_x - e.xpos
+                dy = player_y - e.ypos
+                dist_sq = dx * dx + dy * dy
+
+                # Skip mines beyond max search radius (threat is negligible)
+                if dist_sq > MAX_SEARCH_RADIUS_SQ:
+                    continue
+
+                # Early exit: if mine is within collision distance, threat is maximum
+                if dist_sq <= COLLISION_DISTANCE * COLLISION_DISTANCE:
+                    # Direct collision threat - return minimum potential
+                    hazard_threat = 1.0
+                    return 1.0 - hazard_threat
+
+                # Optimize reachability checking: only check if mine could enter heap
+                # If heap is full and mine is farther than farthest in heap, skip expensive check
+                should_check_reachability = True
+                if len(nearest_mines_heap) >= MAX_NEAREST_MINES:
+                    # Heap is full - only check reachability if this mine could replace farthest
+                    farthest_dist_sq = -nearest_mines_heap[0][0]
+                    if dist_sq >= farthest_dist_sq:
+                        # Mine is farther than farthest in heap, skip reachability check
+                        should_check_reachability = False
+
+                # Check reachability if adjacency graph is available and mine could enter heap
+                if should_check_reachability and adjacency is not None:
+                    mine_pos = (int(e.xpos), int(e.ypos))
+                    closest_node = find_closest_node_to_position(
+                        mine_pos,
+                        adjacency,
+                        threshold=REACHABILITY_THRESHOLD,
+                        spatial_hash=spatial_hash,
+                        subcell_lookup=subcell_lookup,
+                    )
+                    # Skip unreachable mines (behind walls, in unreachable areas)
+                    if closest_node is None:
+                        continue
+
+                # Maintain heap of nearest MAX_NEAREST_MINES mines
+                # Use id(e) as tie-breaker to avoid comparison errors when distances are equal
+                if len(nearest_mines_heap) < MAX_NEAREST_MINES:
+                    # Heap not full, add mine
+                    heapq.heappush(nearest_mines_heap, (-dist_sq, id(e)))
+                else:
+                    # Heap full, compare with farthest mine in heap
+                    if dist_sq < -nearest_mines_heap[0][0]:
+                        # This mine is closer than farthest in heap, replace it
+                        heapq.heapreplace(nearest_mines_heap, (-dist_sq, id(e)))
+
+        if not nearest_mines_heap:
+            return 1.0  # No dangerous mines found, maximum potential
+
+        # Get nearest mine from heap (largest negative = smallest distance)
+        nearest_dist_sq = -nearest_mines_heap[0][0]
+        nearest_dist = np.sqrt(nearest_dist_sq)
+
+        # Calculate threat using exponential decay
+        # Decay factor of 100 pixels means threat drops to ~0.37 at 100px
+        decay_factor = 100.0
+        hazard_threat = np.exp(-nearest_dist / decay_factor)
 
         # Return potential based on hazard proximity
+        # Raw potential in [0.0, 1.0] range (weight applied by caller):
         # When far from hazards: high potential (1.0)
         # When close to hazards: low potential (approaches 0.0)
-        # This encourages maintaining safe distance
-        return 1.0 - (hazard_threat * PBRS_HAZARD_WEIGHT)
+        return 1.0 - hazard_threat
 
     @staticmethod
     def impact_risk_potential(state: Dict[str, Any]) -> float:
-        """Potential penalty based on impact risk.
+        """Potential penalty based on terminal impact risk.
 
-        Uses velocity and surface normal information to estimate collision risk.
-        Higher downward velocity near surfaces increases risk.
+        Matches the exact terminal impact calculation from ninja.py (lines 366-407).
+        Calculates impact velocity using previous frame velocities and normalized
+        surface normals, comparing against threshold to determine risk.
+
+        Floor impact only considered if ninja was airborne before landing.
+        Ceiling impact considered whenever ceiling contact exists.
 
         Args:
-            state: Game state dictionary
+            state: Game state dictionary containing ninja properties
 
         Returns:
             float: Potential in range [0.0, 1.0], lower when high impact risk
         """
-        # Extract velocity components from game state
+        # Extract required ninja properties from state
+        xspeed_old = state.get("player_xspeed_old", 0.0)
+        yspeed_old = state.get("player_yspeed_old", 0.0)
+        airborn_old = state.get("player_airborn_old", False)
+        floor_normalized_x = state.get("floor_normal_x", 0.0)
+        floor_normalized_y = state.get("floor_normal_y", -1.0)
+        ceiling_normalized_x = state.get("ceiling_normal_x", 0.0)
+        ceiling_normalized_y = state.get("ceiling_normal_y", 1.0)
+
+        # Extract floor_count and ceiling_count from game_state array
+        # Indices 14 (floor), 15 (wall), 16 (ceiling) are normalized to [-1, 1]
+        # Normalization: count=0 -> -1, count>=1 -> 1
         game_state = state.get("game_state", [])
-        if len(game_state) < 4:  # Need at least velocity components
-            return 1.0  # No velocity info, assume safe
+        floor_count_norm = game_state[14] if len(game_state) > 14 else -1.0
+        ceiling_count_norm = game_state[16] if len(game_state) > 16 else -1.0
 
-        # Assuming velocity is in positions 2, 3 of game state (vx, vy)
-        vx = game_state[2] if len(game_state) > 2 else 0.0
-        vy = game_state[3] if len(game_state) > 3 else 0.0
+        # Denormalize: (-1, 1] -> (0, 1] (check if > 0 means count > 0)
+        floor_count = (floor_count_norm + 1.0) / 2.0
+        ceiling_count = (ceiling_count_norm + 1.0) / 2.0
+        has_floor_contact = floor_count > 0.5
+        has_ceiling_contact = ceiling_count > 0.5
 
-        # Calculate velocity magnitude
-        velocity_magnitude = np.sqrt(vx**2 + vy**2)
+        max_risk = 0.0
 
-        # Focus on downward velocity as primary risk factor
-        downward_velocity = max(0.0, vy)  # Positive vy is downward
+        # Calculate floor impact risk (only if was airborne before landing)
+        # Matches ninja.py line 366-381
+        if has_floor_contact and airborn_old:
+            # Calculate impact velocity using exact formula from ninja.py line 369-371
+            impact_vel_floor = -(
+                floor_normalized_x * xspeed_old + floor_normalized_y * yspeed_old
+            )
 
-        # Extract surface normal information if available (from rich features)
-        floor_normal_y = 0.0
-        if len(game_state) >= 24:  # Rich features available
-            # Assuming floor normal y is at position ~20 in rich features
-            floor_normal_y = abs(game_state[20]) if len(game_state) > 20 else 0.0
+            # Calculate threshold using exact formula from ninja.py line 373-374
+            threshold_floor = MAX_SURVIVABLE_IMPACT - (4.0 / 3.0) * abs(
+                floor_normalized_y
+            )
 
-        # Calculate impact risk based on downward velocity and surface proximity
-        # Higher risk when moving fast downward near surfaces
-        velocity_risk = min(1.0, velocity_magnitude / PBRS_MAX_VELOCITY)
-        downward_risk = min(1.0, downward_velocity / PBRS_MAX_VELOCITY)
-        surface_proximity = floor_normal_y  # Higher when near floor
+            # Calculate risk as normalized distance above threshold
+            if threshold_floor > 1e-6:  # Avoid division by zero
+                if impact_vel_floor > threshold_floor:
+                    # Impact velocity exceeds threshold - calculate risk
+                    # Risk increases as impact_vel exceeds threshold
+                    excess = impact_vel_floor - threshold_floor
+                    risk_floor = min(1.0, excess / threshold_floor)
+                    max_risk = max(max_risk, risk_floor)
+                # If impact_vel <= threshold, no risk from floor
 
-        # Combine factors: higher risk when fast downward movement near surfaces
-        impact_risk = velocity_risk * downward_risk * (0.5 + 0.5 * surface_proximity)
+        # Calculate ceiling impact risk (always checked if ceiling contact exists)
+        # Matches ninja.py line 383-407 (no airborn_old check for ceiling)
+        if has_ceiling_contact:
+            # Calculate impact velocity using exact formula from ninja.py line 395-397
+            impact_vel_ceiling = -(
+                ceiling_normalized_x * xspeed_old + ceiling_normalized_y * yspeed_old
+            )
 
-        # Return inverted risk as potential (lower risk = higher potential)
-        return 1.0 - (impact_risk * PBRS_IMPACT_WEIGHT)
+            # Calculate threshold using exact formula from ninja.py line 399-400
+            threshold_ceiling = MAX_SURVIVABLE_IMPACT - (4.0 / 3.0) * abs(
+                ceiling_normalized_y
+            )
+
+            # Calculate risk as normalized distance above threshold
+            if threshold_ceiling > 1e-6:  # Avoid division by zero
+                if impact_vel_ceiling > threshold_ceiling:
+                    # Impact velocity exceeds threshold - calculate risk
+                    excess = impact_vel_ceiling - threshold_ceiling
+                    risk_ceiling = min(1.0, excess / threshold_ceiling)
+                    max_risk = max(max_risk, risk_ceiling)
+                # If impact_vel <= threshold, no risk from ceiling
+
+        # Return potential: lower risk = higher potential
+        # Raw potential in [0.0, 1.0] range (weight applied by caller)
+        potential = 1.0 - max_risk
+        return max(0.0, min(1.0, potential))
 
     @staticmethod
     def exploration_potential(
@@ -382,6 +593,12 @@ class PBRSCalculator:
         self._cached_surface_area: Optional[float] = None
         self._cached_level_id: Optional[str] = None
         self._cached_switch_states: Optional[Tuple[Tuple[str, bool], ...]] = None
+
+        # Cache for reachable mine positions per level (performance optimization)
+        # Key: level_id, Value: Dict mapping entity id -> (xpos, ypos)
+        # Only includes mines that are reachable from player start position
+        self._cached_reachable_mines: Optional[Dict[int, Tuple[float, float]]] = None
+        self._cached_mines_level_id: Optional[str] = None
 
         # Track visited positions for exploration potential (minimal usage)
         self.visited_positions: List[Tuple[float, float]] = []
@@ -465,6 +682,74 @@ class PBRSCalculator:
 
         return float(total_reachable_nodes)
 
+    def _precompute_reachable_mines(
+        self,
+        state: Dict[str, Any],
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        graph_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[int, Tuple[float, float]]:
+        """Pre-compute which mines are reachable and cache their positions.
+
+        This method is called once per level to build a lookup table of reachable
+        mine positions. Since mine positions don't change during a level, this
+        eliminates thousands of repeated reachability checks per episode.
+
+        Performance optimization rationale:
+        - Profiling shows find_closest_node_to_position is called ~29 times per
+          hazard_proximity_potential call (14,160 times for 496 calls)
+        - Pre-computing reachability once per level reduces this to O(num_mines)
+          one-time cost instead of O(num_mines * num_steps)
+
+        Args:
+            state: Game state containing entities
+            adjacency: Graph adjacency structure for reachability checking
+            graph_data: Graph data dict with spatial_hash for O(1) lookup
+
+        Returns:
+            Dict mapping entity id -> (xpos, ypos) for reachable mines only
+        """
+        reachable_mines = {}
+        entities = state.get("entities", [])
+        if not entities or adjacency is None:
+            return reachable_mines
+
+        # Extract spatial lookups for O(1) reachability checking
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
+        )
+
+        # Constants for reachability check
+        REACHABILITY_THRESHOLD = 50.0  # pixels
+
+        # Single pass: filter dangerous mines and check reachability once
+        for e in entities:
+            # Only check toggle mines (same filter as hazard_proximity_potential)
+            if not (
+                hasattr(e, "type")
+                and hasattr(e, "state")
+                and e.type in (EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED)
+            ):
+                continue
+
+            if not (hasattr(e, "xpos") and hasattr(e, "ypos")):
+                continue
+
+            # Check reachability once per mine
+            mine_pos = (int(e.xpos), int(e.ypos))
+            closest_node = find_closest_node_to_position(
+                mine_pos,
+                adjacency,
+                threshold=REACHABILITY_THRESHOLD,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+            )
+
+            # Only cache reachable mines
+            if closest_node is not None:
+                reachable_mines[id(e)] = (e.xpos, e.ypos)
+
+        return reachable_mines
+
     def calculate_combined_potential(
         self,
         state: Dict[str, Any],
@@ -542,6 +827,17 @@ class PBRSCalculator:
 
         surface_area = self._cached_surface_area
 
+        # Compute and cache reachable mines per level (for performance optimization)
+        # Only compute if level changed or not cached yet
+        if (
+            self._cached_mines_level_id != level_id
+            or self._cached_reachable_mines is None
+        ):
+            self._cached_reachable_mines = self._precompute_reachable_mines(
+                state, adjacency, graph_data
+            )
+            self._cached_mines_level_id = level_id
+
         # Add surface area to state for potential calculation
         state_with_metrics = dict(state)
         state_with_metrics["_pbrs_surface_area"] = surface_area
@@ -556,16 +852,36 @@ class PBRSCalculator:
             graph_data=graph_data,
         )
 
-        # Apply phase-specific scaling (switch vs exit)
+        # Calculate safety potentials (hazard proximity and impact risk)
+        # These provide safety signals without overwhelming completion objective
+        # Pass pre-computed reachable mines lookup for performance
+        hazard_pot = PBRSPotentials.hazard_proximity_potential(
+            state_with_metrics,
+            adjacency=adjacency,
+            graph_data=graph_data,
+            reachable_mines_lookup=self._cached_reachable_mines,
+        )
+        impact_pot = PBRSPotentials.impact_risk_potential(state)
+
+        # Apply phase-specific scaling (switch vs exit) for objective potential
         if not state.get("switch_activated", False):
-            combined_potential = (
+            objective_component = (
                 PBRS_SWITCH_DISTANCE_SCALE * objective_pot * PBRS_OBJECTIVE_WEIGHT
             )
         else:
-            combined_potential = (
+            objective_component = (
                 PBRS_EXIT_DISTANCE_SCALE * objective_pot * PBRS_OBJECTIVE_WEIGHT
             )
 
+        # Combine all potentials with their respective weights
+        # Objective potential is the primary signal, safety potentials provide guidance
+        combined_potential = (
+            objective_component
+            + hazard_pot * PBRS_HAZARD_WEIGHT
+            + impact_pot * PBRS_IMPACT_WEIGHT
+        )
+
+        # Clamp to reasonable range (objective component is the dominant term)
         max_potential = max(PBRS_SWITCH_DISTANCE_SCALE, PBRS_EXIT_DISTANCE_SCALE)
         return max(0.0, min(max_potential, combined_potential))
 
@@ -631,6 +947,17 @@ class PBRSCalculator:
 
         surface_area = self._cached_surface_area
 
+        # Compute and cache reachable mines per level (for performance optimization)
+        # Only compute if level changed or not cached yet
+        if (
+            self._cached_mines_level_id != level_id
+            or self._cached_reachable_mines is None
+        ):
+            self._cached_reachable_mines = self._precompute_reachable_mines(
+                state, adjacency, graph_data
+            )
+            self._cached_mines_level_id = level_id
+
         state_with_metrics = dict(state)
         state_with_metrics["_pbrs_surface_area"] = surface_area
 
@@ -641,6 +968,17 @@ class PBRSCalculator:
             path_calculator=self.path_calculator,
             graph_data=graph_data,
         )
+
+        # Calculate hazard and impact potentials for safety signals
+        # Pass pre-computed reachable mines lookup for performance
+        hazard_pot = PBRSPotentials.hazard_proximity_potential(
+            state_with_metrics,
+            adjacency=adjacency,
+            graph_data=graph_data,
+            reachable_mines_lookup=self._cached_reachable_mines,
+        )
+        impact_pot = PBRSPotentials.impact_risk_potential(state)
+
         return {
             "objective": objective_pot,
             "switch_distance_potential": PBRS_SWITCH_DISTANCE_SCALE * objective_pot
@@ -652,9 +990,9 @@ class PBRSCalculator:
             "surface_area": surface_area,
             "sqrt_surface_area": np.sqrt(surface_area),
             "area_scale_px": np.sqrt(surface_area) * SUB_NODE_SIZE,
-            "hazard": 0.0,  # Disabled for completion focus
-            "impact": 0.0,  # Disabled for completion focus
-            "exploration": 0.0,  # Disabled for completion focus
+            "hazard": hazard_pot,
+            "impact": impact_pot,
+            "exploration": 0.0,  # Disabled - explicit exploration rewards handle this
         }
 
     def reset(self) -> None:

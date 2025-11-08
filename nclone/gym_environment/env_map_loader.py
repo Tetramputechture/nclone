@@ -62,7 +62,16 @@ class EnvMapLoader:
         self.eval_mode = eval_mode
         self.custom_map_path = custom_map_path
         self.curriculum_stage = curriculum_stage
-        self.test_dataset_path = test_dataset_path or "datasets/test"
+        # Resolve test_dataset_path to absolute path to ensure consistent resolution
+        # regardless of current working directory (important for distributed training)
+        # Paths are typically already resolved by ArchitectureTrainer, but we resolve here
+        # as a safety measure in case paths are passed directly
+        default_path = "datasets/test"
+        path_to_resolve = test_dataset_path or default_path
+        path_obj = Path(path_to_resolve)
+        # If path is already absolute, resolve() will return it unchanged
+        # If relative, resolve() will make it absolute relative to current working directory
+        self.test_dataset_path = str(path_obj.resolve())
 
         # Current map state
         self.current_map_name = None
@@ -220,34 +229,27 @@ class EnvMapLoader:
         Returns:
             Ordered list of level IDs starting with simple levels
         """
+        # self.test_dataset_path is already resolved to absolute path in __init__
         metadata_path = Path(self.test_dataset_path) / "test_metadata.json"
 
         if not metadata_path.exists():
-            print(f"Warning: Test suite metadata not found at {metadata_path}")
-            return []
+            raise RuntimeError(
+                f"Test suite metadata not found at {metadata_path} "
+                f"(resolved from: {self.test_dataset_path})"
+            )
 
-        try:
-            with open(metadata_path, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
 
-            # Extract levels in order: simple, medium, complex, mine_heavy, exploration
-            ordered_levels = []
-            category_order = [
-                "simple",
-                "medium",
-                "complex",
-                "mine_heavy",
-                "exploration",
-            ]
+        # Extract levels in order: simple, medium, complex, mine_heavy, exploration
+        ordered_levels = []
+        category_order = TestSuiteLoader.CATEGORIES
 
-            for category in category_order:
-                if category in metadata.get("categories", {}):
-                    ordered_levels.extend(metadata["categories"][category]["level_ids"])
+        for category in category_order:
+            if category in metadata.get("categories", {}):
+                ordered_levels.extend(metadata["categories"][category]["level_ids"])
 
-            return ordered_levels
-        except Exception as e:
-            print(f"Warning: Failed to load test suite metadata: {e}")
-            return []
+        return ordered_levels
 
     def load_random_categorized_map(self, category: str = "simple"):
         """
@@ -259,9 +261,9 @@ class EnvMapLoader:
         Raises:
             ValueError: If category is invalid or no maps available in that category
         """
-        if category not in ["simple", "complex"]:
+        if category not in TestSuiteLoader.CATEGORIES:
             raise ValueError(
-                f"Invalid category '{category}'. Must be 'simple' or 'complex'."
+                f"Invalid category '{category}'. Must be one of: {TestSuiteLoader.CATEGORIES}"
             )
 
         maps_list = self._map_categories.get(category, [])

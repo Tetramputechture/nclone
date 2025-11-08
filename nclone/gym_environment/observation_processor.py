@@ -23,19 +23,9 @@ This class should handle returning:
 - The global view (RENDERED_VIEW_WIDTH x RENDERED_VIEW_HEIGHT)
   - This covers the global view of the level at 1/6th resolution
 - The game state
-    - Ninja state (12 values)
-        - Position normalized
-        - Speed normalized
-        - Airborn boolean
-        - Walled boolean
-        - Jump duration normalized
-        - Applied gravity normalized
-        - Applied drag normalized
-        - Applied friction normalized
+    - Ninja state
     - Exit and switch entity states
     - Time remaining
-    - Vector between ninja and switch
-    - Vector between ninja and exit door
 """
 
 import numpy as np
@@ -369,10 +359,12 @@ class ObservationProcessor:
 
     def process_game_state(self, obs: Dict[str, Any]) -> np.ndarray:
         """Process game state into enhanced normalized feature vector."""
-        # Extract the ninja state (now 26 features after redundancy removal)
+        # Extract the ninja state (GAME_STATE_CHANNELS features)
+        from .constants import GAME_STATE_CHANNELS
+
         ninja_state = (
-            obs["game_state"][:26]
-            if len(obs["game_state"]) >= 26
+            obs["game_state"][:GAME_STATE_CHANNELS]
+            if len(obs["game_state"]) >= GAME_STATE_CHANNELS
             else obs["game_state"]
         )
         ninja_state = list(ninja_state)  # Convert to list for modification
@@ -408,50 +400,20 @@ class ObservationProcessor:
                 entity_states, ninja_x, ninja_y
             )
 
-        # Normalize hazard distance to [-1, 1]
-        nearest_hazard_norm = (nearest_hazard_dist / screen_diagonal) * 2 - 1
-
-        # Calculate nearest collectible distance
-        switch_dist = (
-            (ninja_x - obs["switch_x"]) ** 2 + (ninja_y - obs["switch_y"]) ** 2
-        ) ** 0.5
-        nearest_collectible_norm = (switch_dist / screen_diagonal) * 2 - 1
-
-        # Update ninja state with computed proximity features
-        # New indices after redundancy removal (26-feature state)
-        if len(ninja_state) >= 26:
-            ninja_state[21] = nearest_hazard_norm  # Feature 21: nearest hazard distance
-            ninja_state[22] = (
-                nearest_collectible_norm  # Feature 22: nearest collectible distance
-            )
-
-        # Calculate level progress features (features 24-25 in ninja state)
-        # Switch activation progress
-        if obs.get("switch_activated", False):
-            switch_progress = 1.0  # Switch is activated
-        else:
-            # Progress based on distance to switch (closer = higher progress)
-            max_switch_dist = screen_diagonal
-            switch_progress = 1.0 - (switch_dist / max_switch_dist)
-            switch_progress = switch_progress * 2 - 1  # Normalize to [-1, 1]
-
-        # Exit accessibility
-        exit_accessibility = 1.0 if obs.get("switch_activated", False) else -1.0
-
-        # REMOVED: completion_progress (redundant - computed from switch_progress and exit distance)
-
-        # Update ninja state with computed progress features
-        if len(ninja_state) >= 26:
-            ninja_state[24] = switch_progress  # Feature 24: switch activation progress
-            ninja_state[25] = exit_accessibility  # Feature 25: exit accessibility
+        # Note: Proximity features (nearest hazard, nearest collectible) and level progress
+        # features (switch progress, exit accessibility) are no longer included in the
+        # ninja state vector. They are available separately in the observation dictionary
+        # if needed. The ninja state now focuses exclusively on physics state.
 
         # Convert back to numpy array
         ninja_state = np.array(ninja_state, dtype=np.float32)
 
         # For backward compatibility, if we have entity states, include them
         # but the new design focuses on the enhanced ninja state
-        if len(obs["game_state"]) > 26:
-            entity_states = obs["game_state"][26:].astype(np.float32)  # Ensure float32
+        if len(obs["game_state"]) > GAME_STATE_CHANNELS:
+            entity_states = obs["game_state"][GAME_STATE_CHANNELS:].astype(
+                np.float32
+            )  # Ensure float32
             processed_state = np.concatenate([ninja_state, entity_states])
         else:
             processed_state = ninja_state
@@ -542,6 +504,13 @@ class ObservationProcessor:
             "entity_positions": np.array(self._entity_positions_buffer, copy=True),
             "player_frame": player_frame,
         }
+
+        # Pass through additional keys that don't need processing
+        # (e.g., action_mask, action_was_ineffective)
+        passthrough_keys = ["action_mask", "action_was_ineffective"]
+        for key in passthrough_keys:
+            if key in obs:
+                result[key] = obs[key]
 
         return result
 

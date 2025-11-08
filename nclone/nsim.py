@@ -129,6 +129,9 @@ class Simulator:
         self.ninja.hor_input = hor_input
         self.ninja.jump_input = jump_input
 
+        # Record position before physics execution for movement detection
+        self.ninja.record_action_start_position()
+
         # Cache active entities to avoid repeated filtering
         active_movable_entities = []
         active_thinkable_entities = []

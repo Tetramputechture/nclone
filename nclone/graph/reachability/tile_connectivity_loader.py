@@ -80,12 +80,6 @@ class TileConnectivityLoader:
             else:
                 raise
 
-        print(
-            f"[TileConnectivityLoader] Loaded connectivity table: "
-            f"shape {self._connectivity_table.shape}, "
-            f"size {self._connectivity_table.nbytes / 1024:.2f} KB"
-        )
-
     def _load_with_compatibility_fix(self, data):
         """
         Load pickle data with numpy 2.x -> 1.x compatibility fix.
