@@ -54,9 +54,14 @@ SWITCH_ACTIVATION_REWARD = 2.0
 
 # Time penalty per step (default/fixed mode)
 # Rationale: Encourages efficiency without overwhelming terminal rewards.
-# At -0.0001 per step, even episodes at max length (20k steps) maintain positive
-# returns when successful: +10.0 completion - 2.0 penalty = +8.0.
-TIME_PENALTY_PER_STEP = -0.0001
+# UPDATED 2025-11-08: Reduced 10x from -0.0001 to -0.00001 based on comprehensive
+# training analysis showing negative reward regime was preventing learning.
+# At -0.00001 per step, episodes maintain strongly positive returns:
+#   Fast completion (500 steps): +20.0 - 0.005 = +19.995
+#   Slow completion (5000 steps): +20.0 - 0.05 = +19.95
+# This allows PBRS and exploration rewards to provide meaningful gradient while
+# still incentivizing efficiency.
+TIME_PENALTY_PER_STEP = -0.00001  # was -0.0001
 
 # Progressive time penalty schedule (for speed optimization)
 # Rationale: Allows early exploration while increasing pressure for efficiency
@@ -105,11 +110,13 @@ INEFFECTIVE_ACTION_PENALTY = -0.02
 # Rewards for maintaining high velocity (core N++ gameplay mechanic)
 
 # Momentum bonus per step
-# Rationale: Small continuous bonus (0.0002) encourages maintaining high speed
-# without overwhelming terminal rewards. Over 5000 steps at max speed, this yields
-# ~1.0 total momentum bonus, roughly 5% of completion reward (20.0). Kept small to
-# encourage speed without creating perverse incentives for longer episodes.
-MOMENTUM_BONUS_PER_STEP = 0.0002
+# Rationale: Continuous bonus encourages maintaining high speed without overwhelming
+# terminal rewards. Over 5000 steps at max speed, this yields ~5.0 total momentum 
+# bonus, roughly 25% of completion reward (20.0).
+# UPDATED 2025-11-08: Increased 5x from 0.0002 to 0.001 based on analysis showing
+# momentum rewards were too weak to influence policy. Higher bonus encourages
+# speed-running behavior characteristic of expert N++ play.
+MOMENTUM_BONUS_PER_STEP = 0.001  # was 0.0002
 
 # Momentum efficiency threshold
 # Rationale: 80% of MAX_HOR_SPEED (2.666 px/frame) provides a reasonable threshold
@@ -124,10 +131,11 @@ MOMENTUM_EFFICIENCY_THRESHOLD = 0.8  # 80% of MAX_HOR_SPEED
 # Rewards for successful buffer-based jumps (frame-perfect execution)
 
 # Buffer usage bonus
-# Rationale: Moderate reward (0.05) for frame-perfect buffer execution, roughly
-# 5% of switch activation reward (1.0). Encourages precise timing without dominating
-# other reward signals.
-BUFFER_USAGE_BONUS = 0.05
+# Rationale: Reward for frame-perfect buffer execution. Encourages precise timing
+# characteristic of expert N++ play.
+# UPDATED 2025-11-08: Increased 2x from 0.05 to 0.1 to better reward skilled
+# movement. Frame-perfect execution should be clearly rewarded.
+BUFFER_USAGE_BONUS = 0.1  # was 0.05
 
 
 # =============================================================================
@@ -177,26 +185,30 @@ PBRS_GAMMA = 0.995
 # Tuned through empirical evaluation to balance competing objectives.
 
 # Objective distance potential weight
-# Rationale: Primary weight (1.0) for distance to switch/exit objectives.
+# Rationale: Primary weight for distance to switch/exit objectives.
 # This is the main shaping signal for task completion.
-PBRS_OBJECTIVE_WEIGHT = 1.5
+# UPDATED 2025-11-08: Increased 3x from 1.5 to 4.5 based on comprehensive analysis
+# showing PBRS rewards were too weak (~0.0 mean) to provide effective gradient.
+# With stronger PBRS, agent receives clear directional signal toward objectives.
+PBRS_OBJECTIVE_WEIGHT = 4.5  # was 1.5
 
 # Hazard proximity potential weight
-# Rationale: Minimal weight (0.04) provides subtle safety hints without distracting
-# from objectives. After fixing double-weighting bug, reduced from 0.2 to restore
-# original effective magnitude. Objective (1.5) dominates by 37.5x.
-PBRS_HAZARD_WEIGHT = 0.04
+# Rationale: Safety hint weight provides hazard awareness without overwhelming
+# objective-seeking behavior.
+# UPDATED 2025-11-08: Increased 3.75x from 0.04 to 0.15 to strengthen safety
+# signals. Objective weight still dominates by 30x (4.5 / 0.15).
+PBRS_HAZARD_WEIGHT = 0.15  # was 0.04
 
 # Impact risk potential weight
-# Rationale: Minimal weight (0.04) for impact awareness without conservatism.
-# After fixing double-weighting bug, reduced from 0.2 to restore original
-# effective magnitude. Objective (1.5) dominates by 37.5x. Agent prioritizes
-# speed and completion over impact avoidance.
-PBRS_IMPACT_WEIGHT = 0.04
+# Rationale: Impact awareness weight encourages safer movement.
+# UPDATED 2025-11-08: Increased 3.75x from 0.04 to 0.15 to strengthen impact
+# awareness. Objective weight still dominates by 30x (4.5 / 0.15).
+PBRS_IMPACT_WEIGHT = 0.15  # was 0.04
 
 # Exploration potential weight
 # Rationale: Combines with explicit exploration rewards for better coverage.
-PBRS_EXPLORATION_WEIGHT = 0.2
+# UPDATED 2025-11-08: Increased 3x from 0.2 to 0.6 to encourage spatial exploration.
+PBRS_EXPLORATION_WEIGHT = 0.6  # was 0.2
 
 # PBRS scaling for switch and exit phases
 # Rationale: Scale of 1.0 ensures PBRS rewards are effective and guide learning.
