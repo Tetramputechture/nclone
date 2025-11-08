@@ -187,6 +187,13 @@ class BaseNppEnvironment(gymnasium.Env):
                 shape=(GAME_STATE_CHANNELS,),
                 dtype=np.float32,
             ),
+            # Action mask for invalid action filtering
+            "action_mask": box.Box(
+                low=0,
+                high=1,
+                shape=(6,),  # 6 actions in N++
+                dtype=np.int8,
+            ),
         }
         return SpacesDict(obs_spaces)
 
@@ -345,6 +352,7 @@ class BaseNppEnvironment(gymnasium.Env):
             "l": self.nplay_headless.sim.frame,
             "level_id": self.map_loader.current_map_name,
             "config_flags": self.config_flags.copy(),
+            "terminal_impact": self.nplay_headless.get_ninja_terminal_impact(),
         }
 
         # Add PBRS component rewards if available
@@ -414,7 +422,7 @@ class BaseNppEnvironment(gymnasium.Env):
 
         ninja_state = self.nplay_headless.get_ninja_state()
 
-        # game_state contains only ninja_state (26 features)
+        # game_state contains only ninja_state (GAME_STATE_CHANNELS features)
         # Entity counts removed - not needed for training
         game_state = ninja_state
 
@@ -447,6 +455,14 @@ class BaseNppEnvironment(gymnasium.Env):
             locked_door_switches = self.nplay_headless.locked_door_switches()
             entities.extend(locked_door_switches)
 
+        # Get ninja properties for PBRS impact risk calculation
+        ninja_vel_old = self.nplay_headless.ninja_velocity_old()
+        ninja_floor_norm = self.nplay_headless.ninja_floor_normal()
+        ninja_ceiling_norm = self.nplay_headless.ninja_ceiling_normal()
+
+        # Get current ninja velocity for momentum rewards
+        ninja_vel = self.nplay_headless.ninja_velocity()
+
         obs = {
             "screen": self.render(),
             "game_state": game_state,
@@ -454,6 +470,16 @@ class BaseNppEnvironment(gymnasium.Env):
             "player_won": self.nplay_headless.ninja_has_won(),
             "player_x": self.nplay_headless.ninja_position()[0],
             "player_y": self.nplay_headless.ninja_position()[1],
+            "player_xspeed": ninja_vel[0],
+            "player_yspeed": ninja_vel[1],
+            "player_xspeed_old": ninja_vel_old[0],
+            "player_yspeed_old": ninja_vel_old[1],
+            "player_airborn_old": self.nplay_headless.ninja_airborn_old(),
+            "buffered_jump_executed": self.nplay_headless.ninja_last_jump_was_buffered(),
+            "floor_normal_x": ninja_floor_norm[0],
+            "floor_normal_y": ninja_floor_norm[1],
+            "ceiling_normal_x": ninja_ceiling_norm[0],
+            "ceiling_normal_y": ninja_ceiling_norm[1],
             "switch_activated": self.nplay_headless.exit_switch_activated(),
             "switch_x": self.nplay_headless.exit_switch_position()[0],
             "switch_y": self.nplay_headless.exit_switch_position()[1],
@@ -461,11 +487,17 @@ class BaseNppEnvironment(gymnasium.Env):
             "exit_door_y": self.nplay_headless.exit_door_position()[1],
             "time_remaining": time_remaining,
             "sim_frame": self.nplay_headless.sim.frame,
-            "doors_opened": self.nplay_headless.get_doors_opened(),
             "entity_states": entity_states_raw,  # For PBRS hazard detection
             "entities": entities,  # Entity objects (mines, locked doors, switches)
             "locked_doors": locked_doors,  # For hierarchical navigation
             "locked_door_switches": locked_door_switches,  # For hierarchical navigation
+            "ninja_has_useless_jump": self.nplay_headless.ninja_has_useless_jump_input(),
+            # Action mask (jump-only masking)
+            "action_mask": np.array(
+                self.nplay_headless.get_action_mask(), dtype=np.int8
+            ),
+            # Add ineffective action flag for penalty detection
+            "action_was_ineffective": self.nplay_headless.ninja_action_was_ineffective(),
         }
 
         return obs
@@ -613,34 +645,7 @@ class BaseNppEnvironment(gymnasium.Env):
         Returns:
             List of mine dictionaries with keys: x, y, state, radius
         """
-        mines = []
-        entity_dic = self.nplay_headless.sim.entity_dic
-
-        if 1 in entity_dic:
-            toggle_mines = entity_dic[1]
-
-            # Import mine radius constants
-            try:
-                from ..constants import TOGGLE_MINE_RADII
-            except ImportError:
-                # Fallback to default values if import fails
-                TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}
-
-            for mine in toggle_mines:
-                if hasattr(mine, "xpos") and hasattr(mine, "ypos"):
-                    state = getattr(mine, "state", 1)
-                    radius = TOGGLE_MINE_RADII.get(state, 4.0)
-
-                    mines.append(
-                        {
-                            "x": float(mine.xpos),
-                            "y": float(mine.ypos),
-                            "state": int(state),
-                            "radius": float(radius),
-                        }
-                    )
-
-        return mines
+        return self.nplay_headless.get_all_mine_data_for_visualization()
 
     def get_route_visualization_locked_door_data(self) -> List[Dict[str, Any]]:
         """Get locked door data for route visualization.
@@ -707,6 +712,17 @@ class BaseNppEnvironment(gymnasium.Env):
             )
 
         return locked_doors
+
+    def get_route_visualization_terminal_impact(self) -> bool:
+        """Get terminal impact value for route visualization.
+
+        This method is callable via env_method from SubprocVecEnv to access
+        terminal impact from remote environments.
+
+        Returns:
+            Boolean indicating if the ninja died from terminal impact
+        """
+        return self.nplay_headless.get_ninja_terminal_impact()
 
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects and support vectorization."""

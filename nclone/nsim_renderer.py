@@ -108,17 +108,6 @@ class NSimRenderer:
 
         return self.screen
 
-    def draw_collision_map(self, init: bool) -> pygame.Surface:
-        self._update_screen_size_and_offsets()
-        self.screen.fill(render_utils.hex2float(render_utils.BASIC_BG_COLOR))
-        self.screen.blit(
-            self.tile_renderer.draw_tiles(
-                init, tile_color=render_utils.BASIC_TILE_COLOR
-            ),
-            (self.tile_x_offset, self.tile_y_offset),
-        )
-        return self.screen
-
     def _update_screen_size_and_offsets(self):
         screen_width = float(self.screen.get_width())
         screen_height = float(self.screen.get_height())

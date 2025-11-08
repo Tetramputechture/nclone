@@ -1,7 +1,7 @@
 import pygame
 import os
 import random
-from typing import Optional
+from typing import Optional, Dict, Any
 from .nsim import Simulator
 from .nsim_renderer import NSimRenderer
 from .map_generation.map_generator import generate_map
@@ -12,6 +12,13 @@ from .constants.entity_types import EntityType
 from .constants.physics_constants import (
     MAX_HOR_SPEED,
     MAX_JUMP_DURATION,
+    TOGGLE_MINE_RADII,
+    GRAVITY_JUMP,
+    GRAVITY_FALL,
+    DRAG_REGULAR,
+    DRAG_SLOW,
+    FRICTION_GROUND,
+    FRICTION_GROUND_SLOW,
 )
 from .gym_environment.constants import LEVEL_DIAGONAL
 from . import render_utils
@@ -220,7 +227,7 @@ class NPlayHeadless:
         self.cached_render_buffer = None
         self.sim.tick(horizontal_input, jump_input)
         if self.render_mode == "human":
-            self.clock.tick(120)
+            self.clock.tick(60)
 
     def render(self, debug_info: Optional[dict] = None):
         """
@@ -286,6 +293,59 @@ class NPlayHeadless:
     def ninja_velocity(self):
         return self.sim.ninja.xspeed, self.sim.ninja.yspeed
 
+    def ninja_velocity_old(self):
+        """Get ninja's previous frame velocities for impact risk calculation."""
+        return self.sim.ninja.xspeed_old, self.sim.ninja.yspeed_old
+
+    def ninja_has_useless_jump_input(self) -> bool:
+        """Check if current jump input is useless (no effect on movement).
+
+        Returns True when jump is pressed but has no effect due to being
+        airborn without active buffers and not in jumping state.
+        """
+        return self.sim.ninja.is_jump_useless
+
+    def ninja_last_jump_was_buffered(self) -> bool:
+        """Check if the last jump executed was via buffer (frame-perfect execution).
+
+        Returns True if the last jump executed used a buffer (floor_buffer, wall_buffer, etc.)
+        for frame-perfect timing.
+        """
+        return self.sim.ninja.last_jump_was_buffered
+
+    def get_action_mask(self) -> list:
+        """Get mask of valid actions for current ninja state.
+
+        Currently only masks actions with useless jump component.
+        Horizontal movement is NOT masked due to wall interaction complexity.
+
+        Returns:
+            List of 6 bools (True = action is valid, False = action is masked/invalid)
+        """
+        return self.sim.ninja.get_valid_action_mask()
+
+    def ninja_action_was_ineffective(self) -> bool:
+        """Check if previous action produced no position delta.
+
+        Used for post-action penalty detection.
+
+        Returns:
+            True if action resulted in no movement
+        """
+        return not self.sim.ninja.check_action_produced_movement()
+
+    def ninja_airborn_old(self):
+        """Get ninja's previous frame airborne state for impact risk calculation."""
+        return self.sim.ninja.airborn_old
+
+    def ninja_floor_normal(self):
+        """Get normalized floor normal vector for impact risk calculation."""
+        return self.sim.ninja.floor_normalized_x, self.sim.ninja.floor_normalized_y
+
+    def ninja_ceiling_normal(self):
+        """Get normalized ceiling normal vector for impact risk calculation."""
+        return self.sim.ninja.ceiling_normalized_x, self.sim.ninja.ceiling_normalized_y
+
     def _sim_exit_switch(self):
         # We want to get the last entry of self.sim.entity_dic[3];
         # this is the exit switch.
@@ -329,10 +389,57 @@ class NPlayHeadless:
             if entity.active and entity.state == 0
         ]
 
-    # ---- Door helpers for graph construction ----
-    def regular_doors(self):
-        """Return regular door entities (type 5)."""
-        return list(self.sim.entity_dic.get(5, []))
+    def get_all_mine_data_for_visualization(self) -> List[Dict[str, Any]]:
+        """Get all mine data for route visualization.
+
+        Returns data for both entity types 1 (untoggled mines) and 21 (toggled mines).
+        This method centralizes mine extraction logic to avoid duplication.
+
+        Returns:
+            List of mine dictionaries with keys: x, y, state, radius
+        """
+        mines = []
+        entity_dic = self.sim.entity_dic
+
+        # Process entity type 1 (untoggled mines - start in untoggled state)
+        if 1 in entity_dic:
+            toggle_mines = entity_dic[1]
+            for mine in toggle_mines:
+                if hasattr(mine, "xpos") and hasattr(mine, "ypos"):
+                    state = getattr(
+                        mine, "state", 1
+                    )  # Type 1 starts untoggled (state 1)
+                    radius = TOGGLE_MINE_RADII.get(state, 4.0)
+
+                    mines.append(
+                        {
+                            "x": float(mine.xpos),
+                            "y": float(mine.ypos),
+                            "state": int(state),
+                            "radius": float(radius),
+                        }
+                    )
+
+        # Process entity type 21 (toggled mines - start in toggled state)
+        if 21 in entity_dic:
+            toggled_mines = entity_dic[21]
+            for mine in toggled_mines:
+                if hasattr(mine, "xpos") and hasattr(mine, "ypos"):
+                    state = getattr(
+                        mine, "state", 0
+                    )  # Type 21 starts toggled (state 0)
+                    radius = TOGGLE_MINE_RADII.get(state, 4.0)
+
+                    mines.append(
+                        {
+                            "x": float(mine.xpos),
+                            "y": float(mine.ypos),
+                            "state": int(state),
+                            "radius": float(radius),
+                        }
+                    )
+
+        return mines
 
     def locked_doors(self):
         """Return locked door entities (type 6). Includes their switch coordinates."""
@@ -349,21 +456,19 @@ class NPlayHeadless:
     def exit(self):
         pygame.quit()
 
-    def get_doors_opened(self):
-        """Returns the total doors opened by the ninja."""
-        return self.sim.ninja.doors_opened
+    def get_ninja_terminal_impact(self):
+        return self.sim.ninja.terminal_impact
 
     def get_ninja_state(self):
         """Get ninja state as a list of floats with fixed length, all normalized between -1 and 1.
 
         Returns:
-            List of 30 floats representing enhanced ninja state:
+            List of GAME_STATE_CHANNELS floats representing enhanced ninja state:
             - Core movement state (8 features)
             - Input and buffer state (5 features)
             - Surface contact information (6 features)
-            - Momentum and physics (4 features)
-            - Entity proximity and hazards (4 features)
-            - Level progress and objectives (3 features)
+            - Momentum and physics (2 features)
+            - Additional physics state (7 features)
         """
         ninja = self.sim.ninja
         state = []
@@ -446,7 +551,7 @@ class NPlayHeadless:
         surface_slope = ninja.floor_normalized_y  # Already [-1, 1]
         state.append(surface_slope)
 
-        # === Momentum and Physics (4 features) ===
+        # === Momentum and Physics (2 features) ===
 
         # 20-21. Recent acceleration (change in velocity)
         accel_x = (
@@ -457,32 +562,55 @@ class NPlayHeadless:
         accel_y = max(-1.0, min(1.0, accel_y))
         state.extend([accel_x, accel_y])
 
-        # 21. Nearest hazard distance (initialized to 0, computed by observation processor)
-        nearest_hazard_distance = 0.0  # Computed from entity_states or mine processor
-        state.append(nearest_hazard_distance)
+        # === Additional Physics State (7 features) ===
 
-        # 22. Nearest collectible distance (initialized to 0, computed by observation processor)
-        nearest_collectible_distance = 0.0  # Computed from switch position
-        state.append(nearest_collectible_distance)
+        # 22. Applied gravity (normalized between GRAVITY_JUMP and GRAVITY_FALL)
+        # GRAVITY_JUMP < GRAVITY_FALL, so normalize: -1 = GRAVITY_JUMP, 1 = GRAVITY_FALL
+        gravity_range = GRAVITY_FALL - GRAVITY_JUMP
+        if gravity_range > 1e-6:
+            gravity_norm = (
+                ninja.applied_gravity - GRAVITY_JUMP
+            ) / gravity_range * 2 - 1  # [-1, 1]
+        else:
+            gravity_norm = 0.0
+        state.append(gravity_norm)
 
-        # 23. Entity interaction cooldown (frames since last entity interaction)
-        # This would need to be tracked separately - for now, use jump duration as proxy
-        interaction_cooldown = (ninja.jump_duration / MAX_JUMP_DURATION) * 2 - 1
-        state.append(interaction_cooldown)
+        # 23. Jump duration (normalized by MAX_JUMP_DURATION, clamped to [-1, 1])
+        jump_duration_norm = min(ninja.jump_duration / MAX_JUMP_DURATION, 1.0) * 2 - 1
+        state.append(jump_duration_norm)
 
-        # === Level Progress and Objectives (2 features) ===
+        # 24. Walled status (boolean to -1/1)
+        walled_status = 1.0 if ninja.walled else -1.0
+        state.append(walled_status)
 
-        # 24. Switch activation progress
-        # Compute based on actual switch state: 1.0 if activated, -1.0 if not
-        switch_activated = self.exit_switch_activated()
-        switch_progress = 1.0 if switch_activated else -1.0
-        state.append(switch_progress)
+        # 25. Floor normal x-component (full x-component, already [-1, 1])
+        floor_normal_x = ninja.floor_normalized_x
+        state.append(floor_normal_x)
 
-        # 25. Exit accessibility
-        # Compute based on switch state and distance to exit
-        # 1.0 if switch is activated (exit accessible), -1.0 otherwise
-        exit_accessibility = 1.0 if switch_activated else -1.0
-        state.append(exit_accessibility)
+        # 26-27. Ceiling normal vector (full ceiling normal, already [-1, 1])
+        ceiling_normal_x = ninja.ceiling_normalized_x
+        ceiling_normal_y = ninja.ceiling_normalized_y
+        state.extend([ceiling_normal_x, ceiling_normal_y])
+
+        # 28. Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
+        # DRAG_SLOW < DRAG_REGULAR, so normalize: -1 = DRAG_SLOW, 1 = DRAG_REGULAR
+        drag_range = DRAG_REGULAR - DRAG_SLOW
+        if drag_range > 1e-6:
+            drag_norm = (ninja.applied_drag - DRAG_SLOW) / drag_range * 2 - 1  # [-1, 1]
+        else:
+            drag_norm = 0.0
+        state.append(drag_norm)
+
+        # 29. Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
+        # FRICTION_GROUND_SLOW < FRICTION_GROUND, so normalize: -1 = FRICTION_GROUND_SLOW, 1 = FRICTION_GROUND
+        friction_range = FRICTION_GROUND - FRICTION_GROUND_SLOW
+        if friction_range > 1e-6:
+            friction_norm = (
+                ninja.applied_friction - FRICTION_GROUND_SLOW
+            ) / friction_range * 2 - 1  # [-1, 1]
+        else:
+            friction_norm = 0.0
+        state.append(friction_norm)
 
         return state
 

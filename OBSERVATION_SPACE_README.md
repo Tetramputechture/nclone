@@ -23,7 +23,7 @@ observation_space = SpacesDict({
     'global_view': Box(0, 255, (176, 100, 1), np.uint8),
     
     # State vectors
-    'game_state': Box(-1, 1, (26,), np.float32),
+    'game_state': Box(-1, 1, (29,), np.float32),
     'reachability_features': Box(0, 1, (8,), np.float32),
     'entity_positions': Box(0, 1, (6,), np.float32),
     'switch_states': Box(0, 1, (25,), np.float32),
@@ -52,36 +52,38 @@ observation_space = SpacesDict({
 ## State Vectors
 
 ### `game_state`
-`(26,)` float32, range [-1, 1]
+`(29,)` float32, range [-1, 1]
 
 Ninja physics and movement state.
 
-**Indices 0-7: Movement**
+**Indices 0-7: Core Movement State (8 features)**
 - `[0]` Velocity magnitude (normalized)
-- `[1:3]` Velocity direction (unit vector)
-- `[3:7]` Movement categories (binary flags)
+- `[1:3]` Velocity direction (unit vector x, y)
+- `[3:7]` Movement categories (ground/air/wall/special states)
 - `[7]` Airborne status
 
-**Indices 8-12: Input & Buffers**
+**Indices 8-12: Input & Buffer State (5 features)**
 - `[8]` Horizontal input {-1, 0, 1}
 - `[9]` Jump input {-1, 1}
-- `[10:13]` Buffer states (timing windows)
+- `[10:13]` Buffer states (jump/floor/wall buffers, normalized timing windows)
 
-**Indices 13-18: Surface Contact**
+**Indices 13-18: Surface Contact Information (6 features)**
 - `[13:16]` Contact strength (floor/wall/ceiling)
-- `[16]` Floor normal
-- `[17]` Wall direction
-- `[18]` Surface slope
+- `[16]` Floor normal strength (magnitude)
+- `[17]` Wall direction (-1 or 1)
+- `[18]` Surface slope (floor normal y-component)
 
-**Indices 19-23: Physics**
+**Indices 19-20: Momentum and Physics (2 features)**
 - `[19:21]` Recent acceleration (x, y)
-- `[21]` Nearest hazard distance
-- `[22]` Nearest collectible distance
-- `[23]` Entity cooldown
 
-**Indices 24-25: Level Progress**
-- `[24]` Switch progress {-1, 1}
-- `[25]` Exit accessible {-1, 1}
+**Indices 21-27: Additional Physics State (7 features)**
+- `[21]` Applied gravity (normalized between GRAVITY_JUMP and GRAVITY_FALL)
+- `[22]` Jump duration (normalized by MAX_JUMP_DURATION)
+- `[23]` Walled status (boolean to -1/1)
+- `[24]` Floor normal x-component (full x-component)
+- `[25:26]` Ceiling normal vector (x, y)
+- `[27]` Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
+- `[28]` Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
 
 ### `reachability_features`
 `(8,)` float32, range [0, 1]

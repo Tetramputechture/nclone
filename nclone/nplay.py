@@ -64,15 +64,6 @@ if os.path.isfile("inputs"):
 
 sim_renderer = NSimRenderer(sim, render_mode="human")
 
-# # Print space of NplayHeadless state, only ninja and exit and switch
-# np_headless = NPlayHeadless()
-# np_headless.load_random_map(seed=42)
-# ninja_state = np_headless.get_ninja_state()
-# entity_states = np_headless.get_entity_states(only_one_exit_and_switch=True)
-# total_state = np.concatenate([ninja_state, entity_states])
-# # Print the total state
-# print(total_state.shape)
-
 
 while running:
     resize = False

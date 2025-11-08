@@ -99,6 +99,8 @@ class Ninja:
         self.floor_buffer = -1
         self.wall_buffer = -1
         self.launch_pad_buffer = -1
+        self.is_jump_useless = False
+        self.last_jump_was_buffered = False
         self.floor_normalized_x = 0
         self.floor_normalized_y = -1
         self.ceiling_normalized_x = 0
@@ -109,9 +111,14 @@ class Ninja:
         self.anim_rate = 0
         self.anim_frame = 11
         self.frame_residual = 0
-        self.bones = [[0, 0] for _ in range(13)]
-        self.update_graphics()
-        self.ragdoll = Ragdoll()
+        if ninja_anim_mode:
+            self.bones = [[0, 0] for _ in range(13)]
+            self.update_graphics()
+            self.ragdoll = Ragdoll()
+        else:
+            self.bones = None
+            # Don't assign lambda - update_graphics() already handles non-animation mode
+            self.ragdoll = None
         self.poslog = []  # Used for debug
         self.speedlog = []
         self.xposlog = []  # Used to produce trace
@@ -126,6 +133,9 @@ class Ninja:
         self.ypos_old = 0
         self.death_xpos = 0
         self.death_ypos = 0
+        self.terminal_impact = False
+        self.xpos_at_action = self.xpos  # Position when action was applied
+        self.ypos_at_action = self.ypos
 
         # speeds
         self.xspeed_old = 0
@@ -357,7 +367,9 @@ class Ninja:
             else:
                 self.floor_normalized_x = self.floor_normal_x / floor_scalar
                 self.floor_normalized_y = self.floor_normal_y / floor_scalar
-            if self.state != 8 and self.airborn_old:  # Check if died from floor impact
+            if (
+                self.state != 8 and self.airborn_old
+            ):  # Check if died from terminal impact on the floor
                 impact_vel = -(
                     self.floor_normalized_x * self.xspeed_old
                     + self.floor_normalized_y * self.yspeed_old
@@ -370,6 +382,7 @@ class Ninja:
                     self.kill(
                         1, self.xpos, self.ypos, self.xspeed * 0.5, self.yspeed * 0.5
                     )
+                    self.terminal_impact = True
 
         # Calculate the combined ceiling normalized normal vector if the ninja has touched any ceiling.
         if self.ceiling_count > 0:
@@ -382,7 +395,7 @@ class Ninja:
             else:
                 self.ceiling_normalized_x = self.ceiling_normal_x / ceiling_scalar
                 self.ceiling_normalized_y = self.ceiling_normal_y / ceiling_scalar
-            if self.state != 8:  # Check if died from floor impact
+            if self.state != 8:  # Check if died from ceiling impact
                 impact_vel = -(
                     self.ceiling_normalized_x * self.xspeed_old
                     + self.ceiling_normalized_y * self.yspeed_old
@@ -395,6 +408,7 @@ class Ninja:
                     self.kill(
                         1, self.xpos, self.ypos, self.xspeed * 0.5, self.yspeed * 0.5
                     )
+                    self.terminal_impact = True
 
         # Check if ninja died from crushing.
         if self.is_crushable and self.crush_len > 0:
@@ -404,11 +418,17 @@ class Ninja:
             ):
                 self.kill(2, self.xpos, self.ypos, 0, 0)
 
-    def floor_jump(self):
-        """Perform floor jump depending on slope angle and direction."""
+    def floor_jump(self, was_buffered: bool = False):
+        """Perform floor jump depending on slope angle and direction.
+
+        Args:
+            was_buffered: True if jump was executed via floor buffer
+        """
         self.jump_buffer = -1
         self.floor_buffer = -1
         self.launch_pad_buffer = -1
+        if was_buffered:
+            self.last_jump_was_buffered = True
         self.state = 3
         self.applied_gravity = GRAVITY_JUMP
         if self.floor_normalized_x == 0:  # Jump from flat ground
@@ -440,14 +460,20 @@ class Ninja:
         self.ypos += jy
         self.jump_duration = 0
 
-    def wall_jump(self):
-        """Perform wall jump depending on wall normal and if sliding or not."""
+    def wall_jump(self, was_buffered: bool = False):
+        """Perform wall jump depending on wall normal and if sliding or not.
+
+        Args:
+            was_buffered: True if jump was executed via wall buffer
+        """
         if self.hor_input * self.wall_normal < 0 and self.state == 5:  # Slide wall jump
             jx = JUMP_WALL_SLIDE_X_MULTIPLIER
             jy = JUMP_WALL_SLIDE_Y
         else:  # Regular wall jump
             jx = JUMP_WALL_REGULAR_X_MULTIPLIER
             jy = JUMP_WALL_REGULAR_Y
+        if was_buffered:
+            self.last_jump_was_buffered = True
         self.state = 3
         self.applied_gravity = GRAVITY_JUMP
         if self.xspeed * self.wall_normal < 0:
@@ -481,8 +507,91 @@ class Ninja:
             self.ylp_boost_normalized * boost_scalar * JUMP_LAUNCH_PAD_BOOST_FACTOR
         )
 
+    def get_valid_action_mask(self) -> list:
+        """Compute mask of valid actions based on current state.
+
+        Masks actions with useless jump component. Horizontal movement is never masked
+        as it has effects beyond position change (wall sliding, state transitions).
+
+        Timing: Called BEFORE action is applied. self.jump_input reflects PREVIOUS frame's action.
+
+        Buffer activation: In think(), pressing jump while airborne activates jump_buffer=0.
+        Buffer counts up each frame (0->1->2->3->4->5->-1). Active when: -1 < buffer < 5.
+
+        Returns:
+            List of 6 bools [NOOP, LEFT, RIGHT, JUMP, JUMP+LEFT, JUMP+RIGHT] (True = valid).
+        """
+        mask = [True] * 6
+
+        # Check for active buffers (allow jumps without holding jump button)
+        has_active_buffer = (
+            -1
+            < self.jump_buffer
+            < 5  # Jump buffer: activated by pressing jump while airborne
+            or -1 < self.floor_buffer < 5  # Floor buffer: activated when touching floor
+            or -1 < self.wall_buffer < 5  # Wall buffer: activated when touching wall
+            or -1
+            < self.launch_pad_buffer
+            < 4  # Launch pad buffer: activated by launch pad
+        )
+
+        # Determine if jump is useless
+        # Jump is useless when: airborne AND not jumping AND no buffers AND won't create buffer
+        #
+        # Key insight: Mask is computed BEFORE action, so we predict buffer activation.
+        # - jump_input == 0: Selecting JUMP will be new press → activates buffer → NOT useless
+        # - jump_input != 0: Selecting JUMP again won't activate buffer → useless unless buffer exists
+        # - Not airborne or jumping: Jump has immediate effect → NOT useless
+        if self.airborn and self.state != 3:
+            if self.jump_input != 0:
+                # Already holding jump → selecting again won't activate buffer
+                jump_useless = not has_active_buffer
+            else:
+                # Not holding jump → selecting JUMP will activate buffer → NOT useless
+                jump_useless = False
+        else:
+            # Not airborne or already jumping → jump has immediate effect
+            jump_useless = False
+
+        # Mask jump actions if useless (actions 0-2 always valid)
+        if jump_useless:
+            mask[3] = False  # JUMP
+            mask[4] = (
+                False  # JUMP+LEFT (mask entire action to prevent bad learning patterns)
+            )
+            mask[5] = False  # JUMP+RIGHT (same reasoning)
+
+        return mask
+
+    def record_action_start_position(self):
+        """Record position at start of action for delta detection.
+
+        Called by environment AFTER action input but BEFORE physics tick.
+        """
+        self.xpos_at_action = self.xpos
+        self.ypos_at_action = self.ypos
+
+    def check_action_produced_movement(self) -> bool:
+        """Check if action resulted in position change.
+
+        Called AFTER physics tick to detect ineffective actions.
+
+        Returns:
+            True if position changed, False if no movement occurred
+        """
+        POSITION_DELTA_THRESHOLD = 0.001  # Account for floating point precision
+
+        dx = abs(self.xpos - self.xpos_at_action)
+        dy = abs(self.ypos - self.ypos_at_action)
+
+        # Any movement above threshold counts as effective
+        return dx > POSITION_DELTA_THRESHOLD or dy > POSITION_DELTA_THRESHOLD
+
     def think(self):
         """This function handles all the ninja's actions depending of the inputs and its environment."""
+        # Reset buffer tracking flag at start of each frame
+        self.last_jump_was_buffered = False
+
         # Logic to determine if you're starting a new jump.
         if not self.jump_input:
             new_jump_check = False
@@ -513,14 +622,42 @@ class Ninja:
         in_floor_buffer = -1 < self.floor_buffer < 5
 
         # Initiate jump buffer if beginning a new jump and airborn.
+        jump_buffer_just_activated = False
         if new_jump_check and self.airborn:
             self.jump_buffer = 0
+            jump_buffer_just_activated = True
+
         # Initiate wall buffer if touched a wall this frame.
         if self.walled:
             self.wall_buffer = 0
+
         # Initiate floor buffer if touched a floor this frame.
         if not self.airborn:
             self.floor_buffer = 0
+
+        # Track if current jump input is useless
+        # A jump is useless when: airborn, not in jump state (3), no active buffers
+        # Note: If we just activated the jump buffer (new_jump_check and airborn),
+        # then the jump is NOT useless, even if buffers weren't active before
+        if self.jump_input:
+            # Recompute has_active_buffer after buffer activation
+            # If jump buffer was just activated, it's now active (value is 0)
+            if jump_buffer_just_activated:
+                has_active_buffer = True
+            else:
+                # Check if jump_buffer is now active (could have been activated above)
+                current_in_jump_buffer = -1 < self.jump_buffer < 5
+                has_active_buffer = (
+                    current_in_jump_buffer
+                    or in_floor_buffer
+                    or in_wall_buffer
+                    or in_lp_buffer
+                )
+            self.is_jump_useless = (
+                self.airborn and self.state != 3 and not has_active_buffer
+            )
+        else:
+            self.is_jump_useless = False
 
         # This part deals with the special states: dead, awaiting death, celebrating, disabled.
         if self.state in (6, 9):
@@ -631,10 +768,11 @@ class Ninja:
                     return
             if in_jump_buffer or new_jump_check:  # if able to perfrom jump
                 if self.walled or in_wall_buffer:
-                    self.wall_jump()
+                    # Only count as buffered if wall_buffer was used (not just walled)
+                    self.wall_jump(was_buffered=in_wall_buffer)
                     return
                 if in_floor_buffer:
-                    self.floor_jump()
+                    self.floor_jump(was_buffered=True)
                     return
                 if in_lp_buffer and new_jump_check:
                     self.lp_jump()
@@ -657,28 +795,32 @@ class Ninja:
     def think_awaiting_death(self):
         """Set state to dead and activate ragdoll."""
         self.state = 6
-        bones_speed = [
-            [
-                self.bones[i][0] - self.bones_old[i][0],
-                self.bones[i][1] - self.bones_old[i][1],
+        if self.ninja_anim_mode:
+            bones_speed = [
+                [
+                    self.bones[i][0] - self.bones_old[i][0],
+                    self.bones[i][1] - self.bones_old[i][1],
+                ]
+                for i in range(13)
             ]
-            for i in range(13)
-        ]
-        self.ragdoll.activate(
-            self.xpos,
-            self.ypos,
-            self.xspeed,
-            self.yspeed,
-            self.death_xpos,
-            self.death_ypos,
-            self.death_xspeed,
-            self.death_yspeed,
-            self.bones,
-            bones_speed,
-        )
+            self.ragdoll.activate(
+                self.xpos,
+                self.ypos,
+                self.xspeed,
+                self.yspeed,
+                self.death_xpos,
+                self.death_ypos,
+                self.death_xspeed,
+                self.death_yspeed,
+                self.bones,
+                bones_speed,
+            )
 
     def update_graphics(self):
         """Update parameters necessary to draw the limbs of the ninja."""
+        if not self.ninja_anim_mode:
+            return
+
         anim_state_old = self.anim_state
         if self.state == 5:
             self.anim_state = 4
@@ -768,8 +910,7 @@ class Ninja:
                 self.anim_frame += 1
 
         self.bones_old = self.bones
-        if self.ninja_anim_mode:
-            self.calc_ninja_position()
+        self.calc_ninja_position()
 
     def calc_ninja_position(self):
         """Calculate the positions of ninja's joints. The positions are fetched from the animation data,

@@ -676,6 +676,7 @@ if args.map:
             debug=False,
         ),
         reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+        test_dataset_path=args.test_dataset_path,
     )
     env = create_visual_testing_env(config=config)
     print(f"Loading custom map from: {args.map}")
@@ -701,6 +702,7 @@ else:
             debug=False,
         ),
         reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+        test_dataset_path=args.test_dataset_path,
     )
     env = create_visual_testing_env(config=config)
 

@@ -1,5 +1,6 @@
 """Main reward calculator that orchestrates all reward components."""
 
+import numpy as np
 from typing import Dict, Any, Optional
 from .exploration_reward_calculator import ExplorationRewardCalculator
 from .pbrs_potentials import PBRSCalculator
@@ -17,7 +18,13 @@ from .reward_constants import (
     COMPLETION_TIME_TARGET,
     PBRS_GAMMA,
     NOOP_ACTION_PENALTY,
+    MASKED_ACTION_PENALTY,
+    INEFFECTIVE_ACTION_PENALTY,
+    MOMENTUM_BONUS_PER_STEP,
+    MOMENTUM_EFFICIENCY_THRESHOLD,
+    BUFFER_USAGE_BONUS,
 )
+from ...constants.physics_constants import MAX_HOR_SPEED
 from ...graph.reachability.path_distance_calculator import (
     CachedPathDistanceCalculator,
 )
@@ -156,6 +163,45 @@ class RewardCalculator:
             noop_penalty = NOOP_ACTION_PENALTY
             reward += noop_penalty
 
+        # Masked action penalty (should rarely trigger if masking works)
+        masked_action_penalty = 0.0
+        if action is not None:
+            action_mask = prev_obs.get("action_mask", np.ones(6, dtype=np.int8))
+            if not action_mask[action]:
+                # Agent selected a masked action - this is a bug if it happens
+                masked_action_penalty = MASKED_ACTION_PENALTY
+                reward += masked_action_penalty
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Masked action {action} was selected! "
+                    f"Mask: {action_mask}, Action: {action}"
+                )
+
+        # Ineffective action penalty (post-action detection)
+        ineffective_action_penalty = 0.0
+        if obs.get("action_was_ineffective", False):
+            # Action produced no position change
+            ineffective_action_penalty = INEFFECTIVE_ACTION_PENALTY
+            reward += ineffective_action_penalty
+
+        # Momentum preservation reward
+        momentum_bonus = 0.0
+        player_xspeed = obs.get("player_xspeed", 0.0)
+        if player_xspeed is not None:
+            speed_efficiency = abs(player_xspeed) / MAX_HOR_SPEED
+            if speed_efficiency >= MOMENTUM_EFFICIENCY_THRESHOLD:
+                # Scale bonus by efficiency to reward higher speeds more
+                momentum_bonus = MOMENTUM_BONUS_PER_STEP * speed_efficiency
+                reward += momentum_bonus
+
+        # Buffer utilization reward
+        buffer_bonus = 0.0
+        if obs.get("buffered_jump_executed", False):
+            buffer_bonus = BUFFER_USAGE_BONUS
+            reward += buffer_bonus
+
         # Switch activation reward
         if obs.get("switch_activated", False) and not prev_obs.get(
             "switch_activated", False
@@ -260,6 +306,10 @@ class RewardCalculator:
             "exploration_reward": exploration_reward,
             "pbrs_reward": pbrs_reward,
             "noop_penalty": noop_penalty,
+            "masked_action_penalty": masked_action_penalty,
+            "ineffective_action_penalty": ineffective_action_penalty,
+            "momentum_bonus": momentum_bonus,
+            "buffer_bonus": buffer_bonus,
             "pbrs_components": pbrs_components,
             "total_reward": reward,
         }

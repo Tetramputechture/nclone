@@ -24,9 +24,26 @@ CELL_SIZE = 24  # 24px tiles
 MAP_WIDTH_PX = MAP_TILE_WIDTH * CELL_SIZE  # 42 * 24 = 1008 pixels
 MAP_HEIGHT_PX = MAP_TILE_HEIGHT * CELL_SIZE  # 23 * 24 = 552 pixels
 
-# Subcell grid dimensions
+# Border extension for out-of-bounds entity queries
+# Entities can be positioned up to ±2 tiles (48px) outside normal bounds
+LOOKUP_BORDER_TILES = 2  # 2 tiles = 48px border on all sides
+LOOKUP_BORDER_PX = LOOKUP_BORDER_TILES * CELL_SIZE  # 48 pixels
+
+# Subcell grid dimensions (original, for reference)
 SUBCELL_WIDTH = MAP_WIDTH_PX // SUB_NODE_SIZE  # 1008 / 12 = 84
 SUBCELL_HEIGHT = MAP_HEIGHT_PX // SUB_NODE_SIZE  # 552 / 12 = 46
+
+# Extended subcell grid dimensions (including border)
+# Extended bounds: [-48, 1056) x [-48, 600) in pixel coordinates
+EXTENDED_MAP_WIDTH_PX = MAP_WIDTH_PX + 2 * LOOKUP_BORDER_PX  # 1008 + 96 = 1104 pixels
+EXTENDED_MAP_HEIGHT_PX = MAP_HEIGHT_PX + 2 * LOOKUP_BORDER_PX  # 552 + 96 = 648 pixels
+SUBCELL_WIDTH_EXTENDED = EXTENDED_MAP_WIDTH_PX // SUB_NODE_SIZE  # 1104 / 12 = 92
+SUBCELL_HEIGHT_EXTENDED = EXTENDED_MAP_HEIGHT_PX // SUB_NODE_SIZE  # 648 / 12 = 54
+
+# Coordinate offset for converting query positions to extended grid indices
+# Query position (x, y) maps to subcell index: ((x - LOOKUP_X_OFFSET - 6) // 12, (y - LOOKUP_Y_OFFSET - 6) // 12)
+LOOKUP_X_OFFSET = -LOOKUP_BORDER_PX  # -48 pixels
+LOOKUP_Y_OFFSET = -LOOKUP_BORDER_PX  # -48 pixels
 
 
 class SubcellNodeLookupPrecomputer:
@@ -41,14 +58,16 @@ class SubcellNodeLookupPrecomputer:
     """
 
     def __init__(self):
-        """Initialize precomputer with map dimensions."""
-        self.subcell_width = SUBCELL_WIDTH
-        self.subcell_height = SUBCELL_HEIGHT
+        """Initialize precomputer with extended map dimensions."""
+        self.subcell_width = SUBCELL_WIDTH_EXTENDED
+        self.subcell_height = SUBCELL_HEIGHT_EXTENDED
         self.subcell_size = SUB_NODE_SIZE
+        self.x_offset = LOOKUP_X_OFFSET
+        self.y_offset = LOOKUP_Y_OFFSET
 
     def precompute_all(self, verbose: bool = True) -> np.ndarray:
         """
-        Precompute closest node position for all subcells.
+        Precompute closest node position for all subcells in extended region.
 
         Args:
             verbose: Print progress updates
@@ -63,7 +82,13 @@ class SubcellNodeLookupPrecomputer:
                 f"Precomputing closest node positions for {total_subcells} subcells..."
             )
             print(f"  Subcell grid: {self.subcell_width}×{self.subcell_height}")
-            print(f"  Map dimensions: {MAP_WIDTH_PX}×{MAP_HEIGHT_PX} pixels")
+            print(
+                f"  Extended map dimensions: {EXTENDED_MAP_WIDTH_PX}×{EXTENDED_MAP_HEIGHT_PX} pixels"
+            )
+            print(f"  Original map dimensions: {MAP_WIDTH_PX}×{MAP_HEIGHT_PX} pixels")
+            print(
+                f"  Border extension: ±{LOOKUP_BORDER_PX}px ({LOOKUP_BORDER_TILES} tiles) on all sides"
+            )
             print()
 
         # Initialize lookup table: (subcell_x, subcell_y) -> (node_x, node_y)
@@ -75,9 +100,11 @@ class SubcellNodeLookupPrecomputer:
 
         for i in range(self.subcell_width):
             for j in range(self.subcell_height):
-                # Subcell center at (6,6) alignment
-                subcell_center_x = 6 + i * self.subcell_size
-                subcell_center_y = 6 + j * self.subcell_size
+                # Convert subcell index to pixel coordinates in extended space
+                # Subcell index i=0 corresponds to x = LOOKUP_X_OFFSET + 6
+                # Subcell center at (6,6) alignment relative to extended grid origin
+                subcell_center_x = self.x_offset + 6 + i * self.subcell_size
+                subcell_center_y = self.y_offset + 6 + j * self.subcell_size
 
                 # Use fast grid snapping (same as _find_closest_node in graph_builder.py)
                 # Nodes are at positions: ..., -18, -6, 6, 18, 30, 42, ...
@@ -93,6 +120,10 @@ class SubcellNodeLookupPrecomputer:
                 f"Precomputation complete: {self.subcell_width}×{self.subcell_height} subcells"
             )
             print("  Node positions computed using grid snapping algorithm")
+            print(
+                f"  Extended bounds cover: x=[{LOOKUP_X_OFFSET}, {LOOKUP_X_OFFSET + EXTENDED_MAP_WIDTH_PX}), "
+                f"y=[{LOOKUP_Y_OFFSET}, {LOOKUP_Y_OFFSET + EXTENDED_MAP_HEIGHT_PX})"
+            )
 
         return lookup
 
@@ -169,12 +200,6 @@ class SubcellNodeLookupLoader:
         with gzip.open(data_path, "rb") as f:
             self._lookup_table = pickle.load(f)
 
-        print(
-            "[SubcellNodeLookupLoader] Loaded lookup table: "
-            f"shape {self._lookup_table.shape}, "
-            f"size {self._lookup_table.nbytes / 1024:.2f} KB"
-        )
-
     def find_closest_node_position(
         self,
         query_x: float,
@@ -187,6 +212,7 @@ class SubcellNodeLookupLoader:
 
         Uses adjacency keys as a runtime mask to filter precomputed positions.
         Checks neighboring subcells if primary candidate doesn't exist.
+        Handles out-of-bounds queries by clamping to extended lookup table bounds.
 
         Args:
             query_x: Query X coordinate in pixels (tile data space)
@@ -196,26 +222,19 @@ class SubcellNodeLookupLoader:
 
         Returns:
             Closest node position (x, y) if found, None otherwise
-
-        Raises:
-            IndexError: If query position is out of bounds
         """
         if self._lookup_table is None:
             raise RuntimeError("Lookup table not loaded")
 
-        # Convert to subcell index (accounting for (6,6) center alignment)
-        subcell_x = int((query_x - 6) // SUB_NODE_SIZE)
-        subcell_y = int((query_y - 6) // SUB_NODE_SIZE)
+        # Convert to subcell index (accounting for offset and (6,6) center alignment)
+        # Extended grid: subcell index = ((query_x - LOOKUP_X_OFFSET - 6) // 12)
+        subcell_x = int((query_x - LOOKUP_X_OFFSET - 6) // SUB_NODE_SIZE)
+        subcell_y = int((query_y - LOOKUP_Y_OFFSET - 6) // SUB_NODE_SIZE)
 
-        # Bounds check - throw exception if out of bounds
-        if not (
-            0 <= subcell_x < self._lookup_table.shape[0]
-            and 0 <= subcell_y < self._lookup_table.shape[1]
-        ):
-            raise IndexError(
-                f"Query position ({query_x}, {query_y}) out of bounds. "
-                f"Valid range: x=[0, {MAP_WIDTH_PX}), y=[0, {MAP_HEIGHT_PX})"
-            )
+        # Clamp to valid extended bounds instead of raising exception
+        # This handles entities positioned up to ±2 tiles outside normal map bounds
+        subcell_x = max(0, min(subcell_x, self._lookup_table.shape[0] - 1))
+        subcell_y = max(0, min(subcell_y, self._lookup_table.shape[1] - 1))
 
         # Get primary candidate from lookup table
         candidate_x = int(self._lookup_table[subcell_x, subcell_y, 0])
@@ -243,12 +262,13 @@ class SubcellNodeLookupLoader:
                     neighbor_x = subcell_x + dx
                     neighbor_y = subcell_y + dy
 
-                    # Bounds check
-                    if not (
-                        0 <= neighbor_x < self._lookup_table.shape[0]
-                        and 0 <= neighbor_y < self._lookup_table.shape[1]
-                    ):
-                        continue
+                    # Bounds check (clamp to extended bounds)
+                    neighbor_x = max(
+                        0, min(neighbor_x, self._lookup_table.shape[0] - 1)
+                    )
+                    neighbor_y = max(
+                        0, min(neighbor_y, self._lookup_table.shape[1] - 1)
+                    )
 
                     # Get candidate from neighbor subcell
                     candidate_x = int(self._lookup_table[neighbor_x, neighbor_y, 0])

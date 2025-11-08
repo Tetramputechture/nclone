@@ -29,7 +29,6 @@ class TestSimplifiedRewardSystem(unittest.TestCase):
             "switch_activated": False,
             "player_dead": False,
             "player_won": False,
-            "doors_opened": 0,
             "game_state": [0.0] * 30,  # Mock game state array
         }
 

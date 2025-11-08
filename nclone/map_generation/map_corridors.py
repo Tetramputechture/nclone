@@ -152,9 +152,31 @@ class MapCorridors(Map):
         # Randomly choose starting direction
         start_horizontal = self.rng.choice([True, False])
 
+        # When num_corridors is odd, randomly decide which direction gets the extra corridor
+        # This ensures balanced distribution between horizontal and vertical corridors
+        if num_corridors % 2 == 1:
+            # Odd number: one direction gets (num_corridors + 1) // 2, other gets num_corridors // 2
+            extra_horizontal = self.rng.choice([True, False])
+        else:
+            # Even number: both directions get equal count
+            extra_horizontal = (
+                start_horizontal  # Doesn't matter, but set for consistency
+            )
+
         # Generate corridors with alternating orientations
         for i in range(num_corridors):
-            is_horizontal = (i % 2 == 0) == start_horizontal
+            # Calculate which direction this corridor should be
+            if num_corridors % 2 == 1:
+                # Odd count: determine based on which direction gets the extra
+                if extra_horizontal:
+                    # Horizontal gets the extra: H, V, H, V, H for 5 corridors
+                    is_horizontal = i % 2 == 0
+                else:
+                    # Vertical gets the extra: V, H, V, H, V for 5 corridors
+                    is_horizontal = i % 2 == 1
+            else:
+                # Even count: simple alternation based on starting direction
+                is_horizontal = (i % 2 == 0) == start_horizontal
 
             if i == 0:
                 # First corridor - place near the start of the map
@@ -270,8 +292,8 @@ class MapCorridors(Map):
                 else:
                     direction = self.rng.choice(["right", "left"])
             else:
-                # Default: continue in a consistent direction
-                direction = "right" if prev_end[0] < MAP_TILE_WIDTH // 2 else "left"
+                # Default: randomly choose direction to ensure balanced left/right distribution
+                direction = self.rng.choice(["right", "left"])
 
             # Position the corridor
             if direction == "right":
@@ -448,10 +470,174 @@ class MapCorridors(Map):
             else:
                 self.set_tile(x, y, 1)
 
-    def _place_entities(self) -> None:
-        """Place ninja spawn, exit door, and switch in the corridors."""
+    def _calculate_chebyshev_distance(
+        self, pos1: Tuple[int, int], pos2: Tuple[int, int]
+    ) -> int:
+        """Calculate Chebyshev distance between two tile positions.
+
+        Args:
+            pos1: First position (x, y) in tiles
+            pos2: Second position (x, y) in tiles
+
+        Returns:
+            Chebyshev distance in tiles (max of x and y differences)
+        """
+        dx = abs(pos1[0] - pos2[0])
+        dy = abs(pos1[1] - pos2[1])
+        return max(dx, dy)
+
+    def _get_valid_empty_tiles(self) -> List[Tuple[int, int]]:
+        """Get all valid empty tile positions in the corridors.
+
+        Returns:
+            List of (x, y) tuples for all empty tiles
+        """
+        valid_tiles = []
+        for y in range(MAP_TILE_HEIGHT):
+            for x in range(MAP_TILE_WIDTH):
+                if self.get_tile(x, y) == 0:
+                    valid_tiles.append((x, y))
+        return valid_tiles
+
+    def _find_best_entity_positions(
+        self,
+        ninja_pos: Tuple[int, int],
+        min_distance_tiles: int = 1,
+    ) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """Find optimal positions for door and switch that maximize distances.
+
+        Ensures door and switch are at least min_distance_tiles away from ninja
+        and from each other, while maximizing the sum of all pairwise distances.
+
+        Args:
+            ninja_pos: Ninja position (x, y) in tiles
+            min_distance_tiles: Minimum distance in tiles (24 pixels = 1 tile)
+
+        Returns:
+            Tuple of (door_pos, switch_pos) where each is (x, y)
+        """
+        valid_tiles = self._get_valid_empty_tiles()
+
+        if len(valid_tiles) < 2:
+            # Fallback: use last corridor end point
+            last_corridor = self.corridors[-1]
+            end_point = last_corridor.get_end_point()
+            door_pos = self._find_closest_valid_tile(
+                end_point[0], end_point[1], tile_type=0
+            )
+            switch_pos = self._find_closest_valid_tile(
+                end_point[0] - 2, end_point[1], tile_type=0
+            )
+            return door_pos, switch_pos
+
+        # Filter tiles that meet minimum distance from ninja
+        candidate_tiles = [
+            tile
+            for tile in valid_tiles
+            if self._calculate_chebyshev_distance(tile, ninja_pos) >= min_distance_tiles
+        ]
+
+        if len(candidate_tiles) < 2:
+            # Not enough candidates, use all valid tiles
+            candidate_tiles = valid_tiles
+
+        best_door_pos = None
+        best_switch_pos = None
+        best_total_distance = -1
+
+        # Try multiple random combinations to find good positions
+        # This balances exploration with reasonable performance
+        num_attempts = min(100, len(candidate_tiles) * 10)
+
+        for _ in range(num_attempts):
+            # Randomly select door position
+            door_candidate = self.rng.choice(candidate_tiles)
+
+            # Filter switch candidates that meet distance requirements
+            switch_candidates = [
+                tile
+                for tile in candidate_tiles
+                if tile != door_candidate
+                and self._calculate_chebyshev_distance(tile, door_candidate)
+                >= min_distance_tiles
+            ]
+
+            if not switch_candidates:
+                continue
+
+            # Try a few switch positions for this door
+            for _ in range(min(5, len(switch_candidates))):
+                switch_candidate = self.rng.choice(switch_candidates)
+
+                # Calculate total pairwise distance
+                ninja_door_dist = self._calculate_chebyshev_distance(
+                    ninja_pos, door_candidate
+                )
+                ninja_switch_dist = self._calculate_chebyshev_distance(
+                    ninja_pos, switch_candidate
+                )
+                door_switch_dist = self._calculate_chebyshev_distance(
+                    door_candidate, switch_candidate
+                )
+
+                total_distance = ninja_door_dist + ninja_switch_dist + door_switch_dist
+
+                if total_distance > best_total_distance:
+                    best_total_distance = total_distance
+                    best_door_pos = door_candidate
+                    best_switch_pos = switch_candidate
+
+        # Fallback if no valid combination found
+        if best_door_pos is None or best_switch_pos is None:
+            # Use last corridor positions as fallback
+            last_corridor = self.corridors[-1]
+            end_point = last_corridor.get_end_point()
+
+            if last_corridor.orientation == "horizontal":
+                door_x = end_point[0]
+                door_y = last_corridor.y + last_corridor.height - 1
+            else:
+                door_x = last_corridor.x + last_corridor.width // 2
+                door_y = end_point[1]
+
+            door_pos = self._find_closest_valid_tile(door_x, door_y, tile_type=0)
+
+            # Find switch position at least min_distance_tiles away
+            switch_candidates = [
+                tile
+                for tile in valid_tiles
+                if tile != door_pos
+                and self._calculate_chebyshev_distance(tile, door_pos)
+                >= min_distance_tiles
+                and self._calculate_chebyshev_distance(tile, ninja_pos)
+                >= min_distance_tiles
+            ]
+
+            if switch_candidates:
+                switch_pos = self.rng.choice(switch_candidates)
+            else:
+                # Last resort: place switch away from door
+                switch_x = door_x - 2 if door_x > 2 else door_x + 2
+                switch_y = door_y
+                switch_pos = self._find_closest_valid_tile(
+                    switch_x, switch_y, tile_type=0
+                )
+
+            return door_pos, switch_pos
+
+        return best_door_pos, best_switch_pos
+
+    def _place_entities(self) -> Tuple[int, int]:
+        """Place ninja spawn, exit door, and switch in the corridors.
+
+        Ensures all three entities are at least 24 pixels (1 tile) apart,
+        and maximizes the distance between all three positions.
+
+        Returns:
+            Tuple of (ninja_x, ninja_y) for potential use by other methods
+        """
         if not self.corridors:
-            return
+            return (1, 1)
 
         # Place ninja in the first corridor
         first_corridor = self.corridors[0]
@@ -463,6 +649,7 @@ class MapCorridors(Map):
 
         # Ensure ninja is on an empty tile
         ninja_x, ninja_y = self._find_closest_valid_tile(ninja_x, ninja_y, tile_type=0)
+        ninja_pos = (ninja_x, ninja_y)
 
         # Set ninja orientation based on first corridor direction
         if first_corridor.orientation == "horizontal":
@@ -472,76 +659,69 @@ class MapCorridors(Map):
 
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
 
-        # Place exit door and switch in the last corridor
-        last_corridor = self.corridors[-1]
-        end_point = last_corridor.get_end_point()
-
-        # Find positions for door and switch
-        if last_corridor.orientation == "horizontal":
-            door_x = end_point[0]
-            door_y = last_corridor.y + last_corridor.height - 1
-        else:
-            door_x = last_corridor.x + last_corridor.width // 2
-            door_y = end_point[1]
-
-        # Ensure door position is valid
-        door_x, door_y = self._find_closest_valid_tile(door_x, door_y, tile_type=0)
-
-        # Place switch at a random distance between ninja and exit door
-        # Calculate the distance and direction from ninja to door
-        dx = door_x - ninja_x
-        dy = door_y - ninja_y
-
-        # Calculate distance
-        distance = max(
-            abs(dx), abs(dy)
-        )  # Use Chebyshev distance for tile-based movement
-
-        # Only place switch if there's meaningful distance (at least 3 tiles)
-        if distance < 3:
-            # Fallback: place switch near door but not on it
-            if last_corridor.orientation == "horizontal":
-                switch_x = max(last_corridor.x, door_x - self.rng.randint(2, 4))
-                switch_y = door_y
-            else:
-                switch_x = door_x
-                switch_y = min(
-                    last_corridor.y + last_corridor.height - 1,
-                    door_y + self.rng.randint(2, 4),
-                )
-        else:
-            # Place switch at a random position between ninja and door
-            # Use a random fraction between 0.2 and 0.8 to avoid placing too close to either
-            fraction = self.rng.uniform(0.2, 0.8)
-
-            # Calculate switch position along the path
-            switch_x = int(ninja_x + dx * fraction)
-            switch_y = int(ninja_y + dy * fraction)
-
-            # Clamp to last corridor bounds
-            switch_x = max(
-                last_corridor.x,
-                min(switch_x, last_corridor.x + last_corridor.width - 1),
-            )
-            switch_y = max(
-                last_corridor.y,
-                min(switch_y, last_corridor.y + last_corridor.height - 1),
-            )
-
-            # Ensure switch is not at the door position
-            if switch_x == door_x and switch_y == door_y:
-                # Adjust slightly away from door
-                if last_corridor.orientation == "horizontal":
-                    switch_x = door_x - self.rng.randint(1, 3)
-                    switch_x = max(last_corridor.x, switch_x)
-                else:
-                    switch_y = door_y + self.rng.randint(1, 3)
-                    switch_y = min(last_corridor.y + last_corridor.height - 1, switch_y)
-
-        # Ensure switch position is valid
-        switch_x, switch_y = self._find_closest_valid_tile(
-            switch_x, switch_y, tile_type=0
+        # Find optimal positions for door and switch that maximize distances
+        # Minimum distance: 24 pixels = 1 tile
+        door_pos, switch_pos = self._find_best_entity_positions(
+            ninja_pos, min_distance_tiles=1
         )
+
+        door_x, door_y = door_pos
+        switch_x, switch_y = switch_pos
+
+        # Verify minimum distances are met (sanity check)
+        # This should rarely happen since _find_best_entity_positions enforces distances,
+        # but provides a safety net for edge cases
+        ninja_door_dist = self._calculate_chebyshev_distance(ninja_pos, door_pos)
+        ninja_switch_dist = self._calculate_chebyshev_distance(ninja_pos, switch_pos)
+        door_switch_dist = self._calculate_chebyshev_distance(door_pos, switch_pos)
+
+        # Ensure all distances are at least 1 tile (24 pixels)
+        if ninja_door_dist < 1:
+            # Move door away from ninja
+            dx = door_x - ninja_x
+            dy = door_y - ninja_y
+            if dx == 0 and dy == 0:
+                door_x = ninja_x + 1
+            else:
+                door_x = ninja_x + (1 if dx >= 0 else -1)
+                door_y = ninja_y + (1 if dy >= 0 else -1)
+            door_x, door_y = self._find_closest_valid_tile(door_x, door_y, tile_type=0)
+            door_pos = (door_x, door_y)
+            # Recalculate distances after door update
+            ninja_door_dist = self._calculate_chebyshev_distance(ninja_pos, door_pos)
+            door_switch_dist = self._calculate_chebyshev_distance(door_pos, switch_pos)
+
+        if ninja_switch_dist < 1:
+            # Move switch away from ninja
+            dx = switch_x - ninja_x
+            dy = switch_y - ninja_y
+            if dx == 0 and dy == 0:
+                switch_x = ninja_x + 1
+            else:
+                switch_x = ninja_x + (1 if dx >= 0 else -1)
+                switch_y = ninja_y + (1 if dy >= 0 else -1)
+            switch_x, switch_y = self._find_closest_valid_tile(
+                switch_x, switch_y, tile_type=0
+            )
+            switch_pos = (switch_x, switch_y)
+            # Recalculate distances after switch update
+            ninja_switch_dist = self._calculate_chebyshev_distance(
+                ninja_pos, switch_pos
+            )
+            door_switch_dist = self._calculate_chebyshev_distance(door_pos, switch_pos)
+
+        if door_switch_dist < 1:
+            # Move switch away from door
+            dx = switch_x - door_x
+            dy = switch_y - door_y
+            if dx == 0 and dy == 0:
+                switch_x = door_x + 1
+            else:
+                switch_x = door_x + (1 if dx >= 0 else -1)
+                switch_y = door_y + (1 if dy >= 0 else -1)
+            switch_x, switch_y = self._find_closest_valid_tile(
+                switch_x, switch_y, tile_type=0
+            )
 
         # Add exit door and switch
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)

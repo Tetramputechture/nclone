@@ -63,8 +63,8 @@ class FrameStackWrapper(ObservationWrapper):
         - Output: (176, 100, 1) - same single frame (NOT stacked)
 
         With state_stack_size=4, game_state shape changes from:
-        - Input: (26,) - single state vector
-        - Output: (4, 26) - stack of 4 state vectors, oldest first
+        - Input: (GAME_STATE_CHANNELS,) - single state vector
+        - Output: (4, GAME_STATE_CHANNELS) - stack of 4 state vectors, oldest first
 
     Args:
         env: Environment to wrap

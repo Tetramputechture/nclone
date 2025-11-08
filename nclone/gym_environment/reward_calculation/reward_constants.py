@@ -21,16 +21,19 @@ from ..constants import LEVEL_DIAGONAL
 # Terminal rewards are the primary learning signals that define task completion
 
 # Level completion reward - primary learning signal
-# Rationale: Large enough (10.0) to dominate cumulative time penalty, ensuring
-# successful episodes always yield positive returns. Even slow completions
-# (10k steps) result in positive reward (10.0 - 1.0 = +9.0).
-LEVEL_COMPLETION_REWARD = 10.0
+# Rationale: Large enough (20.0) to strongly incentivize efficient, shortest-time completion.
+# PBRS provides dense shaping rewards (~1.5 accumulated over episode) to guide HOW to reach
+# the goal, while the completion reward motivates COMPLETING it quickly. With completion
+# reward at 20.0, agents have strong incentive to optimize for speed rather than maximizing
+# per-step rewards. Even slow completions (10k steps) result in positive returns
+# (20.0 - 1.0 = +19.0), but fast completions are significantly more rewarding.
+LEVEL_COMPLETION_REWARD = 20.0
 
 # Death penalty
-# Rationale: Moderate negative reward (-0.5) discourages death without dominating learning.
-# Kept proportional to new completion reward (5% of completion).
+# Rationale: Moderate negative reward (-1.0) discourages death without dominating learning.
+# Kept proportional to completion reward (5% of completion).
 # Too large penalties can lead to overly conservative behavior.
-DEATH_PENALTY = -0.5
+DEATH_PENALTY = -1.0
 
 
 # =============================================================================
@@ -41,7 +44,7 @@ DEATH_PENALTY = -0.5
 # Switch activation reward
 # Rationale: Milestone reward (10% of completion) provides intermediate signal
 # without creating local optima that distract from the ultimate goal.
-SWITCH_ACTIVATION_REWARD = 1.0
+SWITCH_ACTIVATION_REWARD = 2.0
 
 
 # =============================================================================
@@ -83,6 +86,48 @@ COMPLETION_TIME_TARGET = (
 # other reward signals. Encourages active exploration and movement toward objectives.
 # Without this, agents can exploit doing nothing to avoid negative outcomes.
 NOOP_ACTION_PENALTY = -0.02
+
+# Invalid masked action penalty (should rarely trigger if masking works)
+# Rationale: Large penalty (-0.1) for selecting masked actions. This should
+# almost never occur if action masking is implemented correctly in policy.
+MASKED_ACTION_PENALTY = -0.1
+
+# Ineffective action penalty (post-action detection)
+# Rationale: Moderate penalty (-0.02) for actions that produce no position change.
+# This catches cases where horizontal input has mechanical effects (wall sliding)
+# but doesn't produce movement. Kept moderate since mechanical effects may be valuable.
+INEFFECTIVE_ACTION_PENALTY = -0.02
+
+
+# =============================================================================
+# MOMENTUM PRESERVATION REWARDS
+# =============================================================================
+# Rewards for maintaining high velocity (core N++ gameplay mechanic)
+
+# Momentum bonus per step
+# Rationale: Small continuous bonus (0.0002) encourages maintaining high speed
+# without overwhelming terminal rewards. Over 5000 steps at max speed, this yields
+# ~1.0 total momentum bonus, roughly 5% of completion reward (20.0). Kept small to
+# encourage speed without creating perverse incentives for longer episodes.
+MOMENTUM_BONUS_PER_STEP = 0.0002
+
+# Momentum efficiency threshold
+# Rationale: 80% of MAX_HOR_SPEED (2.666 px/frame) provides a reasonable threshold
+# that encourages near-maximum speed without being too strict. Allows for slight
+# speed variations while still rewarding high-speed play.
+MOMENTUM_EFFICIENCY_THRESHOLD = 0.8  # 80% of MAX_HOR_SPEED
+
+
+# =============================================================================
+# BUFFER UTILIZATION REWARDS
+# =============================================================================
+# Rewards for successful buffer-based jumps (frame-perfect execution)
+
+# Buffer usage bonus
+# Rationale: Moderate reward (0.05) for frame-perfect buffer execution, roughly
+# 5% of switch activation reward (1.0). Encourages precise timing without dominating
+# other reward signals.
+BUFFER_USAGE_BONUS = 0.05
 
 
 # =============================================================================
@@ -134,16 +179,20 @@ PBRS_GAMMA = 0.995
 # Objective distance potential weight
 # Rationale: Primary weight (1.0) for distance to switch/exit objectives.
 # This is the main shaping signal for task completion.
-PBRS_OBJECTIVE_WEIGHT = 1.0
+PBRS_OBJECTIVE_WEIGHT = 1.5
 
 # Hazard proximity potential weight
-# Rationale: Small weight provides safety signal without making agent too conservative.
-PBRS_HAZARD_WEIGHT = 0.1
+# Rationale: Minimal weight (0.04) provides subtle safety hints without distracting
+# from objectives. After fixing double-weighting bug, reduced from 0.2 to restore
+# original effective magnitude. Objective (1.5) dominates by 37.5x.
+PBRS_HAZARD_WEIGHT = 0.04
 
 # Impact risk potential weight
-# Rationale: Keep at 0.0 for completion-focused training.
-# Focus on speed and completion rather than impact avoidance.
-PBRS_IMPACT_WEIGHT = 0.0
+# Rationale: Minimal weight (0.04) for impact awareness without conservatism.
+# After fixing double-weighting bug, reduced from 0.2 to restore original
+# effective magnitude. Objective (1.5) dominates by 37.5x. Agent prioritizes
+# speed and completion over impact avoidance.
+PBRS_IMPACT_WEIGHT = 0.04
 
 # Exploration potential weight
 # Rationale: Combines with explicit exploration rewards for better coverage.
@@ -155,7 +204,9 @@ PBRS_EXPLORATION_WEIGHT = 0.2
 # F(s,s') = γ * Φ(s') - Φ(s) > 0 when Φ(s') > Φ(s)/γ ≈ Φ(s)
 # Previous value (0.5) was too conservative, making PBRS rewards too small to effectively guide learning.
 # PBRS rewards need to be large enough to provide meaningful gradient while still being
-# smaller than terminal rewards (10.0 completion, 1.0 switch activation).
+# smaller than terminal rewards (20.0 completion, 2.0 switch activation). PBRS provides
+# dense shaping rewards (~1.5 accumulated) to guide HOW to reach the goal, while terminal
+# rewards motivate COMPLETING it efficiently.
 PBRS_SWITCH_DISTANCE_SCALE = 1.0
 PBRS_EXIT_DISTANCE_SCALE = 1.0
 
