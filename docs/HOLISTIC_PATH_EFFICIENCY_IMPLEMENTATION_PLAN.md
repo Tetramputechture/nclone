@@ -180,6 +180,54 @@ PBRS_EXPLORATION_WEIGHT = 0.6
 4. **Maintain exploration**: Don't over-penalize necessary exploration
 5. **Curriculum-friendly**: Works across difficulty levels
 
+### Critical Implementation Principle: Graph-Based Distance Only
+
+**MANDATORY**: All distance and progress calculations **MUST** use graph-based shortest path distances from the adjacency graph, **NEVER** Euclidean distance.
+
+**Rationale**:
+1. **Respects level geometry**: Walls, gaps, and obstacles are part of the path
+2. **True progress metric**: Shortest PATH distance is the only meaningful progress measure
+3. **Consistent with PBRS**: PBRS already uses graph-based distances (from `pbrs_potentials.py`)
+4. **Prevents false signals**: Euclidean distance can decrease while path distance increases (e.g., moving closer but blocked by wall)
+
+**Implementation details**:
+```python
+# CORRECT: Use path_calculator for all distances
+from nclone.graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
+
+path_distance = self.path_calculator.get_distance(
+    start_pos,      # (x, y) tuple
+    goal_pos,       # (x, y) tuple
+    self.adjacency, # Graph adjacency dict
+    cache_key='objective'  # Cache key for performance
+)
+
+# WRONG: Never use Euclidean distance for progress
+euclidean_distance = np.linalg.norm(np.array(goal_pos) - np.array(start_pos))  # ❌ BAD
+```
+
+**Performance optimization**:
+- **Caching**: `CachedPathDistanceCalculator` maintains per-query cache and level-based cache
+- **Amortization**: Update direction checks every N frames (e.g., every 5 frames) to reduce computation
+- **Spatial hash**: O(1) node lookups using pre-built spatial hash from graph data
+- **A* pathfinding**: Efficient heuristic-guided search (faster than BFS)
+
+**Example**: Agent near wall moving closer in Euclidean space but farther in path space:
+```
+Situation: Agent at (100, 100), Goal at (120, 100), Wall at x=110
+Euclidean distance: 20 pixels (straight line)
+Path distance: 200 pixels (must go around wall)
+
+Agent moves to (110, 100):
+Euclidean distance: 10 pixels (DECREASED - seems like progress!)
+Path distance: 210 pixels (INCREASED - actually moving AWAY!)
+
+With graph-based tracking:
+✅ Correctly identifies this as backtracking (path distance increased)
+✅ Penalizes the movement appropriately
+✅ Prevents agent from hugging walls thinking it's making progress
+```
+
 ---
 
 ## Implementation Tier 1: Directional Incentives (Conservative)
@@ -200,18 +248,22 @@ MOMENTUM_BONUS_PER_STEP = 0.001
 momentum_reward = velocity_magnitude * MOMENTUM_BONUS_PER_STEP
 ```
 
-**Proposed implementation**:
+**Proposed implementation** (GRAPH-BASED):
 ```python
 # New constants in reward_constants.py
 DIRECTIONAL_MOMENTUM_ENABLED = True
 DIRECTIONAL_MOMENTUM_BONUS_PER_STEP = 0.0015  # Increased from 0.001
 BACKWARD_VELOCITY_PENALTY = 0.0003  # 20% of forward bonus
+DIRECTIONAL_MOMENTUM_UPDATE_INTERVAL = 5  # Update direction every N frames (amortize cost)
 
 # In main_reward_calculator.py
 def calculate_directional_momentum_bonus(self, state):
     """
     Reward velocity component toward current objective only.
-    Penalize velocity away from objective.
+    Uses GRAPH-BASED shortest path to determine forward direction.
+    
+    Key insight: "Forward progress" means reducing shortest PATH distance,
+    not Euclidean distance. This respects level geometry and obstacles.
     """
     velocity = np.array([state['vel_x'], state['vel_y']])
     velocity_magnitude = np.linalg.norm(velocity)
@@ -219,44 +271,78 @@ def calculate_directional_momentum_bonus(self, state):
     if velocity_magnitude < 0.1:
         return 0.0
     
+    # Current position
+    ninja_pos = (state['player_x'], state['player_y'])
+    
     # Get current objective position
     if not state.get('switch_activated', False):
         objective_pos = state['switch_pos']
     else:
         objective_pos = state['exit_pos']
     
-    # Direction vector to objective
-    ninja_pos = np.array([state['player_x'], state['player_y']])
-    direction_to_objective = np.array(objective_pos) - ninja_pos
-    distance_to_objective = np.linalg.norm(direction_to_objective)
+    # Update cached direction periodically (amortize pathfinding cost)
+    # Direction cache updated every N frames to avoid excessive computation
+    if self.frame_count % DIRECTIONAL_MOMENTUM_UPDATE_INTERVAL == 0:
+        # Get GRAPH-BASED shortest path distance from current position to objective
+        current_distance = self.path_calculator.get_distance(
+            ninja_pos,
+            objective_pos,
+            self.adjacency,
+            cache_key='objective'
+        )
+        
+        # Sample nearby positions in velocity direction to estimate gradient
+        # Try position slightly ahead in movement direction
+        sample_distance = 20.0  # pixels ahead
+        sample_direction = velocity / velocity_magnitude
+        sample_pos = (
+            ninja_pos[0] + sample_direction[0] * sample_distance,
+            ninja_pos[1] + sample_direction[1] * sample_distance
+        )
+        
+        # Get path distance from sample position to objective
+        sample_path_distance = self.path_calculator.get_distance(
+            sample_pos,
+            objective_pos,
+            self.adjacency,
+            cache_key='objective'
+        )
+        
+        # Determine if velocity direction REDUCES path distance
+        # Positive gradient = moving toward (reducing distance)
+        # Negative gradient = moving away (increasing distance)
+        path_gradient = current_distance - sample_path_distance
+        
+        # Cache the gradient sign for use in intermediate frames
+        self.cached_progress_direction = np.sign(path_gradient)
     
-    if distance_to_objective < 0.1:
-        # Very close to objective, don't penalize any movement
-        return 0.0
+    # Use cached direction for current frame
+    progress_direction = getattr(self, 'cached_progress_direction', 0)
     
-    direction_to_objective /= distance_to_objective
-    
-    # Compute velocity component toward objective
-    velocity_toward = np.dot(velocity, direction_to_objective)
-    
-    # Reward forward velocity, penalize backward
-    if velocity_toward > 0:
-        reward = velocity_toward * DIRECTIONAL_MOMENTUM_BONUS_PER_STEP
+    # Reward velocity when it reduces path distance, penalize when it increases
+    if progress_direction > 0:
+        # Moving toward objective (reducing path distance)
+        reward = velocity_magnitude * DIRECTIONAL_MOMENTUM_BONUS_PER_STEP
+    elif progress_direction < 0:
+        # Moving away from objective (increasing path distance)
+        reward = -velocity_magnitude * BACKWARD_VELOCITY_PENALTY
     else:
-        # Moving away from objective
-        reward = velocity_toward * BACKWARD_VELOCITY_PENALTY
+        # Neutral (no clear progress)
+        reward = 0.0
     
     return reward
 ```
 
 **Expected impact**:
-- ✅ Rewards fast movement **toward** objectives (not just fast movement)
-- ✅ Small penalty for moving away from objectives
+- ✅ Rewards fast movement **toward** objectives based on PATH distance reduction
+- ✅ Small penalty for moving away from objectives (PATH distance increase)
+- ✅ Respects level geometry - doesn't reward movement toward walls
 - ✅ Complements PBRS (different mechanism - velocity vs position)
 - ✅ Over 898 frames with moderate forward velocity: +0.5 to +1.0 bonus
 - ✅ Reduces circular motion incentive
+- ✅ Performance-optimized with caching and amortization (update every 5 frames)
 
-**Risk**: **LOW** - Simple vector projection, well-understood behavior
+**Risk**: **LOW** - Uses existing cached pathfinding infrastructure, well-tested
 
 **Validation metrics**:
 ```python
@@ -271,67 +357,84 @@ def calculate_directional_momentum_bonus(self, state):
 
 **Problem**: No explicit tracking of "best progress" or penalties for significant regression.
 
-**Proposed implementation**:
+**Proposed implementation** (GRAPH-BASED):
 ```python
 # New constants in reward_constants.py
 PROGRESS_TRACKING_ENABLED = True
-BACKTRACK_THRESHOLD = 10.0  # pixels (significant backtracking)
-BACKTRACK_PENALTY_PER_PIXEL = 0.00003  # Conservative penalty
-PROGRESS_BONUS_PER_PIXEL = 0.00005  # Small bonus for measurable progress
+BACKTRACK_THRESHOLD_DISTANCE = 20.0  # path distance units (graph-based)
+BACKTRACK_PENALTY_SCALE = 0.00003  # Conservative penalty per unit distance
+PROGRESS_BONUS_SCALE = 0.00005  # Small bonus per unit distance improvement
 STAGNATION_THRESHOLD = 150  # frames without progress before penalty
 STAGNATION_PENALTY_PER_FRAME = 0.00003
+PROGRESS_CHECK_THRESHOLD = 5.0  # Minimum improvement to count as progress (path units)
 
 # In main_reward_calculator.py
 class RewardCalculator:
     def __init__(self):
         # ... existing init ...
-        self.best_distance_to_switch = float('inf')
-        self.best_distance_to_exit = float('inf')
+        self.best_path_distance_to_switch = float('inf')
+        self.best_path_distance_to_exit = float('inf')
         self.frames_since_progress = 0
         
     def calculate_progress_rewards(self, state):
         """
-        Track best distance achieved and penalize significant backtracking.
-        Reward measurable progress, penalize stagnation.
+        Track best PATH distance achieved and penalize significant backtracking.
+        Uses GRAPH-BASED shortest path distances, not Euclidean.
+        
+        Key insight: Progress means reducing shortest PATH distance through
+        the adjacency graph. This respects level geometry and obstacles.
         """
-        # Get current objective and distance
+        # Get current objective
         if not state.get('switch_activated', False):
             objective_pos = state['switch_pos']
-            best_distance = self.best_distance_to_switch
+            best_path_distance = self.best_path_distance_to_switch
             objective_type = 'switch'
         else:
             objective_pos = state['exit_pos']
-            best_distance = self.best_distance_to_exit
+            best_path_distance = self.best_path_distance_to_exit
             objective_type = 'exit'
         
+        # Get current GRAPH-BASED path distance to objective
         ninja_pos = (state['player_x'], state['player_y'])
-        current_distance = calculate_distance(ninja_pos, objective_pos)
+        current_path_distance = self.path_calculator.get_distance(
+            ninja_pos,
+            objective_pos,
+            self.adjacency,
+            cache_key='objective'
+        )
         
-        # Check for progress
+        # Handle unreachable objectives
+        if current_path_distance == float('inf'):
+            # Objective unreachable from current position
+            # This shouldn't happen often but handle gracefully
+            return -0.001  # Small penalty for being in unreachable area
+        
+        # Check for progress (measurable improvement in PATH distance)
         progress_reward = 0.0
         backtrack_penalty = 0.0
         
-        if current_distance < best_distance - 2.0:  # Measurable improvement (>2 pixels)
-            # Progress made!
-            progress_made = best_distance - current_distance
-            progress_reward = progress_made * PROGRESS_BONUS_PER_PIXEL
+        if current_path_distance < best_path_distance - PROGRESS_CHECK_THRESHOLD:
+            # Significant progress made!
+            progress_made = best_path_distance - current_path_distance
+            progress_reward = progress_made * PROGRESS_BONUS_SCALE
             
-            # Update best distance and reset stagnation counter
+            # Update best path distance and reset stagnation counter
             if objective_type == 'switch':
-                self.best_distance_to_switch = current_distance
+                self.best_path_distance_to_switch = current_path_distance
             else:
-                self.best_distance_to_exit = current_distance
+                self.best_path_distance_to_exit = current_path_distance
             self.frames_since_progress = 0
             
         else:
             # No progress or backtracking
             self.frames_since_progress += 1
             
-            # Check for significant backtracking
-            backtrack_distance = current_distance - best_distance
-            if backtrack_distance > BACKTRACK_THRESHOLD:
-                # Penalize significant regression
-                backtrack_penalty = backtrack_distance * BACKTRACK_PENALTY_PER_PIXEL
+            # Check for significant backtracking (PATH distance increased)
+            backtrack_distance = current_path_distance - best_path_distance
+            if backtrack_distance > BACKTRACK_THRESHOLD_DISTANCE:
+                # Penalize significant regression in path distance
+                # This means agent moved to location with LONGER optimal path
+                backtrack_penalty = backtrack_distance * BACKTRACK_PENALTY_SCALE
         
         # Stagnation penalty (gradual increase)
         stagnation_penalty = 0.0
@@ -347,20 +450,22 @@ class RewardCalculator:
     def reset_episode(self):
         """Reset episode-specific tracking."""
         # ... existing reset ...
-        self.best_distance_to_switch = float('inf')
-        self.best_distance_to_exit = float('inf')
+        self.best_path_distance_to_switch = float('inf')
+        self.best_path_distance_to_exit = float('inf')
         self.frames_since_progress = 0
 ```
 
 **Expected impact**:
-- ✅ Tracks best progress achieved per episode
+- ✅ Tracks best PATH distance progress achieved per episode (graph-based)
 - ✅ Small reward for measurable progress (complements PBRS)
-- ✅ Penalty for significant backtracking (>10 pixels from best)
+- ✅ Penalty for significant backtracking (>20 path units from best)
 - ✅ Gradual penalty for stagnation (>150 frames no progress)
 - ✅ Over 898 frames with occasional backtracking: -0.3 to -1.0 penalty
-- ✅ Encourages monotonic progress
+- ✅ Encourages monotonic progress in PATH space
+- ✅ Correctly handles complex geometry (walls, gaps, obstacles)
+- ✅ Performance-optimized with existing path distance caching
 
-**Risk**: **LOW** - Simple distance tracking, small penalties
+**Risk**: **LOW** - Uses proven pathfinding system, simple logic, conservative penalties
 
 **Validation metrics**:
 ```python
