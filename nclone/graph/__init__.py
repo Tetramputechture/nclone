@@ -4,7 +4,6 @@ Graph-based structural representations for N++ environments.
 
 # Note: FeatureExtractor moved to npp-rl project
 # from .feature_extraction import FeatureExtractor
-from .edge_building import EdgeBuilder
 from .level_data import LevelData, ensure_level_data, create_level_data_dict
 from .common import (
     GraphData,
@@ -18,7 +17,6 @@ from .common import (
 )
 
 __all__ = [
-    "EdgeBuilder",
     "LevelData",
     "ensure_level_data",
     "create_level_data_dict",

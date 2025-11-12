@@ -4,6 +4,8 @@ from .ninja import Ninja
 from .entities import Entity
 from .utils.entity_factory import create_entity_instance
 from .utils.tile_segment_factory import TileSegmentFactory
+from .utils.level_collision_data import LevelCollisionData
+import hashlib
 
 
 class MapLoader:
@@ -50,6 +52,19 @@ class MapLoader:
         TileSegmentFactory.create_segments_for_simulator(
             self.sim, self.sim.tile_dic, process_grid_edges=True
         )
+        
+        # Build unified collision data structures for optimized collision detection
+        # Compute level hash from tile data (deterministic across processes)
+        tile_bytes = str(sorted(self.sim.tile_dic.items())).encode('utf-8')
+        level_hash = hashlib.sha256(tile_bytes).hexdigest()[:16]
+        
+        # Build all collision optimization structures through unified interface
+        self.sim.collision_data = LevelCollisionData()
+        self.sim.collision_data.build(self.sim, level_hash)
+        
+        # Keep spatial_segment_index reference for backward compatibility
+        self.sim.spatial_segment_index = self.sim.collision_data.segment_index
+        self.sim.level_hash = level_hash
 
     def load_map_entities(self):
         """Load the map entities into the simulation. These should change during the simulation,

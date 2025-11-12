@@ -93,6 +93,7 @@ class Ninja:
         self.airborn = False
         self.airborn_old = False
         self.walled = False
+        self.wall_normal = 0
         self.jump_input_old = 0
         self.jump_duration = 0
         self.jump_buffer = -1
@@ -134,6 +135,9 @@ class Ninja:
         self.death_xpos = 0
         self.death_ypos = 0
         self.terminal_impact = False
+        self.death_cause = (
+            None  # Track cause of death: "mine", "impact", "hazard", etc.
+        )
         self.xpos_at_action = self.xpos  # Position when action was applied
         self.ypos_at_action = self.ypos
 
@@ -161,6 +165,15 @@ class Ninja:
 
         # doors opened
         self.doors_opened = 0
+
+        # death cause
+        self.death_cause = None
+
+        # Mine death predictor (initialized by environment)
+        self.mine_death_predictor = None
+
+        # Terminal velocity predictor (initialized by environment)
+        self.terminal_velocity_predictor = None
 
         self.log()
 
@@ -302,14 +315,20 @@ class Ninja:
                 self.floor_normal_x += dx * inv_dist
                 self.floor_normal_y += dy * inv_dist
 
-    def post_collision(self):
+    def post_collision(self, skip_entities=False):
         """Perform logical collisions with entities, check for airborn state,
         check for walled state, calculate floor normals, check for impact or crush death.
+        
+        Args:
+            skip_entities: If True, skip entity collision checks (optimization for terminal velocity)
         """
         # Perform LOGICAL collisions between the ninja and nearby entities.
         # Also check if the ninja can interact with the walls of entities when applicable.
         wall_normal = 0
-        entities = gather_entities_from_neighbourhood(self.sim, self.xpos, self.ypos)
+        if not skip_entities:
+            entities = gather_entities_from_neighbourhood(self.sim, self.xpos, self.ypos)
+        else:
+            entities = []
         for entity in entities:
             if entity.is_logical_collidable:
                 collision_result = entity.logical_collision()
@@ -336,10 +355,13 @@ class Ninja:
                         wall_normal += collision_result
 
         # Check if the ninja can interact with walls from nearby tile segments.
-        rad = NINJA_RADIUS + 0.1
-        segments = gather_segments_from_region(
-            self.sim, self.xpos - rad, self.ypos - rad, self.xpos + rad, self.ypos + rad
-        )
+        if not skip_entities:
+            rad = NINJA_RADIUS + 0.1
+            segments = gather_segments_from_region(
+                self.sim, self.xpos - rad, self.ypos - rad, self.xpos + rad, self.ypos + rad
+            )
+        else:
+            segments = []
         for segment in segments:
             result = segment.get_closest_point(self.xpos, self.ypos)
             a, b = result[1], result[2]
@@ -510,8 +532,10 @@ class Ninja:
     def get_valid_action_mask(self) -> list:
         """Compute mask of valid actions based on current state.
 
-        Masks actions with useless jump component. Horizontal movement is never masked
-        as it has effects beyond position change (wall sliding, state transitions).
+        Masks several types of useless actions:
+        1. Useless jumps (airborne without buffers)
+        2. Directional inputs into walls (when walled)
+        3. Actions leading directly into toggled mines (certain death)
 
         Timing: Called BEFORE action is applied. self.jump_input reflects PREVIOUS frame's action.
 
@@ -561,6 +585,68 @@ class Ninja:
             )
             mask[5] = False  # JUMP+RIGHT (same reasoning)
 
+        # Mask directional inputs into walls (useless, provides no movement)
+        # wall_normal points FROM wall TO ninja:
+        #   wall_normal > 0: wall is on left side
+        #   wall_normal < 0: wall is on right side
+        # Only mask pure directional actions (LEFT/RIGHT), not jump combos
+        # because JUMP+direction triggers wall jumps which are useful
+        # DON'T mask if the input would trigger wall sliding (yspeed > 0)
+        if self.walled:
+            # Check if wall sliding would be triggered: yspeed > 0 and input toward wall
+            # Wall slide is useful (reduces fall speed, enables wall jumps)
+            would_trigger_wall_slide = self.yspeed > 0
+
+            if self.wall_normal > 0:
+                # Wall on left
+                if not would_trigger_wall_slide:
+                    mask[1] = False  # Mask LEFT only if NOT triggering wall slide
+                # Keep JUMP+LEFT (action 4) valid - it triggers wall jump
+            elif self.wall_normal < 0:
+                # Wall on right
+                if not would_trigger_wall_slide:
+                    mask[2] = False  # Mask RIGHT only if NOT triggering wall slide
+                # Keep JUMP+RIGHT (action 5) valid - it triggers wall jump
+
+        # if wall sliding, mask input direction towards the wall
+        if self.state == 5:
+            if self.wall_normal > 0:
+                mask[1] = False
+            elif self.wall_normal < 0:
+                mask[2] = False
+
+        # Mine death masking
+        for action_idx in range(6):
+            # Skip if already masked by jump/wall logic
+            if not mask[action_idx]:
+                continue
+
+            # Query lookup table (O(1), <0.1ms)
+            if self.mine_death_predictor.is_action_deadly(action_idx):
+                mask[action_idx] = False
+
+        # Terminal velocity masking (new fourth heuristic)
+        if (
+            hasattr(self, "terminal_velocity_predictor")
+            and self.terminal_velocity_predictor is not None
+        ):
+            for action_idx in range(6):
+                # Skip if already masked by previous checks
+                if not mask[action_idx]:
+                    continue
+
+                # Query predictor (O(1) lookup or fast simulation)
+                if self.terminal_velocity_predictor.is_action_deadly(action_idx):
+                    mask[action_idx] = False
+
+        # Ensure at least one action is always valid
+        # If all actions are masked (inevitable death scenario), unmask NOOP
+        # This prevents NaN in the policy distribution
+        if not any(mask):
+            # Ninja is in inevitable death scenario (surrounded by mines, etc.)
+            # Allow NOOP as a last resort to prevent policy NaN
+            mask[0] = True
+
         return mask
 
     def record_action_start_position(self):
@@ -570,22 +656,6 @@ class Ninja:
         """
         self.xpos_at_action = self.xpos
         self.ypos_at_action = self.ypos
-
-    def check_action_produced_movement(self) -> bool:
-        """Check if action resulted in position change.
-
-        Called AFTER physics tick to detect ineffective actions.
-
-        Returns:
-            True if position changed, False if no movement occurred
-        """
-        POSITION_DELTA_THRESHOLD = 0.001  # Account for floating point precision
-
-        dx = abs(self.xpos - self.xpos_at_action)
-        dy = abs(self.ypos - self.ypos_at_action)
-
-        # Any movement above threshold counts as effective
-        return dx > POSITION_DELTA_THRESHOLD or dy > POSITION_DELTA_THRESHOLD
 
     def think(self):
         """This function handles all the ninja's actions depending of the inputs and its environment."""
@@ -955,13 +1025,21 @@ class Ninja:
                 self.applied_gravity = GRAVITY_FALL
             self.state = 8
 
-    def kill(self, type, xpos, ypos, xspeed, yspeed):
-        """Set ninja's state to just killed."""
+    def kill(self, type, xpos, ypos, xspeed, yspeed, cause=None):
+        """Set ninja's state to just killed.
+
+        Args:
+            type: Death type (unused, kept for compatibility)
+            xpos, ypos: Death position
+            xspeed, yspeed: Death velocity
+            cause: String indicating death cause ("mine", "impact", "hazard", etc.)
+        """
         if self.state < 6:
             self.death_xpos = xpos
             self.death_ypos = ypos
             self.death_xspeed = xspeed
             self.death_yspeed = yspeed
+            self.death_cause = cause  # Store death cause
             if self.state == 3:
                 self.applied_gravity = GRAVITY_FALL
             self.state = 7
@@ -984,6 +1062,9 @@ class Ninja:
 
     def has_died(self):
         return self.state == 6 or self.state == 7
+
+    def set_death_cause(self, death_cause):
+        self.death_cause = death_cause
 
 
 class Ragdoll:

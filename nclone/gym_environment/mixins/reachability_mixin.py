@@ -30,11 +30,8 @@ class ReachabilityMixin:
     - Entity type classification for reachability
     """
 
-    def _init_reachability_system(
-        self, enable_reachability: bool = True, debug: bool = False
-    ):
+    def _init_reachability_system(self, debug: bool = False):
         """Initialize the reachability system components."""
-        self.enable_reachability = enable_reachability
         self.debug = debug
 
         # Initialize reachability system
@@ -53,12 +50,11 @@ class ReachabilityMixin:
         self._cached_reachability = None
         self._cache_valid = False
 
-        if enable_reachability:
-            self._reachability_system = ReachabilitySystem()
-            self._reachability_extractor = ReachabilityFeatureExtractor()
-            self._path_calculator = CachedPathDistanceCalculator(
-                max_cache_size=200, use_astar=True
-            )
+        self._reachability_system = ReachabilitySystem()
+        self._reachability_extractor = ReachabilityFeatureExtractor()
+        self._path_calculator = CachedPathDistanceCalculator(
+            max_cache_size=200, use_astar=True
+        )
 
         # Initialize logging if debug is enabled
         if self.debug:
@@ -67,10 +63,9 @@ class ReachabilityMixin:
 
     def _reset_reachability_state(self):
         """Reset reachability state during environment reset."""
-        if self.enable_reachability:
-            self._clear_reachability_cache()
-            if hasattr(self, "_path_calculator"):
-                self._path_calculator.clear_cache()
+        self._clear_reachability_cache()
+        if hasattr(self, "_path_calculator"):
+            self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
         """Get 8-dimensional reachability features."""
@@ -158,8 +153,7 @@ class ReachabilityMixin:
 
     def _reinit_reachability_system_after_unpickling(self):
         """Reinitialize reachability system components after unpickling."""
-        if self.enable_reachability:
-            if not hasattr(self, "_reachability_system"):
-                self._reachability_system = ReachabilitySystem()
-            if not hasattr(self, "_reachability_extractor"):
-                self._reachability_extractor = ReachabilityFeatureExtractor()
+        if not hasattr(self, "_reachability_system"):
+            self._reachability_system = ReachabilitySystem()
+        if not hasattr(self, "_reachability_extractor"):
+            self._reachability_extractor = ReachabilityFeatureExtractor()

@@ -112,7 +112,7 @@ class FileHandler:
                 decompressed_data = zlib.decompress(raw_data)
                 return [int(b) for b in decompressed_data]
             except zlib.error as e:
-                logger.warning(f"Failed to decompress {file_path}: {e}")
+                print(f"Failed to decompress {file_path}: {e}")
                 # Fall back to treating as uncompressed
                 return [int(b) for b in raw_data]
         else:
@@ -195,7 +195,7 @@ class FileHandler:
                         f"Loaded input file {input_file} with {len(inputs)} frames"
                     )
                 except Exception as e:
-                    logger.error(f"Failed to load input file {input_file}: {e}")
+                    print(f"Failed to load input file {input_file}: {e}")
                     break
             else:
                 break
@@ -209,7 +209,7 @@ class FileHandler:
             map_data = self._read_file_with_compression_detection(map_path)
             logger.debug(f"Loaded map data with {len(map_data)} bytes")
         except Exception as e:
-            logger.error(f"Failed to load map data: {e}")
+            print(f"Failed to load map data: {e}")
             raise
 
         logger.info(f"Loaded {len(inputs_list)} input sequences and map data")

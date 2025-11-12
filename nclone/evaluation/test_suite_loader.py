@@ -34,6 +34,7 @@ class TestSuiteLoader:
 
     CATEGORIES = [
         "simplest",
+        "simplest_few_mines",
         "simplest_with_mines",
         "simpler",
         "simple",

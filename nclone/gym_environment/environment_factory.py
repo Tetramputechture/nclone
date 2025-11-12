@@ -153,8 +153,6 @@ def make_vectorizable_env(
 def create_vectorized_training_envs(
     num_envs: int = 4,
     env_kwargs: Optional[Dict[str, Any]] = None,
-    enable_graph_for_observations: bool = True,
-    enable_reachability: bool = True,
     debug: bool = False,
 ) -> list:
     """
@@ -163,8 +161,6 @@ def create_vectorized_training_envs(
     Args:
         num_envs: Number of environments to create
         env_kwargs: Environment configuration parameters
-        enable_graph_for_observations: Whether to enable graph observations in observation space
-        enable_reachability: Whether to enable reachability analysis
         debug: Enable debug logging for graph operations
 
     Returns:
@@ -175,9 +171,7 @@ def create_vectorized_training_envs(
     for i in range(num_envs):
         # Create config with specified graph settings
         config = EnvironmentConfig.for_training()
-        config.graph.enable_graph_for_observations = enable_graph_for_observations
         config.graph.debug = debug
-        config.reachability.enable_reachability = enable_reachability
 
         # Add a unique seed for each environment
         if env_kwargs and "seed" in env_kwargs:
@@ -189,9 +183,7 @@ def create_vectorized_training_envs(
         def make_env_factory(seed_value):
             def make_env():
                 cfg = EnvironmentConfig.for_training()
-                cfg.graph.enable_graph_for_observations = enable_graph_for_observations
                 cfg.graph.debug = debug
-                cfg.reachability.enable_reachability = enable_reachability
                 cfg.seed = seed_value
                 return create_training_env(config=cfg)
 

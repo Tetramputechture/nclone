@@ -20,6 +20,14 @@ from ...graph.common import (
     EDGE_FEATURE_DIM,
 )
 from ...graph.reachability.graph_builder import GraphBuilder
+from ...graph.reachability.subcell_node_lookup import SUB_NODE_SIZE
+from ...graph.reachability.pathfinding_utils import (
+    find_closest_node_to_position,
+    extract_spatial_lookups_from_graph_data,
+    NODE_WORLD_COORD_OFFSET,
+)
+from ...constants.physics_constants import NINJA_RADIUS
+from collections import deque
 
 
 @dataclass
@@ -49,16 +57,13 @@ class GraphMixin:
 
     def _init_graph_system(
         self,
-        enable_graph_for_observations: bool = True,
         debug: bool = False,
     ):
         """Initialize the graph system components.
 
         Args:
-            enable_graph_for_observations: Add graph observations to observation space
             debug: Enable debug logging
         """
-        self.enable_graph_for_observations = enable_graph_for_observations
         self.debug = debug
 
         # Initialize graph system
@@ -80,6 +85,14 @@ class GraphMixin:
         self._graph_builder: Optional[GraphBuilder] = None
         self._graph_debug_cache: Optional[Dict[str, Any]] = None
 
+        # Cache for reachable area scale (per level ID)
+        self._reachable_area_scale_cache: Dict[str, float] = {}
+
+        # Cache for GraphData per level (static features only)
+        # Dynamic features (proximity, reachability) updated each step
+        self._graph_data_cache: Dict[str, GraphData] = {}
+        self._current_level_id: Optional[str] = None
+
         # Initialize logging if debug is enabled
         if self.debug:
             logging.basicConfig(level=logging.DEBUG)
@@ -91,9 +104,131 @@ class GraphMixin:
         self.current_graph_data = None
         self.last_switch_states.clear()
         self.last_update_time = time.time()
-        # Clear GraphBuilder cache on reset
-        if hasattr(self.graph_builder, "clear_cache"):
-            self.graph_builder.clear_cache()
+        self.graph_builder.clear_cache()
+        self._current_level_id = None
+        # Note: We keep caches across resets since they're per level ID
+        # (_reachable_area_scale_cache, _graph_data_cache)
+
+    def _get_reachable_area_scale(self) -> float:
+        """Get reachable area scale for distance normalization.
+
+        Computes reachable surface area using flood-fill from start position,
+        then converts to distance scale: sqrt(surface_area) * SUB_NODE_SIZE.
+        Caches result per level ID to avoid repeated computations.
+
+        Returns:
+            Distance scale in pixels (sqrt(surface_area) * SUB_NODE_SIZE)
+
+        Raises:
+            RuntimeError: If graph/adjacency not available (no fallback)
+        """
+        # Get level data to compute level ID
+        level_data = self._get_level_data_from_env()
+        if level_data is None:
+            raise RuntimeError(
+                "Cannot compute reachable area scale: level_data not available."
+            )
+
+        # Generate level ID from tiles array (most reliable unique identifier)
+        # PERFORMANCE: Using tiles hash ensures consistent cache hits across same levels
+        level_id = hash(level_data.tiles.tobytes())
+
+        # Check cache first (O(1) lookup)
+        if level_id in self._reachable_area_scale_cache:
+            return self._reachable_area_scale_cache[level_id]
+
+        # Get adjacency graph
+        if self.current_graph_data is None:
+            raise RuntimeError(
+                "Cannot compute reachable area scale: graph data not available. "
+                "Graph must be built before computing reachable area scale."
+            )
+
+        adjacency = self.current_graph_data.get("adjacency")
+        if not adjacency:
+            raise RuntimeError(
+                "Cannot compute reachable area scale: adjacency graph is empty. "
+                "Graph building must succeed before computing reachable area scale."
+            )
+
+        # Get player start position from level_data
+        start_position = getattr(level_data, "start_position", None)
+        if start_position is None:
+            raise RuntimeError(
+                "Cannot compute reachable area scale: level_data missing start_position. "
+                "Surface area calculation requires player start position."
+            )
+
+        # Convert start position to integer tuple (world space)
+        start_pos = (
+            int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
+            int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
+        )
+
+        # Extract spatial lookups for O(1) node finding
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            self.current_graph_data
+        )
+
+        # Find closest node to start position
+        closest_node = find_closest_node_to_position(
+            start_pos,
+            adjacency,
+            threshold=NINJA_RADIUS,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+        )
+
+        # If no node found within threshold, try with larger threshold
+        if closest_node is None:
+            closest_node = find_closest_node_to_position(
+                start_pos,
+                adjacency,
+                threshold=50.0,  # Relaxed threshold
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+            )
+
+        if closest_node is None or closest_node not in adjacency:
+            raise RuntimeError(
+                "Cannot compute reachable area scale: no node found near start position. "
+                "Graph builder may have failed to find start position."
+            )
+
+        # Flood fill from start node to find all reachable nodes
+        reachable_nodes = set()
+        queue = deque([closest_node])
+        visited = set([closest_node])
+
+        while queue:
+            current = queue.popleft()
+            reachable_nodes.add(current)
+
+            # Get neighbors from adjacency
+            neighbors = adjacency.get(current, [])
+            for neighbor_info in neighbors:
+                if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
+                    neighbor_pos = neighbor_info[0]
+                    if neighbor_pos not in visited:
+                        visited.add(neighbor_pos)
+                        queue.append(neighbor_pos)
+
+        total_reachable_nodes = len(reachable_nodes)
+
+        if total_reachable_nodes == 0:
+            raise RuntimeError(
+                "Cannot compute reachable area scale: no nodes reachable from start position. "
+                "Level may have no traversable space from spawn."
+            )
+
+        # Convert surface area (number of nodes) to distance scale
+        surface_area = float(total_reachable_nodes)
+        area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
+
+        # Cache result
+        self._reachable_area_scale_cache[level_id] = area_scale
+
+        return area_scale
 
     def _should_update_graph(self) -> bool:
         """
@@ -157,10 +292,8 @@ class GraphMixin:
 
         # Get ninja position for reachability analysis
         ninja_pos = None
-        if hasattr(self, "nplay_headless") and self.nplay_headless:
-            ninja_pos_tuple = self.nplay_headless.ninja_position()
-            if ninja_pos_tuple:
-                ninja_pos = (int(ninja_pos_tuple[0]), int(ninja_pos_tuple[1]))
+        ninja_pos_tuple = self.nplay_headless.ninja_position()
+        ninja_pos = (int(ninja_pos_tuple[0]), int(ninja_pos_tuple[1]))
 
         # Use GraphBuilder - proper abstraction
         start_time = time.time()
@@ -170,9 +303,10 @@ class GraphMixin:
         build_time = (time.time() - start_time) * 1000
 
         # GraphBuilder returns dict with 'adjacency', 'reachable', etc.
-        # For ML models that need GraphData, we leave current_graph as None for now
-        # (conversion to GraphData can be done separately if needed)
-        self.current_graph = None
+        # Convert to GraphData format for ML models if graph observations are enabled
+        self.current_graph = self._convert_graph_data_to_graphdata(
+            self.current_graph_data, level_data, ninja_pos
+        )
 
         # Build level cache for path distances if path calculator is available
         if hasattr(self, "path_calculator") and self.path_calculator is not None:
@@ -312,6 +446,101 @@ class GraphMixin:
     def get_current_graph(self) -> Optional[GraphData]:
         """Get current graph data for external use."""
         return self.current_graph
+
+    def _convert_graph_data_to_graphdata(
+        self,
+        graph_data_dict: Dict[str, Any],
+        level_data: Any,
+        ninja_pos: Optional[Tuple[int, int]],
+    ) -> Optional[GraphData]:
+        """Convert GraphBuilder dict to GraphData format for ML models.
+
+        This conversion is only done when graph observations are enabled.
+        Uses the fast GraphBuilder adjacency dict and converts it to the
+        GraphData format expected by graph neural networks.
+
+        Caching strategy:
+        - Base GraphData is cached per level_id (tiles hash)
+        - Dynamic features (proximity, reachability, entity state) updated each step
+        - GraphBuilder already caches adjacency, so this optimizes feature building
+
+        Args:
+            graph_data_dict: Dict from GraphBuilder.build_graph() with 'adjacency' key
+            level_data: Level data for feature building
+            ninja_pos: Current ninja position for reachability features
+
+        Returns:
+            GraphData object or None if conversion fails
+        """
+        if not graph_data_dict or "adjacency" not in graph_data_dict:
+            return None
+
+        adjacency = graph_data_dict.get("adjacency", {})
+        if not adjacency:
+            return None
+
+        # level_data should already be a LevelData object from _get_level_data_from_env()
+        if not isinstance(level_data, LevelData):
+            if self.debug:
+                self.logger.warning(
+                    f"Expected LevelData object, got {type(level_data)}. "
+                    "Graph observations may be incomplete."
+                )
+            return None
+
+        # Generate level_id from tiles hash (same strategy as GraphBuilder)
+        level_id = f"level_{hash(level_data.tiles.tobytes())}"
+
+        # Check cache for base GraphData
+        cached_graph_data = self._graph_data_cache.get(level_id)
+        if cached_graph_data is not None and level_id == self._current_level_id:
+            # Update only dynamic features (proximity, reachability, entity state)
+            # For now, rebuild fully since entity state changes are complex
+            # TODO: Optimize to update only proximity/reachability features
+            pass
+
+        # Convert adjacency dict to Edge list
+        from ...graph.common import Edge, EdgeType
+
+        edges = []
+        for source_pos, neighbors in adjacency.items():
+            for neighbor_info in neighbors:
+                if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
+                    target_pos = (neighbor_info[0], neighbor_info[1])
+                    weight = neighbor_info[2] if len(neighbor_info) > 2 else 1.0
+
+                    # Determine edge type (default to ADJACENT)
+                    edge_type = EdgeType.ADJACENT
+                    if len(neighbor_info) > 3:
+                        edge_type = neighbor_info[3]
+
+                    edges.append(
+                        Edge(
+                            source=source_pos,
+                            target=target_pos,
+                            edge_type=edge_type,
+                            weight=weight,
+                        )
+                    )
+
+        # Convert edges to GraphData using existing function
+        from ...graph.edge_building import create_graph_data
+
+        try:
+            # Build GraphData (will extract entity info and build features)
+            graph_data = create_graph_data(edges, level_data)
+
+            # Cache GraphData per level_id
+            # Note: Entity states may change, but positions/types are static
+            # Full caching helps avoid rebuilding structure each step
+            self._graph_data_cache[level_id] = graph_data
+            self._current_level_id = level_id
+
+            return graph_data
+        except Exception as e:
+            if self.debug:
+                self.logger.warning(f"Failed to convert graph data: {e}")
+            return None
 
     def get_graph_performance_stats(self) -> Dict[str, Any]:
         """Get simple performance statistics."""

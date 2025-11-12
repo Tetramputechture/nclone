@@ -28,6 +28,10 @@ class Simulator:
         self.ver_segment_dic = {}
         self.map_data = None
         self.map_loader = MapLoader(self)
+        
+        # Optional environment reference for cache invalidation
+        # Set by gym environment to enable performance optimizations
+        self.gym_env = None
 
     def load(self, map_data):
         """From the given map data, initiate the level geometry, the entities and the ninja."""
@@ -102,6 +106,11 @@ class Simulator:
                 self.segment_dic[(x, y)] = []
 
         self.tile_dic = {}  # Clear tile_dic as well
+        
+        # Reset collision optimization structures (will be rebuilt after segments are populated)
+        self.collision_data = None
+        self.spatial_segment_index = None
+        self.level_hash = None
 
         # Initialize horizontal grid edges, with outer edges set to 1 (solid)
         for x in range(89):

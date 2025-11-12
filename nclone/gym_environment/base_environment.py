@@ -5,6 +5,7 @@ This module contains the core environment functionality without the specialized
 mixins for graph, reachability, and debug features.
 """
 
+import logging
 import gymnasium
 from gymnasium.spaces import box, discrete, Dict as SpacesDict
 import random
@@ -25,6 +26,9 @@ from .constants import (
     MAX_TIME_IN_FRAMES,
     RENDERED_VIEW_WIDTH,
     RENDERED_VIEW_HEIGHT,
+    LEVEL_WIDTH,
+    LEVEL_HEIGHT,
+    FEATURES_PER_DOOR,
 )
 from .reward_calculation.main_reward_calculator import RewardCalculator
 from .observation_processor import ObservationProcessor
@@ -32,6 +36,10 @@ from .truncation_checker import TruncationChecker
 from .entity_extractor import EntityExtractor
 from .env_map_loader import EnvMapLoader
 from .reward_calculation.reward_constants import PBRS_GAMMA
+from ..constants.entity_types import EntityType
+from ..entity_classes.entity_door_locked import EntityDoorLocked
+
+logger = logging.getLogger(__name__)
 
 
 class BaseNppEnvironment(gymnasium.Env):
@@ -156,8 +164,17 @@ class BaseNppEnvironment(gymnasium.Env):
 
         self.mirror_map = False
 
+        # Cache for level data and entities (invalidated only on reset)
+        # PERFORMANCE: Eliminates 8217+ redundant calls to _extract_level_data()
+        self._cached_level_data: Optional[LevelData] = None
+        self._cached_entities: Optional[list] = None
+
+        # Cache for observation (invalidated after each action execution)
+        # PERFORMANCE: Eliminates redundant _get_observation() calls within single step
+        self._cached_observation: Optional[Dict[str, Any]] = None
+
         # Load the initial map
-        self.map_loader.load_initial_map()
+        self.map_loader.load_map()
 
     def _build_base_observation_space(self) -> SpacesDict:
         """Build the base observation space."""
@@ -184,7 +201,9 @@ class BaseNppEnvironment(gymnasium.Env):
             "game_state": box.Box(
                 low=-1,
                 high=1,
-                shape=(GAME_STATE_CHANNELS,),
+                shape=(
+                    GAME_STATE_CHANNELS,
+                ),  # Now 52: 29 physics + 15 objectives + 5 mines + 3 progress
                 dtype=np.float32,
             ),
             # Action mask for invalid action filtering
@@ -235,47 +254,149 @@ class BaseNppEnvironment(gymnasium.Env):
 
         return hoz_input, jump_input
 
+    def _check_observation_for_nan(
+        self, obs: Dict[str, Any], obs_name: str = "observation"
+    ):
+        """Check observation dictionary for NaN values and log details.
+
+        Args:
+            obs: Observation dictionary to check
+            obs_name: Name identifier for logging (e.g., "prev_obs", "curr_obs")
+        """
+        nan_found = False
+        nan_components = []
+
+        for key, value in obs.items():
+            if isinstance(value, np.ndarray):
+                if np.isnan(value).any():
+                    nan_found = True
+                    nan_count = np.isnan(value).sum()
+                    nan_components.append(f"{key} (array, {nan_count} NaN values)")
+            elif isinstance(value, (float, np.floating)):
+                if np.isnan(value):
+                    nan_found = True
+                    nan_components.append(f"{key} (scalar, value={value})")
+            elif isinstance(value, (list, tuple)):
+                # Check list/tuple elements
+                for i, item in enumerate(value):
+                    if isinstance(item, (float, np.floating)) and np.isnan(item):
+                        nan_found = True
+                        nan_components.append(f"{key}[{i}] (scalar, value={item})")
+                    elif isinstance(item, np.ndarray) and np.isnan(item).any():
+                        nan_found = True
+                        nan_count = np.isnan(item).sum()
+                        nan_components.append(
+                            f"{key}[{i}] (array, {nan_count} NaN values)"
+                        )
+
+        if nan_found:
+            raise ValueError(
+                f"[OBS_NAN] NaN detected in {obs_name}! Components with NaN: {nan_components}. "
+                f"Raw values: player_x={obs.get('player_x')}, player_y={obs.get('player_y')}, "
+                f"player_xspeed={obs.get('player_xspeed')}, player_yspeed={obs.get('player_yspeed')}"
+            )
+
+        return nan_found
+
     def step(self, action: int):
         """Execute one environment step with enhanced episode info.
 
         Template method that defines the step execution flow with hooks
         for subclasses to extend behavior at specific points.
         """
-        # Get previous observation
-        prev_obs = self._get_observation()
+        try:
+            # Get previous observation
+            prev_obs = self._get_observation()
 
-        # Execute action
-        action_hoz, action_jump = self._actions_to_execute(action)
-        self.nplay_headless.tick(action_hoz, action_jump)
+            # Check for NaN in previous observation
+            if self._check_observation_for_nan(prev_obs, "prev_obs"):
+                print(
+                    f"[STEP_NAN] NaN detected in prev_obs before action execution. "
+                    f"Action: {action}"
+                )
 
-        # Hook: After action execution, before observation
-        self._post_action_hook()
+            # Execute action
+            action_hoz, action_jump = self._actions_to_execute(action)
+            self.nplay_headless.tick(action_hoz, action_jump)
 
-        # Get current observation
-        curr_obs = self._get_observation()
-        terminated, truncated, player_won = self._check_termination()
+            # Invalidate observation cache since game state changed
+            self._cached_observation = None
 
-        # Hook: After observation, before reward calculation
-        self._pre_reward_hook(curr_obs, player_won)
+            # Hook: After action execution, before observation
+            self._post_action_hook()
 
-        # Calculate reward (pass action for NOOP penalty)
-        reward = self._calculate_reward(curr_obs, prev_obs, action)
+            # Get current observation
+            curr_obs = self._get_observation()
 
-        # Hook: Modify reward if needed
-        reward = self._modify_reward_hook(reward, curr_obs, player_won, terminated)
+            # Check for NaN in current observation BEFORE reward calculation
+            if self._check_observation_for_nan(curr_obs, "curr_obs"):
+                print(
+                    f"[STEP_NAN] NaN detected in curr_obs after action execution. "
+                    f"Action: {action}, prev_obs had NaN: {self._check_observation_for_nan(prev_obs, 'prev_obs')}"
+                )
 
-        self.current_ep_reward += reward
+            terminated, truncated, player_won = self._check_termination()
 
-        # Process observation for training
-        processed_obs = self._process_observation(curr_obs)
+            # Hook: After observation, before reward calculation
+            self._pre_reward_hook(curr_obs, player_won)
 
-        # Build episode info
-        info = self._build_episode_info(player_won, terminated, truncated)
+            # Calculate reward (pass action for NOOP penalty)
+            reward = self._calculate_reward(curr_obs, prev_obs, action)
 
-        # Hook: Add additional info fields
-        self._extend_info_hook(info)
+            # Check reward for NaN
+            if np.isnan(reward):
+                print(
+                    f"[STEP_NAN] NaN detected in reward after calculation. "
+                    f"Reward value: {reward}, action: {action}, "
+                    f"player_pos=({curr_obs.get('player_x')}, {curr_obs.get('player_y')})"
+                )
 
-        return processed_obs, reward, terminated, truncated, info
+            # Hook: Modify reward if needed
+            reward = self._modify_reward_hook(reward, curr_obs, player_won, terminated)
+
+            # Check reward again after modification
+            if np.isnan(reward):
+                print(
+                    f"[STEP_NAN] NaN detected in reward after modification hook. "
+                    f"Reward value: {reward}"
+                )
+
+            self.current_ep_reward += reward
+
+            # Process observation for training
+            processed_obs = self._process_observation(curr_obs)
+
+            # Check processed observation for NaN
+            if isinstance(processed_obs, dict):
+                if self._check_observation_for_nan(processed_obs, "processed_obs"):
+                    print(
+                        f"[STEP_NAN] NaN detected in processed_obs after processing. "
+                        f"Action: {action}"
+                    )
+
+            # Build episode info
+            info = self._build_episode_info(player_won, terminated, truncated)
+
+            # Hook: Add additional info fields
+            self._extend_info_hook(info)
+
+            # Validate observation before returning
+            if self._check_observation_for_nan(processed_obs, "step_obs"):
+                raise ValueError(
+                    f"NaN detected after step (action={action}). "
+                    f"Frame: {self.nplay_headless.sim.frame}"
+                )
+
+            return processed_obs, reward, terminated, truncated, info
+
+        except Exception as e:
+            logger.error(
+                f"[STEP_EXCEPTION] Exception in step() method: {type(e).__name__}: {e}. "
+                f"Action: {action}, "
+                f"Current ep reward: {self.current_ep_reward}"
+            )
+            # Re-raise to maintain normal error handling
+            raise
 
     def _post_action_hook(self):
         """Hook called after action execution, before getting observation.
@@ -317,6 +438,110 @@ class BaseNppEnvironment(gymnasium.Env):
         """
         return reward
 
+    def _get_observation_metrics(self, obs: Dict[str, Any]) -> Dict[str, float]:
+        """Extract key observation values for TensorBoard logging.
+
+        Extracts individual feature values from observations to help debug
+        incorrect computations and track sensible trends.
+
+        Args:
+            obs: Raw observation dictionary from _get_observation()
+
+        Returns:
+            Dictionary with observation metrics, keys prefixed with "obs/"
+        """
+        metrics = {}
+
+        # === GAME STATE FEATURES ===
+        # Log first 15 key game_state features (ninja physics state)
+        if "game_state" in obs:
+            game_state = obs["game_state"]
+            if isinstance(game_state, np.ndarray):
+                # Log first 15 features (covers ninja state: position, velocity, physics)
+                for i in range(min(15, len(game_state))):
+                    metrics[f"obs/game_state/feature_{i}"] = float(game_state[i])
+
+        # === ENTITY POSITIONS ===
+        # Log raw positions (will be normalized in processed observation)
+        metrics["obs/entity_positions/ninja_x"] = float(obs["player_x"])
+        metrics["obs/entity_positions/ninja_y"] = float(obs["player_y"])
+        # Also log normalized versions (as they appear in processed observation)
+        metrics["obs/entity_positions/ninja_x_norm"] = float(
+            obs["player_x"] / LEVEL_WIDTH
+        )
+        metrics["obs/entity_positions/ninja_y_norm"] = float(
+            obs["player_y"] / LEVEL_HEIGHT
+        )
+
+        metrics["obs/entity_positions/switch_x"] = float(obs["switch_x"])
+        metrics["obs/entity_positions/switch_y"] = float(obs["switch_y"])
+        metrics["obs/entity_positions/switch_x_norm"] = float(
+            obs["switch_x"] / LEVEL_WIDTH
+        )
+        metrics["obs/entity_positions/switch_y_norm"] = float(
+            obs["switch_y"] / LEVEL_HEIGHT
+        )
+
+        metrics["obs/entity_positions/exit_x"] = float(obs["exit_door_x"])
+        metrics["obs/entity_positions/exit_y"] = float(obs["exit_door_y"])
+        metrics["obs/entity_positions/exit_x_norm"] = float(
+            obs["exit_door_x"] / LEVEL_WIDTH
+        )
+        metrics["obs/entity_positions/exit_y_norm"] = float(
+            obs["exit_door_y"] / LEVEL_HEIGHT
+        )
+
+        # === REACHABILITY FEATURES ===
+        if "reachability_features" in obs:
+            reachability = obs["reachability_features"]
+            if isinstance(reachability, np.ndarray):
+                for i in range(len(reachability)):
+                    metrics[f"obs/reachability_features/feature_{i}"] = float(
+                        reachability[i]
+                    )
+
+        # === SWITCH STATES ===
+        # Log first door's features as example
+        if "switch_states" in obs:
+            switch_states = obs["switch_states"]
+            if isinstance(switch_states, np.ndarray) and len(switch_states) > 0:
+                # Log first door's features (5 features: switch_x, switch_y, door_x, door_y, collected)
+                for i in range(min(FEATURES_PER_DOOR, len(switch_states))):
+                    feature_names = [
+                        "switch_x_norm",
+                        "switch_y_norm",
+                        "door_x_norm",
+                        "door_y_norm",
+                        "collected",
+                    ]
+                    if i < len(feature_names):
+                        metrics[f"obs/switch_states/door_0_{feature_names[i]}"] = float(
+                            switch_states[i]
+                        )
+
+        # === SUBTASK FEATURES (if hierarchical enabled) ===
+        if "subtask_features" in obs:
+            subtask = obs["subtask_features"]
+            if isinstance(subtask, np.ndarray):
+                feature_names = [
+                    "subtask_type",
+                    "progress",
+                    "priority",
+                    "completion_bonus",
+                ]
+                for i in range(min(len(subtask), len(feature_names))):
+                    metrics[f"obs/subtask_features/{feature_names[i]}"] = float(
+                        subtask[i]
+                    )
+
+        # === KEY PHYSICS STATE ===
+        metrics["obs/physics/xspeed"] = float(obs["player_xspeed"])
+        metrics["obs/physics/yspeed"] = float(obs["player_yspeed"])
+        metrics["obs/switch_activated"] = float(obs["switch_activated"])
+        metrics["obs/time_remaining"] = float(obs["time_remaining"])
+
+        return metrics
+
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Hook to add additional fields to info dictionary.
 
@@ -330,6 +555,10 @@ class BaseNppEnvironment(gymnasium.Env):
         diagnostic_metrics = self.reward_calculator.get_diagnostic_metrics(curr_obs)
         # Add to info dict for callback to log
         info["diagnostic_metrics"] = diagnostic_metrics
+
+        # Generate observation metrics for TensorBoard logging
+        observation_metrics = self._get_observation_metrics(curr_obs)
+        info["observation_metrics"] = observation_metrics
 
     def _build_episode_info(
         self, player_won: bool, terminated: bool, truncated: bool
@@ -390,8 +619,13 @@ class BaseNppEnvironment(gymnasium.Env):
         # Reset episode reward
         self.current_ep_reward = 0
 
-        # Reset level and load map (unless externally loaded)
-        self.nplay_headless.reset()
+        # Invalidate observation cache
+        self._cached_observation = None
+
+        # Invalidate level data cache on reset (new level loaded)
+        # PERFORMANCE: Cache will be rebuilt on first access
+        self._cached_level_data = None
+        self._cached_entities = None
 
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
@@ -399,11 +633,22 @@ class BaseNppEnvironment(gymnasium.Env):
             skip_map_load = options.get("skip_map_load", False)
 
         if not skip_map_load:
+            # Load map - this calls sim.load() which calls sim.reset()
             self.map_loader.load_map()
+        else:
+            # If map loading is skipped, we still need to reset the sim
+            # This happens when curriculum wrapper loads the map externally
+            self.nplay_headless.reset()
 
         # Get initial observation and process it
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
+
+        # Validate observation before returning
+        if self._check_observation_for_nan(processed_obs, "reset_obs"):
+            raise ValueError(
+                "NaN detected immediately after reset. Initialization problem."
+            )
 
         return (processed_obs, {})
 
@@ -415,6 +660,10 @@ class BaseNppEnvironment(gymnasium.Env):
 
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
+        # Return cached observation if valid
+        if self._cached_observation is not None:
+            return self._cached_observation
+
         # Calculate time remaining feature
         time_remaining = (
             MAX_TIME_IN_FRAMES - self.nplay_headless.sim.frame
@@ -422,38 +671,38 @@ class BaseNppEnvironment(gymnasium.Env):
 
         ninja_state = self.nplay_headless.get_ninja_state()
 
-        # game_state contains only ninja_state (GAME_STATE_CHANNELS features)
-        # Entity counts removed - not needed for training
+        # game_state contains ninja_state (29 features) + path-aware objectives (15) +
+        # mine features (8) + progress features (3) + sequential goals (3) = 58 total features
+        # Start with ninja_state, will be extended by NppEnvironment if path-aware features enabled
         game_state = ninja_state
 
         # Get entity states for PBRS hazard detection
-        entity_states_raw = self.nplay_headless.get_entity_states()
-
-        # Get actual entity objects for tracking critical entities
-        from ..constants.entity_types import EntityType
+        # Try to use reachable area scale if available (from GraphMixin)
+        area_scale = None
+        area_scale = self._get_reachable_area_scale()
+        entity_states_raw = self.nplay_headless.get_entity_states(area_scale=area_scale)
 
         entities = []
-        if hasattr(self.nplay_headless.sim, "entity_dic"):
-            # Extract entities relevant for Deep RL agent:
-            # - Toggle mines (hazards)
-            toggle_mines = self.nplay_headless.sim.entity_dic.get(
-                EntityType.TOGGLE_MINE, []
-            )
-            entities.extend(toggle_mines)
+        # Extract entities relevant for Deep RL agent:
+        # - Toggle mines (hazards)
+        toggle_mines = self.nplay_headless.sim.entity_dic.get(
+            EntityType.TOGGLE_MINE, []
+        )
+        entities.extend(toggle_mines)
 
-            # - Toggled mines (active hazards)
-            toggled_mines = self.nplay_headless.sim.entity_dic.get(
-                EntityType.TOGGLE_MINE_TOGGLED, []
-            )
-            entities.extend(toggled_mines)
+        # - Toggled mines (active hazards)
+        toggled_mines = self.nplay_headless.sim.entity_dic.get(
+            EntityType.TOGGLE_MINE_TOGGLED, []
+        )
+        entities.extend(toggled_mines)
 
-            # - Locked doors (obstacles requiring switch activation)
-            locked_doors = self.nplay_headless.locked_doors()
-            entities.extend(locked_doors)
+        # - Locked doors (obstacles requiring switch activation)
+        locked_doors = self.nplay_headless.locked_doors()
+        entities.extend(locked_doors)
 
-            # - Locked door switches (objectives for opening locked doors)
-            locked_door_switches = self.nplay_headless.locked_door_switches()
-            entities.extend(locked_door_switches)
+        # - Locked door switches (objectives for opening locked doors)
+        locked_door_switches = self.nplay_headless.locked_door_switches()
+        entities.extend(locked_door_switches)
 
         # Get ninja properties for PBRS impact risk calculation
         ninja_vel_old = self.nplay_headless.ninja_velocity_old()
@@ -463,13 +712,19 @@ class BaseNppEnvironment(gymnasium.Env):
         # Get current ninja velocity for momentum rewards
         ninja_vel = self.nplay_headless.ninja_velocity()
 
+        # DIAGNOSTIC: Log what positions we're extracting from simulator
+        ninja_pos = self.nplay_headless.ninja_position()
+        switch_pos = self.nplay_headless.exit_switch_position()
+        exit_pos = self.nplay_headless.exit_door_position()
+
         obs = {
             "screen": self.render(),
             "game_state": game_state,
             "player_dead": self.nplay_headless.ninja_has_died(),
             "player_won": self.nplay_headless.ninja_has_won(),
-            "player_x": self.nplay_headless.ninja_position()[0],
-            "player_y": self.nplay_headless.ninja_position()[1],
+            "death_cause": self.nplay_headless.ninja_death_cause(),
+            "player_x": ninja_pos[0],
+            "player_y": ninja_pos[1],
             "player_xspeed": ninja_vel[0],
             "player_yspeed": ninja_vel[1],
             "player_xspeed_old": ninja_vel_old[0],
@@ -481,10 +736,10 @@ class BaseNppEnvironment(gymnasium.Env):
             "ceiling_normal_x": ninja_ceiling_norm[0],
             "ceiling_normal_y": ninja_ceiling_norm[1],
             "switch_activated": self.nplay_headless.exit_switch_activated(),
-            "switch_x": self.nplay_headless.exit_switch_position()[0],
-            "switch_y": self.nplay_headless.exit_switch_position()[1],
-            "exit_door_x": self.nplay_headless.exit_door_position()[0],
-            "exit_door_y": self.nplay_headless.exit_door_position()[1],
+            "switch_x": switch_pos[0],
+            "switch_y": switch_pos[1],
+            "exit_door_x": exit_pos[0],
+            "exit_door_y": exit_pos[1],
             "time_remaining": time_remaining,
             "sim_frame": self.nplay_headless.sim.frame,
             "entity_states": entity_states_raw,  # For PBRS hazard detection
@@ -496,10 +751,10 @@ class BaseNppEnvironment(gymnasium.Env):
             "action_mask": np.array(
                 self.nplay_headless.get_action_mask(), dtype=np.int8
             ),
-            # Add ineffective action flag for penalty detection
-            "action_was_ineffective": self.nplay_headless.ninja_action_was_ineffective(),
         }
 
+        # Cache the computed observation before returning
+        self._cached_observation = obs
         return obs
 
     def _check_termination(self) -> Tuple[bool, bool, bool]:
@@ -604,20 +859,30 @@ class BaseNppEnvironment(gymnasium.Env):
         """
         Get current level data for external access.
 
+        Uses cached value to avoid rebuilding level data thousands of times per episode.
+        Level geometry never changes during an episode, so caching is safe.
+
         Returns:
             LevelData object containing tiles and entities
         """
-        return self._extract_level_data()
+        if self._cached_level_data is None:
+            self._cached_level_data = self._extract_level_data()
+        return self._cached_level_data
 
     @property
     def entities(self) -> list:
         """
         Get current entities for external access.
 
+        Uses cached value to avoid rebuilding entity list thousands of times per episode.
+        Entity positions never change during an episode, so caching is safe.
+
         Returns:
             List of entity dictionaries
         """
-        return self.entity_extractor.extract_graph_entities()
+        if self._cached_entities is None:
+            self._cached_entities = self.entity_extractor.extract_graph_entities()
+        return self._cached_entities
 
     @property
     def current_map_name(self) -> str:
@@ -664,13 +929,6 @@ class BaseNppEnvironment(gymnasium.Env):
         """
         locked_doors = []
         locked_door_entities = self.nplay_headless.locked_doors()
-
-        # Import door constants
-        try:
-            from ..entity_classes.entity_door_locked import EntityDoorLocked
-        except ImportError:
-            # Fallback to default values if import fails
-            EntityDoorLocked = type("EntityDoorLocked", (), {"RADIUS": 5})
 
         for door_entity in locked_door_entities:
             # Get switch position (entity position)
@@ -754,6 +1012,10 @@ class BaseNppEnvironment(gymnasium.Env):
             if attr in state:
                 del state[attr]
 
+        # Clear observation cache (shouldn't be pickled)
+        if "_cached_observation" in state:
+            del state["_cached_observation"]
+
         return state
 
     def __setstate__(self, state):
@@ -791,6 +1053,10 @@ class BaseNppEnvironment(gymnasium.Env):
                 getattr(self, "custom_map_path", None),
                 test_dataset_path=getattr(self, "test_dataset_path", None),
             )
+
+        # Initialize observation cache
+        if not hasattr(self, "_cached_observation"):
+            self._cached_observation = None
 
         # Mark that we need to reinitialize on next reset
         self._needs_reinit = True

@@ -35,6 +35,12 @@ LEVEL_COMPLETION_REWARD = 20.0
 # Too large penalties can lead to overly conservative behavior.
 DEATH_PENALTY = -1.0
 
+# Mine death penalty
+# Rationale: Stronger penalty (-2.5) for mine deaths to encourage hazard avoidance.
+# Mine deaths are preventable through better path planning, so they deserve stronger
+# negative signal than other death types (impact, terminal velocity).
+MINE_DEATH_PENALTY = -2.5
+
 
 # =============================================================================
 # OBJECTIVE MILESTONE REWARDS
@@ -87,10 +93,11 @@ COMPLETION_TIME_TARGET = (
 )
 
 # NOOP action penalty
-# Rationale: Small penalty (-0.01) discourages standing still without overwhelming
+# Rationale: Moderate penalty (-0.05) discourages standing still without overwhelming
 # other reward signals. Encourages active exploration and movement toward objectives.
 # Without this, agents can exploit doing nothing to avoid negative outcomes.
-NOOP_ACTION_PENALTY = -0.02
+# UPDATED: Increased from -0.02 to -0.05 to exceed exploration rewards and prevent exploitation.
+NOOP_ACTION_PENALTY = -0.05
 
 # Invalid masked action penalty (should rarely trigger if masking works)
 # Rationale: Large penalty (-0.1) for selecting masked actions. This should
@@ -98,10 +105,10 @@ NOOP_ACTION_PENALTY = -0.02
 MASKED_ACTION_PENALTY = -0.1
 
 # Ineffective action penalty (post-action detection)
-# Rationale: Moderate penalty (-0.02) for actions that produce no position change.
+# Rationale: Moderate penalty (-0.05) for actions that produce no position change.
 # This catches cases where horizontal input has mechanical effects (wall sliding)
-# but doesn't produce movement. Kept moderate since mechanical effects may be valuable.
-INEFFECTIVE_ACTION_PENALTY = -0.02
+# but doesn't produce movement. UPDATED: Increased from -0.02 to -0.05 to exceed exploration rewards.
+INEFFECTIVE_ACTION_PENALTY = -0.05
 
 
 # =============================================================================
@@ -111,7 +118,7 @@ INEFFECTIVE_ACTION_PENALTY = -0.02
 
 # Momentum bonus per step
 # Rationale: Continuous bonus encourages maintaining high speed without overwhelming
-# terminal rewards. Over 5000 steps at max speed, this yields ~5.0 total momentum 
+# terminal rewards. Over 5000 steps at max speed, this yields ~5.0 total momentum
 # bonus, roughly 25% of completion reward (20.0).
 # UPDATED 2025-11-08: Increased 5x from 0.0002 to 0.001 based on analysis showing
 # momentum rewards were too weak to influence policy. Higher bonus encourages
@@ -124,6 +131,21 @@ MOMENTUM_BONUS_PER_STEP = 0.001  # was 0.0002
 # speed variations while still rewarding high-speed play.
 MOMENTUM_EFFICIENCY_THRESHOLD = 0.8  # 80% of MAX_HOR_SPEED
 
+# Directional momentum bonus (Tier 1 path efficiency)
+# Rationale: Rewards velocity component toward current objective only, using
+# graph-based shortest path distance to determine forward direction. This prevents
+# rewarding circular motion and encourages productive movement toward objectives.
+# UPDATED 2025-11-08: Added directional momentum to address inefficient looping
+# behavior observed in training (agent achieving only 12.39/~19.99 reward).
+# UPDATED: Reduced from 0.0015 to 0.0005 to fix reward magnitude hierarchy (20x terminal/dense ratio).
+DIRECTIONAL_MOMENTUM_BONUS_PER_STEP = (
+    0.0005  # Reduced from 0.0015 to fix magnitude hierarchy
+)
+BACKWARD_VELOCITY_PENALTY = 0.0003  # 20% of forward bonus
+DIRECTIONAL_MOMENTUM_UPDATE_INTERVAL = (
+    5  # Update direction every N frames (amortize cost)
+)
+
 
 # =============================================================================
 # BUFFER UTILIZATION REWARDS
@@ -135,7 +157,8 @@ MOMENTUM_EFFICIENCY_THRESHOLD = 0.8  # 80% of MAX_HOR_SPEED
 # characteristic of expert N++ play.
 # UPDATED 2025-11-08: Increased 2x from 0.05 to 0.1 to better reward skilled
 # movement. Frame-perfect execution should be clearly rewarded.
-BUFFER_USAGE_BONUS = 0.1  # was 0.05
+# UPDATED: Reduced from 0.1 to 0.02 to align with step-level rewards and prevent perverse incentives.
+BUFFER_USAGE_BONUS = 0.02  # Reduced from 0.1 to align with step-level rewards
 
 
 # =============================================================================
@@ -167,6 +190,15 @@ EXPLORATION_AREA_8X8_REWARD = 0.005
 # Very large area (16x16 cells = 384x384 pixels) - major regions
 EXPLORATION_AREA_16X16_REWARD = 0.005
 
+# Exploration decay configuration
+# Rationale: Reduce exploration rewards as episode progresses to prioritize speed
+# optimization. Early exploration helps discover goals, but later in episode
+# agent should focus on efficient completion rather than continued exploration.
+EXPLORATION_DECAY_ENABLED = True
+EXPLORATION_DECAY_START_STEP = 500  # Start decay after this many steps
+EXPLORATION_DECAY_END_STEP = 2000  # Full decay by this step
+EXPLORATION_MIN_SCALE = 0.2  # Minimum scale factor (20% of original)
+
 
 # =============================================================================
 # POTENTIAL-BASED REWARD SHAPING (PBRS) CONSTANTS
@@ -190,25 +222,32 @@ PBRS_GAMMA = 0.995
 # UPDATED 2025-11-08: Increased 3x from 1.5 to 4.5 based on comprehensive analysis
 # showing PBRS rewards were too weak (~0.0 mean) to provide effective gradient.
 # With stronger PBRS, agent receives clear directional signal toward objectives.
-PBRS_OBJECTIVE_WEIGHT = 4.5  # was 1.5
+# UPDATED: Reduced from 4.5 to 2.0 to fix reward magnitude hierarchy (20x terminal/dense ratio).
+PBRS_OBJECTIVE_WEIGHT = 2.0  # Reduced from 4.5 to fix magnitude hierarchy
 
 # Hazard proximity potential weight
 # Rationale: Safety hint weight provides hazard awareness without overwhelming
 # objective-seeking behavior.
 # UPDATED 2025-11-08: Increased 3.75x from 0.04 to 0.15 to strengthen safety
 # signals. Objective weight still dominates by 30x (4.5 / 0.15).
-PBRS_HAZARD_WEIGHT = 0.15  # was 0.04
+# UPDATED: Increased from 0.15 to 0.8 to strengthen safety signals (40% of objective weight).
+# This ensures agent routes around hazards while still progressing toward goal.
+PBRS_HAZARD_WEIGHT = 0.8  # Increased from 0.15 to strengthen safety signals
 
 # Impact risk potential weight
 # Rationale: Impact awareness weight encourages safer movement.
 # UPDATED 2025-11-08: Increased 3.75x from 0.04 to 0.15 to strengthen impact
 # awareness. Objective weight still dominates by 30x (4.5 / 0.15).
-PBRS_IMPACT_WEIGHT = 0.15  # was 0.04
+# UPDATED: Increased from 0.15 to 0.6 to strengthen impact awareness (30% of objective weight).
+PBRS_IMPACT_WEIGHT = 0.6  # Increased from 0.15 to strengthen impact awareness
 
 # Exploration potential weight
 # Rationale: Combines with explicit exploration rewards for better coverage.
 # UPDATED 2025-11-08: Increased 3x from 0.2 to 0.6 to encourage spatial exploration.
-PBRS_EXPLORATION_WEIGHT = 0.6  # was 0.2
+# UPDATED 2025-11-08 (Tier 1): Reduced 50% from 0.6 to 0.3 to reduce excessive
+# wandering and focus agent on direct paths to objectives. Objective weight (4.5)
+# now dominates by 15x instead of 7.5x, providing clearer directional signal.
+PBRS_EXPLORATION_WEIGHT = 0.3  # was 0.6 (Tier 1 path efficiency reduction)
 
 # PBRS scaling for switch and exit phases
 # Rationale: Scale of 1.0 ensures PBRS rewards are effective and guide learning.
@@ -292,3 +331,22 @@ ICM_INVERSE_LOSS_WEIGHT = 0.1
 # Rationale: Moderate learning rate (1e-3) for ICM network training.
 # Higher than policy network (3e-4) as ICM learns faster auxiliary task.
 ICM_LEARNING_RATE = 1e-3
+
+
+# =============================================================================
+# PATH EFFICIENCY REWARDS (Tier 1)
+# =============================================================================
+# Rewards and penalties for efficient path planning and progress tracking
+# Added 2025-11-08 to address inefficient movement patterns (looping, backtracking)
+
+# Progress tracking and backtracking detection
+# Rationale: Tracks best PATH distance achieved to each objective and penalizes
+# significant regression. Uses graph-based shortest path distances (not Euclidean)
+# to respect level geometry and obstacles. Encourages monotonic progress toward
+# objectives while allowing necessary corrections.
+BACKTRACK_THRESHOLD_DISTANCE = 20.0  # path distance units (graph-based)
+BACKTRACK_PENALTY_SCALE = 0.00003  # Conservative penalty per unit distance
+PROGRESS_BONUS_SCALE = 0.0  # Disabled - redundant with PBRS objective potential
+STAGNATION_THRESHOLD = 75  # frames without progress before penalty (reduced from 150)
+STAGNATION_PENALTY_PER_FRAME = 0.0001  # Increased from 0.00003 for stronger signal
+PROGRESS_CHECK_THRESHOLD = 5.0  # Minimum improvement to count as progress (path units)

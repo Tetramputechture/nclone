@@ -225,17 +225,27 @@ class MineStateProcessor:
             mine_id = getattr(entity, 'id', None)
             if mine_id is None:
                 # Use position tuple as ID
-                x = getattr(entity, 'x', 0.0)
-                y = getattr(entity, 'y', 0.0)
+                x = getattr(entity, 'xpos', 0.0)
+                y = getattr(entity, 'ypos', 0.0)
                 mine_id = (int(x), int(y))
             
             seen_mines.add(mine_id)
             
             # Get mine position and state
-            position = (
-                getattr(entity, 'x', 0.0),
-                getattr(entity, 'y', 0.0),
-            )
+            x = getattr(entity, 'xpos', 0.0)
+            y = getattr(entity, 'ypos', 0.0)
+            
+            # Validate mine position
+            if np.isnan(x) or np.isinf(x):
+                raise ValueError(
+                    f"Invalid mine x position: {x} (mine_id={mine_id})"
+                )
+            if np.isnan(y) or np.isinf(y):
+                raise ValueError(
+                    f"Invalid mine y position: {y} (mine_id={mine_id})"
+                )
+            
+            position = (x, y)
             
             # Get mine state (0=toggled, 1=untoggled, 2=toggling)
             # Default to untoggled if state not available

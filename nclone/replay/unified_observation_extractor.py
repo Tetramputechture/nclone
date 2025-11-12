@@ -216,9 +216,9 @@ class UnifiedObservationExtractor:
                 entities=entities,
             )
         except Exception as e:
-            logger.error(f"Failed to extract reachability features: {e}")
-            logger.error(f"Ninja position: {ninja_pos}")
-            logger.error(
+            print(f"Failed to extract reachability features: {e}")
+            print(f"Ninja position: {ninja_pos}")
+            print(
                 f"Level data: tiles shape {level_data.tiles.shape}, {len(entities)} entities"
             )
             raise RuntimeError(f"Reachability feature extraction failed: {e}") from e
@@ -234,7 +234,7 @@ class UnifiedObservationExtractor:
             raise ValueError(f"Expected shape (8,), got {features.shape}")
 
         if features.dtype != np.float32:
-            logger.warning(f"Converting features from {features.dtype} to float32")
+            print(f"Converting features from {features.dtype} to float32")
             features = features.astype(np.float32)
 
         # Cache the result

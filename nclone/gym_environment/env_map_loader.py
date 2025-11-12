@@ -24,9 +24,6 @@ from .generator_registry import GeneratorRegistry
 
 # Constants
 TRAIN_SEED_START = 100000  # Starting seed for training map generation
-MAP_CATEGORIZATION_PATH = (
-    Path(__file__).parent.parent.parent / "map_categorization.json"
-)
 
 
 class EnvMapLoader:
@@ -76,9 +73,6 @@ class EnvMapLoader:
         # Current map state
         self.current_map_name = None
         self.random_map_type = None
-
-        # Map categorization data (for legacy categorized map loading)
-        self._map_categories = self._load_map_categorization()
 
         # Test suite for evaluation (sequential loading)
         self._test_suite_levels = self._load_test_suite_levels()
@@ -164,8 +158,32 @@ class EnvMapLoader:
         seed = self._train_seed_counter
         map_gen = self._generator_registry.get_map(category, seed)
 
-        # Load the generated map
-        self.nplay_headless.load_map_from_map_data(map_gen.map_data())
+        # Get map data
+        map_data = map_gen.map_data()
+
+        # Validate that map has required entities (exit door at index 1156)
+        exit_door_count = map_data[1156]
+        if exit_door_count == 0:
+            raise RuntimeError(
+                f"Generated map is invalid: no exit door!\n"
+                f"  Category: {category}\n"
+                f"  Seed: {seed}\n"
+                f"This indicates a bug in the map generator."
+            )
+
+        # Validate ninja spawn position
+        ninja_spawn_x = map_data[1231]
+        ninja_spawn_y = map_data[1232]
+        if ninja_spawn_x == 0 and ninja_spawn_y == 0:
+            raise RuntimeError(
+                f"Generated map has invalid ninja spawn at (0, 0)!\n"
+                f"  Category: {category}\n"
+                f"  Seed: {seed}\n"
+                f"This indicates a bug in the map generator."
+            )
+
+        # Load the validated map
+        self.nplay_headless.load_map_from_map_data(map_data)
 
         # Update state
         self.current_map_name = f"train_{category}_{seed}"
@@ -205,23 +223,6 @@ class EnvMapLoader:
             else f"Random {self.random_map_type}"
         )
 
-    def _load_map_categorization(self) -> dict:
-        """
-        Load the map categorization JSON file.
-
-        Returns:
-            Dictionary containing simple and complex map lists, or empty dict if file not found
-        """
-        if not MAP_CATEGORIZATION_PATH.exists():
-            return {"simple": [], "complex": []}
-
-        try:
-            with open(MAP_CATEGORIZATION_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Warning: Failed to load map categorization: {e}")
-            return {"simple": [], "complex": []}
-
     def _load_test_suite_levels(self) -> list:
         """
         Load the test suite level IDs from metadata JSON in sequential order.
@@ -250,45 +251,6 @@ class EnvMapLoader:
                 ordered_levels.extend(metadata["categories"][category]["level_ids"])
 
         return ordered_levels
-
-    def load_random_categorized_map(self, category: str = "simple"):
-        """
-        Load a random map from the specified category (simple or complex).
-
-        Args:
-            category: Either "simple" or "complex" to select map category
-
-        Raises:
-            ValueError: If category is invalid or no maps available in that category
-        """
-        if category not in TestSuiteLoader.CATEGORIES:
-            raise ValueError(
-                f"Invalid category '{category}'. Must be one of: {TestSuiteLoader.CATEGORIES}"
-            )
-
-        maps_list = self._map_categories.get(category, [])
-        if not maps_list:
-            raise ValueError(f"No {category} maps available in categorization file.")
-
-        # Select a random map from the category
-        map_entry = self.rng.choice(maps_list)
-        map_name = map_entry["name"]
-
-        # Construct the full path to the map file
-        map_path = (
-            Path(__file__).parent.parent
-            / "maps"
-            / "official"
-            / map_entry["folder"]
-            / map_name
-        )
-
-        # Update current map state
-        self.current_map_name = f"{category.capitalize()}: {map_name}"
-        self.random_map_type = None
-
-        # Load the map
-        self.nplay_headless.load_map(str(map_path))
 
     def set_curriculum_stage(self, stage: str) -> None:
         """Set the current curriculum stage for map selection.

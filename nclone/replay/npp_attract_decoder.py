@@ -87,7 +87,7 @@ class NppAttractDecoder:
             return result
 
         except Exception as e:
-            logger.error(f"Error decoding npp_attract file {npp_attract_path}: {e}")
+            print(f"Error decoding npp_attract file {npp_attract_path}: {e}")
             return {
                 "tiles": [0] * 966,
                 "entities": [],
@@ -212,7 +212,7 @@ class NppAttractDecoder:
             return complete_map
 
         except Exception as e:
-            logger.error(f"Error creating nclone map from {npp_attract_path}: {e}")
+            print(f"Error creating nclone map from {npp_attract_path}: {e}")
             # Return empty map as fallback
             return b"\x00" * 1335
 
@@ -281,7 +281,7 @@ class NppAttractDecoder:
             return results
 
         except Exception as e:
-            logger.error(
+            print(
                 f"Error validating {npp_attract_path} against {reference_map_path}: {e}"
             )
             return {
@@ -361,7 +361,7 @@ class NppAttractDecoder:
             # Bytes 0-3: Length of map data
             # Bytes 4-7: Length of demo data
             if len(npp_data) < 8:
-                logger.warning("File too short to contain attract file header")
+                print("File too short to contain attract file header")
                 return []
 
             map_data_length = struct.unpack("<I", npp_data[0:4])[0]
@@ -377,7 +377,7 @@ class NppAttractDecoder:
 
             # Validate demo data section exists
             if demo_data_start >= len(npp_data):
-                logger.warning(
+                print(
                     f"Demo data start position {demo_data_start} exceeds file length {len(npp_data)}"
                 )
                 return []
@@ -387,7 +387,7 @@ class NppAttractDecoder:
             # The actual demo data (1 byte/frame) starts after this demo header
 
             if demo_data_start + 16 >= len(npp_data):
-                logger.warning("Demo data section too short for header")
+                print("Demo data section too short for header")
                 return []
 
             # Read demo data section header
@@ -429,9 +429,9 @@ class NppAttractDecoder:
                 )
                 return demo_inputs
             else:
-                logger.warning("No valid demo input sequence found")
+                print("No valid demo input sequence found")
                 return []
 
         except Exception as e:
-            logger.error(f"Error extracting demo data: {e}")
+            print(f"Error extracting demo data: {e}")
             return []

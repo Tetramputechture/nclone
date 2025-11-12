@@ -13,7 +13,6 @@ from enum import Enum
 
 from ...planning.completion_planner import LevelCompletionPlanner
 from ..config import HierarchicalConfig
-from ..constants import LEVEL_DIAGONAL
 
 
 class Subtask(Enum):
@@ -44,14 +43,6 @@ class HierarchicalMixin:
         self.subtask_reward_scale = config.subtask_reward_scale
         self.max_subtask_steps = config.max_subtask_steps
         self.debug = config.debug
-
-        # Validate dependencies
-        if self.enable_hierarchical:
-            if not hasattr(self, "enable_reachability") or not self.enable_reachability:
-                raise ValueError(
-                    "Hierarchical RL requires reachability analysis to be enabled. "
-                    "Set enable_reachability=True in your environment configuration."
-                )
 
         # Initialize completion planner
         self.completion_planner = config.completion_planner or LevelCompletionPlanner()
@@ -481,46 +472,7 @@ class HierarchicalMixin:
             return obs["reachability_features"]
 
         # Try to compute using ReachabilityMixin if available
-        if hasattr(self, "_get_reachability_features") and self.enable_reachability:
-            try:
-                return self._get_reachability_features()
-            except Exception as e:
-                if self.debug:
-                    logging.warning(
-                        f"Failed to compute reachability features, using fallback: {e}"
-                    )
-
-        # Fallback: compute simplified reachability features from basic game state
-        # This fallback is only used when reachability system is disabled or fails
-        try:
-            ninja_x, ninja_y = self.nplay_headless.ninja_position()
-            features = np.zeros(8, dtype=np.float32)
-
-            # At minimum, provide distance-based features
-            switch_x, switch_y = self.nplay_headless.exit_switch_position()
-            exit_x, exit_y = self.nplay_headless.exit_door_position()
-
-            dist_to_switch = np.sqrt(
-                (ninja_x - switch_x) ** 2 + (ninja_y - switch_y) ** 2
-            )
-            dist_to_exit = np.sqrt((ninja_x - exit_x) ** 2 + (ninja_y - exit_y) ** 2)
-
-            features[1] = 1.0 - min(
-                dist_to_switch / LEVEL_DIAGONAL, 1.0
-            )  # Distance to switch
-            features[2] = 1.0 - min(
-                dist_to_exit / LEVEL_DIAGONAL, 1.0
-            )  # Distance to exit
-            features[6] = (
-                1.0 if self.nplay_headless.exit_switch_activated() else 0.0
-            )  # Exit reachable
-            features[7] = features[6]  # Path exists (simplified)
-
-            return features
-        except Exception as e:
-            if self.debug:
-                logging.warning(f"Fallback reachability computation failed: {e}")
-            return np.zeros(8, dtype=np.float32)
+        return self._get_reachability_features()
 
     def _find_exit_switch_id(
         self, obs: Dict[str, Any], info: Dict[str, Any]

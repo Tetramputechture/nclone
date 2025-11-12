@@ -133,7 +133,7 @@ class BinaryReplayParser:
             # Validate inputs are in expected range (0-7)
             invalid_inputs = [inp for inp in inputs if not (0 <= inp <= 7)]
             if invalid_inputs:
-                logger.warning(
+                print(
                     f"Found {len(invalid_inputs)} invalid input values, clamping to 0-7 range"
                 )
                 inputs = [max(0, min(7, inp)) for inp in inputs]
@@ -150,7 +150,7 @@ class BinaryReplayParser:
                 f"Perfect decoder extracted {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}"
             )
         except Exception as e:
-            logger.warning(
+            print(
                 f"Perfect decoder map creation failed, falling back to basic map data: {e}"
             )
             map_data = [0] * 1335  # Standard empty map size
@@ -204,9 +204,7 @@ class BinaryReplayParser:
         try:
             # Check if this is a trace mode directory
             if not self.detect_trace_mode(replay_dir):
-                logger.warning(
-                    f"Directory {replay_dir} does not contain trace mode files"
-                )
+                print(f"Directory {replay_dir} does not contain trace mode files")
                 return False
 
             # Load data
@@ -247,14 +245,14 @@ class BinaryReplayParser:
                         session_counter += 1
 
                 except Exception as e:
-                    logger.error(f"Failed to process replay {i}: {e}")
+                    print(f"Failed to process replay {i}: {e}")
                     self.stats["replays_failed"] += 1
 
             self.stats["files_processed"] += 1
             return True
 
         except Exception as e:
-            logger.error(f"Failed to parse replay directory {replay_dir}: {e}")
+            print(f"Failed to parse replay directory {replay_dir}: {e}")
             return False
 
     def save_frames_to_jsonl(self, frames: List[Dict[str, Any]], output_file: Path):
@@ -310,12 +308,12 @@ class BinaryReplayParser:
                 self.stats["files_processed"] += 1
                 return True
             else:
-                logger.error(f"No frames generated for {replay_file}")
+                print(f"No frames generated for {replay_file}")
                 self.stats["replays_failed"] += 1
                 return False
 
         except Exception as e:
-            logger.error(f"Failed to parse single replay file {replay_file}: {e}")
+            print(f"Failed to parse single replay file {replay_file}: {e}")
             import traceback
 
             logger.debug(f"Full traceback: {traceback.format_exc()}")
@@ -366,7 +364,7 @@ class BinaryReplayParser:
                     self.parse_single_replay_file_to_jsonl(replay_file, output_dir)
 
             if not replay_dirs and not single_replay_files:
-                logger.warning(f"No replay files or directories found in {input_dir}")
+                print(f"No replay files or directories found in {input_dir}")
                 return
 
     def print_statistics(self):
@@ -452,15 +450,13 @@ Note: The parser follows the ntrace.py pattern for handling compressed input fil
                 args.output.mkdir(parents=True, exist_ok=True)
                 replay_parser.parse_single_replay_file_to_jsonl(args.input, args.output)
             else:
-                logger.error(
-                    f"File does not appear to be a valid replay file: {args.input}"
-                )
+                print(f"File does not appear to be a valid replay file: {args.input}")
                 return 1
         else:
             # Directory processing
             replay_parser.process_directory(args.input, args.output)
     except Exception as e:
-        logger.error(f"Processing failed: {e}")
+        print(f"Processing failed: {e}")
         return 1
 
     # Print statistics

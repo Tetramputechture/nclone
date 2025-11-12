@@ -30,7 +30,7 @@ def validate_observation_shapes(obs):
     checks = {
         "player_frame": ((84, 84, 1), np.uint8),
         "global_view": ((176, 100, 1), np.uint8),
-        "game_state": ((26,), np.float32),
+        "game_state": ((64,), np.float32),
         "reachability_features": ((8,), np.float32),
         "entity_positions": ((6,), np.float32),
         "switch_states": ((25,), np.float32),
@@ -105,12 +105,14 @@ def print_observation_details(obs, step_num=0):
     print(f"\n[Step {step_num}] Observation Details:")
 
     # Game state summary
-    print(f"\n  game_state (26 features):")
+    print(f"\n  game_state (64 features):")
     print(f"    velocity_mag={gs[0]:.3f}, direction=({gs[1]:.3f},{gs[2]:.3f})")
     print(f"    airborne={gs[7]:.3f}, input=({gs[8]:.3f},{gs[9]:.3f})")
     print(f"    contact={gs[13:16]}, acceleration=({gs[19]:.3f},{gs[20]:.3f})")
-    print(f"    nearest_hazard={gs[21]:.3f}, nearest_collectible={gs[22]:.3f}")
-    print(f"    switch_progress={gs[24]:.3f}, exit_accessible={gs[25]:.3f}")
+    if len(gs) > 58:
+        print(
+            f"    death_probs[0:6]={gs[58:64]}"
+        )  # Show death probabilities if present
 
     # Reachability summary
     print(f"\n  reachability_features (8 features):")
@@ -220,7 +222,7 @@ def main():
     print("\nValidating non-graph observations:")
     print("  • player_frame (84, 84, 1)")
     print("  • global_view (176, 100, 1)")
-    print("  • game_state (26,)")
+    print("  • game_state (64,)")
     print("  • reachability_features (8,)")
     print("  • entity_positions (6,)")
     print("  • switch_states (25,)")
@@ -242,7 +244,6 @@ def main():
 
     # Create environment
     config = EnvironmentConfig()
-    config.graph.enable_graph_for_observations = False
     env = NppEnvironment(config)
 
     # Run validation episodes

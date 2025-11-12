@@ -256,7 +256,7 @@ class VideoGenerator:
             # Load replay frames
             frames = self._load_jsonl_replay(replay_file)
             if not frames:
-                logger.error("No valid frames found in replay file")
+                print("No valid frames found in replay file")
                 return False
 
             # Check for map_data_path in first frame
@@ -302,14 +302,14 @@ class VideoGenerator:
                             break
 
                     except Exception as e:
-                        logger.error(f"Error processing frame {i}: {e}")
+                        print(f"Error processing frame {i}: {e}")
                         continue
 
                 # Generate video using ffmpeg
                 return self._create_video_from_frames(temp_path, output_video)
 
         except Exception as e:
-            logger.error(f"Failed to generate video: {e}")
+            print(f"Failed to generate video: {e}")
             return False
 
     def generate_video_from_binary_replay(
@@ -343,13 +343,13 @@ class VideoGenerator:
                 )
 
                 if not success:
-                    logger.error("Failed to parse binary replay file")
+                    print("Failed to parse binary replay file")
                     return False
 
                 # Find the generated JSONL file
                 jsonl_files = list(temp_jsonl.parent.glob("*.jsonl"))
                 if not jsonl_files:
-                    logger.error("No JSONL file generated from binary replay")
+                    print("No JSONL file generated from binary replay")
                     return False
 
                 # Use the first JSONL file found
@@ -359,7 +359,7 @@ class VideoGenerator:
                 output_jsonl = output_video.with_suffix(".jsonl")
                 jsonl_files = list(temp_jsonl.parent.glob("*.jsonl"))
                 if not jsonl_files:
-                    logger.error("No JSONL file generated from binary replay")
+                    print("No JSONL file generated from binary replay")
                     return False
                 # Copy the first JSONL file to the output location
                 import shutil
@@ -379,7 +379,7 @@ class VideoGenerator:
                 )
 
         except Exception as e:
-            logger.error(f"Failed to generate video from binary replay: {e}")
+            print(f"Failed to generate video from binary replay: {e}")
             return False
 
     def generate_video_from_npp_attract(
@@ -423,7 +423,7 @@ class VideoGenerator:
                 )
 
         except Exception as e:
-            logger.error(f"Failed to generate video from npp_attract file: {e}")
+            print(f"Failed to generate video from npp_attract file: {e}")
             return False
 
     def _load_first_frame_raw(self, replay_file: Path) -> Optional[Dict[str, Any]]:
@@ -434,7 +434,7 @@ class VideoGenerator:
                 if first_line:
                     return json.loads(first_line)
         except Exception as e:
-            logger.error(f"Failed to load first frame: {e}")
+            print(f"Failed to load first frame: {e}")
         return None
 
     def _load_jsonl_replay(self, replay_file: Path) -> List[ReplayFrame]:
@@ -451,9 +451,7 @@ class VideoGenerator:
                         # Validate frame
                         is_valid, errors = validator.validate_frame(frame_data)
                         if not is_valid:
-                            logger.warning(
-                                f"Frame {line_num} validation failed: {errors}"
-                            )
+                            print(f"Frame {line_num} validation failed: {errors}")
                             continue
 
                         # Convert to ReplayFrame
@@ -478,12 +476,12 @@ class VideoGenerator:
                         frames.append(frame)
 
                     except json.JSONDecodeError as e:
-                        logger.error(f"JSON decode error at line {line_num}: {e}")
+                        print(f"JSON decode error at line {line_num}: {e}")
                     except Exception as e:
-                        logger.error(f"Error processing line {line_num}: {e}")
+                        print(f"Error processing line {line_num}: {e}")
 
         except Exception as e:
-            logger.error(f"Failed to load replay file {replay_file}: {e}")
+            print(f"Failed to load replay file {replay_file}: {e}")
 
         return frames
 
@@ -505,7 +503,7 @@ class VideoGenerator:
                     # RGBA format
                     image = Image.fromarray(frame_array.astype(np.uint8), mode="RGBA")
                 else:
-                    logger.warning(
+                    print(
                         f"Unsupported frame format with {frame_array.shape[2]} channels"
                     )
                     return
@@ -513,13 +511,13 @@ class VideoGenerator:
                 # Already 2D grayscale
                 image = Image.fromarray(frame_array.astype(np.uint8), mode="L")
             else:
-                logger.warning(f"Unsupported frame shape {frame_array.shape}")
+                print(f"Unsupported frame shape {frame_array.shape}")
                 return
 
             image.save(output_path)
 
         except Exception as e:
-            logger.error(f"Failed to save frame as PNG: {e}")
+            print(f"Failed to save frame as PNG: {e}")
 
     def _create_video_from_frames(self, frames_dir: Path, output_video: Path) -> bool:
         """Create video from frame images using ffmpeg."""
@@ -529,9 +527,7 @@ class VideoGenerator:
                 ["ffmpeg", "-version"], capture_output=True, text=True
             )
             if result.returncode != 0:
-                logger.error(
-                    "ffmpeg not found. Please install ffmpeg to generate videos."
-                )
+                print("ffmpeg not found. Please install ffmpeg to generate videos.")
                 return False
 
             # Create output directory if it doesn't exist
@@ -563,11 +559,11 @@ class VideoGenerator:
                 logger.info(f"Video generated successfully: {output_video}")
                 return True
             else:
-                logger.error(f"ffmpeg failed: {result.stderr}")
+                print(f"ffmpeg failed: {result.stderr}")
                 return False
 
         except Exception as e:
-            logger.error(f"Failed to create video: {e}")
+            print(f"Failed to create video: {e}")
             return False
 
 
@@ -680,7 +676,7 @@ Examples:
         logger.info(f"Video generation completed: {args.output}")
         return 0
     else:
-        logger.error("Video generation failed")
+        print("Video generation failed")
         return 1
 
 

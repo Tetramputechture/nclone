@@ -5,6 +5,7 @@ These are among the simplest level types in the game.
 """
 
 from typing import Optional, Tuple, List
+import numpy as np
 
 from .map import Map
 from .constants import VALID_TILE_TYPES, GRID_SIZE_FACTOR
@@ -22,6 +23,7 @@ class MapHorizontalCorridor(Map):
     RANDOM_EDGE_TILES = False
     FIXED_HEIGHT = None
     ADD_MINES = False
+    MAX_MINES = -1
 
     def _calculate_pixel_distance(
         self, x1: float, y1: float, x2: float, y2: float
@@ -200,6 +202,224 @@ class MapHorizontalCorridor(Map):
 
         return door_x, door_y, switch_x, switch_y
 
+    def _place_uniform_ceiling_mines(
+        self,
+        start_x: float,
+        start_y: float,
+        width: float,
+        height: float,
+        ninja_x: float,
+        ninja_y: float,
+        exit_switch_x: float,
+        num_mines: int,
+    ) -> None:
+        """Place ceiling mines uniformly with guaranteed coverage between ninja and exit.
+
+        Args:
+            start_x: Starting x coordinate of the corridor
+            start_y: Starting y coordinate of the corridor
+            width: Width of the corridor
+            height: Height of the corridor
+            ninja_x: X coordinate of ninja spawn
+            ninja_y: Y coordinate of ninja spawn
+            exit_switch_x: X coordinate of exit switch
+            num_mines: Exact number of mines to place
+        """
+        # Skip ceiling mines for horizontal corridors that are exactly 2 tiles high
+        if height == 2:
+            return
+
+        if num_mines <= 0:
+            return
+
+        # Calculate mine y position (one tile below the top of the corridor)
+        mine_y = start_y + 1
+
+        # Ensure mine_y is within map bounds
+        if mine_y < 0 or mine_y >= MAP_TILE_HEIGHT:
+            return
+
+        # Generate uniform positions across the corridor width
+        offset = 1
+        x_start = start_x + 0.5 + offset
+        x_end = start_x + width - 0.5 + offset
+
+        # Generate uniformly spaced positions
+        mine_x_positions = np.linspace(x_start, x_end, num=num_mines).tolist()
+
+        # Filter by distance from ninja spawn
+        SPAWN_BUFFER_TILES = 1
+
+        filtered_positions = []
+        for mine_x in mine_x_positions:
+            distance_to_ninja = (
+                (float(mine_x) - float(ninja_x + 1)) ** 2
+                + (float(mine_y) - float(ninja_y + 1)) ** 2
+            ) ** 0.5
+
+            if distance_to_ninja >= SPAWN_BUFFER_TILES:
+                filtered_positions.append(mine_x)
+
+        # Ensure at least one mine between ninja and exit switch
+        min_x = min(ninja_x, exit_switch_x)
+        max_x = max(ninja_x, exit_switch_x)
+        mines_in_range = [x for x in filtered_positions if min_x < x < max_x]
+
+        # If no mines in range OR no filtered positions at all, add one in the middle
+        if not mines_in_range or not filtered_positions:
+            middle_x = (ninja_x + exit_switch_x) / 2
+            # Add a mine at the middle position if it's valid
+            distance_to_ninja_middle = (
+                (float(middle_x) - float(ninja_x + 1)) ** 2
+                + (float(mine_y) - float(ninja_y + 1)) ** 2
+            ) ** 0.5
+            if distance_to_ninja_middle >= SPAWN_BUFFER_TILES:
+                filtered_positions.append(middle_x)
+                filtered_positions.sort()
+            elif width >= 3:
+                # If middle is too close, try positions further from ninja
+                for fraction in [0.6, 0.4, 0.7, 0.3]:
+                    test_x = ninja_x + fraction * (exit_switch_x - ninja_x)
+                    distance_test = (
+                        (float(test_x) - float(ninja_x + 1)) ** 2
+                        + (float(mine_y) - float(ninja_y + 1)) ** 2
+                    ) ** 0.5
+                    if (
+                        distance_test >= SPAWN_BUFFER_TILES
+                        and start_x <= test_x <= start_x + width
+                    ):
+                        filtered_positions.append(test_x)
+                        break
+
+        # Place all filtered mines
+        for mine_x in filtered_positions:
+            if 0 <= mine_x < MAP_TILE_WIDTH:
+                self.add_entity(1, float(mine_x), float(mine_y))
+
+    def _place_uniform_floor_mines(
+        self,
+        start_x: float,
+        start_y: float,
+        width: float,
+        height: float,
+        ninja_x: float,
+        ninja_y: float,
+        exit_switch_x: float,
+        num_mines: int,
+    ) -> None:
+        """Place floor mines uniformly with guaranteed coverage between ninja and exit.
+
+        Args:
+            start_x: Starting x coordinate of the corridor
+            start_y: Starting y coordinate of the corridor
+            width: Width of the corridor
+            height: Height of the corridor
+            ninja_x: X coordinate of ninja spawn
+            ninja_y: Y coordinate of ninja spawn
+            exit_switch_x: X coordinate of exit switch
+            num_mines: Exact number of mines to place
+        """
+        # Only place floor mines if corridor is at least 2 tiles high
+        if height < 2:
+            return
+
+        if num_mines <= 0:
+            return
+
+        # Skip if corridor is too narrow
+        if width < 2:
+            return
+
+        # Calculate mine y position (floor of the corridor)
+        mine_y = start_y + height - 1
+
+        # Ensure mine_y is within map bounds
+        if mine_y < 0 or mine_y >= MAP_TILE_HEIGHT:
+            return
+
+        # Generate uniform positions with minimum spacing
+        MIN_SEPARATION_TILES = 1.25
+        max_possible_mines = max(
+            1, int((width - MIN_SEPARATION_TILES) / MIN_SEPARATION_TILES) + 1
+        )
+
+        # Limit to what's actually possible given spacing constraints
+        actual_num_mines = min(num_mines, max_possible_mines)
+
+        # Calculate mine positions with proper spacing
+        if actual_num_mines == 1:
+            mine_x_positions = [start_x + width / 2]
+        elif actual_num_mines > 1:
+            usable_width = width - MIN_SEPARATION_TILES
+            spacing = (
+                usable_width / (actual_num_mines - 1) if actual_num_mines > 1 else 0
+            )
+            mine_x_positions = [
+                start_x + 1 + MIN_SEPARATION_TILES / 2 + i * spacing
+                for i in range(actual_num_mines)
+            ]
+
+        # Filter by distance from ninja spawn
+        SPAWN_BUFFER_TILES = 2
+
+        filtered_positions = []
+        for mine_x in mine_x_positions:
+            distance_to_ninja = (
+                (float(mine_x) - float(ninja_x)) ** 2
+                + (float(mine_y) - float(ninja_y)) ** 2
+            ) ** 0.5
+
+            if distance_to_ninja >= SPAWN_BUFFER_TILES:
+                filtered_positions.append(mine_x)
+
+        # Ensure at least one mine between ninja and exit switch
+        min_x = min(ninja_x, exit_switch_x)
+        max_x = max(ninja_x, exit_switch_x)
+        mines_in_range = [x for x in filtered_positions if min_x < x < max_x]
+
+        # If no mines in range OR no filtered positions at all, try to add one in the middle
+        if not mines_in_range or not filtered_positions:
+            middle_x = (ninja_x + exit_switch_x) / 2
+            distance_to_ninja_middle = (
+                (float(middle_x) - float(ninja_x)) ** 2
+                + (float(mine_y) - float(ninja_y)) ** 2
+            ) ** 0.5
+            if distance_to_ninja_middle >= SPAWN_BUFFER_TILES:
+                # Check if this position maintains minimum separation from existing mines
+                valid_position = True
+                for existing_x in filtered_positions:
+                    if abs(middle_x - existing_x) < MIN_SEPARATION_TILES:
+                        valid_position = False
+                        break
+
+                if valid_position:
+                    filtered_positions.append(middle_x)
+                    filtered_positions.sort()
+            elif width >= 3:
+                # If middle is too close, try positions further from ninja
+                # Try positions at 1/3 and 2/3 of the distance between ninja and exit
+                for fraction in [0.6, 0.4, 0.7, 0.3]:
+                    test_x = ninja_x + fraction * (exit_switch_x - ninja_x)
+                    distance_test = (
+                        (float(test_x) - float(ninja_x)) ** 2
+                        + (float(mine_y) - float(ninja_y)) ** 2
+                    ) ** 0.5
+                    if distance_test >= SPAWN_BUFFER_TILES:
+                        valid_position = True
+                        for existing_x in filtered_positions:
+                            if abs(test_x - existing_x) < MIN_SEPARATION_TILES:
+                                valid_position = False
+                                break
+
+                        if valid_position and start_x <= test_x <= start_x + width:
+                            filtered_positions.append(test_x)
+                            break
+
+        # Place all filtered mines
+        for mine_x in filtered_positions:
+            if 0 <= mine_x < MAP_TILE_WIDTH:
+                self.add_entity(1, float(mine_x), float(mine_y + height))
+
     def generate(self, seed: Optional[int] = None) -> "MapHorizontalCorridor":
         """Generate a minimal horizontal corridor level.
 
@@ -268,8 +488,7 @@ class MapHorizontalCorridor(Map):
         ninja_y = start_y + height - 1
 
         # Check if we should add a locked door
-        can_add_locked_door = height == 1 and width >= 4
-        add_locked_door = can_add_locked_door and self.rng.choice([True, False])
+        add_locked_door = height == 1 and width >= 4
 
         # Generate positions with half-tile increments (0.5)
         num_positions = (width - 1) * 4
@@ -296,8 +515,8 @@ class MapHorizontalCorridor(Map):
         locked_door_viable = False
         if (
             add_locked_door
-            and len(door_positions) >= 2
-            and len(available_positions) >= 4
+            and len(door_positions) >= 1
+            and len(available_positions) >= 1
         ):
             # Sample 2 door positions (must be integers for 24-pixel alignment)
             door_pos = sorted(self.rng.sample(door_positions, k=2))
@@ -309,8 +528,7 @@ class MapHorizontalCorridor(Map):
             switch_available = [
                 p
                 for p in switch_available
-                if self._calculate_pixel_distance(p, start_y, ninja_x, ninja_y)
-                >= TILE_PIXEL_SIZE
+                if self._calculate_pixel_distance(p, start_y, ninja_x, ninja_y) >= 6
             ]
 
             # Exclude switch positions too close to doors (minimum 24 pixels = 1 tile distance)
@@ -318,8 +536,7 @@ class MapHorizontalCorridor(Map):
                 p
                 for p in switch_available
                 if all(
-                    self._calculate_pixel_distance(p, start_y, door_x, start_y)
-                    >= TILE_PIXEL_SIZE
+                    self._calculate_pixel_distance(p, start_y, door_x, start_y) >= 6
                     for door_x in door_pos
                 )
             ]
@@ -482,14 +699,31 @@ class MapHorizontalCorridor(Map):
 
         # Situations where height is 1 and random edge tiles are almost impossible to achieve at first.
         if self.ADD_MINES and not (self.RANDOM_EDGE_TILES and height == 1):
-            # Add ceiling mines (skip if height == 2)
-            self._place_corridor_ceiling_mines(
-                start_x, start_y, width, height, "horizontal", ninja_x, ninja_y
+            # Use MAX_MINES as the exact target count for uniform distribution
+            num_mines = self.MAX_MINES if self.MAX_MINES > 0 else max(1, width // 2)
+
+            # Add ceiling mines (skip if height == 2) with uniform distribution
+            self._place_uniform_ceiling_mines(
+                start_x,
+                start_y,
+                width,
+                height,
+                ninja_x,
+                ninja_y,
+                exit_switch_x,
+                num_mines=num_mines,
             )
 
-            # Add floor mines (if height >= 2)
-            self._place_corridor_floor_mines(
-                start_x, start_y, width, height, "horizontal", ninja_x, ninja_y
+            # Add floor mines (if height >= 2) with uniform distribution
+            self._place_uniform_floor_mines(
+                start_x,
+                start_y,
+                width,
+                height,
+                ninja_x,
+                ninja_y,
+                exit_switch_x,
+                num_mines=num_mines,
             )
 
         # Add random entities outside the playspace

@@ -100,6 +100,8 @@ class CachedPathDistanceCalculator:
         cache_key: Optional[str] = None,
         level_data: Optional[LevelData] = None,
         graph_data: Optional[Dict] = None,
+        entity_radius: float = 0.0,
+        ninja_radius: float = 10.0,
     ) -> float:
         """
         Get path distance with caching and spatial indexing.
@@ -114,6 +116,8 @@ class CachedPathDistanceCalculator:
             cache_key: Optional key for cache invalidation (e.g., entity type)
             level_data: Optional level data for level-based caching
             graph_data: Optional graph data dict with spatial_hash for fast lookup
+            entity_radius: Collision radius of the goal entity (default 0.0)
+            ninja_radius: Collision radius of the ninja (default 10.0)
 
         Returns:
             Shortest path distance in pixels
@@ -141,7 +145,9 @@ class CachedPathDistanceCalculator:
                 goal_node = find_closest_node_to_position(
                     goal,
                     adjacency,
-                    threshold=50.0,
+                    threshold=None,  # Will be calculated from radii
+                    entity_radius=entity_radius,
+                    ninja_radius=ninja_radius,
                     spatial_hash=self._spatial_hash,
                     subcell_lookup=subcell_lookup,
                 )
@@ -165,12 +171,13 @@ class CachedPathDistanceCalculator:
                             dx <= 12 and dy <= 12
                         ):  # Within half tile (matching old validation logic)
                             # Snap start position to nearest node using spatial hash
-                            # Use same threshold as visualization for ninja node finding
                             with self.timer.measure("find_start_node"):
                                 start_node = find_closest_node_to_position(
                                     start,
                                     adjacency,
-                                    threshold=24.0,
+                                    threshold=None,  # Will be calculated from radii
+                                    entity_radius=0.0,  # Start is ninja position, no entity radius
+                                    ninja_radius=ninja_radius,
                                     spatial_hash=self._spatial_hash,
                                     subcell_lookup=subcell_lookup,
                                 )
@@ -198,37 +205,41 @@ class CachedPathDistanceCalculator:
             return self.cache[key]
 
         # Cache miss - compute
-        self.misses += 1
-        with self.timer.measure("pathfinding_compute"):
-            distance = self.calculator.calculate_distance(start, goal, adjacency)
-
-        # Validate that positions are in adjacency before caching
-        # Since adjacency is filtered to only reachable nodes, this ensures
-        # we only cache distances for reachable areas
+        # First snap positions to nodes before calculating distance
         start_node = find_closest_node_to_position(
             start,
             adjacency,
-            threshold=24.0,
+            threshold=None,  # Will be calculated from radii
+            entity_radius=0.0,  # Start is ninja position, no entity radius
+            ninja_radius=ninja_radius,
             spatial_hash=self._spatial_hash,
             subcell_lookup=subcell_lookup,
         )
         goal_node = find_closest_node_to_position(
             goal,
             adjacency,
-            threshold=50.0,
+            threshold=None,  # Will be calculated from radii
+            entity_radius=entity_radius,
+            ninja_radius=ninja_radius,
             spatial_hash=self._spatial_hash,
             subcell_lookup=subcell_lookup,
         )
 
-        # Only cache if both positions are reachable (in adjacency graph)
-        if start_node is not None and goal_node is not None:
-            # Store in cache (FIFO eviction)
-            if len(self.cache) >= self.max_cache_size:
-                # Remove oldest entry
-                oldest = next(iter(self.cache))
-                del self.cache[oldest]
+        # If we can't find nodes for start or goal, path is unreachable
+        if start_node is None or goal_node is None:
+            return float("inf")
 
-            self.cache[key] = distance
+        self.misses += 1
+        with self.timer.measure("pathfinding_compute"):
+            distance = self.calculator.calculate_distance(start_node, goal_node, adjacency)
+
+        # Cache the result (both nodes are guaranteed to be valid at this point)
+        if len(self.cache) >= self.max_cache_size:
+            # Remove oldest entry
+            oldest = next(iter(self.cache))
+            del self.cache[oldest]
+
+        self.cache[key] = distance
 
         return distance
 

@@ -3,6 +3,10 @@ This module contains the definitions for tile properties, including grid edges,
 orthogonal segments, diagonal segments, and circular segments. These definitions
 are used by the simulator to construct the level geometry from map data.
 
+IMPORTANT: Tile types 34-37 are glitched/unused tiles and are treated as empty
+(no collision). They are included in the definitions for completeness but should
+not generate any collision segments.
+
 COMPREHENSIVE TILE TYPE DOCUMENTATION:
 
 Tile Types 0-1: Basic tiles
@@ -57,8 +61,9 @@ Tile Types 30-33: Raised steep slopes (steep slopes, raised platform)
 - 32: Raised steep slope, platform on right with sharp drop
 - 33: Raised steep slope, platform on left with sharp drop
 
-Tile Types 34-37: Glitched tiles (not used in normal gameplay)
-- 34-37: Various glitched configurations with partial edges
+Tile Types 34-37: Glitched tiles (TREATED AS EMPTY - NO COLLISION)
+- 34-37: Various glitched configurations - included for completeness but
+  collision system treats these as tile type 0 (empty) for performance
 
 DIAGONAL SEGMENT COORDINATES:
 The TILE_SEGMENT_DIAG_MAP defines diagonal lines within tiles using two points:

@@ -11,6 +11,9 @@ E - Toggle exploration debug overlay
 C - Toggle grid debug overlay
 I - Toggle tile type overlay
 L - Toggle tile rendering
+M - Toggle mine predictor debug overlay
+D - Toggle mine death probability debug overlay
+T - Toggle terminal velocity death probability debug overlay
 R - Reset environment
 
 Examples:
@@ -32,75 +35,13 @@ import gc
 import psutil
 import os
 
-from nclone.graph.reachability.reachability_system import ReachabilitySystem
+# Clear all caches for new level
+from nclone.cache_management import (
+    clear_all_caches_for_new_level,
+)
+
 from nclone.replay.gameplay_recorder import GameplayRecorder
-
-from nclone.planning import LevelCompletionPlanner
-from nclone.graph.reachability.subgoal_integration import ReachabilitySubgoalIntegration
-from nclone.graph.reachability.frontier_detector import FrontierDetector
-
-
-def _get_ninja_position(env):
-    """Get current ninja position from environment."""
-    if hasattr(env, "nplay_headless") and hasattr(env.nplay_headless, "ninja_position"):
-        pos = env.nplay_headless.ninja_position()
-        # Handle different return formats
-        if isinstance(pos, tuple) and len(pos) == 2:
-            return pos
-        elif isinstance(pos, (list, tuple)) and len(pos) >= 2:
-            return (pos[0], pos[1])
-        else:
-            # If it's a single value or unexpected format, use fallback
-            return (100, 100)
-    elif hasattr(env, "sim") and hasattr(env.sim, "ninja"):
-        return (env.sim.ninja.xpos, env.sim.ninja.ypos)
-    else:
-        return (100, 100)  # Fallback
-
-
-def _get_level_hash(env):
-    """
-    Get a hash representing the current level state for graph caching.
-
-    Only hashes static level structure (tiles, entity types/IDs) to avoid
-    rebuilding the graph every frame when dynamic state changes (positions, switch states).
-    """
-    try:
-        if hasattr(env, "level_data"):
-            import hashlib
-
-            # Hash only static structure to avoid cache invalidation on every frame
-            # - tiles: static level geometry
-            # - entity types/IDs: static entity placement (not positions)
-            # - level_id: unique identifier
-
-            level_data = env.level_data
-            hash_components = []
-
-            # Add tiles hash (static geometry)
-            if hasattr(level_data, "tiles"):
-                tiles_bytes = level_data.tiles.tobytes()
-                hash_components.append(hashlib.md5(tiles_bytes).hexdigest())
-
-            # Add entity types and IDs (not positions which are dynamic)
-            if hasattr(level_data, "entities"):
-                entity_static = []
-                for entity in level_data.entities:
-                    # Only include type and ID, not position or state
-                    entity_type = entity.get("type", "")
-                    entity_id = entity.get("id", "")
-                    entity_static.append(f"{entity_type}:{entity_id}")
-                entity_str = ",".join(sorted(entity_static))
-                entity_hash = hashlib.md5(entity_str.encode()).hexdigest()
-                hash_components.append(entity_hash)
-            # Combine all components
-            combined = "|".join(hash_components)
-            result_hash = hashlib.md5(combined.encode()).hexdigest()
-            return result_hash
-    except Exception as e:
-        print(f"Warning: Failed to compute level hash: {e}")
-        pass
-    return None
+from nclone.gym_environment.npp_environment import NppEnvironment
 
 
 class MemoryProfiler:
@@ -338,47 +279,12 @@ parser.add_argument(
     default=None,
     help="Save graph visualization to image file.",
 )
-parser.add_argument(
-    "--show-edges",
-    nargs="*",
-    choices=["walk", "jump", "fall", "wall_slide", "one_way", "functional"],
-    default=["walk", "jump"],
-    help="Edge types to visualize.",
-)
 
 parser.add_argument(
     "--export-frame",
     type=str,
     default=None,
     help="Export first frame of simulation to specified image file and quit (for AI testing).",
-)
-
-# Reachability visualization arguments
-parser.add_argument(
-    "--visualize-reachability",
-    action="store_true",
-    help="Enable reachability analysis visualization overlay.",
-)
-parser.add_argument(
-    "--reachability-from-ninja",
-    action="store_true",
-    help="Show reachability analysis from current ninja position.",
-)
-parser.add_argument(
-    "--show-subgoals",
-    action="store_true",
-    help="Visualize identified subgoals and strategic waypoints.",
-)
-parser.add_argument(
-    "--show-frontiers",
-    action="store_true",
-    help="Visualize exploration frontiers for curiosity-driven RL.",
-)
-parser.add_argument(
-    "--export-reachability",
-    type=str,
-    default=None,
-    help="Export frame with reachability analysis to specified image file and quit.",
 )
 
 # Path-aware reward shaping debug/visualization arguments
@@ -412,26 +318,6 @@ parser.add_argument(
     type=str,
     default=None,
     help="Export frame with path-aware analysis overlay to specified image file and quit.",
-)
-
-# Subgoal visualization arguments
-parser.add_argument(
-    "--visualize-subgoals",
-    action="store_true",
-    help="Enable subgoal visualization overlay.",
-)
-parser.add_argument(
-    "--subgoal-mode",
-    type=str,
-    choices=["basic", "detailed", "reachability"],
-    default="detailed",
-    help="Subgoal visualization mode.",
-)
-parser.add_argument(
-    "--export-subgoals",
-    type=str,
-    default=None,
-    help="Export frame with subgoal visualization to specified image file and quit.",
 )
 
 # Replay recording arguments
@@ -490,9 +376,26 @@ parser.add_argument(
     help="Starting seed for generator testing (default: 10000)",
 )
 
+# Input mode arguments
+parser.add_argument(
+    "--discrete-actions",
+    action="store_true",
+    help="Enable discrete action mode - single action per keypress instead of continuous actions while held",
+)
+
 args = parser.parse_args()
 
 print(f"Headless: {args.headless}")
+
+# Display discrete action mode info
+if args.discrete_actions:
+    print("\n" + "=" * 60)
+    print("DISCRETE ACTION MODE ENABLED")
+    print("=" * 60)
+    print("Each keypress will trigger a single action")
+    print("Keys must be released and pressed again for each action")
+    print("Holding keys will NOT repeat actions")
+    print("=" * 60 + "\n")
 
 # Display help information for generator testing
 if args.test_generators:
@@ -555,59 +458,9 @@ if args.visualize_graph or args.standalone_graph or args.interactive_graph:
 
     print("=" * 60 + "\n")
 
-# Display help information for reachability visualization
-if (
-    args.visualize_reachability
-    or args.reachability_from_ninja
-    or args.show_subgoals
-    or args.show_frontiers
-):
-    print("\n" + "=" * 60)
-    print("REACHABILITY ANALYSIS ACTIVE")
-    print("=" * 60)
-    if args.visualize_reachability:
-        print("• Reachability analysis overlay enabled")
-    if args.reachability_from_ninja:
-        print("• Dynamic reachability from ninja position")
-    if args.show_subgoals:
-        print("• Subgoal and waypoint visualization enabled")
-    if args.show_frontiers:
-        print("• Exploration frontier visualization enabled")
-
-    print("\nRuntime Controls:")
-    print("  T - Toggle reachability overlay")
-    print("  N - Update reachability from ninja position")
-    print("  U - Toggle subgoal visualization")
-    print("  F - Toggle frontier visualization")
-    print("  X - Export reachability screenshot")
-    print("  R - Reset environment")
-
-    print("=" * 60 + "\n")
-
-# Display help information for subgoal visualization
-if args.visualize_subgoals or args.export_subgoals:
-    print("\n" + "=" * 60)
-    print("SUBGOAL VISUALIZATION ACTIVE")
-    print("=" * 60)
-    if args.visualize_subgoals:
-        print("• Subgoal visualization overlay enabled")
-        print(f"• Visualization mode: {args.subgoal_mode}")
-    if args.export_subgoals:
-        print(f"• Export subgoal visualization to: {args.export_subgoals}")
-
-    print("\nRuntime Controls:")
-    print("  S - Toggle subgoal visualization overlay")
-    print("  M - Cycle through visualization modes")
-    print("  P - Update subgoal plan from current position")
-    print("  O - Export subgoal visualization screenshot")
-    print("  R - Reset environment")
-
-    print("=" * 60 + "\n")
-
 # Display help information for path-aware reward shaping testing
 if (
     args.test_path_aware
-    or args.show_path_distances
     or args.visualize_adjacency_graph
     or args.show_blocked_entities
     or args.benchmark_pathfinding
@@ -616,8 +469,6 @@ if (
     print("PATH-AWARE REWARD SHAPING TESTING")
     print("=" * 60)
     print("Testing precomputed tile connectivity + pathfinding system")
-    if args.show_path_distances:
-        print("• Path distance display enabled")
     if args.visualize_adjacency_graph:
         print("• Adjacency graph visualization enabled")
     if args.show_blocked_entities:
@@ -626,7 +477,6 @@ if (
         print("• Performance benchmarking enabled")
 
     print("\nRuntime Controls:")
-    print("  D - Toggle path distance display")
     print("  A - Toggle adjacency graph visualization")
     print("  B - Toggle blocked entity highlighting")
     print("  P - Toggle path to goals visualization (shows shortest paths)")
@@ -672,10 +522,9 @@ if args.map:
         enable_logging=False,
         render=render_config,
         graph=GraphConfig(
-            enable_graph_for_observations=False,
             debug=False,
         ),
-        reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+        reachability=ReachabilityConfig(debug=False),
         test_dataset_path=args.test_dataset_path,
     )
     env = create_visual_testing_env(config=config)
@@ -698,10 +547,9 @@ else:
         enable_logging=False,
         render=render_config,
         graph=GraphConfig(
-            enable_graph_for_observations=False,
             debug=False,
         ),
-        reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+        reachability=ReachabilityConfig(debug=False),
         test_dataset_path=args.test_dataset_path,
     )
     env = create_visual_testing_env(config=config)
@@ -844,12 +692,10 @@ if args.test_generators:
         # Generate initial map
         initial_map = generator_tester.generate_map()
         env.nplay_headless.load_map_from_map_data(initial_map.map_data())
-        # Reset graph state to clear cached adjacency graph for new level
-        if hasattr(env, "_reset_graph_state"):
-            env._reset_graph_state()
-        # Force graph rebuild for new level
-        if hasattr(env, "_update_graph_from_env_state"):
-            env._update_graph_from_env_state()
+        env._reset_graph_state()
+        env._update_graph_from_env_state()
+        env._build_mine_death_lookup_table()
+        env._build_door_feature_cache()
 
         print("Generator Testing Initialized")
         print(f"  {generator_tester.get_info_string()}")
@@ -927,129 +773,18 @@ if args.record:
 graph_debug_enabled = False
 exploration_debug_enabled = False
 grid_debug_enabled = False
-tile_rendering_enabled = True  # Tiles are rendered by default
-tile_types_debug_enabled = False  # Tile type overlay disabled by default
-
-# Initialize reachability system if requested
-reachability_analyzer = None
-subgoal_planner = None
-frontier_detector = None
-reachability_debug_enabled = False
-subgoals_debug_enabled = False
-frontiers_debug_enabled = False
-
-if (
-    args.visualize_reachability
-    or args.reachability_from_ninja
-    or args.show_subgoals
-    or args.show_frontiers
-    or args.export_reachability
-    or args.visualize_subgoals
-    or args.export_subgoals
-):
-    print("Initializing reachability analysis system...")
-
-    try:
-        reachability_analyzer = ReachabilitySystem()
-
-        level_completion_planner = LevelCompletionPlanner()
-        subgoal_planner = ReachabilitySubgoalIntegration(level_completion_planner)
-
-        frontier_detector = FrontierDetector()
-
-        # Set initial debug states
-        reachability_debug_enabled = args.visualize_reachability
-        subgoals_debug_enabled = args.show_subgoals
-        frontiers_debug_enabled = args.show_frontiers
-
-        print("✅ Reachability analysis system initialized successfully")
-
-    except Exception as e:
-        print(f"Warning: Could not initialize reachability system: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-# Initialize subgoal visualization system if requested
-subgoal_debug_enabled = False
-current_subgoals = []
-current_subgoal_plan = None
-
-if args.visualize_subgoals or args.export_subgoals:
-    print("Initializing subgoal visualization system...")
-
-    try:
-        # Enable subgoal visualization
-        subgoal_debug_enabled = args.visualize_subgoals
-
-        # Set visualization mode
-        env.set_subgoal_visualization_mode(args.subgoal_mode)
-        env.set_subgoal_debug_enabled(subgoal_debug_enabled)
-
-        # If visualization is enabled, initialize some basic subgoal data
-        if subgoal_debug_enabled and subgoal_planner:
-            ninja_pos = _get_ninja_position(env)
-            if ninja_pos:
-                print(
-                    f"   - Initializing subgoal data from ninja position: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})"
-                )
-
-                # Create initial completion plan
-                completion_plan = (
-                    subgoal_planner.subgoal_planner.create_hierarchical_completion_plan(
-                        ninja_pos,
-                        env.level_data,
-                        env.entities if hasattr(env, "entities") else [],
-                    )
-                )
-
-                if completion_plan:
-                    current_subgoals = completion_plan.subgoals
-                    current_subgoal_plan = completion_plan
-
-                    # Get reachable positions if available
-                    reachable_positions = None
-                    if reachability_analyzer:
-                        ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
-                        switch_states = {}
-                        reachability_state = reachability_analyzer.analyze_reachability(
-                            env.level_data,
-                            ninja_pos_int,
-                            switch_states,
-                        )
-                        reachable_positions = reachability_state.reachable_positions
-
-                    # Set the data in the debug overlay renderer
-                    env.set_subgoal_data(
-                        current_subgoals, current_subgoal_plan, reachable_positions
-                    )
-
-                    print(f"   - Initial subgoals identified: {len(current_subgoals)}")
-                    if reachable_positions:
-                        print(f"   - Reachable positions: {len(reachable_positions)}")
-                else:
-                    print("   - No initial completion plan could be created")
-
-        print("✅ Subgoal visualization system initialized successfully")
-        print(f"   - Mode: {args.subgoal_mode}")
-        print(f"   - Overlay enabled: {subgoal_debug_enabled}")
-
-    except Exception as e:
-        print(f"Warning: Could not initialize subgoal visualization system: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-# Initialize path-aware reward shaping system if requested
+tile_rendering_enabled = True
+tile_types_debug_enabled = False
+mine_predictor_debug_enabled = False
+death_probability_debug_enabled = False
+terminal_velocity_probability_debug_enabled = False
 path_aware_system = None
-path_distances_debug_enabled = False
 adjacency_graph_debug_enabled = False
 blocked_entities_debug_enabled = False
 show_paths_to_goals = False
 
 if (
     args.test_path_aware
-    or args.show_path_distances
     or args.visualize_adjacency_graph
     or args.show_blocked_entities
     or args.benchmark_pathfinding
@@ -1079,10 +814,10 @@ if (
             "current_graph": None,
             "current_entity_mask": None,
             "cached_level_data": None,
+            "cached_switch_states": None,  # Track switch states to detect changes
         }
 
         # Set initial debug states
-        path_distances_debug_enabled = args.show_path_distances
         adjacency_graph_debug_enabled = args.visualize_adjacency_graph
         blocked_entities_debug_enabled = args.show_blocked_entities
 
@@ -1091,17 +826,11 @@ if (
         print(
             f"   - Connectivity table size: {connectivity_loader.table_size_kb:.2f} KB"
         )
-        print(f"   - Path distance display: {path_distances_debug_enabled}")
         print(f"   - Adjacency graph display: {adjacency_graph_debug_enabled}")
         print(f"   - Blocked entities display: {blocked_entities_debug_enabled}")
 
         # Set initial flags on environment if any are enabled
-        if (
-            path_distances_debug_enabled
-            or adjacency_graph_debug_enabled
-            or blocked_entities_debug_enabled
-        ):
-            env.set_path_distances_debug_enabled(path_distances_debug_enabled)
+        if adjacency_graph_debug_enabled or blocked_entities_debug_enabled:
             env.set_adjacency_graph_debug_enabled(adjacency_graph_debug_enabled)
             env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
 
@@ -1173,192 +902,6 @@ if args.export_frame:
     env.close()
     sys.exit(0)
 
-# Handle reachability export if requested
-if args.export_reachability and reachability_analyzer:
-    print(f"Exporting reachability analysis to {args.export_reachability}...")
-
-    try:
-        # Get current ninja position
-        ninja_pos = _get_ninja_position(env)
-        if ninja_pos:
-            ninja_row, ninja_col = ninja_pos
-
-            # Perform reachability analysis from ninja position
-            # Convert ninja position to integer coordinates and add switch states
-            ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
-            switch_states = {}  # Empty switch states for export
-            reachability_state = reachability_analyzer.analyze_reachability(
-                env.level_data, ninja_pos_int, switch_states
-            )
-
-            # Get subgoals if requested
-            subgoals = []
-            if subgoal_planner and args.show_subgoals:
-                subgoals = subgoal_planner.enhance_subgoals_with_reachability(
-                    env.level_data, reachability_state
-                )
-
-            # Get frontiers if requested
-            frontiers = []
-            if frontier_detector and args.show_frontiers:
-                frontiers = frontier_detector.detect_frontiers(
-                    env.level_data, reachability_state
-                )
-
-            # Enable reachability visualization temporarily
-            env.set_reachability_debug_enabled(True)
-            env.set_reachability_data(reachability_state, subgoals, frontiers)
-
-            # Step the environment once to get a proper frame with reachability overlay
-            observation, reward, terminated, truncated, info = env.step(
-                0
-            )  # NOOP action
-
-            # Get the rendered frame with reachability overlay
-            frame = env.render()
-            if frame is not None and isinstance(frame, np.ndarray):
-                # Convert to PIL Image and save
-                if len(frame.shape) == 3 and frame.shape[2] == 1:
-                    # Single channel (grayscale) - squeeze to 2D
-                    frame_2d = np.squeeze(frame, axis=2)
-                    image = Image.fromarray(frame_2d.astype(np.uint8), mode="L")
-                elif len(frame.shape) == 3 and frame.shape[2] == 3:
-                    image = Image.fromarray(frame, "RGB")
-                elif len(frame.shape) == 3 and frame.shape[2] == 4:
-                    image = Image.fromarray(frame, "RGBA")
-                elif len(frame.shape) == 2:
-                    image = Image.fromarray(frame, "L")
-                else:
-                    print(f"Warning: Unsupported frame shape {frame.shape}")
-                    image = None
-
-                if image:
-                    image.save(args.export_reachability)
-                    print(
-                        f"✅ Reachability analysis exported to {args.export_reachability}"
-                    )
-                    print(
-                        f"   - Reachable positions: {len(reachability_state.reachable_positions)}"
-                    )
-                    if subgoals:
-                        print(f"   - Subgoals identified: {len(subgoals)}")
-                    if frontiers:
-                        print(f"   - Frontiers detected: {len(frontiers)}")
-            else:
-                print("Warning: Could not get frame with reachability overlay")
-        else:
-            print(
-                "Warning: Could not determine ninja position for reachability analysis"
-            )
-
-    except Exception as e:
-        print(f"Error during reachability export: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-    # Clean up and exit
-    pygame.quit()
-    env.close()
-    sys.exit(0)
-
-# Handle subgoal export if requested
-if args.export_subgoals:
-    print(f"Exporting subgoal visualization to {args.export_subgoals}...")
-
-    try:
-        # Get current ninja position
-        ninja_pos = _get_ninja_position(env)
-        if ninja_pos:
-            # Generate subgoals using the subgoal planner
-            if subgoal_planner:
-                # Create hierarchical completion plan
-                completion_plan = (
-                    subgoal_planner.subgoal_planner.create_hierarchical_completion_plan(
-                        ninja_pos,
-                        env.level_data,
-                        env.entities if hasattr(env, "entities") else [],
-                    )
-                )
-
-                # Initialize default values
-                current_subgoals = []
-                current_subgoal_plan = None
-                reachable_positions = None
-
-                if completion_plan:
-                    current_subgoals = completion_plan.subgoals
-                    current_subgoal_plan = completion_plan
-                    print(
-                        f"✅ Subgoal completion plan created with {len(current_subgoals)} subgoals"
-                    )
-                else:
-                    print(
-                        "⚠️  No subgoal completion plan created, exporting basic visualization"
-                    )
-
-                # Get reachable positions if reachability analyzer is available
-                if reachability_analyzer:
-                    ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
-                    switch_states = {}
-                    reachability_state = reachability_analyzer.analyze_reachability(
-                        env.level_data,
-                        ninja_pos_int,
-                        switch_states,
-                    )
-                    reachable_positions = reachability_state.reachable_positions
-
-                # Set subgoal data in debug overlay renderer
-                env.set_subgoal_data(
-                    current_subgoals, current_subgoal_plan, reachable_positions
-                )
-                env.set_subgoal_debug_enabled(True)
-
-                # Step the environment once to get a proper frame with subgoal overlay
-                observation, reward, terminated, truncated, info = env.step(
-                    0
-                )  # NOOP action
-
-                # Export using debug overlay renderer
-                try:
-                    success = env.export_subgoal_visualization(args.export_subgoals)
-                    if success:
-                        print(
-                            f"✅ Subgoal visualization exported to {args.export_subgoals}"
-                        )
-                        print(f"   - Subgoals identified: {len(current_subgoals)}")
-                        if current_subgoal_plan:
-                            print(
-                                f"   - Execution order: {len(current_subgoal_plan.execution_order)} steps"
-                            )
-                        if reachable_positions:
-                            print(
-                                f"   - Reachable positions: {len(reachable_positions)}"
-                            )
-                    else:
-                        print("❌ Failed to export subgoal visualization")
-                except Exception as e:
-                    print(f"❌ Error during subgoal visualization export: {e}")
-                    import traceback
-
-                    traceback.print_exc()
-            else:
-                print("Warning: Subgoal planner not initialized")
-        else:
-            print("Warning: Could not determine ninja position for subgoal analysis")
-
-    except Exception as e:
-        print(f"Error during subgoal export: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-    # Clean up and exit
-    pygame.quit()
-    env.close()
-    sys.exit(0)
-
-
 # Initialize clock for 60 FPS
 clock = None
 if not args.headless:
@@ -1375,17 +918,66 @@ if args.profile_memory:
     memory_profiler = MemoryProfiler(snapshot_interval=args.memory_snapshot_interval)
     memory_profiler.start()
 
+# Discrete action mode tracking
+keys_just_pressed = (
+    set()
+)  # Track which keys were pressed this frame (for discrete mode)
+keys_held = set()  # Track which keys are currently held (to prevent repeat on hold)
+
+
+def manual_reset(env: NppEnvironment):
+    print("Manual reset called")
+    print("Resetting observation processor")
+    env.observation_processor.reset()
+    print("Resetting reward calculator")
+    env.reward_calculator.reset()
+    print("Resetting truncation checker")
+    env.truncation_checker.reset()
+    print("Resetting episode reward")
+    env.current_ep_reward = 0
+    clear_all_caches_for_new_level(env)
+    print("Resetting graph state")
+    env._reset_graph_state()
+    print("Updating graph from env state")
+    env._update_graph_from_env_state()
+    print("Building mine death lookup table")
+    env._build_mine_death_lookup_table()
+    print("Building terminal velocity lookup table")
+    env._build_terminal_velocity_lookup_table()
+    print("Building door feature cache")
+    env._build_door_feature_cache()
+    print("Clearing reachability cache")
+    env._clear_reachability_cache()
+
+
 # Main game loop
 # Wrap the game loop with profiler.enable() and profiler.disable()
 profiler.enable()
 frame_counter = 0  # Initialize frame counter
 while running:
+    # Reset keys pressed this frame (for discrete action mode)
+    keys_just_pressed.clear()
     # Handle pygame events
     if not args.headless:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            if event.type == pygame.KEYUP:
+                # Track key releases for discrete action mode
+                if args.discrete_actions and event.key in keys_held:
+                    keys_held.discard(event.key)
             if event.type == pygame.KEYDOWN:
+                # Track arrow key presses for discrete action mode
+                if args.discrete_actions and event.key in (
+                    pygame.K_LEFT,
+                    pygame.K_RIGHT,
+                    pygame.K_UP,
+                ):
+                    # Only register if key was not already held (prevents repeat on hold)
+                    if event.key not in keys_held:
+                        keys_just_pressed.add(event.key)
+                        keys_held.add(event.key)
+
                 if event.key == pygame.K_r:
                     # Check if episode was successful before reset (for recorder)
                     if recorder is not None and recorder.is_recording:
@@ -1401,18 +993,7 @@ while running:
                                 new_map.map_data()
                             )
 
-                            # Manually reset physics without reloading map
-                            env.observation_processor.reset()
-                            env.reward_calculator.reset()
-                            env.truncation_checker.reset()
-                            env.current_ep_reward = 0
-                            # Reset graph state to clear cached adjacency graph for new level
-                            if hasattr(env, "_reset_graph_state"):
-                                env._reset_graph_state()
-                            # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
-                            if hasattr(env, "_update_graph_from_env_state"):
-                                env._update_graph_from_env_state()
-                            # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
+                            manual_reset(env)
 
                             # Get initial observation
                             initial_obs = env._get_observation()
@@ -1421,11 +1002,6 @@ while running:
                             print(
                                 f"Generated new map: {generator_tester.get_info_string()}"
                             )
-
-                            if show_ascii_on_reset:
-                                print("\nASCII Visualization:")
-                                print(new_map.to_ascii(show_coords=False))
-                                print()
                         except Exception as e:
                             print(f"Error generating map: {e}")
                             import traceback
@@ -1445,10 +1021,7 @@ while running:
                         print("Resetting to spawn position on current map...")
 
                         # Reset physics and observation processors
-                        env.observation_processor.reset()
-                        env.reward_calculator.reset()
-                        env.truncation_checker.reset()
-                        env.current_ep_reward = 0
+                        manual_reset(env)
 
                         # Reset ninja physics but keep same map
                         env.nplay_headless.reset()
@@ -1524,6 +1097,48 @@ while running:
                         env.set_grid_debug_enabled(grid_debug_enabled)
                     except Exception:
                         pass
+                if event.key == pygame.K_m:
+                    # Toggle mine predictor debug overlay
+                    mine_predictor_debug_enabled = not mine_predictor_debug_enabled
+                    try:
+                        env.set_mine_predictor_debug_enabled(
+                            mine_predictor_debug_enabled
+                        )
+                        print(
+                            f"Mine predictor debug: {'ON' if mine_predictor_debug_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Failed to toggle mine predictor debug: {e}")
+                if event.key == pygame.K_d:
+                    # Toggle mine death probability debug overlay
+                    death_probability_debug_enabled = (
+                        not death_probability_debug_enabled
+                    )
+                    try:
+                        env.set_death_probability_debug_enabled(
+                            death_probability_debug_enabled
+                        )
+                        print(
+                            f"Mine death probability debug: {'ON' if death_probability_debug_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Failed to toggle mine death probability debug: {e}")
+                if event.key == pygame.K_t:
+                    # Toggle terminal velocity death probability debug overlay
+                    terminal_velocity_probability_debug_enabled = (
+                        not terminal_velocity_probability_debug_enabled
+                    )
+                    try:
+                        env.set_terminal_velocity_probability_debug_enabled(
+                            terminal_velocity_probability_debug_enabled
+                        )
+                        print(
+                            f"Terminal velocity death probability debug: {'ON' if terminal_velocity_probability_debug_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(
+                            f"Failed to toggle terminal velocity death probability debug: {e}"
+                        )
                 if event.key == pygame.K_l:
                     # Toggle tile rendering
                     tile_rendering_enabled = not tile_rendering_enabled
@@ -1562,18 +1177,7 @@ while running:
                         new_map = generator_tester.generate_map()
                         env.nplay_headless.load_map_from_map_data(new_map.map_data())
 
-                        # Manually reset physics without reloading map
-                        env.observation_processor.reset()
-                        env.reward_calculator.reset()
-                        env.truncation_checker.reset()
-                        env.current_ep_reward = 0
-                        # Reset graph state to clear cached adjacency graph for new level
-                        if hasattr(env, "_reset_graph_state"):
-                            env._reset_graph_state()
-                        # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
-                        if hasattr(env, "_update_graph_from_env_state"):
-                            env._update_graph_from_env_state()
-                        # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
+                        manual_reset(env)
 
                         # Get initial observation
                         initial_obs = env._get_observation()
@@ -1606,19 +1210,7 @@ while running:
                         env.nplay_headless.load_map_from_map_data(new_map.map_data())
 
                         # Manually reset physics without reloading map
-                        env.observation_processor.reset()
-                        env.reward_calculator.reset()
-                        env.truncation_checker.reset()
-                        env.current_ep_reward = 0
-                        # Reset graph state to clear cached adjacency graph for new level
-                        if hasattr(env, "_reset_graph_state"):
-                            env._reset_graph_state()
-                        # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
-                        if hasattr(env, "_update_graph_from_env_state"):
-                            env._update_graph_from_env_state()
-                        # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
-
-                        # Get initial observation
+                        manual_reset(env)
                         initial_obs = env._get_observation()
                         observation = env._process_observation(initial_obs)
 
@@ -1668,19 +1260,8 @@ while running:
                                 )
 
                                 # Manually reset physics without reloading map
-                                env.observation_processor.reset()
-                                env.reward_calculator.reset()
-                                env.truncation_checker.reset()
-                                env.current_ep_reward = 0
-                                # Reset graph state to clear cached adjacency graph for new level
-                                if hasattr(env, "_reset_graph_state"):
-                                    env._reset_graph_state()
-                                # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
-                                if hasattr(env, "_update_graph_from_env_state"):
-                                    env._update_graph_from_env_state()
-                                # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
+                                manual_reset(env)
 
-                                # Get initial observation
                                 initial_obs = env._get_observation()
                                 observation = env._process_observation(initial_obs)
 
@@ -1699,285 +1280,8 @@ while running:
                                 f"Generator #{target_idx + 1} does not exist in current category"
                             )
 
-                # Reachability visualization controls
-                if event.key == pygame.K_t:
-                    # Toggle reachability overlay
-                    if reachability_analyzer:
-                        reachability_debug_enabled = not reachability_debug_enabled
-                        try:
-                            env.set_reachability_debug_enabled(
-                                reachability_debug_enabled
-                            )
-                            print(
-                                f"Reachability overlay: {'ON' if reachability_debug_enabled else 'OFF'}"
-                            )
-                        except Exception as e:
-                            print(f"Could not toggle reachability overlay: {e}")
-
-                if event.key == pygame.K_n:
-                    # Update reachability from ninja position
-                    if reachability_analyzer and reachability_debug_enabled:
-                        try:
-                            ninja_pos = _get_ninja_position(env)
-                            if ninja_pos:
-                                ninja_row, ninja_col = ninja_pos
-                                ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
-                                switch_states = {}
-                                reachability_state = (
-                                    reachability_analyzer.analyze_reachability(
-                                        env.level_data,
-                                        ninja_pos_int,
-                                        switch_states,
-                                    )
-                                )
-
-                                # Get subgoals and frontiers if enabled
-                                subgoals = []
-                                frontiers = []
-                                if subgoal_planner and subgoals_debug_enabled:
-                                    subgoals = subgoal_planner.enhance_subgoals_with_reachability(
-                                        env.level_data, reachability_state
-                                    )
-                                if frontier_detector and frontiers_debug_enabled:
-                                    frontiers = frontier_detector.detect_frontiers(
-                                        env.level_data, reachability_state
-                                    )
-
-                                env.set_reachability_data(
-                                    reachability_state, subgoals, frontiers
-                                )
-                                print(
-                                    f"Updated reachability from ninja position ({ninja_row}, {ninja_col})"
-                                )
-                                print(
-                                    f"  - Reachable positions: {len(reachability_state.reachable_positions)}"
-                                )
-                        except Exception as e:
-                            print(f"Could not update reachability: {e}")
-
-                if event.key == pygame.K_u:
-                    # Toggle subgoal visualization
-                    if subgoal_planner:
-                        subgoals_debug_enabled = not subgoals_debug_enabled
-                        print(
-                            f"Subgoal visualization: {'ON' if subgoals_debug_enabled else 'OFF'}"
-                        )
-
-                        # Update visualization if reachability is active
-                        if reachability_debug_enabled:
-                            try:
-                                ninja_pos = _get_ninja_position(env)
-                                if ninja_pos:
-                                    ninja_row, ninja_col = ninja_pos
-                                    ninja_pos_int = (
-                                        int(ninja_pos[0]),
-                                        int(ninja_pos[1]),
-                                    )
-                                    switch_states = {}
-                                    reachability_state = (
-                                        reachability_analyzer.analyze_reachability(
-                                            env.level_data,
-                                            ninja_pos_int,
-                                            switch_states,
-                                        )
-                                    )
-                                    subgoals = (
-                                        subgoal_planner.enhance_subgoals_with_reachability(
-                                            env.level_data, reachability_state
-                                        )
-                                        if subgoals_debug_enabled
-                                        else []
-                                    )
-                                    frontiers = (
-                                        frontier_detector.detect_frontiers(
-                                            env.level_data, reachability_state
-                                        )
-                                        if frontiers_debug_enabled
-                                        else []
-                                    )
-                                    env.set_reachability_data(
-                                        reachability_state, subgoals, frontiers
-                                    )
-                            except Exception as e:
-                                print(f"Could not update subgoal visualization: {e}")
-
-                if event.key == pygame.K_f:
-                    # Toggle frontier visualization
-                    if frontier_detector:
-                        frontiers_debug_enabled = not frontiers_debug_enabled
-                        print(
-                            f"Frontier visualization: {'ON' if frontiers_debug_enabled else 'OFF'}"
-                        )
-
-                        # Update visualization if reachability is active
-                        if reachability_debug_enabled:
-                            try:
-                                ninja_pos = _get_ninja_position(env)
-                                if ninja_pos:
-                                    ninja_row, ninja_col = ninja_pos
-                                    ninja_pos_int = (
-                                        int(ninja_pos[0]),
-                                        int(ninja_pos[1]),
-                                    )
-                                    switch_states = {}
-                                    reachability_state = (
-                                        reachability_analyzer.analyze_reachability(
-                                            env.level_data,
-                                            ninja_pos_int,
-                                            switch_states,
-                                        )
-                                    )
-                                    subgoals = (
-                                        subgoal_planner.enhance_subgoals_with_reachability(
-                                            env.level_data, reachability_state
-                                        )
-                                        if subgoals_debug_enabled
-                                        else []
-                                    )
-                                    frontiers = (
-                                        frontier_detector.detect_frontiers(
-                                            env.level_data, reachability_state
-                                        )
-                                        if frontiers_debug_enabled
-                                        else []
-                                    )
-                                    env.set_reachability_data(
-                                        reachability_state, subgoals, frontiers
-                                    )
-                            except Exception as e:
-                                print(f"Could not update frontier visualization: {e}")
-
-                if event.key == pygame.K_x:
-                    # Export reachability screenshot
-                    if reachability_analyzer and reachability_debug_enabled:
-                        try:
-                            timestamp = int(time.time())
-                            filename = f"reachability_export_{timestamp}.png"
-                            frame = env.render()
-                            if frame is not None and isinstance(frame, np.ndarray):
-                                if len(frame.shape) == 3 and frame.shape[2] == 3:
-                                    image = Image.fromarray(frame, "RGB")
-                                    image.save(filename)
-                                    print(
-                                        f"✅ Reachability screenshot saved to {filename}"
-                                    )
-                                else:
-                                    print(
-                                        "Warning: Unsupported frame format for export"
-                                    )
-                            else:
-                                print("Warning: Could not get frame for export")
-                        except Exception as e:
-                            print(f"Could not export reachability screenshot: {e}")
-
-                # Subgoal visualization controls
-                if event.key == pygame.K_s:
-                    # Toggle subgoal visualization overlay
-                    subgoal_debug_enabled = not subgoal_debug_enabled
-                    env.set_subgoal_debug_enabled(subgoal_debug_enabled)
-                    print(
-                        f"Subgoal visualization: {'ON' if subgoal_debug_enabled else 'OFF'}"
-                    )
-
-                if event.key == pygame.K_m:
-                    # Cycle through visualization modes
-                    modes = ["basic", "detailed", "reachability"]
-                    current_mode = getattr(args, "subgoal_mode", "detailed")
-                    try:
-                        current_index = modes.index(current_mode)
-                        next_index = (current_index + 1) % len(modes)
-                        args.subgoal_mode = modes[next_index]
-
-                        env.set_subgoal_visualization_mode(args.subgoal_mode)
-                        print(f"Subgoal visualization mode: {args.subgoal_mode}")
-                    except ValueError:
-                        args.subgoal_mode = "detailed"
-                        print("Reset subgoal visualization mode to: detailed")
-
-                if event.key == pygame.K_p:
-                    # Update subgoal plan from current position
-                    if subgoal_planner and subgoal_debug_enabled:
-                        try:
-                            ninja_pos = _get_ninja_position(env)
-                            if ninja_pos:
-                                # Create new completion plan
-                                completion_plan = subgoal_planner.subgoal_planner.create_hierarchical_completion_plan(
-                                    ninja_pos,
-                                    env.level_data,
-                                    env.entities if hasattr(env, "entities") else [],
-                                )
-
-                                if completion_plan:
-                                    current_subgoals = completion_plan.subgoals
-                                    current_subgoal_plan = completion_plan
-
-                                    # Get reachable positions if available
-                                    reachable_positions = None
-                                    if reachability_analyzer:
-                                        ninja_pos_int = (
-                                            int(ninja_pos[0]),
-                                            int(ninja_pos[1]),
-                                        )
-                                        switch_states = {}
-                                        reachability_state = (
-                                            reachability_analyzer.analyze_reachability(
-                                                env.level_data,
-                                                ninja_pos_int,
-                                                switch_states,
-                                            )
-                                        )
-                                        reachable_positions = (
-                                            reachability_state.reachable_positions
-                                        )
-
-                                    # Update debug overlay renderer
-                                    env.set_subgoal_data(
-                                        current_subgoals,
-                                        current_subgoal_plan,
-                                        reachable_positions,
-                                    )
-
-                                    print(
-                                        f"Updated subgoal plan from ninja position ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})"
-                                    )
-                                    print(
-                                        f"  - Subgoals identified: {len(current_subgoals)}"
-                                    )
-                                    print(
-                                        f"  - Execution steps: {len(current_subgoal_plan.execution_order)}"
-                                    )
-                                else:
-                                    print("Could not create subgoal completion plan")
-                        except Exception as e:
-                            print(f"Could not update subgoal plan: {e}")
-
-                if event.key == pygame.K_o:
-                    # Export subgoal visualization screenshot
-                    if subgoal_debug_enabled:
-                        try:
-                            timestamp = int(time.time())
-                            filename = f"subgoal_export_{timestamp}.png"
-                            success = env.export_subgoal_visualization(filename)
-                            if success:
-                                print(
-                                    f"✅ Subgoal visualization screenshot saved to {filename}"
-                                )
-                            else:
-                                print(
-                                    "❌ Failed to export subgoal visualization screenshot"
-                                )
-                        except Exception as e:
-                            print(f"Could not export subgoal screenshot: {e}")
-
                 # Path-aware reward shaping controls
                 if path_aware_system is not None:
-                    if event.key == pygame.K_d:
-                        # Toggle path distance display
-                        path_distances_debug_enabled = not path_distances_debug_enabled
-                        print(
-                            f"Path distance display: {'ON' if path_distances_debug_enabled else 'OFF'}"
-                        )
-
                     if event.key == pygame.K_a:
                         # Toggle adjacency graph visualization
                         adjacency_graph_debug_enabled = (
@@ -2002,160 +1306,6 @@ while running:
                         print(
                             f"Path to goals visualization: {'ON' if show_paths_to_goals else 'OFF'}"
                         )
-
-                    if event.key == pygame.K_t and not (event.mod & pygame.KMOD_CTRL):
-                        # Run pathfinding benchmark
-                        try:
-                            ninja_pos = _get_ninja_position(env)
-                            if ninja_pos:
-                                print("\n" + "=" * 60)
-                                print("PATHFINDING BENCHMARK")
-                                print("=" * 60)
-                                print(
-                                    f"Ninja position: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})"
-                                )
-
-                                # Build/get graph
-                                import time as time_module
-
-                                start = time_module.perf_counter()
-                                # Convert LevelData to dictionary format
-                                level_data_dict = env.level_data.to_dict()
-                                level_data_dict["switch_states"] = (
-                                    env.level_data.switch_states
-                                )
-                                graph_data = path_aware_system[
-                                    "graph_builder"
-                                ].build_graph(level_data_dict)
-                                graph_build_time = (
-                                    time_module.perf_counter() - start
-                                ) * 1000
-
-                                print(f"\nGraph build time: {graph_build_time:.3f} ms")
-                                print(f"  - Nodes: {len(graph_data['adjacency'])}")
-                                print(
-                                    f"  - Edges: {sum(len(neighbors) for neighbors in graph_data['adjacency'].values())}"
-                                )
-
-                                # Build level cache
-                                cache_start = time_module.perf_counter()
-                                cache_rebuilt = path_aware_system[
-                                    "path_calculator"
-                                ].build_level_cache(
-                                    env.level_data, graph_data["adjacency"], graph_data
-                                )
-                                cache_build_time = (
-                                    time_module.perf_counter() - cache_start
-                                ) * 1000
-
-                                print(
-                                    f"\nLevel cache build time: {cache_build_time:.3f} ms"
-                                )
-                                print(
-                                    f"  - Cache rebuilt: {'Yes' if cache_rebuilt else 'No'}"
-                                )
-                                level_cache_stats = path_aware_system[
-                                    "path_calculator"
-                                ].get_level_cache_statistics()
-                                if level_cache_stats:
-                                    print(
-                                        f"  - Cache size: {level_cache_stats['cache_size']} entries"
-                                    )
-
-                                # Get entities
-                                from nclone.constants.entity_types import EntityType
-
-                                entities = env.level_data.entities
-                                switch_pos = None
-                                exit_pos = None
-
-                                for entity in entities:
-                                    entity_type = entity.get("type")
-                                    if entity_type == EntityType.EXIT_SWITCH:
-                                        switch_pos = (
-                                            int(entity.get("x", 0)),
-                                            int(entity.get("y", 0)),
-                                        )
-                                    elif entity_type == EntityType.EXIT_DOOR:
-                                        exit_pos = (
-                                            int(entity.get("x", 0)),
-                                            int(entity.get("y", 0)),
-                                        )
-
-                                if switch_pos:
-                                    # Benchmark path to switch using cached calculator
-                                    start = time_module.perf_counter()
-                                    dist = path_aware_system[
-                                        "path_calculator"
-                                    ].get_distance(
-                                        (int(ninja_pos[0]), int(ninja_pos[1])),
-                                        switch_pos,
-                                        graph_data["adjacency"],
-                                        level_data=env.level_data,
-                                        graph_data=graph_data,
-                                    )
-                                    path_time = (
-                                        time_module.perf_counter() - start
-                                    ) * 1000
-
-                                    print("\nPath to switch:")
-                                    print(f"  - Position: {switch_pos}")
-                                    print(f"  - Distance: {dist:.1f} px")
-                                    print(f"  - Calculation time: {path_time:.3f} ms")
-
-                                if exit_pos:
-                                    # Benchmark path to exit using cached calculator
-                                    start = time_module.perf_counter()
-                                    dist = path_aware_system[
-                                        "path_calculator"
-                                    ].get_distance(
-                                        (int(ninja_pos[0]), int(ninja_pos[1])),
-                                        exit_pos,
-                                        graph_data["adjacency"],
-                                        level_data=env.level_data,
-                                        graph_data=graph_data,
-                                    )
-                                    path_time = (
-                                        time_module.perf_counter() - start
-                                    ) * 1000
-
-                                    print("\nPath to exit:")
-                                    print(f"  - Position: {exit_pos}")
-                                    print(f"  - Distance: {dist:.1f} px")
-                                    print(f"  - Calculation time: {path_time:.3f} ms")
-
-                                # Show cache stats
-                                print("\nCache statistics:")
-                                stats = path_aware_system[
-                                    "path_calculator"
-                                ].get_statistics()
-                                print(f"  - Query cache hits: {stats['hits']}")
-                                print(f"  - Query cache misses: {stats['misses']}")
-                                if stats["total_queries"] > 0:
-                                    print(
-                                        f"  - Query cache hit rate: {stats['hit_rate'] * 100:.1f}%"
-                                    )
-
-                                # Show level cache stats
-                                if "level_cache" in stats:
-                                    level_stats = stats["level_cache"]
-                                    print("\nLevel cache statistics:")
-                                    print(f"  - Hits: {level_stats['hits']}")
-                                    print(f"  - Misses: {level_stats['misses']}")
-                                    if level_stats["total_queries"] > 0:
-                                        print(
-                                            f"  - Hit rate: {level_stats['hit_rate'] * 100:.1f}%"
-                                        )
-                                    print(
-                                        f"  - Cache size: {level_stats['cache_size']} entries"
-                                    )
-
-                                print("=" * 60 + "\n")
-                        except Exception as e:
-                            print(f"Pathfinding benchmark error: {e}")
-                            import traceback
-
-                            traceback.print_exc()
 
                     if event.key == pygame.K_x and not (event.mod & pygame.KMOD_CTRL):
                         # Export path analysis screenshot
@@ -2192,19 +1342,35 @@ while running:
     # Map keyboard inputs to environment actions (arrow keys only)
     action = 0  # Default to NOOP
     if not args.headless:  # Only process keyboard inputs if not in headless mode
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_UP]:
-            if keys[pygame.K_LEFT]:
-                action = 4  # Jump + Left
-            elif keys[pygame.K_RIGHT]:
-                action = 5  # Jump + Right
+        if args.discrete_actions:
+            # Discrete action mode: only register actions on key press (not hold)
+            if pygame.K_UP in keys_just_pressed:
+                if pygame.K_LEFT in keys_just_pressed:
+                    action = 4  # Jump + Left
+                elif pygame.K_RIGHT in keys_just_pressed:
+                    action = 5  # Jump + Right
+                else:
+                    action = 3  # Jump only
             else:
-                action = 3  # Jump only
+                if pygame.K_LEFT in keys_just_pressed:
+                    action = 1  # Left
+                elif pygame.K_RIGHT in keys_just_pressed:
+                    action = 2  # Right
         else:
-            if keys[pygame.K_LEFT]:
-                action = 1  # Left
-            elif keys[pygame.K_RIGHT]:
-                action = 2  # Right
+            # Continuous action mode: register actions while keys are held
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_UP]:
+                if keys[pygame.K_LEFT]:
+                    action = 4  # Jump + Left
+                elif keys[pygame.K_RIGHT]:
+                    action = 5  # Jump + Right
+                else:
+                    action = 3  # Jump only
+            else:
+                if keys[pygame.K_LEFT]:
+                    action = 1  # Left
+                elif keys[pygame.K_RIGHT]:
+                    action = 2  # Right
     else:
         # In headless mode, we can choose to send a default action or no action
         # For now, let's send NOOP. This part could be modified if automated
@@ -2216,21 +1382,89 @@ while running:
         recorder.record_action(action)
 
     # Update path-aware visualization if enabled
-    if path_aware_system is not None and (
-        path_distances_debug_enabled
-        or adjacency_graph_debug_enabled
-        or blocked_entities_debug_enabled
-        or show_paths_to_goals
-    ):
+    if path_aware_system is not None:
         # Get current level data
         level_data = env.level_data
 
+        # Extract current switch states directly from simulator (authoritative source)
+        # LevelData.__eq__ doesn't check switch states, and level_data.entities may be stale,
+        # so we read directly from the simulator to get real-time switch states
+        current_switch_states = {}
+        if hasattr(env, "nplay_headless") and hasattr(env.nplay_headless, "sim"):
+            sim = env.nplay_headless.sim
+            if hasattr(sim, "entity_dic"):
+                # Exit switches (entity_dic key 3 contains both EntityExitSwitch and EntityExit)
+                if 3 in sim.entity_dic:
+                    exit_entities = sim.entity_dic[3]
+                    for i, entity in enumerate(exit_entities):
+                        # Check if this is an EntityExitSwitch
+                        if type(entity).__name__ == "EntityExitSwitch":
+                            # For exit switches, active=False means collected/activated
+                            switch_id = f"exit_switch_{i}"
+                            current_switch_states[switch_id] = not getattr(
+                                entity, "active", True
+                            )
+
+                # Locked door switches (entity_dic key 7)
+                if 7 in sim.entity_dic:
+                    locked_door_switches = sim.entity_dic[7]
+                    for i, switch in enumerate(locked_door_switches):
+                        switch_id = f"locked_door_switch_{i}"
+                        # active=False means collected/activated
+                        current_switch_states[switch_id] = not getattr(
+                            switch, "active", True
+                        )
+
+        # Check if switch states have changed (critical for cache invalidation)
+        switch_states_changed = (
+            path_aware_system.get("cached_switch_states") is None
+            or path_aware_system["cached_switch_states"] != current_switch_states
+        )
+
         # Build/update graph if level has changed (uses LevelData.__eq__ comparison)
+        # OR if switch states have changed (LevelData.__eq__ doesn't check switch states)
         if (
             path_aware_system["current_graph"] is None
             or path_aware_system.get("cached_level_data") is None
             or path_aware_system["cached_level_data"] != level_data
+            or switch_states_changed
         ):
+            # If switch states changed, clear pathfinding caches before rebuilding
+            if switch_states_changed:
+                # Clear path calculator cache (forces rebuild with new goals)
+                path_aware_system["path_calculator"].clear_cache()
+
+                # Clear debug overlay renderer pathfinding cache if accessible
+                if (
+                    hasattr(env, "nplay_headless")
+                    and hasattr(env.nplay_headless, "sim_renderer")
+                    and hasattr(
+                        env.nplay_headless.sim_renderer, "debug_overlay_renderer"
+                    )
+                ):
+                    debug_renderer = (
+                        env.nplay_headless.sim_renderer.debug_overlay_renderer
+                    )
+                    if hasattr(debug_renderer, "clear_pathfinding_cache"):
+                        debug_renderer.clear_pathfinding_cache()
+
+            # CRITICAL: Update level_data entities with fresh simulator data before building cache/graph
+            # level_data.entities may be stale, so we need to refresh them to get current switch states
+            if hasattr(env, "entity_extractor"):
+                fresh_entities = env.entity_extractor.extract_graph_entities()
+                # Create a copy of level_data with updated entities
+                from nclone.graph.level_data import LevelData
+
+                updated_level_data = LevelData(
+                    start_position=level_data.start_position,
+                    tiles=level_data.tiles,
+                    entities=fresh_entities,
+                    level_id=level_data.level_id,
+                    metadata=level_data.metadata,
+                    entity_start_positions=level_data.entity_start_positions,
+                )
+                level_data = updated_level_data
+
             # Rebuild graph for new level
             # Convert LevelData to dict format for graph_builder
             level_data_dict = (
@@ -2248,11 +1482,14 @@ while running:
                 path_aware_system["path_calculator"].build_level_cache(
                     level_data, path_aware_system["current_graph"]["adjacency"]
                 )
-            # Cache the level data for comparison on next frame
+            # Cache the level data and switch states for comparison on next frame
             path_aware_system["cached_level_data"] = level_data
+            path_aware_system["cached_switch_states"] = current_switch_states
+        elif path_aware_system.get("cached_switch_states") is None:
+            # First frame: cache switch states even if level_data comparison passed
+            path_aware_system["cached_switch_states"] = current_switch_states
 
         # Set debug flags on environment
-        env.set_path_distances_debug_enabled(path_distances_debug_enabled)
         env.set_adjacency_graph_debug_enabled(adjacency_graph_debug_enabled)
         env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
         env.set_show_paths_to_goals(show_paths_to_goals)
@@ -2265,7 +1502,6 @@ while running:
         )
     elif path_aware_system is not None:
         # Turn off all path-aware debug flags when none are enabled
-        env.set_path_distances_debug_enabled(False)
         env.set_adjacency_graph_debug_enabled(False)
         env.set_blocked_entities_debug_enabled(False)
         env.set_show_paths_to_goals(False)
@@ -2312,19 +1548,8 @@ while running:
                 env.nplay_headless.load_map_from_map_data(new_map.map_data())
 
                 # Manually reset physics without reloading map
-                env.observation_processor.reset()
-                env.reward_calculator.reset()
-                env.truncation_checker.reset()
-                env.current_ep_reward = 0
-                # Reset graph state to clear cached adjacency graph for new level
-                if hasattr(env, "_reset_graph_state"):
-                    env._reset_graph_state()
-                # Force graph rebuild for new level (graph gets built in _get_observation, but ensure it's ready)
-                if hasattr(env, "_update_graph_from_env_state"):
-                    env._update_graph_from_env_state()
-                # NOTE: Do NOT call env.nplay_headless.reset() here as load_map_from_map_data() already calls sim.load() which resets entities
+                manual_reset(env)
 
-                # Get initial observation
                 initial_obs = env._get_observation()
                 observation = env._process_observation(initial_obs)
 
@@ -2359,6 +1584,66 @@ while running:
         running = False
 
 profiler.disable()
+
+# Print cache statistics
+print("\n" + "=" * 60)
+print("CACHE STATISTICS")
+print("=" * 60)
+
+# Door feature cache statistics
+if hasattr(env, "door_feature_cache"):
+    door_stats = env.door_feature_cache.get_statistics()
+    print("\nDoor Feature Cache:")
+    print(f"  - Cache built: {door_stats['cache_built']}")
+    print(f"  - Grid cells cached: {door_stats['grid_cells']}")
+    print(f"  - Doors tracked: {door_stats['n_doors']}")
+    print(f"  - Cache hits: {door_stats['cache_hits']}")
+    print(f"  - Cache misses: {door_stats['cache_misses']}")
+    print(f"  - Hit rate: {door_stats['hit_rate']:.1%}")
+    print(f"  - Memory: {door_stats['memory_mb']:.2f} MB")
+
+# Entity cache statistics
+if hasattr(env, "nplay_headless") and hasattr(env.nplay_headless, "entity_cache"):
+    entity_cache = env.nplay_headless.entity_cache
+    if entity_cache.is_cache_built():
+        print("\nEntity Cache:")
+        print("  - Cache built: True")
+        print(f"  - Total entities: {entity_cache.cache.n_entities}")
+        print(f"  - Toggle mines: {entity_cache.cache.n_toggle_mines}")
+        memory_kb = (
+            entity_cache.cache.positions.nbytes
+            + entity_cache.cache.types.nbytes
+            + entity_cache.cache.active_states.nbytes
+            + entity_cache.cache.mine_states.nbytes
+        ) / 1024
+        print(f"  - Memory: {memory_kb:.2f} KB")
+
+# Mine death predictor statistics
+if (
+    hasattr(env, "nplay_headless")
+    and hasattr(env.nplay_headless, "sim")
+    and hasattr(env.nplay_headless.sim, "ninja")
+    and hasattr(env.nplay_headless.sim.ninja, "mine_death_predictor")
+    and env.nplay_headless.sim.ninja.mine_death_predictor is not None
+):
+    predictor = env.nplay_headless.sim.ninja.mine_death_predictor
+    stats = predictor.get_stats()
+    print("\nMine Death Predictor:")
+    print(f"  - Reachable mines: {stats.reachable_mines}")
+    print(f"  - Danger zone cells: {stats.danger_zone_cells}")
+    print(f"  - Tier 1 queries: {stats.tier1_queries}")
+    print(f"  - Tier 2 queries: {stats.tier2_queries}")
+    print(f"  - Tier 3 queries: {stats.tier3_queries}")
+    total_queries = stats.tier1_queries + stats.tier2_queries + stats.tier3_queries
+    if total_queries > 0:
+        tier1_rate = stats.tier1_queries / total_queries
+        tier2_rate = stats.tier2_queries / total_queries
+        tier3_rate = stats.tier3_queries / total_queries
+        print(f"  - Tier 1 rate: {tier1_rate:.1%} (fast path)")
+        print(f"  - Tier 2 rate: {tier2_rate:.1%} (medium path)")
+        print(f"  - Tier 3 rate: {tier3_rate:.1%} (slow path)")
+
+print("=" * 60 + "\n")
 
 # Finalize memory profiling if active
 if memory_profiler is not None:
