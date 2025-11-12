@@ -337,6 +337,23 @@ class FrameStackWrapper(ObservationWrapper):
 
         # Stack game state if enabled
         if "game_state" in observation:
+            # Validate game_state before stacking
+            game_state = observation["game_state"]
+            if np.isnan(game_state).any():
+                nan_indices = np.where(np.isnan(game_state))[0]
+                raise ValueError(
+                    f"NaN detected in game_state before frame stacking. "
+                    f"NaN at indices: {nan_indices[:10]} "  # Show first 10
+                    f"(total {len(nan_indices)} NaN values)"
+                )
+            if np.isinf(game_state).any():
+                inf_indices = np.where(np.isinf(game_state))[0]
+                raise ValueError(
+                    f"Inf detected in game_state before frame stacking. "
+                    f"Inf at indices: {inf_indices[:10]} "
+                    f"(total {len(inf_indices)} Inf values)"
+                )
+            
             if (
                 self.enable_state_stacking
                 and len(self.game_state_buffer) > 0

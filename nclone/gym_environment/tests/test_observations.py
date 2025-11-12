@@ -15,6 +15,10 @@ from nclone.gym_environment.npp_environment import (
 from nclone.gym_environment.config import EnvironmentConfig, RenderConfig
 from nclone.gym_environment.constants import (
     GAME_STATE_CHANNELS,
+    NINJA_STATE_DIM,
+    PATH_AWARE_OBJECTIVES_DIM,
+    MINE_FEATURES_DIM,
+    PROGRESS_FEATURES_DIM,
 )
 
 # Add project root to path
@@ -48,22 +52,105 @@ class TestObservationProfiles(unittest.TestCase):
 
     def test_game_state_features(self):
         """Test game state feature extraction."""
-        # Reset environments
-        rich_obs = self.env_rich.reset()[0]
+        obs = self.env_rich.reset()[0]
 
-        # Check feature vector size (should have at least ninja_state features)
-        # May include additional entity_states beyond the base ninja features
-        self.assertGreaterEqual(len(rich_obs["game_state"]), GAME_STATE_CHANNELS)
+        # Verify game_state has correct shape
+        self.assertEqual(obs["game_state"].shape, (GAME_STATE_CHANNELS,))
+        self.assertEqual(len(obs["game_state"]), GAME_STATE_CHANNELS)
 
-        # Check that all features are finite
-        self.assertTrue(np.all(np.isfinite(rich_obs["game_state"])))
+        # Verify all features are in valid ranges
+        game_state = obs["game_state"]
 
-        # Check feature ranges for ninja_state (all features should be normalized)
-        ninja_state_features = rich_obs["game_state"][:GAME_STATE_CHANNELS]
+        # Calculate feature offsets
+        path_aware_start = NINJA_STATE_DIM
+        mine_start = path_aware_start + PATH_AWARE_OBJECTIVES_DIM
+        progress_start = mine_start + MINE_FEATURES_DIM
 
-        # Ninja state features should be normalized to reasonable ranges
-        self.assertTrue(np.all(ninja_state_features >= -10.0))
-        self.assertTrue(np.all(ninja_state_features <= 10.0))
+        # Path-aware objectives
+        # - exit_switch_collected: [0, 1]
+        self.assertGreaterEqual(game_state[path_aware_start], 0.0)
+        self.assertLessEqual(game_state[path_aware_start], 1.0)
+        # - rel_x, rel_y: [-1, 1]
+        self.assertGreaterEqual(game_state[path_aware_start + 1], -1.0)
+        self.assertLessEqual(game_state[path_aware_start + 1], 1.0)
+        self.assertGreaterEqual(game_state[path_aware_start + 2], -1.0)
+        self.assertLessEqual(game_state[path_aware_start + 2], 1.0)
+        # - path_distance: [0, 1]
+        self.assertGreaterEqual(game_state[path_aware_start + 3], 0.0)
+        self.assertLessEqual(game_state[path_aware_start + 3], 1.0)
+
+        # Mine features
+        # - rel_x, rel_y: [-1, 1]
+        self.assertGreaterEqual(game_state[mine_start], -1.0)
+        self.assertLessEqual(game_state[mine_start], 1.0)
+        self.assertGreaterEqual(game_state[mine_start + 1], -1.0)
+        self.assertLessEqual(game_state[mine_start + 1], 1.0)
+        # - mine_state: [-1, 1] (can be -1, 0, 0.5, or 1)
+        self.assertGreaterEqual(game_state[mine_start + 2], -1.0)
+        self.assertLessEqual(game_state[mine_start + 2], 1.0)
+        # - path_distance: [0, 1]
+        self.assertGreaterEqual(game_state[mine_start + 3], 0.0)
+        self.assertLessEqual(game_state[mine_start + 3], 1.0)
+        # - deadly_mines_nearby: [0, 1]
+        self.assertGreaterEqual(game_state[mine_start + 4], 0.0)
+        self.assertLessEqual(game_state[mine_start + 4], 1.0)
+
+        # Progress features
+        # - current_objective_type: [0, 1]
+        self.assertGreaterEqual(game_state[progress_start], 0.0)
+        self.assertLessEqual(game_state[progress_start], 1.0)
+        # - objectives_completed_ratio: [0, 1]
+        self.assertGreaterEqual(game_state[progress_start + 1], 0.0)
+        self.assertLessEqual(game_state[progress_start + 1], 1.0)
+        # - total_path_distance_remaining: [0, 1]
+        self.assertGreaterEqual(game_state[progress_start + 2], 0.0)
+        self.assertLessEqual(game_state[progress_start + 2], 1.0)
+
+    def test_path_aware_features_normalization(self):
+        """Test that path-aware features are properly normalized."""
+        obs = self.env_rich.reset()[0]
+        game_state = obs["game_state"]
+
+        # Calculate feature offsets
+        path_aware_start = NINJA_STATE_DIM
+        mine_start = path_aware_start + PATH_AWARE_OBJECTIVES_DIM
+        progress_start = mine_start + MINE_FEATURES_DIM
+
+        # Verify all features are finite
+        self.assertTrue(np.all(np.isfinite(game_state)))
+
+        # Verify path-aware objective features are normalized
+        path_aware_end = path_aware_start + PATH_AWARE_OBJECTIVES_DIM
+        path_aware_features = game_state[path_aware_start:path_aware_end]
+        # Binary flags should be 0 or 1
+        self.assertIn(path_aware_features[0], [0.0, 1.0])  # exit_switch_collected
+        # Relative positions should be in [-1, 1]
+        self.assertTrue(np.all(path_aware_features[1:3] >= -1.0))
+        self.assertTrue(np.all(path_aware_features[1:3] <= 1.0))
+        # Path distances should be in [0, 1]
+        self.assertTrue(
+            np.all(path_aware_features[3::3] >= 0.0)
+        )  # Every 3rd feature starting at index 3
+        self.assertTrue(np.all(path_aware_features[3::3] <= 1.0))
+
+        # Verify mine features are normalized
+        mine_end = mine_start + MINE_FEATURES_DIM
+        mine_features = game_state[mine_start:mine_end]
+        # Relative positions [-1, 1]
+        self.assertTrue(np.all(mine_features[0:2] >= -1.0))
+        self.assertTrue(np.all(mine_features[0:2] <= 1.0))
+        # Mine state should be -1, 0, 0.5, or 1
+        self.assertIn(mine_features[2], [-1.0, 0.0, 0.5, 1.0])
+        # Path distance and count [0, 1]
+        self.assertTrue(np.all(mine_features[3:5] >= 0.0))
+        self.assertTrue(np.all(mine_features[3:5] <= 1.0))
+
+        # Verify progress features are normalized
+        progress_end = progress_start + PROGRESS_FEATURES_DIM
+        progress_features = game_state[progress_start:progress_end]
+        # All should be in [0, 1]
+        self.assertTrue(np.all(progress_features >= 0.0))
+        self.assertTrue(np.all(progress_features <= 1.0))
 
     def test_feature_stability_across_steps(self):
         """Test that features remain stable across environment steps."""

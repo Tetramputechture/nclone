@@ -26,6 +26,10 @@ from .reward_constants import (
     EXPLORATION_AREA_4X4_REWARD,
     EXPLORATION_AREA_8X8_REWARD,
     EXPLORATION_AREA_16X16_REWARD,
+    EXPLORATION_DECAY_ENABLED,
+    EXPLORATION_DECAY_START_STEP,
+    EXPLORATION_DECAY_END_STEP,
+    EXPLORATION_MIN_SCALE,
 )
 
 
@@ -81,6 +85,9 @@ class ExplorationRewardCalculator:
             (self.area_16x16_height, self.area_16x16_width), dtype=bool
         )
 
+        # Exploration decay tracking
+        self.step_count = 0
+
     def _get_cell_coords(self, x: float, y: float) -> tuple[int, int]:
         """Convert pixel coordinates to cell grid coordinates."""
         cell_x = int(x / EXPLORATION_CELL_SIZE)
@@ -92,6 +99,8 @@ class ExplorationRewardCalculator:
 
     def calculate_exploration_reward(self, player_x: float, player_y: float) -> float:
         """Calculate exploration reward based on newly visited areas at multiple scales."""
+        self.step_count += 1
+        
         reward = 0.0
         cell_x, cell_y = self._get_cell_coords(player_x, player_y)
 
@@ -121,7 +130,25 @@ class ExplorationRewardCalculator:
             reward += EXPLORATION_AREA_16X16_REWARD
             self.visited_16x16[area_16x16_y, area_16x16_x] = True
 
+        # Apply decay if enabled
+        if EXPLORATION_DECAY_ENABLED:
+            decay_scale = self._calculate_decay_scale()
+            reward *= decay_scale
+
         return reward
+
+    def _calculate_decay_scale(self) -> float:
+        """Calculate exploration reward decay scale based on episode progress."""
+        if self.step_count < EXPLORATION_DECAY_START_STEP:
+            return 1.0  # No decay early in episode
+        elif self.step_count >= EXPLORATION_DECAY_END_STEP:
+            return EXPLORATION_MIN_SCALE  # Full decay
+        else:
+            # Linear interpolation
+            progress = (self.step_count - EXPLORATION_DECAY_START_STEP) / (
+                EXPLORATION_DECAY_END_STEP - EXPLORATION_DECAY_START_STEP
+            )
+            return 1.0 - progress * (1.0 - EXPLORATION_MIN_SCALE)
 
     def reset(self):
         """Reset exploration tracking for new episode."""
@@ -129,3 +156,4 @@ class ExplorationRewardCalculator:
         self.visited_4x4.fill(False)
         self.visited_8x8.fill(False)
         self.visited_16x16.fill(False)
+        self.step_count = 0

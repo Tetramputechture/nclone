@@ -58,7 +58,7 @@ env = NppEnvironment(
     render_mode="grayscale_array",  # Headless for training
     dataset_dir="datasets/train",
     config=EnvironmentConfig(
-        graph=GraphConfig(enable_graph_for_observations=True)  # Graph for PBRS and observations
+        graph=GraphConfig()  # Graph for PBRS and observations
     ),
     curriculum_level=0  # Difficulty level
 )
@@ -104,7 +104,7 @@ Multi-modal observations for CNN, MLP, and GNN architectures.
     'switch_states': Box(0, 1, (25,), float32),
     
     # Graph (GNNs, optional)
-    'graph_node_feats': Box(-inf, inf, (max_nodes, 55), float32),
+    'graph_node_feats': Box(-inf, inf, (max_nodes, 50), float32),
     'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), int32),
     ...
 }
@@ -245,7 +245,7 @@ Enable structural level understanding:
 ```python
 env = NPPEnvironment(
     config=EnvironmentConfig(
-        graph=GraphConfig(enable_graph_for_observations=True)
+        graph=GraphConfig()
     ),
     graph_config={
         'node_features': 56,    # Comprehensive node features (reduced from 61)
@@ -256,7 +256,7 @@ env = NPPEnvironment(
 )
 
 # Note: Feature dimensions come from nclone.graph.common:
-# - NODE_FEATURE_DIM = 55 (spatial, type, entity, tile, reachability, proximity)
+# - NODE_FEATURE_DIM = 50 (3 spatial + 7 type + 5 entity + 34 tile + 1 reachability)
 # - EDGE_FEATURE_DIM = 6 (edge type, connectivity)
 ```
 

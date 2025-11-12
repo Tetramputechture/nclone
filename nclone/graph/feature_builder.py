@@ -17,15 +17,14 @@ Supported entities:
 - Exit switch and door
 - Locked doors (up to 16) with switches
 - Toggle mines (up to 256 total: 128 toggled + 128 untoggled)
-- All tile types (38 types)
+- Tile types 0-33 (glitched tiles 34-37 treated as 0)
 
-Feature dimensions: 56 total (reduced from 61 by removing unused entity indices)
+Feature dimensions: 50 total (3 spatial + 7 type + 5 entity + 34 tile + 1 reachability)
 """
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
-from nclone.gym_environment.constants import LEVEL_DIAGONAL
 from ..constants.entity_types import EntityType
 from ..constants.physics_constants import (
     FULL_MAP_WIDTH_PX,
@@ -37,17 +36,16 @@ from .common import NodeType, EdgeType, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 class NodeFeatureBuilder:
     """
-    Builds comprehensive 56-dimensional node feature vectors.
+    Builds comprehensive 50-dimensional node feature vectors.
 
     Feature breakdown:
     - Spatial (3): position (x, y) + resolution level
-    - Type (6): one-hot node type
+    - Type (7): one-hot node type (EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR)
     - Entity (5): entity-specific information (reduced from 10, removed unused)
-    - Tile (38): one-hot tile type
-    - Reachability (2): from reachability system
-    - Proximity (2): distances to key points
+    - Tile (34): one-hot tile type (0-33, glitched tiles 34-37 treated as 0)
+    - Reachability (1): from reachability system
 
-    Total: 3 + 6 + 5 + 38 + 2 + 2 = 56 features
+    Total: 3 + 7 + 5 + 34 + 1 = 50 features
     """
 
     def __init__(self):
@@ -56,17 +54,15 @@ class NodeFeatureBuilder:
         self.SPATIAL_START = 0
         self.SPATIAL_END = 3
         self.TYPE_START = 3
-        self.TYPE_END = 9
-        self.ENTITY_START = 9
-        self.ENTITY_END = 14
-        self.TILE_START = 14
-        self.TILE_END = 52
-        self.REACHABILITY_START = 52
-        self.REACHABILITY_END = 53
-        self.PROXIMITY_START = 53
-        self.PROXIMITY_END = 55
+        self.TYPE_END = 10  # 7 node types: EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR
+        self.ENTITY_START = 10
+        self.ENTITY_END = 15
+        self.TILE_START = 15
+        self.TILE_END = 49  # 34 tile types: 0-33 (glitched tiles 34-37 treated as 0)
+        self.REACHABILITY_START = 49
+        self.REACHABILITY_END = 50
 
-        assert self.PROXIMITY_END == NODE_FEATURE_DIM, "Feature dimensions mismatch!"
+        assert self.REACHABILITY_END == NODE_FEATURE_DIM, "Feature dimensions mismatch!"
 
     def build_node_features(
         self,
@@ -76,24 +72,20 @@ class NodeFeatureBuilder:
         tile_type: int = 0,
         entity_info: Optional[Dict[str, Any]] = None,
         reachability_info: Optional[Dict[str, Any]] = None,
-        ninja_pos: Optional[Tuple[float, float]] = None,
-        goal_pos: Optional[Tuple[float, float]] = None,
     ) -> np.ndarray:
         """
-        Build comprehensive 61-dimensional node features.
+        Build comprehensive 50-dimensional node features.
 
         Args:
             node_pos: (x, y) position of node in pixels
-            node_type: NodeType enum value (EMPTY, WALL, ENTITY, HAZARD, SPAWN, EXIT)
+            node_type: NodeType enum value (EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR)
             resolution_level: 0=fine(6px), 1=medium(24px), 2=coarse(96px)
-            tile_type: Tile type ID (0-37), if applicable
+            tile_type: Tile type ID (0-33, glitched tiles 34-37 should be normalized to 0)
             entity_info: Dict with entity-specific information (type, state, etc.)
             reachability_info: Dict with reachability from flood-fill system
-            ninja_pos: Current ninja position for distance calculation
-            goal_pos: Current goal position (switch or exit) for distance
 
         Returns:
-            np.ndarray of shape (61,) with normalized features
+            np.ndarray of shape (50,) with normalized features
         """
         features = np.zeros(NODE_FEATURE_DIM, dtype=np.float32)
 
@@ -103,8 +95,8 @@ class NodeFeatureBuilder:
         features[2] = resolution_level / 2.0  # 0=fine, 0.5=medium, 1.0=coarse
 
         # ===== Type Encoding =====
-        # [EMPTY, WALL, ENTITY, HAZARD, SPAWN, EXIT]
-        if 0 <= node_type < 6:
+        # [EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR]
+        if 0 <= node_type < 7:
             features[self.TYPE_START + int(node_type)] = 1.0
 
         # ===== Entity-Specific Features =====
@@ -112,25 +104,15 @@ class NodeFeatureBuilder:
             self._add_entity_features(features, entity_info)
 
         # ===== Tile Information =====
-        if 0 <= tile_type <= 37:
+        # Clamp tile types 34-37 to 0 (treat glitched tiles as empty)
+        if tile_type > 33:
+            tile_type = 0
+        if 0 <= tile_type <= 33:
             features[self.TILE_START + tile_type] = 1.0
 
         # ===== Reachability Features =====
         if reachability_info is not None:
             self._add_reachability_features(features, reachability_info)
-
-        # ===== Proximity Features =====
-        if ninja_pos is not None:
-            dx = node_pos[0] - ninja_pos[0]
-            dy = node_pos[1] - ninja_pos[1]
-            dist = np.sqrt(dx**2 + dy**2)
-            features[self.PROXIMITY_START] = min(dist / LEVEL_DIAGONAL, 1.0)
-
-        if goal_pos is not None:
-            dx = node_pos[0] - goal_pos[0]
-            dy = node_pos[1] - goal_pos[1]
-            dist = np.sqrt(dx**2 + dy**2)
-            features[self.PROXIMITY_START + 1] = min(dist / LEVEL_DIAGONAL, 1.0)
 
         return features
 
@@ -196,7 +178,7 @@ class NodeFeatureBuilder:
         self, features: np.ndarray, reachability_info: Dict[str, Any]
     ):
         """
-        Add reachability features from flood-fill system (indices 52-53, 2 features).
+        Add reachability features from flood-fill system (index 49, 1 feature).
 
         The reachability system uses OpenCV flood-fill (<1ms) for connectivity analysis.
         This is NOT physics simulation - it's simple connectivity checking.
@@ -233,7 +215,7 @@ class NodeFeatureBuilder:
         Note: Movement requirements (jump/walljump) are NOT included as physics
         is too complex to pre-compute. Agent learns from frames and game state.
         """
-        # Index 52: reachable_from_ninja (from reachability system's flood-fill)
+        # Index 49: reachable_from_ninja (from reachability system's flood-fill)
         features[self.REACHABILITY_START] = (
             1.0 if reachability_info.get("reachable_from_ninja", False) else 0.0
         )
@@ -340,9 +322,16 @@ def validate_node_features(features: np.ndarray) -> bool:
         return False
     if not np.all(np.isfinite(features)):
         return False
+
+    # Use feature builder constants for maintainability
+    builder = NodeFeatureBuilder()
+
     # Check that one-hot encodings are valid (sum to 0 or 1)
-    type_onehot = features[..., 3:9]
-    tile_onehot = features[..., 19:57]
+    # Type one-hot: indices 3-9 (7 node types)
+    type_onehot = features[..., builder.TYPE_START : builder.TYPE_END]
+    # Tile one-hot: indices 15-48 (34 tile types)
+    tile_onehot = features[..., builder.TILE_START : builder.TILE_END]
+
     if not np.all((type_onehot.sum(axis=-1) == 0) | (type_onehot.sum(axis=-1) == 1)):
         return False
     if not np.all((tile_onehot.sum(axis=-1) == 0) | (tile_onehot.sum(axis=-1) == 1)):
@@ -379,8 +368,6 @@ def build_node_features_batch(
     tile_types: Optional[List[int]] = None,
     entity_infos: Optional[List[Optional[Dict[str, Any]]]] = None,
     reachability_infos: Optional[List[Optional[Dict[str, Any]]]] = None,
-    ninja_pos: Optional[Tuple[float, float]] = None,
-    goal_pos: Optional[Tuple[float, float]] = None,
 ) -> np.ndarray:
     """
     Build node features for multiple nodes in batch.
@@ -389,11 +376,9 @@ def build_node_features_batch(
         node_positions: List of (x, y) positions
         node_types: List of NodeType enum values
         resolution_levels: List of resolution levels (0, 1, 2)
-        tile_types: List of tile type IDs
+        tile_types: List of tile type IDs (0-33, glitched tiles 34-37 should be normalized to 0)
         entity_infos: List of entity info dicts (None for non-entity nodes)
         reachability_infos: List of reachability info dicts
-        ninja_pos: Current ninja position
-        goal_pos: Current goal position
 
     Returns:
         np.ndarray of shape (num_nodes, NODE_FEATURE_DIM)
@@ -415,15 +400,18 @@ def build_node_features_batch(
     features = np.zeros((num_nodes, NODE_FEATURE_DIM), dtype=np.float32)
 
     for i in range(num_nodes):
+        # Normalize glitched tiles to 0
+        tile_type = tile_types[i]
+        if tile_type > 33:
+            tile_type = 0
+
         features[i] = builder.build_node_features(
             node_pos=node_positions[i],
             node_type=node_types[i],
             resolution_level=resolution_levels[i],
-            tile_type=tile_types[i],
+            tile_type=tile_type,
             entity_info=entity_infos[i],
             reachability_info=reachability_infos[i],
-            ninja_pos=ninja_pos,
-            goal_pos=goal_pos,
         )
 
     return features

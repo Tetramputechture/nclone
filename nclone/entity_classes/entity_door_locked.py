@@ -55,3 +55,8 @@ class EntityDoorLocked(EntityDoorBase):
             ninja.doors_opened += 1
             self.change_state(closed=False)
             self.active = False
+            
+            # Invalidate gym environment caches (switch state changed)
+            # PERFORMANCE: Enables efficient cache invalidation
+            if hasattr(self.sim, 'gym_env') and self.sim.gym_env:
+                self.sim.gym_env.invalidate_switch_cache()

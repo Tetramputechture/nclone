@@ -28,6 +28,7 @@ def _build_curriculum_categories():
     # Default weights for curriculum learning (can be overridden)
     default_weights = {
         "simplest": 10.0,
+        "simplest_few_mines": 10.0,
         "simplest_with_mines": 10.0,
         "simpler": 10.0,
         "simple": 30.0,

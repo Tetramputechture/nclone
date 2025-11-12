@@ -30,6 +30,7 @@ class MapVerticalCorridor(Map):
     ADD_CHAOTIC_WALLS = False
     ADD_WALL_MINES = False
     ADD_BOUNDARY_MINES = False
+    MAX_MINES = -1
 
     def _calculate_chebyshev_distance(
         self, pos1: Tuple[int, int], pos2: Tuple[int, int]
@@ -91,73 +92,157 @@ class MapVerticalCorridor(Map):
         """
         valid_tiles = self._get_valid_empty_tiles(chamber_x, chamber_y, width, height)
 
+        # CRITICAL: Remove ninja's exact position from candidates to prevent overlap
+        valid_tiles = [tile for tile in valid_tiles if tile != ninja_pos]
+
         if len(valid_tiles) < 2:
-            # Fallback: use top of chamber
-            door_pos = (chamber_x + width // 2, chamber_y)
-            switch_pos = (chamber_x + width // 2, chamber_y + 1)
+            # Fallback: place at opposite end from ninja
+            if ninja_pos[1] == chamber_y:
+                # Ninja at top, place door/switch at bottom
+                door_pos = (chamber_x + width // 2, chamber_y + height - 1)
+                switch_pos = (chamber_x + width // 2, chamber_y + height - 2)
+            else:
+                # Ninja at bottom, place door/switch at top
+                door_pos = (chamber_x + width // 2, chamber_y)
+                switch_pos = (chamber_x + width // 2, chamber_y + 1)
             return door_pos, switch_pos
-
-        # Filter tiles that meet minimum distance from ninja
-        candidate_tiles = [
-            tile
-            for tile in valid_tiles
-            if self._calculate_chebyshev_distance(tile, ninja_pos) >= min_distance_tiles
-        ]
-
-        if len(candidate_tiles) < 2:
-            # Not enough candidates, use all valid tiles
-            candidate_tiles = valid_tiles
 
         best_door_pos = None
         best_switch_pos = None
         best_total_distance = -1
 
-        # Try multiple random combinations to find good positions
-        num_attempts = min(100, len(candidate_tiles) * 10)
+        # Use exhaustive search for small chambers, sampling for large ones
+        max_combinations = 500  # Limit to avoid performance issues
 
-        for _ in range(num_attempts):
-            # Randomly select door position
-            door_candidate = self.rng.choice(candidate_tiles)
-
-            # Filter switch candidates that meet distance requirements
-            switch_candidates = [
-                tile
-                for tile in candidate_tiles
-                if tile != door_candidate
-                and self._calculate_chebyshev_distance(tile, door_candidate)
-                >= min_distance_tiles
-            ]
-
-            if not switch_candidates:
-                continue
-
-            # Try a few switch positions for this door
-            for _ in range(min(5, len(switch_candidates))):
-                switch_candidate = self.rng.choice(switch_candidates)
-
-                # Calculate total pairwise distance
+        # For small chambers, try all combinations
+        if len(valid_tiles) * (len(valid_tiles) - 1) <= max_combinations:
+            # Exhaustive search: try all pairs of positions
+            for door_candidate in valid_tiles:
+                # Check minimum distance from ninja to door
                 ninja_door_dist = self._calculate_chebyshev_distance(
                     ninja_pos, door_candidate
                 )
-                ninja_switch_dist = self._calculate_chebyshev_distance(
-                    ninja_pos, switch_candidate
+
+                for switch_candidate in valid_tiles:
+                    if switch_candidate == door_candidate:
+                        continue
+
+                    # Check minimum distances
+                    ninja_switch_dist = self._calculate_chebyshev_distance(
+                        ninja_pos, switch_candidate
+                    )
+                    door_switch_dist = self._calculate_chebyshev_distance(
+                        door_candidate, switch_candidate
+                    )
+
+                    # Skip if any pair is too close
+                    if (
+                        ninja_door_dist < min_distance_tiles
+                        or ninja_switch_dist < min_distance_tiles
+                        or door_switch_dist < min_distance_tiles
+                    ):
+                        continue
+
+                    # Calculate total pairwise distance
+                    total_distance = (
+                        ninja_door_dist + ninja_switch_dist + door_switch_dist
+                    )
+
+                    if total_distance > best_total_distance:
+                        best_total_distance = total_distance
+                        best_door_pos = door_candidate
+                        best_switch_pos = switch_candidate
+        else:
+            # For large chambers, use smart sampling
+            # Sample door positions uniformly across the chamber
+            num_door_samples = min(50, len(valid_tiles))
+            door_candidates = self.rng.sample(valid_tiles, num_door_samples)
+
+            for door_candidate in door_candidates:
+                ninja_door_dist = self._calculate_chebyshev_distance(
+                    ninja_pos, door_candidate
                 )
-                door_switch_dist = self._calculate_chebyshev_distance(
-                    door_candidate, switch_candidate
-                )
 
-                total_distance = ninja_door_dist + ninja_switch_dist + door_switch_dist
+                if ninja_door_dist < min_distance_tiles:
+                    continue
 
-                if total_distance > best_total_distance:
-                    best_total_distance = total_distance
-                    best_door_pos = door_candidate
-                    best_switch_pos = switch_candidate
+                # Sample switch positions
+                num_switch_samples = min(20, len(valid_tiles) - 1)
+                switch_candidates = [t for t in valid_tiles if t != door_candidate]
+                if len(switch_candidates) > num_switch_samples:
+                    switch_candidates = self.rng.sample(
+                        switch_candidates, num_switch_samples
+                    )
 
-        # Fallback if no valid combination found
+                for switch_candidate in switch_candidates:
+                    ninja_switch_dist = self._calculate_chebyshev_distance(
+                        ninja_pos, switch_candidate
+                    )
+                    door_switch_dist = self._calculate_chebyshev_distance(
+                        door_candidate, switch_candidate
+                    )
+
+                    # Skip if any pair is too close
+                    if (
+                        ninja_switch_dist < min_distance_tiles
+                        or door_switch_dist < min_distance_tiles
+                    ):
+                        continue
+
+                    total_distance = (
+                        ninja_door_dist + ninja_switch_dist + door_switch_dist
+                    )
+
+                    if total_distance > best_total_distance:
+                        best_total_distance = total_distance
+                        best_door_pos = door_candidate
+                        best_switch_pos = switch_candidate
+
+        # If no valid combination found with min_distance, try with reduced distance
         if best_door_pos is None or best_switch_pos is None:
-            # Use top of chamber as fallback
-            door_pos = (chamber_x + width // 2, chamber_y)
-            switch_pos = (chamber_x + width // 2, chamber_y + 1)
+            # Relax constraint and try again with distance of 2
+            for door_candidate in valid_tiles:
+                ninja_door_dist = self._calculate_chebyshev_distance(
+                    ninja_pos, door_candidate
+                )
+
+                if ninja_door_dist < 2:
+                    continue
+
+                for switch_candidate in valid_tiles:
+                    if switch_candidate == door_candidate:
+                        continue
+
+                    ninja_switch_dist = self._calculate_chebyshev_distance(
+                        ninja_pos, switch_candidate
+                    )
+                    door_switch_dist = self._calculate_chebyshev_distance(
+                        door_candidate, switch_candidate
+                    )
+
+                    if ninja_switch_dist < 2 or door_switch_dist < 2:
+                        continue
+
+                    total_distance = (
+                        ninja_door_dist + ninja_switch_dist + door_switch_dist
+                    )
+
+                    if total_distance > best_total_distance:
+                        best_total_distance = total_distance
+                        best_door_pos = door_candidate
+                        best_switch_pos = switch_candidate
+
+        # Final fallback if still no valid combination
+        if best_door_pos is None or best_switch_pos is None:
+            # Use top and bottom of chamber
+            if ninja_pos[1] == chamber_y:
+                # Ninja at top, place door/switch at bottom
+                door_pos = (chamber_x + width // 2, chamber_y + height - 1)
+                switch_pos = (chamber_x + width // 2, chamber_y + height - 2)
+            else:
+                # Ninja at bottom, place door/switch at top
+                door_pos = (chamber_x + width // 2, chamber_y)
+                switch_pos = (chamber_x + width // 2, chamber_y + 1)
             return door_pos, switch_pos
 
         return best_door_pos, best_switch_pos
@@ -233,16 +318,23 @@ class MapVerticalCorridor(Map):
         )
 
         # Step 6: Place mines on walls
-        should_place_mines = (
-            add_wall_mines and width > 1 and self.rng.choice([True, False])
-        )
+        should_place_mines = add_wall_mines and width > 1
         if should_place_mines:
             self._place_wall_mines(chamber_x, chamber_y, width, height)
 
         # Step 7: Place entities
-        # Ninja at bottom on ground floor at random X position
-        ninja_x = chamber_x + self.rng.randint(0, max(0, width - 2))
-        ninja_y = chamber_y + height - 1
+        # Ninja can spawn at top or bottom of corridor (50/50 chance)
+        spawn_at_top = self.rng.choice([True, False])
+
+        if spawn_at_top:
+            # Ninja at top of corridor
+            ninja_x = chamber_x + self.rng.randint(0, max(0, width - 1))
+            ninja_y = chamber_y
+        else:
+            # Ninja at bottom on ground floor at random X position
+            ninja_x = chamber_x + self.rng.randint(0, max(0, width - 1))
+            ninja_y = chamber_y + height - 1
+
         ninja_orientation = self.rng.choice([1, -1])
 
         # ensure ninja is on an empty tile
@@ -250,86 +342,41 @@ class MapVerticalCorridor(Map):
         ninja_pos = (ninja_x, ninja_y)
 
         # Find optimal positions for door and switch that maximize distances
-        # Minimum distance: 24 pixels = 1 tile
+        # Default minimum distance: 3 tiles (72 pixels)
         door_pos, switch_pos = self._find_best_door_switch_positions(
-            ninja_pos, chamber_x, chamber_y, width, height, min_distance_tiles=1
+            ninja_pos, chamber_x, chamber_y, width, height
         )
 
         door_x, door_y = door_pos
         switch_x, switch_y = switch_pos
 
-        # Verify minimum distances are met (sanity check)
-        ninja_door_dist = self._calculate_chebyshev_distance(ninja_pos, door_pos)
-        ninja_switch_dist = self._calculate_chebyshev_distance(ninja_pos, switch_pos)
-        door_switch_dist = self._calculate_chebyshev_distance(door_pos, switch_pos)
-
-        # Ensure all distances are at least 1 tile (24 pixels)
-        if ninja_door_dist < 1:
-            # Move door away from ninja
-            dx = door_x - ninja_x
-            dy = door_y - ninja_y
-            if dx == 0 and dy == 0:
-                door_y = ninja_y - 1  # Move up
-            else:
-                door_x = ninja_x + (1 if dx >= 0 else -1)
-                door_y = ninja_y + (1 if dy >= 0 else -1)
-            door_x, door_y = self._find_closest_valid_tile(door_x, door_y, tile_type=0)
-            door_pos = (door_x, door_y)
-            # Recalculate distances after door update
-            ninja_door_dist = self._calculate_chebyshev_distance(ninja_pos, door_pos)
-            door_switch_dist = self._calculate_chebyshev_distance(door_pos, switch_pos)
-
-        if ninja_switch_dist < 1:
-            # Move switch away from ninja
-            dx = switch_x - ninja_x
-            dy = switch_y - ninja_y
-            if dx == 0 and dy == 0:
-                switch_y = ninja_y - 1  # Move up
-            else:
-                switch_x = ninja_x + (1 if dx >= 0 else -1)
-                switch_y = ninja_y + (1 if dy >= 0 else -1)
-            switch_x, switch_y = self._find_closest_valid_tile(
-                switch_x, switch_y, tile_type=0
-            )
-            switch_pos = (switch_x, switch_y)
-            # Recalculate distances after switch update
-            ninja_switch_dist = self._calculate_chebyshev_distance(
-                ninja_pos, switch_pos
-            )
-            door_switch_dist = self._calculate_chebyshev_distance(door_pos, switch_pos)
-
-        if door_switch_dist < 1:
-            # Move switch away from door
-            dx = switch_x - door_x
-            dy = switch_y - door_y
-            if dx == 0 and dy == 0:
-                switch_y = door_y + 1
-            else:
-                switch_x = door_x + (1 if dx >= 0 else -1)
-                switch_y = door_y + (1 if dy >= 0 else -1)
-            switch_x, switch_y = self._find_closest_valid_tile(
-                switch_x, switch_y, tile_type=0
-            )
-
-        # Randomly swap door and switch positions (50% chance)
-        swap_door_switch = self.rng.choice([True, False])
-        if swap_door_switch:
-            door_x, switch_x = switch_x, door_x
-            door_y, switch_y = switch_y, door_y
-
+        # Place entities (door and switch positions are already optimized)
         self.set_ninja_spawn(ninja_x, ninja_y, ninja_orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
 
         # Add ceiling mines at the top of the corridor
         if self.ADD_BOUNDARY_MINES:
             self._place_corridor_ceiling_mines(
-                chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
+                chamber_x,
+                chamber_y,
+                width,
+                height,
+                "vertical",
+                ninja_x,
+                ninja_y,
+                max_mines=self.MAX_MINES,
             )
 
         # Add floor mines if corridor is tall enough
         if self.ADD_BOUNDARY_MINES:
             self._place_corridor_floor_mines(
-                chamber_x, chamber_y, width, height, "vertical", ninja_x, ninja_y
+                chamber_x,
+                chamber_y,
+                width,
+                height,
+                ninja_x,
+                ninja_y,
+                max_mines=self.MAX_MINES,
             )
 
         can_add_platforms = height > 8 and width > 2
@@ -426,12 +473,11 @@ class MapVerticalCorridor(Map):
         # Start placing mines from the bottom, leaving some space from the floor
         # and ceiling
         start_offset = self.rng.randint(1, min(3, mine_spacing))
-        end_offset = 2  # Leave space near the top where exit is
 
         # Calculate valid Y range for mine placement
         # Mines are placed in the air (empty space) next to the walls
-        min_y = chamber_y + start_offset
-        max_y = chamber_y + height - end_offset
+        min_y = chamber_y + start_offset + 0.1
+        max_y = chamber_y + height
 
         # Place mines on left wall
         if place_on_left and width >= 1:

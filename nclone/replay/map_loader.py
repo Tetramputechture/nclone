@@ -47,7 +47,7 @@ class MapLoader:
     def _load_map_file(self, map_file: Path) -> None:
         """Load and parse a single map definition file."""
         if not map_file.exists():
-            logger.warning(f"Map file not found: {map_file}")
+            print(f"Map file not found: {map_file}")
             return
 
         try:
@@ -97,7 +97,7 @@ class MapLoader:
             self.loaded_files.append(file_name)
 
         except Exception as e:
-            logger.error(f"Error loading map file {map_file}: {e}")
+            print(f"Error loading map file {map_file}: {e}")
 
     def _is_binary_map_file(self, map_file: Path) -> bool:
         """Check if a file is a binary map file (like those from npp_attract_decoder)."""
@@ -106,14 +106,14 @@ class MapLoader:
             file_size = map_file.stat().st_size
             if file_size == 1335:
                 return True
-            
+
             # Check if file contains binary data by trying to read first few bytes
             with open(map_file, "rb") as f:
                 header = f.read(10)
                 # If it contains non-printable bytes, it's likely binary
                 if any(b < 32 and b not in [9, 10, 13] for b in header):
                     return True
-                    
+
         except Exception:
             pass
         return False
@@ -123,12 +123,14 @@ class MapLoader:
         try:
             with open(map_file, "rb") as f:
                 binary_data = f.read()
-            
-            logger.info(f"Loading binary map from {map_file} ({len(binary_data)} bytes)")
-            
+
+            logger.info(
+                f"Loading binary map from {map_file} ({len(binary_data)} bytes)"
+            )
+
             # For binary maps, we don't have a level name, so use the filename
             level_name = map_file.stem
-            
+
             # Convert binary data to a format that can be used by the environment
             # For now, we'll store the raw binary data and let the environment handle it
             cache_key = level_name.lower()
@@ -138,7 +140,7 @@ class MapLoader:
                 level_name,
                 binary_data,  # Store binary data directly
             )
-            
+
             # Also store with a generic key for binary maps
             self.level_cache["binary_map"] = (
                 map_file.name,
@@ -146,12 +148,12 @@ class MapLoader:
                 level_name,
                 binary_data,
             )
-            
+
             logger.info(f"Loaded binary map: {level_name}")
             self.loaded_files.append(map_file.name)
-            
+
         except Exception as e:
-            logger.error(f"Error loading binary map file {map_file}: {e}")
+            print(f"Error loading binary map file {map_file}: {e}")
 
     def _extract_level_id_from_name(self, level_name: str) -> Optional[int]:
         """

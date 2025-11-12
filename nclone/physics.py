@@ -47,6 +47,11 @@ def gather_segments_from_region(sim, x1, y1, x2, y2):
     - Accurate and fast for our fixed 44x25 map size and small query regions.
     - Avoids the overhead/complexity of a quadtree; tiles are static per map.
     """
+    # Use optimized spatial index if available
+    if hasattr(sim, 'spatial_segment_index') and sim.spatial_segment_index is not None:
+        return sim.spatial_segment_index.query_region(x1, y1, x2, y2)
+    
+    # Fallback to original implementation
     # Compute bounds and cell ranges (optimization - precompute once)
     min_x = min(x1, x2)
     min_y = min(y1, y2)
@@ -130,8 +135,23 @@ def get_single_closest_point(sim, xpos, ypos, radius, segments=None):
     shortest_distance = float("inf")
     result = 0
     closest_point = None
+    
+    # Pre-compute query bounds for AABB rejection test
+    query_min_x = xpos - radius
+    query_min_y = ypos - radius
+    query_max_x = xpos + radius
+    query_max_y = ypos + radius
 
     for segment in segments:
+        # Fast AABB rejection test - skip segments that can't possibly be closest
+        seg_bounds = segment.get_bounds()
+        seg_min_x, seg_min_y, seg_max_x, seg_max_y = seg_bounds
+        
+        # Check if segment bounds overlap query bounds
+        if seg_max_x < query_min_x or seg_min_x > query_max_x or seg_max_y < query_min_y or seg_min_y > query_max_y:
+            continue  # Skip segment - no overlap possible
+        
+        # Expensive closest point calculation (only if AABB test passes)
         is_back_facing, a, b = segment.get_closest_point(xpos, ypos)
         distance_sq = (xpos - a) ** 2 + (ypos - b) ** 2
 

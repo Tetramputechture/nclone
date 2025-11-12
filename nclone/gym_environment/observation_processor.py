@@ -28,9 +28,11 @@ This class should handle returning:
     - Time remaining
 """
 
+import logging
 import numpy as np
 import cv2
 from typing import Dict, Any, Tuple, Optional
+
 from .constants import (
     LEVEL_DIAGONAL,
     PLAYER_FRAME_WIDTH,
@@ -50,6 +52,8 @@ NINJA_POS_IDX = 0
 SWITCH_POS_IDX = 2
 EXIT_POS_IDX = 4
 ENTITY_POSITIONS_SIZE = 6
+
+logger = logging.getLogger(__name__)
 
 
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -243,7 +247,6 @@ class ObservationProcessor:
         self,
         enable_augmentation: bool = True,
         augmentation_config: Dict[str, Any] = None,
-        enable_mine_tracking: bool = True,
         training_mode: bool = True,
     ):
         # OPTIMIZATION: Only enable augmentation during training
@@ -261,8 +264,7 @@ class ObservationProcessor:
             self.augmentation_config["disable_validation"] = training_mode
 
         # Initialize mine state processor
-        self.enable_mine_tracking = enable_mine_tracking
-        self.mine_processor = MineStateProcessor() if enable_mine_tracking else None
+        self.mine_processor = MineStateProcessor()
 
         # OPTIMIZATION: Cache for stabilized frames to avoid redundant conversions
         self._frame_cache = None
@@ -369,36 +371,9 @@ class ObservationProcessor:
         )
         ninja_state = list(ninja_state)  # Convert to list for modification
 
-        # Calculate entity proximity features (features 21-23 in ninja state)
-        ninja_x, ninja_y = obs["player_x"], obs["player_y"]
-        ninja_position = (ninja_x, ninja_y)
-
         # Update mine states if mine tracking is enabled
-        if self.enable_mine_tracking and self.mine_processor is not None:
-            entities = obs.get("entities", [])
-            self.mine_processor.update_mine_states(entities)
-
-        # Calculate nearest hazard distance (normalized by screen diagonal)
-        screen_diagonal = LEVEL_DIAGONAL
-        nearest_hazard_dist = screen_diagonal  # Start with max distance
-        hazard_threat = 0.0
-
-        # Use mine processor for accurate hazard detection
-        if self.enable_mine_tracking and self.mine_processor is not None:
-            nearest_mine = self.mine_processor.get_nearest_dangerous_mine(
-                ninja_position
-            )
-            if nearest_mine is not None:
-                nearest_hazard_dist = nearest_mine.distance_to(ninja_position)
-                hazard_threat = self.mine_processor.get_mine_proximity_score(
-                    ninja_position
-                )
-        elif "entity_states" in obs and len(obs["entity_states"]) > 0:
-            # Fallback: compute hazard from entity_states array
-            entity_states = obs["entity_states"]
-            nearest_hazard_dist, hazard_threat = compute_hazard_from_entity_states(
-                entity_states, ninja_x, ninja_y
-            )
+        entities = obs.get("entities", [])
+        self.mine_processor.update_mine_states(entities)
 
         # Note: Proximity features (nearest hazard, nearest collectible) and level progress
         # features (switch progress, exit accessibility) are no longer included in the
@@ -452,13 +427,45 @@ class ObservationProcessor:
 
         MEMORY OPTIMIZED: Reuses pre-allocated buffers to minimize allocations.
         """
+        # Validate raw inputs BEFORE any processing
+        for key in [
+            "player_x",
+            "player_y",
+            "switch_x",
+            "switch_y",
+            "exit_door_x",
+            "exit_door_y",
+        ]:
+            if key in obs:
+                val = obs[key]
+                if np.isnan(val) or np.isinf(val):
+                    raise ValueError(
+                        f"[OBS_PROCESS] Invalid raw input: {key}={val}. "
+                        f"NaN/Inf detected before processing."
+                    )
+
         # Ensure screen stability and consistent format
         screen = stabilize_frame(obs["screen"])
+
+        # Check screen for NaN
+        if isinstance(screen, np.ndarray) and np.isnan(screen).any():
+            raise ValueError(
+                f"[OBS_PROCESS_NAN] NaN detected in screen after stabilize_frame. "
+                f"NaN count: {np.isnan(screen).sum()}"
+            )
 
         # Process current frame using already grayscale screen
         player_frame = self.frame_around_player(
             screen, obs["player_x"], obs["player_y"]
         )
+
+        # Check player_frame for NaN
+        if isinstance(player_frame, np.ndarray) and np.isnan(player_frame).any():
+            raise ValueError(
+                f"[OBS_PROCESS_NAN] NaN detected in player_frame after frame_around_player. "
+                f"NaN count: {np.isnan(player_frame).sum()}, "
+                f"player_pos=({obs['player_x']}, {obs['player_y']})"
+            )
 
         # MEMORY OPTIMIZATION: Reuse entity_positions_buffer instead of allocating new array
         # Extract entity positions from raw observation
@@ -469,6 +476,24 @@ class ObservationProcessor:
         switch_y_norm = obs["switch_y"] / LEVEL_HEIGHT
         exit_x_norm = obs["exit_door_x"] / LEVEL_WIDTH
         exit_y_norm = obs["exit_door_y"] / LEVEL_HEIGHT
+
+        # Check normalized positions for NaN (division by zero check)
+        normalized_positions = [
+            ninja_x_norm,
+            ninja_y_norm,
+            switch_x_norm,
+            switch_y_norm,
+            exit_x_norm,
+            exit_y_norm,
+        ]
+        for i, pos in enumerate(normalized_positions):
+            if np.isnan(pos) or np.isinf(pos):
+                raise ValueError(
+                    f"[OBS_PROCESS] NaN/Inf in normalized position {i}. "
+                    f"Value: {pos}, ninja=({obs['player_x']}, {obs['player_y']}), "
+                    f"switch=({obs['switch_x']}, {obs['switch_y']}), "
+                    f"exit=({obs['exit_door_x']}, {obs['exit_door_y']})"
+                )
 
         # Reuse buffer: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
         self._entity_positions_buffer[NINJA_POS_IDX : NINJA_POS_IDX + 2] = [
@@ -484,33 +509,76 @@ class ObservationProcessor:
             exit_y_norm,
         ]
 
+        # Check entity_positions_buffer for NaN
+        if np.isnan(self._entity_positions_buffer).any():
+            raise ValueError(
+                f"[OBS_PROCESS] NaN in entity_positions_buffer. "
+                f"Buffer: {self._entity_positions_buffer}"
+            )
+
         # Ensure player_frame has shape (H, W, 1)
         if len(player_frame.shape) == 2:
             player_frame = player_frame[..., np.newaxis]
 
-        # NOTE: Augmentation is now handled by FrameStackWrapper to ensure
-        # consistent augmentation across all frames in a stack. This prevents
-        # the critical bug where each frame gets a different random augmentation.
-        # ObservationProcessor no longer applies augmentation directly.
+        game_state = self.process_game_state(obs)
 
-        # MEMORY OPTIMIZATION: Return views/references to buffers where safe
-        # game_state needs to be a new array since it's computed fresh
-        # entity_positions needs a copy since observations are stored in rollout buffers
-        # Using np.array() for explicit copy (slightly more efficient than .copy())
+        # Check game_state for NaN
+        if isinstance(game_state, np.ndarray) and np.isnan(game_state).any():
+            nan_indices = np.where(np.isnan(game_state))[0]
+            raise ValueError(
+                f"[OBS_PROCESS] NaN in game_state after process_game_state. "
+                f"NaN at indices: {nan_indices[:10]}, count: {len(nan_indices)}"
+            )
+
+        global_view = self.process_rendered_global_view(screen)
+
+        # Check global_view for NaN
+        if isinstance(global_view, np.ndarray) and np.isnan(global_view).any():
+            raise ValueError(
+                f"[OBS_PROCESS] NaN in global_view. "
+                f"NaN count: {np.isnan(global_view).sum()}"
+            )
+
+        entity_positions = np.array(self._entity_positions_buffer, copy=True)
+
+        # Check entity_positions copy for NaN
+        if np.isnan(entity_positions).any():
+            raise ValueError(
+                f"[OBS_PROCESS] NaN in entity_positions. Values: {entity_positions}"
+            )
+
         result = {
-            "game_state": self.process_game_state(obs),
-            "global_view": self.process_rendered_global_view(screen),
+            "game_state": game_state,
+            "global_view": global_view,
             "reachability_features": obs["reachability_features"],
-            "entity_positions": np.array(self._entity_positions_buffer, copy=True),
+            "entity_positions": entity_positions,
             "player_frame": player_frame,
         }
 
         # Pass through additional keys that don't need processing
-        # (e.g., action_mask, action_was_ineffective)
-        passthrough_keys = ["action_mask", "action_was_ineffective"]
+        passthrough_keys = [
+            "action_mask",
+            "graph_node_feats",
+            "graph_edge_index",
+            "graph_edge_feats",
+            "graph_node_mask",
+            "graph_edge_mask",
+            "graph_node_types",
+            "graph_edge_types",
+            "locked_door_features",
+            "num_locked_doors",
+        ]
         for key in passthrough_keys:
             if key in obs:
                 result[key] = obs[key]
+
+        # Final check: validate all arrays in result for NaN
+        for key, value in result.items():
+            if isinstance(value, np.ndarray) and np.isnan(value).any():
+                raise ValueError(
+                    f"[OBS_PROCESS] NaN in result['{key}']. "
+                    f"NaN count: {np.isnan(value).sum()}"
+                )
 
         return result
 
@@ -545,9 +613,6 @@ class ObservationProcessor:
         Returns:
             Feature array of shape (max_mines, 7) or None if tracking disabled
         """
-        if not self.enable_mine_tracking or self.mine_processor is None:
-            return None
-
         return self.mine_processor.get_mine_features(
             ninja_position, target_position, max_mines
         )
@@ -567,9 +632,6 @@ class ObservationProcessor:
         Returns:
             True if path is safe, or if mine tracking is disabled
         """
-        if not self.enable_mine_tracking or self.mine_processor is None:
-            return True
-
         return self.mine_processor.is_path_safe(start, end)
 
     def get_mine_stats(self) -> Optional[Dict[str, Any]]:
@@ -579,18 +641,11 @@ class ObservationProcessor:
         Returns:
             Dictionary with mine stats or None if tracking disabled
         """
-        if not self.enable_mine_tracking or self.mine_processor is None:
-            return None
-
         return self.mine_processor.get_summary_stats()
 
     def reset(self) -> None:
         """Reset processor state and clear buffers."""
-        if self.enable_mine_tracking and self.mine_processor is not None:
-            self.mine_processor.reset()
-
-        # MEMORY OPTIMIZATION: Clear buffers to prepare for next episode
-        # Using fill(0) is faster than reallocating
+        self.mine_processor.reset()
         self._player_frame_buffer.fill(0)
         self._global_view_buffer.fill(0)
         self._entity_positions_buffer.fill(0)

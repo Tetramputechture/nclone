@@ -1,192 +1,100 @@
 """
-Simplified edge building for strategic RL representation.
+Helper functions for building graph data from adjacency information.
 
-This module creates basic graph edges using only connectivity information from
-the fast flood fill reachability system. It focuses on simple adjacency and reachability relationships.
+This module provides utilities for converting GraphBuilder adjacency graphs
+into GraphData format with comprehensive node and edge features for ML models.
 """
 
 import numpy as np
-from typing import List, Tuple, Set
-from .reachability.reachability_system import ReachabilitySystem
-from .common import EdgeType, NodeType, GraphData, Edge
+from typing import List, Tuple, Dict, Any, Optional
+from .common import NodeType, GraphData, Edge
 from .level_data import LevelData
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 from ..constants.entity_types import EntityType
 from .common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 
-class EdgeBuilder:
+def _extract_entity_info(
+    pos: Tuple[int, int], level_data: LevelData
+) -> Optional[Dict[str, Any]]:
     """
-    Edge builder using basic connectivity.
+    Extract entity information for a position if an entity is present.
 
-    This approach focuses on simple connectivity information:
-    - Adjacent edges for direct movement possibilities
-    - Basic reachability edges from flood fill analysis
+    Args:
+        pos: Position in pixel coordinates (x, y)
+        level_data: Complete level data including entities
+
+    Returns:
+        Entity info dict with type, active, state, radius, closed (for doors)
+        or None if no entity at this position
     """
+    x, y = pos
 
-    def __init__(
-        self, debug: bool = False, reachability_system: ReachabilitySystem = None
-    ):
-        """Initialize simplified edge builder."""
-        self.debug = debug
-        self.reachability_system = reachability_system or ReachabilitySystem()
+    # Check for entities at this position
+    entities_here = level_data.get_entities_in_region(
+        x - TILE_PIXEL_SIZE // 2,
+        y - TILE_PIXEL_SIZE // 2,
+        x + TILE_PIXEL_SIZE // 2,
+        y + TILE_PIXEL_SIZE // 2,
+    )
 
-    def build_edges(self, level_data: LevelData) -> List[Edge]:
-        """
-        Build simplified edges using basic connectivity.
+    if not entities_here:
+        return None
 
-        Args:
-            level_data: Complete level data including tiles, entities, and player state
+    # Return first relevant entity (same priority as node type determination)
+    for entity in entities_here:
+        entity_type = entity.get("type", 0)
 
-        Returns:
-            List of edges
-        """
-        edges = []
+        # Only extract info for entities we care about
+        if entity_type in [
+            EntityType.EXIT_DOOR,
+            EntityType.EXIT_SWITCH,
+            EntityType.TOGGLE_MINE,
+            EntityType.TOGGLE_MINE_TOGGLED,
+            EntityType.LOCKED_DOOR,
+        ]:
+            entity_info = {
+                "type": entity_type,
+                "active": entity.get("active", True),
+                "state": entity.get("state", 0.0),
+                "radius": entity.get("radius", 0.0),
+            }
 
-        # Get traversable positions from level data
-        traversable_positions = self._get_traversable_positions(level_data)
+            # Add closed status for doors
+            if entity_type == EntityType.LOCKED_DOOR:
+                entity_info["closed"] = entity.get("closed", True)
 
-        # 1. Create adjacent edges (basic connectivity)
-        adjacent_edges = self._create_adjacent_edges(traversable_positions)
-        edges.extend(adjacent_edges)
+            return entity_info
 
-        # 2. Create reachable edges (using flood fill results)
-        reachable_edges = []
-        if level_data.player and level_data.player.position:
-            reachable_edges = self._create_reachable_edges(
-                level_data.player.position, level_data, traversable_positions
-            )
-            edges.extend(reachable_edges)
-
-        if self.debug:
-            print(f"Created {len(edges)} edges:")
-            print(f"  Adjacent: {len(adjacent_edges)}")
-            print(f"  Reachable: {len(reachable_edges)}")
-
-        return edges
-
-    def _get_traversable_positions(self, level_data: LevelData) -> Set[Tuple[int, int]]:
-        """Get all positions that are not solid walls."""
-        traversable = set()
-
-        for row in range(level_data.height):
-            for col in range(level_data.width):
-                tile_id = level_data.tiles[row, col]
-                # Check if tile is traversable based on approximate tile analysis
-                # Tile 0: Empty space (fully traversable)
-                # Tiles 2-33: Complex geometry but generally traversable
-                # Tile 1 and 34+: Solid walls or glitched (not traversable)
-                if tile_id == 0 or (2 <= tile_id <= 33):
-                    # Convert to pixel coordinates (center of tile)
-                    pixel_x = col * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
-                    pixel_y = row * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
-                    traversable.add((pixel_x, pixel_y))
-
-        return traversable
-
-    def _create_adjacent_edges(
-        self, traversable_positions: Set[Tuple[int, int]]
-    ) -> List[Edge]:
-        """Create edges between adjacent traversable positions."""
-        edges = []
-
-        # Use 4-connectivity (up, down, left, right)
-        directions = [
-            (0, TILE_PIXEL_SIZE),
-            (0, -TILE_PIXEL_SIZE),
-            (TILE_PIXEL_SIZE, 0),
-            (-TILE_PIXEL_SIZE, 0),
-        ]
-
-        for pos in traversable_positions:
-            x, y = pos
-            for dx, dy in directions:
-                neighbor = (x + dx, y + dy)
-                if neighbor in traversable_positions:
-                    edges.append(
-                        Edge(
-                            source=pos,
-                            target=neighbor,
-                            edge_type=EdgeType.ADJACENT,  # Direct adjacency between nodes
-                            weight=1.0,
-                        )
-                    )
-
-        return edges
-
-    def _create_reachable_edges(
-        self,
-        ninja_pos: Tuple[int, int],
-        level_data: LevelData,
-        traversable_positions: Set[Tuple[int, int]],
-    ) -> List[Edge]:
-        """Create simplified edges based on reachability analysis."""
-        edges = []
-
-        # Get reachable positions from flood fill
-        switch_states = getattr(level_data, "switch_states", {})
-        result = self.reachability_system.analyze_reachability(
-            level_data=level_data,
-            ninja_position=ninja_pos,
-            switch_states=switch_states,
-        )
-
-        if hasattr(result, "reachable_positions"):
-            reachable_positions = result.reachable_positions
-
-            # Create simple reachable edges from ninja position to all reachable positions
-            # This provides strategic information about what's accessible
-            for pos in reachable_positions:
-                if pos != ninja_pos and pos in traversable_positions:
-                    distance = np.sqrt(
-                        (ninja_pos[0] - pos[0]) ** 2 + (ninja_pos[1] - pos[1]) ** 2
-                    )
-                    # Only create edges for positions that are reasonably close
-                    if distance < TILE_PIXEL_SIZE * 10:  # Within 10 tiles
-                        edges.append(
-                            Edge(
-                                source=ninja_pos,
-                                target=pos,
-                                edge_type=EdgeType.REACHABLE,  # Can reach via movement
-                                weight=distance / TILE_PIXEL_SIZE,
-                            )
-                        )
-
-        return edges
+    return None
 
 
 def _determine_node_type(pos: Tuple[int, int], level_data: LevelData) -> NodeType:
     """
-    Determine the node type for a position based on tiles and entities.
+    Determine node type for a REACHABLE position.
+
+    Note: This function assumes pos is already validated as reachable by
+    GraphBuilder's flood fill. No tile-type traversability checking needed.
+    All positions passed to this function are guaranteed to be reachable from
+    player spawn, so we only need to classify by entity type.
 
     Args:
-        pos: Position in pixel coordinates (x, y)
-        level_data: Complete level data including tiles and entities
+        pos: Position in pixel coordinates (x, y) - guaranteed reachable
+        level_data: Complete level data including entities
 
     Returns:
         NodeType enum value representing the type of node at this position
     """
     x, y = pos
 
-    # Convert pixel coordinates to tile coordinates
-    tile_col = int(x // TILE_PIXEL_SIZE)
-    tile_row = int(y // TILE_PIXEL_SIZE)
-
-    # Check if position is within level bounds
-    if not (0 <= tile_row < level_data.height and 0 <= tile_col < level_data.width):
-        return NodeType.WALL  # Out of bounds treated as wall
-
-    # Get tile type at this position
-    tile_id = level_data.tiles[tile_row, tile_col]
-
-    # Check for player spawn point
+    # 1. Check spawn point (fast - single position check)
     if level_data.player and level_data.player.position:
         player_x, player_y = level_data.player.position
         # Check if this position is close to player spawn (within one tile)
         if abs(x - player_x) < TILE_PIXEL_SIZE and abs(y - player_y) < TILE_PIXEL_SIZE:
             return NodeType.SPAWN
 
-    # Check for entities at this position (entities take priority over tiles)
+    # 2. Check for relevant entities only (4 types: exit switch, exit door, toggle mines, locked doors)
     entities_here = level_data.get_entities_in_region(
         x - TILE_PIXEL_SIZE // 2,
         y - TILE_PIXEL_SIZE // 2,
@@ -195,66 +103,35 @@ def _determine_node_type(pos: Tuple[int, int], level_data: LevelData) -> NodeTyp
     )
 
     if entities_here:
-        # Determine node type based on entity types present
         for entity in entities_here:
             entity_type = entity.get("type", 0)
 
-            # Exit entities (doors and switches)
-            if entity_type in [EntityType.EXIT_DOOR, EntityType.EXIT_SWITCH]:
-                return NodeType.EXIT
+            # Priority order: exits first, then interactive entities
+            if entity_type == EntityType.EXIT_DOOR:
+                return NodeType.EXIT_DOOR
+            if entity_type == EntityType.EXIT_SWITCH:
+                return NodeType.EXIT_SWITCH
+            if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
+                return NodeType.TOGGLE_MINE
+            if entity_type == EntityType.LOCKED_DOOR:
+                return NodeType.LOCKED_DOOR
 
-            # Hazardous entities
-            if entity_type in [
-                EntityType.TOGGLE_MINE,
-                EntityType.TOGGLE_MINE_TOGGLED,
-                EntityType.DRONE_ZAP,
-                EntityType.DRONE_CHASER,
-                EntityType.MINI_DRONE,
-                EntityType.THWUMP,
-                EntityType.SHWUMP,
-                EntityType.DEATH_BALL,
-            ]:
-                return NodeType.HAZARD
-
-            # Interactive entities (doors, switches, etc.)
-            if entity_type in [
-                EntityType.REGULAR_DOOR,
-                EntityType.LOCKED_DOOR,
-                EntityType.TRAP_DOOR,
-                EntityType.GOLD,
-                EntityType.LAUNCH_PAD,
-                EntityType.ONE_WAY,
-                EntityType.BOUNCE_BLOCK,
-                EntityType.BOOST_PAD,
-            ]:
-                return NodeType.ENTITY
-
-    # Determine node type based on tile
-    if tile_id == 0:
-        return NodeType.EMPTY  # Empty/traversable space
-    elif tile_id == 1:
-        return NodeType.WALL  # Solid wall
-    else:
-        # For complex tile types, determine if they're generally traversable
-        # Based on tile definitions, most tiles are some form of geometry that can be navigated
-        # Only fully solid tiles (type 1) are completely impassable
-        # Half-tiles (2-5), slopes (6-9), quarter circles/pipes (10-17), and mild/steep slopes (18-33)
-        # are all partially or fully traversable depending on ninja position and movement
-        # For strategic RL purposes, we'll treat them as EMPTY since they allow some form of traversal
-        if 2 <= tile_id <= 33:
-            return NodeType.EMPTY  # Complex geometry but traversable
-        else:
-            # Glitched tiles (34-37) or unknown tiles - treat as walls for safety
-            return NodeType.WALL
+    # 3. Default: empty traversable space
+    # (We know it's reachable because GraphBuilder included it)
+    return NodeType.EMPTY
 
 
 def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     """
-    Create GraphData from edges with comprehensive 56-dim node and 6-dim edge features.
+    Create GraphData from edges with comprehensive 50-dim node and 6-dim edge features.
 
     This function converts the edge representation into the standard GraphData format
     expected by the rest of the system, using NodeFeatureBuilder and EdgeFeatureBuilder
     to create full feature representations with proper ReachabilitySystem integration.
+
+    Args:
+        edges: List of Edge objects
+        level_data: LevelData object
     """
     from .feature_builder import NodeFeatureBuilder, EdgeFeatureBuilder
     from .reachability.reachability_system import ReachabilitySystem
@@ -289,21 +166,10 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     node_builder = NodeFeatureBuilder()
     edge_builder = EdgeFeatureBuilder()
 
-    # Extract ninja position from level_data for reachability and proximity
+    # Extract ninja position from level_data for reachability analysis only
     ninja_pos = None
     if hasattr(level_data, "ninja") and level_data.ninja is not None:
         ninja_pos = (level_data.ninja.position.x, level_data.ninja.position.y)
-
-    # Extract goal position (exit door or next switch)
-    goal_pos = None
-    if hasattr(level_data, "objects") and level_data.objects:
-        # Find exit door or nearest switch
-        for obj in level_data.objects:
-            if hasattr(obj, "type"):
-                # Exit door (type 11)
-                if obj.type == 11:
-                    goal_pos = (obj.position.x, obj.position.y)
-                    break
 
     # Initialize reachability system for connectivity analysis
     reachability_sys = ReachabilitySystem(debug=False)
@@ -335,13 +201,19 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
         # Determine node type
         node_type = _determine_node_type(pos, level_data)
 
-        # Get tile type at this position
+        # Get tile type at this position and normalize glitched tiles (34-37) to 0
         tile_type = 0
         if hasattr(level_data, "get_tile_at"):
             try:
                 tile_type = level_data.get_tile_at(pos[0], pos[1])
+                # Treat glitched tiles (34-37) as empty (type 0)
+                if tile_type > 33:
+                    tile_type = 0
             except Exception:
                 tile_type = 0
+
+        # Extract entity info if this is an entity node
+        entity_info = _extract_entity_info(pos, level_data)
 
         # Build reachability info for this node
         reachability_info = None
@@ -350,16 +222,14 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
                 "reachable_from_ninja": reachability_result.is_position_reachable(pos),
             }
 
-        # Build comprehensive node features (56 dimensions)
+        # Build comprehensive node features (50 dimensions)
         node_features[i] = node_builder.build_node_features(
             node_pos=pos,
             node_type=node_type,
             resolution_level=1,  # Default resolution (medium)
             tile_type=tile_type,
-            entity_info=None,  # TODO: Extract entity info if node is entity
+            entity_info=entity_info,
             reachability_info=reachability_info,
-            ninja_pos=ninja_pos,
-            goal_pos=goal_pos,
         )
         node_types[i] = node_type
         node_mask[i] = 1

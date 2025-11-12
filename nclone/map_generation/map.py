@@ -260,6 +260,7 @@ class Map:
         ninja_x: float,
         ninja_y: float,
         excluded_positions: Optional[List[Tuple[float, float]]] = None,
+        max_mines: int = -1,
     ) -> None:
         """Place ceiling mines in a corridor.
 
@@ -311,10 +312,6 @@ class Map:
             ]
 
         # Filter mines by distance from ninja spawn and excluded positions
-        # CRITICAL: Account for ninja spawn offset!
-        # Ninja has 1.5 tile (36px) offset, mines have no offset
-        # Required safety: 18px = 0.75 tiles
-        # Total buffer in grid coordinates: 0.75 + 1.5 = 2.25 tiles
         SPAWN_BUFFER_TILES = 1
         CONNECTION_BUFFER_TILES = 2.5
 
@@ -346,6 +343,10 @@ class Map:
 
             filtered_positions.append(mine_x)
 
+        # if max_mines is not -1, limit the number of mines to max_mines
+        if max_mines != -1:
+            filtered_positions = filtered_positions[:max_mines]
+
         # Place all filtered mines
         for mine_x in filtered_positions:
             if 0 <= mine_x < MAP_TILE_WIDTH:
@@ -357,10 +358,10 @@ class Map:
         start_y: float,
         width: float,
         height: float,
-        orientation: str,
         ninja_x: float,
         ninja_y: float,
         excluded_positions: Optional[List[Tuple[float, float]]] = None,
+        max_mines: int = -1,
     ) -> None:
         """Place floor mines in a corridor.
 
@@ -459,6 +460,9 @@ class Map:
                     continue
 
             filtered_positions.append(mine_x)
+
+        if max_mines != -1:
+            filtered_positions = filtered_positions[:max_mines]
 
         # Place all filtered mines
         for mine_x in filtered_positions:

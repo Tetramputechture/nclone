@@ -25,7 +25,6 @@ def analyze_graph_building(map_id: int, verbose: bool = True):
     config = EnvironmentConfig.for_visual_testing()
     config.starting_map = map_id
     config.headless = True
-    config.graph.enable_graph_for_observations = True
 
     env = create_visual_testing_env(config=config)
 

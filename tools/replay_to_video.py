@@ -82,7 +82,7 @@ class CompactReplayVideoGenerator:
                 )
 
                 if frame_count == 0:
-                    logger.error("No frames were rendered")
+                    print("No frames were rendered")
                     return False
 
                 logger.info(f"Rendered {frame_count} frames")
@@ -92,7 +92,7 @@ class CompactReplayVideoGenerator:
                 return self._create_video_from_frames(temp_path, output_video)
 
         except Exception as e:
-            logger.error(f"Failed to generate video: {e}", exc_info=True)
+            print(f"Failed to generate video: {e}", exc_info=True)
             return False
 
     def _render_frames(
@@ -153,7 +153,7 @@ class CompactReplayVideoGenerator:
                     # Already 2D grayscale (H, W)
                     img = Image.fromarray(frame.astype(np.uint8))
                 else:
-                    logger.warning(f"Unexpected frame shape: {frame.shape}")
+                    print(f"Unexpected frame shape: {frame.shape}")
                     continue
 
                 img.save(frame_path)
@@ -190,11 +190,9 @@ class CompactReplayVideoGenerator:
                 ["ffmpeg", "-version"], capture_output=True, text=True
             )
             if result.returncode != 0:
-                logger.error(
-                    "ffmpeg not found. Please install ffmpeg to generate videos."
-                )
-                logger.error("On Ubuntu/Debian: sudo apt-get install ffmpeg")
-                logger.error("On macOS: brew install ffmpeg")
+                print("ffmpeg not found. Please install ffmpeg to generate videos.")
+                print("On Ubuntu/Debian: sudo apt-get install ffmpeg")
+                print("On macOS: brew install ffmpeg")
                 return False
 
             # Create output directory if it doesn't exist
@@ -235,12 +233,12 @@ class CompactReplayVideoGenerator:
                 logger.info(f"   FPS: {self.fps}")
                 return True
             else:
-                logger.error(f"ffmpeg failed with return code {result.returncode}")
-                logger.error(f"Error output: {result.stderr}")
+                print(f"ffmpeg failed with return code {result.returncode}")
+                print(f"Error output: {result.stderr}")
                 return False
 
         except Exception as e:
-            logger.error(f"Failed to create video: {e}")
+            print(f"Failed to create video: {e}")
             return False
 
 
@@ -281,15 +279,15 @@ Examples:
     # Validate inputs
     replay_path = Path(args.replay_file)
     if not replay_path.exists():
-        logger.error(f"Replay file not found: {replay_path}")
+        print(f"Replay file not found: {replay_path}")
         return 1
 
     if not replay_path.suffix == ".replay":
-        logger.warning(f"File does not have .replay extension: {replay_path}")
+        print(f"File does not have .replay extension: {replay_path}")
 
     output_path = Path(args.output_video)
     if not output_path.suffix in [".mp4", ".MP4"]:
-        logger.warning(f"Output file does not have .mp4 extension: {output_path}")
+        print(f"Output file does not have .mp4 extension: {output_path}")
 
     # Generate video
     generator = CompactReplayVideoGenerator(fps=args.fps)

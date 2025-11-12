@@ -11,29 +11,49 @@ from enum import IntEnum
 from typing import Tuple, Optional, Dict
 
 from ..constants import TILE_PIXEL_SIZE
-from ..constants.physics_constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
+from ..constants.physics_constants import (
+    MAP_TILE_WIDTH,
+    MAP_TILE_HEIGHT,
+    FULL_MAP_WIDTH,
+    FULL_MAP_HEIGHT,
+)
 
 # Graph configuration constants
-# Sub-grid resolution for better spatial accuracy
-SUB_GRID_RESOLUTION = 4  # Divide each tile into 4x4 sub-cells (6x6 pixels each)
-SUB_CELL_SIZE = TILE_PIXEL_SIZE // SUB_GRID_RESOLUTION  # 6 pixels per sub-cell
+# GraphBuilder uses 2x2 sub-nodes per tile at 12px resolution
+# See graph_builder.py: SUB_NODE_OFFSETS = [(6,6), (18,6), (6,18), (18,18)]
+SUB_NODES_PER_TILE = 4  # 2×2 grid per 24px tile
 
-# Calculate sub-grid dimensions using inner playable area (42x23 tiles)
-SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 168 sub-cells wide (42*4)
-SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 92 sub-cells tall (23*4)
+# Map dimensions (from physics_constants.py)
+# MAP_TILE_WIDTH = 42, MAP_TILE_HEIGHT = 23 (playable area)
+# FULL_MAP_WIDTH = 44, FULL_MAP_HEIGHT = 25 (with 1-tile padding)
+FULL_TILES = FULL_MAP_WIDTH * FULL_MAP_HEIGHT  # 1,100 tiles
 
-# Keep generous upper bounds to allow entity padding in observations
-N_MAX_NODES = (
-    SUB_GRID_WIDTH * SUB_GRID_HEIGHT + 400
-)  # Sub-grid + entities buffer (~18000)
-E_MAX_EDGES = N_MAX_NODES * 8  # Up to 8 directions per node (4 cardinal + 4 diagonal)
+# Theoretical maximum (if all tiles fully traversable):
+THEORETICAL_MAX_NODES = FULL_TILES * SUB_NODES_PER_TILE  # 4,400
+# Add buffer for edge cases and entity nodes
+N_MAX_NODES = THEORETICAL_MAX_NODES + 100  # 4,500
+
+# GraphBuilder uses 4-connectivity (N, E, S, W cardinal only, no diagonals)
+# See graph_builder.py: directions = {"N": (0, -12), "E": (12, 0), "S": (0, 12), "W": (-12, 0)}
+MAX_NEIGHBORS_PER_NODE = 4
+THEORETICAL_MAX_EDGES = N_MAX_NODES * MAX_NEIGHBORS_PER_NODE  # 18,000
+# Add buffer for functional edges (entity interactions)
+E_MAX_EDGES = THEORETICAL_MAX_EDGES + 500  # 18,500
+
+# Legacy constants for backward compatibility (deprecated)
+SUB_GRID_RESOLUTION = 2  # Matches actual 2x2 sub-nodes
+SUB_CELL_SIZE = TILE_PIXEL_SIZE // SUB_GRID_RESOLUTION  # 12 pixels per sub-cell
+SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 84 sub-cells wide (42*2)
+SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 46 sub-cells tall (23*2)
 
 # Feature dimensions for enhanced observation space
-NODE_FEATURE_DIM = 55  # Comprehensive node features
-EDGE_FEATURE_DIM = 6   # Comprehensive edge features
+NODE_FEATURE_DIM = 50  # Comprehensive node features (3 spatial + 7 type + 5 entity + 34 tile + 1 reachability)
+EDGE_FEATURE_DIM = 6  # Comprehensive edge features
 
 # Type counts (derived from IntEnum classes below)
-N_NODE_TYPES = 6  # NodeType: EMPTY, WALL, ENTITY, HAZARD, SPAWN, EXIT
+N_NODE_TYPES = (
+    7  # NodeType: EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR
+)
 N_EDGE_TYPES = 4  # EdgeType: ADJACENT, REACHABLE, FUNCTIONAL, BLOCKED
 
 # Entity tracking limits
@@ -50,14 +70,19 @@ CELL_SIZE = TILE_PIXEL_SIZE  # 24 pixels
 
 
 class NodeType(IntEnum):
-    """Simplified node types for strategic RL representation."""
+    """Simplified node types for strategic RL representation.
 
-    EMPTY = 0  # Traversable space
-    WALL = 1  # Solid obstacle
-    ENTITY = 2  # Interactive entity (switch, door, locked door, etc.)
-    HAZARD = 3  # Dangerous area (mines, drones, etc.)
+    Note: All node positions are guaranteed to be reachable from player spawn
+    via GraphBuilder's flood fill. No tile-type traversability checking needed.
+    """
+
+    EMPTY = 0  # Traversable space (reachable via flood fill)
+    WALL = 1  # Solid obstacle (unused if we only create nodes for reachable positions)
+    TOGGLE_MINE = 2  # Toggle mine (EntityType.TOGGLE_MINE or TOGGLE_MINE_TOGGLED)
+    LOCKED_DOOR = 3  # Locked door (EntityType.LOCKED_DOOR)
     SPAWN = 4  # Player spawn point
-    EXIT = 5  # Level exit
+    EXIT_SWITCH = 5  # Exit switch (EntityType.EXIT_SWITCH)
+    EXIT_DOOR = 6  # Exit door (EntityType.EXIT_DOOR)
 
 
 class EdgeType(IntEnum):

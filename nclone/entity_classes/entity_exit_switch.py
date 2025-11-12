@@ -74,3 +74,8 @@ class EntityExitSwitch(Entity):
                 True  # Mark the switch as hit on the parent Exit door
             )
             self.log_collision()
+            
+            # Invalidate gym environment caches (switch state changed)
+            # PERFORMANCE: Enables efficient cache invalidation
+            if hasattr(self.sim, 'gym_env') and self.sim.gym_env:
+                self.sim.gym_env.invalidate_switch_cache()

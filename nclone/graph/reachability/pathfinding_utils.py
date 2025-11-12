@@ -53,7 +53,7 @@ def _get_subcell_lookup_loader():
             )
             return loader
         else:
-            _logger.warning("Subcell lookup loader created but table is None")
+            _logger.error("Subcell lookup loader created but table is None")
             raise RuntimeError("Subcell lookup table is None")
     except FileNotFoundError as e:
         # Auto-generate the lookup file if it doesn't exist
@@ -91,16 +91,16 @@ def _get_subcell_lookup_loader():
             else:
                 raise RuntimeError("Failed to load generated lookup table")
         except Exception as gen_error:
-            _logger.error(
+            _logger(
                 f"Failed to auto-generate subcell lookup file: {gen_error}. "
                 f"Falling back to loader error."
             )
             raise
     except RuntimeError as e:
-        _logger.error(f"Subcell lookup runtime error: {e}")
+        _logger(f"Subcell lookup runtime error: {e}")
         raise
     except Exception as e:
-        _logger.error(f"Subcell lookup unexpected error: {type(e).__name__}: {e}")
+        _logger(f"Subcell lookup unexpected error: {type(e).__name__}: {e}")
         raise
 
 
@@ -135,7 +135,7 @@ def extract_spatial_lookups_from_graph_data(
         subcell_lookup = _get_subcell_lookup_loader()
         _logger.debug("extract_spatial_lookups: subcell_lookup available")
     except Exception as e:
-        _logger.error(f"Failed to load subcell lookup: {e}")
+        _logger(f"Failed to load subcell lookup: {e}")
         subcell_lookup = None
 
     return spatial_hash, subcell_lookup
@@ -144,7 +144,9 @@ def extract_spatial_lookups_from_graph_data(
 def find_closest_node_to_position(
     world_pos: Tuple[int, int],
     adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
-    threshold: float = 50.0,
+    threshold: Optional[float] = None,
+    entity_radius: float = 0.0,
+    ninja_radius: float = 10.0,
     spatial_hash: Optional[any] = None,
     subcell_lookup: Optional[any] = None,
 ) -> Optional[Tuple[int, int]]:
@@ -164,7 +166,9 @@ def find_closest_node_to_position(
     Args:
         world_pos: World position (x, y) in pixels (full map space)
         adjacency: Graph adjacency structure (keys in tile data space)
-        threshold: Maximum distance threshold (default 50 pixels)
+        threshold: Maximum distance threshold (if None, calculated as ninja_radius + entity_radius)
+        entity_radius: Collision radius of the entity at world_pos (default 0.0)
+        ninja_radius: Collision radius of the ninja (default 10.0)
         spatial_hash: Optional SpatialHash instance for O(1) lookup
         subcell_lookup: Optional SubcellNodeLookupLoader instance for fastest lookup
 
@@ -173,6 +177,10 @@ def find_closest_node_to_position(
     """
     if not adjacency:
         return None
+
+    # Calculate threshold from radii if not provided
+    if threshold is None:
+        threshold = ninja_radius + entity_radius
 
     world_x, world_y = world_pos
 
@@ -185,7 +193,7 @@ def find_closest_node_to_position(
         try:
             subcell_lookup = _get_subcell_lookup_loader()
         except Exception as e:
-            _logger.warning(f"Failed to load subcell lookup: {e}")
+            _logger(f"Failed to load subcell lookup: {e}")
             subcell_lookup = None
 
     # Fastest path: Use precomputed subcell lookup if available (O(1) direct access)
@@ -199,7 +207,7 @@ def find_closest_node_to_position(
                 return closest_node
         except Exception as e:
             # Other errors (e.g., lookup table not loaded)
-            _logger.warning(
+            _logger(
                 f"Subcell lookup failed: {e}. Falling back to spatial hash or linear search."
             )
 

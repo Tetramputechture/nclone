@@ -183,6 +183,10 @@ class TileSegmentFactory:
             hor_segment_dic: Horizontal segment accumulator
             ver_segment_dic: Vertical segment accumulator
         """
+        # Skip glitched/unused tiles (34-37) - treat as empty (no collision)
+        if tile_id >= 34:
+            return
+
         coord = (xcoord, ycoord)
 
         # Process orthogonal segments (grid edges and linear segments)
@@ -286,6 +290,10 @@ class TileSegmentFactory:
             ycoord: Tile y coordinate
             simulator: Simulator object with all required dictionaries
         """
+        # Skip glitched/unused tiles (34-37) - treat as empty (no collision)
+        if tile_id >= 34:
+            return
+
         # Process grid edges (for MapLoader compatibility)
         if tile_id in TILE_GRID_EDGE_MAP:
             grid_edge_list = TILE_GRID_EDGE_MAP[tile_id]

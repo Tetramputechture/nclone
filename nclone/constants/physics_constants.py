@@ -12,6 +12,18 @@ NINJA_RADIUS = 10  # Ninja collision radius in pixels
 DRONE_RADIUS = 7.5  # Drone collision radius in pixels
 MINI_DRONE_RADIUS = 4.0  # Mini drone collision radius in pixels
 
+# Entity collision radii (for pathfinding and reachability)
+EXIT_SWITCH_RADIUS = 6  # Exit switch collision radius in pixels
+EXIT_DOOR_RADIUS = 12  # Exit door collision radius in pixels
+LOCKED_DOOR_SWITCH_RADIUS = 5  # Locked door switch collision radius in pixels
+REGULAR_DOOR_RADIUS = 10  # Regular door collision radius in pixels
+TRAP_DOOR_RADIUS = 5  # Trap door collision radius in pixels
+GOLD_RADIUS = 6  # Gold collectible collision radius in pixels
+LAUNCH_PAD_RADIUS = 6  # Launch pad collision radius in pixels
+BOOST_PAD_RADIUS = 6  # Boost pad collision radius in pixels
+LASER_RADIUS = 5.9  # Laser collision radius in pixels
+DEATH_BALL_RADIUS = 5  # Death ball collision radius in pixels
+
 # Grid and movement constants
 DRONE_GRID_SIZE = 24  # Regular drone grid cell size in pixels
 MINI_DRONE_GRID_SIZE = 12  # Mini drone grid cell size in pixels
@@ -335,3 +347,41 @@ OVERLAP_THRESHOLD = 1.0  # Threshold for entity overlap detection
 # === PERFORMANCE CONSTANTS ===
 MAX_ENTITIES_PER_CALCULATION = 100  # Maximum entities to process in one calculation
 CACHE_TIMEOUT_FRAMES = 60  # Number of frames to cache calculations
+
+# === MINE DEATH PREDICTION CONSTANTS (HYBRID APPROACH) ===
+# Tier 1: Spatial danger zone grid
+MINE_DANGER_ZONE_RADIUS = (
+    80.0  # Pixels - cells within this radius marked as danger zone
+)
+MINE_DANGER_ZONE_CELL_SIZE = 24  # Pixels - grid cell size (matches game tiles)
+
+# Tier 2: Distance-based threshold for simulation
+MINE_DANGER_THRESHOLD = 30.0  # Pixels - distance threshold to trigger full simulation
+
+# Tier 3: Physics simulation parameters
+MINE_DEATH_LOOKAHEAD_FRAMES = 6  # Number of frames to simulate for collision detection
+
+# Collision detection
+MINE_COLLISION_THRESHOLD = 12.5  # Tuned value for accurate collision detection (prevents false positive masking)
+
+# === TERMINAL VELOCITY MASKING CONSTANTS ===
+# Prevents agent from selecting actions leading to terminal impact death
+# (collision with floor/ceiling at speeds exceeding MAX_SURVIVABLE_IMPACT)
+
+# Tier 1: Quick state filter
+TERMINAL_IMPACT_SAFE_VELOCITY = (
+    4.0  # Below this velocity, skip expensive checks (px/frame)
+)
+
+# Tier 2: Lookup table quantization
+TERMINAL_VELOCITY_QUANTIZATION = (
+    0.5  # Velocity quantization for lookup table (px/frame)
+)
+TERMINAL_DISTANCE_QUANTIZATION = (
+    12  # Distance quantization for lookup table (pixels, half-tile)
+)
+
+# Tier 3: Physics simulation
+TERMINAL_IMPACT_SIMULATION_FRAMES = (
+    30  # Max frames to simulate forward for impact prediction
+)

@@ -106,12 +106,8 @@ class PBRSConfig:
 
 @dataclass
 class GraphConfig:
-    """Configuration for graph-based features.
+    """Configuration for graph-based features."""
 
-    - enable_graph_for_observations: Add graph observations to observation space
-    """
-
-    enable_graph_for_observations: bool = True
     debug: bool = False
 
     def __post_init__(self):
@@ -124,7 +120,6 @@ class GraphConfig:
 class ReachabilityConfig:
     """Configuration for reachability analysis."""
 
-    enable_reachability: bool = True
     debug: bool = False
 
     def __post_init__(self):
@@ -219,8 +214,8 @@ class EnvironmentConfig:
                 render_mode="grayscale_array",
                 enable_animation=False,
             ),
-            graph=GraphConfig(enable_graph_for_observations=False),
-            reachability=ReachabilityConfig(enable_reachability=True),
+            graph=GraphConfig(),
+            reachability=ReachabilityConfig(),
             enable_short_episode_truncation=False,
             **kwargs,
         )
@@ -243,8 +238,8 @@ class EnvironmentConfig:
                 p=0.5,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            graph=GraphConfig(enable_graph_for_observations=False),
-            reachability=ReachabilityConfig(enable_reachability=True),
+            graph=GraphConfig(),
+            reachability=ReachabilityConfig(),
             eval_mode=True,
             enable_short_episode_truncation=False,  # Let episodes run to completion
             **kwargs,
@@ -269,10 +264,9 @@ class EnvironmentConfig:
                 render_mode="human", enable_animation=True, enable_debug_overlay=True
             ),
             graph=GraphConfig(
-                enable_graph_for_observations=True,
                 debug=True,
             ),
-            reachability=ReachabilityConfig(enable_reachability=True, debug=True),
+            reachability=ReachabilityConfig(debug=True),
             enable_logging=True,
             **kwargs,
         )
@@ -287,10 +281,9 @@ class EnvironmentConfig:
                 render_mode="human", enable_animation=True, enable_debug_overlay=False
             ),
             graph=GraphConfig(
-                enable_graph_for_observations=False,
                 debug=False,
             ),
-            reachability=ReachabilityConfig(enable_reachability=False, debug=False),
+            reachability=ReachabilityConfig(debug=False),
             **kwargs,
         )
         return config
@@ -311,8 +304,8 @@ class EnvironmentConfig:
                 p=0.5,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            graph=GraphConfig(enable_graph_for_observations=True),
-            reachability=ReachabilityConfig(enable_reachability=True),
+            graph=GraphConfig(),
+            reachability=ReachabilityConfig(),
             hierarchical=HierarchicalConfig(
                 enable_hierarchical=True,
                 completion_planner=completion_planner,
@@ -337,9 +330,9 @@ class EnvironmentConfig:
                 p=0.0,
             ),
             render=RenderConfig(render_mode="grayscale_array"),
-            graph=GraphConfig(enable_graph_for_observations=False),
-            reachability=ReachabilityConfig(enable_reachability=False),
-            hierarchical=HierarchicalConfig(enable_hierarchical=False),
+            graph=GraphConfig(),
+            reachability=ReachabilityConfig(),
+            hierarchical=HierarchicalConfig(),
             **kwargs,
         )
         return config
@@ -370,10 +363,6 @@ class EnvironmentConfig:
             "enable_debug_overlay": self.render.enable_debug_overlay,
             # PBRS settings
             "pbrs_gamma": self.pbrs.pbrs_gamma,
-            # Graph settings
-            "enable_graph_for_observations": self.graph.enable_graph_for_observations,
-            # Reachability settings
-            "enable_reachability": self.reachability.enable_reachability,
             # Hierarchical settings
             "enable_hierarchical": self.hierarchical.enable_hierarchical,
             "completion_planner": self.hierarchical.completion_planner,
@@ -399,15 +388,6 @@ def validate_config(config: EnvironmentConfig) -> bool:
     """
     try:
         # Check for conflicting settings
-        if (
-            config.hierarchical.enable_hierarchical
-            and not config.reachability.enable_reachability
-        ):
-            raise ValueError(
-                "Hierarchical RL requires reachability analysis to be enabled. "
-                "Set reachability.enable_reachability=True in your configuration."
-            )
-
         if config.render.render_mode == "human" and not config.render.enable_animation:
             logging.info(
                 "Human render mode without animation - consider enabling animation for better visualization"

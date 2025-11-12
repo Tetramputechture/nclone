@@ -102,6 +102,7 @@ class MapCorridors(Map):
     ADD_ZIG_ZAG_DROPS = False
     ADD_CHAOTIC_WALLS = False
     ADD_MINES = False
+    MAX_MINES = -1
 
     def __init__(self, seed: Optional[int] = None):
         """Initialize the corridors generator.
@@ -765,6 +766,7 @@ class MapCorridors(Map):
                         ninja_x,
                         ninja_y,
                         connection_positions,
+                        max_mines=self.MAX_MINES,
                     )
                 # Add floor mines
                 self._place_corridor_floor_mines(
@@ -772,10 +774,10 @@ class MapCorridors(Map):
                     corridor.y,
                     corridor.width,
                     corridor.height,
-                    "horizontal",
                     ninja_x,
                     ninja_y,
                     connection_positions,
+                    max_mines=self.MAX_MINES,
                 )
             elif corridor.orientation == "vertical":
                 # Add ceiling mines at the top
@@ -788,6 +790,7 @@ class MapCorridors(Map):
                     ninja_x,
                     ninja_y,
                     connection_positions,
+                    max_mines=self.MAX_MINES,
                 )
 
     def _add_random_entities_outside(self) -> None:
