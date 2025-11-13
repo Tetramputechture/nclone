@@ -935,6 +935,201 @@ class DebugOverlayRenderer:
         self.cached_terminal_velocity_surface = surface
         return surface
 
+    def _draw_reachable_walls(self, reachable_walls_info: dict) -> Optional[pygame.Surface]:
+        """Draw reachable wall segments visualization for action masking debug.
+
+        Args:
+            reachable_walls_info: Dictionary containing:
+                - wall_segments: list of ((x1, y1), (x2, y2)) wall segment tuples
+                - ninja_position: tuple of (x, y) ninja position
+
+        Returns:
+            pygame.Surface with reachable wall segments visualization
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        wall_segments = reachable_walls_info.get("wall_segments", [])
+        ninja_pos = reachable_walls_info.get("ninja_position", (0, 0))
+
+        if not wall_segments:
+            return surface
+
+        # Colors
+        WALL_COLOR = (255, 100, 255, 255)  # Magenta for reachable walls
+        WALL_THICK = 3
+
+        # Draw each wall segment
+        for (x1, y1), (x2, y2) in wall_segments:
+            # Convert world coordinates to screen coordinates
+            screen_x1 = int(x1 * self.adjust) + self.tile_x_offset
+            screen_y1 = int(y1 * self.adjust) + self.tile_y_offset
+            screen_x2 = int(x2 * self.adjust) + self.tile_x_offset
+            screen_y2 = int(y2 * self.adjust) + self.tile_y_offset
+
+            # Draw the wall segment
+            pygame.draw.line(
+                surface,
+                WALL_COLOR,
+                (screen_x1, screen_y1),
+                (screen_x2, screen_y2),
+                WALL_THICK,
+            )
+
+        return surface
+
+    def _draw_action_mask(self, action_mask_info: dict) -> Optional[pygame.Surface]:
+        """Draw action mask visualization showing allowed vs masked actions.
+
+        Args:
+            action_mask_info: Dictionary containing:
+                - action_mask: list or array of 6 booleans (True=allowed, False=masked)
+                - ninja_position: tuple of (x, y) ninja position
+
+        Returns:
+            pygame.Surface with action mask visualization
+
+        Layout (keyboard-style grid):
+        Row 1: [JL] [JP] [JR]  <- Jump+Left(4), Jump(3), Jump+Right(5)
+        Row 2: [LT] [NO] [RT]  <- Left(1), NOOP(0), Right(2)
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        action_mask = action_mask_info.get("action_mask")
+        ninja_pos = action_mask_info.get("ninja_position", (0, 0))
+        last_action = action_mask_info.get("last_action")
+
+        if action_mask is None or len(action_mask) != 6:
+            return surface
+
+        # Colors
+        ALLOWED_COLOR = (100, 255, 100, 255)  # Green for allowed
+        MASKED_COLOR = (255, 100, 100, 255)   # Red for masked
+        INVALID_ACTION_COLOR = (255, 255, 0, 255)  # Yellow for invalid action taken
+        TEXT_COLOR = (255, 255, 255, 255)     # White text
+        BG_COLOR = (0, 0, 0, 220)             # Semi-transparent black background
+        BORDER_COLOR = (150, 150, 255, 255)   # Light blue border
+
+        # Determine ninja quadrant for positioning
+        ninja_screen_x = int(ninja_pos[0] * self.adjust) + self.tile_x_offset
+        ninja_screen_y = int(ninja_pos[1] * self.adjust) + self.tile_y_offset
+
+        screen_center_x = self.screen.get_width() / 2
+        screen_center_y = self.screen.get_height() / 2
+
+        ninja_in_left = ninja_screen_x < screen_center_x
+        ninja_in_top = ninja_screen_y < screen_center_y
+
+        # Compact keyboard layout dimensions
+        key_size = 20         # Size of each key box
+        key_spacing = 3       # Space between keys
+        panel_padding = 8
+        
+        # Calculate panel dimensions
+        # 3 keys wide, 2 keys tall
+        panel_width = 3 * key_size + 2 * key_spacing + 2 * panel_padding
+        panel_height = 2 * key_size + key_spacing + 2 * panel_padding + 20  # +20 for title
+
+        # Position panel close to ninja
+        offset_distance = 30  # Distance from ninja (horizontal and vertical)
+        screen_margin = 10
+
+        if ninja_in_left:
+            panel_x = ninja_screen_x + offset_distance
+            if panel_x + panel_width > self.screen.get_width() - screen_margin:
+                panel_x = self.screen.get_width() - panel_width - screen_margin
+        else:
+            panel_x = ninja_screen_x - offset_distance - panel_width
+            if panel_x < screen_margin:
+                panel_x = screen_margin
+
+        if ninja_in_top:
+            # Ninja in top half - place panel below ninja
+            panel_y = ninja_screen_y + offset_distance
+            if panel_y + panel_height > self.screen.get_height() - screen_margin:
+                panel_y = self.screen.get_height() - panel_height - screen_margin
+        else:
+            # Ninja in bottom half - place panel above ninja
+            panel_y = ninja_screen_y - offset_distance - panel_height
+            if panel_y < screen_margin:
+                panel_y = screen_margin
+
+        # Draw background panel
+        pygame.draw.rect(
+            surface,
+            BG_COLOR,
+            (panel_x, panel_y, panel_width, panel_height),
+            border_radius=4,
+        )
+        pygame.draw.rect(
+            surface,
+            BORDER_COLOR,
+            (panel_x, panel_y, panel_width, panel_height),
+            2,
+            border_radius=4,
+        )
+
+        # Fonts
+        try:
+            title_font = pygame.font.Font(None, 18)
+            key_font = pygame.font.Font(None, 14)
+        except pygame.error:
+            title_font = pygame.font.SysFont("arial", 16)
+            key_font = pygame.font.SysFont("arial", 12)
+
+        # Draw title
+        title_text = "Action Mask"
+        title_surf = title_font.render(title_text, True, TEXT_COLOR)
+        title_x = panel_x + (panel_width - title_surf.get_width()) // 2
+        surface.blit(title_surf, (title_x, panel_y + 4))
+
+        # Key layout mapping: (row, col) -> (action_idx, label)
+        # Row 0 (top): Jump actions
+        # Row 1 (bottom): Movement actions
+        key_layout = [
+            [(4, "JL"), (3, "JP"), (5, "JR")],  # Row 0: Jump+Left, Jump, Jump+Right
+            [(1, "LT"), (0, "NO"), (2, "RT")],  # Row 1: Left, NOOP, Right
+        ]
+
+        # Starting Y position for keys (below title)
+        keys_start_y = panel_y + 24
+
+        # Draw keys in grid
+        for row_idx, row in enumerate(key_layout):
+            for col_idx, (action_idx, label) in enumerate(row):
+                # Calculate key position
+                key_x = panel_x + panel_padding + col_idx * (key_size + key_spacing)
+                key_y = keys_start_y + row_idx * (key_size + key_spacing)
+
+                # Determine color based on mask and whether this action was just taken
+                is_allowed = action_mask[action_idx]
+                is_last_action = (last_action is not None and last_action == action_idx)
+                
+                # Yellow if this masked action was just taken, otherwise green/red
+                if is_last_action and not is_allowed:
+                    key_color = INVALID_ACTION_COLOR
+                    border_color = (200, 200, 0, 255)  # Dark yellow border
+                elif is_allowed:
+                    key_color = ALLOWED_COLOR
+                    border_color = (255, 255, 255, 200)  # White border
+                else:
+                    key_color = MASKED_COLOR
+                    border_color = (150, 0, 0, 255)  # Dark red border
+
+                # Draw key background
+                key_rect = pygame.Rect(key_x, key_y, key_size, key_size)
+                pygame.draw.rect(surface, key_color, key_rect, border_radius=2)
+                
+                # Draw key border
+                pygame.draw.rect(surface, border_color, key_rect, 1, border_radius=2)
+
+                # Draw label
+                label_surf = key_font.render(label, True, (0, 0, 0, 255))
+                label_x = key_x + (key_size - label_surf.get_width()) // 2
+                label_y = key_y + (key_size - label_surf.get_height()) // 2
+                surface.blit(label_surf, (label_x, label_y))
+
+        return surface
+
     def _draw_path_aware(self, path_aware_info: dict) -> Optional[pygame.Surface]:
         """Draw path-aware debugging information (adjacency graph, path distances, blocked entities).
 
@@ -1186,8 +1381,91 @@ class DebugOverlayRenderer:
                 pygame.draw.circle(surface, EXIT_NODE_COLOR, (screen_x, screen_y), 6)
                 pygame.draw.circle(surface, (0, 0, 0, 255), (screen_x, screen_y), 6, 2)
 
+        # Helper function to get segment color based on direction
+        def get_segment_color(segment_type, segment_sign):
+            """Get color for a path segment based on its direction.
+            
+            Args:
+                segment_type: 'horizontal' or 'vertical'
+                segment_sign: +1 or -1
+            
+            Returns:
+                RGB color tuple
+            """
+            if segment_type == 'horizontal':
+                if segment_sign == 1:
+                    return (0, 200, 255, 220)  # Cyan (right)
+                else:
+                    return (255, 50, 255, 220)  # Magenta (left)
+            else:  # vertical
+                if segment_sign == 1:
+                    return (255, 200, 0, 220)  # Gold (down)
+                else:
+                    return (100, 255, 100, 220)  # Light green (up)
+        
+        # Helper function to draw an arrow
+        def draw_arrow(surface, color, start_pos, end_pos, arrow_size=8):
+            """Draw an arrow from start to end position.
+            
+            Args:
+                surface: Pygame surface to draw on
+                color: Arrow color
+                start_pos: (x, y) start position
+                end_pos: (x, y) end position
+                arrow_size: Size of the arrowhead in pixels
+            """
+            import math
+            
+            # Calculate direction vector
+            dx = end_pos[0] - start_pos[0]
+            dy = end_pos[1] - start_pos[1]
+            length = math.sqrt(dx * dx + dy * dy)
+            
+            if length < 0.01:  # Avoid division by zero
+                return
+            
+            # Normalize direction
+            dir_x = dx / length
+            dir_y = dy / length
+            
+            # Calculate arrow midpoint (where we'll draw the arrowhead)
+            mid_x = (start_pos[0] + end_pos[0]) / 2
+            mid_y = (start_pos[1] + end_pos[1]) / 2
+            
+            # Calculate arrowhead points
+            # Perpendicular vector for arrowhead wings
+            perp_x = -dir_y
+            perp_y = dir_x
+            
+            # Arrow tip
+            tip_x = mid_x + dir_x * arrow_size * 0.5
+            tip_y = mid_y + dir_y * arrow_size * 0.5
+            
+            # Arrow wing points
+            wing1_x = mid_x - dir_x * arrow_size * 0.5 + perp_x * arrow_size * 0.4
+            wing1_y = mid_y - dir_y * arrow_size * 0.5 + perp_y * arrow_size * 0.4
+            
+            wing2_x = mid_x - dir_x * arrow_size * 0.5 - perp_x * arrow_size * 0.4
+            wing2_y = mid_y - dir_y * arrow_size * 0.5 - perp_y * arrow_size * 0.4
+            
+            # Draw filled triangle for arrowhead
+            arrow_points = [
+                (int(tip_x), int(tip_y)),
+                (int(wing1_x), int(wing1_y)),
+                (int(wing2_x), int(wing2_y))
+            ]
+            pygame.draw.polygon(surface, color, arrow_points)
+            
+            # Draw outline for better visibility
+            pygame.draw.polygon(surface, (0, 0, 0, 255), arrow_points, 1)
+
         # Use shared pathfinding function
         find_shortest_path = find_shortest_path_with_parents
+
+        # Get segment visualization flag
+        show_segments = path_aware_info.get("show_segments", False)
+        segments = path_aware_info.get("segments")
+        current_segment_index = path_aware_info.get("current_segment_index")
 
         # Draw paths to goals if enabled
         if show_paths and ninja_pos and adjacency and reachable:
@@ -1309,6 +1587,7 @@ class DebugOverlayRenderer:
             if closest_node and cached_data:
                 # Draw switch path
                 if switch_path:
+                    # Draw path with single color
                     for i in range(len(switch_path) - 1):
                         node1 = switch_path[i]
                         node2 = switch_path[i + 1]
@@ -1327,14 +1606,15 @@ class DebugOverlayRenderer:
                             screen_y2 = int(y2 * self.adjust + self.tile_y_offset) + 24
                             pygame.draw.line(
                                 surface,
-                                SWITCH_PATH_COLOR,
-                                (screen_x1, screen_y1),
-                                (screen_x2, screen_y2),
-                                3,
-                            )
+                                    SWITCH_PATH_COLOR,
+                                    (screen_x1, screen_y1),
+                                    (screen_x2, screen_y2),
+                                    3,
+                                )
 
                 # Draw exit path
                 if exit_path:
+                    # Draw path with single color
                     for i in range(len(exit_path) - 1):
                         node1 = exit_path[i]
                         node2 = exit_path[i + 1]
@@ -1562,6 +1842,18 @@ class DebugOverlayRenderer:
             )
             if terminal_velocity_prob_surface:
                 surface.blit(terminal_velocity_prob_surface, (0, 0))
+
+        # Draw reachable wall segments visualization if provided
+        if debug_info and "reachable_walls" in debug_info:
+            reachable_walls_surface = self._draw_reachable_walls(debug_info["reachable_walls"])
+            if reachable_walls_surface:
+                surface.blit(reachable_walls_surface, (0, 0))
+
+        # Draw action mask visualization if provided
+        if debug_info and "action_mask" in debug_info:
+            action_mask_surface = self._draw_action_mask(debug_info["action_mask"])
+            if action_mask_surface:
+                surface.blit(action_mask_surface, (0, 0))
 
         # Draw subgoal visualization if enabled
         if self.subgoal_debug_enabled:

@@ -430,10 +430,12 @@ class RewardCalculator:
                     f"reward={reward}"
                 )
 
-        # Masked action penalty (should rarely trigger if masking works)
+        # Masked action penalty (should never trigger during learning if masking works correctly)
         masked_action_penalty = 0.0
         if action is not None:
-            action_mask = prev_obs.get("action_mask", np.ones(6, dtype=np.int8))
+            action_mask = prev_obs.get("action_mask")
+            if action_mask is None:
+                raise ValueError("Action mask not found in previous observation")
             if not action_mask[action]:
                 # Agent selected a masked action - this is a bug if it happens
                 masked_action_penalty = MASKED_ACTION_PENALTY

@@ -183,7 +183,6 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
             if hasattr(level_data, "switch_states"):
                 switch_states = level_data.switch_states
 
-            # Analyze reachability using OpenCV flood-fill (<1ms)
             reachability_result = reachability_sys.analyze_reachability(
                 level_data=level_data,
                 ninja_position=ninja_pos,

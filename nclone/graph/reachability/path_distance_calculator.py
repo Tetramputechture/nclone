@@ -11,6 +11,7 @@ from .pathfinding_algorithms import PathDistanceCalculator
 from .pathfinding_utils import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
+    find_shortest_path_with_parents,
 )
 from .path_distance_cache import LevelBasedPathDistanceCache
 from .performance_timer import PerformanceTimer
@@ -205,20 +206,24 @@ class CachedPathDistanceCalculator:
             return self.cache[key]
 
         # Cache miss - compute
-        # First snap positions to nodes before calculating distance
-        start_node = find_closest_node_to_position(
+        # First snap positions to nodes before calculating distance using smart selection
+        from .pathfinding_utils import (
+            find_start_node_for_player,
+            find_goal_node_closest_to_start,
+        )
+
+        start_node = find_start_node_for_player(
             start,
             adjacency,
-            threshold=None,  # Will be calculated from radii
-            entity_radius=0.0,  # Start is ninja position, no entity radius
-            ninja_radius=ninja_radius,
+            player_radius=ninja_radius,
             spatial_hash=self._spatial_hash,
             subcell_lookup=subcell_lookup,
+            goal_pos=goal,
         )
-        goal_node = find_closest_node_to_position(
+        goal_node = find_goal_node_closest_to_start(
             goal,
+            start_node,
             adjacency,
-            threshold=None,  # Will be calculated from radii
             entity_radius=entity_radius,
             ninja_radius=ninja_radius,
             spatial_hash=self._spatial_hash,
@@ -231,7 +236,9 @@ class CachedPathDistanceCalculator:
 
         self.misses += 1
         with self.timer.measure("pathfinding_compute"):
-            distance = self.calculator.calculate_distance(start_node, goal_node, adjacency)
+            distance = self.calculator.calculate_distance(
+                start_node, goal_node, adjacency
+            )
 
         # Cache the result (both nodes are guaranteed to be valid at this point)
         if len(self.cache) >= self.max_cache_size:
@@ -242,6 +249,86 @@ class CachedPathDistanceCalculator:
         self.cache[key] = distance
 
         return distance
+
+    def get_path_and_distance(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        adjacency: Dict,
+        cache_key: Optional[str] = None,
+        level_data: Optional[LevelData] = None,
+        graph_data: Optional[Dict] = None,
+        entity_radius: float = 0.0,
+        ninja_radius: float = 10.0,
+    ) -> Tuple[Optional[List[Tuple[int, int]]], float]:
+        """
+        Get both path sequence and distance with caching and spatial indexing.
+
+        This extends get_distance() to also return the actual path waypoints,
+        which is useful for path-based action masking and visualization.
+
+        Args:
+            start: Start position (world/full map space)
+            goal: Goal position (world/full map space)
+            adjacency: Graph adjacency (filtered to only reachable nodes)
+            cache_key: Optional key for cache invalidation (e.g., entity type)
+            level_data: Optional level data for level-based caching
+            graph_data: Optional graph data dict with spatial_hash for fast lookup
+            entity_radius: Collision radius of the goal entity (default 0.0)
+            ninja_radius: Collision radius of the ninja (default 10.0)
+
+        Returns:
+            Tuple of (path, distance) where:
+            - path: List of (x,y) waypoints from start to goal, or None if unreachable
+            - distance: Shortest path distance in pixels, or float('inf') if unreachable
+        """
+        # Extract spatial hash and subcell lookup from graph_data if available
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
+        )
+
+        # Store spatial_hash for later use if available
+        if spatial_hash is not None:
+            self._spatial_hash = spatial_hash
+
+        # Find nodes for start and goal using smart selection
+        from .pathfinding_utils import (
+            find_start_node_for_player,
+            find_goal_node_closest_to_start,
+        )
+
+        # Find start node (prefer overlapped nodes closest to goal)
+        start_node = find_start_node_for_player(
+            start,
+            adjacency,
+            player_radius=ninja_radius,
+            spatial_hash=self._spatial_hash,
+            subcell_lookup=subcell_lookup,
+            goal_pos=goal,
+        )
+
+        # Find goal node (prefer closest to start among goal candidates)
+        goal_node = find_goal_node_closest_to_start(
+            goal,
+            start_node,
+            adjacency,
+            entity_radius=entity_radius,
+            ninja_radius=ninja_radius,
+            spatial_hash=self._spatial_hash,
+            subcell_lookup=subcell_lookup,
+        )
+
+        # If we can't find nodes for start or goal, path is unreachable
+        if start_node is None or goal_node is None:
+            return None, float("inf")
+
+        # Use find_shortest_path_with_parents to get both path and distance
+        with self.timer.measure("pathfinding_compute"):
+            path, distance = find_shortest_path_with_parents(
+                start_node, goal_node, adjacency
+            )
+
+        return path, distance
 
     def clear_cache(self):
         """Clear cache (call on level change)."""

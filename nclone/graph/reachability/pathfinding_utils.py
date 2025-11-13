@@ -249,6 +249,231 @@ def find_closest_node_to_position(
     return None
 
 
+def find_start_node_for_player(
+    player_pos: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    player_radius: float = 10.0,
+    spatial_hash: Optional[any] = None,
+    subcell_lookup: Optional[any] = None,
+    goal_pos: Optional[Tuple[int, int]] = None,
+) -> Optional[Tuple[int, int]]:
+    """
+    Find best start node for player position, preferring overlapped nodes.
+
+    Priority:
+    1. Nodes whose centers are within player radius (overlapped)
+       - If multiple overlapped and goal_pos provided: select closest to goal
+       - Otherwise: select topmost (lowest y value)
+    2. If no overlapped nodes, closest node within threshold
+
+    Args:
+        player_pos: Player world position (x, y) in pixels
+        adjacency: Graph adjacency structure
+        player_radius: Player collision radius (default 10.0)
+        spatial_hash: Optional SpatialHash for fast lookup
+        subcell_lookup: Optional SubcellNodeLookupLoader for fastest lookup
+        goal_pos: Optional goal position to prefer nodes in goal direction
+
+    Returns:
+        Best start node, or None if none found
+    """
+    if not adjacency:
+        return None
+
+    world_x, world_y = player_pos
+    query_x = world_x - NODE_WORLD_COORD_OFFSET
+    query_y = world_y - NODE_WORLD_COORD_OFFSET
+
+    # Get candidates within larger search radius
+    search_radius = player_radius * 2.0  # Search wider initially
+
+    overlapped_nodes = []
+    nearby_nodes = []
+
+    # Get subcell_lookup if not provided
+    if subcell_lookup is None:
+        try:
+            subcell_lookup = _get_subcell_lookup_loader()
+        except Exception:
+            subcell_lookup = None
+
+    # Use spatial indexing to get candidates
+    candidates = []
+    if subcell_lookup is not None:
+        try:
+            # Use subcell lookup to find nodes within search radius
+            closest = subcell_lookup.find_closest_node_position(
+                query_x, query_y, adjacency, max_radius=search_radius
+            )
+            if closest is not None:
+                # Get all nearby candidates using spatial hash or linear search
+                if spatial_hash is not None:
+                    candidates = spatial_hash.query(
+                        query_x, query_y, radius=search_radius
+                    )
+                    candidates = [c for c in candidates if c in adjacency]
+                else:
+                    # Fallback: check all nodes
+                    for node in adjacency.keys():
+                        nx, ny = node
+                        dist_sq = (nx - query_x) ** 2 + (ny - query_y) ** 2
+                        if dist_sq <= search_radius * search_radius:
+                            candidates.append(node)
+        except Exception:
+            candidates = []
+
+    if not candidates:
+        if spatial_hash is not None:
+            try:
+                candidates = spatial_hash.query(query_x, query_y, radius=search_radius)
+                candidates = [c for c in candidates if c in adjacency]
+            except Exception:
+                candidates = []
+
+    # Final fallback: all nodes
+    if not candidates:
+        candidates = list(adjacency.keys())
+
+    # Categorize candidates
+    for node in candidates:
+        nx, ny = node
+        dist_sq = (nx - query_x) ** 2 + (ny - query_y) ** 2
+        dist = dist_sq**0.5
+
+        if dist <= player_radius:
+            # Node center is within player radius (overlapped)
+            overlapped_nodes.append((node, dist))
+        elif dist <= search_radius:
+            nearby_nodes.append((node, dist))
+
+    # Prefer overlapped nodes
+    if overlapped_nodes:
+        if len(overlapped_nodes) > 1:
+            if goal_pos is not None:
+                # Prefer node closest to goal (most relevant direction)
+                goal_x = goal_pos[0] - NODE_WORLD_COORD_OFFSET
+                goal_y = goal_pos[1] - NODE_WORLD_COORD_OFFSET
+                overlapped_nodes.sort(
+                    key=lambda x: (x[0][0] - goal_x) ** 2 + (x[0][1] - goal_y) ** 2
+                )
+                return overlapped_nodes[0][0]
+            else:
+                # Prefer topmost node (lowest y value) for consistency
+                overlapped_nodes.sort(key=lambda x: x[0][1])
+                return overlapped_nodes[0][0]
+        else:
+            return overlapped_nodes[0][0]
+
+    # Fallback to closest nearby node
+    if nearby_nodes:
+        nearby_nodes.sort(key=lambda x: x[1])
+        return nearby_nodes[0][0]
+
+    return None
+
+
+def find_goal_node_closest_to_start(
+    goal_pos: Tuple[int, int],
+    start_node: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    entity_radius: float = 0.0,
+    ninja_radius: float = 10.0,
+    spatial_hash: Optional[any] = None,
+    subcell_lookup: Optional[any] = None,
+) -> Optional[Tuple[int, int]]:
+    """
+    Find goal node closest to start among nodes overlapped by entity radius.
+
+    Strategy:
+    1. Find all nodes within entity_radius of goal position (overlapped nodes)
+    2. Among those, select the one closest to start_node
+    3. If no overlapped nodes, expand search to ninja_radius + entity_radius
+
+    Args:
+        goal_pos: Goal world position (x, y) in pixels
+        start_node: Start node position (for proximity check)
+        adjacency: Graph adjacency structure
+        entity_radius: Entity collision radius
+        ninja_radius: Ninja collision radius
+        spatial_hash: Optional SpatialHash
+        subcell_lookup: Optional SubcellNodeLookupLoader
+
+    Returns:
+        Best goal node, or None if none found
+    """
+    if not adjacency or start_node is None:
+        return None
+
+    world_x, world_y = goal_pos
+    query_x = world_x - NODE_WORLD_COORD_OFFSET
+    query_y = world_y - NODE_WORLD_COORD_OFFSET
+
+    # Get subcell_lookup if not provided
+    if subcell_lookup is None:
+        try:
+            subcell_lookup = _get_subcell_lookup_loader()
+        except Exception:
+            subcell_lookup = None
+
+    # First try to find nodes overlapped by entity radius
+    overlapped_nodes = []
+    nearby_nodes = []
+
+    # Search radius for candidates
+    search_radius = ninja_radius + entity_radius
+
+    # Get candidates within search radius
+    candidates = []
+    if spatial_hash is not None:
+        try:
+            candidates = spatial_hash.query(query_x, query_y, radius=search_radius)
+            candidates = [c for c in candidates if c in adjacency]
+        except Exception:
+            pass
+
+    # Fallback: linear search if no spatial hash
+    if not candidates:
+        for node in adjacency.keys():
+            nx, ny = node
+            dist_sq = (nx - query_x) ** 2 + (ny - query_y) ** 2
+            if dist_sq <= search_radius * search_radius:
+                candidates.append(node)
+
+    if not candidates:
+        return None
+
+    # Categorize candidates by distance to goal
+    for candidate in candidates:
+        cx, cy = candidate
+        dist_to_goal = ((cx - query_x) ** 2 + (cy - query_y) ** 2) ** 0.5
+
+        if dist_to_goal <= entity_radius:
+            # Node overlapped by entity radius
+            overlapped_nodes.append(candidate)
+        else:
+            nearby_nodes.append(candidate)
+
+    # Prefer nodes overlapped by entity radius
+    search_set = overlapped_nodes if overlapped_nodes else nearby_nodes
+
+    if not search_set:
+        return None
+
+    # Among candidates, find closest to start_node
+    sx, sy = start_node
+    min_dist_to_start = float("inf")
+    best_node = None
+
+    for candidate in search_set:
+        cx, cy = candidate
+        dist_sq = (cx - sx) ** 2 + (cy - sy) ** 2
+        if dist_sq < min_dist_to_start:
+            min_dist_to_start = dist_sq
+            best_node = candidate
+
+    return best_node
+
+
 def bfs_distance_from_start(
     start_node: Tuple[int, int],
     target_node: Optional[Tuple[int, int]],

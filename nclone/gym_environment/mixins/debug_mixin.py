@@ -40,6 +40,7 @@ class DebugMixin:
         self._adjacency_graph_debug_enabled: bool = False
         self._blocked_entities_debug_enabled: bool = False
         self._show_paths_to_goals: bool = False
+        self._path_segments_debug_enabled: bool = False
         self._path_aware_graph_data = None
         self._path_aware_entity_mask = None
         self._path_aware_level_data = None
@@ -54,6 +55,13 @@ class DebugMixin:
         self._terminal_velocity_probability_frames: int = (
             10  # Number of frames to simulate
         )
+
+        # Action mask debug visualization state
+        self._action_mask_debug_enabled: bool = False
+        self._last_action_taken: Optional[int] = None
+
+        # Reachable wall debug visualization state
+        self._reachable_walls_debug_enabled: bool = False
 
     def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
@@ -77,6 +85,7 @@ class DebugMixin:
                 "show_adjacency": self._adjacency_graph_debug_enabled,
                 "show_blocked": self._blocked_entities_debug_enabled,
                 "show_paths": self._show_paths_to_goals,
+                "show_segments": self._show_paths_to_goals,  # Auto-enable when paths shown
                 "graph_data": self._path_aware_graph_data,
                 "entity_mask": self._path_aware_entity_mask,
                 "level_data": self._path_aware_level_data
@@ -86,6 +95,21 @@ class DebugMixin:
                 if hasattr(self, "level_data")
                 else [],
             }
+
+            # Add segment data when paths are shown
+            if self._show_paths_to_goals:
+                # Get segment data from path guidance predictor
+                if (
+                    hasattr(self, "nplay_headless")
+                    and hasattr(self.nplay_headless, "sim")
+                    and hasattr(self.nplay_headless.sim, "ninja")
+                    and hasattr(
+                        self.nplay_headless.sim.ninja, "path_guidance_predictor"
+                    )
+                ):
+                    predictor = self.nplay_headless.sim.ninja.path_guidance_predictor
+                    # Path guidance predictor now uses distance-based masking
+                    # Segments are no longer tracked
 
         # Add other debug info only if general debug overlay is enabled
         if self._enable_debug_overlay:
@@ -176,6 +200,47 @@ class DebugMixin:
                     "ninja_position": self.nplay_headless.ninja_position(),
                 }
 
+        # Add action mask visualization if enabled
+        if self._action_mask_debug_enabled:
+            # Get action mask from cached observation or fresh observation
+            action_mask = None
+            if hasattr(self, "_cached_observation") and self._cached_observation:
+                action_mask = self._cached_observation.get("action_mask")
+            elif hasattr(self, "nplay_headless") and hasattr(
+                self.nplay_headless, "sim"
+            ):
+                sim = self.nplay_headless.sim
+                if hasattr(sim, "ninja"):
+                    action_mask = sim.ninja.get_valid_action_mask()
+
+            if action_mask is not None:
+                info["action_mask"] = {
+                    "action_mask": action_mask,
+                    "ninja_position": self.nplay_headless.ninja_position(),
+                    "last_action": self._last_action_taken,
+                }
+
+        # Add reachable wall segments visualization if enabled
+        if self._reachable_walls_debug_enabled:
+            wall_segments = []
+            if (
+                hasattr(self, "nplay_headless")
+                and hasattr(self.nplay_headless, "sim")
+                and hasattr(self.nplay_headless.sim, "ninja")
+                and hasattr(self.nplay_headless.sim.ninja, "path_guidance_predictor")
+            ):
+                predictor = self.nplay_headless.sim.ninja.path_guidance_predictor
+                ninja_pos = self.nplay_headless.ninja_position()
+                wall_segments = predictor.get_reachable_wall_segments_for_debug(
+                    ninja_pos, threshold=24.0
+                )
+
+            if wall_segments:
+                info["reachable_walls"] = {
+                    "wall_segments": wall_segments,
+                    "ninja_position": self.nplay_headless.ninja_position(),
+                }
+
         return info if info else None  # Return None if no debug info is to be shown
 
     def _get_pbrs_surface_area(self) -> Optional[float]:
@@ -185,16 +250,12 @@ class DebugMixin:
             Surface area (number of reachable sub-nodes) if available, None otherwise.
             Surface area is computed when PBRS potential is first calculated for a level.
         """
-        try:
-            if hasattr(self, "reward_calculator") and hasattr(
-                self.reward_calculator, "pbrs_calculator"
-            ):
-                pbrs_calc = self.reward_calculator.pbrs_calculator
-                if hasattr(pbrs_calc, "_cached_surface_area"):
-                    return pbrs_calc._cached_surface_area
-        except Exception:
-            # Silently fail if PBRS calculator not available or not initialized
-            pass
+        if hasattr(self, "reward_calculator") and hasattr(
+            self.reward_calculator, "pbrs_calculator"
+        ):
+            pbrs_calc = self.reward_calculator.pbrs_calculator
+            if hasattr(pbrs_calc, "_cached_surface_area"):
+                return pbrs_calc._cached_surface_area
         return None
 
     def _get_exploration_debug_info(
@@ -307,6 +368,10 @@ class DebugMixin:
         """Enable/disable path to goals visualization."""
         self._show_paths_to_goals = bool(enabled)
 
+    def set_path_segments_debug_enabled(self, enabled: bool):
+        """Enable/disable path segment visualization."""
+        self._path_segments_debug_enabled = bool(enabled)
+
     def set_path_aware_data(self, graph_data=None, entity_mask=None, level_data=None):
         """Set path-aware graph and entity mask data for visualization."""
         self._path_aware_graph_data = graph_data
@@ -334,3 +399,15 @@ class DebugMixin:
         self._terminal_velocity_probability_frames = max(
             1, min(frames, 30)
         )  # Clamp to [1, 30]
+
+    def set_action_mask_debug_enabled(self, enabled: bool):
+        """Enable/disable action mask debug visualization."""
+        self._action_mask_debug_enabled = bool(enabled)
+
+    def _record_action_for_debug(self, action: int):
+        """Record the action taken for debug visualization."""
+        self._last_action_taken = action
+
+    def set_reachable_walls_debug_enabled(self, enabled: bool):
+        """Enable/disable reachable wall segments debug visualization."""
+        self._reachable_walls_debug_enabled = bool(enabled)
