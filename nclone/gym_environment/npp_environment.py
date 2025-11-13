@@ -427,21 +427,6 @@ class NppEnvironment(
                 # If tile extraction fails, proceed without caching
                 pass
 
-        # Get graph data for optimization
-        if self.current_graph_data is None:
-            logger.warning(
-                "Graph data not available. Building terminal velocity predictor without optimization."
-            )
-            # Create predictor without graph optimization
-            predictor = TerminalVelocityPredictor(
-                self.nplay_headless.sim, graph_data=None
-            )
-        else:
-            # Pass full graph data for optimization
-            predictor = TerminalVelocityPredictor(
-                self.nplay_headless.sim, graph_data=self.current_graph_data
-            )
-
         # Get reachable positions for lookup table
         reachable_positions = (
             self.current_graph_data.get("reachable", set())
@@ -457,11 +442,107 @@ class NppEnvironment(
             self.nplay_headless.sim.ninja.terminal_velocity_predictor = None
             return
 
-        # Build lookup table (graph-constrained, optimized, with per-level caching)
-        verbose = getattr(self, "debug", False)
-        predictor.build_lookup_table(
-            reachable_positions, level_id=level_id, verbose=verbose
+        # Calculate reachability ratio for strategy selection
+        from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
+
+        total_cells = (LEVEL_WIDTH_PX // 24) * (LEVEL_HEIGHT_PX // 24)
+        reachability_ratio = (
+            len(reachable_positions) / total_cells if total_cells > 0 else 0.0
         )
+
+        verbose = getattr(self, "debug", False)
+
+        # Smart strategy selection based on level characteristics
+        if reachability_ratio > 0.8:
+            # Open level: use lazy building (instant initialization)
+            # Terminal impacts are rare in open spaces, lazy caching is more efficient
+            if verbose:
+                logger.info(
+                    f"Terminal velocity strategy: LAZY building (reachability={reachability_ratio:.2f}, open level)"
+                )
+
+            if self.current_graph_data is None:
+                predictor = TerminalVelocityPredictor(
+                    self.nplay_headless.sim, graph_data=None, lazy_build=True
+                )
+            else:
+                predictor = TerminalVelocityPredictor(
+                    self.nplay_headless.sim,
+                    graph_data=self.current_graph_data,
+                    lazy_build=True,
+                )
+
+            # No build_lookup_table() call - start with empty table
+
+        elif reachability_ratio < 0.5:
+            # Dense level: use eager building (precompute hot paths)
+            # Terminal impacts more likely in tight spaces, worth upfront cost
+            if verbose:
+                logger.info(
+                    f"Terminal velocity strategy: EAGER building (reachability={reachability_ratio:.2f}, dense level)"
+                )
+
+            if self.current_graph_data is None:
+                predictor = TerminalVelocityPredictor(
+                    self.nplay_headless.sim, graph_data=None, lazy_build=False
+                )
+            else:
+                predictor = TerminalVelocityPredictor(
+                    self.nplay_headless.sim,
+                    graph_data=self.current_graph_data,
+                    lazy_build=False,
+                )
+
+            # Build full lookup table for all reachable positions
+            predictor.build_lookup_table(
+                reachable_positions, level_id=level_id, verbose=verbose
+            )
+
+        else:
+            # Medium level: hybrid strategy (surface-adjacent only)
+            # Balance between build time and runtime performance
+            if verbose:
+                logger.info(
+                    f"Terminal velocity strategy: HYBRID building (reachability={reachability_ratio:.2f}, medium level)"
+                )
+
+            if self.current_graph_data is None:
+                predictor = TerminalVelocityPredictor(
+                    self.nplay_headless.sim, graph_data=None, lazy_build=True
+                )
+            else:
+                predictor = TerminalVelocityPredictor(
+                    self.nplay_headless.sim,
+                    graph_data=self.current_graph_data,
+                    lazy_build=True,
+                )
+
+            # Build lookup table for surface-adjacent positions only
+            # Terminal impacts primarily occur near surfaces
+            surface_positions = predictor._filter_surface_adjacent_positions(
+                reachable_positions, max_distance=48
+            )
+
+            if len(surface_positions) > 0:
+                # Temporarily disable lazy_build for this partial build
+                predictor.lazy_build = False
+                predictor.build_lookup_table(
+                    surface_positions, level_id=level_id, verbose=verbose
+                )
+                # Re-enable lazy_build for runtime caching
+                predictor.lazy_build = True
+
+                if verbose:
+                    logger.info(
+                        f"Hybrid build: {len(surface_positions)}/{len(reachable_positions)} "
+                        f"surface-adjacent positions precomputed ({100 * len(surface_positions) / len(reachable_positions):.1f}%)"
+                    )
+            else:
+                # No surface positions found, fall back to pure lazy
+                if verbose:
+                    logger.info(
+                        "Hybrid build: No surface positions found, using pure lazy mode"
+                    )
 
         # Attach predictor to ninja
         self.nplay_headless.sim.ninja.terminal_velocity_predictor = predictor
@@ -473,60 +554,6 @@ class NppEnvironment(
                 f"{stats.build_time_ms:.1f}ms, "
                 f"{stats.lookup_table_size} entries (reachability-optimized)"
             )
-
-    def _initialize_path_guidance_predictor(self):
-        """
-        Initialize path guidance predictor for action masking.
-
-        Creates a PathGuidancePredictor instance that uses spatial node transitions
-        to efficiently mask actions moving away from monotonic paths. The predictor
-        only recalculates paths when the ninja crosses 12x12px node boundaries.
-
-        Called once per episode reset after graph building is complete.
-        """
-        from ..gym_environment.action_masking.path_guidance_predictor import (
-            PathGuidancePredictor,
-        )
-
-        # Get path calculator from reward calculator
-        # The reward calculator already has an optimized CachedPathDistanceCalculator
-        if not hasattr(self, "reward_calculator") or self.reward_calculator is None:
-            logger.warning(
-                "Reward calculator not available. Skipping path guidance predictor initialization."
-            )
-            self.nplay_headless.sim.ninja.path_guidance_predictor = None
-            return
-
-        if (
-            not hasattr(self.reward_calculator, "path_calculator")
-            or self.reward_calculator.path_calculator is None
-        ):
-            logger.warning(
-                "Path calculator not available in reward calculator. "
-                "Skipping path guidance predictor initialization."
-            )
-            self.nplay_headless.sim.ninja.path_guidance_predictor = None
-            return
-
-        # Create predictor with shared path calculator
-        try:
-            predictor = PathGuidancePredictor(
-                path_calculator=self.reward_calculator.path_calculator,
-                strict_mode=False,  # Conservative masking by default
-                sim=self.nplay_headless.sim,  # Pass sim reference for wall detection
-            )
-
-            # Attach predictor to ninja
-            self.nplay_headless.sim.ninja.path_guidance_predictor = predictor
-
-            verbose = getattr(self, "debug", False)
-            if verbose:
-                logger.info("Path guidance predictor initialized for action masking")
-        except Exception as e:
-            logger.error(f"Failed to initialize path guidance predictor: {e}")
-            # Set predictor to None to avoid using partial/broken predictor
-            self.nplay_headless.sim.ninja.path_guidance_predictor = None
-            # Don't raise - path guidance masking is optional
 
     def _build_door_feature_cache(self):
         """
@@ -659,9 +686,6 @@ class NppEnvironment(
         # Build terminal velocity predictor lookup table after graph is ready
         self._build_terminal_velocity_lookup_table()
 
-        # Initialize path guidance predictor for action masking
-        self._initialize_path_guidance_predictor()
-
         # Build precomputed door feature cache after graph is ready
         # PERFORMANCE: Precomputes ALL path distances for O(1) runtime lookup
         self._build_door_feature_cache()
@@ -752,12 +776,49 @@ class NppEnvironment(
                 is not None
             ):
                 ninja = self.nplay_headless.sim.ninja
-                # Calculate terminal velocity death probabilities for all 6 actions
-                tv_death_prob_result = (
-                    ninja.terminal_velocity_predictor.calculate_death_probability(
-                        frames_to_simulate=10
+                predictor = ninja.terminal_velocity_predictor
+
+                # Conditional computation: only compute when ninja is in risky state
+                # This matches the Tier 1 filter logic in is_action_deadly()
+                from ..constants.physics_constants import TERMINAL_IMPACT_SAFE_VELOCITY
+                from ..terminal_velocity_predictor import DeathProbabilityResult
+
+                # Check if chaining wall jumps (TWO wall jumps within 6 frames of each other)
+                # Single wall jump doesn't build enough velocity to be lethal
+                frames_between_jumps = (
+                    ninja.last_wall_jump_frame - ninja.second_last_wall_jump_frame
+                )
+                is_chaining_wall_jumps = (
+                    frames_between_jumps <= 6 and frames_between_jumps > 0
+                )
+
+                is_risky_state = (
+                    ninja.airborn
+                    and (
+                        ninja.yspeed
+                        > TERMINAL_IMPACT_SAFE_VELOCITY  # Dangerous downward velocity
+                        or (
+                            ninja.yspeed
+                            < -TERMINAL_IMPACT_SAFE_VELOCITY  # Dangerous upward velocity
+                            and is_chaining_wall_jumps  # Only dangerous if chaining wall jumps
+                        )
                     )
                 )
+
+                if is_risky_state:
+                    # Calculate terminal velocity death probabilities for all 6 actions
+                    tv_death_prob_result = predictor.calculate_death_probability(
+                        frames_to_simulate=10
+                    )
+                else:
+                    # Safe state: return cached zero result (no computation needed)
+                    tv_death_prob_result = DeathProbabilityResult(
+                        action_death_probs=[0.0] * 6,
+                        masked_actions=[],
+                        frames_simulated=0,
+                        nearest_surface_distance=float("inf"),
+                    )
+
                 self._game_state_buffer[
                     idx : idx + TERMINAL_VELOCITY_DEATH_PROBABILITIES_DIM
                 ] = tv_death_prob_result.action_death_probs

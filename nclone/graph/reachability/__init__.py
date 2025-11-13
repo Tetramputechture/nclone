@@ -14,7 +14,7 @@ New path-aware reward shaping components:
 
 from .reachability_system import ReachabilitySystem
 from .reachability_types import (
-    ReachabilityApproximation,
+    ReachabilityResult,
 )
 
 # Path-aware components (optional imports - may not have precomputed data yet)
@@ -40,7 +40,7 @@ try:
 
     __all__ = [
         "ReachabilitySystem",
-        "ReachabilityApproximation",
+        "ReachabilityResult",
         "TileConnectivityLoader",
         "TileConnectivityPrecomputer",
         "EntityMask",
@@ -58,5 +58,5 @@ except ImportError:
     # Precomputed data not available yet
     __all__ = [
         "ReachabilitySystem",
-        "ReachabilityApproximation",
+        "ReachabilityResult",
     ]

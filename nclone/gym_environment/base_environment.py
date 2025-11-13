@@ -781,48 +781,6 @@ class BaseNppEnvironment(gymnasium.Env):
         Returns:
             Action mask as numpy array of int8
         """
-        # Update path guidance predictor if available
-        if (
-            hasattr(self.nplay_headless.sim.ninja, "path_guidance_predictor")
-            and self.nplay_headless.sim.ninja.path_guidance_predictor is not None
-        ):
-            # Determine goal based on switch state
-            if not self.nplay_headless.exit_switch_activated():
-                goal_pos = switch_pos
-            else:
-                goal_pos = exit_pos
-
-            # Get adjacency graph and graph data if available
-            adjacency = None
-            graph_data = None
-            level_data = None
-
-            # Try to get graph data from subclass (NppEnvironment has these)
-            if (
-                hasattr(self, "current_graph_data")
-                and self.current_graph_data is not None
-            ):
-                adjacency = self.current_graph_data.get("adjacency", {})
-                graph_data = self.current_graph_data
-
-            if hasattr(self, "level_data"):
-                level_data = self.level_data
-
-            # Update path only if we have adjacency graph
-            if adjacency:
-                try:
-                    self.nplay_headless.sim.ninja.path_guidance_predictor.update_path(
-                        ninja_pos,
-                        goal_pos,
-                        adjacency,
-                        graph_data=graph_data,
-                        level_data=level_data,
-                    )
-                except Exception as e:
-                    # Log error but don't fail - path guidance is optional
-                    if self.enable_logging:
-                        logger.warning(f"Failed to update path guidance: {e}")
-
         # Get action mask from ninja
         return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
 

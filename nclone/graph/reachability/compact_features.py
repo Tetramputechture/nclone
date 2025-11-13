@@ -2,7 +2,7 @@
 Simplified compact reachability features for RL integration.
 
 This module implements simplified 8-dimensional feature encoding that relies on
-the fast OpenCV flood fill reachability system. It removes complex physics
+the graph-based flood fill reachability system. It removes complex physics
 calculations and focuses on strategic connectivity information.
 
 Feature Vector Layout (8 dimensions):
@@ -21,7 +21,7 @@ import math
 from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 
-from .reachability_types import ReachabilityApproximation
+from .reachability_types import ReachabilityResult
 from ...planning import LevelCompletionPlanner
 from ...gym_environment.constants import LEVEL_DIAGONAL
 
@@ -64,7 +64,7 @@ class CompactReachabilityFeatures:
 
     def encode_reachability(
         self,
-        reachability_result: ReachabilityApproximation,
+        reachability_result: ReachabilityResult,
         level_data: Any,
         entities: List[Any],
         ninja_position: Tuple[float, float],
@@ -131,7 +131,7 @@ class CompactReachabilityFeatures:
         return features
 
     def _calculate_reachable_area_ratio(
-        self, reachability_result: ReachabilityApproximation, level_data: Any
+        self, reachability_result: ReachabilityResult, level_data: Any
     ) -> float:
         """Calculate the ratio of reachable area to total traversable area."""
         reachable_count = len(reachability_result.reachable_positions)
@@ -149,7 +149,7 @@ class CompactReachabilityFeatures:
 
     def _calculate_objective_distance(
         self,
-        reachability_result: ReachabilityApproximation,
+        reachability_result: ReachabilityResult,
         level_data: Any,
         entities: List[Any],
         ninja_position: Tuple[float, float],
@@ -176,7 +176,7 @@ class CompactReachabilityFeatures:
 
     def _calculate_switch_accessibility(
         self,
-        reachability_result: ReachabilityApproximation,
+        reachability_result: ReachabilityResult,
         entities: List[Any],
         switch_states: Dict[str, bool],
     ) -> float:
@@ -206,7 +206,7 @@ class CompactReachabilityFeatures:
         return accessible_switches / important_switches
 
     def _calculate_exit_accessibility(
-        self, reachability_result: ReachabilityApproximation, entities: List[Any]
+        self, reachability_result: ReachabilityResult, entities: List[Any]
     ) -> float:
         """Calculate accessibility of exit."""
         # Find exit entities
@@ -233,7 +233,7 @@ class CompactReachabilityFeatures:
 
     def _calculate_hazard_proximity(
         self,
-        reachability_result: ReachabilityApproximation,
+        reachability_result: ReachabilityResult,
         entities: List[Any],
         ninja_position: Tuple[float, float],
     ) -> float:
@@ -283,7 +283,7 @@ class CompactReachabilityFeatures:
             return 0.0
 
     def _calculate_connectivity_score(
-        self, reachability_result: ReachabilityApproximation
+        self, reachability_result: ReachabilityResult
     ) -> float:
         """Calculate overall connectivity score based on reachable positions."""
         reachable_count = len(reachability_result.reachable_positions)
@@ -304,7 +304,7 @@ class CompactReachabilityFeatures:
     def _is_position_reachable(
         self,
         position: Tuple[float, float],
-        reachability_result: ReachabilityApproximation,
+        reachability_result: ReachabilityResult,
     ) -> bool:
         """Check if a position is reachable according to reachability analysis."""
         # Convert position to tile coordinates for comparison

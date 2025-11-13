@@ -210,7 +210,7 @@ class NodeFeatureBuilder:
         Args:
             features: Feature array to modify
             reachability_info: Dict with keys:
-                - reachable_from_ninja: bool (from ReachabilityApproximation.is_position_reachable)
+                - reachable_from_ninja: bool (from ReachabilityResult.is_position_reachable)
 
         Note: Movement requirements (jump/walljump) are NOT included as physics
         is too complex to pre-compute. Agent learns from frames and game state.

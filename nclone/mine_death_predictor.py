@@ -26,7 +26,6 @@ from .constants import (
 class HybridPredictorStats:
     """Statistics about the hybrid predictor."""
 
-    build_time_ms: float = 0.0
     reachable_mines: int = 0
     danger_zone_cells: int = 0
     tier1_queries: int = 0  # Queries handled by spatial filter
