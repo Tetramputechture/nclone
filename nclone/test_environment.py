@@ -14,6 +14,8 @@ L - Toggle tile rendering
 M - Toggle mine predictor debug overlay
 D - Toggle mine death probability debug overlay
 T - Toggle terminal velocity death probability debug overlay
+W - Toggle action mask debug overlay
+U - Toggle reachable walls debug overlay
 R - Reset environment
 
 Examples:
@@ -479,7 +481,9 @@ if (
     print("\nRuntime Controls:")
     print("  A - Toggle adjacency graph visualization")
     print("  B - Toggle blocked entity highlighting")
-    print("  P - Toggle path to goals visualization (shows shortest paths)")
+    print("  P - Toggle path to goals visualization (with colored segments)")
+    print("      • Cyan: Right | Magenta: Left | Gold: Down | Green: Up")
+    print("      • Thicker line = current segment")
     print("  T - Run pathfinding benchmark at current position")
     print("  X - Export path analysis screenshot")
     print("  R - Reset environment")
@@ -778,6 +782,8 @@ tile_types_debug_enabled = False
 mine_predictor_debug_enabled = False
 death_probability_debug_enabled = False
 terminal_velocity_probability_debug_enabled = False
+action_mask_debug_enabled = False
+reachable_walls_debug_enabled = False
 path_aware_system = None
 adjacency_graph_debug_enabled = False
 blocked_entities_debug_enabled = False
@@ -940,16 +946,19 @@ def manual_reset(env: NppEnvironment):
     env._reset_graph_state()
     print("Updating graph from env state")
     env._update_graph_from_env_state()
+    print("Clearing reachability cache")
+    env._clear_reachability_cache()
+    print("Building door feature cache")
+    env._build_door_feature_cache()
     print("Building mine death lookup table")
     env._build_mine_death_lookup_table()
     print("Building terminal velocity lookup table")
     env._build_terminal_velocity_lookup_table()
-    print("Building door feature cache")
-    env._build_door_feature_cache()
-    print("Clearing reachability cache")
-    env._clear_reachability_cache()
+    print("Initializing path guidance predictor")
+    env._initialize_path_guidance_predictor()
 
 
+manual_reset(env)
 # Main game loop
 # Wrap the game loop with profiler.enable() and profiler.disable()
 profiler.enable()
@@ -1139,6 +1148,28 @@ while running:
                         print(
                             f"Failed to toggle terminal velocity death probability debug: {e}"
                         )
+                if event.key == pygame.K_w:
+                    # Toggle action mask debug overlay
+                    action_mask_debug_enabled = not action_mask_debug_enabled
+                    try:
+                        env.set_action_mask_debug_enabled(action_mask_debug_enabled)
+                        print(
+                            f"Action mask debug: {'ON' if action_mask_debug_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Failed to toggle action mask debug: {e}")
+                if event.key == pygame.K_u:
+                    # Toggle reachable walls debug overlay
+                    reachable_walls_debug_enabled = not reachable_walls_debug_enabled
+                    try:
+                        env.set_reachable_walls_debug_enabled(
+                            reachable_walls_debug_enabled
+                        )
+                        print(
+                            f"Reachable walls debug: {'ON' if reachable_walls_debug_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Failed to toggle reachable walls debug: {e}")
                 if event.key == pygame.K_l:
                     # Toggle tile rendering
                     tile_rendering_enabled = not tile_rendering_enabled

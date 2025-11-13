@@ -53,18 +53,16 @@ import math
 from typing import Dict, Any, List, Tuple, Union
 from collections import defaultdict
 
-from ..entities import GridSegmentLinear, GridSegmentCircular
+from ..entities import GridSegmentLinear
 from ..tile_definitions import (
     TILE_GRID_EDGE_MAP,
     TILE_SEGMENT_ORTHO_MAP,
-    TILE_SEGMENT_DIAG_MAP,
-    TILE_SEGMENT_CIRCULAR_MAP,
 )
 from ..constants.physics_constants import (
-    TILE_PIXEL_SIZE,
     FULL_MAP_WIDTH,
     FULL_MAP_HEIGHT,
 )
+from .tile_segment_cache import TileSegmentCache
 
 
 class TileSegmentFactory:
@@ -210,24 +208,11 @@ class TileSegmentFactory:
                     ]
 
         # Process non-orthogonal segments (diagonal and circular)
-        xtl = xcoord * TILE_PIXEL_SIZE
-        ytl = ycoord * TILE_PIXEL_SIZE
-
-        # Add diagonal segments
-        if tile_id in TILE_SEGMENT_DIAG_MAP:
-            ((x1, y1), (x2, y2)) = TILE_SEGMENT_DIAG_MAP[tile_id]
-            segment_dic[coord].append(
-                GridSegmentLinear((xtl + x1, ytl + y1), (xtl + x2, ytl + y2))
-            )
-
-        # Add circular segments
-        if tile_id in TILE_SEGMENT_CIRCULAR_MAP:
-            ((x_center, y_center), quadrant, convex) = TILE_SEGMENT_CIRCULAR_MAP[
-                tile_id
-            ]
-            segment_dic[coord].append(
-                GridSegmentCircular((xtl + x_center, ytl + y_center), quadrant, convex)
-            )
+        # Use TileSegmentCache for efficient template-based instantiation
+        non_ortho_segments = TileSegmentCache.instantiate_segments(
+            tile_id, xcoord, ycoord
+        )
+        segment_dic[coord].extend(non_ortho_segments)
 
     @staticmethod
     def _process_orthogonal_segments(hor_segment_dic, ver_segment_dic, segment_dic):

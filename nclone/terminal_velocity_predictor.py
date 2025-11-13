@@ -11,6 +11,8 @@ accurate physics simulation for predictions.
 """
 
 import time
+import pickle
+from pathlib import Path
 from typing import Set, Tuple, Dict, Optional, List
 from dataclasses import dataclass
 
@@ -19,6 +21,9 @@ from .constants import (
     TERMINAL_IMPACT_SAFE_VELOCITY,
     TERMINAL_VELOCITY_QUANTIZATION,
     TERMINAL_DISTANCE_QUANTIZATION,
+    TILE_PIXEL_SIZE,
+    LEVEL_WIDTH_PX,
+    LEVEL_HEIGHT_PX,
 )
 from .graph.reachability.subcell_node_lookup import (
     SubcellNodeLookupLoader,
@@ -64,6 +69,11 @@ class TerminalVelocityPredictor:
     # Static tiles = static terminal velocity physics
     _lookup_table_cache: Dict[str, Dict[Tuple, int]] = {}
 
+    # Class-level tile-type cache (pre-computed terminal velocity data)
+    # Loaded once from disk, shared across all predictor instances
+    _tile_type_cache: Dict[int, Dict[Tuple, int]] = {}
+    _tile_cache_loaded: bool = False
+
     def __init__(self, sim, graph_data: Optional[Dict] = None):
         """
         Initialize predictor with simulation reference and optional graph data.
@@ -89,6 +99,138 @@ class TerminalVelocityPredictor:
         self.subcell_lookup = None
 
         self.subcell_lookup = SubcellNodeLookupLoader()
+
+        # Load tile cache on first instantiation
+        if not TerminalVelocityPredictor._tile_cache_loaded:
+            self._load_tile_cache()
+
+    @classmethod
+    def _load_tile_cache(cls):
+        """
+        Load or auto-generate pre-computed tile-type terminal velocity data.
+
+        This method loads the offline-computed terminal impact behaviors for
+        flat surface tiles (types 1-5, 18-33). The cache is loaded once per
+        process and shared across all predictor instances.
+
+        If cache is not found, it will be auto-generated on first load.
+        This is a one-time cost (~30-60 seconds) that saves significant time
+        on subsequent runs.
+
+        Curved tiles (6-17) are not cached and use runtime simulation.
+        """
+        if cls._tile_cache_loaded:
+            return
+
+        module_dir = Path(__file__).parent
+        cache_file = module_dir / "data" / "terminal_velocity_tile_cache.pkl"
+
+        # Try to load existing cache
+        if cache_file.exists():
+            try:
+                with open(cache_file, "rb") as f:
+                    cls._tile_type_cache = pickle.load(f)
+                cls._tile_cache_loaded = True
+
+                # Calculate statistics
+                total_entries = sum(len(data) for data in cls._tile_type_cache.values())
+                tiles_with_data = sum(
+                    1 for data in cls._tile_type_cache.values() if len(data) > 0
+                )
+                print(
+                    f"Loaded terminal velocity tile cache: {tiles_with_data} tile types, {total_entries} entries"
+                )
+                return
+            except Exception as e:
+                print(f"Warning: Failed to load cache: {e}")
+                print("Will attempt to regenerate...")
+
+        # Cache not found or failed to load - auto-generate it
+        print()
+        print("=" * 70)
+        print("Terminal velocity tile cache not found. Generating now...")
+        print("This is a ONE-TIME operation (~30-60 seconds)...")
+        print("Subsequent runs will use the cached data (instant load).")
+        print("=" * 70)
+        print()
+
+        try:
+            # Import here to avoid circular dependencies
+            import sys
+
+            sys.path.insert(0, str(module_dir.parent))
+
+            from nclone.tools.precompute_terminal_velocity_data import (
+                generate_all_tile_data,
+                save_data_to_file,
+            )
+
+            # Generate cache data with verbose output
+            cls._tile_type_cache = generate_all_tile_data(
+                verbose=True, use_multiprocessing=True
+            )
+
+            # Save for future use
+            try:
+                save_data_to_file(cls._tile_type_cache, str(cache_file), verbose=True)
+                print()
+                print("=" * 70)
+                print("Cache generation complete and saved!")
+                print(f"Future runs will load instantly from: {cache_file}")
+                print("=" * 70)
+                print()
+            except Exception as e:
+                print(f"Warning: Could not save cache to {cache_file}: {e}")
+                print("Cache will be regenerated on next run.")
+
+            cls._tile_cache_loaded = True
+
+        except Exception as e:
+            import traceback
+
+            print(f"ERROR: Failed to generate terminal velocity cache: {e}")
+            traceback.print_exc()
+            print()
+            print("Falling back to full simulation (slower but functional)")
+            cls._tile_cache_loaded = True  # Mark as attempted
+            cls._tile_type_cache = {}
+
+    def _get_tile_type_at_position(self, x: float, y: float) -> int:
+        """
+        Get tile type at world coordinates.
+
+        Args:
+            x: World X coordinate
+            y: World Y coordinate
+
+        Returns:
+            Tile type ID (0-37), or 0 if no tile exists
+        """
+        tile_x = int(x // TILE_PIXEL_SIZE)
+        tile_y = int(y // TILE_PIXEL_SIZE)
+
+        if hasattr(self.sim, "tile_dic"):
+            return self.sim.tile_dic.get((tile_x, tile_y), 0)
+
+        return 0
+
+    def _is_curved_tile(self, tile_type: int) -> bool:
+        """
+        Check if tile type has curved surfaces.
+
+        Curved tiles (diagonals, quarter circles, quarter pipes) are rare
+        sources of terminal impact deaths (<1%). These tiles are not included
+        in the precomputed cache and use runtime simulation instead.
+
+        Args:
+            tile_type: Tile type ID (0-37)
+
+        Returns:
+            True if tile has curved surfaces, False otherwise
+        """
+        from .constants.tile_constants import CURVED_TILES
+
+        return tile_type in CURVED_TILES
 
     def build_lookup_table(
         self,
@@ -172,24 +314,106 @@ class TerminalVelocityPredictor:
         total_possible = len(reachable_positions) * len(velocity_samples)
         total_sampled = len(sampled_positions) * len(velocity_samples)
 
+        # Track cache usage statistics
+        tile_cache_hits = 0
+        tile_cache_misses = 0
+        tile_type_misses = {}  # Track which tile types cause misses
+        state_misses_per_tile = {}  # Track state-level misses per tile type
+
         for pos_idx, pos in enumerate(sampled_positions):
             if verbose and pos_idx % 100 == 0:
                 print(
-                    f"  Progress: {pos_idx}/{len(sampled_positions)} positions processed"
+                    f"  Progress: {pos_idx}/{len(sampled_positions)} positions processed "
+                    f"(cache hits: {tile_cache_hits}, misses: {tile_cache_misses})"
                 )
 
             for vy in velocity_samples:
                 # Create state key (quantized)
                 state_key = self._create_lookup_key(pos[0], pos[1], 0.0, vy)
 
-                # Simulate each action to determine if deadly (uses physics simulation!)
-                action_mask = 0
-                for action in range(6):
-                    # Simulate to check if deadly
-                    is_deadly = self.simulator.simulate_for_terminal_impact(action)
+                # Try tile cache first (Phase 2 optimization)
+                action_mask = None
+                tile_type = self._get_tile_type_at_position(pos[0], pos[1])
 
-                    if is_deadly:
-                        action_mask |= 1 << action
+                # Skip cache for curved tiles (use simulation instead)
+                if self._is_curved_tile(tile_type):
+                    # Curved tiles not in cache - go directly to simulation
+                    tile_cache_misses += 1
+                    # Fall through to simulation below
+                elif tile_type in self._tile_type_cache:
+                    # Calculate local position within tile
+                    tile_x = int(pos[0] // TILE_PIXEL_SIZE)
+                    tile_y = int(pos[1] // TILE_PIXEL_SIZE)
+                    local_x = pos[0] - (tile_x * TILE_PIXEL_SIZE)
+                    local_y = pos[1] - (tile_y * TILE_PIXEL_SIZE)
+
+                    # Quantize local position and velocity for cache lookup
+                    local_x_q = round(local_x / 6) * 6
+                    local_y_q = round(local_y / 6) * 6
+                    vx_q = 0.0  # We only sample vx=0 for now
+                    vy_q = (
+                        round(vy / TERMINAL_VELOCITY_QUANTIZATION)
+                        * TERMINAL_VELOCITY_QUANTIZATION
+                    )
+
+                    cache_key = (vx_q, vy_q, local_x_q, local_y_q)
+
+                    if cache_key in self._tile_type_cache[tile_type]:
+                        # Cache hit! Use pre-computed result
+                        action_mask = self._tile_type_cache[tile_type][cache_key]
+                        tile_cache_hits += 1
+                    else:
+                        # State-level miss: tile type cached, but this specific state isn't
+                        state_misses_per_tile[tile_type] = (
+                            state_misses_per_tile.get(tile_type, 0) + 1
+                        )
+                        if (
+                            verbose and tile_cache_misses < 10
+                        ):  # Only print first few misses
+                            print(
+                                f"  Cache miss (state): tile_type={tile_type}, "
+                                f"pos=({pos[0]:.0f},{pos[1]:.0f}), local=({local_x:.1f},{local_y:.1f}), "
+                                f"vy={vy:.2f} -> key={cache_key}"
+                            )
+                else:
+                    # Tile-level miss: tile type not in cache at all
+                    # (Note: curved tiles are intentionally skipped, not an error)
+                    tile_type_misses[tile_type] = tile_type_misses.get(tile_type, 0) + 1
+                    # Only warn about unexpected missing tiles (not empty, glitched, or curved)
+                    if verbose and tile_type not in [0, 34, 35, 36, 37]:
+                        if not self._is_curved_tile(tile_type):
+                            if (
+                                tile_type_misses[tile_type] == 1
+                            ):  # Only print once per tile type
+                                print(
+                                    f"  Cache miss (tile): tile_type={tile_type} not in cache "
+                                    f"(at pos {pos[0]:.0f},{pos[1]:.0f})"
+                                )
+
+                # Fall back to simulation if cache miss
+                if action_mask is None:
+                    tile_cache_misses += 1
+
+                    # Create the state dict and set the ninja to this state before simulating
+                    sampled_state = self._create_state_dict(pos[0], pos[1], 0.0, vy)
+
+                    # Save current ninja state so we can restore it after simulations
+                    original_state = self.simulator._save_ninja_state()
+
+                    # Simulate each action to determine if deadly (uses physics simulation!)
+                    action_mask = 0
+                    for action in range(6):
+                        # Set ninja to the sampled state before each simulation
+                        self.simulator._restore_ninja_state(sampled_state)
+
+                        # Simulate to check if deadly
+                        is_deadly = self.simulator.simulate_for_terminal_impact(action)
+
+                        if is_deadly:
+                            action_mask |= 1 << action
+
+                    # Restore original ninja state after all simulations for this sample
+                    self.simulator._restore_ninja_state(original_state)
 
                 self.lookup_table[state_key] = action_mask
 
@@ -206,6 +430,34 @@ class TerminalVelocityPredictor:
             print(f"\nTerminal velocity predictor built in {build_time:.1f}ms:")
             print(f"  Table size: {len(self.lookup_table)} entries")
             print(f"  Memory: ~{(len(self.lookup_table) * 32) / 1024:.1f} KB")
+            if tile_cache_hits + tile_cache_misses > 0:
+                cache_hit_rate = (
+                    100 * tile_cache_hits / (tile_cache_hits + tile_cache_misses)
+                )
+                print(
+                    f"  Tile cache hit rate: {cache_hit_rate:.1f}% ({tile_cache_hits}/{tile_cache_hits + tile_cache_misses})"
+                )
+
+                # Print cache miss breakdown
+                if tile_cache_misses > 0:
+                    print("  Cache miss breakdown:")
+                    if tile_type_misses:
+                        print(
+                            f"    Tile-level misses (tile type not cached): {sum(tile_type_misses.values())} queries"
+                        )
+                        for tile_type, count in sorted(
+                            tile_type_misses.items(), key=lambda x: -x[1]
+                        )[:5]:
+                            print(f"      Tile type {tile_type}: {count} misses")
+                    if state_misses_per_tile:
+                        print(
+                            f"    State-level misses (state not in tile cache): {sum(state_misses_per_tile.values())} queries"
+                        )
+                        for tile_type, count in sorted(
+                            state_misses_per_tile.items(), key=lambda x: -x[1]
+                        )[:5]:
+                            print(f"      Tile type {tile_type}: {count} misses")
+
             if total_possible > 0:
                 reduction_pct = 100 * (1 - total_sampled / total_possible)
                 print(
@@ -427,11 +679,12 @@ class TerminalVelocityPredictor:
         Sample positions from reachable set, prioritizing areas with higher terminal impact risk.
 
         Strategy:
-        1. Use spatial hash to distribute samples uniformly across reachable space
-        2. Prioritize positions near walls/ceilings (higher terminal impact risk)
+        1. For high-reachability levels (>80%): Filter to surface-adjacent positions only
+        2. Use spatial hash to distribute samples uniformly across reachable space
         3. Reduce sampling to ~5% of reachable positions (20x reduction)
 
-        This maintains accuracy while reducing simulation count by 50%.
+        High-reachability optimization: Open levels have large empty spaces where terminal
+        impact is impossible. Focus sampling on positions near surfaces (within 48px of any tile).
 
         Args:
             reachable_positions: Set of all reachable positions from graph
@@ -445,6 +698,21 @@ class TerminalVelocityPredictor:
         if len(reachable_positions) <= target_sample_count:
             # If we have fewer positions than target, use all
             return list(reachable_positions)
+
+        # High-reachability optimization: filter to surface-adjacent positions
+        total_cells = (LEVEL_WIDTH_PX // 24) * (LEVEL_HEIGHT_PX // 24)
+        reachability_ratio = len(reachable_positions) / total_cells
+
+        if reachability_ratio > 0.8:
+            # High reachability: focus on surface-adjacent positions
+            surface_adjacent = self._filter_surface_adjacent_positions(
+                reachable_positions, max_distance=48
+            )
+            if len(surface_adjacent) > 0:
+                # Use surface-adjacent positions for sampling
+                reachable_positions = surface_adjacent
+                # Adjust target to account for reduced search space
+                target_sample_count = min(target_sample_count, len(surface_adjacent))
 
         # Convert to list for indexing
         positions_list = list(reachable_positions)
@@ -490,6 +758,56 @@ class TerminalVelocityPredictor:
             sampled = sampled[:target_sample_count]
 
         return sampled
+
+    def _filter_surface_adjacent_positions(
+        self, positions: Set[Tuple[int, int]], max_distance: int = 48
+    ) -> Set[Tuple[int, int]]:
+        """
+        Filter positions to only those near tile surfaces.
+
+        Terminal velocity deaths occur when the ninja impacts a surface at high speed.
+        In open levels with high reachability, most positions are far from any surface
+        and cannot cause terminal impact. This method filters to positions within
+        max_distance of any tile, dramatically reducing the search space for open levels.
+
+        Args:
+            positions: Set of positions to filter
+            max_distance: Maximum distance from a tile surface (pixels)
+
+        Returns:
+            Set of positions within max_distance of any tile
+        """
+        if not hasattr(self.sim, "tile_dic") or not self.sim.tile_dic:
+            # No tiles - return all positions (shouldn't happen)
+            return positions
+
+        # Get all tile positions
+        tile_positions = set(self.sim.tile_dic.keys())
+
+        # Convert tile grid positions to pixel positions
+        tile_pixel_positions = set()
+        for tx, ty in tile_positions:
+            # Add tile center position
+            pixel_x = tx * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
+            pixel_y = ty * TILE_PIXEL_SIZE + TILE_PIXEL_SIZE // 2
+            tile_pixel_positions.add((pixel_x, pixel_y))
+
+        # Filter positions to those within max_distance of any tile
+        surface_adjacent = set()
+        max_dist_sq = max_distance * max_distance
+
+        for pos in positions:
+            # Check if within max_distance of any tile
+            for tile_pos in tile_pixel_positions:
+                dx = pos[0] - tile_pos[0]
+                dy = pos[1] - tile_pos[1]
+                dist_sq = dx * dx + dy * dy
+
+                if dist_sq <= max_dist_sq:
+                    surface_adjacent.add(pos)
+                    break  # Found nearby tile, no need to check others
+
+        return surface_adjacent if len(surface_adjacent) > 0 else positions
 
     def _distance_to_floor(self, ninja) -> float:
         """

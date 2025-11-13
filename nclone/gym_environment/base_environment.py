@@ -315,6 +315,10 @@ class BaseNppEnvironment(gymnasium.Env):
                     f"Action: {action}"
                 )
 
+            # Record action for debug visualization
+            if hasattr(self, "_record_action_for_debug"):
+                self._record_action_for_debug(action)
+
             # Execute action
             action_hoz, action_jump = self._actions_to_execute(action)
             self.nplay_headless.tick(action_hoz, action_jump)
@@ -746,16 +750,81 @@ class BaseNppEnvironment(gymnasium.Env):
             "entities": entities,  # Entity objects (mines, locked doors, switches)
             "locked_doors": locked_doors,  # For hierarchical navigation
             "locked_door_switches": locked_door_switches,  # For hierarchical navigation
-            "ninja_has_useless_jump": self.nplay_headless.ninja_has_useless_jump_input(),
-            # Action mask (jump-only masking)
-            "action_mask": np.array(
-                self.nplay_headless.get_action_mask(), dtype=np.int8
+            # Update path guidance predictor before getting action mask
+            # This ensures path-based masking has current data
+            "action_mask": self._get_action_mask_with_path_update(
+                ninja_pos, switch_pos, exit_pos
             ),
         }
 
         # Cache the computed observation before returning
         self._cached_observation = obs
         return obs
+
+    def _get_action_mask_with_path_update(
+        self,
+        ninja_pos: Tuple[float, float],
+        switch_pos: Tuple[float, float],
+        exit_pos: Tuple[float, float],
+    ) -> np.ndarray:
+        """Get action mask with path guidance predictor updated.
+
+        Updates the path guidance predictor's cached path before retrieving
+        the action mask. This ensures path-based masking uses current ninja
+        position and goal state.
+
+        Args:
+            ninja_pos: Current ninja position (x, y)
+            switch_pos: Exit switch position (x, y)
+            exit_pos: Exit door position (x, y)
+
+        Returns:
+            Action mask as numpy array of int8
+        """
+        # Update path guidance predictor if available
+        if (
+            hasattr(self.nplay_headless.sim.ninja, "path_guidance_predictor")
+            and self.nplay_headless.sim.ninja.path_guidance_predictor is not None
+        ):
+            # Determine goal based on switch state
+            if not self.nplay_headless.exit_switch_activated():
+                goal_pos = switch_pos
+            else:
+                goal_pos = exit_pos
+
+            # Get adjacency graph and graph data if available
+            adjacency = None
+            graph_data = None
+            level_data = None
+
+            # Try to get graph data from subclass (NppEnvironment has these)
+            if (
+                hasattr(self, "current_graph_data")
+                and self.current_graph_data is not None
+            ):
+                adjacency = self.current_graph_data.get("adjacency", {})
+                graph_data = self.current_graph_data
+
+            if hasattr(self, "level_data"):
+                level_data = self.level_data
+
+            # Update path only if we have adjacency graph
+            if adjacency:
+                try:
+                    self.nplay_headless.sim.ninja.path_guidance_predictor.update_path(
+                        ninja_pos,
+                        goal_pos,
+                        adjacency,
+                        graph_data=graph_data,
+                        level_data=level_data,
+                    )
+                except Exception as e:
+                    # Log error but don't fail - path guidance is optional
+                    if self.enable_logging:
+                        logger.warning(f"Failed to update path guidance: {e}")
+
+        # Get action mask from ninja
+        return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
 
     def _check_termination(self) -> Tuple[bool, bool, bool]:
         """

@@ -320,14 +320,6 @@ class NPlayHeadless:
         """Get ninja's previous frame velocities for impact risk calculation."""
         return self.sim.ninja.xspeed_old, self.sim.ninja.yspeed_old
 
-    def ninja_has_useless_jump_input(self) -> bool:
-        """Check if current jump input is useless (no effect on movement).
-
-        Returns True when jump is pressed but has no effect due to being
-        airborn without active buffers and not in jumping state.
-        """
-        return self.sim.ninja.is_jump_useless
-
     def ninja_last_jump_was_buffered(self) -> bool:
         """Check if the last jump executed was via buffer (frame-perfect execution).
 

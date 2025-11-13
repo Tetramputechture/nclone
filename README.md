@@ -10,7 +10,6 @@ N++ game simulator with Gym-compatible interface for Deep Reinforcement Learning
 - **Gym-compatible environment** for standard RL frameworks
 - **Headless rendering** for fast training (1000+ FPS)
 - **Multi-modal observations** (visual frames, physics state, graph representations)
-- **Fast reachability analysis** (<1ms using OpenCV flood fill)
 
 ## Installation
 

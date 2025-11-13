@@ -380,25 +380,19 @@ class NppEnvironment(
 
         # Build danger zone grid with verbose output if debug enabled
         verbose = getattr(self, "debug", False)
-        try:
-            predictor.build_lookup_table(reachable_positions, verbose=verbose)
+        predictor.build_lookup_table(reachable_positions, verbose=verbose)
 
-            # Attach predictor to ninja
-            self.nplay_headless.sim.ninja.mine_death_predictor = predictor
+        # Attach predictor to ninja
+        self.nplay_headless.sim.ninja.mine_death_predictor = predictor
 
-            if verbose:
-                stats = predictor.get_stats()
-                logger.info(
-                    f"Hybrid mine predictor built: "
-                    f"{stats.build_time_ms:.1f}ms, "
-                    f"{stats.reachable_mines} mines, "
-                    f"{stats.danger_zone_cells} danger cells"
-                )
-        except Exception as e:
-            logger.error(f"Failed to build mine death predictor: {e}")
-            # Set predictor to None to avoid using partial/broken predictor
-            self.nplay_headless.sim.ninja.mine_death_predictor = None
-            raise
+        if verbose:
+            stats = predictor.get_stats()
+            logger.info(
+                f"Hybrid mine predictor built: "
+                f"{stats.build_time_ms:.1f}ms, "
+                f"{stats.reachable_mines} mines, "
+                f"{stats.danger_zone_cells} danger cells"
+            )
 
     def _build_terminal_velocity_lookup_table(self):
         """
@@ -465,26 +459,74 @@ class NppEnvironment(
 
         # Build lookup table (graph-constrained, optimized, with per-level caching)
         verbose = getattr(self, "debug", False)
+        predictor.build_lookup_table(
+            reachable_positions, level_id=level_id, verbose=verbose
+        )
+
+        # Attach predictor to ninja
+        self.nplay_headless.sim.ninja.terminal_velocity_predictor = predictor
+
+        if verbose:
+            stats = predictor.get_stats()
+            logger.info(
+                f"Terminal velocity predictor built: "
+                f"{stats.build_time_ms:.1f}ms, "
+                f"{stats.lookup_table_size} entries (reachability-optimized)"
+            )
+
+    def _initialize_path_guidance_predictor(self):
+        """
+        Initialize path guidance predictor for action masking.
+
+        Creates a PathGuidancePredictor instance that uses spatial node transitions
+        to efficiently mask actions moving away from monotonic paths. The predictor
+        only recalculates paths when the ninja crosses 12x12px node boundaries.
+
+        Called once per episode reset after graph building is complete.
+        """
+        from ..gym_environment.action_masking.path_guidance_predictor import (
+            PathGuidancePredictor,
+        )
+
+        # Get path calculator from reward calculator
+        # The reward calculator already has an optimized CachedPathDistanceCalculator
+        if not hasattr(self, "reward_calculator") or self.reward_calculator is None:
+            logger.warning(
+                "Reward calculator not available. Skipping path guidance predictor initialization."
+            )
+            self.nplay_headless.sim.ninja.path_guidance_predictor = None
+            return
+
+        if (
+            not hasattr(self.reward_calculator, "path_calculator")
+            or self.reward_calculator.path_calculator is None
+        ):
+            logger.warning(
+                "Path calculator not available in reward calculator. "
+                "Skipping path guidance predictor initialization."
+            )
+            self.nplay_headless.sim.ninja.path_guidance_predictor = None
+            return
+
+        # Create predictor with shared path calculator
         try:
-            predictor.build_lookup_table(
-                reachable_positions, level_id=level_id, verbose=verbose
+            predictor = PathGuidancePredictor(
+                path_calculator=self.reward_calculator.path_calculator,
+                strict_mode=False,  # Conservative masking by default
+                sim=self.nplay_headless.sim,  # Pass sim reference for wall detection
             )
 
             # Attach predictor to ninja
-            self.nplay_headless.sim.ninja.terminal_velocity_predictor = predictor
+            self.nplay_headless.sim.ninja.path_guidance_predictor = predictor
 
+            verbose = getattr(self, "debug", False)
             if verbose:
-                stats = predictor.get_stats()
-                logger.info(
-                    f"Terminal velocity predictor built: "
-                    f"{stats.build_time_ms:.1f}ms, "
-                    f"{stats.lookup_table_size} entries (reachability-optimized)"
-                )
+                logger.info("Path guidance predictor initialized for action masking")
         except Exception as e:
-            logger.error(f"Failed to build terminal velocity predictor: {e}")
+            logger.error(f"Failed to initialize path guidance predictor: {e}")
             # Set predictor to None to avoid using partial/broken predictor
-            self.nplay_headless.sim.ninja.terminal_velocity_predictor = None
-            # Don't raise - terminal velocity masking is optional
+            self.nplay_headless.sim.ninja.path_guidance_predictor = None
+            # Don't raise - path guidance masking is optional
 
     def _build_door_feature_cache(self):
         """
@@ -616,6 +658,9 @@ class NppEnvironment(
 
         # Build terminal velocity predictor lookup table after graph is ready
         self._build_terminal_velocity_lookup_table()
+
+        # Initialize path guidance predictor for action masking
+        self._initialize_path_guidance_predictor()
 
         # Build precomputed door feature cache after graph is ready
         # PERFORMANCE: Precomputes ALL path distances for O(1) runtime lookup

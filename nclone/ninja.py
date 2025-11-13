@@ -49,6 +49,9 @@ from .constants import (
     RAGDOLL_DRAG,
 )
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 cached_ninja_animation = []
 
@@ -318,7 +321,7 @@ class Ninja:
     def post_collision(self, skip_entities=False):
         """Perform logical collisions with entities, check for airborn state,
         check for walled state, calculate floor normals, check for impact or crush death.
-        
+
         Args:
             skip_entities: If True, skip entity collision checks (optimization for terminal velocity)
         """
@@ -326,7 +329,9 @@ class Ninja:
         # Also check if the ninja can interact with the walls of entities when applicable.
         wall_normal = 0
         if not skip_entities:
-            entities = gather_entities_from_neighbourhood(self.sim, self.xpos, self.ypos)
+            entities = gather_entities_from_neighbourhood(
+                self.sim, self.xpos, self.ypos
+            )
         else:
             entities = []
         for entity in entities:
@@ -358,7 +363,11 @@ class Ninja:
         if not skip_entities:
             rad = NINJA_RADIUS + 0.1
             segments = gather_segments_from_region(
-                self.sim, self.xpos - rad, self.ypos - rad, self.xpos + rad, self.ypos + rad
+                self.sim,
+                self.xpos - rad,
+                self.ypos - rad,
+                self.xpos + rad,
+                self.ypos + rad,
             )
         else:
             segments = []
@@ -585,35 +594,46 @@ class Ninja:
             )
             mask[5] = False  # JUMP+RIGHT (same reasoning)
 
-        # Mask directional inputs into walls (useless, provides no movement)
+        # Mask directional inputs into walls based on state
         # wall_normal points FROM wall TO ninja:
         #   wall_normal > 0: wall is on left side
         #   wall_normal < 0: wall is on right side
         # Only mask pure directional actions (LEFT/RIGHT), not jump combos
         # because JUMP+direction triggers wall jumps which are useful
-        # DON'T mask if the input would trigger wall sliding (yspeed > 0)
         if self.walled:
-            # Check if wall sliding would be triggered: yspeed > 0 and input toward wall
-            # Wall slide is useful (reduces fall speed, enables wall jumps)
-            would_trigger_wall_slide = self.yspeed > 0
+            if not self.airborn:
+                # Case 1: Grounded and walled - mask direct movement toward wall
+                # Moving into wall while grounded provides no benefit
+                if self.wall_normal > 0:
+                    mask[1] = False  # Wall on left, mask LEFT
+                elif self.wall_normal < 0:
+                    mask[2] = False  # Wall on right, mask RIGHT
+            else:
+                # Airborne and walled
+                if self.state == 5:
+                    # Case 3: Already wall sliding - mask direct input toward wall
+                    # Input is already being used to maintain wall slide
+                    if self.wall_normal > 0:
+                        mask[1] = False  # Mask LEFT
+                    elif self.wall_normal < 0:
+                        mask[2] = False  # Mask RIGHT
+                else:
+                    # Case 2: Airborne but not wall sliding yet
+                    # Wall slide triggers when: yspeed > 0 and input toward wall
+                    # If input would trigger wall slide, DON'T mask (it's useful)
+                    # If input wouldn't trigger wall slide, mask it (it's useless)
+                    would_trigger_wall_slide = self.yspeed >= 0
 
-            if self.wall_normal > 0:
-                # Wall on left
-                if not would_trigger_wall_slide:
-                    mask[1] = False  # Mask LEFT only if NOT triggering wall slide
-                # Keep JUMP+LEFT (action 4) valid - it triggers wall jump
-            elif self.wall_normal < 0:
-                # Wall on right
-                if not would_trigger_wall_slide:
-                    mask[2] = False  # Mask RIGHT only if NOT triggering wall slide
-                # Keep JUMP+RIGHT (action 5) valid - it triggers wall jump
-
-        # if wall sliding, mask input direction towards the wall
-        if self.state == 5:
-            if self.wall_normal > 0:
-                mask[1] = False
-            elif self.wall_normal < 0:
-                mask[2] = False
+                    if self.wall_normal > 0:
+                        # Wall on left
+                        if not would_trigger_wall_slide:
+                            mask[1] = False  # Mask LEFT if NOT triggering wall slide
+                        # Keep JUMP+LEFT (action 4) valid - triggers wall jump
+                    elif self.wall_normal < 0:
+                        # Wall on right
+                        if not would_trigger_wall_slide:
+                            mask[2] = False  # Mask RIGHT if NOT triggering wall slide
+                        # Keep JUMP+RIGHT (action 5) valid - triggers wall jump
 
         # Mine death masking
         for action_idx in range(6):
@@ -638,6 +658,34 @@ class Ninja:
                 # Query predictor (O(1) lookup or fast simulation)
                 if self.terminal_velocity_predictor.is_action_deadly(action_idx):
                     mask[action_idx] = False
+        else:
+            logger.warning(
+                "Terminal velocity predictor not found, skipping terminal velocity masking"
+            )
+
+        # Path guidance masking (5th heuristic) - spatial-based
+        # Masks actions that move away from monotonic paths
+        if (
+            hasattr(self, "path_guidance_predictor")
+            and self.path_guidance_predictor is not None
+        ):
+            for action_idx in range(6):
+                # Skip if already masked by previous checks
+                if not mask[action_idx]:
+                    continue
+
+                ninja_pos = (self.xpos, self.ypos)
+                ninja_vel = (self.xspeed, self.yspeed)
+
+                # Query path-based predictor
+                if self.path_guidance_predictor.is_action_counterproductive(
+                    action_idx, ninja_pos, ninja_vel, self.state, self.wall_normal
+                ):
+                    mask[action_idx] = False
+        else:
+            logger.warning(
+                "Path guidance predictor not found, skipping path guidance masking"
+            )
 
         # Ensure at least one action is always valid
         # If all actions are masked (inevitable death scenario), unmask NOOP
@@ -645,7 +693,20 @@ class Ninja:
         if not any(mask):
             # Ninja is in inevitable death scenario (surrounded by mines, etc.)
             # Allow NOOP as a last resort to prevent policy NaN
+            print("All actions are masked, unmasking NOOP")
             mask[0] = True
+
+        # Validate mask before returning
+        # These assertions catch bugs early before they cause NaN in the policy
+        assert isinstance(mask, list), f"Mask must be a list, got {type(mask)}"
+        assert len(mask) == 6, f"Mask must have 6 elements, got {len(mask)}"
+        assert all(isinstance(m, bool) for m in mask), (
+            f"All mask elements must be boolean, got types: {[type(m) for m in mask]}"
+        )
+        assert any(mask), (
+            "At least one action must be valid. This should be enforced by "
+            "the fallback above. If you see this, there's a logic bug."
+        )
 
         return mask
 
