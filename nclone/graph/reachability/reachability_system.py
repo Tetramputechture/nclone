@@ -1,51 +1,34 @@
 """
-Ultra-Fast Reachability System for performance-optimized RL training.
+Graph-Based Reachability System for performance-optimized RL training.
 
-This module implements a simplified flood fill reachability analysis system
-using ultra-fast OpenCV approximation (<1ms) suitable for real-time RL training.
+This module implements reachability analysis using graph-based flood fill
+from the adjacency graph, providing exact reachability without rendering overhead.
 
-This simplification aligns with the principle that deep RL agents should learn
-complex movement patterns emergently rather than having them pre-computed.
+This approach is consistent with PBRS surface area calculation and eliminates
+the deprecated OpenCV-based flood fill dependency.
 """
 
-import time
 from typing import Tuple, List, Dict, Optional, Any
-import numpy as np
 
-from .reachability_types import ReachabilityApproximation
-from .opencv_flood_fill import OpenCVFloodFill
+from .reachability_types import ReachabilityResult
 
 
 class ReachabilitySystem:
     """
-    Ultra-fast reachability analysis system using OpenCV flood fill.
+    Graph-based reachability analysis system.
 
-    Provides ultra-fast flood fill approximation (<1ms) for real-time RL training.
-    Uses connectivity-based analysis rather than complex physics calculations.
+    Provides exact reachability calculation using graph flood fill from adjacency.
+    Uses the same approach as PBRS surface area calculation for consistency.
     """
 
     def __init__(self, debug: bool = False):
         """
-        Initialize ultra-fast reachability system.
+        Initialize graph-based reachability system.
 
         Args:
             debug: Enable debug output and performance logging
         """
         self.debug = debug
-
-        # Initialize flood fill implementation (lazy loading for performance)
-        self._flood_fill = None
-
-        # Performance tracking
-        self.performance_history = {"times": [], "accuracies": []}
-
-    @property
-    def flood_fill(self):
-        """Lazy initialization of ultra-fast OpenCV flood fill."""
-        if self._flood_fill is None:
-            # Use OpenCV with 0.125x scale for ultra-fast performance (<1ms)
-            self._flood_fill = OpenCVFloodFill(render_scale=0.125, debug=self.debug)
-        return self._flood_fill
 
     @property
     def subgoal_planner(self):
@@ -60,86 +43,43 @@ class ReachabilitySystem:
 
     def analyze_reachability(
         self,
-        level_data,
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        graph_data: Dict[str, Any],
         ninja_position: Tuple[int, int],
-        switch_states: Dict[str, bool],
-    ) -> ReachabilityApproximation:
+    ) -> ReachabilityResult:
         """
-        Analyze reachability using ultra-fast flood fill approximation.
+        Analyze reachability using graph-based flood fill.
+
+        Following the PBRS pattern: assumes graph is already built by GraphMixin,
+        avoiding redundant graph construction. Uses the existing adjacency to
+        perform flood fill from the ninja position.
 
         Args:
-            level_data: Level data structure
+            adjacency: Pre-built graph adjacency structure from GraphMixin
+            graph_data: Graph data dict with spatial_hash and other metadata
             ninja_position: Current ninja position (x, y)
-            switch_states: Current switch states
 
         Returns:
-            Ultra-fast reachability approximation result
+            Exact graph-based reachability result
         """
-        start_time = time.perf_counter()
-
-        if self.debug:
-            print("DEBUG: Using ultra-fast flood fill analysis")
-
-        # Use ultra-fast flood fill analysis
-        entities = getattr(level_data, "entities", [])
-        result = self.flood_fill.quick_check(
-            ninja_position, level_data, switch_states, entities=entities
-        )
-
-        # Record performance metrics
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
-        self._record_performance(elapsed_ms, result.confidence)
-
-        return result
-
-    def _record_performance(self, time_ms: float, accuracy: float):
-        """Record performance metrics."""
-        self.performance_history["times"].append(time_ms)
-        self.performance_history["accuracies"].append(accuracy)
-
-        # Keep only recent history (last 100 measurements)
-        if len(self.performance_history["times"]) > 100:
-            self.performance_history["times"] = self.performance_history["times"][-100:]
-            self.performance_history["accuracies"] = self.performance_history[
-                "accuracies"
-            ][-100:]
-
-    def get_performance_summary(self) -> Dict[str, Any]:
-        """Get performance summary for ultra-fast reachability analysis."""
-        history = self.performance_history
-
-        if history["times"]:
-            return {
-                "avg_time_ms": float(np.mean(history["times"])),
-                "p95_time_ms": float(np.percentile(history["times"], 95)),
-                "max_time_ms": float(np.max(history["times"])),
-                "min_time_ms": float(np.min(history["times"])),
-                "avg_accuracy": float(np.mean(history["accuracies"]))
-                if history["accuracies"]
-                else 0.0,
-                "min_accuracy": float(np.min(history["accuracies"]))
-                if history["accuracies"]
-                else 0.0,
-                "max_accuracy": float(np.max(history["accuracies"]))
-                if history["accuracies"]
-                else 0.0,
-                "sample_count": len(history["times"]),
-            }
+        # Use graph data already built by GraphMixin - avoid redundant graph building
+        # If 'reachable' is already in graph_data from GraphBuilder.build_graph(),
+        # use it directly. Otherwise, perform flood fill.
+        if "reachable" in graph_data:
+            reachable_positions = graph_data["reachable"]
         else:
-            return {
-                "avg_time_ms": 0.0,
-                "p95_time_ms": 0.0,
-                "max_time_ms": 0.0,
-                "min_time_ms": 0.0,
-                "avg_accuracy": 0.0,
-                "min_accuracy": 0.0,
-                "max_accuracy": 0.0,
-                "sample_count": 0,
-            }
+            # Perform flood fill using the existing adjacency graph
+            from ...gym_environment.reward_calculation.pbrs_potentials import (
+                _flood_fill_reachable_nodes,
+            )
 
-    def reset_performance_history(self):
-        """Reset performance tracking history."""
-        self.performance_history = {"times": [], "accuracies": []}
+            reachable_positions = _flood_fill_reachable_nodes(
+                ninja_position, adjacency, graph_data
+            )
+
+        return ReachabilityResult(
+            reachable_positions=reachable_positions,
+        )
 
     def create_hierarchical_completion_plan(
         self,
@@ -169,5 +109,5 @@ class ReachabilitySystem:
             level_data=level_data,
             entities=entities,
             switch_states=switch_states,
-            reachability_analyzer=self.flood_fill,  # Use flood fill for strategic analysis
+            reachability_analyzer=self,  # Pass self for reachability analysis
         )

@@ -51,6 +51,11 @@ class TerminalVelocitySimulator:
         Returns:
             True if terminal impact death detected, False otherwise
         """
+        # Validate ninja state before simulation
+        # Skip if ninja is already dead (state 6/7) or celebrating (state 8)
+        if self.ninja.state in (6, 7, 8):
+            return False  # Invalid state for simulation
+        
         # Save original ninja state
         saved_state = self._save_ninja_state()
 
@@ -185,6 +190,9 @@ class TerminalVelocitySimulator:
             "ceiling_normalized_y": self.ninja.ceiling_normalized_y,
             "floor_count": self.ninja.floor_count,
             "ceiling_count": self.ninja.ceiling_count,
+            "last_wall_jump_frame": self.ninja.last_wall_jump_frame,
+            "second_last_wall_jump_frame": self.ninja.second_last_wall_jump_frame,
+            "third_last_wall_jump_frame": self.ninja.third_last_wall_jump_frame,
         }
 
     def _restore_ninja_state(self, state: Dict):
@@ -224,3 +232,6 @@ class TerminalVelocitySimulator:
         self.ninja.ceiling_normalized_y = state["ceiling_normalized_y"]
         self.ninja.floor_count = state["floor_count"]
         self.ninja.ceiling_count = state["ceiling_count"]
+        self.ninja.last_wall_jump_frame = state["last_wall_jump_frame"]
+        self.ninja.second_last_wall_jump_frame = state["second_last_wall_jump_frame"]
+        self.ninja.third_last_wall_jump_frame = state["third_last_wall_jump_frame"]

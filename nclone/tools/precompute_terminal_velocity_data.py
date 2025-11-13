@@ -36,6 +36,10 @@ from nclone.constants import (
     TILE_PIXEL_SIZE,
     TERMINAL_VELOCITY_QUANTIZATION,
     TERMINAL_IMPACT_SAFE_VELOCITY,
+    GRAVITY_FALL,
+    GRAVITY_JUMP,
+    DRAG_REGULAR,
+    FRICTION_GROUND,
 )
 from nclone.nsim import Simulator
 from nclone.sim_config import SimConfig
@@ -92,9 +96,12 @@ def sample_velocity_states() -> list:
             velocities.append((vx, vy))
 
     # Also sample fast upward velocities (ceiling impacts)
-    for vy in np.arange(
-        -12.0, -TERMINAL_IMPACT_SAFE_VELOCITY, TERMINAL_VELOCITY_QUANTIZATION
-    ):
+    # CRITICAL: Must sample down to -0.5 to catch wall slide jumps (-1.0 velocity)
+    # Wall jumps are the most common cause of ceiling terminal impacts!
+    #   - Floor jump: -2.0
+    #   - Wall jump (regular): -1.4
+    #   - Wall jump (slide): -1.0
+    for vy in np.arange(-12.0, -0.5, TERMINAL_VELOCITY_QUANTIZATION):
         for vx in np.arange(-6.0, 6.0, TERMINAL_VELOCITY_QUANTIZATION):
             velocities.append((vx, vy))
 
@@ -122,9 +129,9 @@ def sample_velocity_states_vertical_only() -> list:
         velocities.append((vx, vy))
 
     # Upward velocities (ceiling impacts)
-    for vy in np.arange(
-        -12.0, -TERMINAL_IMPACT_SAFE_VELOCITY, TERMINAL_VELOCITY_QUANTIZATION
-    ):
+    # CRITICAL: Must sample down to -0.5 to catch wall slide jumps (-1.0 velocity)
+    # Wall jumps are the most common cause of ceiling terminal impacts!
+    for vy in np.arange(-12.0, -0.5, TERMINAL_VELOCITY_QUANTIZATION):
         velocities.append((vx, vy))
 
     return velocities
@@ -169,6 +176,89 @@ def get_sampling_strategy(tile_type: int) -> dict:
     else:
         # Unknown tiles: use safe default (full sampling)
         return {"position_step": 6, "velocity_samples": "full"}
+
+
+def _create_clean_ninja_state(ninja, x: float, y: float, vx: float, vy: float):
+    """
+    Restore ninja to a clean initial state for testing.
+
+    This is critical to avoid state contamination between action tests.
+    Each action must be tested from the same initial conditions.
+
+    Args:
+        ninja: Ninja object to initialize
+        x: X position
+        y: Y position
+        vx: X velocity
+        vy: Y velocity
+    """
+    # Determine state and gravity based on velocity direction
+    # Upward motion (negative yspeed) should use jumping state with GRAVITY_JUMP
+    # Must catch all jump types:
+    #   - Floor jump: -2.0
+    #   - Wall jump (regular): -1.4
+    #   - Wall jump (slide): -1.0  <- Critical for ceiling impacts!
+    # Use threshold of -0.5 to safely catch all upward jump scenarios
+    if vy < -0.5:  # Upward motion (jumping)
+        state = 3  # Jumping state
+        applied_gravity = GRAVITY_JUMP
+        # Assume chained wall jumps for upward motion (conservative for terminal velocity detection)
+        # Set up THREE wall jumps within 5 frames: frames -10, -5, 0
+        last_wall_jump_frame = 0
+        second_last_wall_jump_frame = -5
+        third_last_wall_jump_frame = -10
+    else:  # Downward or slow motion (falling)
+        state = 4  # Falling state
+        applied_gravity = GRAVITY_FALL
+        # No wall jumps for downward motion
+        last_wall_jump_frame = -100
+        second_last_wall_jump_frame = -100
+        third_last_wall_jump_frame = -100
+
+    # Position and velocity
+    ninja.hor_input = 0
+    ninja.jump_input = 0
+    ninja.xpos = x
+    ninja.ypos = y
+    ninja.xpos_old = x
+    ninja.ypos_old = y
+    ninja.xspeed = vx
+    ninja.yspeed = vy
+    ninja.xspeed_old = vx
+    ninja.yspeed_old = vy
+
+    # State variables
+    ninja.state = state
+    ninja.airborn = True
+    ninja.airborn_old = True
+    ninja.walled = False
+    ninja.wall_normal = 0
+
+    # Physics parameters
+    ninja.applied_gravity = applied_gravity
+    ninja.applied_drag = DRAG_REGULAR
+    ninja.applied_friction = FRICTION_GROUND
+
+    # Jump and buffer state
+    ninja.jump_duration = 0
+    ninja.jump_buffer = -1
+    ninja.floor_buffer = -1
+    ninja.wall_buffer = -1
+    ninja.launch_pad_buffer = -1
+    ninja.jump_input_old = 0
+
+    # Collision normals
+    ninja.floor_normalized_x = 0
+    ninja.floor_normalized_y = -1
+    ninja.ceiling_normalized_x = 0
+    ninja.ceiling_normalized_y = 1
+    ninja.floor_count = 0
+    ninja.ceiling_count = 0
+
+    # Wall jump tracking for terminal velocity detection
+    ninja.last_wall_jump_frame = last_wall_jump_frame
+    ninja.second_last_wall_jump_frame = second_last_wall_jump_frame
+    ninja.third_last_wall_jump_frame = third_last_wall_jump_frame
 
 
 def sample_positions_within_tile(position_step: int = 6) -> list:
@@ -249,13 +339,11 @@ def _compute_single_state(args: Tuple) -> Tuple[Tuple, int]:
     state_key = (vx_q, vy_q, local_x_q, local_y_q)
 
     # Test all 6 actions
+    # CRITICAL: Restore complete clean state before EACH action test to avoid contamination
     action_mask = 0
     for action in range(6):
-        sim.ninja.xpos = world_x
-        sim.ninja.ypos = world_y
-        sim.ninja.xspeed = vx
-        sim.ninja.yspeed = vy
-        sim.ninja.airborn = True
+        # Restore ninja to clean initial state (fixes state contamination bug)
+        _create_clean_ninja_state(sim.ninja, world_x, world_y, vx, vy)
 
         is_deadly = tv_sim.simulate_for_terminal_impact(action)
 
@@ -397,13 +485,11 @@ def compute_tile_terminal_velocity_data(
             state_key = (vx_q, vy_q, local_x_q, local_y_q)
 
             # Test all 6 actions
+            # CRITICAL: Restore complete clean state before EACH action test to avoid contamination
             action_mask = 0
             for action in range(6):
-                sim.ninja.xpos = world_x
-                sim.ninja.ypos = world_y
-                sim.ninja.xspeed = vx
-                sim.ninja.yspeed = vy
-                sim.ninja.airborn = True
+                # Restore ninja to clean initial state (fixes state contamination bug)
+                _create_clean_ninja_state(sim.ninja, world_x, world_y, vx, vy)
 
                 is_deadly = tv_sim.simulate_for_terminal_impact(action)
 

@@ -36,7 +36,6 @@ class GraphUpdateInfo:
 
     nodes_updated: int = 0
     edges_updated: int = 0
-    update_time_ms: float = 0.0
     switch_states: Dict[int, bool] = None
 
     def __post_init__(self):
@@ -72,13 +71,6 @@ class GraphMixin:
         self.current_graph_data: Optional[Dict[str, Any]] = None
         self.last_switch_states: Dict[int, bool] = {}
         self.last_update_time = 0.0
-
-        # Graph performance tracking
-        self.graph_update_stats = {
-            "total_updates": 0,
-            "avg_update_time_ms": 0.0,
-            "last_update_info": GraphUpdateInfo(),
-        }
 
         # Graph debug visualization state
         self._graph_debug_enabled: bool = False
@@ -295,12 +287,9 @@ class GraphMixin:
         ninja_pos_tuple = self.nplay_headless.ninja_position()
         ninja_pos = (int(ninja_pos_tuple[0]), int(ninja_pos_tuple[1]))
 
-        # Use GraphBuilder - proper abstraction
-        start_time = time.time()
         self.current_graph_data = self.graph_builder.build_graph(
             level_data, ninja_pos=ninja_pos
         )
-        build_time = (time.time() - start_time) * 1000
 
         # GraphBuilder returns dict with 'adjacency', 'reachable', etc.
         # Convert to GraphData format for ML models if graph observations are enabled
@@ -316,11 +305,7 @@ class GraphMixin:
                 else {}
             )
             if adjacency:
-                cache_start_time = time.time()
                 self.path_calculator.build_level_cache(level_data, adjacency)
-                cache_time = (time.time() - cache_start_time) * 1000
-                if self.debug:
-                    self.logger.debug(f"Level cache built in {cache_time:.2f}ms")
 
         # Update switch state tracking
         self.last_switch_states = self._get_switch_states_from_env()
@@ -331,26 +316,6 @@ class GraphMixin:
             if self.current_graph_data
             else {}
         )
-        total_nodes = len(adjacency)
-        total_edges = sum(len(neighbors) for neighbors in adjacency.values())
-
-        update_info = GraphUpdateInfo(
-            nodes_updated=total_nodes,
-            edges_updated=total_edges,
-            update_time_ms=build_time,
-            switch_states=self.last_switch_states.copy(),
-        )
-        self.graph_update_stats["last_update_info"] = update_info
-
-        if self.debug:
-            self.logger.debug(
-                f"Fast graph rebuilt: {total_nodes} nodes, "
-                f"{total_edges} edges in {build_time:.2f}ms"
-            )
-            if self.current_graph_data:
-                reachable = self.current_graph_data.get("reachable", set())
-                if reachable:
-                    self.logger.debug(f"  Reachable positions: {len(reachable)}")
 
     def _get_level_data_from_env(self) -> Optional[LevelData]:
         """Extract level data from environment for graph building."""
@@ -431,17 +396,6 @@ class GraphMixin:
         """Get the full hierarchical graph data for advanced processing (deprecated, use get_graph_data)."""
         # Deprecated: kept for backward compatibility
         return self.current_graph_data
-
-    def _update_graph_performance_stats(self, update_time_ms: float):
-        """Update simple performance statistics."""
-        self.graph_update_stats["total_updates"] += 1
-
-        # Simple rolling average
-        alpha = 0.1
-        self.graph_update_stats["avg_update_time_ms"] = (
-            alpha * update_time_ms
-            + (1 - alpha) * self.graph_update_stats["avg_update_time_ms"]
-        )
 
     def get_current_graph(self) -> Optional[GraphData]:
         """Get current graph data for external use."""
@@ -541,10 +495,6 @@ class GraphMixin:
             if self.debug:
                 self.logger.warning(f"Failed to convert graph data: {e}")
             return None
-
-    def get_graph_performance_stats(self) -> Dict[str, Any]:
-        """Get simple performance statistics."""
-        return self.graph_update_stats.copy()
 
     def force_graph_update(self):
         """Force a graph update (for testing/debugging)."""

@@ -178,6 +178,16 @@ class Ninja:
         # Terminal velocity predictor (initialized by environment)
         self.terminal_velocity_predictor = None
 
+        # Track recent wall jumps for terminal velocity detection
+        # Need THREE wall jumps within 5 frames of each other to build lethal velocity
+        self.last_wall_jump_frame = -100  # Frame number of most recent wall jump
+        self.second_last_wall_jump_frame = (
+            -100
+        )  # Frame number of second-to-last wall jump
+        self.third_last_wall_jump_frame = (
+            -100
+        )  # Frame number of third-to-last wall jump
+
         self.log()
 
     def integrate(self):
@@ -520,6 +530,12 @@ class Ninja:
         self.launch_pad_buffer = -1
         self.jump_duration = 0
 
+        # Track wall jump for terminal velocity detection
+        # Need THREE wall jumps within 5 frames to build lethal upward velocity
+        self.third_last_wall_jump_frame = self.second_last_wall_jump_frame
+        self.second_last_wall_jump_frame = self.last_wall_jump_frame
+        self.last_wall_jump_frame = self.sim.frame
+
     def lp_jump(self):
         """Perform launch pad jump."""
         self.floor_buffer = -1
@@ -645,47 +661,59 @@ class Ninja:
             if self.mine_death_predictor.is_action_deadly(action_idx):
                 mask[action_idx] = False
 
-        # Terminal velocity masking (new fourth heuristic)
+        # Terminal velocity masking (new fourth heuristic with ~10 frame lookahead)
         if (
             hasattr(self, "terminal_velocity_predictor")
             and self.terminal_velocity_predictor is not None
         ):
-            for action_idx in range(6):
-                # Skip if already masked by previous checks
-                if not mask[action_idx]:
-                    continue
+            # Only check if in risky state (conditional computation for performance)
+            # Same logic as Tier 1 filter in is_action_deadly()
+            from .constants import TERMINAL_IMPACT_SAFE_VELOCITY
 
-                # Query predictor (O(1) lookup or fast simulation)
-                if self.terminal_velocity_predictor.is_action_deadly(action_idx):
-                    mask[action_idx] = False
-        else:
-            logger.warning(
-                "Terminal velocity predictor not found, skipping terminal velocity masking"
+            # Check if chaining wall jumps (THREE consecutive wall jumps within 5 frames)
+            # Single/double wall jumps don't build enough velocity to be lethal
+            # Need 3 jumps to accumulate deadly upward momentum
+            frames_between_2nd_and_3rd = (
+                self.second_last_wall_jump_frame - self.third_last_wall_jump_frame
+            )
+            frames_between_1st_and_2nd = (
+                self.last_wall_jump_frame - self.second_last_wall_jump_frame
+            )
+            # Check for 3-jump chain (both gaps must be ≤5 frames)
+            is_chaining_3_jumps = (
+                frames_between_2nd_and_3rd <= 5
+                and frames_between_2nd_and_3rd > 0
+                and frames_between_1st_and_2nd <= 5
+                and frames_between_1st_and_2nd > 0
+            )
+            # Also check for old 2-jump pattern for safety (backward compatibility)
+            is_chaining_2_jumps = (
+                frames_between_1st_and_2nd <= 6 and frames_between_1st_and_2nd > 0
+            )
+            is_chaining_wall_jumps = is_chaining_3_jumps or is_chaining_2_jumps
+
+            is_risky_state = self.airborn and (
+                self.yspeed
+                > TERMINAL_IMPACT_SAFE_VELOCITY  # Dangerous downward velocity
+                or (
+                    self.yspeed
+                    < -TERMINAL_IMPACT_SAFE_VELOCITY  # Dangerous upward velocity
+                    and is_chaining_wall_jumps  # Only dangerous if chaining wall jumps
+                )
             )
 
-        # Path guidance masking (5th heuristic) - spatial-based
-        # Masks actions that move away from monotonic paths
-        if (
-            hasattr(self, "path_guidance_predictor")
-            and self.path_guidance_predictor is not None
-        ):
-            for action_idx in range(6):
-                # Skip if already masked by previous checks
-                if not mask[action_idx]:
-                    continue
+            if is_risky_state:
+                for action_idx in range(6):
+                    # Skip if already masked by previous checks
+                    if not mask[action_idx]:
+                        continue
 
-                ninja_pos = (self.xpos, self.ypos)
-                ninja_vel = (self.xspeed, self.yspeed)
-
-                # Query path-based predictor
-                if self.path_guidance_predictor.is_action_counterproductive(
-                    action_idx, ninja_pos, ninja_vel, self.state, self.wall_normal
-                ):
-                    mask[action_idx] = False
-        else:
-            logger.warning(
-                "Path guidance predictor not found, skipping path guidance masking"
-            )
+                    # Query predictor with 10-frame lookahead
+                    # Masks actions that lead to inevitable death within ~10 frames
+                    if self.terminal_velocity_predictor.is_action_deadly_within_frames(
+                        action_idx, frames=10
+                    ):
+                        mask[action_idx] = False
 
         # Ensure at least one action is always valid
         # If all actions are masked (inevitable death scenario), unmask NOOP

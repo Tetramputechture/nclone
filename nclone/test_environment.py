@@ -932,30 +932,53 @@ keys_held = set()  # Track which keys are currently held (to prevent repeat on h
 
 
 def manual_reset(env: NppEnvironment):
+    """
+    Manually reset environment to match the behavior of env.reset().
+    This is used in test_environment.py for generator testing and level switching.
+    """
     print("Manual reset called")
+
+    # Reset all processors (matches reset() method)
     print("Resetting observation processor")
     env.observation_processor.reset()
     print("Resetting reward calculator")
     env.reward_calculator.reset()
     print("Resetting truncation checker")
     env.truncation_checker.reset()
+
+    # Reset episode tracking
     print("Resetting episode reward")
     env.current_ep_reward = 0
+
+    # Clear all caches (matches reset() method)
     clear_all_caches_for_new_level(env)
+
+    # Reset graph and reachability state (matches reset() method)
     print("Resetting graph state")
     env._reset_graph_state()
+    print("Resetting reachability state")
+    env._reset_reachability_state()
+
+    # Rebuild graph from current map (matches reset() method)
     print("Updating graph from env state")
     env._update_graph_from_env_state()
-    print("Clearing reachability cache")
-    env._clear_reachability_cache()
-    print("Building door feature cache")
-    env._build_door_feature_cache()
+
+    # Build predictors and caches (matches reset() method order)
     print("Building mine death lookup table")
     env._build_mine_death_lookup_table()
+
     print("Building terminal velocity lookup table")
     env._build_terminal_velocity_lookup_table()
-    print("Initializing path guidance predictor")
-    env._initialize_path_guidance_predictor()
+
+    print("Building door feature cache")
+    env._build_door_feature_cache()
+
+    # Initialize locked door caches (matches reset() method)
+    if hasattr(env, "_initialize_locked_door_caches"):
+        print("Initializing locked door caches")
+        env._initialize_locked_door_caches()
+
+    print("Manual reset complete")
 
 
 manual_reset(env)
@@ -1673,6 +1696,35 @@ if (
         print(f"  - Tier 1 rate: {tier1_rate:.1%} (fast path)")
         print(f"  - Tier 2 rate: {tier2_rate:.1%} (medium path)")
         print(f"  - Tier 3 rate: {tier3_rate:.1%} (slow path)")
+
+# Terminal velocity predictor statistics
+if (
+    hasattr(env, "nplay_headless")
+    and hasattr(env.nplay_headless, "sim")
+    and hasattr(env.nplay_headless.sim, "ninja")
+    and hasattr(env.nplay_headless.sim.ninja, "terminal_velocity_predictor")
+    and env.nplay_headless.sim.ninja.terminal_velocity_predictor is not None
+):
+    tv_predictor = env.nplay_headless.sim.ninja.terminal_velocity_predictor
+    tv_stats = tv_predictor.stats
+    print("\nTerminal Velocity Predictor:")
+    print(f"  - Lazy build: {tv_predictor.lazy_build}")
+    print(f"  - Lookup table size: {tv_stats.lookup_table_size}")
+    print(f"  - Tier 1 queries: {tv_stats.tier1_queries}")
+    print(f"  - Tier 2 queries: {tv_stats.tier2_queries}")
+    print(f"  - Tier 3 queries: {tv_stats.tier3_queries}")
+    tv_total_queries = (
+        tv_stats.tier1_queries + tv_stats.tier2_queries + tv_stats.tier3_queries
+    )
+    if tv_total_queries > 0:
+        tv_tier1_rate = tv_stats.tier1_queries / tv_total_queries
+        tv_tier2_rate = tv_stats.tier2_queries / tv_total_queries
+        tv_tier3_rate = tv_stats.tier3_queries / tv_total_queries
+        print(f"  - Tier 1 rate: {tv_tier1_rate:.1%} (fast path)")
+        print(f"  - Tier 2 rate: {tv_tier2_rate:.1%} (medium path)")
+        print(f"  - Tier 3 rate: {tv_tier3_rate:.1%} (slow path)")
+        if tv_predictor.lazy_build:
+            print(f"  - Auto-cached entries: {tv_stats.tier3_queries}")
 
 print("=" * 60 + "\n")
 

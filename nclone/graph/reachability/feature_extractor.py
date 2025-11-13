@@ -2,7 +2,7 @@
 Simplified interface for extracting compact reachability features.
 
 This module provides a simplified ReachabilityFeatureExtractor that uses the
-fast OpenCV flood fill reachability system with minimal caching and overhead.
+graph-based flood fill reachability system with minimal caching and overhead.
 Designed for real-time RL training with <1ms performance targets.
 """
 

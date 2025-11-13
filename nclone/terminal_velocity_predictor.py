@@ -34,13 +34,13 @@ from .graph.reachability.subcell_node_lookup import (
 class TerminalVelocityPredictorStats:
     """Statistics about the terminal velocity predictor."""
 
-    build_time_ms: float = 0.0
     lookup_table_size: int = 0
     tier1_queries: int = 0  # Queries handled by quick filter
     tier2_queries: int = 0  # Queries handled by lookup table
     tier3_queries: int = 0  # Queries requiring simulation
     cache_hits: int = 0  # Number of cache hits
     cache_misses: int = 0  # Number of cache misses
+    build_time_ms: float = 0.0  # Time taken to build lookup table
 
 
 @dataclass
@@ -74,7 +74,9 @@ class TerminalVelocityPredictor:
     _tile_type_cache: Dict[int, Dict[Tuple, int]] = {}
     _tile_cache_loaded: bool = False
 
-    def __init__(self, sim, graph_data: Optional[Dict] = None):
+    def __init__(
+        self, sim, graph_data: Optional[Dict] = None, lazy_build: bool = False
+    ):
         """
         Initialize predictor with simulation reference and optional graph data.
 
@@ -82,6 +84,8 @@ class TerminalVelocityPredictor:
             sim: Simulation object containing ninja and entities
             graph_data: Optional graph data with adjacency and reachability info
                        Used to optimize lookup table size and query performance
+            lazy_build: If True, start with empty lookup table and cache results on-demand
+                       If False, requires explicit build_lookup_table() call
         """
         self.sim = sim
         self.graph_data = graph_data
@@ -89,6 +93,7 @@ class TerminalVelocityPredictor:
         self.simulator = TerminalVelocitySimulator(sim)
         self.stats = TerminalVelocityPredictorStats()
         self.last_death_probability: DeathProbabilityResult = None
+        self.lazy_build = lazy_build
 
         # Level caching for avoiding rebuilds on same level
         self._current_level_id: Optional[str] = None
@@ -295,13 +300,15 @@ class TerminalVelocityPredictor:
             if self.graph_data:
                 print("  Using graph optimization (adjacency-based)")
 
-        # Sample velocity states (only dangerous range)
-        # Only build for vy > SAFE_VELOCITY since lower velocities are filtered in Tier 1
+        # Sample velocity states for ceiling impacts (upward velocities)
+        # Focus on negative vy for wall jump chain scenarios
         import numpy as np
 
-        velocity_samples = np.arange(
-            TERMINAL_IMPACT_SAFE_VELOCITY, 12.0, TERMINAL_VELOCITY_QUANTIZATION
-        )
+        # Only sample upward velocities (ceiling impacts from wall jump chains)
+        # Must sample down to -0.5 to catch wall slide jumps (-1.0 velocity)
+        # Wall jump velocities: slide=-1.0, regular=-1.4, floor=-2.0
+        # 3-chain accumulation can reach -6.0 to -12.0
+        velocity_samples = np.arange(-12.0, -0.5, TERMINAL_VELOCITY_QUANTIZATION)
 
         # Build table for subset of reachable positions (sample for performance)
         # Graph already constrains to reachable area - this is the key optimization!
@@ -482,9 +489,47 @@ class TerminalVelocityPredictor:
 
         # Tier 1: Quick state filter (O(1), ~0.001ms)
         # Skip expensive checks if in obviously safe state
-        if not ninja.airborn or abs(ninja.yspeed) < TERMINAL_IMPACT_SAFE_VELOCITY:
+        # CRITICAL: For ceiling impacts, only risky if chaining wall jumps!
+        # Single wall jump doesn't build enough velocity for lethal ceiling impact,
+        # but TWO wall jumps within 6 frames of each other can be deadly.
+        if not ninja.airborn:
             self.stats.tier1_queries += 1
-            return False  # Safe state, no terminal impact risk
+            return False  # Not airborne, no terminal impact risk
+
+        # Only filter out small downward or near-zero velocities
+        # Upward motion is only risky if chaining wall jumps (2 jumps within 6 frames)
+        if ninja.yspeed >= 0 and ninja.yspeed < TERMINAL_IMPACT_SAFE_VELOCITY:
+            self.stats.tier1_queries += 1
+            return False  # Safe downward/zero velocity, no terminal impact risk
+
+        # Check upward motion with wall jump chaining
+        # Must be both: dangerous velocity AND chaining wall jumps
+        # Need THREE consecutive wall jumps within 5 frames to build lethal upward momentum
+        if ninja.yspeed < -TERMINAL_IMPACT_SAFE_VELOCITY:  # Dangerous upward velocity
+            frames_between_2nd_and_3rd = (
+                ninja.second_last_wall_jump_frame - ninja.third_last_wall_jump_frame
+            )
+            frames_between_1st_and_2nd = (
+                ninja.last_wall_jump_frame - ninja.second_last_wall_jump_frame
+            )
+            # Check for 3-jump chain (both gaps must be ≤5 frames)
+            is_chaining_3_jumps = (
+                frames_between_2nd_and_3rd <= 5
+                and frames_between_2nd_and_3rd > 0
+                and frames_between_1st_and_2nd <= 5
+                and frames_between_1st_and_2nd > 0
+            )
+            # Also check for old 2-jump pattern for safety (backward compatibility)
+            is_chaining_2_jumps = (
+                frames_between_1st_and_2nd <= 6 and frames_between_1st_and_2nd > 0
+            )
+            is_chaining = is_chaining_3_jumps or is_chaining_2_jumps
+            if not is_chaining:
+                self.stats.tier1_queries += 1
+                return False  # Upward but not chaining wall jumps, safe
+        elif ninja.yspeed < 0:  # Slow upward motion
+            self.stats.tier1_queries += 1
+            return False  # Upward but not fast enough to be dangerous
 
         # Graph optimization: Check if ninja is in reachable area
         # If not in reachable zone, either already dead or in unreachable area
@@ -514,7 +559,115 @@ class TerminalVelocityPredictor:
 
         # Tier 3: Full simulation (O(frames), ~0.5ms, rare)
         self.stats.tier3_queries += 1
-        return self.simulator.simulate_for_terminal_impact(action)
+        is_deadly = self.simulator.simulate_for_terminal_impact(action)
+
+        # Auto-cache result if lazy_build is enabled
+        if self.lazy_build:
+            self._auto_cache_result(state_key, action, is_deadly)
+
+        return is_deadly
+
+    def is_action_deadly_within_frames(self, action: int, frames: int = 10) -> bool:
+        """
+        Check if action leads to terminal impact death within N frames.
+
+        Used for action masking to prevent inevitable deaths. Returns True if
+        ANY frame from 1 to N results in a terminal impact.
+
+        Args:
+            action: Action to check (0=NOOP, 1=LEFT, 2=RIGHT, 3=JUMP, 4=JUMP+LEFT, 5=JUMP+RIGHT)
+            frames: Number of frames to lookahead (default: 10)
+
+        Returns:
+            True if action leads to death within N frames, False otherwise
+        """
+        ninja = self.sim.ninja
+
+        # Quick filter: if in obviously safe state, no need to simulate
+        # Same logic as Tier 1 in is_action_deadly()
+        if not ninja.airborn:
+            return False
+
+        # Only filter out small downward or near-zero velocities
+        if ninja.yspeed >= 0 and ninja.yspeed < TERMINAL_IMPACT_SAFE_VELOCITY:
+            return False
+
+        # Check upward motion with wall jump chaining
+        # Must be both: dangerous velocity AND chaining wall jumps
+        # Need THREE consecutive wall jumps within 5 frames to build lethal upward momentum
+        if ninja.yspeed < -TERMINAL_IMPACT_SAFE_VELOCITY:  # Dangerous upward velocity
+            frames_between_2nd_and_3rd = (
+                ninja.second_last_wall_jump_frame - ninja.third_last_wall_jump_frame
+            )
+            frames_between_1st_and_2nd = (
+                ninja.last_wall_jump_frame - ninja.second_last_wall_jump_frame
+            )
+            # Check for 3-jump chain (both gaps must be ≤5 frames)
+            is_chaining_3_jumps = (
+                frames_between_2nd_and_3rd <= 5
+                and frames_between_2nd_and_3rd > 0
+                and frames_between_1st_and_2nd <= 5
+                and frames_between_1st_and_2nd > 0
+            )
+            # Also check for old 2-jump pattern for safety (backward compatibility)
+            is_chaining_2_jumps = (
+                frames_between_1st_and_2nd <= 6 and frames_between_1st_and_2nd > 0
+            )
+            is_chaining = is_chaining_3_jumps or is_chaining_2_jumps
+            if not is_chaining:
+                return False  # Upward but not chaining wall jumps, safe
+        elif ninja.yspeed < 0:  # Slow upward motion
+            return False  # Upward but not fast enough to be dangerous
+
+        # Save original state
+        saved_state = self.simulator._save_ninja_state()
+
+        # Convert action to inputs
+        action_inputs = [
+            (0, 0),  # 0: NOOP
+            (-1, 0),  # 1: LEFT
+            (1, 0),  # 2: RIGHT
+            (0, 1),  # 3: JUMP
+            (-1, 1),  # 4: JUMP+LEFT
+            (1, 1),  # 5: JUMP+RIGHT
+        ]
+        hor_input, jump_input = action_inputs[action]
+
+        # Simulate N frames and check for death at each frame
+        impact_detected = False
+        for frame_idx in range(1, frames + 1):
+            # Restore to original state
+            self.simulator._restore_ninja_state(saved_state)
+
+            # Set inputs
+            ninja.hor_input = hor_input
+            ninja.jump_input = jump_input
+
+            # Simulate this many frames
+            for _ in range(frame_idx):
+                ninja.think()
+                ninja.integrate()
+                ninja.pre_collision()
+                ninja.collide_vs_tiles()
+                ninja.post_collision(skip_entities=True)
+
+                # Check for terminal impact
+                if self.simulator._check_terminal_impact():
+                    impact_detected = True
+                    break
+
+                # Early exit if ninja died
+                if ninja.has_died():
+                    impact_detected = True
+                    break
+
+            if impact_detected:
+                break
+
+        # Restore original state
+        self.simulator._restore_ninja_state(saved_state)
+
+        return impact_detected
 
     def calculate_death_probability(
         self, frames_to_simulate: int = 10
@@ -534,7 +687,19 @@ class TerminalVelocityPredictor:
         ninja = self.sim.ninja
 
         # Quick filter: if safe state, return all zeros
-        if not ninja.airborn or abs(ninja.yspeed) < TERMINAL_IMPACT_SAFE_VELOCITY:
+        # CRITICAL: Don't filter out upward motion (wall jumps can cause ceiling deaths!)
+        if not ninja.airborn:
+            result = DeathProbabilityResult(
+                action_death_probs=[0.0] * 6,
+                masked_actions=[],
+                frames_simulated=0,
+                nearest_surface_distance=float("inf"),
+            )
+            self.last_death_probability = result
+            return result
+
+        # Only filter out small downward/zero velocities
+        if ninja.yspeed >= 0 and ninja.yspeed < TERMINAL_IMPACT_SAFE_VELOCITY:
             result = DeathProbabilityResult(
                 action_death_probs=[0.0] * 6,
                 masked_actions=[],
@@ -588,6 +753,32 @@ class TerminalVelocityPredictor:
 
         return result
 
+    def _auto_cache_result(self, state_key: Tuple, action: int, is_deadly: bool):
+        """
+        Automatically cache simulation result for lazy building.
+
+        Updates lookup table with the result of a Tier 3 simulation.
+        Used in lazy_build mode to build the lookup table on-demand.
+
+        Args:
+            state_key: Quantized state key (x, y, vx, vy)
+            action: Action index (0-5)
+            is_deadly: Whether the action is deadly for this state
+        """
+        # Get existing mask for this state, or create new one
+        if state_key in self.lookup_table:
+            action_mask = self.lookup_table[state_key]
+        else:
+            action_mask = 0
+
+        # Update mask for this action
+        if is_deadly:
+            action_mask |= 1 << action
+
+        # Store updated mask
+        self.lookup_table[state_key] = action_mask
+        self.stats.lookup_table_size = len(self.lookup_table)
+
     def _create_lookup_key(
         self, x: float, y: float, vx: float, vy: float
     ) -> Tuple[float, float, float, float]:
@@ -637,7 +828,30 @@ class TerminalVelocityPredictor:
             Dictionary with ninja state ready for simulation
         """
         # Import here to avoid circular dependency
-        from .constants import GRAVITY_FALL, DRAG_REGULAR, FRICTION_GROUND
+        from .constants import GRAVITY_FALL, GRAVITY_JUMP, DRAG_REGULAR, FRICTION_GROUND
+
+        # Determine state and gravity based on velocity direction
+        # Upward motion (negative yspeed) should use jumping state with GRAVITY_JUMP
+        # Must catch all jump types:
+        #   - Floor jump: -2.0
+        #   - Wall jump (regular): -1.4
+        #   - Wall jump (slide): -1.0  <- Critical for ceiling impacts!
+        # Use threshold of -0.5 to safely catch all upward jump scenarios
+        if vy < -0.5:  # Upward motion (jumping)
+            state = 3  # Jumping state
+            applied_gravity = GRAVITY_JUMP
+            # Assume chained wall jumps for upward motion (conservative for terminal velocity detection)
+            # Set up THREE wall jumps within 5 frames: frames -10, -5, 0
+            last_wall_jump_frame = 0
+            second_last_wall_jump_frame = -5
+            third_last_wall_jump_frame = -10
+        else:  # Downward or slow motion (falling)
+            state = 4  # Falling state
+            applied_gravity = GRAVITY_FALL
+            # No wall jumps for downward motion
+            last_wall_jump_frame = -100
+            second_last_wall_jump_frame = -100
+            third_last_wall_jump_frame = -100
 
         return {
             "hor_input": 0,
@@ -650,12 +864,12 @@ class TerminalVelocityPredictor:
             "yspeed": vy,
             "xspeed_old": vx,
             "yspeed_old": vy,
-            "state": 4,  # Falling (most common state for terminal velocity)
+            "state": state,
             "airborn": True,
             "airborn_old": True,
             "walled": False,
             "wall_normal": 0,
-            "applied_gravity": GRAVITY_FALL,
+            "applied_gravity": applied_gravity,
             "applied_drag": DRAG_REGULAR,
             "applied_friction": FRICTION_GROUND,
             "jump_duration": 0,
@@ -670,6 +884,9 @@ class TerminalVelocityPredictor:
             "ceiling_normalized_y": 1,
             "floor_count": 0,
             "ceiling_count": 0,
+            "last_wall_jump_frame": last_wall_jump_frame,
+            "second_last_wall_jump_frame": second_last_wall_jump_frame,
+            "third_last_wall_jump_frame": third_last_wall_jump_frame,
         }
 
     def _sample_positions_for_terminal_risk(

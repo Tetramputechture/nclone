@@ -31,7 +31,8 @@ class TestTerminalVelocityIntegration(unittest.TestCase):
         self.assertIsNone(predictor_no_graph.graph_data)
         self.assertEqual(len(predictor_no_graph.adjacency), 0)
         self.assertEqual(len(predictor_no_graph.reachable), 0)
-        self.assertIsNone(predictor_no_graph.subcell_lookup)
+        # Subcell lookup is always initialized (not None) for potential use
+        self.assertIsNotNone(predictor_no_graph.subcell_lookup)
         
         # Test 2: Predictor works with graph data
         graph_data = {

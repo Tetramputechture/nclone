@@ -52,9 +52,9 @@ observation_space = SpacesDict({
 ## State Vectors
 
 ### `game_state`
-`(64,)` float32, range [-1, 1] or [0, 1]
+`(70,)` float32, range [-1, 1] or [0, 1]
 
-Combined state vector: ninja physics (29) + path-aware objectives (15) + mine features (8) + progress (3) + sequential goal (3) + death probabilities (6).
+Combined state vector: ninja physics (29) + path-aware objectives (15) + mine features (8) + progress (3) + sequential goal (3) + mine death probabilities (6) + terminal velocity death probabilities (6).
 
 **Indices 0-28: Ninja Physics State (29 features)**
 - `[0]` Velocity magnitude (normalized)
@@ -102,7 +102,7 @@ Combined state vector: ninja physics (29) + path-aware objectives (15) + mine fe
 - `[56]` Switch priority {0, 1}
 - `[57]` Door priority {0, 1}
 
-**Indices 58-63: Action Death Probabilities (6 features)**
+**Indices 58-63: Mine Death Probabilities (6 features)**
 
 Privileged information from physics simulation - probability of mine collision for each action.
 
@@ -114,6 +114,19 @@ Privileged information from physics simulation - probability of mine collision f
 - `[63]` JUMP+RIGHT death probability [0.0-1.0]
 
 Computed via `MineDeathPredictor.calculate_death_probability()` using 3-tier hybrid approach (spatial filter → distance check → physics simulation). Defaults to 0.0 when mine predictor is unavailable.
+
+**Indices 64-69: Terminal Velocity Death Probabilities (6 features)**
+
+Privileged information from physics simulation - probability of terminal impact death for each action.
+
+- `[64]` NOOP terminal death probability [0.0-1.0]
+- `[65]` LEFT terminal death probability [0.0-1.0]
+- `[66]` RIGHT terminal death probability [0.0-1.0]
+- `[67]` JUMP terminal death probability [0.0-1.0]
+- `[68]` JUMP+LEFT terminal death probability [0.0-1.0]
+- `[69]` JUMP+RIGHT terminal death probability [0.0-1.0]
+
+Computed via `TerminalVelocityPredictor` using reachability-optimized lookup table for fast impact trajectory prediction. Defaults to 0.0 when predictor is unavailable.
 
 ### `reachability_features`
 `(8,)` float32, range [0, 1]

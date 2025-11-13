@@ -96,21 +96,6 @@ class DebugMixin:
                 else [],
             }
 
-            # Add segment data when paths are shown
-            if self._show_paths_to_goals:
-                # Get segment data from path guidance predictor
-                if (
-                    hasattr(self, "nplay_headless")
-                    and hasattr(self.nplay_headless, "sim")
-                    and hasattr(self.nplay_headless.sim, "ninja")
-                    and hasattr(
-                        self.nplay_headless.sim.ninja, "path_guidance_predictor"
-                    )
-                ):
-                    predictor = self.nplay_headless.sim.ninja.path_guidance_predictor
-                    # Path guidance predictor now uses distance-based masking
-                    # Segments are no longer tracked
-
         # Add other debug info only if general debug overlay is enabled
         if self._enable_debug_overlay:
             # Basic environment info
@@ -218,27 +203,6 @@ class DebugMixin:
                     "action_mask": action_mask,
                     "ninja_position": self.nplay_headless.ninja_position(),
                     "last_action": self._last_action_taken,
-                }
-
-        # Add reachable wall segments visualization if enabled
-        if self._reachable_walls_debug_enabled:
-            wall_segments = []
-            if (
-                hasattr(self, "nplay_headless")
-                and hasattr(self.nplay_headless, "sim")
-                and hasattr(self.nplay_headless.sim, "ninja")
-                and hasattr(self.nplay_headless.sim.ninja, "path_guidance_predictor")
-            ):
-                predictor = self.nplay_headless.sim.ninja.path_guidance_predictor
-                ninja_pos = self.nplay_headless.ninja_position()
-                wall_segments = predictor.get_reachable_wall_segments_for_debug(
-                    ninja_pos, threshold=24.0
-                )
-
-            if wall_segments:
-                info["reachable_walls"] = {
-                    "wall_segments": wall_segments,
-                    "ninja_position": self.nplay_headless.ninja_position(),
                 }
 
         return info if info else None  # Return None if no debug info is to be shown
