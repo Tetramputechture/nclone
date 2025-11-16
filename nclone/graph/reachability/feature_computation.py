@@ -22,7 +22,6 @@ from ...constants.physics_constants import (
     EXIT_SWITCH_RADIUS,
     EXIT_DOOR_RADIUS,
     LOCKED_DOOR_SWITCH_RADIUS,
-    TOGGLE_MINE_RADII,
     NINJA_RADIUS,
 )
 from ...gym_environment.constants import LEVEL_DIAGONAL
@@ -38,10 +37,18 @@ def compute_reachability_features_from_graph(
     path_calculator: Any,
 ) -> np.ndarray:
     """
-    Compute 8-dimensional reachability features using adjacency graph and lookup tables.
+    Compute 6-dimensional reachability features using adjacency graph and lookup tables.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     No linear searches or Euclidean distance calculations.
+
+    Features (6 dims):
+    1. Reachable area ratio (0-1)
+    2. Distance to nearest switch (normalized, inverted)
+    3. Distance to exit (normalized, inverted)
+    4. Exit reachable flag (0-1)
+    5. Total mines normalized (0-1)
+    6. Deadly mine ratio (0-1)
 
     Args:
         adjacency: Graph adjacency structure from GraphBuilder
@@ -51,7 +58,7 @@ def compute_reachability_features_from_graph(
         path_calculator: CachedPathDistanceCalculator instance
 
     Returns:
-        8-dimensional numpy array with normalized features [0-1]
+        6-dimensional numpy array with normalized features [0-1]
 
     Raises:
         RuntimeError: If required data is missing (adjacency, graph_data, etc.)
@@ -67,7 +74,7 @@ def compute_reachability_features_from_graph(
     # Total possible nodes (approximate: all traversable tiles)
     total_possible_nodes = MAP_TILE_WIDTH * MAP_TILE_HEIGHT
 
-    features = np.zeros(8, dtype=np.float32)
+    features = np.zeros(6, dtype=np.float32)
 
     # Feature 1: Reachable area ratio
     features[0] = np.clip(len(adjacency) / max(total_possible_nodes, 1), 0.0, 1.0)
@@ -246,151 +253,47 @@ def compute_reachability_features_from_graph(
         min_exit_dist = min(exit_distances)
         features[2] = np.clip(1.0 - (min_exit_dist / area_scale), 0.0, 1.0)
 
-    # Feature 4: Objective path quality (normalized)
-    # Measures path smoothness/quality to next objective (replaces switch count)
-    # Uses path distance vs Euclidean distance ratio as quality metric
-    path_quality = 1.0  # Default: perfect path
+    # Feature 4: Exit reachable flag
+    # Checks if the exit door is reachable (simplified from full completion path)
+    exit_reachable = False
+    for exit_entity in exits:
+        exit_pos = get_entity_position(exit_entity)
+        exit_node = find_closest_node_to_position(
+            exit_pos,
+            adjacency,
+            threshold=50.0,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+        )
+        if exit_node is not None and exit_node in adjacency:
+            exit_reachable = True
+            break
+    features[3] = 1.0 if exit_reachable else 0.0
 
-    if next_obj_distances:
-        # Find next objective position
-        next_obj_pos = None
-        for switch in exit_switches:
-            if getattr(switch, "active", True):
-                next_obj_pos = get_entity_position(switch)
-                break
-        if next_obj_pos is None:
-            for switch in locked_door_switches:
-                if getattr(switch, "active", True):
-                    next_obj_pos = get_entity_position(switch)
-                    break
-        if next_obj_pos is None and exits:
-            next_obj_pos = get_entity_position(exits[0])
-
-        if next_obj_pos:
-            path_dist = min(next_obj_distances)
-            euclidean_dist = np.sqrt(
-                (next_obj_pos[0] - ninja_pos[0]) ** 2
-                + (next_obj_pos[1] - ninja_pos[1]) ** 2
-            )
-            if euclidean_dist > 0:
-                # Quality = 1.0 if path is direct (ratio = 1.0), decreases as path becomes longer
-                path_ratio = path_dist / euclidean_dist
-                path_quality = np.clip(
-                    2.0 - path_ratio, 0.0, 1.0
-                )  # 1.0 = direct, 0.0 = very indirect
-
-    features[3] = path_quality
-
-    # Feature 5: Deadly mines on optimal path (normalized)
-    # Counts deadly (toggled) mines near the optimal path to next objective
+    # Features 5-6: Mine context (simplified from detailed mine features)
+    # Mine information is primarily handled by graph nodes, these provide high-level context
     hazard_types = [
         EntityType.TOGGLE_MINE,
         EntityType.TOGGLE_MINE_TOGGLED,
     ]
     hazards = [e for e in entities if get_entity_type(e) in hazard_types]
 
-    deadly_mines_on_path = 0
-    if next_obj_distances:
-        # Find next objective position for path analysis
-        next_obj_pos = None
-        for switch in exit_switches:
-            if getattr(switch, "active", True):
-                next_obj_pos = get_entity_position(switch)
-                break
-        if next_obj_pos is None:
-            for switch in locked_door_switches:
-                if getattr(switch, "active", True):
-                    next_obj_pos = get_entity_position(switch)
-                    break
-        if next_obj_pos is None and exits:
-            next_obj_pos = get_entity_position(exits[0])
+    # Feature 5: Total mines normalized (0-1)
+    total_mines = len(hazards)
+    features[4] = np.clip(total_mines / 10.0, 0.0, 1.0)  # Max 10 mines
 
-        if next_obj_pos:
-            # Count deadly mines near the path
-            # A mine is "on path" if it's within 50 pixels of the optimal path
-            path_threshold = 50.0
+    # Feature 6: Deadly mine ratio (0-1)
+    if total_mines > 0:
+        deadly_mines = 0
         for hazard in hazards:
             hazard_state = getattr(hazard, "state", 1)
             # For TOGGLE_MINE_TOGGLED, state is always 0 (deadly)
             if getattr(hazard, "entity_type", None) == EntityType.TOGGLE_MINE_TOGGLED:
                 hazard_state = 0
-
             if hazard_state == 0:  # Deadly mine
-                hazard_pos = get_entity_position(hazard)
-                # Check if mine is near the path (simplified: check if closer to path than threshold)
-                # Use path distance to mine as proxy for "on path"
-                # Get mine radius based on state (0=toggled/deadly)
-                mine_radius = TOGGLE_MINE_RADII.get(hazard_state, 4.0)
-                mine_path_dist = path_calculator.get_distance(
-                    ninja_pos,
-                    hazard_pos,
-                    adjacency,
-                    level_data=level_data,
-                    graph_data=graph_data,
-                    entity_radius=mine_radius,
-                    ninja_radius=NINJA_RADIUS,
-                )
-                obj_path_dist = min(next_obj_distances)
-                # If mine is between ninja and objective (path distance similar), count it
-                if mine_path_dist < obj_path_dist + path_threshold:
-                    deadly_mines_on_path += 1
-
-    features[4] = np.clip(
-        deadly_mines_on_path / 5.0, 0.0, 1.0
-    )  # Max 5 deadly mines on path
-
-    # Feature 6: Connectivity score (edge density)
-    total_edges = sum(len(neighbors) for neighbors in adjacency.values())
-    if len(adjacency) > 0:
-        features[5] = np.clip(total_edges / (len(adjacency) * 4.0), 0.0, 1.0)
+                deadly_mines += 1
+        features[5] = deadly_mines / total_mines
     else:
         features[5] = 0.0
-
-    # Feature 7: Next objective reachable (replaces "exit reachable")
-    # Checks if the next objective in hierarchy is reachable
-    next_obj_reachable = False
-    if next_obj_distances:
-        # If we found distances, the objective is reachable
-        next_obj_reachable = True
-    features[6] = 1.0 if next_obj_reachable else 0.0
-
-    # Feature 8: Full completion path exists (switch→door→exit)
-    # Verifies that a complete path exists through all objectives
-    full_path_exists = False
-    if exits and switches:
-        # Check if exit is reachable
-        exit_reachable = False
-        for exit_entity in exits:
-            exit_pos = get_entity_position(exit_entity)
-            exit_node = find_closest_node_to_position(
-                exit_pos,
-                adjacency,
-                threshold=50.0,
-                spatial_hash=spatial_hash,
-                subcell_lookup=subcell_lookup,
-            )
-            if exit_node is not None and exit_node in adjacency:
-                exit_reachable = True
-                break
-
-        # Check if at least one switch is reachable
-        switch_reachable = False
-        for switch in switches:
-            switch_pos = get_entity_position(switch)
-            switch_node = find_closest_node_to_position(
-                switch_pos,
-                adjacency,
-                threshold=50.0,
-                spatial_hash=spatial_hash,
-                subcell_lookup=subcell_lookup,
-            )
-            if switch_node is not None and switch_node in adjacency:
-                switch_reachable = True
-                break
-
-        # Full path exists if both switch and exit are reachable
-        full_path_exists = exit_reachable and switch_reachable
-
-    features[7] = 1.0 if full_path_exists else 0.0
 
     return features

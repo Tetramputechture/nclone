@@ -14,13 +14,18 @@ import time
 from typing import Dict, Any, Optional
 
 from ..gym_environment.observation_processor import ObservationProcessor
-from ..gym_environment.constants import MAX_TIME_IN_FRAMES
+from ..gym_environment.truncation_calculator import calculate_truncation_limit
 from ..nplay_headless import NPlayHeadless
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..constants.entity_types import EntityType
 from ..constants.physics_constants import NINJA_RADIUS
 from ..graph.level_data import LevelData, extract_start_position_from_map_data
-from ..graph.reachability.feature_extractor import ReachabilityFeatureExtractor
+from ..graph.reachability.feature_computation import (
+    compute_reachability_features_from_graph,
+)
+from ..graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
+from ..graph.reachability.graph_builder import GraphBuilder
+from ..graph.mine_analysis import compute_mine_context
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +48,25 @@ class UnifiedObservationExtractor:
                                       Set to False for replay parsing to save computation time
         """
         self.enable_visual_observations = enable_visual_observations
-        self.observation_processor = ObservationProcessor(enable_augmentation=False)
+        self.observation_processor = ObservationProcessor(
+            enable_augmentation=False,
+            enable_visual_processing=enable_visual_observations,
+        )
 
         # Create a minimal NPlayHeadless instance for observation compatibility
         # We'll use this to leverage the existing observation extraction methods
         self._nplay_headless = None
 
-        # Initialize reachability feature extractor
-        self._reachability_extractor = ReachabilityFeatureExtractor()
+        # Initialize graph-based reachability system
+        self._graph_builder = GraphBuilder()
+        self._path_calculator = CachedPathDistanceCalculator(
+            max_cache_size=200, use_astar=True
+        )
         self._reachability_cache = {}
+        self._graph_cache = {}  # Cache graph data per level
         self._reachability_cache_ttl = 0.1  # 100ms cache TTL
         self._last_reachability_time = 0
+        self._truncation_limit_cache = {}  # Cache truncation limits per level
 
     def _create_nplay_headless_wrapper(self, sim) -> NPlayHeadless:
         """
@@ -75,6 +88,7 @@ class UnifiedObservationExtractor:
                 enable_animation=False,
                 enable_logging=False,
                 enable_debug_overlay=False,
+                enable_rendering=self.enable_visual_observations,
             )
 
         # Replace the internal simulator with our replay simulator
@@ -176,7 +190,7 @@ class UnifiedObservationExtractor:
         """
         Extract compact reachability features from current game state.
 
-        This replicates the logic from NppEnvironment._get_reachability_features()
+        This uses the graph-based approach (compute_reachability_features_from_graph)
         to ensure consistency with training observations.
 
         Args:
@@ -184,7 +198,7 @@ class UnifiedObservationExtractor:
             frame_number: Current frame number
 
         Returns:
-            8-dimensional float32 feature vector
+            6-dimensional float32 feature vector (4 base + 2 mine context)
 
         Raises:
             RuntimeError: If reachability feature extraction fails
@@ -206,21 +220,60 @@ class UnifiedObservationExtractor:
 
         # Extract current game state
         level_data = self._extract_level_data(sim)
-        entities = self._extract_graph_entities(sim)
 
         try:
-            # Extract reachability features
-            features = self._reachability_extractor.extract_features(
-                ninja_position=ninja_pos,
-                level_data=level_data,
-                entities=entities,
+            # Build or retrieve cached graph for this level
+            level_id = level_data.level_id
+            if level_id not in self._graph_cache:
+                graph_data = self._graph_builder.build_graph(level_data)
+                self._graph_cache[level_id] = graph_data
+
+                # Build level cache for path calculator
+                adjacency = graph_data.get("adjacency")
+                if adjacency:
+                    self._path_calculator.build_level_cache(
+                        level_data, adjacency, graph_data
+                    )
+            else:
+                graph_data = self._graph_cache[level_id]
+
+            adjacency = graph_data.get("adjacency")
+            if not adjacency:
+                raise RuntimeError("No adjacency data in graph")
+
+            # Compute base reachability features (8 dims)
+            base_features = compute_reachability_features_from_graph(
+                adjacency,
+                graph_data,
+                level_data,
+                ninja_pos,
+                self._path_calculator,
             )
+
+            # Keep only first 4 features (Phase 6: removed redundant features)
+            base_features = base_features[:4]
+
+            # Add mine context features (Phase 6)
+            mine_context = compute_mine_context(level_data)
+
+            # Combine features: 4 base + 2 mine context = 6 dims
+            features = np.concatenate(
+                [
+                    base_features,
+                    np.array(
+                        [
+                            mine_context["total_mines_norm"],
+                            mine_context["deadly_mine_ratio"],
+                        ],
+                        dtype=np.float32,
+                    ),
+                ]
+            )
+
         except Exception as e:
             print(f"Failed to extract reachability features: {e}")
             print(f"Ninja position: {ninja_pos}")
-            print(
-                f"Level data: tiles shape {level_data.tiles.shape}, {len(entities)} entities"
-            )
+            print(f"Level data: tiles shape {level_data.tiles.shape}")
             raise RuntimeError(f"Reachability feature extraction failed: {e}") from e
 
         # Validate features
@@ -230,8 +283,8 @@ class UnifiedObservationExtractor:
         if not isinstance(features, np.ndarray):
             raise TypeError(f"Expected numpy array, got {type(features)}")
 
-        if features.shape != (8,):
-            raise ValueError(f"Expected shape (8,), got {features.shape}")
+        if features.shape != (6,):
+            raise ValueError(f"Expected shape (6,), got {features.shape}")
 
         if features.dtype != np.float32:
             print(f"Converting features from {features.dtype} to float32")
@@ -249,6 +302,72 @@ class UnifiedObservationExtractor:
                 del self._reachability_cache[key]
 
         return features
+
+    def _get_truncation_limit(self, sim, level_id: str) -> int:
+        """
+        Calculate dynamic truncation limit for the current level.
+
+        Uses the same logic as the live environment: surface area from graph
+        and reachable mine count to compute a complexity-based time limit.
+
+        Args:
+            sim: Simulator instance
+            level_id: Level identifier for caching
+
+        Returns:
+            Truncation limit in frames
+        """
+        # Check cache
+        if level_id in self._truncation_limit_cache:
+            return self._truncation_limit_cache[level_id]
+
+        # Extract level data
+        level_data = self._extract_level_data(sim)
+
+        try:
+            # Build or retrieve cached graph
+            if level_id not in self._graph_cache:
+                graph_data = self._graph_builder.build_graph(level_data)
+                self._graph_cache[level_id] = graph_data
+            else:
+                graph_data = self._graph_cache[level_id]
+
+            adjacency = graph_data.get("adjacency")
+            if not adjacency:
+                # Fallback to default if no graph available
+                from ..gym_environment.constants import MAX_TIME_IN_FRAMES
+
+                return MAX_TIME_IN_FRAMES
+
+            # Calculate surface area (number of reachable nodes)
+            surface_area = len(adjacency)
+
+            # Count reachable mines
+            reachable_mine_count = 0
+            for entity in level_data.entities:
+                entity_type = entity.get("type")
+                if entity_type in [
+                    EntityType.TOGGLE_MINE,
+                    EntityType.TOGGLE_MINE_TOGGLED,
+                ]:
+                    reachable_mine_count += 1
+
+            # Calculate dynamic truncation limit
+            truncation_limit = calculate_truncation_limit(
+                surface_area, reachable_mine_count
+            )
+
+            # Cache the result
+            self._truncation_limit_cache[level_id] = truncation_limit
+
+            return truncation_limit
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate truncation limit: {e}. Using default.")
+            # Fallback to default on error
+            from ..gym_environment.constants import MAX_TIME_IN_FRAMES
+
+            return MAX_TIME_IN_FRAMES
 
     def extract_raw_observation(self, sim, frame_number: int) -> Dict[str, Any]:
         """
@@ -272,8 +391,13 @@ class UnifiedObservationExtractor:
         # Create wrapper to access NPlayHeadless observation methods
         nplay_wrapper = self._create_nplay_headless_wrapper(sim)
 
-        # Calculate time remaining feature (matching NppEnvironment logic)
-        time_remaining = (MAX_TIME_IN_FRAMES - sim.frame) / MAX_TIME_IN_FRAMES
+        # Calculate dynamic truncation limit for this level
+        level_id = f"level_{id(sim.map_data)}"  # Use map_data id as level identifier
+        truncation_limit = self._get_truncation_limit(sim, level_id)
+
+        # Calculate time remaining feature using dynamic truncation limit
+        # This ensures replay observations match live environment observations
+        time_remaining = (truncation_limit - sim.frame) / truncation_limit
 
         # Extract ninja state using the standardized method
         ninja_state = nplay_wrapper.get_ninja_state()
@@ -306,9 +430,6 @@ class UnifiedObservationExtractor:
         if self.enable_visual_observations:
             # Render the current frame using the wrapper
             obs["screen"] = nplay_wrapper.render()
-        else:
-            # Provide a minimal placeholder screen for compatibility
-            obs["screen"] = np.zeros((600, 1056, 1), dtype=np.uint8)  # Level dimensions
 
         return obs
 
@@ -337,13 +458,6 @@ class UnifiedObservationExtractor:
             processed_obs = {
                 "game_state": self.observation_processor.process_game_state(raw_obs),
                 "reachability_features": raw_obs["reachability_features"],
-                # Provide minimal placeholders for visual observations
-                "player_frame": np.zeros(
-                    (128, 128, 3), dtype=np.uint8
-                ),  # Player frame placeholder
-                "global_view": np.zeros(
-                    (100, 176, 1), dtype=np.uint8
-                ),  # Global view placeholder
             }
 
         return processed_obs
@@ -507,4 +621,7 @@ class UnifiedObservationExtractor:
         """Reset the observation processor state and clear caches."""
         self.observation_processor.reset()
         self._reachability_cache.clear()
+        self._graph_cache.clear()
+        self._truncation_limit_cache.clear()
+        self._path_calculator.clear_cache()
         self._last_reachability_time = 0

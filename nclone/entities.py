@@ -1,7 +1,6 @@
 import math
 import array
 import struct
-import numpy as np
 
 from . import render_utils
 from .physics import *
@@ -62,19 +61,23 @@ class GridSegmentLinear:
     def get_bounds(self):
         """Return the bounding box of the linear segment as (min_x, min_y, max_x, max_y)."""
         return self._bounds_cache
-    
+
     def intersects_bounds(self, min_x, min_y, max_x, max_y):
         """Fast AABB intersection test.
-        
+
         Args:
             min_x, min_y, max_x, max_y: Query bounding box
-            
+
         Returns:
             True if segment bounds overlap query bounds, False otherwise
         """
         seg_min_x, seg_min_y, seg_max_x, seg_max_y = self._bounds_cache
-        return not (seg_max_x < min_x or seg_min_x > max_x or 
-                    seg_max_y < min_y or seg_min_y > max_y)
+        return not (
+            seg_max_x < min_x
+            or seg_min_x > max_x
+            or seg_max_y < min_y
+            or seg_min_y > max_y
+        )
 
     def intersect_with_ray(self, xpos, ypos, dx, dy, radius):
         """Return the time of intersection (as a fraction of a frame) for the collision
@@ -156,19 +159,23 @@ class GridSegmentCircular:
     def get_bounds(self):
         """Return the bounding box of the circular segment as (min_x, min_y, max_x, max_y)."""
         return self._bounds_cache
-    
+
     def intersects_bounds(self, min_x, min_y, max_x, max_y):
         """Fast AABB intersection test.
-        
+
         Args:
             min_x, min_y, max_x, max_y: Query bounding box
-            
+
         Returns:
             True if segment bounds overlap query bounds, False otherwise
         """
         seg_min_x, seg_min_y, seg_max_x, seg_max_y = self._bounds_cache
-        return not (seg_max_x < min_x or seg_min_x > max_x or 
-                    seg_max_y < min_y or seg_min_y > max_y)
+        return not (
+            seg_max_x < min_x
+            or seg_min_x > max_x
+            or seg_max_y < min_y
+            or seg_min_y > max_y
+        )
 
     def intersect_with_ray(self, xpos, ypos, dx, dy, radius):
         """Return the time of intersection (as a fraction of a frame) for the collision
@@ -210,34 +217,26 @@ class Entity:
         self.sim = sim
         self.xpos = xcoord * 6
         self.ypos = ycoord * 6
-        self.poslog = array.array("h")
+        if self.sim.sim_config.debug:
+            self.poslog = array.array("h")
+            self.exported_chunks = array.array("H")
+        else:
+            self.poslog = None
+            self.exported_chunks = None
         self.active = True
         self.is_logical_collidable = False
         self.is_physical_collidable = False
         self.is_movable = False
         self.is_thinkable = False
         self.log_positions = False
-        self.log_collisions = True
+        self.log_collisions = False
         self.cell = clamp_cell(math.floor(self.xpos / 24), math.floor(self.ypos / 24))
         self.last_exported_state = None
         self.last_exported_frame = None
         self.last_exported_coords = None
-        self.exported_chunks = array.array("H")
 
     def get_state(self, minimal_state: bool = False):
         """Get the entity's state as a list of normalized float values between 0 and 1."""
-        # Validate positions before normalization
-        if np.isnan(self.xpos) or np.isinf(self.xpos):
-            raise ValueError(
-                f"Invalid xpos in Entity.get_state(): {self.xpos} "
-                f"(type={self.type}, index={self.index})"
-            )
-        if np.isnan(self.ypos) or np.isinf(self.ypos):
-            raise ValueError(
-                f"Invalid ypos in Entity.get_state(): {self.ypos} "
-                f"(type={self.type}, index={self.index})"
-            )
-
         # Basic attributes that all entities have
         state = [
             float(self.active),  # Already 0 or 1
@@ -267,7 +266,8 @@ class Entity:
     def log_collision(self, state=1):
         """Log an interaction with this entity"""
         if (
-            self.log_collisions
+            self.sim.sim_config.debug
+            and self.log_collisions
             and self.sim.sim_config.log_data
             and self.sim.frame > 0
             and state != self.last_exported_state
@@ -280,7 +280,9 @@ class Entity:
     def log_position(self):
         """Log position of entity on current frame"""
         # Only export position if enabled and the entity has moved enough
-        if not (self.active and self.sim.sim_config.log_data and self.log_positions):
+        if self.sim.sim_config.debug or not (
+            self.active and self.sim.sim_config.log_data and self.log_positions
+        ):
             return
         last = self.last_exported_coords
         dist = abs(last[0] - self.xpos) + abs(last[1] - self.ypos) if last else 0

@@ -106,6 +106,17 @@ def clear_door_feature_caches(env: Any, verbose: bool = False) -> None:
         if verbose:
             print("  - Reset _cached_switch_states")
 
+    # Exit features cache (position-based caching for performance)
+    if hasattr(env, "_cached_exit_features"):
+        env._cached_exit_features = None
+        if verbose:
+            print("  - Reset _cached_exit_features")
+
+    if hasattr(env, "_last_exit_cache_ninja_pos"):
+        env._last_exit_cache_ninja_pos = None
+        if verbose:
+            print("  - Reset _last_exit_cache_ninja_pos")
+
     if verbose:
         print("Cleared door feature caches")
 
@@ -335,55 +346,6 @@ def clear_debug_overlay_caches(
         print("Cleared debug overlay caches")
 
 
-def invalidate_mine_dependent_caches(
-    sim_renderer: Any, sim: Any = None, verbose: bool = False
-) -> None:
-    """
-    Invalidate caches that depend on mine states.
-
-    Called when toggle mines change state to ensure debug overlays
-    (mine predictor, death probability) reflect current mine states.
-
-    Updates:
-    - Mine death predictor data structures (mine positions, danger zones)
-    - Debug overlay surface caches (mine predictor, death probability)
-
-    Args:
-        sim_renderer: NSimRenderer instance (from nplay_headless.sim_renderer)
-        sim: Simulator instance (optional, for updating mine death predictor)
-        verbose: If True, print cache invalidation operations
-
-    Example:
-        >>> invalidate_mine_dependent_caches(nplay_headless.sim_renderer, nplay_headless.sim, verbose=True)
-        Updated mine death predictor
-        Invalidated mine-dependent caches
-    """
-    # Update mine death predictor if it exists
-    if sim is not None:
-        if hasattr(sim, "ninja") and hasattr(sim.ninja, "mine_death_predictor"):
-            predictor = sim.ninja.mine_death_predictor
-            if predictor is not None and hasattr(predictor, "update_mine_states"):
-                predictor.update_mine_states(verbose=verbose)
-                if verbose:
-                    print("  - Updated mine death predictor")
-
-    # Clear debug overlay caches if renderer exists
-    if hasattr(sim_renderer, "debug_overlay_renderer"):
-        debug_renderer = sim_renderer.debug_overlay_renderer
-        # Only clear mine/death overlays, not exploration or text
-        if hasattr(debug_renderer, "cached_mine_surface"):
-            debug_renderer.cached_mine_surface = None
-            if verbose:
-                print("  - Cleared cached_mine_surface")
-        if hasattr(debug_renderer, "cached_death_surface"):
-            debug_renderer.cached_death_surface = None
-            if verbose:
-                print("  - Cleared cached_death_surface")
-
-        if verbose:
-            print("Invalidated mine-dependent caches")
-
-
 def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
     """
     Reset graph and state caches in the environment.
@@ -391,7 +353,6 @@ def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
     Calls environment methods to reset:
     - Graph state (_reset_graph_state)
     - Reachability state (_reset_reachability_state)
-    - Hierarchical state (_reset_hierarchical_state)
 
     Args:
         env: Environment instance (NppEnvironment or similar)
@@ -410,12 +371,6 @@ def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
         env._reset_reachability_state()
         if verbose:
             print("  - Reset reachability state")
-
-    if hasattr(env, "enable_hierarchical") and env.enable_hierarchical:
-        if hasattr(env, "_reset_hierarchical_state"):
-            env._reset_hierarchical_state()
-            if verbose:
-                print("  - Reset hierarchical state")
 
     if verbose:
         print("Reset graph state caches")

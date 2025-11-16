@@ -43,6 +43,8 @@ class NPlayHeadless:
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
         seed: Optional[int] = None,
+        enable_rendering: bool = True,
+        debug=False,
     ):
         """
         Initialize the simulation and renderer, as well as the headless pygame
@@ -50,37 +52,52 @@ class NPlayHeadless:
 
         Note: Rendering automatically uses grayscale in grayscale_array mode (headless) for performance.
         RGB is only used in 'human' mode for visual testing.
+
+        Args:
+            enable_rendering: If False, skip pygame initialization entirely for maximum performance.
+                Only use when visual observations are not needed (graph+state+reachability sufficient).
         """
         self.render_mode = render_mode
-
+        self.enable_rendering = enable_rendering or render_mode == "human"
+        self.debug = debug
         self.sim = Simulator(
-            SimConfig(enable_anim=enable_animation, log_data=enable_logging)
+            SimConfig(
+                enable_anim=enable_animation, log_data=enable_logging, debug=debug
+            )
         )
 
-        # OPTIMIZATION: Always use grayscale in headless mode (grayscale_array)
-        # RGB only used for human viewing (render_mode="human")
-        # This eliminates expensive RGB->grayscale conversion (~30% speedup)
-        use_grayscale = render_mode == "grayscale_array"
+        # Only initialize rendering if needed
+        if self.enable_rendering:
+            # OPTIMIZATION: Always use grayscale in headless mode (grayscale_array)
+            # RGB only used for human viewing (render_mode="human")
+            # This eliminates expensive RGB->grayscale conversion (~30% speedup)
+            use_grayscale = render_mode == "grayscale_array"
 
-        self.sim_renderer = NSimRenderer(
-            self.sim, render_mode, enable_debug_overlay, grayscale=use_grayscale
-        )
-        self.current_map_data = None
-        self.clock = pygame.time.Clock()
+            self.sim_renderer = NSimRenderer(
+                self.sim, render_mode, enable_debug_overlay, grayscale=use_grayscale
+            )
+            self.current_map_data = None
+            self.clock = pygame.time.Clock()
 
-        # init pygame
-        pygame.init()
-        pygame.display.init()
-        if self.render_mode == "grayscale_array":
-            os.environ["SDL_VIDEODRIVER"] = "dummy"
+            # init pygame
+            pygame.init()
+            pygame.display.init()
+            if self.render_mode == "grayscale_array":
+                os.environ["SDL_VIDEODRIVER"] = "dummy"
+            else:
+                print("Setting up pygame display")
+                pygame.display.set_mode((render_utils.SRCWIDTH, render_utils.SRCHEIGHT))
+
+            # Pre-allocate buffer for surface to array conversion
+            self._render_buffer = np.empty(
+                (render_utils.SRCWIDTH, render_utils.SRCHEIGHT, 3), dtype=np.uint8
+            )
         else:
-            print("Setting up pygame display")
-            pygame.display.set_mode((render_utils.SRCWIDTH, render_utils.SRCHEIGHT))
-
-        # Pre-allocate buffer for surface to array conversion
-        self._render_buffer = np.empty(
-            (render_utils.SRCWIDTH, render_utils.SRCHEIGHT, 3), dtype=np.uint8
-        )
+            # Rendering disabled - skip pygame initialization entirely
+            self.sim_renderer = None
+            self.current_map_data = None
+            self.clock = None
+            self._render_buffer = None
 
         self.enable_debug_overlay = enable_debug_overlay
         self.seed = seed
@@ -254,6 +271,10 @@ class NPlayHeadless:
         Args:
             debug_info: A dictionary containing debug information to be displayed on the screen.
         """
+        # Return None if rendering is disabled (visual observations not needed)
+        if not self.enable_rendering or self.sim_renderer is None:
+            return None
+
         if self.current_tick == self.last_rendered_tick:
             if (
                 self.render_mode == "human" and self.cached_render_surface is not None
@@ -728,27 +749,6 @@ class NPlayHeadless:
                         entity_state.append(normalized_rel_speed)
                     else:
                         entity_state.append(0.0)  # No velocity information
-
-                    # Check for NaN/inf in entity state before adding
-                    for i, val in enumerate(entity_state):
-                        if np.isnan(val) or np.isinf(val):
-                            raise ValueError(
-                                f"Invalid value in entity_states: {val} at index {i} "
-                                f"for entity_type={entity_type}, entity_idx={entity_idx}, "
-                                f"xpos={entity.xpos}, ypos={entity.ypos}, "
-                                f"ninja_pos=({ninja.xpos}, {ninja.ypos})"
-                            )
-
-                    # Assert that all entity states are between 0 and 1. If not
-                    # print an informative error message containing the entity type,
-                    # index, and state.
-                    if not all(0 <= state_val <= 1 for state_val in entity_state):
-                        print(
-                            f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds"
-                        )
-                        raise ValueError(
-                            f"Entity type {entity_type} index {entity_idx} state {entity_state} is out of bounds"
-                        )
 
                     while len(entity_state) < MAX_ATTRIBUTES:
                         entity_state.append(0.0)

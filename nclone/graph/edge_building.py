@@ -192,6 +192,42 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
             # If reachability analysis fails, continue without it
             reachability_result = None
 
+    # Compute topological features for all nodes (Phase 5)
+    from .topological_features import compute_batch_topological_features
+
+    # Get current objective position (exit switch if not collected, else exit door)
+    objective_pos = (0.0, 0.0)  # Default
+    if hasattr(level_data, "entities") and level_data.entities:
+        from ..constants.entity_types import EntityType
+
+        # Find exit switch and door
+        exit_switch = None
+        exit_door = None
+        for entity in level_data.entities:
+            if entity.get("type") == EntityType.EXIT_SWITCH:
+                exit_switch = (entity.get("x", 0), entity.get("y", 0))
+            elif entity.get("type") == EntityType.EXIT_DOOR:
+                exit_door = (entity.get("x", 0), entity.get("y", 0))
+
+        # Use exit switch as objective (agent must collect it first)
+        if exit_switch:
+            objective_pos = exit_switch
+        elif exit_door:
+            objective_pos = exit_door
+
+    # Build adjacency dict from edges for topological computation
+    adjacency_dict: Dict[Tuple[float, float], List[Tuple[float, float]]] = {}
+    for edge in edges:
+        if edge.source not in adjacency_dict:
+            adjacency_dict[edge.source] = []
+        adjacency_dict[edge.source].append(edge.target)
+
+    # Compute topological features for all nodes
+    node_positions_array = np.array(sorted(positions), dtype=np.float32)
+    batch_topological = compute_batch_topological_features(
+        node_positions_array, adjacency_dict, objective_pos, sample_size=100
+    )
+
     # Fill node data with comprehensive features
     for i, pos in enumerate(sorted(positions)):
         if i >= N_MAX_NODES:
@@ -199,17 +235,6 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
 
         # Determine node type
         node_type = _determine_node_type(pos, level_data)
-
-        # Get tile type at this position and normalize glitched tiles (34-37) to 0
-        tile_type = 0
-        if hasattr(level_data, "get_tile_at"):
-            try:
-                tile_type = level_data.get_tile_at(pos[0], pos[1])
-                # Treat glitched tiles (34-37) as empty (type 0)
-                if tile_type > 33:
-                    tile_type = 0
-            except Exception:
-                tile_type = 0
 
         # Extract entity info if this is an entity node
         entity_info = _extract_entity_info(pos, level_data)
@@ -221,19 +246,77 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
                 "reachable_from_ninja": reachability_result.is_position_reachable(pos),
             }
 
-        # Build comprehensive node features (50 dimensions)
+        # Extract topological info for this node
+        topological_info = None
+        if batch_topological and len(batch_topological["in_degree"]) > i:
+            topological_info = {
+                "in_degree": float(batch_topological["in_degree"][i]),
+                "out_degree": float(batch_topological["out_degree"][i]),
+                "objective_dx": float(batch_topological["objective_dx"][i]),
+                "objective_dy": float(batch_topological["objective_dy"][i]),
+                "objective_hops": float(batch_topological["objective_hops"][i]),
+                "betweenness": float(batch_topological["betweenness"][i]),
+            }
+
+        # Build optimized node features (21 dimensions in Phase 5)
         node_features[i] = node_builder.build_node_features(
             node_pos=pos,
             node_type=node_type,
-            resolution_level=1,  # Default resolution (medium)
-            tile_type=tile_type,
             entity_info=entity_info,
             reachability_info=reachability_info,
+            topological_info=topological_info,
         )
         node_types[i] = node_type
         node_mask[i] = 1
 
-    # Fill edge data with comprehensive features
+    # Extract mine nodes for mine danger computation
+    mine_nodes = []
+    entities = level_data.entities if hasattr(level_data, "entities") else []
+    for entity in entities:
+        entity_type = entity.get("type", 0)
+        from ..constants.entity_types import EntityType
+
+        if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
+            # Extract mine data
+            mine_state_raw = entity.get("state", 0.0)
+            # Convert to -1/0/+1 encoding
+            if mine_state_raw == 0.0:
+                mine_state = -1.0  # Deadly (toggled)
+            elif mine_state_raw == 2.0:
+                mine_state = 0.0  # Transitioning
+            else:
+                mine_state = 1.0  # Safe (untoggled)
+
+            mine_nodes.append(
+                {
+                    "position": (entity.get("x", 0), entity.get("y", 0)),
+                    "radius": entity.get("radius", 4.0),
+                    "state": mine_state,
+                }
+            )
+
+    # Compute geometric features for all edges in batch (vectorized for performance)
+    from .geometric_features import compute_batch_geometric_features
+
+    if len(edges) > 0:
+        # Extract source and target positions
+        edge_sources = np.array([edge.source for edge in edges], dtype=np.float32)
+        edge_targets = np.array([edge.target for edge in edges], dtype=np.float32)
+
+        # Compute geometric features in batch
+        batch_geometric = compute_batch_geometric_features(edge_sources, edge_targets)
+    else:
+        batch_geometric = None
+
+    # Compute mine danger features for all edges in batch
+    from .mine_proximity import batch_compute_mine_features
+
+    if len(edges) > 0 and len(mine_nodes) > 0:
+        batch_mine = batch_compute_mine_features(edges, mine_nodes)
+    else:
+        batch_mine = None
+
+    # Fill edge data with enhanced features
     for i, edge in enumerate(edges):
         if i >= E_MAX_EDGES:
             break
@@ -255,11 +338,33 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
             else:
                 edge_reachability_confidence = 0.0
 
-        # Build comprehensive edge features (6 dimensions)
+        # Extract geometric features for this edge
+        geometric_dict = None
+        if batch_geometric is not None:
+            geometric_dict = {
+                "dx_norm": float(batch_geometric["dx_norm"][i]),
+                "dy_norm": float(batch_geometric["dy_norm"][i]),
+                "distance": float(batch_geometric["distance"][i]),
+                "movement_category": float(batch_geometric["movement_category"][i]),
+            }
+
+        # Extract mine danger features for this edge
+        mine_dict = None
+        if batch_mine is not None:
+            mine_dict = {
+                "nearest_mine_distance": float(batch_mine["nearest_mine_distance"][i]),
+                "passes_deadly_mine": float(batch_mine["passes_deadly_mine"][i]),
+                "mine_threat_level": float(batch_mine["mine_threat_level"][i]),
+                "num_mines_nearby": float(batch_mine["num_mines_nearby"][i]),
+            }
+
+        # Build enhanced edge features (14 dimensions)
         edge_features[i] = edge_builder.build_edge_features(
             edge_type=edge.edge_type,
             weight=edge.weight,
             reachability_confidence=edge_reachability_confidence,
+            geometric_features=geometric_dict,
+            mine_features=mine_dict,
         )
         edge_types[i] = edge.edge_type
         edge_mask[i] = 1

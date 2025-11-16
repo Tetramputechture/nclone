@@ -124,26 +124,9 @@ class EntityToggleMine(Entity):
     def set_state(self, state):
         """Set the state of the toggle. 0:toggled, 1:untoggled, 2:toggling."""
         if state in (0, 1, 2):
-            old_state = getattr(self, "state", None)
             self.state = state
             self.RADIUS = self.RADII[state]
             self.log_collision(state)
-
-            # Invalidate mine-dependent caches if state actually changed
-            # PERFORMANCE: Updates mine death predictor and invalidates debug overlay caches
-            if old_state is not None and old_state != state:
-                # Update mine death predictor and clear debug overlay caches
-                from nclone.cache_management import invalidate_mine_dependent_caches
-
-                # Access renderer through gym_env -> nplay_headless -> sim_renderer
-                if hasattr(self.sim, "gym_env") and self.sim.gym_env:
-                    env = self.sim.gym_env
-                    if hasattr(env, "nplay_headless") and hasattr(
-                        env.nplay_headless, "sim_renderer"
-                    ):
-                        invalidate_mine_dependent_caches(
-                            env.nplay_headless.sim_renderer, self.sim
-                        )
 
     def get_state(self):
         state = super().get_state()

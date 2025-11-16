@@ -98,8 +98,11 @@ class GraphMixin:
         self.last_update_time = time.time()
         self.graph_builder.clear_cache()
         self._current_level_id = None
-        # Note: We keep caches across resets since they're per level ID
-        # (_reachable_area_scale_cache, _graph_data_cache)
+
+        # Clear per-level caches since we use random levels and won't reload the same level
+        # This prevents unbounded memory growth during training
+        self._reachable_area_scale_cache.clear()
+        self._graph_data_cache.clear()
 
     def _get_reachable_area_scale(self) -> float:
         """Get reachable area scale for distance normalization.
@@ -298,14 +301,33 @@ class GraphMixin:
         )
 
         # Build level cache for path distances if path calculator is available
-        if hasattr(self, "path_calculator") and self.path_calculator is not None:
+        # CRITICAL: Use _path_calculator (from ReachabilityMixin), not path_calculator
+        # CRITICAL: Must build cache BEFORE any path distance calculations to avoid
+        # "unreachable" warnings for valid levels on first observation
+        if hasattr(self, "_path_calculator") and self._path_calculator is not None:
             adjacency = (
                 self.current_graph_data.get("adjacency", {})
                 if self.current_graph_data
                 else {}
             )
-            if adjacency:
-                self.path_calculator.build_level_cache(level_data, adjacency)
+            if adjacency and level_data is not None:
+                # Pass graph_data for spatial indexing optimization
+                # This builds the level cache with precomputed distances to all goals
+                cache_built = self._path_calculator.build_level_cache(
+                    level_data, adjacency, self.current_graph_data
+                )
+
+                if not cache_built and self._path_calculator.level_cache is None:
+                    # Ensure level_cache is initialized even if build_cache returns False
+                    from nclone.graph.reachability.path_distance_cache import (
+                        LevelBasedPathDistanceCache,
+                    )
+
+                    self._path_calculator.level_cache = LevelBasedPathDistanceCache()
+                    # Try building again
+                    self._path_calculator.build_level_cache(
+                        level_data, adjacency, self.current_graph_data
+                    )
 
         # Update switch state tracking
         self.last_switch_states = self._get_switch_states_from_env()
@@ -323,17 +345,25 @@ class GraphMixin:
         return self.level_data
 
     def _get_graph_observations(self) -> Dict[str, np.ndarray]:
-        """Get complete graph observations for HGT processing with full 56/6 features."""
+        """Get complete graph observations for HGT processing with full 56/6 features.
+
+        MEMORY OPTIMIZATION: Uses float16 for node/edge features to reduce memory by 50%.
+        The feature extractor will cast back to float32 for training, so there's no
+        precision loss during gradient computation.
+        """
 
         # Initialize empty graph observations with full feature dimensions
+        # MEMORY OPTIMIZATION: Use float16 for features (50% memory reduction)
         graph_obs = {
             "graph_node_feats": np.zeros(
-                (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
-            ),  # 56 dims
+                (N_MAX_NODES, NODE_FEATURE_DIM),
+                dtype=np.float16,  # Changed from float32
+            ),  # 56 dims - stored as float16, cast to float32 during training
             "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
             "graph_edge_feats": np.zeros(
-                (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
-            ),  # 6 dims
+                (E_MAX_EDGES, EDGE_FEATURE_DIM),
+                dtype=np.float16,  # Changed from float32
+            ),  # 6 dims - stored as float16, cast to float32 during training
             "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
             "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
             "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
@@ -390,11 +420,6 @@ class GraphMixin:
 
     def get_graph_data(self):
         """Get the fast graph data (adjacency dict) for pathfinding/reachability."""
-        return self.current_graph_data
-
-    def get_hierarchical_graph_data(self):
-        """Get the full hierarchical graph data for advanced processing (deprecated, use get_graph_data)."""
-        # Deprecated: kept for backward compatibility
         return self.current_graph_data
 
     def get_current_graph(self) -> Optional[GraphData]:

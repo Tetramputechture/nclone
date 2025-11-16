@@ -45,17 +45,6 @@ class DebugMixin:
         self._path_aware_entity_mask = None
         self._path_aware_level_data = None
 
-        # Mine predictor debug visualization state
-        self._mine_predictor_debug_enabled: bool = False
-        self._death_probability_debug_enabled: bool = False
-        self._death_probability_frames: int = 10  # Number of frames to simulate
-
-        # Terminal velocity predictor debug visualization state
-        self._terminal_velocity_probability_debug_enabled: bool = False
-        self._terminal_velocity_probability_frames: int = (
-            10  # Number of frames to simulate
-        )
-
         # Action mask debug visualization state
         self._action_mask_debug_enabled: bool = False
         self._last_action_taken: Optional[int] = None
@@ -128,62 +117,6 @@ class DebugMixin:
             # Add tile types debug info if enabled
             if self._tile_types_debug_enabled:
                 info["tile_types"] = True
-
-        # Add mine predictor visualization if enabled (independent of general debug overlay)
-        if self._mine_predictor_debug_enabled:
-            predictor = None
-            if hasattr(self, "nplay_headless") and hasattr(self.nplay_headless, "sim"):
-                sim = self.nplay_headless.sim
-                if hasattr(sim, "ninja") and hasattr(sim.ninja, "mine_death_predictor"):
-                    predictor = sim.ninja.mine_death_predictor
-
-            if predictor:
-                info["mine_predictor"] = {
-                    "mine_positions": predictor.mine_positions,
-                    "danger_zone_cells": predictor.danger_zone_cells,
-                    "stats": predictor.stats,
-                    "ninja_position": self.nplay_headless.ninja_position(),
-                }
-
-        # Add mine death probability visualization if enabled
-        if self._death_probability_debug_enabled:
-            predictor = None
-            if hasattr(self, "nplay_headless") and hasattr(self.nplay_headless, "sim"):
-                sim = self.nplay_headless.sim
-                if hasattr(sim, "ninja") and hasattr(sim.ninja, "mine_death_predictor"):
-                    predictor = sim.ninja.mine_death_predictor
-
-            if predictor and predictor.mine_positions:
-                # Calculate death probability for current state
-                death_prob_result = predictor.calculate_death_probability(
-                    frames_to_simulate=self._death_probability_frames
-                )
-                info["death_probability"] = {
-                    "result": death_prob_result,
-                    "ninja_position": self.nplay_headless.ninja_position(),
-                }
-
-        # Add terminal velocity death probability visualization if enabled
-        if self._terminal_velocity_probability_debug_enabled:
-            terminal_velocity_predictor = None
-            if hasattr(self, "nplay_headless") and hasattr(self.nplay_headless, "sim"):
-                sim = self.nplay_headless.sim
-                if hasattr(sim, "ninja") and hasattr(
-                    sim.ninja, "terminal_velocity_predictor"
-                ):
-                    terminal_velocity_predictor = sim.ninja.terminal_velocity_predictor
-
-            if terminal_velocity_predictor:
-                # Calculate terminal velocity death probability for current state
-                terminal_velocity_death_prob_result = (
-                    terminal_velocity_predictor.calculate_death_probability(
-                        frames_to_simulate=self._terminal_velocity_probability_frames
-                    )
-                )
-                info["terminal_velocity_probability"] = {
-                    "result": terminal_velocity_death_prob_result,
-                    "ninja_position": self.nplay_headless.ninja_position(),
-                }
 
         # Add action mask visualization if enabled
         if self._action_mask_debug_enabled:
@@ -342,28 +275,6 @@ class DebugMixin:
         self._path_aware_entity_mask = entity_mask
         self._path_aware_level_data = level_data
 
-    def set_mine_predictor_debug_enabled(self, enabled: bool):
-        """Enable/disable mine death predictor debug visualization."""
-        self._mine_predictor_debug_enabled = bool(enabled)
-
-    def set_death_probability_debug_enabled(self, enabled: bool):
-        """Enable/disable mine death probability debug visualization."""
-        self._death_probability_debug_enabled = bool(enabled)
-
-    def set_death_probability_frames(self, frames: int):
-        """Set number of frames to simulate for mine death probability calculation."""
-        self._death_probability_frames = max(1, min(frames, 30))  # Clamp to [1, 30]
-
-    def set_terminal_velocity_probability_debug_enabled(self, enabled: bool):
-        """Enable/disable terminal velocity death probability debug visualization."""
-        self._terminal_velocity_probability_debug_enabled = bool(enabled)
-
-    def set_terminal_velocity_probability_frames(self, frames: int):
-        """Set number of frames to simulate for terminal velocity death probability calculation."""
-        self._terminal_velocity_probability_frames = max(
-            1, min(frames, 30)
-        )  # Clamp to [1, 30]
-
     def set_action_mask_debug_enabled(self, enabled: bool):
         """Enable/disable action mask debug visualization."""
         self._action_mask_debug_enabled = bool(enabled)
@@ -371,7 +282,3 @@ class DebugMixin:
     def _record_action_for_debug(self, action: int):
         """Record the action taken for debug visualization."""
         self._last_action_taken = action
-
-    def set_reachable_walls_debug_enabled(self, enabled: bool):
-        """Enable/disable reachable wall segments debug visualization."""
-        self._reachable_walls_debug_enabled = bool(enabled)

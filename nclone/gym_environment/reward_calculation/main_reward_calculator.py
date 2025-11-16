@@ -20,17 +20,7 @@ from .reward_constants import (
     COMPLETION_TIME_TARGET,
     PBRS_GAMMA,
     NOOP_ACTION_PENALTY,
-    MASKED_ACTION_PENALTY,
     BUFFER_USAGE_BONUS,
-    DIRECTIONAL_MOMENTUM_BONUS_PER_STEP,
-    BACKWARD_VELOCITY_PENALTY,
-    DIRECTIONAL_MOMENTUM_UPDATE_INTERVAL,
-    BACKTRACK_THRESHOLD_DISTANCE,
-    BACKTRACK_PENALTY_SCALE,
-    PROGRESS_BONUS_SCALE,
-    STAGNATION_THRESHOLD,
-    STAGNATION_PENALTY_PER_FRAME,
-    PROGRESS_CHECK_THRESHOLD,
     EXPLORATION_GRID_WIDTH,
     EXPLORATION_GRID_HEIGHT,
 )
@@ -39,11 +29,6 @@ from ...graph.reachability.path_distance_calculator import (
 )
 
 from ..constants import LEVEL_DIAGONAL as PBRS_DISTANCE_SCALE
-from ...constants.physics_constants import (
-    EXIT_SWITCH_RADIUS,
-    EXIT_DOOR_RADIUS,
-    NINJA_RADIUS,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -167,223 +152,6 @@ class RewardCalculator:
         # Track switch activation for PBRS continuity
         self._prev_switch_activated = False
 
-    def calculate_directional_momentum_bonus(self, state: Dict[str, Any]) -> float:
-        """
-        Reward velocity component toward current objective only.
-        Uses GRAPH-BASED shortest path to determine forward direction.
-
-        Key insight: "Forward progress" means reducing shortest PATH distance,
-        not Euclidean distance. This respects level geometry and obstacles.
-
-        Args:
-            state: Current game state dictionary
-
-        Returns:
-            float: Directional momentum reward (positive for forward, negative for backward)
-        """
-        # Get velocity
-        vel_x = state.get("player_xspeed", 0.0)
-        vel_y = state.get("player_yspeed", 0.0)
-        velocity = np.array([vel_x, vel_y])
-        velocity_magnitude = np.linalg.norm(velocity)
-
-        if velocity_magnitude < 0.1:
-            return 0.0
-
-        # Get required graph data
-        adjacency = state.get("_adjacency_graph")
-        level_data = state.get("level_data")
-        graph_data = state.get("_graph_data")
-
-        if adjacency is None or level_data is None:
-            # Fallback to non-directional momentum if graph data unavailable
-            return 0.0
-
-        # Current position
-        ninja_pos = (state["player_x"], state["player_y"])
-
-        if not state.get("switch_activated", False):
-            objective_pos = (state["switch_x"], state["switch_y"])
-            entity_radius = EXIT_SWITCH_RADIUS
-        else:
-            objective_pos = (state["exit_door_x"], state["exit_door_y"])
-            entity_radius = EXIT_DOOR_RADIUS
-
-        # Update cached direction periodically (amortize pathfinding cost)
-        self.frame_count += 1
-        if self.frame_count % DIRECTIONAL_MOMENTUM_UPDATE_INTERVAL == 0:
-            # Get GRAPH-BASED shortest path distance from current position to objective
-            current_distance = self.path_calculator.get_distance(
-                ninja_pos,
-                objective_pos,
-                adjacency,
-                cache_key="objective",
-                level_data=level_data,
-                graph_data=graph_data,
-                entity_radius=entity_radius,
-                ninja_radius=NINJA_RADIUS,
-            )
-
-            # Handle unreachable objectives
-            if current_distance == float("inf"):
-                self.cached_progress_direction = 0
-            else:
-                # Sample nearby positions in velocity direction to estimate gradient
-                # Try position slightly ahead in movement direction
-                sample_distance = 20.0  # pixels ahead
-                sample_direction = velocity / velocity_magnitude
-                sample_pos = (
-                    ninja_pos[0] + sample_direction[0] * sample_distance,
-                    ninja_pos[1] + sample_direction[1] * sample_distance,
-                )
-
-                # Get path distance from sample position to objective
-                sample_path_distance = self.path_calculator.get_distance(
-                    sample_pos,
-                    objective_pos,
-                    adjacency,
-                    cache_key="objective",
-                    level_data=level_data,
-                    graph_data=graph_data,
-                    entity_radius=entity_radius,
-                    ninja_radius=NINJA_RADIUS,
-                )
-
-                # Determine if velocity direction REDUCES path distance
-                # Positive gradient = moving toward (reducing distance)
-                # Negative gradient = moving away (increasing distance)
-                if sample_path_distance == float("inf"):
-                    path_gradient = 0.0
-                else:
-                    path_gradient = current_distance - sample_path_distance
-
-                # Cache the gradient sign for use in intermediate frames
-                self.cached_progress_direction = np.sign(path_gradient)
-
-        # Use cached direction for current frame
-        progress_direction = self.cached_progress_direction
-
-        # Reward velocity when it reduces path distance, penalize when it increases
-        if progress_direction > 0:
-            # Moving toward objective (reducing path distance)
-            reward = velocity_magnitude * DIRECTIONAL_MOMENTUM_BONUS_PER_STEP
-        elif progress_direction < 0:
-            # Moving away from objective (increasing path distance)
-            reward = -velocity_magnitude * BACKWARD_VELOCITY_PENALTY
-        else:
-            # Neutral (no clear progress)
-            reward = 0.0
-
-        return reward
-
-    def calculate_progress_rewards(self, state: Dict[str, Any]) -> float:
-        """
-        Track best PATH distance achieved and penalize significant backtracking.
-        Uses GRAPH-BASED shortest path distances, not Euclidean.
-
-        Key insight: Progress means reducing shortest PATH distance through
-        the adjacency graph. This respects level geometry and obstacles.
-
-        Args:
-            state: Current game state dictionary
-
-        Returns:
-            float: Progress reward (positive for progress, negative for backtracking/stagnation)
-        """
-        # Get required graph data
-        adjacency = state.get("_adjacency_graph")
-        level_data = state.get("level_data")
-        graph_data = state.get("_graph_data")
-
-        if adjacency is None or level_data is None:
-            raise ValueError("Adjacency graph or level data not found in state")
-
-        if not state.get("switch_activated", False):
-            objective_pos = (state["switch_x"], state["switch_y"])
-            best_path_distance = self.best_path_distance_to_switch
-            objective_type = "switch"
-            entity_radius = EXIT_SWITCH_RADIUS
-        else:
-            objective_pos = (state["exit_door_x"], state["exit_door_y"])
-            best_path_distance = self.best_path_distance_to_exit
-            objective_type = "exit"
-            entity_radius = EXIT_DOOR_RADIUS
-
-        # Get current GRAPH-BASED path distance to objective
-        ninja_pos = (state["player_x"], state["player_y"])
-        current_path_distance = self.path_calculator.get_distance(
-            ninja_pos,
-            objective_pos,
-            adjacency,
-            cache_key="objective",
-            level_data=level_data,
-            graph_data=graph_data,
-            entity_radius=entity_radius,
-            ninja_radius=NINJA_RADIUS,
-        )
-
-        # Handle unreachable objectives
-        if current_path_distance == float("inf"):
-            # Objective unreachable from current position
-            # This shouldn't happen often but handle gracefully
-            return -0.001  # Small penalty for being in unreachable area
-
-        # Check if this is the first valid measurement (baseline initialization)
-        if best_path_distance == float("inf"):
-            # Initialize baseline silently without reward
-            if objective_type == "switch":
-                self.best_path_distance_to_switch = current_path_distance
-            else:
-                self.best_path_distance_to_exit = current_path_distance
-            self.frames_since_progress = 0
-            return 0.0  # No reward for establishing baseline
-
-        # Check for progress (measurable improvement in PATH distance)
-        progress_reward = 0.0
-        backtrack_penalty = 0.0
-        progress_bonus = 0.0
-
-        if current_path_distance < best_path_distance - PROGRESS_CHECK_THRESHOLD:
-            # Significant progress made!
-            progress_made = best_path_distance - current_path_distance
-            progress_bonus = progress_made * PROGRESS_BONUS_SCALE
-            progress_reward = progress_bonus
-            self.progress_bonus_total += progress_bonus
-
-            # Update best path distance and reset stagnation counter
-            if objective_type == "switch":
-                self.best_path_distance_to_switch = current_path_distance
-            else:
-                self.best_path_distance_to_exit = current_path_distance
-            self.frames_since_progress = 0
-
-        else:
-            # No progress or backtracking
-            self.frames_since_progress += 1
-
-            # Check for significant backtracking (PATH distance increased)
-            backtrack_distance = current_path_distance - best_path_distance
-            if backtrack_distance > BACKTRACK_THRESHOLD_DISTANCE:
-                # Penalize significant regression in path distance
-                # This means agent moved to location with LONGER optimal path
-                backtrack_penalty = backtrack_distance * BACKTRACK_PENALTY_SCALE
-                self.backtrack_penalty_total += backtrack_penalty
-                self.backtrack_events_total += 1
-                progress_reward = -backtrack_penalty
-
-        # Stagnation penalty (gradual increase)
-        stagnation_penalty = 0.0
-        if self.frames_since_progress > STAGNATION_THRESHOLD:
-            excess_frames = self.frames_since_progress - STAGNATION_THRESHOLD
-            stagnation_penalty = min(
-                excess_frames * STAGNATION_PENALTY_PER_FRAME,
-                0.005,  # Cap at 0.005 per step
-            )
-            self.stagnation_penalty_total += stagnation_penalty
-            progress_reward -= stagnation_penalty
-
-        return progress_reward
-
     def calculate_reward(
         self,
         obs: Dict[str, Any],
@@ -413,57 +181,23 @@ class RewardCalculator:
 
         # Initialize reward with time penalty to encourage efficiency
         reward = self._calculate_time_penalty()
-        if np.isnan(reward):
-            print(
-                f"[REWARD_NAN] NaN detected after time_penalty: {reward}, "
-                f"steps_taken={self.steps_taken}"
-            )
 
-        # NOOP action penalty (discourage standing still)
+        # NOOP action penalty when there is no current (discourage standing still)
         noop_penalty = 0.0
-        if action is not None and action == 0:
+        if (
+            action is not None
+            and action == 0
+            and abs(obs.get("player_xspeed", 0.0)) < 0.1
+            and abs(obs.get("player_yspeed", 0.0)) < 0.1
+        ):
             noop_penalty = NOOP_ACTION_PENALTY
             reward += noop_penalty
-            if np.isnan(reward):
-                print(
-                    f"[REWARD_NAN] NaN detected after noop_penalty: {noop_penalty}, "
-                    f"reward={reward}"
-                )
-
-        # Masked action penalty (should never trigger during learning if masking works correctly)
-        masked_action_penalty = 0.0
-        if action is not None:
-            action_mask = prev_obs.get("action_mask")
-            if action_mask is None:
-                raise ValueError("Action mask not found in previous observation")
-            if not action_mask[action]:
-                # Agent selected a masked action - this is a bug if it happens
-                masked_action_penalty = MASKED_ACTION_PENALTY
-                reward += masked_action_penalty
-                print(
-                    f"Masked action {action} was selected! "
-                    f"Mask: {action_mask}, Action: {action}"
-                )
-
-        # Momentum preservation reward
-        momentum_bonus = self.calculate_directional_momentum_bonus(obs)
-        reward += momentum_bonus
-        if np.isnan(reward) or np.isnan(momentum_bonus):
-            print(
-                f"[REWARD_NAN] NaN detected after momentum_bonus: {momentum_bonus}, "
-                f"reward={reward}, player_pos=({obs.get('player_x')}, {obs.get('player_y')})"
-            )
 
         # Buffer utilization reward
         buffer_bonus = 0.0
         if obs.get("buffered_jump_executed", False):
             buffer_bonus = BUFFER_USAGE_BONUS
             reward += buffer_bonus
-            if np.isnan(reward):
-                print(
-                    f"[REWARD_NAN] NaN detected after buffer_bonus: {buffer_bonus}, "
-                    f"reward={reward}"
-                )
 
         # Switch activation reward
         if obs.get("switch_activated", False) and not prev_obs.get(
@@ -508,17 +242,13 @@ class RewardCalculator:
                 self.closest_distance_to_exit = distance_to_exit
 
         # Exploration reward (focused on switch/exit discovery)
-        exploration_reward = self.exploration_calculator.calculate_exploration_reward(
-            obs["player_x"], obs["player_y"]
-        )
-        reward += exploration_reward
-        if np.isnan(reward) or np.isnan(exploration_reward):
-            print(
-                f"[REWARD_NAN] NaN detected after exploration_reward: {exploration_reward}, "
-                f"reward={reward}, player_pos=({obs.get('player_x')}, {obs.get('player_y')})"
-            )
+        # Currently disabled to prevent wandering behavior
+        # exploration_reward = self.exploration_calculator.calculate_exploration_reward(
+        #     obs["player_x"], obs["player_y"]
+        # )
+        # reward += exploration_reward
 
-        # Add PBRS shaping reward if enabled (focused on switch/exit objectives)
+        # Add PBRS shaping reward
         pbrs_reward = 0.0
         pbrs_components = {}
         # Extract adjacency graph, level_data, and graph_data from observation
@@ -542,11 +272,6 @@ class RewardCalculator:
         current_potential = self.pbrs_calculator.calculate_combined_potential(
             obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
         )
-        if np.isnan(current_potential):
-            print(
-                f"[REWARD_NAN] NaN detected in current_potential: {current_potential}, "
-                f"player_pos=({obs.get('player_x')}, {obs.get('player_y')})"
-            )
 
         # Get individual potential components for logging
         pbrs_components = self.pbrs_calculator.get_potential_components(
@@ -575,33 +300,7 @@ class RewardCalculator:
                 # negative when moving away (decreasing potential).
                 pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
 
-            # Check for NaN or Inf in PBRS components
-            if (
-                np.isnan(pbrs_reward)
-                or np.isinf(pbrs_reward)
-                or np.isnan(current_potential)
-                or np.isinf(current_potential)
-                or np.isnan(self.prev_potential)
-                or np.isinf(self.prev_potential)
-            ):
-                logger.error(
-                    f"[REWARD_NAN] Invalid PBRS components detected: "
-                    f"pbrs_reward={pbrs_reward}, "
-                    f"current_potential={current_potential}, prev_potential={self.prev_potential}, "
-                    f"pbrs_gamma={self.pbrs_gamma}, "
-                    f"player_pos=({obs.get('player_x')}, {obs.get('player_y')})"
-                )
-                # Use fallback: don't add PBRS reward if it's invalid
-                pbrs_reward = 0.0
-
             reward += pbrs_reward
-
-            # Check reward after adding PBRS
-            if np.isnan(reward) or np.isinf(reward):
-                logger.error(
-                    f"[REWARD_NAN] Invalid reward after PBRS: {reward}, "
-                    f"pbrs_reward={pbrs_reward}, pbrs_components={pbrs_components}"
-                )
         else:
             # First step: initialize potential but don't add reward (no previous state)
             # This ensures PBRS starts correctly on second step
@@ -615,43 +314,14 @@ class RewardCalculator:
         # Update switch tracking for next step
         self._prev_switch_activated = obs.get("switch_activated", False)
 
-        # Calculate progress rewards - DISABLED (redundant with PBRS objective potential)
-        # Progress bonus now set to 0.0 in reward_constants.py
-        # Keeping the tracking for diagnostic metrics only
-        progress_reward = self.calculate_progress_rewards(obs)
-        if PROGRESS_BONUS_SCALE > 0:  # Only add if enabled
-            reward += progress_reward
-        if np.isnan(reward) or np.isnan(progress_reward):
-            print(
-                f"[REWARD_NAN] NaN detected after progress_reward: {progress_reward}, "
-                f"reward={reward}, player_pos=({obs.get('player_x')}, {obs.get('player_y')})"
-            )
-
         # Store component rewards for episode info
         self.last_pbrs_components = {
-            "exploration_reward": exploration_reward,
             "pbrs_reward": pbrs_reward,
             "noop_penalty": noop_penalty,
-            "masked_action_penalty": masked_action_penalty,
-            "momentum_bonus": momentum_bonus,
             "buffer_bonus": buffer_bonus,
-            "progress_reward": progress_reward,
             "pbrs_components": pbrs_components,
             "total_reward": reward,
         }
-
-        # Final check before returning
-        if np.isnan(reward) or np.isinf(reward):
-            logger.error(
-                f"[REWARD_NAN] FINAL Invalid reward: {reward} (NaN or Inf), "
-                f"components: exploration={exploration_reward}, pbrs={pbrs_reward}, "
-                f"momentum={momentum_bonus}, progress={progress_reward}, "
-                f"noop={noop_penalty}, masked_action={masked_action_penalty}, "
-                f"buffer_bonus={buffer_bonus}, "
-                f"player_pos=({obs.get('player_x')}, {obs.get('player_y')})"
-            )
-            # Return 0.0 instead of inf/nan to avoid breaking training
-            return 0.0
 
         return reward
 

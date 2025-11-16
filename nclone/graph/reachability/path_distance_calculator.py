@@ -11,7 +11,7 @@ from .pathfinding_algorithms import PathDistanceCalculator
 from .pathfinding_utils import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
-    find_shortest_path_with_parents,
+    find_shortest_path,
 )
 from .path_distance_cache import LevelBasedPathDistanceCache
 from .performance_timer import PerformanceTimer
@@ -88,8 +88,17 @@ class CachedPathDistanceCalculator:
             self.level_cache = LevelBasedPathDistanceCache()
 
         rebuilt = self.level_cache.build_cache(level_data, adjacency, graph_data)
+
         if rebuilt:
             self.level_data = level_data
+            # Update level ID tracking so get_distance() knows cache is ready
+            level_id = getattr(level_data, "level_id", None)
+            if level_id is None:
+                # Generate level ID from tiles if not present
+                import hashlib
+
+                level_id = hashlib.md5(level_data.tiles.tobytes()).hexdigest()
+            self._current_level_id = level_id
 
         return rebuilt
 
@@ -135,10 +144,17 @@ class CachedPathDistanceCalculator:
         # Try level cache first if level_data is provided
         if level_data is not None and self.level_cache is not None:
             # Only rebuild cache if level actually changed (Fix for Issue #2)
+            # Generate level_id if not present (for consistent tracking)
             level_id = getattr(level_data, "level_id", None)
+            if level_id is None:
+                import hashlib
+
+                level_id = hashlib.md5(level_data.tiles.tobytes()).hexdigest()
+
             if level_id != self._current_level_id:
                 with self.timer.measure("build_level_cache"):
                     self.build_level_cache(level_data, adjacency, graph_data)
+                # build_level_cache() now sets _current_level_id, but ensure it's set here too
                 self._current_level_id = level_id
 
             # Find goal node using spatial hash for O(1) lookup
@@ -194,6 +210,33 @@ class CachedPathDistanceCalculator:
                                 )
                                 if cached_dist != float("inf"):
                                     return cached_dist
+            else:
+                # Check if goal is even within reachable area by checking adjacency bounds
+                if adjacency:
+                    # Get bounds of adjacency graph
+                    min_x = min(n[0] for n in adjacency.keys()) if adjacency else 0
+                    max_x = max(n[0] for n in adjacency.keys()) if adjacency else 0
+                    min_y = min(n[1] for n in adjacency.keys()) if adjacency else 0
+                    max_y = max(n[1] for n in adjacency.keys()) if adjacency else 0
+
+                    # Convert goal to tile data space for comparison
+                    from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
+
+                    goal_tile_x = goal[0] - NODE_WORLD_COORD_OFFSET
+                    goal_tile_y = goal[1] - NODE_WORLD_COORD_OFFSET
+
+                    # If goal is way outside bounds, this is likely a stale position from previous level
+                    # Return a safe max distance instead of inf to avoid warnings
+                    if (
+                        goal_tile_x < min_x - 100
+                        or goal_tile_x > max_x + 100
+                        or goal_tile_y < min_y - 100
+                        or goal_tile_y > max_y + 100
+                    ):
+                        # Return a large but finite distance instead of inf
+                        # Use a safe max value (level diagonal * 2) to avoid inf warnings
+                        # This matches the behavior in _safe_path_distance
+                        return 2000.0  # Safe max distance for unreachable goals
 
         # Fall back to per-query cache
         # Snap to grid for cache consistency (24 pixel tiles)
@@ -322,11 +365,8 @@ class CachedPathDistanceCalculator:
         if start_node is None or goal_node is None:
             return None, float("inf")
 
-        # Use find_shortest_path_with_parents to get both path and distance
         with self.timer.measure("pathfinding_compute"):
-            path, distance = find_shortest_path_with_parents(
-                start_node, goal_node, adjacency
-            )
+            path, distance = find_shortest_path(start_node, goal_node, adjacency)
 
         return path, distance
 

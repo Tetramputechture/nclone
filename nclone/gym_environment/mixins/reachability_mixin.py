@@ -7,10 +7,9 @@ integrated into the main NppEnvironment class.
 
 import logging
 import numpy as np
-from typing import Dict, Tuple
+from typing import Tuple
 
 from ...graph.reachability.reachability_system import ReachabilitySystem
-from ...graph.reachability.feature_extractor import ReachabilityFeatureExtractor
 from ...graph.reachability.feature_computation import (
     compute_reachability_features_from_graph,
 )
@@ -36,22 +35,20 @@ class ReachabilityMixin:
 
         # Initialize reachability system
         self._reachability_system = None
-        self._reachability_extractor = None
         self._reachability_cache = {}
         self._reachability_cache_ttl = 0.1  # 100ms cache TTL
         self._last_reachability_time = 0
 
-        # Reachability performance tracking
-        self.reachability_times = []
-        self.max_time_samples = 100
-
-        # Simple cache for reachability performance
+        # Grid-based cache for reachability performance (Phase 6 optimization)
+        # PERFORMANCE: Use grid-based caching to avoid recomputing when ninja in same cell
         self._last_ninja_pos = None
         self._cached_reachability = None
         self._cache_valid = False
+        self._reachability_grid_size = (
+            24  # Pixels - invalidate when ninja moves to new grid cell
+        )
 
         self._reachability_system = ReachabilitySystem()
-        self._reachability_extractor = ReachabilityFeatureExtractor()
         self._path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200, use_astar=True
         )
@@ -68,7 +65,7 @@ class ReachabilityMixin:
             self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
-        """Get 8-dimensional reachability features."""
+        """Get 6-dimensional reachability features (Phase 6: includes mine context)."""
         reachability_features = self._compute_reachability(
             self.nplay_headless.ninja_position()
         )
@@ -77,25 +74,39 @@ class ReachabilityMixin:
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
-        Compute 8-dimensional reachability features using adjacency graph.
+        Compute 6-dimensional reachability features using adjacency graph (Phase 6).
 
-        Features:
+        Base features (4 dims):
         1. Reachable area ratio (0-1)
         2. Distance to nearest switch (normalized)
         3. Distance to exit (normalized)
-        4. Reachable switches count (normalized)
-        5. Reachable hazards count (normalized)
-        6. Connectivity score (0-1)
-        7. Exit reachable flag (0-1)
-        8. Switch-to-exit path exists (0-1)
+        4. Exit reachable flag (0-1)
+
+        Mine context features (2 dims):
+        5. Total mines normalized (0-1)
+        6. Deadly mine ratio (0-1)
+
+        PERFORMANCE: Uses grid-based caching to avoid recomputing when ninja
+        hasn't moved significantly (>24px grid cell).
         """
-        # Check cache validity
+        # Check cache validity using grid-based position matching
         if (
             self._cache_valid
-            and self._last_ninja_pos == ninja_pos
+            and self._last_ninja_pos is not None
             and self._cached_reachability is not None
         ):
-            return self._cached_reachability
+            last_x, last_y = self._last_ninja_pos
+            ninja_x, ninja_y = ninja_pos
+
+            # Check if ninja moved to a new grid cell
+            ninja_grid_x = int(ninja_x // self._reachability_grid_size)
+            ninja_grid_y = int(ninja_y // self._reachability_grid_size)
+            last_grid_x = int(last_x // self._reachability_grid_size)
+            last_grid_y = int(last_y // self._reachability_grid_size)
+
+            if ninja_grid_x == last_grid_x and ninja_grid_y == last_grid_y:
+                # Cache hit: ninja in same grid cell, return cached features
+                return self._cached_reachability
 
         # Get graph data from GraphMixin (required)
         if not hasattr(self, "current_graph_data") or self.current_graph_data is None:
@@ -116,13 +127,35 @@ class ReachabilityMixin:
             level_data, adjacency, self.current_graph_data
         )
 
-        # Compute features using shared function
-        features = compute_reachability_features_from_graph(
+        # Compute base reachability features (8 dims)
+        base_features = compute_reachability_features_from_graph(
             adjacency,
             self.current_graph_data,
             level_data,
             ninja_pos,
             self._path_calculator,
+        )
+
+        # Keep only first 4 features (Phase 6: removed redundant features)
+        base_features = base_features[:4]
+
+        # Add mine context features (Phase 6)
+        from ...graph.mine_analysis import compute_mine_context
+
+        mine_context = compute_mine_context(level_data)
+
+        # Combine features: 4 base + 2 mine context = 6 dims
+        features = np.concatenate(
+            [
+                base_features,
+                np.array(
+                    [
+                        mine_context["total_mines_norm"],
+                        mine_context["deadly_mine_ratio"],
+                    ],
+                    dtype=np.float32,
+                ),
+            ]
         )
 
         # Update cache
@@ -138,22 +171,7 @@ class ReachabilityMixin:
         self._cached_reachability = None
         self._cache_valid = False
 
-    def get_reachability_performance_stats(self) -> Dict[str, float]:
-        """Get reachability performance statistics."""
-        if not self.reachability_times:
-            return {}
-
-        times_ms = [t * 1000 for t in self.reachability_times]
-        return {
-            "avg_time_ms": np.mean(times_ms),
-            "max_time_ms": np.max(times_ms),
-            "min_time_ms": np.min(times_ms),
-            "std_time_ms": np.std(times_ms),
-        }
-
     def _reinit_reachability_system_after_unpickling(self):
         """Reinitialize reachability system components after unpickling."""
         if not hasattr(self, "_reachability_system"):
             self._reachability_system = ReachabilitySystem()
-        if not hasattr(self, "_reachability_extractor"):
-            self._reachability_extractor = ReachabilityFeatureExtractor()
