@@ -524,7 +524,7 @@ def bfs_distance_from_start(
     return distances, target_distance
 
 
-def find_shortest_path_with_parents(
+def find_shortest_path(
     start_node: Tuple[int, int],
     end_node: Tuple[int, int],
     adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],

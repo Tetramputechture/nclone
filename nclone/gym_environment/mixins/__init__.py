@@ -9,13 +9,10 @@ of concerns.
 from .graph_mixin import GraphMixin, GraphUpdateInfo
 from .reachability_mixin import ReachabilityMixin
 from .debug_mixin import DebugMixin
-from .hierarchical_mixin import HierarchicalMixin, Subtask
 
 __all__ = [
     "GraphMixin",
     "GraphUpdateInfo",
     "ReachabilityMixin",
     "DebugMixin",
-    "HierarchicalMixin",
-    "Subtask",
 ]

@@ -13,7 +13,6 @@ I - Toggle tile type overlay
 L - Toggle tile rendering
 M - Toggle mine predictor debug overlay
 D - Toggle mine death probability debug overlay
-T - Toggle terminal velocity death probability debug overlay
 W - Toggle action mask debug overlay
 U - Toggle reachable walls debug overlay
 R - Reset environment
@@ -698,7 +697,6 @@ if args.test_generators:
         env.nplay_headless.load_map_from_map_data(initial_map.map_data())
         env._reset_graph_state()
         env._update_graph_from_env_state()
-        env._build_mine_death_lookup_table()
         env._build_door_feature_cache()
 
         print("Generator Testing Initialized")
@@ -779,9 +777,6 @@ exploration_debug_enabled = False
 grid_debug_enabled = False
 tile_rendering_enabled = True
 tile_types_debug_enabled = False
-mine_predictor_debug_enabled = False
-death_probability_debug_enabled = False
-terminal_velocity_probability_debug_enabled = False
 action_mask_debug_enabled = False
 reachable_walls_debug_enabled = False
 path_aware_system = None
@@ -963,13 +958,6 @@ def manual_reset(env: NppEnvironment):
     print("Updating graph from env state")
     env._update_graph_from_env_state()
 
-    # Build predictors and caches (matches reset() method order)
-    print("Building mine death lookup table")
-    env._build_mine_death_lookup_table()
-
-    print("Building terminal velocity lookup table")
-    env._build_terminal_velocity_lookup_table()
-
     print("Building door feature cache")
     env._build_door_feature_cache()
 
@@ -1129,48 +1117,6 @@ while running:
                         env.set_grid_debug_enabled(grid_debug_enabled)
                     except Exception:
                         pass
-                if event.key == pygame.K_m:
-                    # Toggle mine predictor debug overlay
-                    mine_predictor_debug_enabled = not mine_predictor_debug_enabled
-                    try:
-                        env.set_mine_predictor_debug_enabled(
-                            mine_predictor_debug_enabled
-                        )
-                        print(
-                            f"Mine predictor debug: {'ON' if mine_predictor_debug_enabled else 'OFF'}"
-                        )
-                    except Exception as e:
-                        print(f"Failed to toggle mine predictor debug: {e}")
-                if event.key == pygame.K_d:
-                    # Toggle mine death probability debug overlay
-                    death_probability_debug_enabled = (
-                        not death_probability_debug_enabled
-                    )
-                    try:
-                        env.set_death_probability_debug_enabled(
-                            death_probability_debug_enabled
-                        )
-                        print(
-                            f"Mine death probability debug: {'ON' if death_probability_debug_enabled else 'OFF'}"
-                        )
-                    except Exception as e:
-                        print(f"Failed to toggle mine death probability debug: {e}")
-                if event.key == pygame.K_t:
-                    # Toggle terminal velocity death probability debug overlay
-                    terminal_velocity_probability_debug_enabled = (
-                        not terminal_velocity_probability_debug_enabled
-                    )
-                    try:
-                        env.set_terminal_velocity_probability_debug_enabled(
-                            terminal_velocity_probability_debug_enabled
-                        )
-                        print(
-                            f"Terminal velocity death probability debug: {'ON' if terminal_velocity_probability_debug_enabled else 'OFF'}"
-                        )
-                    except Exception as e:
-                        print(
-                            f"Failed to toggle terminal velocity death probability debug: {e}"
-                        )
                 if event.key == pygame.K_w:
                     # Toggle action mask debug overlay
                     action_mask_debug_enabled = not action_mask_debug_enabled
@@ -1181,18 +1127,6 @@ while running:
                         )
                     except Exception as e:
                         print(f"Failed to toggle action mask debug: {e}")
-                if event.key == pygame.K_u:
-                    # Toggle reachable walls debug overlay
-                    reachable_walls_debug_enabled = not reachable_walls_debug_enabled
-                    try:
-                        env.set_reachable_walls_debug_enabled(
-                            reachable_walls_debug_enabled
-                        )
-                        print(
-                            f"Reachable walls debug: {'ON' if reachable_walls_debug_enabled else 'OFF'}"
-                        )
-                    except Exception as e:
-                        print(f"Failed to toggle reachable walls debug: {e}")
                 if event.key == pygame.K_l:
                     # Toggle tile rendering
                     tile_rendering_enabled = not tile_rendering_enabled
@@ -1671,62 +1605,6 @@ if hasattr(env, "nplay_headless") and hasattr(env.nplay_headless, "entity_cache"
             + entity_cache.cache.mine_states.nbytes
         ) / 1024
         print(f"  - Memory: {memory_kb:.2f} KB")
-
-# Mine death predictor statistics
-if (
-    hasattr(env, "nplay_headless")
-    and hasattr(env.nplay_headless, "sim")
-    and hasattr(env.nplay_headless.sim, "ninja")
-    and hasattr(env.nplay_headless.sim.ninja, "mine_death_predictor")
-    and env.nplay_headless.sim.ninja.mine_death_predictor is not None
-):
-    predictor = env.nplay_headless.sim.ninja.mine_death_predictor
-    stats = predictor.get_stats()
-    print("\nMine Death Predictor:")
-    print(f"  - Reachable mines: {stats.reachable_mines}")
-    print(f"  - Danger zone cells: {stats.danger_zone_cells}")
-    print(f"  - Tier 1 queries: {stats.tier1_queries}")
-    print(f"  - Tier 2 queries: {stats.tier2_queries}")
-    print(f"  - Tier 3 queries: {stats.tier3_queries}")
-    total_queries = stats.tier1_queries + stats.tier2_queries + stats.tier3_queries
-    if total_queries > 0:
-        tier1_rate = stats.tier1_queries / total_queries
-        tier2_rate = stats.tier2_queries / total_queries
-        tier3_rate = stats.tier3_queries / total_queries
-        print(f"  - Tier 1 rate: {tier1_rate:.1%} (fast path)")
-        print(f"  - Tier 2 rate: {tier2_rate:.1%} (medium path)")
-        print(f"  - Tier 3 rate: {tier3_rate:.1%} (slow path)")
-
-# Terminal velocity predictor statistics
-if (
-    hasattr(env, "nplay_headless")
-    and hasattr(env.nplay_headless, "sim")
-    and hasattr(env.nplay_headless.sim, "ninja")
-    and hasattr(env.nplay_headless.sim.ninja, "terminal_velocity_predictor")
-    and env.nplay_headless.sim.ninja.terminal_velocity_predictor is not None
-):
-    tv_predictor = env.nplay_headless.sim.ninja.terminal_velocity_predictor
-    tv_stats = tv_predictor.stats
-    print("\nTerminal Velocity Predictor:")
-    print(f"  - Lazy build: {tv_predictor.lazy_build}")
-    print(f"  - Lookup table size: {tv_stats.lookup_table_size}")
-    print(f"  - Tier 1 queries: {tv_stats.tier1_queries}")
-    print(f"  - Tier 2 queries: {tv_stats.tier2_queries}")
-    print(f"  - Tier 3 queries: {tv_stats.tier3_queries}")
-    tv_total_queries = (
-        tv_stats.tier1_queries + tv_stats.tier2_queries + tv_stats.tier3_queries
-    )
-    if tv_total_queries > 0:
-        tv_tier1_rate = tv_stats.tier1_queries / tv_total_queries
-        tv_tier2_rate = tv_stats.tier2_queries / tv_total_queries
-        tv_tier3_rate = tv_stats.tier3_queries / tv_total_queries
-        print(f"  - Tier 1 rate: {tv_tier1_rate:.1%} (fast path)")
-        print(f"  - Tier 2 rate: {tv_tier2_rate:.1%} (medium path)")
-        print(f"  - Tier 3 rate: {tv_tier3_rate:.1%} (slow path)")
-        if tv_predictor.lazy_build:
-            print(f"  - Auto-cached entries: {tv_stats.tier3_queries}")
-
-print("=" * 60 + "\n")
 
 # Finalize memory profiling if active
 if memory_profiler is not None:

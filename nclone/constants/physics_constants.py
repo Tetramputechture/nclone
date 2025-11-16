@@ -370,7 +370,7 @@ MINE_COLLISION_THRESHOLD = 12.5  # Tuned value for accurate collision detection 
 
 # Tier 1: Quick state filter
 TERMINAL_IMPACT_SAFE_VELOCITY = (
-    5.0  # Below this velocity, skip expensive checks (px/frame)
+    3  # Below this velocity, skip expensive checks (px/frame)
 )
 
 # Tier 2: Lookup table quantization

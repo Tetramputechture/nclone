@@ -11,20 +11,15 @@ from .config import (
     RenderConfig,
     GraphConfig,
     ReachabilityConfig,
-    HierarchicalConfig,
 )
 
 # Factory functions for easy environment creation
 from .environment_factory import (
     create_training_env,
     create_evaluation_env,
-    create_research_env,
-    create_minimal_env,
     make_vectorizable_env,
     create_vectorized_training_envs,
-    create_hierarchical_env,
     benchmark_environment_performance,
-    validate_environment,
 )
 
 
@@ -38,15 +33,10 @@ __all__ = [
     "RenderConfig",
     "GraphConfig",
     "ReachabilityConfig",
-    "HierarchicalConfig",
     # Factory functions
     "create_training_env",
     "create_evaluation_env",
-    "create_research_env",
-    "create_minimal_env",
     "make_vectorizable_env",
     "create_vectorized_training_envs",
-    "create_hierarchical_env",
     "benchmark_environment_performance",
-    "validate_environment",
 ]

@@ -8,7 +8,6 @@ This module defines all reward-related constants following RL best practices:
 
 References:
 - Ng et al. (1999): "Policy Invariance Under Reward Transformations" (PBRS theory)
-- Pathak et al. (2017): "Curiosity-driven Exploration" (ICM)
 - Sutton & Barto (2018): "Reinforcement Learning: An Introduction" (reward scaling)
 """
 
@@ -30,16 +29,17 @@ from ..constants import LEVEL_DIAGONAL
 LEVEL_COMPLETION_REWARD = 20.0
 
 # Death penalty
-# Rationale: Moderate negative reward (-1.0) discourages death without dominating learning.
-# Kept proportional to completion reward (5% of completion).
-# Too large penalties can lead to overly conservative behavior.
-DEATH_PENALTY = -1.0
+# Rationale: Moderate negative reward (-2.0) discourages death without dominating learning.
+# Increased to 10% of completion reward (was 5%) to better discourage death while still
+# allowing learning. Also applied to truncation (timeout) to strongly discourage it.
+# Moderate penalties prevent overly conservative behavior while guiding toward completion.
+DEATH_PENALTY = -2.0
 
 # Mine death penalty
-# Rationale: Stronger penalty (-2.5) for mine deaths to encourage hazard avoidance.
-# Mine deaths are preventable through better path planning, so they deserve stronger
-# negative signal than other death types (impact, terminal velocity).
-MINE_DEATH_PENALTY = -2.5
+# Rationale: Stronger penalty (-3.0) for mine deaths to encourage hazard avoidance.
+# Increased to 15% of completion reward (was 12.5%). Mine deaths are preventable through
+# better path planning, so they deserve stronger negative signal than other death types.
+MINE_DEATH_PENALTY = -3.0
 
 
 # =============================================================================
@@ -59,25 +59,25 @@ SWITCH_ACTIVATION_REWARD = 2.0
 # Per-step rewards that encourage efficiency
 
 # Time penalty per step (default/fixed mode)
-# Rationale: Encourages efficiency without overwhelming terminal rewards.
-# UPDATED 2025-11-08: Reduced 10x from -0.0001 to -0.00001 based on comprehensive
-# training analysis showing negative reward regime was preventing learning.
-# At -0.00001 per step, episodes maintain strongly positive returns:
-#   Fast completion (500 steps): +20.0 - 0.005 = +19.995
-#   Slow completion (5000 steps): +20.0 - 0.05 = +19.95
-# This allows PBRS and exploration rewards to provide meaningful gradient while
-# still incentivizing efficiency.
-TIME_PENALTY_PER_STEP = -0.00001  # was -0.0001
+# Rationale: Strong efficiency incentive creates 3-4 point difference between
+# fast and slow completion. UPDATED to -0.003 per step (300x increase):
+#   Fast completion (400 steps): -1.2 total
+#   Slow completion (1500 steps): -4.5 total
+#   Difference: 3.3 points, strongly incentivizes speed
+# PBRS provides gradient for completion, time penalty provides pressure for efficiency.
+# The combination enables both general learning AND speed optimization.
+# Terminal reward (+20.0) still dominates, maintaining learning stability.
+TIME_PENALTY_PER_STEP = -0.003  # was -0.00001 (300x increase)
 
 # Progressive time penalty schedule (for speed optimization)
 # Rationale: Allows early exploration while increasing pressure for efficiency
-# over episode duration. Phased approach supports curriculum learning:
+# over episode duration. Use if fixed penalty prevents learning.
 # - Early phase: minimal penalty, encourage exploration
 # - Middle phase: moderate penalty, find solutions
 # - Late phase: high penalty, optimize routes
-TIME_PENALTY_EARLY = -0.00005  # Steps 0-30%: exploration phase
-TIME_PENALTY_MIDDLE = -0.0002  # Steps 30-70%: solution phase
-TIME_PENALTY_LATE = -0.0005  # Steps 70-100%: optimization phase
+TIME_PENALTY_EARLY = -0.001  # Steps 0-30%: exploration phase (20x increase)
+TIME_PENALTY_MIDDLE = -0.003  # Steps 30-70%: solution phase (15x increase)
+TIME_PENALTY_LATE = -0.006  # Steps 70-100%: optimization phase (12x increase)
 
 # Phase thresholds (as fraction of max episode length)
 TIME_PENALTY_EARLY_THRESHOLD = 0.3  # 30% of episode
@@ -131,22 +131,6 @@ MOMENTUM_BONUS_PER_STEP = 0.001  # was 0.0002
 # speed variations while still rewarding high-speed play.
 MOMENTUM_EFFICIENCY_THRESHOLD = 0.8  # 80% of MAX_HOR_SPEED
 
-# Directional momentum bonus (Tier 1 path efficiency)
-# Rationale: Rewards velocity component toward current objective only, using
-# graph-based shortest path distance to determine forward direction. This prevents
-# rewarding circular motion and encourages productive movement toward objectives.
-# UPDATED 2025-11-08: Added directional momentum to address inefficient looping
-# behavior observed in training (agent achieving only 12.39/~19.99 reward).
-# UPDATED: Reduced from 0.0015 to 0.0005 to fix reward magnitude hierarchy (20x terminal/dense ratio).
-DIRECTIONAL_MOMENTUM_BONUS_PER_STEP = (
-    0.0005  # Reduced from 0.0015 to fix magnitude hierarchy
-)
-BACKWARD_VELOCITY_PENALTY = 0.0003  # 20% of forward bonus
-DIRECTIONAL_MOMENTUM_UPDATE_INTERVAL = (
-    5  # Update direction every N frames (amortize cost)
-)
-
-
 # =============================================================================
 # BUFFER UTILIZATION REWARDS
 # =============================================================================
@@ -175,20 +159,22 @@ EXPLORATION_GRID_HEIGHT = 25
 EXPLORATION_CELL_SIZE = 24.0  # pixels
 
 # Exploration rewards at different spatial scales
-# Rationale: Multi-scale rewards encourage both fine-grained and broad exploration.
-# Total maximum per-step exploration reward = 0.04
+# DISABLED: PBRS provides exploration through potential gradients. Explicit exploration
+# conflicts with "shortest path" objective and can encourage wandering instead of
+# efficient completion. Removing 0.02/step that could encourage non-optimal behavior.
+# Keep exploration calculator for diagnostic metrics but set rewards to 0.
 
 # Single cell (24x24 pixels) - finest granularity
-EXPLORATION_CELL_REWARD = 0.005
+EXPLORATION_CELL_REWARD = 0.0  # DISABLED
 
 # Medium area (4x4 cells = 96x96 pixels) - room-sized regions
-EXPLORATION_AREA_4X4_REWARD = 0.005
+EXPLORATION_AREA_4X4_REWARD = 0.0  # DISABLED
 
 # Large area (8x8 cells = 192x192 pixels) - section-sized regions
-EXPLORATION_AREA_8X8_REWARD = 0.005
+EXPLORATION_AREA_8X8_REWARD = 0.0  # DISABLED
 
 # Very large area (16x16 cells = 384x384 pixels) - major regions
-EXPLORATION_AREA_16X16_REWARD = 0.005
+EXPLORATION_AREA_16X16_REWARD = 0.0  # DISABLED
 
 # Exploration decay configuration
 # Rationale: Reduce exploration rewards as episode progresses to prioritize speed
@@ -217,29 +203,25 @@ PBRS_GAMMA = 0.995
 # Tuned through empirical evaluation to balance competing objectives.
 
 # Objective distance potential weight
-# Rationale: Primary weight for distance to switch/exit objectives.
-# This is the main shaping signal for task completion.
-# UPDATED 2025-11-08: Increased 3x from 1.5 to 4.5 based on comprehensive analysis
-# showing PBRS rewards were too weak (~0.0 mean) to provide effective gradient.
-# With stronger PBRS, agent receives clear directional signal toward objectives.
-# UPDATED: Reduced from 4.5 to 2.0 to fix reward magnitude hierarchy (20x terminal/dense ratio).
-PBRS_OBJECTIVE_WEIGHT = 2.0  # Reduced from 4.5 to fix magnitude hierarchy
+# Rationale: Reduced to maintain 20:1 terminal/dense reward ratio (Sutton & Barto, 2018).
+# At 0.3 weight, PBRS accumulates ~0.75-1.5 over episode (3.75-7.5% of terminal).
+# This provides sufficient gradient for learning without overwhelming terminal rewards.
+# Terminal rewards (±20.0) remain the dominant learning signal.
+# UPDATED: Reduced 6.67x from 2.0 to 0.3 to restore proper hierarchy.
+PBRS_OBJECTIVE_WEIGHT = 0.3  # Reduced 6.67x from 2.0
 
 # Hazard proximity potential weight
 # Rationale: Safety hint weight provides hazard awareness without overwhelming
-# objective-seeking behavior.
-# UPDATED 2025-11-08: Increased 3.75x from 0.04 to 0.15 to strengthen safety
-# signals. Objective weight still dominates by 30x (4.5 / 0.15).
-# UPDATED: Increased from 0.15 to 0.8 to strengthen safety signals (40% of objective weight).
-# This ensures agent routes around hazards while still progressing toward goal.
-PBRS_HAZARD_WEIGHT = 0.8  # Increased from 0.15 to strengthen safety signals
+# objective-seeking behavior. Reduced proportionally to maintain 40% ratio to objective.
+# At 0.12 weight, hazard avoidance guides routing while objective potential dominates.
+# UPDATED: Reduced 6.67x from 0.8 to 0.12 to maintain ratio with objective weight.
+PBRS_HAZARD_WEIGHT = 0.12  # Reduced 6.67x from 0.8 (maintains 40% ratio)
 
 # Impact risk potential weight
-# Rationale: Impact awareness weight encourages safer movement.
-# UPDATED 2025-11-08: Increased 3.75x from 0.04 to 0.15 to strengthen impact
-# awareness. Objective weight still dominates by 30x (4.5 / 0.15).
-# UPDATED: Increased from 0.15 to 0.6 to strengthen impact awareness (30% of objective weight).
-PBRS_IMPACT_WEIGHT = 0.6  # Increased from 0.15 to strengthen impact awareness
+# Rationale: Impact awareness weight encourages safer movement without dominating.
+# Reduced proportionally to maintain 30% ratio to objective weight.
+# UPDATED: Reduced 6.67x from 0.6 to 0.09 to maintain ratio with objective weight.
+PBRS_IMPACT_WEIGHT = 0.09  # Reduced 6.67x from 0.6 (maintains 30% ratio)
 
 # Exploration potential weight
 # Rationale: Combines with explicit exploration rewards for better coverage.
@@ -301,36 +283,6 @@ PBRS_EXPLORATION_RADIUS = 30.0
 PBRS_FALLBACK_DISTANCE_SCALE = (
     LEVEL_DIAGONAL  # Fallback when adaptive scaling unavailable
 )
-
-
-# =============================================================================
-# INTRINSIC MOTIVATION CONSTANTS (for npp-rl integration)
-# =============================================================================
-# Constants for ICM-based curiosity and intrinsic rewards
-# (Pathak et al., 2017: "Curiosity-driven Exploration by Self-supervised Prediction")
-
-# ICM reward combination weight (alpha)
-# Rationale: Weight (0.1) for combining intrinsic and extrinsic rewards.
-# Formula: total_reward = extrinsic + alpha * intrinsic
-# Set to 10% to provide exploration boost without overwhelming task rewards.
-ICM_ALPHA = 0.1
-
-# ICM intrinsic reward clip value
-# Rationale: Maximum intrinsic reward (1.0) to prevent instability from
-# large prediction errors during early training.
-ICM_REWARD_CLIP = 1.0
-
-# ICM loss function weights
-# Rationale: Standard ICM weights from Pathak et al. (2017).
-# Forward model (0.9) dominates for curiosity signal.
-# Inverse model (0.1) provides auxiliary learning objective.
-ICM_FORWARD_LOSS_WEIGHT = 0.9
-ICM_INVERSE_LOSS_WEIGHT = 0.1
-
-# ICM learning rate
-# Rationale: Moderate learning rate (1e-3) for ICM network training.
-# Higher than policy network (3e-4) as ICM learns faster auxiliary task.
-ICM_LEARNING_RATE = 1e-3
 
 
 # =============================================================================

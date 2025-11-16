@@ -121,12 +121,18 @@ class Ninja:
             self.ragdoll = Ragdoll()
         else:
             self.bones = None
-            # Don't assign lambda - update_graphics() already handles non-animation mode
             self.ragdoll = None
-        self.poslog = []  # Used for debug
-        self.speedlog = []
-        self.xposlog = []  # Used to produce trace
-        self.yposlog = []
+
+        if sim.sim_config.debug:
+            self.poslog = []  # Used for debug
+            self.speedlog = []
+            self.xposlog = []  # Used to produce trace
+            self.yposlog = []
+        else:
+            self.poslog = None
+            self.speedlog = None
+            self.xposlog = None
+            self.yposlog = None
 
         # inputs
         self.hor_input = 0
@@ -172,21 +178,8 @@ class Ninja:
         # death cause
         self.death_cause = None
 
-        # Mine death predictor (initialized by environment)
-        self.mine_death_predictor = None
-
-        # Terminal velocity predictor (initialized by environment)
-        self.terminal_velocity_predictor = None
-
-        # Track recent wall jumps for terminal velocity detection
-        # Need THREE wall jumps within 5 frames of each other to build lethal velocity
-        self.last_wall_jump_frame = -100  # Frame number of most recent wall jump
-        self.second_last_wall_jump_frame = (
-            -100
-        )  # Frame number of second-to-last wall jump
-        self.third_last_wall_jump_frame = (
-            -100
-        )  # Frame number of third-to-last wall jump
+        # Track consecutive frames airborne for death context learning
+        self.frames_airborne = 0
 
         self.log()
 
@@ -421,9 +414,20 @@ class Ninja:
                     self.xspeed = self.xspeed_old
                     self.yspeed = self.yspeed_old
                     self.kill(
-                        1, self.xpos, self.ypos, self.xspeed * 0.5, self.yspeed * 0.5
+                        1,
+                        self.xpos,
+                        self.ypos,
+                        self.xspeed * 0.5,
+                        self.yspeed * 0.5,
+                        cause="terminal_impact",
                     )
                     self.terminal_impact = True
+
+        # Track frames_airborne: increment when airborne, reset when on floor
+        if self.airborn:
+            self.frames_airborne += 1
+        else:
+            self.frames_airborne = 0
 
         # Calculate the combined ceiling normalized normal vector if the ninja has touched any ceiling.
         if self.ceiling_count > 0:
@@ -447,7 +451,12 @@ class Ninja:
                     self.xspeed = self.xspeed_old
                     self.yspeed = self.yspeed_old
                     self.kill(
-                        1, self.xpos, self.ypos, self.xspeed * 0.5, self.yspeed * 0.5
+                        1,
+                        self.xpos,
+                        self.ypos,
+                        self.xspeed * 0.5,
+                        self.yspeed * 0.5,
+                        cause="terminal_impact",
                     )
                     self.terminal_impact = True
 
@@ -530,12 +539,6 @@ class Ninja:
         self.launch_pad_buffer = -1
         self.jump_duration = 0
 
-        # Track wall jump for terminal velocity detection
-        # Need THREE wall jumps within 5 frames to build lethal upward velocity
-        self.third_last_wall_jump_frame = self.second_last_wall_jump_frame
-        self.second_last_wall_jump_frame = self.last_wall_jump_frame
-        self.last_wall_jump_frame = self.sim.frame
-
     def lp_jump(self):
         """Perform launch pad jump."""
         self.floor_buffer = -1
@@ -570,6 +573,24 @@ class Ninja:
         Returns:
             List of 6 bools [NOOP, LEFT, RIGHT, JUMP, JUMP+LEFT, JUMP+RIGHT] (True = valid).
         """
+        # Store ninja state snapshot for logging if masked action is selected
+        if not hasattr(self, "_mask_debug_state"):
+            self._mask_debug_state = {}
+
+        self._mask_debug_state = {
+            "position": (self.xpos, self.ypos),
+            "velocity": (self.xspeed, self.yspeed),
+            "airborn": self.airborn,
+            "walled": self.walled,
+            "wall_normal": self.wall_normal if self.walled else None,
+            "state": self.state,
+            "jump_input": self.jump_input,
+            "jump_buffer": self.jump_buffer,
+            "floor_buffer": self.floor_buffer,
+            "wall_buffer": self.wall_buffer,
+            "launch_pad_buffer": self.launch_pad_buffer,
+        }
+
         mask = [True] * 6
 
         # Check for active buffers (allow jumps without holding jump button)
@@ -651,77 +672,12 @@ class Ninja:
                             mask[2] = False  # Mask RIGHT if NOT triggering wall slide
                         # Keep JUMP+RIGHT (action 5) valid - triggers wall jump
 
-        # Mine death masking
-        for action_idx in range(6):
-            # Skip if already masked by jump/wall logic
-            if not mask[action_idx]:
-                continue
-
-            # Query lookup table (O(1), <0.1ms)
-            if self.mine_death_predictor.is_action_deadly(action_idx):
-                mask[action_idx] = False
-
-        # Terminal velocity masking (new fourth heuristic with ~10 frame lookahead)
-        if (
-            hasattr(self, "terminal_velocity_predictor")
-            and self.terminal_velocity_predictor is not None
-        ):
-            # Only check if in risky state (conditional computation for performance)
-            # Same logic as Tier 1 filter in is_action_deadly()
-            from .constants import TERMINAL_IMPACT_SAFE_VELOCITY
-
-            # Check if chaining wall jumps (THREE consecutive wall jumps within 5 frames)
-            # Single/double wall jumps don't build enough velocity to be lethal
-            # Need 3 jumps to accumulate deadly upward momentum
-            frames_between_2nd_and_3rd = (
-                self.second_last_wall_jump_frame - self.third_last_wall_jump_frame
-            )
-            frames_between_1st_and_2nd = (
-                self.last_wall_jump_frame - self.second_last_wall_jump_frame
-            )
-            # Check for 3-jump chain (both gaps must be ≤5 frames)
-            is_chaining_3_jumps = (
-                frames_between_2nd_and_3rd <= 5
-                and frames_between_2nd_and_3rd > 0
-                and frames_between_1st_and_2nd <= 5
-                and frames_between_1st_and_2nd > 0
-            )
-            # Also check for old 2-jump pattern for safety (backward compatibility)
-            is_chaining_2_jumps = (
-                frames_between_1st_and_2nd <= 6 and frames_between_1st_and_2nd > 0
-            )
-            is_chaining_wall_jumps = is_chaining_3_jumps or is_chaining_2_jumps
-
-            is_risky_state = self.airborn and (
-                self.yspeed
-                > TERMINAL_IMPACT_SAFE_VELOCITY  # Dangerous downward velocity
-                or (
-                    self.yspeed
-                    < -TERMINAL_IMPACT_SAFE_VELOCITY  # Dangerous upward velocity
-                    and is_chaining_wall_jumps  # Only dangerous if chaining wall jumps
-                )
-            )
-
-            if is_risky_state:
-                for action_idx in range(6):
-                    # Skip if already masked by previous checks
-                    if not mask[action_idx]:
-                        continue
-
-                    # Query predictor with 10-frame lookahead
-                    # Masks actions that lead to inevitable death within ~10 frames
-                    if self.terminal_velocity_predictor.is_action_deadly_within_frames(
-                        action_idx, frames=10
-                    ):
-                        mask[action_idx] = False
-
         # Ensure at least one action is always valid
         # If all actions are masked (inevitable death scenario), unmask NOOP
         # This prevents NaN in the policy distribution
         if not any(mask):
             # Ninja is in inevitable death scenario (surrounded by mines, etc.)
             # Allow NOOP as a last resort to prevent policy NaN
-            print("All actions are masked, unmasking NOOP")
             mask[0] = True
 
         # Validate mask before returning
@@ -735,6 +691,23 @@ class Ninja:
             "At least one action must be valid. This should be enforced by "
             "the fallback above. If you see this, there's a logic bug."
         )
+
+        # Store computed mask for debugging
+        self._mask_debug_state["computed_mask"] = mask.copy()
+        self._mask_debug_state["masked_actions"] = [i for i in range(6) if not mask[i]]
+        self._mask_debug_state["valid_actions"] = [i for i in range(6) if mask[i]]
+
+        # Add fingerprint for tracking (only in debug mode, check via sim config)
+        if self.sim.sim_config.debug:
+            self._mask_debug_state["mask_fingerprint"] = (
+                round(self.xpos, 2),
+                round(self.ypos, 2),
+                self.airborn,
+                self.walled,
+                self.jump_input,
+                self.state,
+            )
+            self._mask_debug_state["mask_timestamp"] = self.sim.frame
 
         return mask
 
@@ -1139,12 +1112,15 @@ class Ninja:
 
     def log(self):
         """Log position and velocity vectors of the ninja for the current frame"""
-        self.poslog.append((self.sim.frame, round(self.xpos, 6), round(self.ypos, 6)))
-        self.speedlog.append(
-            (self.sim.frame, round(self.xspeed, 6), round(self.yspeed, 6))
-        )
-        self.xposlog.append(self.xpos)
-        self.yposlog.append(self.ypos)
+        if self.sim.sim_config.debug:
+            self.poslog.append(
+                (self.sim.frame, round(self.xpos, 6), round(self.ypos, 6))
+            )
+            self.speedlog.append(
+                (self.sim.frame, round(self.xspeed, 6), round(self.yspeed, 6))
+            )
+            self.xposlog.append(self.xpos)
+            self.yposlog.append(self.ypos)
 
     def has_won(self):
         return self.state == 8

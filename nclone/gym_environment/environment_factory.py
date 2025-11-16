@@ -19,7 +19,8 @@ def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
 
     # Apply frame stacking wrapper if enabled
     if (
-        config.frame_stack.enable_visual_frame_stacking
+        config.enable_visual_observations
+        and config.frame_stack.enable_visual_frame_stacking
         or config.frame_stack.enable_state_stacking
     ):
         env = FrameStackWrapper(
@@ -105,29 +106,6 @@ def create_visual_testing_env(
     return env
 
 
-def create_minimal_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
-    """Create a minimal environment with all advanced features disabled."""
-    if config is None:
-        config = EnvironmentConfig.minimal()
-    env = NppEnvironment(config)
-
-    # Apply frame stacking wrapper if enabled
-    if (
-        config.frame_stack.enable_visual_frame_stacking
-        or config.frame_stack.enable_state_stacking
-    ):
-        env = FrameStackWrapper(
-            env,
-            visual_stack_size=config.frame_stack.visual_stack_size,
-            state_stack_size=config.frame_stack.state_stack_size,
-            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
-            enable_state_stacking=config.frame_stack.enable_state_stacking,
-            padding_type=config.frame_stack.padding_type,
-        )
-
-    return env
-
-
 def make_vectorizable_env(
     env_factory: Callable[[], NppEnvironment],
 ) -> Callable[[], NppEnvironment]:
@@ -194,36 +172,6 @@ def create_vectorized_training_envs(
     return env_factories
 
 
-def create_hierarchical_env(
-    config: Optional[EnvironmentConfig] = None,
-    completion_planner: Optional[Any] = None,
-) -> NppEnvironment:
-    """Create an environment optimized for hierarchical RL training."""
-    if config is None:
-        config = EnvironmentConfig.for_hierarchical_training(
-            completion_planner=completion_planner
-        )
-    elif completion_planner is not None:
-        config.hierarchical.completion_planner = completion_planner
-    env = NppEnvironment(config)
-
-    # Apply frame stacking wrapper if enabled
-    if (
-        config.frame_stack.enable_visual_frame_stacking
-        or config.frame_stack.enable_state_stacking
-    ):
-        env = FrameStackWrapper(
-            env,
-            visual_stack_size=config.frame_stack.visual_stack_size,
-            state_stack_size=config.frame_stack.state_stack_size,
-            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
-            enable_state_stacking=config.frame_stack.enable_state_stacking,
-            padding_type=config.frame_stack.padding_type,
-        )
-
-    return env
-
-
 def benchmark_environment_performance(
     env: NppEnvironment, num_steps: int = 1000, target_fps: float = 60.0
 ) -> Dict[str, Any]:
@@ -278,12 +226,6 @@ def benchmark_environment_performance(
     graph_stats = {}
     reachability_stats = {}
 
-    if hasattr(env, "get_graph_performance_stats"):
-        graph_stats = env.get_graph_performance_stats()
-
-    if hasattr(env, "get_reachability_performance_stats"):
-        reachability_stats = env.get_reachability_performance_stats()
-
     results = {
         "total_steps": num_steps,
         "total_time_s": total_time,
@@ -312,44 +254,3 @@ def benchmark_environment_performance(
         print(f"  Reachability time: {reachability_stats.get('avg_time_ms', 0):.2f}ms")
 
     return results
-
-
-def validate_environment(env: NppEnvironment) -> bool:
-    """
-    Validate that an environment is properly configured.
-
-    Args:
-        env: Environment to validate
-
-    Returns:
-        True if environment is valid, False otherwise
-    """
-    import logging
-
-    # Check if environment has proper observation space
-    if not hasattr(env, "observation_space"):
-        logging.error("Environment missing observation_space")
-        return False
-
-    # Test environment reset and step
-    try:
-        obs, info = env.reset()
-
-        # Check for required observation components
-        required_keys = ["player_frame", "global_view", "game_state"]
-        if isinstance(obs, dict):
-            for key in required_keys:
-                if key not in obs:
-                    logging.error(f"Missing required observation key: {key}")
-                    return False
-
-        # Test a single step
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-
-        logging.info("Environment validation passed")
-        return True
-
-    except Exception as e:
-        logging.error(f"Environment validation failed: {e}")
-        return False

@@ -23,7 +23,6 @@ from .constants import (
     GAME_STATE_CHANNELS,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
-    MAX_TIME_IN_FRAMES,
     RENDERED_VIEW_WIDTH,
     RENDERED_VIEW_HEIGHT,
     LEVEL_WIDTH,
@@ -66,7 +65,6 @@ class BaseNppEnvironment(gymnasium.Env):
         enable_animation: bool = False,
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
-        enable_short_episode_truncation: bool = False,
         seed: Optional[int] = None,
         eval_mode: bool = False,
         custom_map_path: Optional[str] = None,
@@ -74,6 +72,7 @@ class BaseNppEnvironment(gymnasium.Env):
         enable_augmentation: bool = True,
         augmentation_config: Optional[Dict[str, Any]] = None,
         pbrs_gamma: float = PBRS_GAMMA,
+        enable_visual_observations: bool = False,
     ):
         """
         Initialize the base N++ environment.
@@ -83,7 +82,6 @@ class BaseNppEnvironment(gymnasium.Env):
             enable_animation: Enable animation in rendering
             enable_logging: Enable debug logging
             enable_debug_overlay: Enable debug overlay visualization
-            enable_short_episode_truncation: Enable episode truncation on lack of progress
             seed: Random seed for reproducibility
             eval_mode: Use evaluation maps instead of training maps
             custom_map_path: Path to custom map file
@@ -91,25 +89,35 @@ class BaseNppEnvironment(gymnasium.Env):
             enable_augmentation: Enable frame augmentation
             augmentation_config: Augmentation configuration dictionary
             pbrs_gamma: PBRS discount factor
+            enable_visual_observations: If False, skip rendering and visual observation processing
+                (graph + state + reachability contain all necessary information)
         """
         super().__init__()
 
-        # Store configuration
         self.render_mode = render_mode
         self.enable_animation = enable_animation
         self.enable_logging = enable_logging
+        self.debug_mode = enable_logging
         self.custom_map_path = custom_map_path
         self.test_dataset_path = test_dataset_path
         self.eval_mode = eval_mode
+        self.enable_visual_observations = (
+            enable_visual_observations or render_mode == "human"
+        )
+
+        # Cache for previous observation to avoid redundant computation
+        self._prev_obs_cache = None
 
         # Initialize core game interface
         # Note: Grayscale rendering is automatic in headless mode (grayscale_array)
+        # Skip rendering entirely if visual observations disabled for maximum performance
         self.nplay_headless = NPlayHeadless(
             render_mode=render_mode,
             enable_animation=enable_animation,
             enable_logging=enable_logging,
             enable_debug_overlay=enable_debug_overlay,
             seed=seed,
+            enable_rendering=enable_visual_observations,
         )
 
         # Initialize action space (6 actions: NOOP, Left, Right, Jump, Jump+Left, Jump+Right)
@@ -120,6 +128,9 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Track reward for the current episode
         self.current_ep_reward = 0
+
+        # Track last action for death context learning
+        self.last_action = None
 
         # Initialize entity extractor
         self.entity_extractor = EntityExtractor(self.nplay_headless)
@@ -139,14 +150,13 @@ class BaseNppEnvironment(gymnasium.Env):
             enable_augmentation=enable_augmentation,
             augmentation_config=augmentation_config,
             training_mode=not eval_mode,  # Disable validation in training mode
+            enable_visual_processing=enable_visual_observations,
         )
 
         self.reward_calculator = RewardCalculator(pbrs_gamma=pbrs_gamma)
 
         # Initialize truncation checker
-        self.truncation_checker = TruncationChecker(
-            self, enable_short_episode_truncation=enable_short_episode_truncation
-        )
+        self.truncation_checker = TruncationChecker(self)
 
         # Store all configuration flags for logging and debugging
         self.config_flags = {
@@ -154,7 +164,6 @@ class BaseNppEnvironment(gymnasium.Env):
             "enable_animation": enable_animation,
             "enable_logging": enable_logging,
             "enable_debug_overlay": enable_debug_overlay,
-            "enable_short_episode_truncation": enable_short_episode_truncation,
             "eval_mode": eval_mode,
             "pbrs_gamma": pbrs_gamma,
         }
@@ -178,9 +187,12 @@ class BaseNppEnvironment(gymnasium.Env):
 
     def _build_base_observation_space(self) -> SpacesDict:
         """Build the base observation space."""
-        obs_spaces = {
+        obs_spaces = {}
+
+        # Only include visual observation spaces if visual observations are enabled
+        if self.enable_visual_observations:
             # Player-centered frame
-            "player_frame": box.Box(
+            obs_spaces["player_frame"] = box.Box(
                 low=0,
                 high=255,
                 shape=(
@@ -189,31 +201,31 @@ class BaseNppEnvironment(gymnasium.Env):
                     1,
                 ),
                 dtype=np.uint8,
-            ),
+            )
             # Global view frame
-            "global_view": box.Box(
+            obs_spaces["global_view"] = box.Box(
                 low=0,
                 high=255,
                 shape=(RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1),
                 dtype=np.uint8,
-            ),
-            # Game state features (ninja state + entity states)
-            "game_state": box.Box(
-                low=-1,
-                high=1,
-                shape=(
-                    GAME_STATE_CHANNELS,
-                ),  # Now 52: 29 physics + 15 objectives + 5 mines + 3 progress
-                dtype=np.float32,
-            ),
-            # Action mask for invalid action filtering
-            "action_mask": box.Box(
-                low=0,
-                high=1,
-                shape=(6,),  # 6 actions in N++
-                dtype=np.int8,
-            ),
-        }
+            )
+
+        # Game state features (ninja state + entity states) - always available
+        obs_spaces["game_state"] = box.Box(
+            low=-1,
+            high=1,
+            shape=(
+                GAME_STATE_CHANNELS,
+            ),  # Now 52: 29 physics + 15 objectives + 5 mines + 3 progress
+            dtype=np.float32,
+        )
+        # Action mask for invalid action filtering - always available
+        obs_spaces["action_mask"] = box.Box(
+            low=0,
+            high=1,
+            shape=(6,),  # 6 actions in N++
+            dtype=np.int8,
+        )
         return SpacesDict(obs_spaces)
 
     def _actions_to_execute(self, action: int) -> Tuple[int, int]:
@@ -254,70 +266,30 @@ class BaseNppEnvironment(gymnasium.Env):
 
         return hoz_input, jump_input
 
-    def _check_observation_for_nan(
-        self, obs: Dict[str, Any], obs_name: str = "observation"
-    ):
-        """Check observation dictionary for NaN values and log details.
-
-        Args:
-            obs: Observation dictionary to check
-            obs_name: Name identifier for logging (e.g., "prev_obs", "curr_obs")
-        """
-        nan_found = False
-        nan_components = []
-
-        for key, value in obs.items():
-            if isinstance(value, np.ndarray):
-                if np.isnan(value).any():
-                    nan_found = True
-                    nan_count = np.isnan(value).sum()
-                    nan_components.append(f"{key} (array, {nan_count} NaN values)")
-            elif isinstance(value, (float, np.floating)):
-                if np.isnan(value):
-                    nan_found = True
-                    nan_components.append(f"{key} (scalar, value={value})")
-            elif isinstance(value, (list, tuple)):
-                # Check list/tuple elements
-                for i, item in enumerate(value):
-                    if isinstance(item, (float, np.floating)) and np.isnan(item):
-                        nan_found = True
-                        nan_components.append(f"{key}[{i}] (scalar, value={item})")
-                    elif isinstance(item, np.ndarray) and np.isnan(item).any():
-                        nan_found = True
-                        nan_count = np.isnan(item).sum()
-                        nan_components.append(
-                            f"{key}[{i}] (array, {nan_count} NaN values)"
-                        )
-
-        if nan_found:
-            raise ValueError(
-                f"[OBS_NAN] NaN detected in {obs_name}! Components with NaN: {nan_components}. "
-                f"Raw values: player_x={obs.get('player_x')}, player_y={obs.get('player_y')}, "
-                f"player_xspeed={obs.get('player_xspeed')}, player_yspeed={obs.get('player_yspeed')}"
-            )
-
-        return nan_found
-
     def step(self, action: int):
         """Execute one environment step with enhanced episode info.
 
         Template method that defines the step execution flow with hooks
         for subclasses to extend behavior at specific points.
         """
-        try:
-            # Get previous observation
-            prev_obs = self._get_observation()
+        logger = logging.getLogger(__name__)
 
-            # Check for NaN in previous observation
-            if self._check_observation_for_nan(prev_obs, "prev_obs"):
-                print(
-                    f"[STEP_NAN] NaN detected in prev_obs before action execution. "
-                    f"Action: {action}"
-                )
+        try:
+            # Get previous observation for reward calculation
+            # Note: We don't validate actions against prev_obs mask because:
+            # 1. The policy already validated with the mask from _last_obs
+            # 2. The environment state may have changed since policy selection
+            # 3. Validation belongs at policy level, not environment level
+            prev_obs = self._prev_obs_cache
+            if prev_obs is None:
+                prev_obs = self._get_observation()
 
             # Record action for debug visualization
             if hasattr(self, "_record_action_for_debug"):
                 self._record_action_for_debug(action)
+
+            # Track last action for death context
+            self.last_action = action
 
             # Execute action
             action_hoz, action_jump = self._actions_to_execute(action)
@@ -332,12 +304,14 @@ class BaseNppEnvironment(gymnasium.Env):
             # Get current observation
             curr_obs = self._get_observation()
 
-            # Check for NaN in current observation BEFORE reward calculation
-            if self._check_observation_for_nan(curr_obs, "curr_obs"):
-                print(
-                    f"[STEP_NAN] NaN detected in curr_obs after action execution. "
-                    f"Action: {action}, prev_obs had NaN: {self._check_observation_for_nan(prev_obs, 'prev_obs')}"
-                )
+            # Cache observation for reward calculation in next step
+            # Shallow copy dict + explicit action_mask copy prevents wrapper mutations
+            self._prev_obs_cache = curr_obs.copy()
+            self._prev_obs_cache["action_mask"] = curr_obs["action_mask"].copy()
+
+            # Return a copy so wrappers can't mutate our cached observation
+            obs_to_return = curr_obs.copy()
+            obs_to_return["action_mask"] = curr_obs["action_mask"].copy()
 
             terminated, truncated, player_won = self._check_termination()
 
@@ -347,49 +321,25 @@ class BaseNppEnvironment(gymnasium.Env):
             # Calculate reward (pass action for NOOP penalty)
             reward = self._calculate_reward(curr_obs, prev_obs, action)
 
-            # Check reward for NaN
-            if np.isnan(reward):
-                print(
-                    f"[STEP_NAN] NaN detected in reward after calculation. "
-                    f"Reward value: {reward}, action: {action}, "
-                    f"player_pos=({curr_obs.get('player_x')}, {curr_obs.get('player_y')})"
-                )
+            # Apply death penalty for truncation (treat truncation as failure)
+            if truncated and not terminated:
+                from .reward_calculation.reward_constants import DEATH_PENALTY
+
+                reward += DEATH_PENALTY
 
             # Hook: Modify reward if needed
             reward = self._modify_reward_hook(reward, curr_obs, player_won, terminated)
 
-            # Check reward again after modification
-            if np.isnan(reward):
-                print(
-                    f"[STEP_NAN] NaN detected in reward after modification hook. "
-                    f"Reward value: {reward}"
-                )
-
             self.current_ep_reward += reward
 
-            # Process observation for training
-            processed_obs = self._process_observation(curr_obs)
-
-            # Check processed observation for NaN
-            if isinstance(processed_obs, dict):
-                if self._check_observation_for_nan(processed_obs, "processed_obs"):
-                    print(
-                        f"[STEP_NAN] NaN detected in processed_obs after processing. "
-                        f"Action: {action}"
-                    )
+            # Process observation for training (use returned copy, not original)
+            processed_obs = self._process_observation(obs_to_return)
 
             # Build episode info
             info = self._build_episode_info(player_won, terminated, truncated)
 
             # Hook: Add additional info fields
             self._extend_info_hook(info)
-
-            # Validate observation before returning
-            if self._check_observation_for_nan(processed_obs, "step_obs"):
-                raise ValueError(
-                    f"NaN detected after step (action={action}). "
-                    f"Frame: {self.nplay_headless.sim.frame}"
-                )
 
             return processed_obs, reward, terminated, truncated, info
 
@@ -523,21 +473,6 @@ class BaseNppEnvironment(gymnasium.Env):
                             switch_states[i]
                         )
 
-        # === SUBTASK FEATURES (if hierarchical enabled) ===
-        if "subtask_features" in obs:
-            subtask = obs["subtask_features"]
-            if isinstance(subtask, np.ndarray):
-                feature_names = [
-                    "subtask_type",
-                    "progress",
-                    "priority",
-                    "completion_bonus",
-                ]
-                for i in range(min(len(subtask), len(feature_names))):
-                    metrics[f"obs/subtask_features/{feature_names[i]}"] = float(
-                        subtask[i]
-                    )
-
         # === KEY PHYSICS STATE ===
         metrics["obs/physics/xspeed"] = float(obs["player_xspeed"])
         metrics["obs/physics/yspeed"] = float(obs["player_yspeed"])
@@ -559,10 +494,6 @@ class BaseNppEnvironment(gymnasium.Env):
         diagnostic_metrics = self.reward_calculator.get_diagnostic_metrics(curr_obs)
         # Add to info dict for callback to log
         info["diagnostic_metrics"] = diagnostic_metrics
-
-        # Generate observation metrics for TensorBoard logging
-        observation_metrics = self._get_observation_metrics(curr_obs)
-        info["observation_metrics"] = observation_metrics
 
     def _build_episode_info(
         self, player_won: bool, terminated: bool, truncated: bool
@@ -604,6 +535,9 @@ class BaseNppEnvironment(gymnasium.Env):
                   Use this when map has already been loaded externally
                   (e.g., by curriculum wrapper).
         """
+        # Clear observation cache on reset
+        self._prev_obs_cache = None
+
         # Handle reinitialization after unpickling
         if hasattr(self, "_needs_reinit") and self._needs_reinit:
             # Reinitialize components that may have been affected by pickling
@@ -622,6 +556,9 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Reset episode reward
         self.current_ep_reward = 0
+
+        # Reset last action tracking for death context
+        self.last_action = None
 
         # Invalidate observation cache
         self._cached_observation = None
@@ -648,12 +585,6 @@ class BaseNppEnvironment(gymnasium.Env):
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
 
-        # Validate observation before returning
-        if self._check_observation_for_nan(processed_obs, "reset_obs"):
-            raise ValueError(
-                "NaN detected immediately after reset. Initialization problem."
-            )
-
         return (processed_obs, {})
 
     def render(self):
@@ -665,13 +596,19 @@ class BaseNppEnvironment(gymnasium.Env):
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
         # Return cached observation if valid
+        # CRITICAL: DO NOT recompute action_mask! It must remain exactly as it was computed.
+        # If we recompute it, ninja state might have changed slightly between action selection
+        # and validation, causing the mask to change and trigger false positives in
+        # masked action detection. The action_mask must stay consistent throughout the step.
         if self._cached_observation is not None:
             return self._cached_observation
 
-        # Calculate time remaining feature
+        # Calculate time remaining feature using dynamic truncation limit
+        # This ensures agents see accurate time pressure based on level complexity
         time_remaining = (
-            MAX_TIME_IN_FRAMES - self.nplay_headless.sim.frame
-        ) / MAX_TIME_IN_FRAMES
+            self.truncation_checker.current_truncation_limit
+            - self.nplay_headless.sim.frame
+        ) / self.truncation_checker.current_truncation_limit
 
         ninja_state = self.nplay_headless.get_ninja_state()
 
@@ -722,7 +659,6 @@ class BaseNppEnvironment(gymnasium.Env):
         exit_pos = self.nplay_headless.exit_door_position()
 
         obs = {
-            "screen": self.render(),
             "game_state": game_state,
             "player_dead": self.nplay_headless.ninja_has_died(),
             "player_won": self.nplay_headless.ninja_has_won(),
@@ -748,14 +684,58 @@ class BaseNppEnvironment(gymnasium.Env):
             "sim_frame": self.nplay_headless.sim.frame,
             "entity_states": entity_states_raw,  # For PBRS hazard detection
             "entities": entities,  # Entity objects (mines, locked doors, switches)
-            "locked_doors": locked_doors,  # For hierarchical navigation
-            "locked_door_switches": locked_door_switches,  # For hierarchical navigation
+            "locked_doors": locked_doors,
+            "locked_door_switches": locked_door_switches,
             # Update path guidance predictor before getting action mask
             # This ensures path-based masking has current data
             "action_mask": self._get_action_mask_with_path_update(
                 ninja_pos, switch_pos, exit_pos
             ),
+            "death_context": self._get_death_context(),
         }
+
+        # DEFENSIVE FIX: Validate mask consistency before returning observation
+        # This catches corrupted masks early before they cause issues in the policy
+        action_mask = obs["action_mask"]
+        if action_mask.shape != (6,):
+            logger.error(
+                f"[MASK_VALIDATION] Invalid action_mask shape: {action_mask.shape}, expected (6,). "
+                f"This indicates a critical bug in mask generation."
+            )
+            # Force correct shape with all actions valid as fallback
+            obs["action_mask"] = np.ones(6, dtype=np.int8)
+        elif not action_mask.any():
+            logger.error(
+                f"[MASK_VALIDATION] All actions masked! Mask: {action_mask}. "
+                f"This should never happen - at least one action must be valid. "
+                f"Forcing NOOP to be valid as emergency fallback."
+            )
+            # Force NOOP to be valid as emergency fallback
+            action_mask = action_mask.copy()
+            action_mask[0] = 1
+            obs["action_mask"] = action_mask
+
+        # Add ninja debug state for masked action bug detection
+        # This is stored in the observation so reward calculator can access it
+        # when a masked action is detected
+        ninja = self.nplay_headless.sim.ninja
+        if hasattr(ninja, "_mask_debug_state"):
+            obs["_ninja_debug_state"] = ninja._mask_debug_state.copy()
+
+        # Add debug tracking info when debug mode is enabled
+        if self.nplay_headless.sim.sim_config.debug:
+            obs["_env_id"] = id(self)
+            obs["_step_num"] = self.nplay_headless.sim.frame
+            if hasattr(ninja, "_mask_debug_state"):
+                obs["_mask_fingerprint"] = ninja._mask_debug_state.get(
+                    "mask_fingerprint"
+                )
+                obs["_mask_timestamp"] = ninja._mask_debug_state.get("mask_timestamp")
+
+        # Only add screen if visual observations enabled
+        # When disabled, graph + state + reachability contain all necessary information
+        if self.enable_visual_observations:
+            obs["screen"] = self.render()
 
         # Cache the computed observation before returning
         self._cached_observation = obs
@@ -779,10 +759,94 @@ class BaseNppEnvironment(gymnasium.Env):
             exit_pos: Exit door position (x, y)
 
         Returns:
-            Action mask as numpy array of int8
+            Action mask as numpy array of int8 (defensive copy to prevent memory sharing)
         """
-        # Get action mask from ninja
-        return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
+        # Get action mask from ninja and force deep copy
+        # DEFENSIVE FIX: Use np.array(..., copy=True) to ensure unique memory allocation
+        # This prevents memory sharing issues in SubprocVecEnv where arrays might be
+        # shared across process boundaries via IPC, leading to race conditions where
+        # the mask used by the policy differs from the mask computed in the environment
+        mask = np.array(self.nplay_headless.get_action_mask(), dtype=np.int8, copy=True)
+
+        # Ensure C-contiguous layout to prevent memory aliasing
+        if not mask.flags["C_CONTIGUOUS"]:
+            mask = np.ascontiguousarray(mask, dtype=np.int8)
+
+        # DIAGNOSTIC: Track mask creation for debugging (only in debug mode)
+        if self.nplay_headless.sim.sim_config.debug:
+            import os
+
+            logger.debug(
+                f"[MASK_CREATE] pid={os.getpid()} env_frame={self.nplay_headless.sim.frame} "
+                f"id={id(mask)} owns_data={mask.flags['OWNDATA']} "
+                f"c_contiguous={mask.flags['C_CONTIGUOUS']} hash={hash(mask.tobytes())}"
+            )
+
+        return mask
+
+    def _get_death_context(self) -> np.ndarray:
+        """Extract rich death context for agent learning.
+
+        Provides 9 features describing what led to death:
+        [0] death_occurred: 1.0 if died this step, 0.0 otherwise
+        [1] death_velocity_magnitude: Speed at death (normalized 0-1)
+        [2] death_velocity_x: X velocity at death (normalized -1 to 1)
+        [3] death_velocity_y: Y velocity at death (normalized -1 to 1)
+        [4] death_impact_normal_x: Surface normal X at impact (-1 to 1)
+        [5] death_impact_normal_y: Surface normal Y at impact (-1 to 1)
+        [6] frames_airborne_before_death: Frames airborne before death (normalized 0-1)
+        [7] last_action_before_death: Action that led to death (normalized -1 to 1)
+        [8] death_type: Categorical encoding (0=none, 0.25=mine, 0.5=terminal_impact, 0.75=hazard, 1.0=other)
+
+        Returns:
+            Array of shape (9,) with death context features
+        """
+        context = np.zeros(9, dtype=np.float32)
+
+        if not self.nplay_headless.ninja_has_died():
+            return context
+
+        ninja = self.nplay_headless.sim.ninja
+        context[0] = 1.0  # death_occurred flag
+
+        # Velocity at death (from ninja.death_xspeed/yspeed)
+        from ..constants.physics_constants import MAX_HOR_SPEED
+
+        death_vel_mag = np.sqrt(ninja.death_xspeed**2 + ninja.death_yspeed**2)
+        context[1] = np.clip(death_vel_mag / (MAX_HOR_SPEED * 2), 0, 1)
+        context[2] = np.clip(ninja.death_xspeed / MAX_HOR_SPEED, -1, 1)
+        context[3] = np.clip(ninja.death_yspeed / MAX_HOR_SPEED, -1, 1)
+
+        # Surface normal (for terminal impact)
+        if getattr(ninja, "terminal_impact", False):
+            # Use floor or ceiling normal depending on impact type
+            if ninja.floor_count > 0:
+                context[4] = ninja.floor_normalized_x
+                context[5] = ninja.floor_normalized_y
+            elif ninja.ceiling_count > 0:
+                context[4] = ninja.ceiling_normalized_x
+                context[5] = ninja.ceiling_normalized_y
+
+        # Frames airborne (tracked in ninja.py)
+        if hasattr(ninja, "frames_airborne"):
+            context[6] = np.clip(ninja.frames_airborne / 100.0, 0, 1)
+
+        # Last action (tracked in environment)
+        if hasattr(self, "last_action") and self.last_action is not None:
+            context[7] = (self.last_action / 5.0) * 2 - 1  # Normalize 0-5 to [-1, 1]
+
+        # Death type encoding
+        death_cause = ninja.death_cause or "other"
+        type_map = {
+            None: 0.0,
+            "mine": 0.25,
+            "terminal_impact": 0.5,
+            "hazard": 0.75,
+            "other": 1.0,
+        }
+        context[8] = type_map.get(death_cause, 0.0)
+
+        return context
 
     def _check_termination(self) -> Tuple[bool, bool, bool]:
         """
@@ -802,11 +866,11 @@ class BaseNppEnvironment(gymnasium.Env):
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
         should_truncate, reason = self.truncation_checker.update(ninja_x, ninja_y)
         if should_truncate and self.enable_logging:
-            print(f"Episode terminated due to time: {reason}")
+            print(f"Episode truncated due to time: {reason}")
 
-        # We also terminate if the truncation state is reached, that way we can
-        # learn from the episode, since our time remaining is in our observation
-        return terminated or should_truncate, False, player_won
+        # Return proper truncated flag (don't merge with terminated)
+        # Truncation is now treated separately so we can apply death penalty
+        return terminated, should_truncate, player_won
 
     def _calculate_reward(self, curr_obs, prev_obs, action=None):
         """Calculate the reward for the environment."""

@@ -14,7 +14,10 @@ class Simulator:
     def __init__(self, sc: SimConfig):
         """Initializes the simulator with a given SimConfig."""
         self.frame = 0
-        self.collisionlog = []
+        if sc.debug:
+            self.collisionlog = []
+        else:
+            self.collisionlog = None
 
         self.sim_config = sc
         self.ninja = None
@@ -28,7 +31,7 @@ class Simulator:
         self.ver_segment_dic = {}
         self.map_data = None
         self.map_loader = MapLoader(self)
-        
+
         # Optional environment reference for cache invalidation
         # Set by gym environment to enable performance optimizations
         self.gym_env = None
@@ -48,14 +51,17 @@ class Simulator:
         """Reset the simulation to the initial state. Keeps the current map tiles, and resets the ninja,
         entities and the collision log."""
         self.frame = 0
-        self.collisionlog = []
+        if self.sim_config.debug:
+            self.collisionlog = []
+        else:
+            self.collisionlog = None
         self.ninja = None
         self.reset_map_entity_data()
         self.map_loader.load_map_entities()
 
     def reset_map_entity_data(self):
         """Reset the map entity data. This is used when a new map is loaded or when the map is reset.
-        
+
         IMPORTANT: This method must remove door segments from segment_dic before clearing entity_dic,
         otherwise door segments will persist and be duplicated when entities are reloaded. This is
         critical for curriculum learning where load_map_from_map_data() is followed by reset().
@@ -67,11 +73,13 @@ class Simulator:
             if door_type in self.entity_dic:
                 for door_entity in self.entity_dic[door_type]:
                     # Check if entity has a segment attribute (door entities should)
-                    if hasattr(door_entity, "segment") and hasattr(door_entity, "grid_edges"):
+                    if hasattr(door_entity, "segment") and hasattr(
+                        door_entity, "grid_edges"
+                    ):
                         segment = door_entity.segment
                         grid_edges = door_entity.grid_edges
                         is_vertical = getattr(door_entity, "is_vertical", False)
-                        
+
                         # Find the cell containing this segment and remove it
                         # We need to find which cell contains the segment
                         # Segments are stored by their cell location
@@ -79,16 +87,20 @@ class Simulator:
                             if segment in segments_list:
                                 segments_list.remove(segment)
                                 break
-                        
+
                         # Reset grid edges that this door was using
                         for grid_edge in grid_edges:
                             if is_vertical:
                                 if grid_edge in self.ver_grid_edge_dic:
-                                    self.ver_grid_edge_dic[grid_edge] = max(0, self.ver_grid_edge_dic[grid_edge] - 1)
+                                    self.ver_grid_edge_dic[grid_edge] = max(
+                                        0, self.ver_grid_edge_dic[grid_edge] - 1
+                                    )
                             else:
                                 if grid_edge in self.hor_grid_edge_dic:
-                                    self.hor_grid_edge_dic[grid_edge] = max(0, self.hor_grid_edge_dic[grid_edge] - 1)
-        
+                                    self.hor_grid_edge_dic[grid_edge] = max(
+                                        0, self.hor_grid_edge_dic[grid_edge] - 1
+                                    )
+
         # Now clear entity data structures
         self.grid_entity = {}
         for x in range(44):
@@ -106,7 +118,7 @@ class Simulator:
                 self.segment_dic[(x, y)] = []
 
         self.tile_dic = {}  # Clear tile_dic as well
-        
+
         # Reset collision optimization structures (will be rebuilt after segments are populated)
         self.collision_data = None
         self.spatial_segment_index = None

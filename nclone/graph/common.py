@@ -47,8 +47,12 @@ SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 84 sub-cells wide (42*2
 SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 46 sub-cells tall (23*2)
 
 # Feature dimensions for enhanced observation space
-NODE_FEATURE_DIM = 50  # Comprehensive node features (3 spatial + 7 type + 5 entity + 34 tile + 1 reachability)
-EDGE_FEATURE_DIM = 6  # Comprehensive edge features
+# Phase 1: Removed tile encoding (34 dims), refactored entity features
+# Phase 2: Added geometric edge features (4 dims)
+# Phase 3: Added mine danger edge features (4 dims)
+# Phase 5: Added topological node features (6 dims) - COMPLETE
+NODE_FEATURE_DIM = 21  # Complete node features (2 spatial + 7 type + 3 mine + 2 entity_state + 1 reachability + 6 topological)
+EDGE_FEATURE_DIM = 14  # Complete edge features (4 type + 2 connectivity + 4 geometric + 4 mine_danger)
 
 # Type counts (derived from IntEnum classes below)
 N_NODE_TYPES = (

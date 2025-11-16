@@ -129,37 +129,6 @@ class ReachabilityConfig:
 
 
 @dataclass
-class HierarchicalConfig:
-    """Configuration for hierarchical RL functionality."""
-
-    enable_hierarchical: bool = False
-    completion_planner: Optional[Any] = None
-    enable_subtask_rewards: bool = True
-    subtask_reward_scale: float = 0.1
-    max_subtask_steps: int = 1000
-    debug: bool = False
-
-    # Hierarchical constants
-    SUBTASK_COMPLETION_BONUS: float = 0.5
-    SUBTASK_TIMEOUT_PENALTY: float = 0.1
-    SUBTASK_TIMEOUT_THRESHOLD: int = 500
-    SIGNIFICANT_MOVEMENT_THRESHOLD: float = 5.0
-    DISTANCE_REWARD_SCALE: float = 0.01
-    MINE_AVOIDANCE_REWARD_SCALE: float = 0.005
-
-    def __post_init__(self):
-        """Validate hierarchical configuration."""
-        if self.subtask_reward_scale < 0:
-            raise ValueError("subtask_reward_scale must be non-negative")
-
-        if self.max_subtask_steps <= 0:
-            raise ValueError("max_subtask_steps must be positive")
-
-        if self.enable_hierarchical and self.debug:
-            logging.info("Hierarchical RL debug mode enabled")
-
-
-@dataclass
 class EnvironmentConfig:
     """Main configuration class for NppEnvironment."""
 
@@ -169,7 +138,9 @@ class EnvironmentConfig:
     custom_map_path: Optional[str] = None
     test_dataset_path: Optional[str] = None  # Path to test dataset for evaluation
     enable_logging: bool = False
-    enable_short_episode_truncation: bool = False
+    enable_visual_observations: bool = (
+        False  # If False, skip rendering entirely (graph+state+reachability sufficient)
+    )
 
     # Component configurations
     frame_stack: FrameStackConfig = field(default_factory=FrameStackConfig)
@@ -178,12 +149,11 @@ class EnvironmentConfig:
     pbrs: PBRSConfig = field(default_factory=PBRSConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     reachability: ReachabilityConfig = field(default_factory=ReachabilityConfig)
-    hierarchical: HierarchicalConfig = field(default_factory=HierarchicalConfig)
 
     def __post_init__(self):
         """Validate environment configuration."""
         if self.enable_logging:
-            logging.basicConfig(level=logging.INFO)
+            logging.basicConfig(level=logging.DEBUG)
             logging.info("Environment logging enabled")
 
     @classmethod
@@ -204,19 +174,6 @@ class EnvironmentConfig:
         Expected memory savings: ~500 KB per environment instance.
         """
         config = cls(
-            augmentation=AugmentationConfig(
-                enable_augmentation=True,
-                disable_validation=True,
-                intensity="medium",
-                p=0.5,
-            ),
-            render=RenderConfig(
-                render_mode="grayscale_array",
-                enable_animation=False,
-            ),
-            graph=GraphConfig(),
-            reachability=ReachabilityConfig(),
-            enable_short_episode_truncation=False,
             **kwargs,
         )
         return config
@@ -231,108 +188,7 @@ class EnvironmentConfig:
         - Clean evaluation without PBRS
         """
         config = cls(
-            augmentation=AugmentationConfig(
-                enable_augmentation=False,
-                disable_validation=True,
-                intensity="medium",
-                p=0.5,
-            ),
-            render=RenderConfig(render_mode="grayscale_array"),
-            graph=GraphConfig(),
-            reachability=ReachabilityConfig(),
             eval_mode=True,
-            enable_short_episode_truncation=False,  # Let episodes run to completion
-            **kwargs,
-        )
-        return config
-
-    @classmethod
-    def for_research(cls, **kwargs) -> "EnvironmentConfig":
-        """Create configuration optimized for research and debugging.
-
-        Validation ENABLED for safety during development.
-        Debug overlay and logging enabled for detailed inspection.
-        """
-        config = cls(
-            augmentation=AugmentationConfig(
-                enable_augmentation=True,
-                disable_validation=False,  # Keep validation for debugging
-                intensity="medium",
-                p=0.5,
-            ),
-            render=RenderConfig(
-                render_mode="human", enable_animation=True, enable_debug_overlay=True
-            ),
-            graph=GraphConfig(
-                debug=True,
-            ),
-            reachability=ReachabilityConfig(debug=True),
-            enable_logging=True,
-            **kwargs,
-        )
-        return config
-
-    @classmethod
-    def for_visual_testing(cls, **kwargs) -> "EnvironmentConfig":
-        """Create configuration optimized for testing rendering and visualization."""
-        config = cls(
-            enable_logging=False,
-            render=RenderConfig(
-                render_mode="human", enable_animation=True, enable_debug_overlay=False
-            ),
-            graph=GraphConfig(
-                debug=False,
-            ),
-            reachability=ReachabilityConfig(debug=False),
-            **kwargs,
-        )
-        return config
-
-    @classmethod
-    def for_hierarchical_training(
-        cls, completion_planner=None, **kwargs
-    ) -> "EnvironmentConfig":
-        """Create configuration optimized for hierarchical RL training.
-
-        Performance optimizations enabled for fast training.
-        """
-        config = cls(
-            augmentation=AugmentationConfig(
-                enable_augmentation=True,
-                disable_validation=True,  # Performance optimization
-                intensity="medium",
-                p=0.5,
-            ),
-            render=RenderConfig(render_mode="grayscale_array"),
-            graph=GraphConfig(),
-            reachability=ReachabilityConfig(),
-            hierarchical=HierarchicalConfig(
-                enable_hierarchical=True,
-                completion_planner=completion_planner,
-                enable_subtask_rewards=True,
-            ),
-            enable_short_episode_truncation=True,
-            **kwargs,
-        )
-        return config
-
-    @classmethod
-    def minimal(cls, **kwargs) -> "EnvironmentConfig":
-        """Create minimal configuration with all advanced features disabled.
-
-        Maximum performance - validation disabled, no augmentation.
-        """
-        config = cls(
-            augmentation=AugmentationConfig(
-                enable_augmentation=False,  # No augmentation for minimal config
-                disable_validation=True,
-                intensity="light",
-                p=0.0,
-            ),
-            render=RenderConfig(render_mode="grayscale_array"),
-            graph=GraphConfig(),
-            reachability=ReachabilityConfig(),
-            hierarchical=HierarchicalConfig(),
             **kwargs,
         )
         return config
@@ -345,7 +201,6 @@ class EnvironmentConfig:
             "eval_mode": self.eval_mode,
             "custom_map_path": self.custom_map_path,
             "enable_logging": self.enable_logging,
-            "enable_short_episode_truncation": self.enable_short_episode_truncation,
             # Frame stacking settings
             "enable_visual_frame_stacking": self.frame_stack.enable_visual_frame_stacking,
             "visual_stack_size": self.frame_stack.visual_stack_size,
@@ -363,16 +218,8 @@ class EnvironmentConfig:
             "enable_debug_overlay": self.render.enable_debug_overlay,
             # PBRS settings
             "pbrs_gamma": self.pbrs.pbrs_gamma,
-            # Hierarchical settings
-            "enable_hierarchical": self.hierarchical.enable_hierarchical,
-            "completion_planner": self.hierarchical.completion_planner,
-            "enable_subtask_rewards": self.hierarchical.enable_subtask_rewards,
-            "subtask_reward_scale": self.hierarchical.subtask_reward_scale,
-            "max_subtask_steps": self.hierarchical.max_subtask_steps,
             # Debug settings
-            "debug": self.graph.debug
-            or self.reachability.debug
-            or self.hierarchical.debug,
+            "debug": self.graph.debug or self.reachability.debug,
         }
 
 

@@ -6,17 +6,17 @@ It monitors player movement at different scales to detect when the player might 
 
 
 The episode will be truncated if:
-- The max amount of frames (20,000) has been reached
+- The dynamically calculated max amount of frames has been reached (based on level complexity)
 """
 
 from typing import Tuple
 
+from .constants import MAX_TIME_IN_FRAMES  # Keep as fallback
+from .truncation_calculator import calculate_truncation_limit
+
 
 class TruncationChecker:
-    MAX_FRAMES = 5000
-    SHORT_EPISODE_MAX_FRAMES = 2000
-
-    def __init__(self, env, enable_short_episode_truncation: bool = False):
+    def __init__(self, env):
         """Initialize the truncation checker.
 
         Args:
@@ -24,7 +24,26 @@ class TruncationChecker:
         """
         self.env = env
         self.position_history = []  # List of (x, y) tuples
-        self.enable_short_episode_truncation = enable_short_episode_truncation
+        self.current_truncation_limit = MAX_TIME_IN_FRAMES  # fallback
+
+    def set_level_truncation_limit(
+        self, surface_area: float, reachable_mine_count: int
+    ) -> int:
+        """
+        Set truncation limit for current level based on complexity.
+        Called once per level load (cached).
+
+        Args:
+            surface_area: PBRS surface area (number of reachable nodes)
+            reachable_mine_count: Number of reachable toggle mines
+
+        Returns:
+            Computed truncation limit in frames
+        """
+        self.current_truncation_limit = calculate_truncation_limit(
+            surface_area, reachable_mine_count
+        )
+        return self.current_truncation_limit
 
     def update(self, x: float, y: float) -> Tuple[bool, str]:
         """Update position history and check for stuck conditions.
@@ -38,18 +57,11 @@ class TruncationChecker:
         """
         self.position_history.append((x, y))
 
-        # Check frame limits
-        if (
-            self.enable_short_episode_truncation
-            and len(self.position_history) >= self.SHORT_EPISODE_MAX_FRAMES
-        ):
-            return True, "Max frames reached"
-
-        if len(self.position_history) >= self.MAX_FRAMES:
-            return True, "Max frames reached"
+        if len(self.position_history) >= self.current_truncation_limit:
+            return True, f"Max frames reached ({self.current_truncation_limit})"
 
         return False, ""
 
     def reset(self):
-        """Reset the truncation checker state."""
+        """Reset position history but keep truncation limit (per-level cache)."""
         self.position_history = []

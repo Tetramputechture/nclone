@@ -213,11 +213,6 @@ class PBRSPotentials:
                 entity_radius=entity_radius,
                 ninja_radius=NINJA_RADIUS,
             )
-            if np.isnan(distance) or np.isinf(distance) and distance != float("inf"):
-                print(
-                    f"[PBRS_NAN] Invalid distance value: {distance}, "
-                    f"player_pos={player_pos}, goal_pos={goal_pos}, cache_key={cache_key}"
-                )
         except Exception as e:
             raise RuntimeError(
                 f"PBRS path distance calculation failed: {e}\n"
@@ -237,12 +232,6 @@ class PBRSPotentials:
                 "If you see this error, there's a bug in the PBRS calculation flow."
             )
 
-        if np.isnan(surface_area) or surface_area <= 0:
-            logger.error(
-                f"[PBRS_NAN] Invalid surface_area: {surface_area}, "
-                f"player_pos={player_pos}, goal_pos={goal_pos}"
-            )
-
         # Handle unreachable goals
         if distance == float("inf"):
             # Goal is unreachable - return minimum potential
@@ -253,35 +242,10 @@ class PBRSPotentials:
             # Multiply by SUB_NODE_SIZE (12px) to get pixel distance equivalent
             # Result: scale grows with sqrt(area), keeping gradients consistent
             area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
-            if np.isnan(area_scale) or area_scale <= 0:
-                logger.error(
-                    f"[PBRS_NAN] Invalid area_scale: {area_scale}, "
-                    f"surface_area={surface_area}, SUB_NODE_SIZE={SUB_NODE_SIZE}, "
-                    f"player_pos={player_pos}, goal_pos={goal_pos}"
-                )
             normalized_distance = min(1.0, distance / area_scale)
-            if np.isnan(normalized_distance):
-                logger.error(
-                    f"[PBRS_NAN] NaN in normalized_distance: {normalized_distance}, "
-                    f"distance={distance}, area_scale={area_scale}, "
-                    f"player_pos={player_pos}, goal_pos={goal_pos}"
-                )
 
         potential = 1.0 - normalized_distance
         result = max(0.0, min(1.0, potential))
-
-        # Check for NaN or Inf in final result
-        if np.isnan(result) or np.isinf(result):
-            logger.error(
-                f"[PBRS_POTENTIAL_ERROR] Invalid potential: {result} (NaN or Inf). "
-                f"normalized_distance={normalized_distance}, potential={potential}, "
-                f"distance={distance}, area_scale={area_scale if distance != float('inf') else 'N/A'}, "
-                f"surface_area={surface_area}, "
-                f"player_pos={player_pos}, goal_pos={goal_pos}, cache_key={cache_key}"
-            )
-            # Return fallback value instead of propagating inf/nan
-            # Return 0.0 (minimum potential) to avoid breaking training
-            return 0.0
 
         return result
 
@@ -878,23 +842,6 @@ class PBRSCalculator:
 
         surface_area = self._cached_surface_area
 
-        # STRICT: Surface area must be positive (should never be 0 or negative)
-        if surface_area <= 0 or np.isnan(surface_area) or np.isinf(surface_area):
-            logger.error(
-                f"[PBRS_SURFACE_AREA_ERROR] Invalid surface_area: {surface_area}. "
-                f"Surface area must be positive. "
-                f"level_id={level_id}, player_pos=({state.get('player_x')}, {state.get('player_y')}), "
-                f"adjacency_size={len(adjacency) if adjacency else 0}"
-            )
-            raise RuntimeError(
-                f"PBRS surface area calculation returned invalid value: {surface_area}. "
-                "Surface area must be positive. This indicates:\n"
-                "  1. Graph building failed to find reachable nodes\n"
-                "  2. Start position is invalid\n"
-                "  3. Level has no navigable space\n"
-                f"Level ID: {level_id}, Player: ({state.get('player_x')}, {state.get('player_y')})"
-            )
-
         # Compute and cache reachable mines per level (for performance optimization)
         # Only compute if level changed or not cached yet
         if (
@@ -919,12 +866,6 @@ class PBRSCalculator:
             path_calculator=self.path_calculator,
             graph_data=graph_data,
         )
-        if np.isnan(objective_pot) or np.isinf(objective_pot):
-            logger.error(
-                f"[PBRS_NAN] Invalid objective_pot: {objective_pot} (NaN or Inf), "
-                f"player_pos=({state.get('player_x')}, {state.get('player_y')}), "
-                f"surface_area={surface_area}"
-            )
 
         # Calculate safety potentials (hazard proximity and impact risk)
         # These provide safety signals without overwhelming completion objective
@@ -935,20 +876,8 @@ class PBRSCalculator:
             graph_data=graph_data,
             reachable_mines_lookup=self._cached_reachable_mines,
         )
-        if np.isnan(hazard_pot) or np.isinf(hazard_pot):
-            logger.error(
-                f"[PBRS_NAN] Invalid hazard_pot: {hazard_pot} (NaN or Inf), "
-                f"player_pos=({state.get('player_x')}, {state.get('player_y')})"
-            )
-            hazard_pot = 0.0  # Fallback
 
         impact_pot = PBRSPotentials.impact_risk_potential(state)
-        if np.isnan(impact_pot) or np.isinf(impact_pot):
-            logger.error(
-                f"[PBRS_NAN] Invalid impact_pot: {impact_pot} (NaN or Inf), "
-                f"player_pos=({state.get('player_x')}, {state.get('player_y')})"
-            )
-            impact_pot = 0.0  # Fallback
 
         # Apply phase-specific scaling (switch vs exit) for objective potential
         if not state.get("switch_activated", False):
@@ -960,14 +889,6 @@ class PBRSCalculator:
                 PBRS_EXIT_DISTANCE_SCALE * objective_pot * PBRS_OBJECTIVE_WEIGHT
             )
 
-        # Check for invalid objective component
-        if np.isnan(objective_component) or np.isinf(objective_component):
-            logger.error(
-                f"[PBRS_COMPONENT_ERROR] Invalid objective_component: {objective_component}. "
-                f"objective_pot={objective_pot}, switch_activated={state.get('switch_activated')}"
-            )
-            objective_component = 0.0  # Fallback
-
         # Combine all potentials with their respective weights
         # Objective potential is the primary signal, safety potentials provide guidance
         combined_potential = (
@@ -976,27 +897,9 @@ class PBRSCalculator:
             + impact_pot * PBRS_IMPACT_WEIGHT
         )
 
-        # Check for invalid combined potential
-        if np.isnan(combined_potential) or np.isinf(combined_potential):
-            logger.error(
-                f"[PBRS_COMBINED_ERROR] Invalid combined_potential: {combined_potential}. "
-                f"objective_component={objective_component}, "
-                f"hazard_pot={hazard_pot}, PBRS_HAZARD_WEIGHT={PBRS_HAZARD_WEIGHT}, "
-                f"impact_pot={impact_pot}, PBRS_IMPACT_WEIGHT={PBRS_IMPACT_WEIGHT}"
-            )
-            combined_potential = 0.0  # Fallback
-
         # Clamp to reasonable range (objective component is the dominant term)
         max_potential = max(PBRS_SWITCH_DISTANCE_SCALE, PBRS_EXIT_DISTANCE_SCALE)
         result = max(0.0, min(max_potential, combined_potential))
-
-        # Final check for invalid result
-        if np.isnan(result) or np.isinf(result):
-            logger.error(
-                f"[PBRS_RESULT_ERROR] Invalid final result: {result}. "
-                f"combined_potential={combined_potential}, max_potential={max_potential}"
-            )
-            return 0.0  # Fallback to safe value
 
         return result
 

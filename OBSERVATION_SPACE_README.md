@@ -1,6 +1,6 @@
 # Observation Space Reference
 
-Multi-modal observation space for the nclone N++ environment.
+Multi-modal observation space for the nclone N++ environment (optimized for graph-based RL).
 
 ## Validation
 
@@ -18,43 +18,60 @@ python tools/validate_observations.py --episodes 5 --max-steps 200 --verbose
 
 ```python
 observation_space = SpacesDict({
-    # Visual
+    # Visual (NOT USED - disabled for graph-only training)
     'player_frame': Box(0, 255, (84, 84, 1), np.uint8),
     'global_view': Box(0, 255, (176, 100, 1), np.uint8),
     
-    # Game state
-    'game_state': Box(-1, 1, (52,), np.float32),
-    'reachability_features': Box(0, 1, (8,), np.float32),
-    'entity_positions': Box(0, 1, (6,), np.float32),
-    'switch_states': Box(0, 1, (25,), np.float32),
+    # Game state (OPTIMIZED)
+    'game_state': Box(-1, 1, (29,), np.float32),  # Only ninja physics
+    'reachability_features': Box(0, 1, (6,), np.float32),  # 4 base + 2 mine context
     
-    # Graph
-    'graph_node_feats': Box(-inf, inf, (max_nodes, 50), np.float32),
+    # Graph (ENHANCED with mine navigation features)
+    'graph_node_feats': Box(-inf, inf, (max_nodes, 21), np.float32),  # Added topological features
     'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), np.int32),
-    'graph_edge_feats': Box(0, 1, (max_edges, 6), np.float32),
+    'graph_edge_feats': Box(-inf, inf, (max_edges, 14), np.float32),  # Added geometric + mine danger
     'graph_node_mask': Box(0, 1, (max_nodes,), np.int32),
     'graph_edge_mask': Box(0, 1, (max_edges,), np.int32),
+    'graph_node_types': Box(0, 10, (max_nodes,), np.int32),
+    'graph_edge_types': Box(0, 10, (max_edges,), np.int32),
 })
 ```
 
-## Visual Observations
+## Design Principles (Phases 1-6 Optimization)
+
+### Removed Redundancy
+- **Tile encoding**: Removed 34-dim one-hot from nodes (position is sufficient)
+- **Path objectives**: Removed 15 dims from game_state (now in graph)
+- **Mine features**: Removed 8 dims from game_state (now in graph nodes/edges)
+- **Progress features**: Removed 3 dims from game_state (computed from graph)
+- **Sequential goals**: Removed 3 dims from game_state (in graph structure)
+- **Action death probabilities**: Removed 6 dims (no expensive physics precomputation)
+- **Entity positions**: Removed separate 6-dim vector (in graph nodes)
+- **Switch states**: Removed separate 25-dim vector (in graph nodes)
+
+### Graph-Centric Design
+All spatial, entity, and mine information consolidated into comprehensive graph representation with explicit mine state encoding and geometric features for navigation.
+
+## Visual Observations (NOT USED)
+
+Visual modalities are available but not used for training. The agent learns purely from graph structure and state vectors.
 
 ### `player_frame`
 `(84, 84, 1)` uint8, range [0, 255]
 
-84×84 grayscale frame centered on ninja. Covers approximately 1/6 of full level.
+84×84 grayscale frame centered on ninja.
 
 ### `global_view`
 `(176, 100, 1)` uint8, range [0, 255]
 
-176×100 grayscale frame showing full level at 1/6 resolution (downsampled from 1056×600).
+176×100 grayscale frame showing full level at 1/6 resolution.
 
 ## State Vectors
 
 ### `game_state`
-`(70,)` float32, range [-1, 1] or [0, 1]
+`(29,)` float32, range [-1, 1] or [0, 1]
 
-Combined state vector: ninja physics (29) + path-aware objectives (15) + mine features (8) + progress (3) + sequential goal (3) + mine death probabilities (6) + terminal velocity death probabilities (6).
+**Only contains ninja physics state** - all other features moved to graph.
 
 **Indices 0-28: Ninja Physics State (29 features)**
 - `[0]` Velocity magnitude (normalized)
@@ -77,110 +94,52 @@ Combined state vector: ninja physics (29) + path-aware objectives (15) + mine fe
 - `[27]` Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
 - `[28]` Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
 
-**Indices 29-43: Path-Aware Objectives (15 features)**
-- `[29]` Exit switch collected {0, 1}
-- `[30:32]` Exit switch relative position (x, y) and path distance
-- `[33:35]` Exit door relative position (x, y) and path distance
-- `[36:43]` Nearest locked door: present, switch_collected, switch_rel (x, y), switch_path_dist, door_rel (x, y), door_path_dist
-
-**Indices 44-51: Mine Features (8 features)**
-- `[44:45]` Nearest mine relative position (x, y)
-- `[46]` Mine state {-1, 0, 0.5, 1} (deadly/safe/unknown)
-- `[47]` Path distance to nearest mine
-- `[48]` Deadly mines nearby count (normalized)
-- `[49]` Mine state certainty [0, 1] (based on distance to nearest mine)
-- `[50]` Safe mines nearby count (normalized)
-- `[51]` Mine avoidance difficulty [0, 1] (spatial complexity metric)
-
-**Indices 52-54: Progress Features (3 features)**
-- `[52]` Current objective type (normalized)
-- `[53]` Objectives completed ratio [0, 1]
-- `[54]` Total path distance remaining (normalized)
-
-**Indices 55-57: Sequential Goal Features (3 features)**
-- `[55]` Goal phase {-1, 0, 1} (pre-switch, post-switch, at-door)
-- `[56]` Switch priority {0, 1}
-- `[57]` Door priority {0, 1}
-
-**Indices 58-63: Mine Death Probabilities (6 features)**
-
-Privileged information from physics simulation - probability of mine collision for each action.
-
-- `[58]` NOOP death probability [0.0-1.0]
-- `[59]` LEFT death probability [0.0-1.0]
-- `[60]` RIGHT death probability [0.0-1.0]
-- `[61]` JUMP death probability [0.0-1.0]
-- `[62]` JUMP+LEFT death probability [0.0-1.0]
-- `[63]` JUMP+RIGHT death probability [0.0-1.0]
-
-Computed via `MineDeathPredictor.calculate_death_probability()` using 3-tier hybrid approach (spatial filter → distance check → physics simulation). Defaults to 0.0 when mine predictor is unavailable.
-
-**Indices 64-69: Terminal Velocity Death Probabilities (6 features)**
-
-Privileged information from physics simulation - probability of terminal impact death for each action.
-
-- `[64]` NOOP terminal death probability [0.0-1.0]
-- `[65]` LEFT terminal death probability [0.0-1.0]
-- `[66]` RIGHT terminal death probability [0.0-1.0]
-- `[67]` JUMP terminal death probability [0.0-1.0]
-- `[68]` JUMP+LEFT terminal death probability [0.0-1.0]
-- `[69]` JUMP+RIGHT terminal death probability [0.0-1.0]
-
-Computed via `TerminalVelocityPredictor` using reachability-optimized lookup table for fast impact trajectory prediction. Defaults to 0.0 when predictor is unavailable.
-
 ### `reachability_features`
-`(8,)` float32, range [0, 1]
-
-Graph-based path planning features using adjacency graph.
-
-- `[0]` Area ratio (reachable / total)
-- `[1]` Distance to next objective (normalized, inverted) - uses objective hierarchy
-- `[2]` Exit distance (normalized, inverted)
-- `[3]` Objective path quality (path distance / Euclidean ratio)
-- `[4]` Deadly mines on optimal path (normalized count)
-- `[5]` Connectivity score (edge density)
-- `[6]` Next objective reachable {0, 1}
-- `[7]` Full completion path exists {0, 1} (switch→door→exit)
-
-### `entity_positions`
 `(6,)` float32, range [0, 1]
 
-Key entity positions normalized to [0, 1].
+Graph-based reachability features with mine context.
 
-- `[0:2]` Ninja (x, y)
-- `[2:4]` Switch (x, y)
-- `[4:6]` Exit (x, y)
+**Base Features (4)**
+- `[0]` Reachable area ratio [0, 1] (reachable / total graph nodes)
+- `[1]` Distance to nearest switch [0, 1] (normalized, inverted)
+- `[2]` Distance to exit [0, 1] (normalized, inverted)
+- `[3]` Exit reachable flag {0, 1}
 
-### `switch_states`
-`(25,)` float32, range [0, 1]
-
-Locked door system state (5 doors × 5 features).
-
-Per-door features (5 each):
-- `[0:2]` Switch position (x, y)
-- `[2:4]` Door position (x, y)
-- `[4]` Collected/open state {0, 1}
-
-Padded with zeros for levels with <5 locked doors.
-
-```python
-# Door indexing
-door_0 = switch_states[0:5]
-door_1 = switch_states[5:10]
-door_2 = switch_states[10:15]
-```
+**Mine Context (2)**
+- `[4]` Total mines normalized [0, 1] (count / 256 max)
+- `[5]` Deadly mine ratio [0, 1] (deadly / total mines)
 
 ## Graph Observations
 
-### `graph_node_feats`
-`(max_nodes, 50)` float32
+See [GRAPH_FEATURES.md](docs/GRAPH_FEATURES.md) for detailed feature descriptions.
 
-50-dimensional node features:
-- Spatial (3): position (x, y) + resolution level
-- Type (7): one-hot node type (EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR)
-- Entity (5): entity-specific attributes
-- Tile (34): tile type one-hot (0-33, glitched tiles 34-37 treated as 0)
-- Reachability (1): connectivity from flood-fill
+### `graph_node_feats`
+`(max_nodes, 21)` float32
+
+21-dimensional node features with mine-specific and topological information:
+
+**Spatial (2)**: x, y position normalized
+
+**Type (7)**: One-hot node type (EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR)
+
+**Mine-Specific (3)**: 
+- is_mine: Binary flag
+- mine_state: -1.0 (deadly), 0.0 (transitioning), +1.0 (safe)
+- mine_radius: Normalized collision radius
+
+**Entity State (2)**:
+- entity_active: For switches/doors
+- door_closed: For locked doors
+
+**Reachability (1)**: Flood-fill reachability from ninja
+
+**Topological (6)**:
+- in_degree: Normalized in-degree
+- out_degree: Normalized out-degree
+- objective_dx: X-distance to objective
+- objective_dy: Y-distance to objective
+- objective_hops: Graph hops to objective
+- betweenness: Centrality score
 
 ### `graph_edge_index`
 `(2, max_edges)` int32
@@ -188,9 +147,40 @@ door_2 = switch_states[10:15]
 COO format edge list: `[[sources], [targets]]`
 
 ### `graph_edge_feats`
-`(max_edges, 6)` float32
+`(max_edges, 14)` float32
 
-6-dimensional edge features (type, distance, connectivity).
+14-dimensional edge features with geometric and mine danger information:
+
+**Edge Type (4)**: One-hot (ADJACENT, REACHABLE, FUNCTIONAL, BLOCKED)
+
+**Connectivity (2)**:
+- weight: Traversal weight
+- reachability_confidence: From flood-fill system
+
+**Geometric (4)**:
+- dx_norm: Normalized x-direction [-1, 1]
+- dy_norm: Normalized y-direction [-1, 1]
+- distance: Normalized Euclidean distance [0, 1]
+- movement_category: [0, 1] (0=horizontal, 0.33=mixed, 0.66=upward, 1.0=downward)
+
+**Mine Danger (4)**:
+- nearest_mine_distance: Distance to nearest mine [0, 1]
+- passes_deadly_mine: Binary flag if edge passes through deadly mine
+- mine_threat_level: Aggregate danger score [0, 1]
+- num_mines_nearby: Count of mines near edge [0, 1]
 
 ### `graph_node_mask` / `graph_edge_mask`
 Binary masks {0, 1} indicating valid nodes/edges (vs padding).
+
+### `graph_node_types` / `graph_edge_types`
+Integer type IDs for each node/edge.
+
+## Performance Characteristics
+
+- **Graph building**: <200ms per level (target maintained)
+- **Node features**: 21 dims (down from 50) - faster processing
+- **Edge features**: 14 dims (up from 6) - richer information
+- **Game state**: 29 dims (down from 64) - minimal state MLP
+- **Total observation**: Graph-centric with no redundancy
+
+All geometric and mine danger computations are vectorized using numpy for performance.

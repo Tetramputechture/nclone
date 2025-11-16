@@ -33,23 +33,17 @@ from ..graph.reachability.pathfinding_utils import (
 from ..constants.physics_constants import (
     MAP_TILE_WIDTH,
     MAP_TILE_HEIGHT,
-    LEVEL_WIDTH_PX,
-    LEVEL_HEIGHT_PX,
     NINJA_RADIUS,
 )
 from collections import deque
-from ..constants.entity_types import EntityType
 from ..gym_environment.constants import (
     LEVEL_DIAGONAL,
     NINJA_STATE_DIM,
-    PATH_AWARE_OBJECTIVES_DIM,
-    MINE_FEATURES_DIM,
-    PROGRESS_FEATURES_DIM,
-    SEQUENTIAL_GOAL_DIM,
-    ACTION_DEATH_PROBABILITIES_DIM,
-    GAME_STATE_CHANNELS,
-    ENTITY_POSITIONS_DIM,
+    MAX_LOCKED_DOORS,
+    FEATURES_PER_DOOR,
+    SWITCH_STATES_DIM,
 )
+from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 
 
 def map_input_to_action(input_byte: int) -> int:
@@ -104,6 +98,7 @@ class ReplayExecutor:
         self,
         observation_config: Optional[Dict[str, Any]] = None,
         render_mode: str = "grayscale_array",
+        enable_rendering: bool = False,
     ):
         """Initialize replay executor.
 
@@ -113,6 +108,7 @@ class ReplayExecutor:
         """
         self.observation_config = observation_config or {}
         self.render_mode = render_mode
+        self.enable_rendering = enable_rendering
 
         # Create headless environment
         self.nplay_headless = NPlayHeadless(
@@ -121,11 +117,13 @@ class ReplayExecutor:
             enable_logging=False,
             enable_debug_overlay=False,
             seed=42,  # Fixed seed for determinism
+            enable_rendering=enable_rendering,
         )
 
         # Create observation processor
         self.obs_processor = ObservationProcessor(
             enable_augmentation=False,  # No augmentation for replay
+            enable_visual_processing=False,
         )
 
         # Initialize graph builder and path calculator for reachability features
@@ -148,16 +146,6 @@ class ReplayExecutor:
 
         # Cache for reachable area scale (per level ID)
         self._reachable_area_scale_cache: Dict[str, float] = {}
-
-        # Pre-allocate observation buffers for 52-feature game_state
-        self._game_state_buffer = np.zeros(GAME_STATE_CHANNELS, dtype=np.float32)
-        self._path_aware_objectives_buffer = np.zeros(
-            PATH_AWARE_OBJECTIVES_DIM, dtype=np.float32
-        )
-        self._mine_features_buffer = np.zeros(MINE_FEATURES_DIM, dtype=np.float32)
-        self._progress_features_buffer = np.zeros(
-            PROGRESS_FEATURES_DIM, dtype=np.float32
-        )
 
     def _safe_path_distance(
         self,
@@ -390,9 +378,6 @@ class ReplayExecutor:
                     level_data, adjacency, self._cached_graph_data
                 )
 
-            # Initialize mine death predictor after graph is built
-            self._build_mine_death_predictor()
-
         observations = []
 
         # Execute each input frame
@@ -435,14 +420,11 @@ class ReplayExecutor:
         - switch_x, switch_y: exit switch position
         - exit_door_x, exit_door_y: exit door position
         - switch_activated: whether switch has been activated
-        - game_state: ninja state (GAME_STATE_CHANNELS features)
-        - reachability_features: 8-dimensional reachability vector
+        - game_state: ninja state (NINJA_STATE_DIM=29 features, physics only)
+        - reachability_features: 6-dimensional reachability vector
         - player_won: whether the player has won
         - player_dead: whether the player has died
         """
-        # Render current frame
-        screen = self.nplay_headless.render()
-
         # Get ninja position
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
 
@@ -451,108 +433,15 @@ class ReplayExecutor:
         exit_door_x, exit_door_y = self._get_exit_door_position()
         switch_activated = self._is_switch_activated()
 
-        # Build entity_positions array: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
-        from ..gym_environment.constants import LEVEL_WIDTH, LEVEL_HEIGHT
+        # Get game state (29-dim ninja physics only)
+        game_state = self.nplay_headless.get_ninja_state()
+        if not isinstance(game_state, np.ndarray):
+            game_state = np.array(game_state, dtype=np.float32)
 
-        entity_positions = np.zeros(ENTITY_POSITIONS_DIM, dtype=np.float32)
-        entity_positions[0] = ninja_x / LEVEL_WIDTH
-        entity_positions[1] = ninja_y / LEVEL_HEIGHT
-        entity_positions[2] = switch_x / LEVEL_WIDTH if switch_x > 0 else 0.0
-        entity_positions[3] = switch_y / LEVEL_HEIGHT if switch_y > 0 else 0.0
-        entity_positions[4] = exit_door_x / LEVEL_WIDTH if exit_door_x > 0 else 0.0
-        entity_positions[5] = exit_door_y / LEVEL_HEIGHT if exit_door_y > 0 else 0.0
+        # Ensure correct dimension
+        game_state = game_state[:NINJA_STATE_DIM].astype(np.float32)
 
-        # Extract entities for feature computation
-        entities = []
-        locked_doors = []
-        if hasattr(self.nplay_headless.sim, "entity_dic"):
-            toggle_mines = self.nplay_headless.sim.entity_dic.get(
-                EntityType.TOGGLE_MINE, []
-            )
-            entities.extend(toggle_mines)
-
-            toggled_mines = self.nplay_headless.sim.entity_dic.get(
-                EntityType.TOGGLE_MINE_TOGGLED, []
-            )
-            entities.extend(toggled_mines)
-
-            locked_doors = self.nplay_headless.locked_doors()
-
-        # Get base game state (29 features)
-        base_game_state = self.nplay_headless.get_ninja_state()
-        if not isinstance(base_game_state, np.ndarray):
-            base_game_state = np.array(base_game_state, dtype=np.float32)
-
-        # Extend game_state to 52 features
-        self._game_state_buffer[:NINJA_STATE_DIM] = base_game_state[:NINJA_STATE_DIM]
-
-        # Verify graph and path_calculator are available
-        if self._cached_graph_data is None or self._cached_level_data is None:
-            raise RuntimeError(
-                "Graph and level data not cached. Call execute_replay() first."
-            )
-        if self.path_calculator is None:
-            raise RuntimeError("Path calculator not initialized.")
-
-        # Build observation dict for feature computation
-        obs_for_features = {
-            "entity_positions": entity_positions,
-            "entities": entities,
-            "locked_doors": locked_doors,
-            "switch_activated": switch_activated,
-        }
-
-        # Compute additional features
-        self._compute_path_aware_objectives(
-            obs_for_features, self._path_aware_objectives_buffer
-        )
-        self._extract_mine_features(obs_for_features, self._mine_features_buffer)
-        self._compute_progress_features(
-            obs_for_features, self._progress_features_buffer
-        )
-
-        # Concatenate features into game_state_buffer
-        idx = NINJA_STATE_DIM
-        self._game_state_buffer[idx : idx + PATH_AWARE_OBJECTIVES_DIM] = (
-            self._path_aware_objectives_buffer
-        )
-        idx += PATH_AWARE_OBJECTIVES_DIM
-        self._game_state_buffer[idx : idx + MINE_FEATURES_DIM] = (
-            self._mine_features_buffer
-        )
-        idx += MINE_FEATURES_DIM
-        self._game_state_buffer[idx : idx + PROGRESS_FEATURES_DIM] = (
-            self._progress_features_buffer
-        )
-        idx += PROGRESS_FEATURES_DIM
-
-        # NEW: Sequential goal features
-        if hasattr(self.nplay_headless, "get_sequential_goal_features"):
-            seq_features = self.nplay_headless.get_sequential_goal_features()
-            self._game_state_buffer[idx : idx + SEQUENTIAL_GOAL_DIM] = seq_features
-        else:
-            self._game_state_buffer[idx : idx + SEQUENTIAL_GOAL_DIM] = 0.0
-        idx += SEQUENTIAL_GOAL_DIM
-
-        ninja = self.nplay_headless.sim.ninja
-        if (
-            hasattr(ninja, "mine_death_predictor")
-            and ninja.mine_death_predictor is not None
-        ):
-            death_prob_result = ninja.mine_death_predictor.calculate_death_probability(
-                frames_to_simulate=10
-            )
-            self._game_state_buffer[idx : idx + ACTION_DEATH_PROBABILITIES_DIM] = (
-                death_prob_result.action_death_probs
-            )
-        else:
-            print("No mine death predictor found")
-            self._game_state_buffer[idx : idx + ACTION_DEATH_PROBABILITIES_DIM] = 0.0
-
-        # Get final 64-feature game_state (was 58)
-        game_state = np.array(self._game_state_buffer, copy=True)
-
-        # Compute reachability features
+        # Compute reachability features (6-dim)
         reachability_features = self._compute_reachability_features(
             ninja_x, ninja_y, switch_x, switch_y, exit_door_x, exit_door_y
         )
@@ -571,9 +460,11 @@ class ReplayExecutor:
         # Get graph observations matching GraphMixin output
         graph_obs = self._get_graph_observations()
 
+        # Get locked doors for switch states
+        locked_doors = self.nplay_headless.locked_doors()
+
         # Build complete raw observation
         obs = {
-            "screen": screen,
             "player_x": ninja_x,
             "player_y": ninja_y,
             "switch_x": switch_x,
@@ -585,13 +476,25 @@ class ReplayExecutor:
             "reachability_features": reachability_features,
             "player_won": player_won,
             "player_dead": player_dead,
-            "entity_positions": entity_positions,
-            "entities": entities,
             "locked_doors": locked_doors,
         }
 
+        if self.enable_rendering:
+            obs["screen"] = self.nplay_headless.render()
+
         # Add graph observations to observation dict
         obs.update(graph_obs)
+
+        # Add switch states (for hierarchical PPO and other components)
+        obs["switch_states_dict"] = self._get_switch_states_from_env()
+        obs["switch_states"] = self._build_switch_states_array(obs)
+
+        # Add exit features and locked door features for objective attention
+        obs["exit_features"] = self._compute_exit_features()
+        obs["locked_door_features"] = self._compute_locked_door_features()
+        obs["num_locked_doors"] = np.array(
+            [len(obs.get("locked_doors", []))], dtype=np.int32
+        )
 
         return obs
 
@@ -606,6 +509,274 @@ class ReplayExecutor:
     def _is_switch_activated(self) -> bool:
         """Check if exit switch is activated."""
         return self.nplay_headless.exit_switch_activated()
+
+    def _get_switch_states_from_env(self) -> Dict[str, bool]:
+        """Get switch states from environment.
+
+        Returns dictionary mapping switch IDs to their activation states.
+        Based on BaseNppEnvironment._get_switch_states_from_env.
+        """
+        switch_states = {}
+
+        # Check locked door switches
+        locked_doors = self.nplay_headless.locked_doors()
+        for i, locked_door in enumerate(locked_doors):
+            # Check if door is open (switch activated)
+            is_activated = not getattr(locked_door, "active", True)
+
+            # Store switch state
+            switch_states[f"locked_door_{i}"] = is_activated
+
+            # Store switch part state (same as door for locked doors)
+            switch_states[f"locked_door_switch_{i}"] = is_activated
+
+        return switch_states
+
+    def _extract_locked_door_positions(self, locked_door) -> tuple:
+        """Extract positions from locked door entity.
+
+        Returns (switch_x, switch_y, door_x, door_y, switch_collected).
+        Based on NppEnvironment._extract_locked_door_positions.
+        """
+        # Switch position (entity position)
+        switch_x = getattr(locked_door, "xpos", 0.0)
+        switch_y = getattr(locked_door, "ypos", 0.0)
+
+        # Door position (segment center)
+        segment = getattr(locked_door, "segment", None)
+        if segment:
+            door_x = (segment.x1 + segment.x2) * 0.5
+            door_y = (segment.y1 + segment.y2) * 0.5
+        else:
+            door_x, door_y = switch_x, switch_y
+
+        # Switch collected (door open) - active=False means collected
+        switch_collected = 1.0 if not getattr(locked_door, "active", True) else 0.0
+
+        return switch_x, switch_y, door_x, door_y, switch_collected
+
+    def _build_switch_states_array(self, obs: Dict[str, Any]) -> np.ndarray:
+        """Build switch states array with detailed locked door information.
+
+        Format per door (5 features):
+        - switch_x_norm: Normalized X position of switch (0-1)
+        - switch_y_norm: Normalized Y position of switch (0-1)
+        - door_x_norm: Normalized X position of door (0-1)
+        - door_y_norm: Normalized Y position of door (0-1)
+        - collected: 1.0 if switch collected (door open), 0.0 otherwise (door closed)
+
+        Returns:
+            Array of shape (SWITCH_STATES_DIM,) for up to MAX_LOCKED_DOORS
+
+        Based on NppEnvironment._build_switch_states_array.
+        """
+        switch_states_array = np.zeros(SWITCH_STATES_DIM, dtype=np.float32)
+        locked_doors = obs.get("locked_doors", [])
+
+        for i, locked_door in enumerate(locked_doors[:MAX_LOCKED_DOORS]):
+            switch_x, switch_y, door_x, door_y, switch_collected = (
+                self._extract_locked_door_positions(locked_door)
+            )
+
+            # Normalize positions to [0, 1]
+            base_idx = i * FEATURES_PER_DOOR
+            switch_states_array[base_idx + 0] = np.clip(
+                switch_x / LEVEL_WIDTH_PX, 0.0, 1.0
+            )
+            switch_states_array[base_idx + 1] = np.clip(
+                switch_y / LEVEL_HEIGHT_PX, 0.0, 1.0
+            )
+            switch_states_array[base_idx + 2] = np.clip(
+                door_x / LEVEL_WIDTH_PX, 0.0, 1.0
+            )
+            switch_states_array[base_idx + 3] = np.clip(
+                door_y / LEVEL_HEIGHT_PX, 0.0, 1.0
+            )
+            switch_states_array[base_idx + 4] = switch_collected
+
+        return switch_states_array
+
+    def _compute_exit_features(self) -> np.ndarray:
+        """
+        Compute features for exit switch and exit door for objective attention.
+
+        Returns (7,) array containing:
+        [switch_x, switch_y, switch_activated, switch_path_dist, door_x, door_y, door_path_dist]
+
+        All positions are relative to ninja and normalized to [-1, 1].
+        Path distances are normalized to [0, 1].
+        """
+        from ..constants.physics_constants import (
+            EXIT_SWITCH_RADIUS,
+            EXIT_DOOR_RADIUS,
+        )
+
+        features = np.zeros(7, dtype=np.float32)
+
+        # Get ninja position
+        ninja_x, ninja_y = self.nplay_headless.ninja_position()
+
+        # Get exit switch position and status
+        switch_x, switch_y = self._get_switch_position()
+        switch_activated = self._is_switch_activated()
+
+        # Relative position normalized to [-1, 1]
+        rel_switch_x = (switch_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
+        rel_switch_y = (switch_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
+        features[0] = np.clip(rel_switch_x, -1.0, 1.0)
+        features[1] = np.clip(rel_switch_y, -1.0, 1.0)
+
+        # Switch activation status (0.0 = not collected, 1.0 = collected)
+        features[2] = 1.0 if switch_activated else 0.0
+
+        # Path distance to switch
+        if self._cached_graph_data and self.path_calculator:
+            adjacency = self._cached_graph_data.get("adjacency")
+            if adjacency:
+                switch_path_dist = self._safe_path_distance(
+                    (int(ninja_x), int(ninja_y)),
+                    (int(switch_x), int(switch_y)),
+                    adjacency,
+                    "exit_switch",
+                    level_data=self._cached_level_data,
+                    graph_data=self._cached_graph_data,
+                    entity_radius=EXIT_SWITCH_RADIUS,
+                )
+
+                if switch_path_dist != float("inf"):
+                    # Normalize by area scale
+                    area_scale = self._get_area_scale()
+                    features[3] = np.clip(switch_path_dist / area_scale, 0.0, 1.0)
+
+        # Get exit door position
+        door_x, door_y = self._get_exit_door_position()
+
+        # Relative position normalized to [-1, 1]
+        rel_door_x = (door_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
+        rel_door_y = (door_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
+        features[4] = np.clip(rel_door_x, -1.0, 1.0)
+        features[5] = np.clip(rel_door_y, -1.0, 1.0)
+
+        # Path distance to door
+        if self._cached_graph_data and self.path_calculator:
+            adjacency = self._cached_graph_data.get("adjacency")
+            if adjacency:
+                door_path_dist = self._safe_path_distance(
+                    (int(ninja_x), int(ninja_y)),
+                    (int(door_x), int(door_y)),
+                    adjacency,
+                    "exit_door",
+                    level_data=self._cached_level_data,
+                    graph_data=self._cached_graph_data,
+                    entity_radius=EXIT_DOOR_RADIUS,
+                )
+
+                if door_path_dist != float("inf"):
+                    area_scale = self._get_area_scale()
+                    features[6] = np.clip(door_path_dist / area_scale, 0.0, 1.0)
+
+        return features
+
+    def _compute_locked_door_features(self) -> np.ndarray:
+        """
+        Compute features for all locked doors (up to 16) for objective attention.
+
+        Returns (16, 8) array where each row contains:
+        [switch_x, switch_y, switch_collected, switch_path_dist, door_x, door_y, door_open, door_path_dist]
+
+        Rows beyond actual door count are zero-padded.
+        """
+        from ..constants.physics_constants import LOCKED_DOOR_SWITCH_RADIUS
+        from ..gym_environment.precomputed_door_features import (
+            MAX_LOCKED_DOORS_ATTENTION,
+            LOCKED_DOOR_FEATURES_DIM,
+        )
+
+        features = np.zeros(
+            (MAX_LOCKED_DOORS_ATTENTION, LOCKED_DOOR_FEATURES_DIM), dtype=np.float32
+        )
+
+        # Get locked doors
+        locked_doors = self.nplay_headless.locked_doors()
+
+        if not locked_doors:
+            return features
+
+        # Get ninja position
+        ninja_x, ninja_y = self.nplay_headless.ninja_position()
+
+        # Get area scale for normalization
+        area_scale = self._get_area_scale()
+
+        # Process each locked door
+        for idx, locked_door in enumerate(locked_doors[:MAX_LOCKED_DOORS_ATTENTION]):
+            switch_x, switch_y, door_x, door_y, switch_collected = (
+                self._extract_locked_door_positions(locked_door)
+            )
+
+            # Switch features
+            rel_switch_x = (switch_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
+            rel_switch_y = (switch_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
+            features[idx, 0] = np.clip(rel_switch_x, -1.0, 1.0)
+            features[idx, 1] = np.clip(rel_switch_y, -1.0, 1.0)
+            features[idx, 2] = switch_collected
+
+            # Switch path distance
+            if self._cached_graph_data and self.path_calculator:
+                adjacency = self._cached_graph_data.get("adjacency")
+                if adjacency:
+                    switch_path_dist = self._safe_path_distance(
+                        (int(ninja_x), int(ninja_y)),
+                        (int(switch_x), int(switch_y)),
+                        adjacency,
+                        f"locked_switch_{idx}",
+                        level_data=self._cached_level_data,
+                        graph_data=self._cached_graph_data,
+                        entity_radius=LOCKED_DOOR_SWITCH_RADIUS,
+                    )
+
+                    if switch_path_dist != float("inf"):
+                        features[idx, 3] = np.clip(
+                            switch_path_dist / area_scale, 0.0, 1.0
+                        )
+
+            # Door features
+            rel_door_x = (door_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
+            rel_door_y = (door_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
+            features[idx, 4] = np.clip(rel_door_x, -1.0, 1.0)
+            features[idx, 5] = np.clip(rel_door_y, -1.0, 1.0)
+            features[idx, 6] = switch_collected  # door_open = switch_collected
+
+            # Door path distance (same as switch for locked doors)
+            features[idx, 7] = features[idx, 3]
+
+        return features
+
+    def _get_area_scale(self) -> float:
+        """Get area scale for distance normalization."""
+        # Check if we have cached area scale for this level
+        if (
+            self._cached_level_id
+            and self._cached_level_id in self._reachable_area_scale_cache
+        ):
+            return self._reachable_area_scale_cache[self._cached_level_id]
+
+        # Compute from graph if available
+        if self._cached_graph_data:
+            adjacency = self._cached_graph_data.get("adjacency")
+            if adjacency:
+                # Estimate reachable area from graph
+                reachable_nodes = len(adjacency)
+                if reachable_nodes > 0:
+                    area_scale = np.sqrt(float(reachable_nodes)) * SUB_NODE_SIZE
+                    if self._cached_level_id:
+                        self._reachable_area_scale_cache[self._cached_level_id] = (
+                            area_scale
+                        )
+                    return area_scale
+
+        # Fallback to level diagonal
+        return LEVEL_DIAGONAL
 
     def _extract_level_data(self) -> LevelData:
         """
@@ -653,17 +824,15 @@ class ReplayExecutor:
         exit_door_y: float,
     ) -> np.ndarray:
         """
-        Compute 8-dimensional reachability features using adjacency graph.
+        Compute 6-dimensional reachability features using adjacency graph.
 
-        Features:
+        Features (4 base + 2 mine context):
         1. Reachable area ratio (0-1)
-        2. Distance to nearest switch (normalized)
-        3. Distance to exit (normalized)
-        4. Reachable switches count (normalized)
-        5. Reachable hazards count (normalized)
-        6. Connectivity score (0-1)
-        7. Exit reachable flag (0-1)
-        8. Switch-to-exit path exists (0-1)
+        2. Distance to nearest switch (normalized, inverted)
+        3. Distance to exit (normalized, inverted)
+        4. Exit reachable flag (0-1)
+        5. Total mines normalized (0-1)
+        6. Deadly mine ratio (0-1)
         """
         # Use cached graph and level data (built once per replay)
         if self._cached_graph_data is None or self._cached_level_data is None:
@@ -686,387 +855,6 @@ class ReplayExecutor:
             self._cached_level_data,
             ninja_pos,
             self.path_calculator,
-        )
-
-        return features
-
-    def _compute_path_aware_objectives(
-        self, obs: Dict[str, Any], buffer: np.ndarray
-    ) -> np.ndarray:
-        """
-        Compute path-aware objective features using graph-based pathfinding.
-
-        Returns PATH_AWARE_OBJECTIVES_DIM (15) features:
-        - Exit switch (4): collected, rel_x, rel_y, path_distance
-        - Exit door (3): rel_x, rel_y, path_distance
-        - Nearest locked door (8): present, switch_collected, switch_rel_x, switch_rel_y,
-          switch_path_distance, door_rel_x, door_rel_y, door_path_distance
-        """
-        features = buffer
-        features.fill(0.0)
-
-        adjacency = self._cached_graph_data.get("adjacency")
-        if adjacency is None or len(adjacency) == 0:
-            return features
-
-        entity_positions = obs.get(
-            "entity_positions", np.zeros(ENTITY_POSITIONS_DIM, dtype=np.float32)
-        )
-        ninja_pos = (
-            int(entity_positions[0] * LEVEL_WIDTH_PX),
-            int(entity_positions[1] * LEVEL_HEIGHT_PX),
-        )
-
-        # Exit switch [0-3]
-        from ..constants.physics_constants import EXIT_SWITCH_RADIUS
-
-        exit_switch_collected = 1.0 if obs.get("switch_activated", False) else 0.0
-        exit_switch_pos = (
-            int(entity_positions[2] * LEVEL_WIDTH_PX),
-            int(entity_positions[3] * LEVEL_HEIGHT_PX),
-        )
-        rel_switch_x = (exit_switch_pos[0] - ninja_pos[0]) / (LEVEL_WIDTH_PX / 2)
-        rel_switch_y = (exit_switch_pos[1] - ninja_pos[1]) / (LEVEL_HEIGHT_PX / 2)
-        switch_path_dist = self._safe_path_distance(
-            ninja_pos,
-            exit_switch_pos,
-            adjacency,
-            "exit_switch",
-            level_data=self._cached_level_data,
-            graph_data=self._cached_graph_data,
-            entity_radius=EXIT_SWITCH_RADIUS,
-        )
-        features[0] = exit_switch_collected
-        features[1] = np.clip(rel_switch_x, -1.0, 1.0)
-        features[2] = np.clip(rel_switch_y, -1.0, 1.0)
-        area_scale = self._get_reachable_area_scale()
-        features[3] = np.clip(switch_path_dist / area_scale, 0.0, 1.0)
-
-        # Exit door [4-6]
-        from ..constants.physics_constants import EXIT_DOOR_RADIUS
-
-        exit_door_pos = (
-            int(entity_positions[4] * LEVEL_WIDTH_PX),
-            int(entity_positions[5] * LEVEL_HEIGHT_PX),
-        )
-        rel_door_x = (exit_door_pos[0] - ninja_pos[0]) / (LEVEL_WIDTH_PX / 2)
-        rel_door_y = (exit_door_pos[1] - ninja_pos[1]) / (LEVEL_HEIGHT_PX / 2)
-        door_path_dist = self._safe_path_distance(
-            ninja_pos,
-            exit_door_pos,
-            adjacency,
-            "exit_door",
-            level_data=self._cached_level_data,
-            graph_data=self._cached_graph_data,
-            entity_radius=EXIT_DOOR_RADIUS,
-        )
-        features[4] = np.clip(rel_door_x, -1.0, 1.0)
-        features[5] = np.clip(rel_door_y, -1.0, 1.0)
-        features[6] = np.clip(door_path_dist / area_scale, 0.0, 1.0)
-
-        # Nearest locked door [7-14]
-        locked_doors = obs.get("locked_doors", [])
-        if locked_doors:
-            nearest_door = None
-            nearest_door_dist = float("inf")
-
-            for door in locked_doors:
-                if getattr(door, "active", True):
-                    door_segment = getattr(door, "segment", None)
-                    if door_segment and hasattr(door_segment, "p1"):
-                        door_x = (door_segment.p1[0] + door_segment.p2[0]) / 2.0
-                        door_y = (door_segment.p1[1] + door_segment.p2[1]) / 2.0
-                    else:
-                        door_x = getattr(door, "xpos", 0.0)
-                        door_y = getattr(door, "ypos", 0.0)
-
-                    euclidean_dist = np.sqrt(
-                        (door_x - ninja_pos[0]) ** 2 + (door_y - ninja_pos[1]) ** 2
-                    )
-                    if euclidean_dist < nearest_door_dist:
-                        nearest_door_dist = euclidean_dist
-                        nearest_door = door
-
-            if nearest_door is not None:
-                features[7] = 1.0
-                features[8] = 0.0 if getattr(nearest_door, "active", True) else 1.0
-
-                switch_x = getattr(
-                    nearest_door, "sw_xpos", getattr(nearest_door, "xpos", 0.0)
-                )
-                switch_y = getattr(
-                    nearest_door, "sw_ypos", getattr(nearest_door, "ypos", 0.0)
-                )
-                from ..constants.physics_constants import LOCKED_DOOR_SWITCH_RADIUS
-
-                switch_pos = (int(switch_x), int(switch_y))
-                rel_switch_x = (switch_pos[0] - ninja_pos[0]) / (LEVEL_WIDTH_PX / 2)
-                rel_switch_y = (switch_pos[1] - ninja_pos[1]) / (LEVEL_HEIGHT_PX / 2)
-                switch_path_dist = self._safe_path_distance(
-                    ninja_pos,
-                    switch_pos,
-                    adjacency,
-                    "locked_door_switch",
-                    level_data=self._cached_level_data,
-                    graph_data=self._cached_graph_data,
-                    entity_radius=LOCKED_DOOR_SWITCH_RADIUS,
-                )
-                features[9] = np.clip(rel_switch_x, -1.0, 1.0)
-                features[10] = np.clip(rel_switch_y, -1.0, 1.0)
-                features[11] = np.clip(switch_path_dist / area_scale, 0.0, 1.0)
-
-                door_segment = getattr(nearest_door, "segment", None)
-                if door_segment and hasattr(door_segment, "p1"):
-                    door_x = (door_segment.p1[0] + door_segment.p2[0]) / 2.0
-                    door_y = (door_segment.p1[1] + door_segment.p2[1]) / 2.0
-                else:
-                    door_x = getattr(nearest_door, "xpos", 0.0)
-                    door_y = getattr(nearest_door, "ypos", 0.0)
-
-                door_pos = (int(door_x), int(door_y))
-                rel_door_x = (door_pos[0] - ninja_pos[0]) / (LEVEL_WIDTH_PX / 2)
-                rel_door_y = (door_pos[1] - ninja_pos[1]) / (LEVEL_HEIGHT_PX / 2)
-                # Door is a line segment, use radius 0 for center point
-                door_path_dist = self._safe_path_distance(
-                    ninja_pos,
-                    door_pos,
-                    adjacency,
-                    "locked_door",
-                    level_data=self._cached_level_data,
-                    graph_data=self._cached_graph_data,
-                    entity_radius=0.0,
-                )
-                features[12] = np.clip(rel_door_x, -1.0, 1.0)
-                features[13] = np.clip(rel_door_y, -1.0, 1.0)
-                features[14] = np.clip(door_path_dist / area_scale, 0.0, 1.0)
-
-        return features
-
-    def _extract_mine_features(
-        self, obs: Dict[str, Any], buffer: np.ndarray
-    ) -> np.ndarray:
-        """Extract enhanced mine features (8 dims).
-
-        Features:
-        [0-1] nearest_mine_rel_x, rel_y (normalized -1 to 1)
-        [2] nearest_mine_state (0=deadly, 0.5=toggling, 1=safe, -1=none)
-        [3] nearest_mine_path_distance (normalized 0-1)
-        [4] deadly_mines_nearby_count (normalized 0-1)
-        [5] mine_state_certainty (0=unknown to 1=recently seen)
-        [6] safe_mines_nearby_count (normalized 0-1)
-        [7] mine_avoidance_difficulty (0-1: spatial complexity)
-        """
-        NEARBY_RADIUS = 100.0
-        MAX_NEARBY = 10.0
-        CERTAINTY_RADIUS = 150.0
-
-        features = buffer
-        features.fill(0.0)
-
-        adjacency = self._cached_graph_data.get("adjacency")
-        if adjacency is None or len(adjacency) == 0:
-            features[2] = -1.0
-            features[5] = 1.0  # High certainty when no mines
-            return features
-
-        entity_positions = obs.get(
-            "entity_positions", np.zeros(ENTITY_POSITIONS_DIM, dtype=np.float32)
-        )
-        ninja_x = entity_positions[0] * LEVEL_WIDTH_PX
-        ninja_y = entity_positions[1] * LEVEL_HEIGHT_PX
-        ninja_pos = (int(ninja_x), int(ninja_y))
-
-        # Collect mines
-        entities = obs.get("entities", [])
-        mines = []
-        deadly_nearby = 0
-        safe_nearby = 0
-
-        for entity in entities:
-            entity_type = getattr(entity, "entity_type", None)
-            if entity_type in (EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED):
-                mx = getattr(entity, "xpos", 0.0)
-                my = getattr(entity, "ypos", 0.0)
-                mstate = getattr(entity, "state", 1)
-
-                if entity_type == EntityType.TOGGLE_MINE_TOGGLED:
-                    mstate = 0
-
-                dist = np.sqrt((mx - ninja_x) ** 2 + (my - ninja_y) ** 2)
-
-                mines.append({"x": mx, "y": my, "state": mstate, "dist": dist})
-
-                if dist < NEARBY_RADIUS:
-                    if mstate == 0:
-                        deadly_nearby += 1
-                    elif mstate == 1:
-                        safe_nearby += 1
-
-        if not mines:
-            features[2] = -1.0
-            features[5] = 1.0
-            return features
-
-        # Find nearest mine
-        nearest = min(mines, key=lambda m: m["dist"])
-
-        # Features 0-1: Relative position
-        area_scale = self._get_reachable_area_scale()
-        features[0] = np.clip((nearest["x"] - ninja_x) / area_scale, -1.0, 1.0)
-        features[1] = np.clip((nearest["y"] - ninja_y) / area_scale, -1.0, 1.0)
-
-        # Feature 2: State
-        if nearest["state"] == 0:
-            features[2] = 0.0  # Deadly
-        elif nearest["state"] == 2:
-            features[2] = 0.5  # Toggling
-        else:
-            features[2] = 1.0  # Safe
-
-        # Feature 3: Path distance
-        try:
-            from ..constants.physics_constants import TOGGLE_MINE_RADII
-
-            mine_radius = TOGGLE_MINE_RADII.get(nearest["state"], 4.0)
-            mine_pos = (int(nearest["x"]), int(nearest["y"]))
-            path_dist = self._safe_path_distance(
-                ninja_pos,
-                mine_pos,
-                adjacency,
-                "mine",
-                level_data=self._cached_level_data,
-                graph_data=self._cached_graph_data,
-                entity_radius=mine_radius,
-            )
-            features[3] = min(path_dist / area_scale, 1.0)
-        except Exception:
-            features[3] = min(nearest["dist"] / area_scale, 1.0)
-
-        # Feature 4: Deadly mines nearby
-        features[4] = min(deadly_nearby / MAX_NEARBY, 1.0)
-
-        # Feature 5: State certainty (based on distance)
-        features[5] = 1.0 - min(nearest["dist"] / CERTAINTY_RADIUS, 1.0)
-
-        # Feature 6: Safe mines nearby
-        features[6] = min(safe_nearby / MAX_NEARBY, 1.0)
-
-        # Feature 7: Avoidance difficulty
-        total_nearby = deadly_nearby + safe_nearby
-        if total_nearby > 0:
-            danger_ratio = deadly_nearby / total_nearby
-            density = total_nearby / MAX_NEARBY
-            features[7] = min(0.7 * danger_ratio + 0.3 * density, 1.0)
-
-        return features
-
-    def _compute_progress_features(
-        self, obs: Dict[str, Any], buffer: np.ndarray
-    ) -> np.ndarray:
-        """
-        Compute progress tracking features.
-
-        Returns PROGRESS_FEATURES_DIM (3) features:
-        - current_objective_type (0=switch, 0.33=door, 0.67=exit, normalized 0-1)
-        - objectives_completed_ratio (0 to 1)
-        - total_path_distance_remaining (normalized)
-        """
-        MAX_OBJECTIVE_PATHS = 3.0
-
-        features = buffer
-        features.fill(0.0)
-
-        adjacency = self._cached_graph_data.get("adjacency")
-        if adjacency is None or len(adjacency) == 0:
-            return features
-
-        entity_positions = obs.get(
-            "entity_positions", np.zeros(ENTITY_POSITIONS_DIM, dtype=np.float32)
-        )
-        ninja_pos = (
-            int(entity_positions[0] * LEVEL_WIDTH_PX),
-            int(entity_positions[1] * LEVEL_HEIGHT_PX),
-        )
-
-        exit_switch_collected = obs.get("switch_activated", False)
-        locked_doors = obs.get("locked_doors", [])
-
-        completed = 0
-        total = 1
-
-        for door in locked_doors:
-            total += 1
-            if not getattr(door, "active", True):
-                completed += 1
-
-        if not exit_switch_collected:
-            current_obj_type = 0.0
-        elif any(getattr(door, "active", True) for door in locked_doors):
-            current_obj_type = 0.33
-        else:
-            current_obj_type = 0.67
-
-        total_path_dist = 0.0
-
-        if not exit_switch_collected:
-            from ..constants.physics_constants import EXIT_SWITCH_RADIUS
-
-            exit_switch_pos = (
-                int(entity_positions[2] * LEVEL_WIDTH_PX),
-                int(entity_positions[3] * LEVEL_HEIGHT_PX),
-            )
-            switch_dist = self._safe_path_distance(
-                ninja_pos,
-                exit_switch_pos,
-                adjacency,
-                "progress_exit_switch",
-                level_data=self._cached_level_data,
-                graph_data=self._cached_graph_data,
-                entity_radius=EXIT_SWITCH_RADIUS,
-            )
-            total_path_dist += switch_dist
-
-        for door in locked_doors:
-            if getattr(door, "active", True):
-                from ..constants.physics_constants import LOCKED_DOOR_SWITCH_RADIUS
-
-                switch_x = getattr(door, "sw_xpos", getattr(door, "xpos", 0.0))
-                switch_y = getattr(door, "sw_ypos", getattr(door, "ypos", 0.0))
-                switch_pos = (int(switch_x), int(switch_y))
-
-                door_dist = self._safe_path_distance(
-                    ninja_pos,
-                    switch_pos,
-                    adjacency,
-                    "progress_locked_door_switch",
-                    level_data=self._cached_level_data,
-                    graph_data=self._cached_graph_data,
-                    entity_radius=LOCKED_DOOR_SWITCH_RADIUS,
-                )
-                total_path_dist += door_dist
-
-        from ..constants.physics_constants import EXIT_DOOR_RADIUS
-
-        exit_door_pos = (
-            int(entity_positions[4] * LEVEL_WIDTH_PX),
-            int(entity_positions[5] * LEVEL_HEIGHT_PX),
-        )
-        exit_dist = self._safe_path_distance(
-            ninja_pos,
-            exit_door_pos,
-            adjacency,
-            "progress_exit_door",
-            level_data=self._cached_level_data,
-            graph_data=self._cached_graph_data,
-            entity_radius=EXIT_DOOR_RADIUS,
-        )
-        total_path_dist += exit_dist
-
-        features[0] = current_obj_type
-        features[1] = completed / max(total, 1)
-        area_scale = self._get_reachable_area_scale()
-        features[2] = np.clip(
-            total_path_dist / (area_scale * MAX_OBJECTIVE_PATHS), 0.0, 1.0
         )
 
         return features
@@ -1217,54 +1005,6 @@ class ReplayExecutor:
                 ]
 
         return graph_obs
-
-    def _build_mine_death_predictor(self):
-        """
-        Build hybrid mine death predictor for BC pretraining.
-
-        Uses graph system's reachability data to filter mines and build
-        a danger zone grid. Called once per replay after graph building is complete.
-        """
-        from ..mine_death_predictor import MineDeathPredictor
-
-        # Get reachable positions from graph system
-        if (
-            self._cached_graph_data is None
-            or "reachable" not in self._cached_graph_data
-        ):
-            # If graph data not available, set predictor to None
-            if hasattr(self.nplay_headless, "sim") and hasattr(
-                self.nplay_headless.sim, "ninja"
-            ):
-                self.nplay_headless.sim.ninja.mine_death_predictor = None
-            return
-
-        reachable_positions = self._cached_graph_data.get("reachable", set())
-
-        # Skip if no reachable positions
-        if not reachable_positions:
-            if hasattr(self.nplay_headless, "sim") and hasattr(
-                self.nplay_headless.sim, "ninja"
-            ):
-                self.nplay_headless.sim.ninja.mine_death_predictor = None
-            return
-
-        # Create and build predictor
-        predictor = MineDeathPredictor(self.nplay_headless.sim)
-
-        try:
-            # Build danger zone grid (non-verbose for BC dataset generation)
-            predictor.build_lookup_table(reachable_positions, verbose=False)
-
-            # Attach predictor to ninja
-            self.nplay_headless.sim.ninja.mine_death_predictor = predictor
-        except Exception:
-            # If predictor build fails, set to None to avoid errors
-            # Death probabilities will default to 0.0 in this case
-            if hasattr(self.nplay_headless, "sim") and hasattr(
-                self.nplay_headless.sim, "ninja"
-            ):
-                self.nplay_headless.sim.ninja.mine_death_predictor = None
 
     def close(self):
         """Clean up resources."""
