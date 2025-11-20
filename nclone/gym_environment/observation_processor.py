@@ -14,7 +14,7 @@ We get our formatted game observation from the NPlusPlus get_observation() metho
     'switch_y' -- the y position of the switch
     'exit_door_x' -- the x position of the exit door
     'exit_door_y' -- the y position of the exit door
-    'time_remaining' -- the time remaining in the simulation before truncation
+    NOTE: time_remaining is now included as the 41st feature in 'game_state'
 
 This class should handle returning:
 
@@ -42,7 +42,6 @@ from .constants import (
     RENDERED_VIEW_HEIGHT,
 )
 from ..constants.physics_constants import MAX_HOR_SPEED
-from .frame_augmentation import get_recommended_config
 
 # Entity position array indices
 # Format: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
@@ -170,13 +169,22 @@ class ObservationProcessor:
         self.enable_visual_processing = enable_visual_processing
 
         # Set augmentation configuration optimized for platformer games
-        if augmentation_config is None:
+        if (
+            augmentation_config is None
+            and enable_visual_processing
+            and not training_mode
+        ):
+            from .frame_augmentation import get_recommended_config
+
             self.augmentation_config = get_recommended_config("mid")
         else:
             self.augmentation_config = augmentation_config
 
         # Add disable_validation flag if not present (defaults based on training_mode)
-        if "disable_validation" not in self.augmentation_config:
+        if (
+            self.augmentation_config is not None
+            and "disable_validation" not in self.augmentation_config
+        ):
             self.augmentation_config["disable_validation"] = training_mode
 
         # OPTIMIZATION: Cache for stabilized frames to avoid redundant conversions
@@ -292,15 +300,7 @@ class ObservationProcessor:
         # Convert back to numpy array
         ninja_state = np.array(ninja_state, dtype=np.float32)
 
-        # For backward compatibility, if we have entity states, include them
-        # but the new design focuses on the enhanced ninja state
-        if len(obs["game_state"]) > GAME_STATE_CHANNELS:
-            entity_states = obs["game_state"][GAME_STATE_CHANNELS:].astype(
-                np.float32
-            )  # Ensure float32
-            processed_state = np.concatenate([ninja_state, entity_states])
-        else:
-            processed_state = ninja_state
+        processed_state = ninja_state
 
         # Ensure final state is float32
         return processed_state.astype(np.float32)
@@ -378,6 +378,7 @@ class ObservationProcessor:
             passthrough_keys = [
                 "action_mask",
                 "death_context",
+                # Dense graph format (backward compatibility)
                 "graph_node_feats",
                 "graph_edge_index",
                 "graph_edge_feats",
@@ -385,6 +386,15 @@ class ObservationProcessor:
                 "graph_edge_mask",
                 "graph_node_types",
                 "graph_edge_types",
+                # Sparse graph format (memory optimized)
+                "graph_node_feats_sparse",
+                "graph_edge_index_sparse",
+                "graph_edge_feats_sparse",
+                "graph_node_types_sparse",
+                "graph_edge_types_sparse",
+                "graph_num_nodes",
+                "graph_num_edges",
+                # Other features
                 "locked_door_features",
                 "num_locked_doors",
                 "reachability_features",
@@ -424,6 +434,7 @@ class ObservationProcessor:
         passthrough_keys = [
             "action_mask",
             "death_context",  # Death context for auxiliary learning
+            # Dense graph format (backward compatibility)
             "graph_node_feats",
             "graph_edge_index",
             "graph_edge_feats",
@@ -431,6 +442,15 @@ class ObservationProcessor:
             "graph_edge_mask",
             "graph_node_types",
             "graph_edge_types",
+            # Sparse graph format (memory optimized)
+            "graph_node_feats_sparse",
+            "graph_edge_index_sparse",
+            "graph_edge_feats_sparse",
+            "graph_node_types_sparse",
+            "graph_edge_types_sparse",
+            "graph_num_nodes",
+            "graph_num_edges",
+            # Other features
             "exit_features",  # Exit features for objective attention
             "locked_door_features",
             "num_locked_doors",
@@ -440,20 +460,6 @@ class ObservationProcessor:
                 result[key] = obs[key]
 
         return result
-
-    def update_augmentation_config(
-        self, training_stage: str = None, config: Dict[str, Any] = None
-    ) -> None:
-        """Update augmentation configuration during training.
-
-        Args:
-            training_stage: One of "early", "mid", "late" for recommended configs
-            config: Custom configuration dictionary
-        """
-        if config is not None:
-            self.augmentation_config = config
-        elif training_stage is not None:
-            self.augmentation_config = get_recommended_config(training_stage)
 
     def reset(self) -> None:
         """Reset processor state and clear buffers."""

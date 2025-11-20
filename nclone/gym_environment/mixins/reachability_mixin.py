@@ -65,7 +65,7 @@ class ReachabilityMixin:
             self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
-        """Get 6-dimensional reachability features (Phase 6: includes mine context)."""
+        """Get 7-dimensional reachability features (includes mine context + phase indicator)."""
         reachability_features = self._compute_reachability(
             self.nplay_headless.ninja_position()
         )
@@ -74,7 +74,7 @@ class ReachabilityMixin:
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
-        Compute 6-dimensional reachability features using adjacency graph (Phase 6).
+        Compute 7-dimensional reachability features using adjacency graph.
 
         Base features (4 dims):
         1. Reachable area ratio (0-1)
@@ -85,6 +85,9 @@ class ReachabilityMixin:
         Mine context features (2 dims):
         5. Total mines normalized (0-1)
         6. Deadly mine ratio (0-1)
+
+        Phase indicator (1 dim):
+        7. Switch activated flag (0-1) - CRITICAL for Markov property
 
         PERFORMANCE: Uses grid-based caching to avoid recomputing when ninja
         hasn't moved significantly (>24px grid cell).
@@ -127,35 +130,14 @@ class ReachabilityMixin:
             level_data, adjacency, self.current_graph_data
         )
 
-        # Compute base reachability features (8 dims)
-        base_features = compute_reachability_features_from_graph(
+        # Compute all reachability features (7 dims)
+        # Includes: 4 base + 2 mine context + 1 phase indicator (switch_activated)
+        features = compute_reachability_features_from_graph(
             adjacency,
             self.current_graph_data,
             level_data,
             ninja_pos,
             self._path_calculator,
-        )
-
-        # Keep only first 4 features (Phase 6: removed redundant features)
-        base_features = base_features[:4]
-
-        # Add mine context features (Phase 6)
-        from ...graph.mine_analysis import compute_mine_context
-
-        mine_context = compute_mine_context(level_data)
-
-        # Combine features: 4 base + 2 mine context = 6 dims
-        features = np.concatenate(
-            [
-                base_features,
-                np.array(
-                    [
-                        mine_context["total_mines_norm"],
-                        mine_context["deadly_mine_ratio"],
-                    ],
-                    dtype=np.float32,
-                ),
-            ]
         )
 
         # Update cache

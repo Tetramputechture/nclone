@@ -13,6 +13,7 @@ from typing import Dict, Tuple, Any
 from .pathfinding_utils import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
+    get_cached_surface_area,
     NODE_WORLD_COORD_OFFSET,
 )
 from ...constants.entity_types import EntityType
@@ -26,7 +27,6 @@ from ...constants.physics_constants import (
 )
 from ...gym_environment.constants import LEVEL_DIAGONAL
 from .subcell_node_lookup import SUB_NODE_SIZE
-from collections import deque
 
 
 def compute_reachability_features_from_graph(
@@ -37,18 +37,19 @@ def compute_reachability_features_from_graph(
     path_calculator: Any,
 ) -> np.ndarray:
     """
-    Compute 6-dimensional reachability features using adjacency graph and lookup tables.
+    Compute 7-dimensional reachability features using adjacency graph and lookup tables.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     No linear searches or Euclidean distance calculations.
 
-    Features (6 dims):
+    Features (7 dims):
     1. Reachable area ratio (0-1)
     2. Distance to nearest switch (normalized, inverted)
     3. Distance to exit (normalized, inverted)
     4. Exit reachable flag (0-1)
     5. Total mines normalized (0-1)
     6. Deadly mine ratio (0-1)
+    7. Switch activated flag (0-1) - EXPLICIT phase indicator for Markov property
 
     Args:
         adjacency: Graph adjacency structure from GraphBuilder
@@ -58,7 +59,7 @@ def compute_reachability_features_from_graph(
         path_calculator: CachedPathDistanceCalculator instance
 
     Returns:
-        6-dimensional numpy array with normalized features [0-1]
+        7-dimensional numpy array with normalized features [0-1]
 
     Raises:
         RuntimeError: If required data is missing (adjacency, graph_data, etc.)
@@ -74,62 +75,33 @@ def compute_reachability_features_from_graph(
     # Total possible nodes (approximate: all traversable tiles)
     total_possible_nodes = MAP_TILE_WIDTH * MAP_TILE_HEIGHT
 
-    features = np.zeros(6, dtype=np.float32)
+    features = np.zeros(7, dtype=np.float32)
 
     # Feature 1: Reachable area ratio
     features[0] = np.clip(len(adjacency) / max(total_possible_nodes, 1), 0.0, 1.0)
 
     # Compute reachable area scale for distance normalization
-    # Use flood-fill from start position to count reachable nodes
+    # Use cached surface area calculation to avoid recomputation
     area_scale = LEVEL_DIAGONAL  # Fallback
     try:
         start_position = getattr(level_data, "start_position", None)
         if start_position is not None:
+            # Generate cache key using LevelData utility method for consistency
+            cache_key = level_data.get_cache_key_for_reachability(
+                include_switch_states=True
+            )
+
             # Convert start position to world space
             start_pos = (
                 int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
                 int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
             )
 
-            # Find closest node to start position
-            closest_node = find_closest_node_to_position(
-                start_pos,
-                adjacency,
-                threshold=NINJA_RADIUS,
-                spatial_hash=spatial_hash,
-                subcell_lookup=subcell_lookup,
+            # Use cached version to avoid recomputation for same level
+            surface_area = get_cached_surface_area(
+                cache_key, start_pos, adjacency, graph_data
             )
-
-            if closest_node is None:
-                closest_node = find_closest_node_to_position(
-                    start_pos,
-                    adjacency,
-                    threshold=50.0,
-                    spatial_hash=spatial_hash,
-                    subcell_lookup=subcell_lookup,
-                )
-
-            if closest_node is not None and closest_node in adjacency:
-                # Flood fill from start node
-                reachable_nodes = set()
-                queue = deque([closest_node])
-                visited = set([closest_node])
-
-                while queue:
-                    current = queue.popleft()
-                    reachable_nodes.add(current)
-
-                    neighbors = adjacency.get(current, [])
-                    for neighbor_info in neighbors:
-                        if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
-                            neighbor_pos = neighbor_info[0]
-                            if neighbor_pos not in visited:
-                                visited.add(neighbor_pos)
-                                queue.append(neighbor_pos)
-
-                if len(reachable_nodes) > 0:
-                    surface_area = float(len(reachable_nodes))
-                    area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
+            area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
     except Exception:
         # Fallback to LEVEL_DIAGONAL if computation fails
         pass
@@ -295,5 +267,16 @@ def compute_reachability_features_from_graph(
         features[5] = deadly_mines / total_mines
     else:
         features[5] = 0.0
+
+    # Feature 7: Switch activated flag (EXPLICIT phase indicator)
+    # Critical for Markov property: agent needs to know which objective to pursue
+    # For exit switches: active=True means not collected, active=False means activated
+    switch_activated = False
+    for switch in exit_switches:
+        switch_active = getattr(switch, "active", True)
+        if not switch_active:  # Switch has been activated
+            switch_activated = True
+            break
+    features[6] = 1.0 if switch_activated else 0.0
 
     return features

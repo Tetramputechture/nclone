@@ -576,7 +576,7 @@ GENERATOR_PRESETS = {
             min_width=4,
             max_width=15,
             min_height=1,
-            max_height=2,
+            max_height=4,
             random_edge_tiles=True,
             add_mines=False,
         ),

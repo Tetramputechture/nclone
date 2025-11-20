@@ -1,156 +1,86 @@
-"""Main reward calculator that orchestrates all reward components."""
+"""Simplified reward calculator with curriculum-aware component lifecycle.
+
+Focused reward system with clear hierarchy:
+1. Terminal rewards (completion, death) - Define task success/failure
+2. PBRS objective potential - Policy-invariant guidance to goal
+3. Time penalty - Efficiency pressure (curriculum-controlled)
+
+All redundant components removed for clarity.
+"""
 
 import logging
-import numpy as np
 from typing import Dict, Any, Optional
-from .exploration_reward_calculator import ExplorationRewardCalculator
+from .reward_config import RewardConfig
 from .pbrs_potentials import PBRSCalculator
 from .reward_constants import (
     LEVEL_COMPLETION_REWARD,
     DEATH_PENALTY,
     MINE_DEATH_PENALTY,
     SWITCH_ACTIVATION_REWARD,
-    TIME_PENALTY_PER_STEP,
-    TIME_PENALTY_EARLY,
-    TIME_PENALTY_MIDDLE,
-    TIME_PENALTY_LATE,
-    TIME_PENALTY_EARLY_THRESHOLD,
-    TIME_PENALTY_LATE_THRESHOLD,
-    COMPLETION_TIME_BONUS_MAX,
-    COMPLETION_TIME_TARGET,
     PBRS_GAMMA,
-    NOOP_ACTION_PENALTY,
-    BUFFER_USAGE_BONUS,
-    EXPLORATION_GRID_WIDTH,
-    EXPLORATION_GRID_HEIGHT,
 )
 from ...graph.reachability.path_distance_calculator import (
     CachedPathDistanceCalculator,
 )
 
-from ..constants import LEVEL_DIAGONAL as PBRS_DISTANCE_SCALE
 
 logger = logging.getLogger(__name__)
 
 
 class RewardCalculator:
-    """Main reward calculator for completion-focused training.
+    """Simplified reward calculator with curriculum-aware lifecycle.
 
-        Orchestrates multiple reward components:
-        - Terminal rewards (completion, death)
-        - Milestone rewards (switch activation)
-        - Time-based penalties (efficiency)
-        - Navigation shaping (PBRS-based distance rewards)
-    - Exploration rewards (multi-scale spatial coverage)
-        - PBRS potentials (policy-invariant shaping)
+    Components:
+    - Terminal rewards: Always active (completion, death, switch milestone)
+    - PBRS objective potential: Always active (curriculum-scaled weight)
+    - Time penalty: Conditionally active (curriculum-controlled)
 
-        All constants are defined in reward_constants.py to eliminate magic numbers
-        and provide clear documentation of reward design decisions.
+    Removed components (redundant/confusing):
+    - Exploration rewards (PBRS provides via potential gradients)
+    - Progress bonuses (PBRS already rewards progress)
+    - Backtrack penalties (confusing, PBRS handles naturally)
+    - NOOP penalties (let PBRS guide, don't punish stillness)
+    - Buffer bonuses (gameplay mechanic, not learning signal)
+    - Hazard/impact PBRS (death penalty is clearer signal)
     """
 
     def __init__(
         self,
-        reward_config: Optional[Dict[str, Any]] = None,
+        reward_config: Optional[RewardConfig] = None,
         pbrs_gamma: float = PBRS_GAMMA,
-        time_penalty_mode: str = "fixed",
-        time_penalty_early: float = TIME_PENALTY_EARLY,
-        time_penalty_middle: float = TIME_PENALTY_MIDDLE,
-        time_penalty_late: float = TIME_PENALTY_LATE,
-        enable_completion_bonus: bool = True,
-        completion_bonus_max: float = COMPLETION_TIME_BONUS_MAX,
-        completion_bonus_target: int = COMPLETION_TIME_TARGET,
-        max_episode_steps: int = 5000,
     ):
-        """Initialize reward calculator with all components.
+        """Initialize simplified reward calculator.
 
         Args:
-            reward_config: Complete reward configuration dict (overrides individual params if provided)
-            pbrs_gamma: Discount factor for PBRS (γ in r_shaped = r_env + γ * Φ(s') - Φ(s))
-            time_penalty_mode: "fixed" or "progressive" time penalty
-            time_penalty_early: Early phase penalty (for progressive mode)
-            time_penalty_middle: Middle phase penalty (for progressive mode)
-            time_penalty_late: Late phase penalty (for progressive mode)
-            enable_completion_bonus: Whether to give bonus for fast completion
-            completion_bonus_max: Maximum completion time bonus
-            completion_bonus_target: Target steps for full bonus
-            max_episode_steps: Maximum episode length (for progressive penalty phases)
+            reward_config: RewardConfig instance managing curriculum-aware component lifecycle
+            pbrs_gamma: Discount factor for PBRS (γ in F(s,s') = γ * Φ(s') - Φ(s))
         """
-        # If reward_config provided, extract parameters from it
-        if reward_config is not None:
-            pbrs_gamma = reward_config.get("pbrs_gamma", pbrs_gamma)
-            time_penalty_mode = reward_config.get(
-                "time_penalty_mode", time_penalty_mode
-            )
-            time_penalty_early = reward_config.get(
-                "time_penalty_early", time_penalty_early
-            )
-            time_penalty_middle = reward_config.get(
-                "time_penalty_middle", time_penalty_middle
-            )
-            time_penalty_late = reward_config.get(
-                "time_penalty_late", time_penalty_late
-            )
-            enable_completion_bonus = reward_config.get(
-                "enable_completion_bonus", enable_completion_bonus
-            )
-            completion_bonus_max = reward_config.get(
-                "completion_bonus_max", completion_bonus_max
-            )
-            completion_bonus_target = reward_config.get(
-                "completion_bonus_target", completion_bonus_target
-            )
-            max_episode_steps = reward_config.get(
-                "max_episode_steps", max_episode_steps
-            )
-
-        self.exploration_calculator = ExplorationRewardCalculator()
-        self.steps_taken = 0
-
-        # Track closest distances for diagnostic metrics
-        # PBRS handles all reward shaping, but we track progress for diagnostics
-        self.closest_distance_to_switch = float("inf")
-        self.closest_distance_to_exit = float("inf")
-
-        # Time penalty configuration
-        self.time_penalty_mode = time_penalty_mode
-        self.time_penalty_early = time_penalty_early
-        self.time_penalty_middle = time_penalty_middle
-        self.time_penalty_late = time_penalty_late
-        self.max_episode_steps = max_episode_steps
-
-        # Completion bonus configuration
-        self.enable_completion_bonus = enable_completion_bonus
-        self.completion_bonus_max = completion_bonus_max
-        self.completion_bonus_target = completion_bonus_target
+        # Single config object manages all curriculum logic
+        self.config = reward_config or RewardConfig()
 
         # PBRS configuration
-        self.pbrs_gamma = pbrs_gamma if pbrs_gamma is not None else PBRS_GAMMA
+        self.pbrs_gamma = pbrs_gamma
         self.prev_potential = None
 
+        # Create path calculator for PBRS
         path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200, use_astar=True
         )
-
         self.pbrs_calculator = PBRSCalculator(path_calculator=path_calculator)
 
-        # Tier 1 path efficiency: Directional momentum tracking
-        self.frame_count = 0
-        self.cached_progress_direction = 0  # +1 forward, -1 backward, 0 neutral
+        # Physics discovery rewards (NEW)
+        if self.config.enable_physics_discovery:
+            from .physics_discovery_rewards import PhysicsDiscoveryRewards
 
-        # Tier 1 path efficiency: Progress tracking
-        self.best_path_distance_to_switch = float("inf")
-        self.best_path_distance_to_exit = float("inf")
-        self.frames_since_progress = 0
-        self.backtrack_events_total = 0
-        self.progress_bonus_total = 0.0
-        self.backtrack_penalty_total = 0.0
-        self.stagnation_penalty_total = 0.0
+            self.physics_discovery = PhysicsDiscoveryRewards()
+        else:
+            self.physics_discovery = None
 
-        # Store path calculator for directional momentum and progress tracking
-        self.path_calculator = path_calculator
+        self.steps_taken = 0
 
-        # Track switch activation for PBRS continuity
-        self._prev_switch_activated = False
+        # Track closest distances for diagnostic metrics only
+        self.closest_distance_to_switch = float("inf")
+        self.closest_distance_to_exit = float("inf")
 
     def calculate_reward(
         self,
@@ -158,458 +88,156 @@ class RewardCalculator:
         prev_obs: Dict[str, Any],
         action: Optional[int] = None,
     ) -> float:
-        """Calculate completion-focused reward.
+        """Calculate simplified, curriculum-aware reward.
+
+        Components:
+        1. Terminal rewards (always active)
+        2. Time penalty (curriculum-controlled via config)
+        3. PBRS objective potential (curriculum-scaled via config)
 
         Args:
             obs: Current game state
             prev_obs: Previous game state
-            action: Action taken (0=NOOP, 1=Left, 2=Right, 3=Jump, 4=Jump+Left, 5=Jump+Right)
+            action: Action taken (optional, unused in simplified version)
 
         Returns:
             float: Total reward for the transition
         """
         self.steps_taken += 1
 
-        # Death penalty (terminal)
+        # === TERMINAL REWARDS (always active) ===
+
+        # Death penalties
         if obs.get("player_dead", False):
-            # Apply stronger penalty for mine deaths
             death_cause = obs.get("death_cause", None)
-            if death_cause == "mine":
-                return MINE_DEATH_PENALTY
-            else:
-                return DEATH_PENALTY
+            return MINE_DEATH_PENALTY if death_cause == "mine" else DEATH_PENALTY
 
-        # Initialize reward with time penalty to encourage efficiency
-        reward = self._calculate_time_penalty()
+        # Completion reward
+        if obs.get("player_won", False):
+            return LEVEL_COMPLETION_REWARD
 
-        # NOOP action penalty when there is no current (discourage standing still)
-        noop_penalty = 0.0
-        if (
-            action is not None
-            and action == 0
-            and abs(obs.get("player_xspeed", 0.0)) < 0.1
-            and abs(obs.get("player_yspeed", 0.0)) < 0.1
-        ):
-            noop_penalty = NOOP_ACTION_PENALTY
-            reward += noop_penalty
+        # === TIME PENALTY (curriculum-controlled) ===
+        # Config determines if active and magnitude based on training phase
+        reward = self.config.time_penalty_per_step
 
-        # Buffer utilization reward
-        buffer_bonus = 0.0
-        if obs.get("buffered_jump_executed", False):
-            buffer_bonus = BUFFER_USAGE_BONUS
-            reward += buffer_bonus
-
-        # Switch activation reward
-        if obs.get("switch_activated", False) and not prev_obs.get(
+        # === MILESTONE REWARD ===
+        switch_just_activated = obs.get("switch_activated", False) and not prev_obs.get(
             "switch_activated", False
-        ):
+        )
+        if switch_just_activated:
             reward += SWITCH_ACTIVATION_REWARD
 
-        # Exit completion reward (terminal)
-        if obs.get("player_won", False):
-            reward += LEVEL_COMPLETION_REWARD
+        # === PBRS SHAPING (curriculum-scaled) ===
+        adjacency = obs.get("_adjacency_graph")
+        level_data = obs.get("level_data")
+        graph_data = obs.get("_graph_data")
 
-            # Add completion time bonus if enabled
-            if self.enable_completion_bonus:
-                bonus = self._calculate_completion_bonus(self.steps_taken)
-                reward += bonus
+        # Validate required data for PBRS
+        if not adjacency or not level_data:
+            raise ValueError(
+                "PBRS requires adjacency graph and level_data in observation. "
+                "Ensure graph building is enabled in environment config."
+            )
 
-        # Track closest distances for diagnostic metrics
+        # Calculate potential with curriculum-scaled weight and normalization
+        current_potential = self.pbrs_calculator.calculate_combined_potential(
+            obs,
+            adjacency=adjacency,
+            level_data=level_data,
+            graph_data=graph_data,
+            objective_weight=self.config.pbrs_objective_weight,
+            scale_factor=self.config.pbrs_normalization_scale,
+        )
+
+        # Apply PBRS shaping: F(s,s') = γ * Φ(s') - Φ(s)
+        if self.prev_potential is not None:
+            if switch_just_activated:
+                # Prevent discontinuity at switch activation
+                # Switch milestone reward (+2.0) is sufficient signal
+                pbrs_reward = 0.0
+            else:
+                # Normal PBRS: positive when moving closer, negative when moving away
+                pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
+            reward += pbrs_reward
+
+        # Update state for next step
+        self.prev_potential = current_potential
+
+        # Track diagnostic metrics (Euclidean distance)
         from ..util.util import calculate_distance
 
         distance_to_switch = calculate_distance(
             obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
         )
-        distance_to_exit = calculate_distance(
-            obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
-        )
-
         if distance_to_switch < self.closest_distance_to_switch:
             self.closest_distance_to_switch = distance_to_switch
 
-        # Detect switch activation and reset exploration when switch is activated
-        switch_active_changed = obs.get("switch_activated", False) and not prev_obs.get(
-            "switch_activated", False
-        )
-
-        if switch_active_changed:
-            self.exploration_calculator.reset()
-            # Reset closest distance tracking for exit phase
-            self.closest_distance_to_exit = distance_to_exit
-        elif obs.get("switch_activated", False):
-            # Track closest distance to exit during exit phase
+        if obs.get("switch_activated", False):
+            distance_to_exit = calculate_distance(
+                obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
+            )
             if distance_to_exit < self.closest_distance_to_exit:
                 self.closest_distance_to_exit = distance_to_exit
 
-        # Exploration reward (focused on switch/exit discovery)
-        # Currently disabled to prevent wandering behavior
-        # exploration_reward = self.exploration_calculator.calculate_exploration_reward(
-        #     obs["player_x"], obs["player_y"]
-        # )
-        # reward += exploration_reward
-
-        # Add PBRS shaping reward
-        pbrs_reward = 0.0
-        pbrs_components = {}
-        # Extract adjacency graph, level_data, and graph_data from observation
-        # These are required for path-aware PBRS calculations with spatial indexing
-        adjacency = obs.get("_adjacency_graph")
-        level_data = obs.get("level_data")
-        graph_data = obs.get("_graph_data")  # Contains spatial_hash for O(1) lookup
-
-        # STRICT: Validate required data
-        if adjacency is None:
-            raise ValueError(
-                "PBRS enabled but adjacency graph not found in observation. "
-                "Ensure graph updates are enabled and adjacency is provided."
+        # === PHYSICS DISCOVERY REWARDS (curriculum-controlled) ===
+        if self.config.enable_physics_discovery and self.physics_discovery is not None:
+            physics_rewards = self.physics_discovery.calculate_physics_rewards(
+                obs, prev_obs, action
             )
-        if level_data is None:
-            raise ValueError(
-                "PBRS enabled but level_data not found in observation. "
-                "Ensure level_data is included in observation dict."
+            total_physics_reward = (
+                sum(physics_rewards.values()) * self.config.physics_discovery_weight
             )
-
-        current_potential = self.pbrs_calculator.calculate_combined_potential(
-            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
-        )
-
-        # Get individual potential components for logging
-        pbrs_components = self.pbrs_calculator.get_potential_components(
-            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
-        )
-
-        # Detect switch activation transition for PBRS continuity
-        switch_just_activated = (
-            obs.get("switch_activated", False) and not self._prev_switch_activated
-        )
-
-        if self.prev_potential is not None:
-            # Maintain PBRS continuity at switch activation
-            if switch_just_activated:
-                # Set prev_potential = current_potential to ensure zero PBRS reward
-                # This eliminates discontinuity from switching objective (switch→exit)
-                # The switch activation reward (+2.0) is preserved without PBRS interference
-                # Note: We update prev_potential here, then again after this block for next step
-                # This ensures continuity: F(s,s') = γ * Φ(s') - Φ(s) = γ * Φ(s') - Φ(s') = 0
-                pbrs_reward = 0.0
-            else:
-                # Normal PBRS calculation
-                # PBRS formula: F(s,s') = γ * Φ(s') - Φ(s)
-                # This ensures policy invariance (Ng et al., 1999) while providing
-                # dense reward signal. Positive reward when moving closer (increasing potential),
-                # negative when moving away (decreasing potential).
-                pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
-
-            reward += pbrs_reward
-        else:
-            # First step: initialize potential but don't add reward (no previous state)
-            # This ensures PBRS starts correctly on second step
-            pbrs_reward = 0.0
-
-        # Update previous potential for next step
-        # If switch just activated, we maintain continuity by using current_potential
-        # Otherwise, we use current_potential normally
-        self.prev_potential = current_potential
-
-        # Update switch tracking for next step
-        self._prev_switch_activated = obs.get("switch_activated", False)
-
-        # Store component rewards for episode info
-        self.last_pbrs_components = {
-            "pbrs_reward": pbrs_reward,
-            "noop_penalty": noop_penalty,
-            "buffer_bonus": buffer_bonus,
-            "pbrs_components": pbrs_components,
-            "total_reward": reward,
-        }
+            reward += total_physics_reward
 
         return reward
 
     def reset(self):
-        """Reset all components for new episode."""
-        self.exploration_calculator.reset()
+        """Reset episode state for new episode."""
         self.steps_taken = 0
+        self.prev_potential = None
 
-        # Reset progress tracking for diagnostics
+        # Reset diagnostic tracking
         self.closest_distance_to_switch = float("inf")
         self.closest_distance_to_exit = float("inf")
 
-        # Reset PBRS state
-        self.prev_potential = None
+        # Reset PBRS calculator state
         if self.pbrs_calculator is not None:
             self.pbrs_calculator.reset()
 
-        # Reset switch tracking
-        self._prev_switch_activated = False
+        # Reset physics discovery rewards
+        if self.physics_discovery is not None:
+            self.physics_discovery.reset()
 
-        # Tier 1 path efficiency: Reset directional momentum tracking
-        self.frame_count = 0
-        self.cached_progress_direction = 0
+    def update_config(self, timesteps: int, success_rate: float) -> None:
+        """Update reward configuration based on training progress.
 
-        # Tier 1 path efficiency: Reset progress tracking
-        self.best_path_distance_to_switch = float("inf")
-        self.best_path_distance_to_exit = float("inf")
-        self.frames_since_progress = 0
-        self.backtrack_events_total = 0
-        self.progress_bonus_total = 0.0
-        self.backtrack_penalty_total = 0.0
-        self.stagnation_penalty_total = 0.0
-
-    def get_reward_components(self, obs: Dict[str, Any]) -> Dict[str, float]:
-        """Get individual reward components for debugging/logging.
+        Called by trainer at evaluation checkpoints to trigger curriculum transitions.
 
         Args:
-            obs: Current game state
-
-        Returns:
-            dict: Dictionary of reward component values
+            timesteps: Total timesteps trained so far
+            success_rate: Recent evaluation success rate (0.0-1.0)
         """
-        components = {}
+        old_phase = self.config.training_phase
+        self.config.update(timesteps, success_rate)
 
-        adjacency = obs.get("_adjacency_graph")
-        level_data = obs.get("level_data")
-        graph_data = obs.get("_graph_data")
-        components.update(
-            self.pbrs_calculator.get_potential_components(
-                obs,
-                adjacency=adjacency,
-                level_data=level_data,
-                graph_data=graph_data,
-            )
-        )
-        components["combined_potential"] = (
-            self.pbrs_calculator.calculate_combined_potential(
-                obs,
-                adjacency=adjacency,
-                level_data=level_data,
-                graph_data=graph_data,
-            )
-        )
-
-        return components
-
-    def get_diagnostic_metrics(self, obs: Dict[str, Any]) -> Dict[str, float]:
-        """Generate comprehensive diagnostic metrics for TensorBoard.
-
-        Returns detailed breakdowns of distances, potentials, and reward components
-        to enable deep diagnosis of training issues.
-
-        Args:
-            obs: Current game state dictionary
-
-        Returns:
-            dict: Comprehensive metrics for TensorBoard logging
-        """
-        from ..util.util import calculate_distance
-        from ..constants import LEVEL_DIAGONAL
-
-        metrics = {}
-
-        # === DISTANCE METRICS ===
-        # Track raw distances to objectives
-        distance_to_switch = calculate_distance(
-            obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
-        )
-        distance_to_exit = calculate_distance(
-            obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
-        )
-
-        # Current objective distance
-        if not obs.get("switch_activated", False):
-            metrics["distance/to_current_objective"] = distance_to_switch
-            metrics["distance/to_switch"] = distance_to_switch
-        else:
-            metrics["distance/to_current_objective"] = distance_to_exit
-            metrics["distance/to_exit"] = distance_to_exit
-
-        # Normalized distances (for understanding potential calculations)
-        metrics["distance/normalized_to_objective"] = min(
-            1.0, metrics["distance/to_current_objective"] / LEVEL_DIAGONAL
-        )
-
-        metrics["distance/relative_to_scale"] = (
-            metrics["distance/to_current_objective"] / PBRS_DISTANCE_SCALE
-        )
-
-        # === POTENTIAL METRICS ===
-        # Extract adjacency graph, level_data, and graph_data for PBRS calculations
-        adjacency = obs.get("_adjacency_graph")
-        level_data = obs.get("level_data")
-        graph_data = obs.get("_graph_data")
-
-        # Calculate current potential with required parameters
-        current_potential = self.pbrs_calculator.calculate_combined_potential(
-            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
-        )
-        metrics["pbrs/current_potential"] = current_potential
-
-        if self.prev_potential is not None:
-            metrics["pbrs/prev_potential"] = self.prev_potential
-            potential_delta = current_potential - self.prev_potential
-            metrics["pbrs/potential_delta"] = potential_delta
-
-            # Detect switch activation transition for accurate PBRS reward calculation
-            switch_just_activated = (
-                obs.get("switch_activated", False) and not self._prev_switch_activated
+        # Log phase transitions
+        if self.config.training_phase != old_phase:
+            logger.info(
+                f"\n{'=' * 60}\n"
+                f"REWARD PHASE TRANSITION: {old_phase} → {self.config.training_phase}\n"
+                f"Timesteps: {timesteps:,}\n"
+                f"Success Rate: {success_rate:.1%}\n"
+                f"Active Components:\n"
+                f"  PBRS Weight: {self.config.pbrs_objective_weight:.2f}\n"
+                f"  Time Penalty: {self.config.time_penalty_per_step:.4f}/step\n"
+                f"  Normalization Scale: {self.config.pbrs_normalization_scale:.2f}\n"
+                f"{'=' * 60}\n"
             )
 
-            # PBRS reward calculation (matches actual reward calculation logic)
-            if switch_just_activated:
-                # Switch activation: zero PBRS reward for continuity
-                pbrs_reward_after_gamma = 0.0
-                pbrs_reward_before_gamma = 0.0
-            else:
-                # Normal PBRS calculation: F(s,s') = γ * Φ(s') - Φ(s)
-                pbrs_reward_before_gamma = potential_delta
-                pbrs_reward_after_gamma = (
-                    self.pbrs_gamma * current_potential - self.prev_potential
-                )
-
-            metrics["pbrs/reward_before_gamma"] = pbrs_reward_before_gamma
-            metrics["pbrs/reward_after_gamma"] = pbrs_reward_after_gamma
-
-            # Flag potential issues
-            metrics["pbrs/is_negative"] = 1.0 if pbrs_reward_after_gamma < 0 else 0.0
-            metrics["pbrs/is_positive"] = 1.0 if pbrs_reward_after_gamma > 0 else 0.0
-            metrics["pbrs/switch_transition"] = 1.0 if switch_just_activated else 0.0
-
-        # Component breakdown
-        pbrs_components = self.pbrs_calculator.get_potential_components(
-            obs, adjacency=adjacency, level_data=level_data, graph_data=graph_data
-        )
-        for comp_name, comp_value in pbrs_components.items():
-            metrics[f"pbrs/component_{comp_name}"] = comp_value
-
-        # Track closest distances achieved (progress tracking)
-        metrics["navigation/closest_to_switch"] = (
-            self.closest_distance_to_switch
-            if self.closest_distance_to_switch != float("inf")
-            else distance_to_switch
-        )
-        metrics["navigation/closest_to_exit"] = (
-            self.closest_distance_to_exit
-            if self.closest_distance_to_exit != float("inf")
-            else distance_to_exit
-        )
-
-        # === REWARD COMPONENT BREAKDOWN ===
-        if hasattr(self, "last_pbrs_components"):
-            components = self.last_pbrs_components
-            for comp_name, comp_value in components.items():
-                if isinstance(comp_value, (int, float)):
-                    metrics[f"reward_components/{comp_name}"] = comp_value
-
-        # === EFFICIENCY METRICS ===
-        metrics["episode/steps_taken"] = self.steps_taken
-        metrics["episode/switch_activated"] = (
-            1.0 if obs.get("switch_activated") else 0.0
-        )
-
-        # === TIER 1 PATH EFFICIENCY METRICS ===
-        # Directional momentum metrics
-        vel_x = obs.get("player_xspeed", 0.0)
-        vel_y = obs.get("player_yspeed", 0.0)
-        velocity = np.array([vel_x, vel_y])
-        velocity_magnitude = np.linalg.norm(velocity)
-
-        if self.cached_progress_direction > 0:
-            metrics["movement/forward_velocity_avg"] = velocity_magnitude
-            metrics["movement/backward_velocity_avg"] = 0.0
-        elif self.cached_progress_direction < 0:
-            metrics["movement/forward_velocity_avg"] = 0.0
-            metrics["movement/backward_velocity_avg"] = velocity_magnitude
-        else:
-            metrics["movement/forward_velocity_avg"] = 0.0
-            metrics["movement/backward_velocity_avg"] = 0.0
-
-        # Progress tracking metrics
-        metrics["progress/best_distance_to_switch"] = (
-            self.best_path_distance_to_switch
-            if self.best_path_distance_to_switch != float("inf")
-            else 0.0
-        )
-        metrics["progress/best_distance_to_exit"] = (
-            self.best_path_distance_to_exit
-            if self.best_path_distance_to_exit != float("inf")
-            else 0.0
-        )
-        metrics["progress/frames_since_progress"] = float(self.frames_since_progress)
-        metrics["progress/backtrack_events_total"] = float(self.backtrack_events_total)
-
-        # Reward component breakdown for Tier 1
-        if hasattr(self, "last_pbrs_components"):
-            components = self.last_pbrs_components
-            if "progress_reward" in components:
-                metrics["reward/progress_bonus_total"] = self.progress_bonus_total
-                metrics["reward/backtrack_penalty_total"] = self.backtrack_penalty_total
-                metrics["reward/stagnation_penalty_total"] = (
-                    self.stagnation_penalty_total
-                )
-
-            if "momentum_bonus" in components:
-                metrics["reward/directional_momentum_total"] = components[
-                    "momentum_bonus"
-                ]
-
-        # Exploration coverage metric
-        if hasattr(self, "exploration_calculator"):
-            total_cells = EXPLORATION_GRID_WIDTH * EXPLORATION_GRID_HEIGHT
-            visited_cells = np.sum(self.exploration_calculator.visited_cells)
-            metrics["exploration/area_coverage_fraction"] = (
-                visited_cells / total_cells if total_cells > 0 else 0.0
-            )
-
-        return metrics
-
-    def get_reward_statistics(self) -> Dict[str, float]:
-        """Get statistics about reward components for validation.
+    def get_config_state(self) -> Dict[str, Any]:
+        """Get current reward configuration state for logging.
 
         Returns:
-            Dictionary containing reward component statistics
+            Dictionary with current configuration values
         """
-        return {
-            "steps_taken": self.steps_taken,
-            "backtrack_events": self.backtrack_events_total,
-            "progress_bonus_total": self.progress_bonus_total,
-            "backtrack_penalty_total": self.backtrack_penalty_total,
-            "stagnation_penalty_total": self.stagnation_penalty_total,
-        }
-
-    def _calculate_time_penalty(self) -> float:
-        """Calculate time penalty based on configured mode.
-
-        Returns:
-            float: Time penalty for current step
-        """
-        if self.time_penalty_mode == "progressive":
-            # Progressive penalty increases pressure over episode duration
-            progress = self.steps_taken / self.max_episode_steps
-
-            if progress < TIME_PENALTY_EARLY_THRESHOLD:
-                return self.time_penalty_early
-            elif progress < TIME_PENALTY_LATE_THRESHOLD:
-                return self.time_penalty_middle
-            else:
-                return self.time_penalty_late
-        else:
-            # Fixed penalty mode (default)
-            return TIME_PENALTY_PER_STEP
-
-    def _calculate_completion_bonus(self, completion_steps: int) -> float:
-        """Calculate bonus reward for fast completion.
-
-        Bonus linearly decreases from max to zero as completion time increases.
-
-        Args:
-            completion_steps: Number of steps taken to complete level
-
-        Returns:
-            float: Completion time bonus (0.0 to completion_bonus_max)
-        """
-        if completion_steps <= self.completion_bonus_target:
-            # Linear interpolation: full bonus at 0 steps, zero bonus at target
-            progress = completion_steps / self.completion_bonus_target
-            return self.completion_bonus_max * (1.0 - progress)
-        else:
-            # No bonus for completion slower than target
-            return 0.0
+        return self.config.get_active_components()

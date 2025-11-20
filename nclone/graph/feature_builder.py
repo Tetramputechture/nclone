@@ -20,6 +20,7 @@ Supported entities:
 
 Feature dimensions (Phase 1): 15 total (2 spatial + 7 type + 3 mine + 2 entity_state + 1 reachability)
 Feature dimensions (Phase 5): 21 total (adds 6 topological features)
+Feature dimensions (Phase 6 - MEMORY OPTIMIZED): 16 total (removed: is_mine, in_degree, out_degree, betweenness)
 """
 
 import numpy as np
@@ -36,34 +37,38 @@ from .common import NodeType, EdgeType, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 class NodeFeatureBuilder:
     """
-    Builds optimized 21-dimensional node feature vectors (Phase 5 complete).
+    Builds optimized 17-dimensional node feature vectors (Phase 6 - Memory Optimized).
 
     Feature breakdown:
     - Spatial (2): position (x, y) normalized
     - Type (7): one-hot node type (EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR)
-    - Mine-specific (3): is_mine, mine_state (-1/0/+1), mine_radius
+    - Mine-specific (2): mine_state (-1/0/+1), mine_radius [REMOVED: is_mine - redundant with type]
     - Entity state (2): entity_active, door_closed
     - Reachability (1): from reachability system
-    - Topological (6): in_degree, out_degree, objective_dx, objective_dy, objective_hops, betweenness
+    - Topological (3): objective_dx, objective_dy, objective_hops [REMOVED: in_degree, out_degree, betweenness]
 
-    Total: 2 + 7 + 3 + 2 + 1 + 6 = 21 features
+    Total: 2 + 7 + 2 + 2 + 1 + 3 = 17 features (was 21)
+
+    Memory savings: ~40% reduction in node feature storage
     """
 
     def __init__(self):
         """Initialize the node feature builder."""
-        # Feature index boundaries
+        # Feature index boundaries (16 features total - memory optimized)
         self.SPATIAL_START = 0
         self.SPATIAL_END = 2
         self.TYPE_START = 2
         self.TYPE_END = 9  # 7 node types: EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR
         self.MINE_START = 9
-        self.MINE_END = 12  # 3 mine features: is_mine, mine_state, mine_radius
-        self.ENTITY_STATE_START = 12
-        self.ENTITY_STATE_END = 14  # 2 entity state features: active, door_closed
-        self.REACHABILITY_START = 14
-        self.REACHABILITY_END = 15
-        self.TOPOLOGICAL_START = 15
-        self.TOPOLOGICAL_END = 21  # 6 topological features
+        self.MINE_END = (
+            11  # 2 mine features: mine_state, mine_radius (removed: is_mine)
+        )
+        self.ENTITY_STATE_START = 11
+        self.ENTITY_STATE_END = 13  # 2 entity state features: active, door_closed
+        self.REACHABILITY_START = 13
+        self.REACHABILITY_END = 14
+        self.TOPOLOGICAL_START = 14
+        self.TOPOLOGICAL_END = 17  # 3 topological features: objective_dx, objective_dy, objective_hops (removed: in_degree, out_degree, betweenness)
 
         assert self.TOPOLOGICAL_END == NODE_FEATURE_DIM, "Feature dimensions mismatch!"
 
@@ -76,17 +81,17 @@ class NodeFeatureBuilder:
         topological_info: Optional[Dict[str, Any]] = None,
     ) -> np.ndarray:
         """
-        Build optimized 21-dimensional node features (Phase 5 complete).
+        Build optimized 17-dimensional node features (Phase 6 - Memory Optimized).
 
         Args:
             node_pos: (x, y) position of node in pixels
             node_type: NodeType enum value (EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR)
             entity_info: Dict with entity-specific information (type, state, radius, closed for doors)
             reachability_info: Dict with reachability from flood-fill system
-            topological_info: Dict with topological features (degree, objective-relative, centrality)
+            topological_info: Dict with topological features (objective-relative only)
 
         Returns:
-            np.ndarray of shape (21,) with normalized features
+            np.ndarray of shape (17,) with normalized features
         """
         features = np.zeros(NODE_FEATURE_DIM, dtype=np.float32)
 
@@ -99,7 +104,7 @@ class NodeFeatureBuilder:
         if 0 <= node_type < 7:
             features[self.TYPE_START + int(node_type)] = 1.0
 
-        # ===== Mine-Specific Features (3 dims) =====
+        # ===== Mine-Specific Features (2 dims) =====
         # Always compute mine features (will be zeros for non-mines)
         if entity_info is not None:
             self._add_mine_features(features, entity_info, node_type)
@@ -112,7 +117,8 @@ class NodeFeatureBuilder:
         if reachability_info is not None:
             self._add_reachability_features(features, reachability_info)
 
-        # ===== Topological Features (6 dims) =====
+        # ===== Topological Features (3 dims) =====
+        # Only objective-relative features (removed: in_degree, out_degree, betweenness)
         if topological_info is not None:
             self._add_topological_features(features, topological_info)
 
@@ -122,7 +128,9 @@ class NodeFeatureBuilder:
         self, features: np.ndarray, entity_info: Dict[str, Any], node_type: NodeType
     ):
         """
-        Add mine-specific features (indices 9-11, 3 features).
+        Add mine-specific features (indices 9-10, 2 features).
+
+        MEMORY OPTIMIZATION: Removed is_mine flag (redundant with node_type TOGGLE_MINE bit).
 
         Args:
             features: Feature array to modify
@@ -133,9 +141,8 @@ class NodeFeatureBuilder:
             node_type: NodeType to check if this is a mine node
 
         Mine state encoding:
-        - is_mine (index 9): 1.0 if node is a mine, 0.0 otherwise
-        - mine_state (index 10): -1.0=deadly, 0.0=transitioning, +1.0=safe
-        - mine_radius (index 11): normalized collision radius
+        - mine_state (index 9): -1.0=deadly, 0.0=transitioning, +1.0=safe (0.0 for non-mines)
+        - mine_radius (index 10): normalized collision radius (0.0 for non-mines)
         """
         entity_type = entity_info.get("type", 0)
         is_mine = (
@@ -143,10 +150,7 @@ class NodeFeatureBuilder:
             or node_type == NodeType.TOGGLE_MINE
         )
 
-        # Index 9: is_mine (binary flag)
-        features[self.MINE_START] = 1.0 if is_mine else 0.0
-
-        # Index 10: mine_state (-1/0/+1 for deadly/transitioning/safe)
+        # Index 9: mine_state (-1/0/+1 for deadly/transitioning/safe)
         if is_mine:
             raw_state = entity_info.get("state", 0.0)
             # Toggle mine states: 0=toggled (deadly), 1=untoggled (safe), 2=transitioning
@@ -156,23 +160,23 @@ class NodeFeatureBuilder:
                 mine_state = 0.0  # Transitioning
             else:  # raw_state == 1.0
                 mine_state = 1.0  # Safe
-            features[self.MINE_START + 1] = mine_state
+            features[self.MINE_START] = mine_state
         else:
-            features[self.MINE_START + 1] = 0.0
+            features[self.MINE_START] = 0.0
 
-        # Index 11: mine_radius (normalized)
+        # Index 10: mine_radius (normalized)
         if is_mine:
             mine_radius = entity_info.get("radius", 0.0)
             max_radius = NINJA_RADIUS * 2  # Max expected mine radius
-            features[self.MINE_START + 2] = np.clip(mine_radius / max_radius, 0.0, 1.0)
+            features[self.MINE_START + 1] = np.clip(mine_radius / max_radius, 0.0, 1.0)
         else:
-            features[self.MINE_START + 2] = 0.0
+            features[self.MINE_START + 1] = 0.0
 
     def _add_entity_state_features(
         self, features: np.ndarray, entity_info: Dict[str, Any]
     ):
         """
-        Add general entity state features (indices 12-13, 2 features).
+        Add general entity state features (indices 11-12, 2 features).
 
         Args:
             features: Feature array to modify
@@ -181,15 +185,15 @@ class NodeFeatureBuilder:
                 - closed: bool (for doors, True if closed)
 
         Features:
-        - entity_active (index 12): 1.0 if active, 0.0 otherwise
-        - door_closed (index 13): 1.0 if door is closed, 0.0 if open or not a door
+        - entity_active (index 11): 1.0 if active, 0.0 otherwise
+        - door_closed (index 12): 1.0 if door is closed, 0.0 if open or not a door
         """
-        # Index 12: entity_active (for switches and doors)
+        # Index 11: entity_active (for switches and doors)
         features[self.ENTITY_STATE_START] = (
             1.0 if entity_info.get("active", True) else 0.0
         )
 
-        # Index 13: door_closed (for locked doors only)
+        # Index 12: door_closed (for locked doors only)
         entity_type = entity_info.get("type", 0)
         if entity_type == EntityType.LOCKED_DOOR:
             features[self.ENTITY_STATE_START + 1] = (
@@ -202,7 +206,7 @@ class NodeFeatureBuilder:
         self, features: np.ndarray, reachability_info: Dict[str, Any]
     ):
         """
-        Add reachability features from flood-fill system (index 14, 1 feature).
+        Add reachability features from flood-fill system (index 13, 1 feature).
 
         Args:
             features: Feature array to modify
@@ -212,7 +216,7 @@ class NodeFeatureBuilder:
         Note: Movement requirements (jump/walljump) are NOT included as physics
         is too complex to pre-compute. Agent learns from graph structure and experience.
         """
-        # Index 14: reachable_from_ninja (from reachability system's flood-fill)
+        # Index 13: reachable_from_ninja (from reachability system's flood-fill)
         features[self.REACHABILITY_START] = (
             1.0 if reachability_info.get("reachable_from_ninja", False) else 0.0
         )
@@ -221,55 +225,44 @@ class NodeFeatureBuilder:
         self, features: np.ndarray, topological_info: Dict[str, Any]
     ):
         """
-        Add topological features from graph analysis (indices 15-20, 6 features).
+        Add topological features from graph analysis (indices 14-16, 3 features).
+
+        MEMORY OPTIMIZATION: Removed in_degree, out_degree, betweenness (not critical for shortest-path navigation).
 
         Args:
             features: Feature array to modify
             topological_info: Dict with keys:
-                - in_degree: Normalized in-degree [0, 1]
-                - out_degree: Normalized out-degree [0, 1]
                 - objective_dx: Normalized x-distance to objective [-1, 1]
                 - objective_dy: Normalized y-distance to objective [-1, 1]
                 - objective_hops: Normalized graph hops to objective [0, 1]
-                - betweenness: Normalized betweenness centrality [0, 1]
         """
-        # Index 15: in_degree
+        # Index 14: objective_dx
         features[self.TOPOLOGICAL_START] = np.clip(
-            topological_info.get("in_degree", 0.0), 0.0, 1.0
-        )
-        # Index 16: out_degree
-        features[self.TOPOLOGICAL_START + 1] = np.clip(
-            topological_info.get("out_degree", 0.0), 0.0, 1.0
-        )
-        # Index 17: objective_dx
-        features[self.TOPOLOGICAL_START + 2] = np.clip(
             topological_info.get("objective_dx", 0.0), -1.0, 1.0
         )
-        # Index 18: objective_dy
-        features[self.TOPOLOGICAL_START + 3] = np.clip(
+        # Index 15: objective_dy
+        features[self.TOPOLOGICAL_START + 1] = np.clip(
             topological_info.get("objective_dy", 0.0), -1.0, 1.0
         )
-        # Index 19: objective_hops
-        features[self.TOPOLOGICAL_START + 4] = np.clip(
+        # Index 16: objective_hops
+        features[self.TOPOLOGICAL_START + 2] = np.clip(
             topological_info.get("objective_hops", 0.0), 0.0, 1.0
-        )
-        # Index 20: betweenness
-        features[self.TOPOLOGICAL_START + 5] = np.clip(
-            topological_info.get("betweenness", 0.0), 0.0, 1.0
         )
 
 
 class EdgeFeatureBuilder:
     """
-    Builds enhanced edge feature vectors (Phase 3: 14 dims).
+    Builds optimized edge feature vectors (Phase 6 - Memory Optimized: 12 dims).
 
     Feature breakdown:
     - Edge type (4): one-hot encoding
     - Connectivity (2): weight and reachability confidence
     - Geometric (4): dx, dy, distance, movement_category
-    - Mine danger (4): nearest_mine_dist, passes_deadly_mine, threat_level, mines_nearby
+    - Mine danger (2): nearest_mine_dist, passes_deadly_mine [REMOVED: threat_level, mines_nearby]
 
-    Total: 4 + 2 + 4 + 4 = 14 features
+    Total: 4 + 2 + 4 + 2 = 12 features (was 14)
+
+    Memory savings: ~32% reduction in edge feature storage
     """
 
     def __init__(self):
@@ -281,7 +274,7 @@ class EdgeFeatureBuilder:
         self.GEOMETRIC_START = 6
         self.GEOMETRIC_END = 10
         self.MINE_START = 10
-        self.MINE_END = 14
+        self.MINE_END = 12  # 2 mine features: nearest_mine_distance, passes_deadly_mine (removed: threat_level, mines_nearby)
 
         assert self.MINE_END == EDGE_FEATURE_DIM, "Edge feature dimensions mismatch!"
 
@@ -294,7 +287,7 @@ class EdgeFeatureBuilder:
         mine_features: Optional[Dict[str, float]] = None,
     ) -> np.ndarray:
         """
-        Build enhanced edge features (14 dimensions in Phase 3).
+        Build optimized edge features (12 dimensions in Phase 6 - Memory Optimized).
 
         Args:
             edge_type: EdgeType enum value
@@ -312,11 +305,9 @@ class EdgeFeatureBuilder:
             mine_features: Dict with keys:
                 - nearest_mine_distance: normalized distance to nearest mine [0, 1]
                 - passes_deadly_mine: binary flag [0, 1]
-                - mine_threat_level: aggregate danger score [0, 1]
-                - num_mines_nearby: normalized count [0, 1]
 
         Returns:
-            np.ndarray of shape (14,) with normalized features
+            np.ndarray of shape (12,) with normalized features
         """
         features = np.zeros(EDGE_FEATURE_DIM, dtype=np.float32)
 
@@ -345,19 +336,14 @@ class EdgeFeatureBuilder:
                 geometric_features.get("movement_category", 0.0), 0.0, 1.0
             )
 
-        # ===== Mine Danger Features (indices 10-13) =====
+        # ===== Mine Danger Features (indices 10-11) =====
+        # MEMORY OPTIMIZATION: Removed mine_threat_level and num_mines_nearby (redundant)
         if mine_features is not None:
             features[self.MINE_START] = np.clip(
                 mine_features.get("nearest_mine_distance", 1.0), 0.0, 1.0
             )
             features[self.MINE_START + 1] = np.clip(
                 mine_features.get("passes_deadly_mine", 0.0), 0.0, 1.0
-            )
-            features[self.MINE_START + 2] = np.clip(
-                mine_features.get("mine_threat_level", 0.0), 0.0, 1.0
-            )
-            features[self.MINE_START + 3] = np.clip(
-                mine_features.get("num_mines_nearby", 0.0), 0.0, 1.0
             )
 
         return features

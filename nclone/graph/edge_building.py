@@ -153,14 +153,15 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
     num_edges = len(edges)
 
     # Initialize fixed-size arrays with full feature dimensions
+    # MEMORY OPTIMIZATION: Use efficient data types
     node_features = np.zeros((N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32)
-    node_types = np.zeros(N_MAX_NODES, dtype=np.int32)
-    node_mask = np.zeros(N_MAX_NODES, dtype=np.int32)
+    node_types = np.zeros(N_MAX_NODES, dtype=np.uint8)  # 7 node types (0-6)
+    node_mask = np.zeros(N_MAX_NODES, dtype=np.uint8)  # Binary 0/1
 
-    edge_index = np.zeros((2, E_MAX_EDGES), dtype=np.int32)
+    edge_index = np.zeros((2, E_MAX_EDGES), dtype=np.uint16)  # Max node index 4500 < 65535
     edge_features = np.zeros((E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32)
-    edge_types = np.zeros(E_MAX_EDGES, dtype=np.int32)
-    edge_mask = np.zeros(E_MAX_EDGES, dtype=np.int32)
+    edge_types = np.zeros(E_MAX_EDGES, dtype=np.uint8)  # 4 edge types (0-3)
+    edge_mask = np.zeros(E_MAX_EDGES, dtype=np.uint8)  # Binary 0/1
 
     # Initialize feature builders
     node_builder = NodeFeatureBuilder()
@@ -246,19 +247,16 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
                 "reachable_from_ninja": reachability_result.is_position_reachable(pos),
             }
 
-        # Extract topological info for this node
+        # Extract topological info for this node (only objective-relative features)
         topological_info = None
-        if batch_topological and len(batch_topological["in_degree"]) > i:
+        if batch_topological and len(batch_topological["objective_dx"]) > i:
             topological_info = {
-                "in_degree": float(batch_topological["in_degree"][i]),
-                "out_degree": float(batch_topological["out_degree"][i]),
                 "objective_dx": float(batch_topological["objective_dx"][i]),
                 "objective_dy": float(batch_topological["objective_dy"][i]),
                 "objective_hops": float(batch_topological["objective_hops"][i]),
-                "betweenness": float(batch_topological["betweenness"][i]),
             }
 
-        # Build optimized node features (21 dimensions in Phase 5)
+        # Build optimized node features (17 dimensions in Phase 6 - Memory Optimized)
         node_features[i] = node_builder.build_node_features(
             node_pos=pos,
             node_type=node_type,

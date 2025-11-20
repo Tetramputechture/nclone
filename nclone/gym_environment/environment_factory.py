@@ -8,7 +8,6 @@ with common configurations for training, evaluation, and research.
 from typing import Optional, Callable, Dict, Any
 from .npp_environment import NppEnvironment
 from .config import EnvironmentConfig
-from .frame_stack_wrapper import FrameStackWrapper
 
 
 def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
@@ -23,6 +22,8 @@ def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
         and config.frame_stack.enable_visual_frame_stacking
         or config.frame_stack.enable_state_stacking
     ):
+        from .frame_stack_wrapper import FrameStackWrapper
+
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -46,29 +47,8 @@ def create_evaluation_env(config: Optional[EnvironmentConfig] = None) -> NppEnvi
         config.frame_stack.enable_visual_frame_stacking
         or config.frame_stack.enable_state_stacking
     ):
-        env = FrameStackWrapper(
-            env,
-            visual_stack_size=config.frame_stack.visual_stack_size,
-            state_stack_size=config.frame_stack.state_stack_size,
-            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
-            enable_state_stacking=config.frame_stack.enable_state_stacking,
-            padding_type=config.frame_stack.padding_type,
-        )
+        from .frame_stack_wrapper import FrameStackWrapper
 
-    return env
-
-
-def create_research_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
-    """Create an environment optimized for research and debugging."""
-    if config is None:
-        config = EnvironmentConfig.for_research()
-    env = NppEnvironment(config)
-
-    # Apply frame stacking wrapper if enabled
-    if (
-        config.frame_stack.enable_visual_frame_stacking
-        or config.frame_stack.enable_state_stacking
-    ):
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -94,6 +74,8 @@ def create_visual_testing_env(
         config.frame_stack.enable_visual_frame_stacking
         or config.frame_stack.enable_state_stacking
     ):
+        from .frame_stack_wrapper import FrameStackWrapper
+
         env = FrameStackWrapper(
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
@@ -170,87 +152,3 @@ def create_vectorized_training_envs(
         env_factories.append(make_vectorizable_env(make_env_factory(i)))
 
     return env_factories
-
-
-def benchmark_environment_performance(
-    env: NppEnvironment, num_steps: int = 1000, target_fps: float = 60.0
-) -> Dict[str, Any]:
-    """
-    Benchmark environment performance.
-
-    Args:
-        env: Environment to benchmark
-        num_steps: Number of steps to run
-        target_fps: Target FPS for performance evaluation
-
-    Returns:
-        Performance benchmark results
-    """
-    import time
-
-    # Reset environment
-    env.reset()
-
-    # Warm up
-    for _ in range(10):
-        action = env.action_space.sample()
-        env.step(action)
-
-    # Benchmark
-    start_time = time.time()
-    update_times = []
-
-    for step in range(num_steps):
-        step_start = time.time()
-
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-
-        step_time = time.time() - step_start
-        update_times.append(step_time * 1000)  # Convert to ms
-
-        if terminated or truncated:
-            env.reset()
-
-    total_time = time.time() - start_time
-
-    # Calculate statistics
-    avg_step_time_ms = sum(update_times) / len(update_times)
-    max_step_time_ms = max(update_times)
-    min_step_time_ms = min(update_times)
-
-    target_step_time_ms = 1000.0 / target_fps
-    performance_ratio = target_step_time_ms / avg_step_time_ms
-
-    # Get performance stats from environment
-    graph_stats = {}
-    reachability_stats = {}
-
-    results = {
-        "total_steps": num_steps,
-        "total_time_s": total_time,
-        "avg_step_time_ms": avg_step_time_ms,
-        "max_step_time_ms": max_step_time_ms,
-        "min_step_time_ms": min_step_time_ms,
-        "target_step_time_ms": target_step_time_ms,
-        "performance_ratio": performance_ratio,
-        "meets_target_fps": performance_ratio >= 1.0,
-        "graph_stats": graph_stats,
-        "reachability_stats": reachability_stats,
-    }
-
-    print(
-        f"Environment Benchmark Results:\n"
-        f"  Average step time: {avg_step_time_ms:.2f}ms\n"
-        f"  Target step time: {target_step_time_ms:.2f}ms\n"
-        f"  Performance ratio: {performance_ratio:.2f}\n"
-        f"  Meets target FPS: {results['meets_target_fps']}\n"
-    )
-
-    if graph_stats:
-        print(f"  Graph update time: {graph_stats.get('avg_update_time_ms', 0):.2f}ms")
-
-    if reachability_stats:
-        print(f"  Reachability time: {reachability_stats.get('avg_time_ms', 0):.2f}ms")
-
-    return results

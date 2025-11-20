@@ -24,9 +24,10 @@ observation_space = SpacesDict({
     
     # Game state (OPTIMIZED)
     'game_state': Box(-1, 1, (29,), np.float32),  # Only ninja physics
-    'reachability_features': Box(0, 1, (6,), np.float32),  # 4 base + 2 mine context
+    'reachability_features': Box(0, 1, (7,), np.float32),  # 4 base + 2 mine context + 1 phase
+    'time_remaining': Box(0, 1, (), np.float32),  # Dynamic truncation-based time pressure
     
-    # Graph (ENHANCED with mine navigation features)
+    # Graph (with mine navigation features)
     'graph_node_feats': Box(-inf, inf, (max_nodes, 21), np.float32),  # Added topological features
     'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), np.int32),
     'graph_edge_feats': Box(-inf, inf, (max_edges, 14), np.float32),  # Added geometric + mine danger
@@ -95,9 +96,9 @@ Visual modalities are available but not used for training. The agent learns pure
 - `[28]` Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
 
 ### `reachability_features`
-`(6,)` float32, range [0, 1]
+`(7,)` float32, range [0, 1]
 
-Graph-based reachability features with mine context.
+Graph-based reachability features with mine context and explicit phase indicator.
 
 **Base Features (4)**
 - `[0]` Reachable area ratio [0, 1] (reachable / total graph nodes)
@@ -108,6 +109,30 @@ Graph-based reachability features with mine context.
 **Mine Context (2)**
 - `[4]` Total mines normalized [0, 1] (count / 256 max)
 - `[5]` Deadly mine ratio [0, 1] (deadly / total mines)
+
+**Phase Indicator (1)**
+- `[6]` Switch activated flag {0, 1} - **CRITICAL for Markov property**
+  - Explicit indicator of which objective to pursue (switch vs exit)
+  - Enables proper credit assignment for +2.0 milestone reward
+  - Ensures agent observes two-phase task structure clearly
+
+### `time_remaining`
+`()` float32 scalar, range [0, 1]
+
+Curriculum-aware dynamic truncation time pressure feature - **CRITICAL for Markov property**.
+
+- Normalized time remaining: `(curriculum_limit - current_frame) / curriculum_limit`
+- **Dynamic truncation**: Base limit calculated per level based on complexity
+  - Formula: `sqrt(surface_area) * BASE_TIME_PER_NODE * TRUNCATION_MULTIPLIER`
+  - Ensures fair time allocation: small levels get ~600-800 frames, large levels get ~3000-4000 frames
+- **Curriculum-aware multipliers**: Aligns with reward config phases for consistency
+  - Early phase (no time penalty): 2.0x generous limit (exploration focus)
+  - Mid phase (optional penalty): 1.5x moderate limit (balanced approach)
+  - Late phase (full time penalty): 1.0x standard limit (efficiency focus)
+- **Robust calculation**: Handles edge cases (division by zero, negative values)
+- **Agent consistency**: Agent observes the SAME time horizon that determines actual truncation
+
+This feature ensures agents understand the actual time constraints they will face, maintaining consistency between observation and environment behavior across curriculum phases.
 
 ## Graph Observations
 

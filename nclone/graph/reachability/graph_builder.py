@@ -14,11 +14,11 @@ Improved implementation with sub-tile nodes:
 import time
 import numpy as np
 from typing import Dict, Set, Tuple, List, Any, Optional
-from collections import deque
 
 from .tile_connectivity_loader import TileConnectivityLoader
 from .entity_mask import EntityMask
 from .spatial_hash import SpatialHash
+from .pathfinding_utils import flood_fill_reachable_nodes
 
 # Hardcoded cell size as per N++ constants
 CELL_SIZE = 24
@@ -442,6 +442,11 @@ class GraphBuilder:
         self._level_graph_cache = {}  # level_id -> base graph
         self._current_level_id = None
 
+        # Flood fill caching (per level)
+        # Only recompute flood fill when player moves >= 12px from last cached position
+        self._flood_fill_cache = {}  # level_id -> (last_ninja_pos, reachable_set)
+        self._flood_fill_distance_threshold = SUB_NODE_SIZE  # 12px
+
         # Performance tracking
         self.build_times = []
         self.cache_hits = 0
@@ -520,25 +525,32 @@ class GraphBuilder:
         level_data: Dict[str, Any],
         ninja_pos: Optional[Tuple[int, int]] = None,
         level_id: Optional[str] = None,
+        filter_by_reachability: bool = True,
     ) -> Dict[str, Any]:
         """
         Build complete traversability graph for level.
 
         The adjacency graph is filtered to only include nodes reachable from the initial
-        player position (from LevelData.start_position). This ensures path caching only
-        calculates distances for reachable areas, preventing caching of unreachable or
-        isolated regions.
+        player position (from LevelData.start_position) when filter_by_reachability=True.
+        This ensures path caching only calculates distances for reachable areas, preventing
+        caching of unreachable or isolated regions.
+
+        When rebuilding mid-gameplay (e.g., after switch state changes), set
+        filter_by_reachability=False to avoid filtering by spawn reachability, as the ninja
+        may have moved to areas that are no longer reachable from spawn.
 
         Args:
             level_data: Level data with tiles, entities, switch_states, start_position
                        Can be a dict or LevelData object
             ninja_pos: Optional ninja position for reachability analysis (current position)
             level_id: Optional level identifier for caching
+            filter_by_reachability: If True, filter adjacency to nodes reachable from spawn.
+                                   Set to False when rebuilding during gameplay.
 
         Returns:
             Dictionary containing:
             - 'adjacency': Dict mapping (x, y) -> List[(neighbor_x, neighbor_y, cost)]
-                          Filtered to only include nodes reachable from initial player position
+                          Filtered to reachable nodes if filter_by_reachability=True
             - 'reachable': Set of reachable positions from ninja_pos (if provided)
             - 'blocked_positions': Set of blocked positions (by entities)
             - 'blocked_edges': Set of blocked edges
@@ -589,12 +601,26 @@ class GraphBuilder:
 
         # Filter adjacency to only include nodes reachable from initial player position
         # This ensures path caching only operates on reachable areas
-        initial_player_pos = self._find_player_spawn(level_data_dict, tiles)
-        reachable_nodes = self._flood_fill_from_graph(initial_player_pos, adjacency)
+        # Skip filtering when rebuilding mid-gameplay (ninja may be in isolated area)
+        if filter_by_reachability:
+            initial_player_pos = self._find_player_spawn(level_data_dict, tiles)
 
-        # Filter adjacency to only reachable nodes
-        # Critical: This ensures all cached distances are for reachable areas only
-        adjacency = self._filter_adjacency_to_reachable(adjacency, reachable_nodes)
+            # Build spatial hash for optimization (not in base_graph yet)
+            temp_spatial_hash = SpatialHash(cell_size=CELL_SIZE)
+            temp_spatial_hash.build(list(adjacency.keys()))
+
+            # Use shared flood fill utility
+            reachable_nodes = flood_fill_reachable_nodes(
+                initial_player_pos,
+                adjacency,
+                spatial_hash=temp_spatial_hash,
+                subcell_lookup=None,  # Will be auto-loaded by flood_fill
+                player_radius=PLAYER_RADIUS,
+            )
+
+            # Filter adjacency to only reachable nodes
+            # Critical: This ensures all cached distances are for reachable areas only
+            adjacency = self._filter_adjacency_to_reachable(adjacency, reachable_nodes)
 
         # Build spatial hash for O(1) node lookup
         spatial_hash = SpatialHash(cell_size=CELL_SIZE)
@@ -611,8 +637,11 @@ class GraphBuilder:
 
         # If ninja position provided, compute reachable set for that position
         # Note: This may differ from initial_player_pos if ninja has moved
+        # Optimization: Only recompute flood fill if player moved >= 12px from last cached position
         if ninja_pos is not None:
-            reachable = self._flood_fill_from_graph(ninja_pos, adjacency)
+            reachable = self._get_cached_flood_fill(
+                level_id, ninja_pos, adjacency, spatial_hash
+            )
             result["reachable"] = reachable
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -1310,65 +1339,59 @@ class GraphBuilder:
 
         return filtered
 
-    def _flood_fill_from_graph(
+    def _get_cached_flood_fill(
         self,
-        start: Tuple[int, int],
+        level_id: str,
+        ninja_pos: Tuple[int, int],
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        spatial_hash: Any,
     ) -> Set[Tuple[int, int]]:
         """
-        Perform flood fill on adjacency graph to find reachable positions.
+        Get flood fill results with caching based on player position.
+
+        Only recomputes flood fill when player moves >= 12px from last cached position.
+        This optimization avoids expensive BFS operations when player moves small amounts.
 
         Args:
-            start: Starting position (pixel coordinates, e.g., current ninja position)
+            level_id: Level identifier for cache key
+            ninja_pos: Current ninja position (x, y) in pixels
             adjacency: Graph adjacency structure
+            spatial_hash: SpatialHash for optimization
 
         Returns:
-            Set of reachable positions from the starting position
+            Set of reachable node positions from ninja_pos
         """
-        if not adjacency:
-            return set()
+        # Check if we have cached flood fill for this level
+        if level_id in self._flood_fill_cache:
+            last_ninja_pos, cached_reachable = self._flood_fill_cache[level_id]
 
-        # Find ALL nodes within player radius (10px) - any node covered by the
-        # player circle should be considered a valid starting position
-        start_nodes = self._find_nodes_within_radius(
-            start, {pos: None for pos in adjacency.keys()}, radius=PLAYER_RADIUS
+            # Calculate distance moved since last flood fill
+            dx = ninja_pos[0] - last_ninja_pos[0]
+            dy = ninja_pos[1] - last_ninja_pos[1]
+            distance_moved = (dx * dx + dy * dy) ** 0.5
+
+            # If player hasn't moved significantly, return cached result
+            if distance_moved < self._flood_fill_distance_threshold:
+                return cached_reachable
+
+        # Need to recompute flood fill (either no cache or player moved enough)
+        reachable = flood_fill_reachable_nodes(
+            ninja_pos,
+            adjacency,
+            spatial_hash=spatial_hash,
+            subcell_lookup=None,  # Will be auto-loaded by flood_fill
+            player_radius=PLAYER_RADIUS,
         )
 
-        # Fallback to closest node if no nodes within radius
-        if not start_nodes:
-            start_node = self._find_closest_node(
-                start, {pos: None for pos in adjacency.keys()}
-            )
-            if start_node is None or start_node not in adjacency:
-                return set()
-            start_nodes = [start_node]
-
-        # Filter to only valid nodes in adjacency
-        start_nodes = [node for node in start_nodes if node in adjacency]
-        if not start_nodes:
-            return set()
-
-        # Flood fill from all starting nodes
-        reachable = set()
-        queue = deque(start_nodes)
-        visited = set(start_nodes)
-
-        while queue:
-            current = queue.popleft()
-            reachable.add(current)
-
-            # Get neighbors from adjacency
-            neighbors = adjacency.get(current, [])
-            for neighbor_pos, _ in neighbors:
-                if neighbor_pos not in visited:
-                    visited.add(neighbor_pos)
-                    queue.append(neighbor_pos)
+        # Cache the result
+        self._flood_fill_cache[level_id] = (ninja_pos, reachable)
 
         return reachable
 
     def clear_cache(self):
         """Clear level graph cache (call on environment reset)."""
         self._level_graph_cache.clear()
+        self._flood_fill_cache.clear()
         self._current_level_id = None
 
     def get_statistics(self) -> Dict[str, Any]:

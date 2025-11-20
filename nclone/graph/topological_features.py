@@ -3,7 +3,10 @@ Topological feature computation for graph nodes.
 
 This module provides functions to compute graph-theoretic features that help
 the agent understand the structure and importance of nodes in the level graph.
-Includes degree centrality, objective-relative distances, and betweenness centrality.
+
+MEMORY OPTIMIZATION (Phase 6): Only computes objective-relative features.
+Degree and betweenness centrality functions are kept for backward compatibility
+but are not used in the default pipeline.
 
 All computations are optimized for performance with caching where appropriate.
 """
@@ -268,39 +271,34 @@ def compute_batch_topological_features(
     sample_size: int = 100,
 ) -> Dict[str, np.ndarray]:
     """
-    Compute all topological features for nodes in one call.
+    Compute topological features for nodes in one call.
+    
+    MEMORY OPTIMIZATION (Phase 6): Removed degree and betweenness computation.
+    Only computes objective-relative features essential for navigation.
 
     Args:
         node_positions: Array of node positions [num_nodes, 2]
         adjacency: Dict mapping node position -> list of reachable neighbor positions
         objective_pos: Target objective position (x, y)
-        sample_size: Sample size for betweenness centrality approximation
+        sample_size: DEPRECATED - no longer used (kept for API compatibility)
 
     Returns:
         Dict with keys (all arrays of shape [num_nodes]):
-        - 'in_degree': Normalized in-degree [0, 1]
-        - 'out_degree': Normalized out-degree [0, 1]
         - 'objective_dx': Normalized x-distance to objective [-1, 1]
         - 'objective_dy': Normalized y-distance to objective [-1, 1]
         - 'objective_hops': Normalized graph hops to objective [0, 1]
-        - 'betweenness': Normalized betweenness centrality [0, 1]
+        
+    Removed features (not critical for shortest-path navigation):
+        - 'in_degree', 'out_degree': Network topology features
+        - 'betweenness': Expensive centrality calculation
     """
-    # Compute degree
-    in_degree, out_degree = compute_node_degrees(adjacency)
-
-    # Compute objective-relative features
+    # Compute only objective-relative features (essential for navigation)
     objective_dx, objective_dy, objective_hops = compute_objective_relative_positions(
         node_positions, objective_pos, adjacency
     )
 
-    # Compute betweenness centrality
-    betweenness = compute_betweenness_centrality(adjacency, sample_size)
-
     return {
-        "in_degree": in_degree,
-        "out_degree": out_degree,
         "objective_dx": objective_dx,
         "objective_dy": objective_dy,
         "objective_hops": objective_hops,
-        "betweenness": betweenness,
     }

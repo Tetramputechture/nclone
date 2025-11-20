@@ -66,14 +66,12 @@ def gather_segments_from_region(sim, x1, y1, x2, y2):
     min_cell_y = clamp(math.floor(min_y / 24), 0, 24)
     max_cell_y = clamp(math.floor(max_y / 24), 0, 24)
 
-    # Optimization: use list comprehension for better performance
     segments = []
     segment_dic = sim.segment_dic
     for xcell in range(min_cell_x, max_cell_x + 1):
         for ycell in range(min_cell_y, max_cell_y + 1):
             cell_key = (xcell, ycell)
             if cell_key in segment_dic:
-                # Inline the active check for better performance
                 segments.extend(seg for seg in segment_dic[cell_key] if seg.active)
     return segments
 
@@ -108,15 +106,25 @@ def sweep_circle_vs_tiles(sim, xpos_old, ypos_old, dx, dy, radius):
     xpos_new = xpos_old + dx
     ypos_new = ypos_old + dy
     width = radius + 1
-    x1 = min(xpos_old, xpos_new) - width
-    y1 = min(ypos_old, ypos_new) - width
-    x2 = max(xpos_old, xpos_new) + width
-    y2 = max(ypos_old, ypos_new) + width
+
+    # Use conditionals instead of min/max for 2-value comparisons (slightly faster)
+    x1 = (xpos_old if xpos_old < xpos_new else xpos_new) - width
+    y1 = (ypos_old if ypos_old < ypos_new else ypos_new) - width
+    x2 = (xpos_old if xpos_old > xpos_new else xpos_new) + width
+    y2 = (ypos_old if ypos_old > ypos_new else ypos_new) + width
+
     segments = gather_segments_from_region(sim, x1, y1, x2, y2)
     shortest_time = 1
+
     for segment in segments:
         time = segment.intersect_with_ray(xpos_old, ypos_old, dx, dy, radius)
-        shortest_time = min(time, shortest_time)
+        # Early exit: if we've found a collision at time 0, we can't find anything earlier
+        if time == 0:
+            return 0
+        # Avoid min() call when time is not shorter
+        if time < shortest_time:
+            shortest_time = time
+
     return shortest_time
 
 

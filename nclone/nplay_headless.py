@@ -1,6 +1,6 @@
-import pygame
 import os
 import random
+import math
 from typing import Optional, Dict, Any
 from .nsim import Simulator
 from .nsim_renderer import NSimRenderer
@@ -8,10 +8,8 @@ from .map_generation.map_generator import generate_map
 from .sim_config import SimConfig
 import numpy as np
 from typing import List
-from .constants.entity_types import EntityType
 from .constants.physics_constants import (
     MAX_HOR_SPEED,
-    MAX_JUMP_DURATION,
     TOGGLE_MINE_RADII,
     GRAVITY_JUMP,
     GRAVITY_FALL,
@@ -19,10 +17,11 @@ from .constants.physics_constants import (
     DRAG_SLOW,
     FRICTION_GROUND,
     FRICTION_GROUND_SLOW,
+    GROUND_ACCEL,
+    AIR_ACCEL,
+    LEVEL_HEIGHT_PX,
 )
-from .gym_environment.constants import LEVEL_DIAGONAL
 from . import render_utils
-from .nplay_headless_entity_cache import EntityCacheManager
 
 
 class NPlayHeadless:
@@ -68,6 +67,8 @@ class NPlayHeadless:
 
         # Only initialize rendering if needed
         if self.enable_rendering:
+            import pygame
+
             # OPTIMIZATION: Always use grayscale in headless mode (grayscale_array)
             # RGB only used for human viewing (render_mode="human")
             # This eliminates expensive RGB->grayscale conversion (~30% speedup)
@@ -108,17 +109,15 @@ class NPlayHeadless:
         self.cached_render_surface = None
         self.cached_render_buffer = None
 
-        # Entity cache for performance optimization
-        # PERFORMANCE: Precomputes static entity data, eliminating per-frame iteration
-        self.entity_cache = EntityCacheManager()
-
-    def _perform_grayscale_conversion(self, surface: pygame.Surface) -> np.ndarray:
+    def _perform_grayscale_conversion(self, surface: Any) -> np.ndarray:
         """
         Converts a Pygame surface to a grayscaled NumPy array (H, W, 1).
         OPTIMIZED: If surface is already grayscale (8-bit), use fast path.
         """
         # OPTIMIZATION: Check if surface is already grayscale (8-bit with palette)
         if surface.get_bytesize() == 1:
+            import pygame
+
             # Grayscale surface - use fast pixels2d (no RGB conversion needed!)
             try:
                 # Get direct reference to pixel data (W, H)
@@ -183,12 +182,6 @@ class NPlayHeadless:
 
             clear_pathfinding_caches(self.sim_renderer.debug_overlay_renderer)
 
-        # Build entity cache after map is loaded
-        # PERFORMANCE: Precomputes static entity data (positions, types)
-        from nclone.cache_management import rebuild_entity_cache
-
-        rebuild_entity_cache(self)
-
     def load_map(self, map_path: str):
         """
         Load a map from a file.
@@ -236,29 +229,30 @@ class NPlayHeadless:
         Reset the simulation to the initial state, including rendering caches and ticks.
         """
         self.sim.reset()
-        # Clear rendering caches
-        from nclone.cache_management import (
-            clear_render_caches,
-            clear_pathfinding_caches,
-        )
 
-        clear_render_caches(self)
-        # Clear pathfinding cache when ninja resets (position changes)
-        if hasattr(self, "sim_renderer") and hasattr(
-            self.sim_renderer, "debug_overlay_renderer"
-        ):
-            clear_pathfinding_caches(self.sim_renderer.debug_overlay_renderer)
+        if self.enable_rendering:
+            # Clear rendering caches
+            from nclone.cache_management import (
+                clear_render_caches,
+                clear_pathfinding_caches,
+            )
+
+            clear_render_caches(self)
+            # Clear pathfinding cache when ninja resets (position changes)
+            if hasattr(self, "sim_renderer") and hasattr(
+                self.sim_renderer, "debug_overlay_renderer"
+            ):
+                clear_pathfinding_caches(self.sim_renderer.debug_overlay_renderer)
 
     def tick(self, horizontal_input: int, jump_input: int):
         """
         Tick the simulation with the given horizontal and jump inputs.
         """
         self.current_tick += 1
-        # Invalidate both caches since a tick advanced
-        self.cached_render_surface = None
-        self.cached_render_buffer = None
         self.sim.tick(horizontal_input, jump_input)
-        if self.render_mode == "human":
+        if self.enable_rendering:
+            self.cached_render_surface = None
+            self.cached_render_buffer = None
             self.clock.tick(60)
 
     def render(self, debug_info: Optional[dict] = None):
@@ -477,7 +471,10 @@ class NPlayHeadless:
         return self.sim.tile_dic
 
     def exit(self):
-        pygame.quit()
+        if self.enable_rendering:
+            import pygame
+
+            pygame.quit()
 
     def get_ninja_terminal_impact(self):
         return self.sim.ninja.terminal_impact
@@ -486,12 +483,13 @@ class NPlayHeadless:
         """Get ninja state as a list of floats with fixed length, all normalized between -1 and 1.
 
         Returns:
-            List of GAME_STATE_CHANNELS floats representing enhanced ninja state:
+            List of GAME_STATE_CHANNELS floats representing ninja state:
             - Core movement state (8 features)
             - Input and buffer state (5 features)
             - Surface contact information (6 features)
-            - Momentum and physics (2 features)
             - Additional physics state (7 features)
+            - Temporal features (6 features)
+            - Physics features (8 features)
         """
         ninja = self.sim.ninja
         state = []
@@ -574,20 +572,9 @@ class NPlayHeadless:
         surface_slope = ninja.floor_normalized_y  # Already [-1, 1]
         state.append(surface_slope)
 
-        # === Momentum and Physics (2 features) ===
+        # === Additional Physics State (5 features) ===
 
-        # 20-21. Recent acceleration (change in velocity)
-        accel_x = (
-            ninja.xspeed - ninja.xspeed_old
-        ) / MAX_HOR_SPEED  # Normalize by max speed
-        accel_y = (ninja.yspeed - ninja.yspeed_old) / MAX_HOR_SPEED
-        accel_x = max(-1.0, min(1.0, accel_x))  # Clamp to [-1, 1]
-        accel_y = max(-1.0, min(1.0, accel_y))
-        state.extend([accel_x, accel_y])
-
-        # === Additional Physics State (7 features) ===
-
-        # 22. Applied gravity (normalized between GRAVITY_JUMP and GRAVITY_FALL)
+        # 20. Applied gravity (normalized between GRAVITY_JUMP and GRAVITY_FALL)
         # GRAVITY_JUMP < GRAVITY_FALL, so normalize: -1 = GRAVITY_JUMP, 1 = GRAVITY_FALL
         gravity_range = GRAVITY_FALL - GRAVITY_JUMP
         if gravity_range > 1e-6:
@@ -598,24 +585,20 @@ class NPlayHeadless:
             gravity_norm = 0.0
         state.append(gravity_norm)
 
-        # 23. Jump duration (normalized by MAX_JUMP_DURATION, clamped to [-1, 1])
-        jump_duration_norm = min(ninja.jump_duration / MAX_JUMP_DURATION, 1.0) * 2 - 1
-        state.append(jump_duration_norm)
-
-        # 24. Walled status (boolean to -1/1)
+        # 21. Walled status (boolean to -1/1)
         walled_status = 1.0 if ninja.walled else -1.0
         state.append(walled_status)
 
-        # 25. Floor normal x-component (full x-component, already [-1, 1])
+        # 22. Floor normal x-component (full x-component, already [-1, 1])
         floor_normal_x = ninja.floor_normalized_x
         state.append(floor_normal_x)
 
-        # 26-27. Ceiling normal vector (full ceiling normal, already [-1, 1])
+        # 23-24. Ceiling normal vector (full ceiling normal, already [-1, 1])
         ceiling_normal_x = ninja.ceiling_normalized_x
         ceiling_normal_y = ninja.ceiling_normalized_y
         state.extend([ceiling_normal_x, ceiling_normal_y])
 
-        # 28. Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
+        # 25. Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
         # DRAG_SLOW < DRAG_REGULAR, so normalize: -1 = DRAG_SLOW, 1 = DRAG_REGULAR
         drag_range = DRAG_REGULAR - DRAG_SLOW
         if drag_range > 1e-6:
@@ -624,7 +607,7 @@ class NPlayHeadless:
             drag_norm = 0.0
         state.append(drag_norm)
 
-        # 29. Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
+        # 26. Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
         # FRICTION_GROUND_SLOW < FRICTION_GROUND, so normalize: -1 = FRICTION_GROUND_SLOW, 1 = FRICTION_GROUND
         friction_range = FRICTION_GROUND - FRICTION_GROUND_SLOW
         if friction_range > 1e-6:
@@ -635,127 +618,54 @@ class NPlayHeadless:
             friction_norm = 0.0
         state.append(friction_norm)
 
-        return state
+        # === Temporal Features (6 features) ===
+        # 27-32. Temporal dynamics from ninja.get_temporal_features()
+        temporal_features = ninja.get_temporal_features()
+        state.extend(temporal_features)
 
-    def get_sequential_goal_features(self) -> list:
-        """Get sequential goal progression features for hierarchical learning.
+        # === Enhanced Physics Features (8 features) ===
 
-        Returns 3 features encoding switch→door sequence:
-        [0] goal_phase: -1.0 (pre-switch) | 0.0 (post-switch, pre-door) | 1.0 (at door)
-        [1] switch_priority: 1.0 if switch not collected, else 0.0
-        [2] door_priority: 0.0 if switch not collected, else 1.0
+        # 33. Kinetic energy (normalized, always computable from current velocity)
+        kinetic_energy = 0.5 * (ninja.xspeed**2 + ninja.yspeed**2)
+        kinetic_energy_norm = min(kinetic_energy / (MAX_HOR_SPEED**2), 1.0) * 2 - 1
+        state.append(kinetic_energy_norm)
 
-        Returns:
-            List of 3 floats in [-1, 1]
-        """
-        features = []
+        # 34. Potential energy (height-based, using current position)
+        potential_energy_norm = (ninja.ypos / LEVEL_HEIGHT_PX) * 2 - 1
+        state.append(potential_energy_norm)
 
-        # Get switch state
-        exit_switch_collected = self.exit_switch_activated()
+        # 35. Applied force magnitude (from current physics constants)
+        force_magnitude = math.sqrt(
+            ninja.applied_gravity**2
+            + (GROUND_ACCEL if not ninja.airborn else AIR_ACCEL) ** 2
+        )
+        force_magnitude_norm = min(force_magnitude / 0.1, 1.0) * 2 - 1
+        state.append(force_magnitude_norm)
 
-        # Get distance to door
-        ninja_x, ninja_y = self.ninja_position()
-        door_x, door_y = self.exit_door_position()
-        dist_to_door = ((ninja_x - door_x) ** 2 + (ninja_y - door_y) ** 2) ** 0.5
-        near_door = dist_to_door < 50.0
+        # 36. Energy change rate (using already-tracked xspeed_old, yspeed_old)
+        prev_kinetic = 0.5 * (ninja.xspeed_old**2 + ninja.yspeed_old**2)
+        energy_change_rate = (kinetic_energy - prev_kinetic) / max(
+            kinetic_energy + 0.01, 0.01
+        )
+        energy_change_norm = max(-1.0, min(1.0, energy_change_rate))
+        state.append(energy_change_norm)
 
-        # Feature 0: Goal phase
-        if not exit_switch_collected:
-            goal_phase = -1.0
-        elif not near_door:
-            goal_phase = 0.0
-        else:
-            goal_phase = 1.0
-        features.append(goal_phase)
+        # 37. Contact strength (normalized floor contact count)
+        floor_contact_strength = min(ninja.floor_count / 5.0, 1.0) * 2 - 1
+        state.append(floor_contact_strength)
 
-        # Features 1-2: Priority weights
-        switch_priority = 1.0 if not exit_switch_collected else 0.0
-        door_priority = 1.0 - switch_priority
-        features.extend([switch_priority, door_priority])
+        # 38. Wall contact strength (normalized wall contact count)
+        wall_contact_strength = min(ninja.wall_count / 3.0, 1.0) * 2 - 1
+        state.append(wall_contact_strength)
 
-        return features
+        # 39. Surface slope angle (from existing floor_normalized_x, floor_normalized_y)
+        surface_slope = (
+            math.atan2(ninja.floor_normalized_y, ninja.floor_normalized_x) / math.pi
+        )
+        state.append(surface_slope)
 
-    def get_entity_states(self, area_scale: Optional[float] = None):
-        """Get all entity states as a list of floats with fixed length, all normalized between 0 and 1.
-
-        Args:
-            area_scale: Optional reachable area scale for distance normalization.
-                       If None, falls back to LEVEL_DIAGONAL.
-
-        PERFORMANCE: Uses precomputed entity cache (~10x speedup: 2.0s → 0.2s per 858 steps)
-        """
-        # Use entity cache if available (fast path)
-        if hasattr(self, "entity_cache") and self.entity_cache.is_cache_built():
-            ninja = self.sim.ninja
-            ninja_pos = (ninja.xpos, ninja.ypos)
-
-            # Get cached entity states
-            # PERFORMANCE: O(1) array access instead of entity iteration
-            state_array = self.entity_cache.get_entity_states(
-                ninja_pos, max_entities_per_type=128, minimal_state=False
-            )
-
-            return state_array.tolist()
-
-        # Fallback: Original implementation (cache not built yet)
-        state = []
-        # Maximum number of attributes per entity (padding with zeros if entity has fewer attributes)
-        MAX_ATTRIBUTES = 6
-
-        # Entity type to max count mapping based on our own constraints
-        MAX_COUNTS = {
-            # Support max amount of mines and gold; otherwise, constrain to 32
-            EntityType.TOGGLE_MINE: 128,
-            EntityType.EXIT_DOOR: 1,
-            EntityType.LOCKED_DOOR: 32,
-            EntityType.LAUNCH_PAD: 32,
-        }
-
-        entity_types = list(MAX_COUNTS.keys())
-
-        # Use provided area_scale or fallback to LEVEL_DIAGONAL
-        distance_scale = area_scale if area_scale is not None else LEVEL_DIAGONAL
-
-        # For each entity type in the simulation
-        for entity_type in entity_types:
-            entities = self.sim.entity_dic.get(entity_type, [])
-            # Default to 16 if not specified
-            max_count = MAX_COUNTS.get(entity_type, 16)
-
-            state.append(float(len(entities)) / max_count)
-
-            # Process each entity up to max_count
-            for entity_idx in range(max_count):
-                # If we have an actual entity at this index
-                if entity_idx < len(entities):
-                    entity = entities[entity_idx]
-                    entity_state = entity.get_state()
-
-                    ninja = self.sim.ninja
-                    # Distance to ninja (normalized by reachable area scale or screen diagonal)
-                    dx = entity.xpos - ninja.xpos
-                    dy = entity.ypos - ninja.ypos
-                    distance = (dx**2 + dy**2) ** 0.5
-                    normalized_distance = min(distance / distance_scale, 1.0)
-                    entity_state.append(normalized_distance)
-
-                    # Relative velocity (if entity has velocity attributes)
-                    if hasattr(entity, "xspeed") and hasattr(entity, "yspeed"):
-                        # Relative velocity magnitude normalized by ninja's max speed
-                        rel_vx = entity.xspeed - ninja.xspeed
-                        rel_vy = entity.yspeed - ninja.yspeed
-                        rel_speed = (rel_vx**2 + rel_vy**2) ** 0.5
-                        normalized_rel_speed = min(rel_speed / MAX_HOR_SPEED, 1.0)
-                        entity_state.append(normalized_rel_speed)
-                    else:
-                        entity_state.append(0.0)  # No velocity information
-
-                    while len(entity_state) < MAX_ATTRIBUTES:
-                        entity_state.append(0.0)
-
-                    state.extend(entity_state)
-                else:
-                    # Add padding for non-existent entity
-                    state.extend([0.0] * MAX_ATTRIBUTES)
+        # 40. Wall interaction strength (from existing wall_normal, already computed)
+        wall_interaction = ninja.wall_normal if ninja.walled else 0.0
+        state.append(wall_interaction)
 
         return state

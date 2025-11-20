@@ -28,7 +28,6 @@ class DebugMixin:
         self._enable_debug_overlay = enable_debug_overlay
 
         # Debug visualization state
-        self._exploration_debug_enabled: bool = False
         self._grid_debug_enabled: bool = False
         self._tile_types_debug_enabled: bool = False
         self._reachability_debug_enabled: bool = False
@@ -105,11 +104,6 @@ class DebugMixin:
 
             info.update(env_info)
 
-            # Add exploration debug info if enabled
-            if self._exploration_debug_enabled:
-                exploration_info = self._get_exploration_debug_info(ninja_x, ninja_y)
-                info["exploration"] = exploration_info
-
             # Add grid outline debug info if enabled
             if self._grid_debug_enabled:
                 info["grid_outline"] = True
@@ -155,47 +149,6 @@ class DebugMixin:
                 return pbrs_calc._cached_surface_area
         return None
 
-    def _get_exploration_debug_info(
-        self, ninja_x: float, ninja_y: float
-    ) -> Dict[str, Any]:
-        """Get exploration debug information."""
-        cell_x, cell_y = self.reward_calculator.exploration_calculator._get_cell_coords(
-            ninja_x, ninja_y
-        )
-        area_4x4_x = cell_x // 4
-        area_4x4_y = cell_y // 4
-        area_8x8_x = cell_x // 8
-        area_8x8_y = cell_y // 8
-        area_16x16_x = cell_x // 16
-        area_16x16_y = cell_y // 16
-
-        return {
-            "current_cell": (cell_x, cell_y),
-            "current_4x4_area": (area_4x4_x, area_4x4_y),
-            "current_8x8_area": (area_8x8_x, area_8x8_y),
-            "current_16x16_area": (area_16x16_x, area_16x16_y),
-            "visited_cells": self.reward_calculator.exploration_calculator.visited_cells,
-            "visited_4x4": self.reward_calculator.exploration_calculator.visited_4x4,
-            "visited_8x8": self.reward_calculator.exploration_calculator.visited_8x8,
-            "visited_16x16": self.reward_calculator.exploration_calculator.visited_16x16,
-            "visited_cells_count": np.sum(
-                self.reward_calculator.exploration_calculator.visited_cells
-            ),
-            "visited_4x4_count": np.sum(
-                self.reward_calculator.exploration_calculator.visited_4x4
-            ),
-            "visited_8x8_count": np.sum(
-                self.reward_calculator.exploration_calculator.visited_8x8
-            ),
-            "visited_16x16_count": np.sum(
-                self.reward_calculator.exploration_calculator.visited_16x16
-            ),
-        }
-
-    def set_exploration_debug_enabled(self, enabled: bool):
-        """Enable/disable exploration debug overlay visualization."""
-        self._exploration_debug_enabled = bool(enabled)
-
     def set_grid_debug_enabled(self, enabled: bool):
         """Enable/disable grid outline debug overlay visualization."""
         self._grid_debug_enabled = bool(enabled)
@@ -227,31 +180,6 @@ class DebugMixin:
         ):
             return self.nplay_headless.sim_renderer.debug_overlay_renderer
         return None
-
-    def set_subgoal_debug_enabled(self, enabled: bool):
-        """Enable or disable subgoal visualization."""
-        renderer = self.debug_overlay_renderer
-        if renderer:
-            renderer.set_subgoal_debug_enabled(enabled)
-
-    def set_subgoal_visualization_mode(self, mode: str):
-        """Set subgoal visualization mode."""
-        renderer = self.debug_overlay_renderer
-        if renderer:
-            renderer.set_subgoal_visualization_mode(mode)
-
-    def set_subgoal_data(self, subgoals, plan=None, reachable_positions=None):
-        """Set subgoal data for visualization."""
-        renderer = self.debug_overlay_renderer
-        if renderer:
-            renderer.set_subgoal_data(subgoals, plan, reachable_positions)
-
-    def export_subgoal_visualization(self, filename: str) -> bool:
-        """Export subgoal visualization to image file."""
-        renderer = self.debug_overlay_renderer
-        if renderer:
-            return renderer.export_subgoal_visualization(filename)
-        return False
 
     def set_adjacency_graph_debug_enabled(self, enabled: bool):
         """Enable/disable adjacency graph debug visualization."""
