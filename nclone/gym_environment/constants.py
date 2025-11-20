@@ -17,8 +17,8 @@ RENDERED_VIEW_WIDTH = 100  # 100 / 6
 RENDERED_VIEW_HEIGHT = 176  # 1056 / 6
 RENDERED_VIEW_CHANNELS = 1  # Grayscale
 
-# Game state feature dimensions
-NINJA_STATE_DIM = 29
+# Game state feature dimensions (enhanced physics + time_remaining)
+NINJA_STATE_DIM = 41  # 40 enhanced physics features + 1 time_remaining
 GAME_STATE_CHANNELS = NINJA_STATE_DIM
 
 # Switch states array (legacy format, still used by some components)
@@ -32,7 +32,10 @@ LOCKED_DOOR_FEATURES_DIM = 8  # [switch_x, switch_y, switch_collected, switch_pa
 LOCKED_DOOR_ARRAY_SIZE = MAX_LOCKED_DOORS_ATTENTION * LOCKED_DOOR_FEATURES_DIM  # 128
 
 # Reachability features dimension
-REACHABILITY_FEATURES_DIM = 6
+# 7 features: [reachable_area_ratio, dist_to_switch, dist_to_exit, exit_reachable,
+#              total_mines_norm, deadly_mine_ratio, switch_activated]
+# The 7th feature (switch_activated) is critical for Markov property - explicit phase indicator
+REACHABILITY_FEATURES_DIM = 7
 
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0

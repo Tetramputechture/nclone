@@ -402,15 +402,9 @@ class UnifiedObservationExtractor:
         # Extract ninja state using the standardized method
         ninja_state = nplay_wrapper.get_ninja_state()
 
-        # Extract entity states using the standardized method
-        entity_states = nplay_wrapper.get_entity_states()
-
-        # Combine ninja and entity states (matching NppEnvironment format)
-        game_state = np.concatenate([ninja_state, entity_states])
-
         # Build raw observation dictionary matching NppEnvironment._get_observation()
         obs = {
-            "game_state": game_state,
+            "game_state": ninja_state,
             "player_dead": nplay_wrapper.ninja_has_died(),
             "player_won": nplay_wrapper.ninja_has_won(),
             "player_x": nplay_wrapper.ninja_position()[0],
@@ -422,7 +416,6 @@ class UnifiedObservationExtractor:
             "exit_door_y": nplay_wrapper.exit_door_position()[1],
             "time_remaining": time_remaining,
             "sim_frame": sim.frame,
-            "entity_states": entity_states,  # Raw entity states for PBRS
             "reachability_features": self._get_reachability_features(sim, frame_number),
         }
 

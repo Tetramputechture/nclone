@@ -181,6 +181,14 @@ class Ninja:
         # Track consecutive frames airborne for death context learning
         self.frames_airborne = 0
 
+        # Track state transitions for temporal features
+        self.state_change_frame = 0  # Frames since last state change
+        self.previous_state = 0  # Track previous state
+
+        # Track consecutive contact frames for stability features
+        self.consecutive_floor_frames = 0
+        self.consecutive_wall_frames = 0
+
         self.log()
 
     def integrate(self):
@@ -272,54 +280,99 @@ class Ninja:
             self.sim, self.xpos - rad, self.ypos - rad, self.xpos + rad, self.ypos + rad
         )
 
+        # Cache frequently accessed instance variables for performance
+        xpos = self.xpos
+        ypos = self.ypos
+        xspeed = self.xspeed
+        yspeed = self.yspeed
+        x_crush = self.x_crush
+        y_crush = self.y_crush
+        crush_len = self.crush_len
+        ceiling_count = self.ceiling_count
+        ceiling_normal_x = self.ceiling_normal_x
+        ceiling_normal_y = self.ceiling_normal_y
+        floor_count = self.floor_count
+        floor_normal_x = self.floor_normal_x
+        floor_normal_y = self.floor_normal_y
+
         # Find the closest point from the ninja, apply depenetration and update speed. Loop 32 times.
         for _ in range(32):
             result, closest_point = get_single_closest_point(
-                self.sim, self.xpos, self.ypos, NINJA_RADIUS, segments=segments
+                self.sim, xpos, ypos, NINJA_RADIUS, segments=segments
             )
             if result == 0:
                 break
             a, b = closest_point
-            dx = self.xpos - a
-            dy = self.ypos - b
+            dx = xpos - a
+            dy = ypos - b
             # This part tries to reproduce corner cases in some positions. Band-aid solution, and not in the game's code.
             if abs(dx) <= 0.0000001:
                 dx = 0
-                if self.xpos in (50.51197510492316, 49.23232124849253):
+                if xpos in (50.51197510492316, 49.23232124849253):
                     dx = -(2**-47)
-                if self.xpos == 49.153536108584795:
+                if xpos == 49.153536108584795:
                     dx = 2**-47
-            dist = math.sqrt(dx**2 + dy**2)
+
+            # Compute distance squared first for early exit optimization
+            dx_sq = dx * dx
+            dy_sq = dy * dy
+            dist_sq = dx_sq + dy_sq
+
+            # Early exit before expensive sqrt if distance is too small
+            if dist_sq < 1e-16:  # Equivalent to dist < 1e-8
+                break
+
+            dist = math.sqrt(dist_sq)
             depen_len = NINJA_RADIUS - dist * result
-            if dist == 0 or depen_len < 0.0000001:
-                return
+            if depen_len < 0.0000001:
+                break
+
+            # Compute normalized direction once and reuse
             inv_dist = 1.0 / dist
-            depen_x = dx * inv_dist * depen_len
-            depen_y = dy * inv_dist * depen_len
-            self.xpos += depen_x
-            self.ypos += depen_y
-            self.x_crush += depen_x
-            self.y_crush += depen_y
-            self.crush_len += depen_len
-            dot_product = self.xspeed * dx + self.yspeed * dy
-            if (
-                dot_product < 0
-            ):  # Project velocity onto surface only if moving towards surface
-                cross_product = self.xspeed * dy - self.yspeed * dx
+            norm_dx = dx * inv_dist
+            norm_dy = dy * inv_dist
+
+            # Apply depenetration using precomputed normalized direction
+            depen_x = norm_dx * depen_len
+            depen_y = norm_dy * depen_len
+            xpos += depen_x
+            ypos += depen_y
+            x_crush += depen_x
+            y_crush += depen_y
+            crush_len += depen_len
+
+            # Project velocity onto surface only if moving towards surface
+            dot_product = xspeed * dx + yspeed * dy
+            if dot_product < 0:
+                cross_product = xspeed * dy - yspeed * dx
                 inv_dist_sq = inv_dist * inv_dist
-                xspeed_new = cross_product * inv_dist_sq * dy
-                yspeed_new = cross_product * inv_dist_sq * (-dx)
-                self.xspeed = xspeed_new
-                self.yspeed = yspeed_new
-            # Adjust ceiling variables if ninja collides with ceiling (or wall!)
+                xspeed = cross_product * inv_dist_sq * dy
+                yspeed = cross_product * inv_dist_sq * (-dx)
+
+            # Adjust ceiling/floor variables using precomputed normalized direction
             if dy >= -0.0001:
-                self.ceiling_count += 1
-                self.ceiling_normal_x += dx * inv_dist
-                self.ceiling_normal_y += dy * inv_dist
-            else:  # Adjust floor variables if ninja collides with floor
-                self.floor_count += 1
-                self.floor_normal_x += dx * inv_dist
-                self.floor_normal_y += dy * inv_dist
+                ceiling_count += 1
+                ceiling_normal_x += norm_dx
+                ceiling_normal_y += norm_dy
+            else:
+                floor_count += 1
+                floor_normal_x += norm_dx
+                floor_normal_y += norm_dy
+
+        # Write back cached variables to instance
+        self.xpos = xpos
+        self.ypos = ypos
+        self.xspeed = xspeed
+        self.yspeed = yspeed
+        self.x_crush = x_crush
+        self.y_crush = y_crush
+        self.crush_len = crush_len
+        self.ceiling_count = ceiling_count
+        self.ceiling_normal_x = ceiling_normal_x
+        self.ceiling_normal_y = ceiling_normal_y
+        self.floor_count = floor_count
+        self.floor_normal_x = floor_normal_x
+        self.floor_normal_y = floor_normal_y
 
     def post_collision(self, skip_entities=False):
         """Perform logical collisions with entities, check for airborn state,
@@ -428,6 +481,17 @@ class Ninja:
             self.frames_airborne += 1
         else:
             self.frames_airborne = 0
+
+        # Track consecutive contact frames for stability features
+        if not self.airborn:
+            self.consecutive_floor_frames += 1
+        else:
+            self.consecutive_floor_frames = 0
+
+        if self.walled:
+            self.consecutive_wall_frames += 1
+        else:
+            self.consecutive_wall_frames = 0
 
         # Calculate the combined ceiling normalized normal vector if the ninja has touched any ceiling.
         if self.ceiling_count > 0:
@@ -723,6 +787,13 @@ class Ninja:
         """This function handles all the ninja's actions depending of the inputs and its environment."""
         # Reset buffer tracking flag at start of each frame
         self.last_jump_was_buffered = False
+
+        # Track state transitions for temporal features
+        if self.state != self.previous_state:
+            self.state_change_frame = 0
+            self.previous_state = self.state
+        else:
+            self.state_change_frame += 1
 
         # Logic to determine if you're starting a new jump.
         if not self.jump_input:
@@ -1079,6 +1150,35 @@ class Ninja:
         self.bones_old = self.bones
         self.bones = self.new_bones
         self.new_bones = self.bones_old
+
+    def get_temporal_features(self):
+        """Extract 6 temporal features for RL observation space.
+
+        Returns:
+            List of 6 floats normalized to [-1, 1] range:
+            - velocity_change_x: Frame-to-frame acceleration in x
+            - velocity_change_y: Frame-to-frame acceleration in y
+            - momentum_magnitude: Current velocity magnitude
+            - frames_airborne_normalized: Consecutive frames airborne
+            - jump_duration_normalized: Current jump duration
+            - state_transition_timing: Frames since last state change
+        """
+        return [
+            # velocity_change_x: Frame-to-frame acceleration (already normalized)
+            max(-1.0, min(1.0, (self.xspeed - self.xspeed_old) / MAX_HOR_SPEED)),
+            # velocity_change_y: Frame-to-frame acceleration (already normalized)
+            max(-1.0, min(1.0, (self.yspeed - self.yspeed_old) / MAX_HOR_SPEED)),
+            # momentum_magnitude: Current velocity magnitude for momentum tracking
+            min(math.sqrt(self.xspeed**2 + self.yspeed**2) / (MAX_HOR_SPEED * 1.5), 1.0)
+            * 2
+            - 1,
+            # frames_airborne_normalized: Consecutive frames airborne (for landing prediction)
+            min(self.frames_airborne / 60.0, 1.0) * 2 - 1,
+            # jump_duration_normalized: Current jump duration (for jump timing)
+            min(self.jump_duration / MAX_JUMP_DURATION, 1.0) * 2 - 1,
+            # state_transition_timing: Frames since last state change (for physics awareness)
+            min(self.state_change_frame / 30.0, 1.0) * 2 - 1,
+        ]
 
     def win(self):
         """Set ninja's state to celebrating."""

@@ -146,6 +146,38 @@ class GraphMixin:
                 "Graph building must succeed before computing reachable area scale."
             )
 
+        # Validate graph has at least 1 node (catch completely broken graphs)
+        # Note: Even very small maps (2-3 nodes) can be valid
+        logger = logging.getLogger(__name__)
+        MIN_GRAPH_NODES = 1
+        if len(adjacency) < MIN_GRAPH_NODES:
+            map_name = getattr(self, "map_loader", None)
+            if map_name and hasattr(map_name, "current_map_name"):
+                map_name = map_name.current_map_name
+            else:
+                map_name = "unknown"
+
+            logger.error(
+                f"CRITICAL: Empty graph detected with {len(adjacency)} nodes! "
+                f"Map: {map_name}"
+            )
+            raise RuntimeError(
+                f"Empty graph: {len(adjacency)} nodes. "
+                f"This indicates a critical bug in graph building."
+            )
+
+        # Log warning for very small graphs (likely indicates spawn isolation issue)
+        if len(adjacency) < 10:
+            map_name = getattr(self, "map_loader", None)
+            if map_name and hasattr(map_name, "current_map_name"):
+                map_name = map_name.current_map_name
+            else:
+                map_name = "unknown"
+            logger.warning(
+                f"Small graph detected: {len(adjacency)} nodes. "
+                f"Map: {map_name}. This may indicate spawn isolation or very small map."
+            )
+
         # Get player start position from level_data
         start_position = getattr(level_data, "start_position", None)
         if start_position is None:
@@ -344,79 +376,186 @@ class GraphMixin:
         # Use existing level_data property
         return self.level_data
 
-    def _get_graph_observations(self) -> Dict[str, np.ndarray]:
-        """Get complete graph observations for HGT processing with full 56/6 features.
+    def _get_graph_observations(self, use_sparse: bool = True) -> Dict[str, np.ndarray]:
+        """Get complete graph observations for HGT processing.
 
-        MEMORY OPTIMIZATION: Uses float16 for node/edge features to reduce memory by 50%.
-        The feature extractor will cast back to float32 for training, so there's no
-        precision loss during gradient computation.
+        Args:
+            use_sparse: If True, return sparse format (default). If False, return dense format.
+
+        MEMORY OPTIMIZATION (Sparse Format):
+        - Stores only valid nodes/edges without padding (~95% memory reduction)
+        - Uses float32 for features (converted from float16 in current_graph if needed)
+        - Edge indices remain uint16 (sufficient for max 4500 nodes)
+        - Returns arrays with actual sizes, not fixed N_MAX_NODES/E_MAX_EDGES
+
+        BACKWARD COMPATIBILITY (Dense Format):
+        - Uses float16 for node/edge features to reduce memory by 50%
+        - The feature extractor will cast back to float32 for training
         """
 
-        # Initialize empty graph observations with full feature dimensions
-        # MEMORY OPTIMIZATION: Use float16 for features (50% memory reduction)
-        graph_obs = {
-            "graph_node_feats": np.zeros(
-                (N_MAX_NODES, NODE_FEATURE_DIM),
-                dtype=np.float16,  # Changed from float32
-            ),  # 56 dims - stored as float16, cast to float32 during training
-            "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-            "graph_edge_feats": np.zeros(
-                (E_MAX_EDGES, EDGE_FEATURE_DIM),
-                dtype=np.float16,  # Changed from float32
-            ),  # 6 dims - stored as float16, cast to float32 during training
-            "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
-            "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
-            "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
-            "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
-        }
+        if use_sparse:
+            # SPARSE FORMAT: Return only valid nodes/edges without padding
+            # This achieves ~95% memory reduction in rollout buffer
+            #
+            # REACHABILITY FILTERING:
+            # Nodes are already filtered to only include those reachable from spawn
+            # via flood-fill because GraphMixin.build_graph() uses the default
+            # filter_by_reachability=True. This ensures consistency with PBRS potentials,
+            # which also use flood-fill from start position for surface area calculation.
+            #
+            # All nodes in graph_data are guaranteed to be reachable from player spawn,
+            # matching the reachability semantics used in reward shaping.
+            if self.current_graph is None:
+                # Return empty sparse observation with dummy dense arrays for VecEnv compatibility
+                obs_dict = {
+                    "graph_node_feats_sparse": np.zeros(
+                        (0, NODE_FEATURE_DIM), dtype=np.float32
+                    ),
+                    "graph_edge_index_sparse": np.zeros((2, 0), dtype=np.uint16),
+                    "graph_edge_feats_sparse": np.zeros(
+                        (0, EDGE_FEATURE_DIM), dtype=np.float32
+                    ),
+                    "graph_node_types_sparse": np.zeros(0, dtype=np.uint8),
+                    "graph_edge_types_sparse": np.zeros(0, dtype=np.uint8),
+                    "graph_num_nodes": np.array([0], dtype=np.int32),
+                    "graph_num_edges": np.array([0], dtype=np.int32),
+                }
+                # Add dummy dense arrays for VecEnv
+                obs_dict.update(
+                    {
+                        "graph_node_feats": np.zeros(
+                            (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float16
+                        ),
+                        "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.uint16),
+                        "graph_edge_feats": np.zeros(
+                            (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float16
+                        ),
+                        "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.uint8),
+                        "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.uint8),
+                        "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.uint8),
+                        "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.uint8),
+                    }
+                )
+                return obs_dict
 
-        # Fill with actual graph data if available
-        if self.current_graph is not None:
-            # Use the fine-resolution graph for primary observations
             graph_data = self.current_graph
+            num_nodes = graph_data.num_nodes
+            num_edges = graph_data.num_edges
 
-            # Copy node features (up to max nodes)
-            num_nodes = min(graph_data.num_nodes, N_MAX_NODES)
-            if (
-                hasattr(graph_data, "node_features")
-                and graph_data.node_features is not None
-            ):
-                graph_obs["graph_node_feats"][:num_nodes] = graph_data.node_features[
-                    :num_nodes
-                ]
+            # Extract only valid data (no padding)
+            # Note: All nodes here are already reachable-filtered by GraphBuilder
+            node_features = graph_data.node_features[:num_nodes].astype(np.float32)
+            edge_index = graph_data.edge_index[:, :num_edges].astype(np.uint16)
+            edge_features = graph_data.edge_features[:num_edges].astype(np.float32)
+            node_types = graph_data.node_types[:num_nodes].astype(np.uint8)
+            edge_types = graph_data.edge_types[:num_edges].astype(np.uint8)
 
-            # Copy edge index (up to max edges)
-            num_edges = min(graph_data.num_edges, E_MAX_EDGES)
-            if hasattr(graph_data, "edge_index") and graph_data.edge_index is not None:
-                graph_obs["graph_edge_index"][:, :num_edges] = graph_data.edge_index[
-                    :, :num_edges
-                ]
+            # Return BOTH sparse (for memory efficiency) and dense (for VecEnv compatibility)
+            # Dense arrays are empty/dummy to satisfy observation space requirements
+            # Sparse rollout buffer will extract and use only the sparse keys
+            obs_dict = {
+                # Sparse format (actual data, memory efficient)
+                "graph_node_feats_sparse": node_features,
+                "graph_edge_index_sparse": edge_index,
+                "graph_edge_feats_sparse": edge_features,
+                "graph_node_types_sparse": node_types,
+                "graph_edge_types_sparse": edge_types,
+                "graph_num_nodes": np.array([num_nodes], dtype=np.int32),
+                "graph_num_edges": np.array([num_edges], dtype=np.int32),
+            }
 
-            # Copy edge features (up to max edges)
-            if (
-                hasattr(graph_data, "edge_features")
-                and graph_data.edge_features is not None
-            ):
-                graph_obs["graph_edge_feats"][:num_edges] = graph_data.edge_features[
-                    :num_edges
-                ]
+            # Add dummy dense arrays to satisfy VecEnv/observation space requirements
+            # These are ignored by sparse rollout buffer but needed for VecEnv compatibility
+            obs_dict.update(
+                {
+                    "graph_node_feats": np.zeros(
+                        (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float16
+                    ),
+                    "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.uint16),
+                    "graph_edge_feats": np.zeros(
+                        (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float16
+                    ),
+                    "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.uint8),
+                    "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.uint8),
+                    "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.uint8),
+                    "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.uint8),
+                }
+            )
 
-            # Set masks
-            graph_obs["graph_node_mask"][:num_nodes] = 1
-            graph_obs["graph_edge_mask"][:num_edges] = 1
+            return obs_dict
+        else:
+            # DENSE FORMAT (backward compatibility): Padded to N_MAX_NODES/E_MAX_EDGES
+            graph_obs = {
+                "graph_node_feats": np.zeros(
+                    (N_MAX_NODES, NODE_FEATURE_DIM),
+                    dtype=np.float16,
+                ),
+                "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.uint16),
+                "graph_edge_feats": np.zeros(
+                    (E_MAX_EDGES, EDGE_FEATURE_DIM),
+                    dtype=np.float16,
+                ),
+                "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.uint8),
+                "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.uint8),
+                "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.uint8),
+                "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.uint8),
+            }
 
-            # Copy node and edge types
-            if hasattr(graph_data, "node_types") and graph_data.node_types is not None:
-                graph_obs["graph_node_types"][:num_nodes] = graph_data.node_types[
-                    :num_nodes
-                ]
+            # Fill with actual graph data if available
+            if self.current_graph is not None:
+                graph_data = self.current_graph
 
-            if hasattr(graph_data, "edge_types") and graph_data.edge_types is not None:
-                graph_obs["graph_edge_types"][:num_edges] = graph_data.edge_types[
-                    :num_edges
-                ]
+                # Copy node features (up to max nodes)
+                num_nodes = min(graph_data.num_nodes, N_MAX_NODES)
+                if (
+                    hasattr(graph_data, "node_features")
+                    and graph_data.node_features is not None
+                ):
+                    graph_obs["graph_node_feats"][:num_nodes] = (
+                        graph_data.node_features[:num_nodes]
+                    )
 
-        return graph_obs
+                # Copy edge index (up to max edges)
+                num_edges = min(graph_data.num_edges, E_MAX_EDGES)
+                if (
+                    hasattr(graph_data, "edge_index")
+                    and graph_data.edge_index is not None
+                ):
+                    graph_obs["graph_edge_index"][:, :num_edges] = (
+                        graph_data.edge_index[:, :num_edges]
+                    )
+
+                # Copy edge features (up to max edges)
+                if (
+                    hasattr(graph_data, "edge_features")
+                    and graph_data.edge_features is not None
+                ):
+                    graph_obs["graph_edge_feats"][:num_edges] = (
+                        graph_data.edge_features[:num_edges]
+                    )
+
+                # Set masks
+                graph_obs["graph_node_mask"][:num_nodes] = 1
+                graph_obs["graph_edge_mask"][:num_edges] = 1
+
+                # Copy node and edge types
+                if (
+                    hasattr(graph_data, "node_types")
+                    and graph_data.node_types is not None
+                ):
+                    graph_obs["graph_node_types"][:num_nodes] = graph_data.node_types[
+                        :num_nodes
+                    ]
+
+                if (
+                    hasattr(graph_data, "edge_types")
+                    and graph_data.edge_types is not None
+                ):
+                    graph_obs["graph_edge_types"][:num_edges] = graph_data.edge_types[
+                        :num_edges
+                    ]
+
+            return graph_obs
 
     def get_graph_data(self):
         """Get the fast graph data (adjacency dict) for pathfinding/reachability."""

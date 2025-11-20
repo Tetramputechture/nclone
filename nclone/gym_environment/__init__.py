@@ -19,7 +19,6 @@ from .environment_factory import (
     create_evaluation_env,
     make_vectorizable_env,
     create_vectorized_training_envs,
-    benchmark_environment_performance,
 )
 
 
@@ -38,5 +37,4 @@ __all__ = [
     "create_evaluation_env",
     "make_vectorizable_env",
     "create_vectorized_training_envs",
-    "benchmark_environment_performance",
 ]

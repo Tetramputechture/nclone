@@ -25,17 +25,10 @@ from ..graph.reachability.feature_computation import (
     compute_reachability_features_from_graph,
 )
 from ..graph.reachability.subcell_node_lookup import SUB_NODE_SIZE
-from ..graph.reachability.pathfinding_utils import (
-    find_closest_node_to_position,
-    extract_spatial_lookups_from_graph_data,
-    NODE_WORLD_COORD_OFFSET,
-)
 from ..constants.physics_constants import (
     MAP_TILE_WIDTH,
     MAP_TILE_HEIGHT,
-    NINJA_RADIUS,
 )
-from collections import deque
 from ..gym_environment.constants import (
     LEVEL_DIAGONAL,
     NINJA_STATE_DIM,
@@ -139,13 +132,13 @@ class ReplayExecutor:
         self._cached_level_data = None
         self._cached_graph_data = None
         self._cached_level_id = None
+        self._cached_switch_states: Dict[
+            str, bool
+        ] = {}  # Track switch states for graph rebuilding
 
         # Cache for GraphData objects (for graph observations)
         self._graph_data_cache: Dict[str, Any] = {}
         self._current_graph: Optional[Any] = None
-
-        # Cache for reachable area scale (per level ID)
-        self._reachable_area_scale_cache: Dict[str, float] = {}
 
     def _safe_path_distance(
         self,
@@ -199,9 +192,9 @@ class ReplayExecutor:
     def _get_reachable_area_scale(self) -> float:
         """Get reachable area scale for distance normalization.
 
-        Computes reachable surface area using flood-fill from start position,
-        then converts to distance scale: sqrt(surface_area) * SUB_NODE_SIZE.
-        Caches result per level ID to avoid repeated computations.
+        Uses shared cached surface area calculation from pathfinding_utils.
+        Avoids duplicate flood fill logic and ensures consistency with other
+        components that use the same surface area calculation.
 
         Returns:
             Distance scale in pixels (sqrt(surface_area) * SUB_NODE_SIZE)
@@ -209,6 +202,11 @@ class ReplayExecutor:
         Raises:
             RuntimeError: If graph/adjacency not available (no fallback)
         """
+        from nclone.graph.reachability.pathfinding_utils import (
+            get_cached_surface_area,
+            NODE_WORLD_COORD_OFFSET,
+        )
+
         # Get level data
         if self._cached_level_data is None:
             raise RuntimeError(
@@ -217,121 +215,77 @@ class ReplayExecutor:
 
         level_data = self._cached_level_data
 
-        # Generate level ID
-        level_id = None
-        if hasattr(level_data, "map_data_hash"):
-            level_id = str(level_data.map_data_hash)
-        elif hasattr(level_data, "id"):
-            level_id = str(level_data.id)
-        elif hasattr(level_data, "map_data"):
-            import hashlib
-
-            map_bytes = (
-                bytes(level_data.map_data)
-                if hasattr(level_data.map_data, "__iter__")
-                else b""
-            )
-            level_id = hashlib.md5(map_bytes).hexdigest()
-        else:
-            level_id = f"level_{id(level_data)}"
-
-        # Check cache
-        if level_id in self._reachable_area_scale_cache:
-            return self._reachable_area_scale_cache[level_id]
-
         # Get adjacency graph
         if self._cached_graph_data is None:
             raise RuntimeError(
-                "Cannot compute reachable area scale: graph data not available. "
-                "Graph must be built before computing reachable area scale."
+                "Cannot compute reachable area scale: graph data not available."
             )
 
         adjacency = self._cached_graph_data.get("adjacency")
         if not adjacency:
             raise RuntimeError(
-                "Cannot compute reachable area scale: adjacency graph is empty. "
-                "Graph building must succeed before computing reachable area scale."
+                "Cannot compute reachable area scale: adjacency graph is empty."
             )
 
-        # Get player start position from level_data
+        # Get player start position
         start_position = getattr(level_data, "start_position", None)
         if start_position is None:
             raise RuntimeError(
-                "Cannot compute reachable area scale: level_data missing start_position. "
-                "Surface area calculation requires player start position."
+                "Cannot compute reachable area scale: level_data missing start_position."
             )
 
-        # Convert start position to integer tuple (world space)
+        # Update switch states from simulator to ensure cache key is correct
+        self._update_level_data_switch_states(level_data)
+
+        # Generate cache key using LevelData utility method for consistency
+        cache_key = level_data.get_cache_key_for_reachability(
+            include_switch_states=True
+        )
+
+        # Convert to world space
         start_pos = (
             int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
             int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
         )
 
-        # Extract spatial lookups for O(1) node finding
-        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
-            self._cached_graph_data
+        # Use shared cached surface area calculation
+        surface_area = get_cached_surface_area(
+            cache_key, start_pos, adjacency, self._cached_graph_data
         )
 
-        # Find closest node to start position
-        PLAYER_RADIUS = NINJA_RADIUS
-        closest_node = find_closest_node_to_position(
-            start_pos,
-            adjacency,
-            threshold=PLAYER_RADIUS,
-            spatial_hash=spatial_hash,
-            subcell_lookup=subcell_lookup,
-        )
-
-        # If no node found within threshold, try with larger threshold
-        if closest_node is None:
-            closest_node = find_closest_node_to_position(
-                start_pos,
-                adjacency,
-                threshold=50.0,  # Relaxed threshold
-                spatial_hash=spatial_hash,
-                subcell_lookup=subcell_lookup,
-            )
-
-        if closest_node is None or closest_node not in adjacency:
-            raise RuntimeError(
-                "Cannot compute reachable area scale: no node found near start position. "
-                "Graph builder may have failed to find start position."
-            )
-
-        # Flood fill from start node to find all reachable nodes
-        reachable_nodes = set()
-        queue = deque([closest_node])
-        visited = set([closest_node])
-
-        while queue:
-            current = queue.popleft()
-            reachable_nodes.add(current)
-
-            # Get neighbors from adjacency
-            neighbors = adjacency.get(current, [])
-            for neighbor_info in neighbors:
-                if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
-                    neighbor_pos = neighbor_info[0]
-                    if neighbor_pos not in visited:
-                        visited.add(neighbor_pos)
-                        queue.append(neighbor_pos)
-
-        total_reachable_nodes = len(reachable_nodes)
-
-        if total_reachable_nodes == 0:
-            raise RuntimeError(
-                "Cannot compute reachable area scale: no nodes reachable from start position. "
-                "Level may have no traversable space from spawn."
-            )
-
-        # Convert surface area (number of nodes) to distance scale
-        surface_area = float(total_reachable_nodes)
+        # Convert to distance scale
         area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
 
-        # Cache result
-        self._reachable_area_scale_cache[level_id] = area_scale
-
         return area_scale
+
+    def _update_level_data_switch_states(self, level_data):
+        """Update level_data.switch_states from current simulator state.
+
+        This ensures cache keys include current switch states for proper
+        cache invalidation when switches change during replay.
+
+        Args:
+            level_data: LevelData instance to update
+
+        Returns:
+            bool: True if switch states changed, False otherwise
+        """
+        # Extract switch states from locked doors
+        locked_doors = self.nplay_headless.locked_doors()
+        current_states = {}
+        for i, locked_door in enumerate(locked_doors):
+            # Check if door is open (switch activated)
+            is_activated = not getattr(locked_door, "active", True)
+            current_states[f"locked_door_{i}"] = is_activated
+
+        # Check if states changed
+        states_changed = current_states != self._cached_switch_states
+
+        # Update level_data and cache
+        level_data.switch_states = current_states
+        self._cached_switch_states = current_states.copy()
+
+        return states_changed
 
     def execute_replay(
         self,
@@ -347,6 +301,15 @@ class ReplayExecutor:
         Returns:
             List of observations, one per frame
         """
+        # Clear surface area cache at start of each replay to prevent stale data
+        # from previous replays (especially important for BC pretraining)
+        from nclone.graph.reachability.pathfinding_utils import clear_surface_area_cache
+
+        clear_surface_area_cache()
+
+        # Store input sequence for time_remaining calculation
+        self._current_input_sequence = input_sequence
+
         # Load map
         self.nplay_headless.load_map_from_map_data(list(map_data))
 
@@ -361,15 +324,23 @@ class ReplayExecutor:
         # Only rebuild graph if level changed
         if level_id != self._cached_level_id or self._cached_graph_data is None:
             # Build graph once for the entire replay
+            # CRITICAL: Use filter_by_reachability=False for replays
+            # Replays may navigate through doors that close, creating isolated regions
+            # We need the full graph to properly compute features throughout the replay
             ninja_pos = (
                 int(self.nplay_headless.ninja_position()[0]),
                 int(self.nplay_headless.ninja_position()[1]),
             )
             self._cached_graph_data = self.graph_builder.build_graph(
-                level_data, ninja_pos=ninja_pos
+                level_data,
+                ninja_pos=ninja_pos,
+                filter_by_reachability=False,  # Full graph needed for replay execution
             )
             self._cached_level_data = level_data
             self._cached_level_id = level_id
+
+            # Initialize switch states cache for new level
+            self._cached_switch_states = {}
 
             # Build level cache once
             adjacency = self._cached_graph_data.get("adjacency")
@@ -420,11 +391,41 @@ class ReplayExecutor:
         - switch_x, switch_y: exit switch position
         - exit_door_x, exit_door_y: exit door position
         - switch_activated: whether switch has been activated
-        - game_state: ninja state (NINJA_STATE_DIM=29 features, physics only)
+        - game_state: ninja state (NINJA_STATE_DIM=41 features, enhanced physics + time_remaining)
         - reachability_features: 6-dimensional reachability vector
         - player_won: whether the player has won
         - player_dead: whether the player has died
         """
+        # Update level_data switch states BEFORE computing any features
+        # CRITICAL: This must happen before any path calculations or cache key generation
+        switch_states_changed = False
+        if self._cached_level_data is not None:
+            switch_states_changed = self._update_level_data_switch_states(
+                self._cached_level_data
+            )
+
+            # If switch states changed, rebuild the graph to reflect new door states
+            # This is critical for path distance calculations to work correctly
+            # Use filter_by_reachability=False to avoid filtering by spawn reachability,
+            # as the ninja may have moved through doors that closed behind them
+            if switch_states_changed:
+                ninja_pos = (
+                    int(self.nplay_headless.ninja_position()[0]),
+                    int(self.nplay_headless.ninja_position()[1]),
+                )
+                self._cached_graph_data = self.graph_builder.build_graph(
+                    self._cached_level_data,
+                    ninja_pos=ninja_pos,
+                    filter_by_reachability=False,  # Don't filter - ninja may be past closed doors
+                )
+
+                # Rebuild level cache with new graph
+                adjacency = self._cached_graph_data.get("adjacency")
+                if adjacency:
+                    self.path_calculator.build_level_cache(
+                        self._cached_level_data, adjacency, self._cached_graph_data
+                    )
+
         # Get ninja position
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
 
@@ -433,13 +434,22 @@ class ReplayExecutor:
         exit_door_x, exit_door_y = self._get_exit_door_position()
         switch_activated = self._is_switch_activated()
 
-        # Get game state (29-dim ninja physics only)
-        game_state = self.nplay_headless.get_ninja_state()
-        if not isinstance(game_state, np.ndarray):
-            game_state = np.array(game_state, dtype=np.float32)
+        # Get ninja state (40D enhanced physics)
+        ninja_state = self.nplay_headless.get_ninja_state()
+        if not isinstance(ninja_state, np.ndarray):
+            ninja_state = np.array(ninja_state, dtype=np.float32)
 
-        # Ensure correct dimension
-        game_state = game_state[:NINJA_STATE_DIM].astype(np.float32)
+        # Calculate time_remaining (for replay, we use frame progress as approximation)
+        # Note: In replay context, we don't have access to truncation limits,
+        # so we use a simple frame-based approximation
+        current_frame = self.nplay_headless.sim.frame
+        estimated_max_frames = len(getattr(self, "_current_input_sequence", [])) or 2000
+        time_remaining = max(
+            0.0, (estimated_max_frames - current_frame) / estimated_max_frames
+        )
+
+        # Create 41D game_state (40D physics + 1D time_remaining) to match environment
+        game_state = np.append(ninja_state[:40], time_remaining).astype(np.float32)
 
         # Compute reachability features (6-dim)
         reachability_features = self._compute_reachability_features(
@@ -753,30 +763,17 @@ class ReplayExecutor:
         return features
 
     def _get_area_scale(self) -> float:
-        """Get area scale for distance normalization."""
-        # Check if we have cached area scale for this level
-        if (
-            self._cached_level_id
-            and self._cached_level_id in self._reachable_area_scale_cache
-        ):
-            return self._reachable_area_scale_cache[self._cached_level_id]
+        """Get area scale for distance normalization.
 
-        # Compute from graph if available
-        if self._cached_graph_data:
-            adjacency = self._cached_graph_data.get("adjacency")
-            if adjacency:
-                # Estimate reachable area from graph
-                reachable_nodes = len(adjacency)
-                if reachable_nodes > 0:
-                    area_scale = np.sqrt(float(reachable_nodes)) * SUB_NODE_SIZE
-                    if self._cached_level_id:
-                        self._reachable_area_scale_cache[self._cached_level_id] = (
-                            area_scale
-                        )
-                    return area_scale
-
-        # Fallback to level diagonal
-        return LEVEL_DIAGONAL
+        Uses the shared _get_reachable_area_scale() method which computes
+        proper reachable surface area via flood fill, rather than just
+        counting all nodes in adjacency.
+        """
+        try:
+            return self._get_reachable_area_scale()
+        except RuntimeError:
+            # Fallback to level diagonal if computation fails
+            return LEVEL_DIAGONAL
 
     def _extract_level_data(self) -> LevelData:
         """
@@ -937,74 +934,160 @@ class ReplayExecutor:
         except Exception:
             return None
 
-    def _get_graph_observations(self) -> Dict[str, np.ndarray]:
+    def _get_graph_observations(self, use_sparse: bool = True) -> Dict[str, np.ndarray]:
         """Get complete graph observations matching GraphMixin output.
 
+        Args:
+            use_sparse: If True, return sparse format (default). If False, return dense format.
+
         Returns graph observations with proper feature dimensions:
-        - node_features: NODE_FEATURE_DIM (19 dims from nclone)
-        - edge_features: EDGE_FEATURE_DIM (6 dims from nclone)
+        - Sparse format: Only valid nodes/edges (~95% memory reduction)
+        - Dense format: Padded to N_MAX_NODES/E_MAX_EDGES (backward compatibility)
         """
-        # Initialize empty graph observations with full feature dimensions
-        graph_obs = {
-            "graph_node_feats": np.zeros(
-                (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
-            ),
-            "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-            "graph_edge_feats": np.zeros(
-                (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
-            ),
-            "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
-            "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
-            "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
-            "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
-        }
+        if use_sparse:
+            # SPARSE FORMAT: Return only valid nodes/edges without padding
+            # Also include dummy dense arrays for VecEnv compatibility
+            if self._current_graph is None:
+                # Return empty sparse observation
+                obs_dict = {
+                    "graph_node_feats_sparse": np.zeros(
+                        (0, NODE_FEATURE_DIM), dtype=np.float32
+                    ),
+                    "graph_edge_index_sparse": np.zeros((2, 0), dtype=np.uint16),
+                    "graph_edge_feats_sparse": np.zeros(
+                        (0, EDGE_FEATURE_DIM), dtype=np.float32
+                    ),
+                    "graph_node_types_sparse": np.zeros(0, dtype=np.uint8),
+                    "graph_edge_types_sparse": np.zeros(0, dtype=np.uint8),
+                    "graph_num_nodes": np.array([0], dtype=np.int32),
+                    "graph_num_edges": np.array([0], dtype=np.int32),
+                }
+                # Add dummy dense arrays for VecEnv
+                obs_dict.update(
+                    {
+                        "graph_node_feats": np.zeros(
+                            (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
+                        ),
+                        "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
+                        "graph_edge_feats": np.zeros(
+                            (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
+                        ),
+                        "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
+                        "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
+                        "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
+                        "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
+                    }
+                )
+                return obs_dict
 
-        # Fill with actual graph data if available
-        if self._current_graph is not None:
             graph_data = self._current_graph
+            num_nodes = graph_data.num_nodes
+            num_edges = graph_data.num_edges
 
-            # Copy node features (up to max nodes)
-            num_nodes = min(graph_data.num_nodes, N_MAX_NODES)
-            if (
-                hasattr(graph_data, "node_features")
-                and graph_data.node_features is not None
-            ):
-                graph_obs["graph_node_feats"][:num_nodes] = graph_data.node_features[
-                    :num_nodes
-                ]
+            # Extract only valid data (no padding)
+            node_features = graph_data.node_features[:num_nodes].astype(np.float32)
+            edge_index = graph_data.edge_index[:, :num_edges].astype(np.uint16)
+            edge_features = graph_data.edge_features[:num_edges].astype(np.float32)
+            node_types = graph_data.node_types[:num_nodes].astype(np.uint8)
+            edge_types = graph_data.edge_types[:num_edges].astype(np.uint8)
 
-            # Copy edge index (up to max edges)
-            num_edges = min(graph_data.num_edges, E_MAX_EDGES)
-            if hasattr(graph_data, "edge_index") and graph_data.edge_index is not None:
-                graph_obs["graph_edge_index"][:, :num_edges] = graph_data.edge_index[
-                    :, :num_edges
-                ]
+            obs_dict = {
+                "graph_node_feats_sparse": node_features,
+                "graph_edge_index_sparse": edge_index,
+                "graph_edge_feats_sparse": edge_features,
+                "graph_node_types_sparse": node_types,
+                "graph_edge_types_sparse": edge_types,
+                "graph_num_nodes": np.array([num_nodes], dtype=np.int32),
+                "graph_num_edges": np.array([num_edges], dtype=np.int32),
+            }
+            # Add dummy dense arrays for VecEnv compatibility
+            obs_dict.update(
+                {
+                    "graph_node_feats": np.zeros(
+                        (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
+                    ),
+                    "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
+                    "graph_edge_feats": np.zeros(
+                        (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
+                    ),
+                    "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
+                    "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
+                    "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
+                    "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
+                }
+            )
+            return obs_dict
+        else:
+            # DENSE FORMAT (backward compatibility): Padded to N_MAX_NODES/E_MAX_EDGES
+            graph_obs = {
+                "graph_node_feats": np.zeros(
+                    (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
+                ),
+                "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
+                "graph_edge_feats": np.zeros(
+                    (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
+                ),
+                "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
+                "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
+                "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
+                "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
+            }
 
-            # Copy edge features (up to max edges)
-            if (
-                hasattr(graph_data, "edge_features")
-                and graph_data.edge_features is not None
-            ):
-                graph_obs["graph_edge_feats"][:num_edges] = graph_data.edge_features[
-                    :num_edges
-                ]
+            # Fill with actual graph data if available
+            if self._current_graph is not None:
+                graph_data = self._current_graph
 
-            # Set masks
-            graph_obs["graph_node_mask"][:num_nodes] = 1
-            graph_obs["graph_edge_mask"][:num_edges] = 1
+                # Copy node features (up to max nodes)
+                num_nodes = min(graph_data.num_nodes, N_MAX_NODES)
+                if (
+                    hasattr(graph_data, "node_features")
+                    and graph_data.node_features is not None
+                ):
+                    graph_obs["graph_node_feats"][:num_nodes] = (
+                        graph_data.node_features[:num_nodes]
+                    )
 
-            # Copy node and edge types
-            if hasattr(graph_data, "node_types") and graph_data.node_types is not None:
-                graph_obs["graph_node_types"][:num_nodes] = graph_data.node_types[
-                    :num_nodes
-                ]
+                # Copy edge index (up to max edges)
+                num_edges = min(graph_data.num_edges, E_MAX_EDGES)
+                if (
+                    hasattr(graph_data, "edge_index")
+                    and graph_data.edge_index is not None
+                ):
+                    graph_obs["graph_edge_index"][:, :num_edges] = (
+                        graph_data.edge_index[:, :num_edges]
+                    )
 
-            if hasattr(graph_data, "edge_types") and graph_data.edge_types is not None:
-                graph_obs["graph_edge_types"][:num_edges] = graph_data.edge_types[
-                    :num_edges
-                ]
+                # Copy edge features (up to max edges)
+                if (
+                    hasattr(graph_data, "edge_features")
+                    and graph_data.edge_features is not None
+                ):
+                    graph_obs["graph_edge_feats"][:num_edges] = (
+                        graph_data.edge_features[:num_edges]
+                    )
 
-        return graph_obs
+                # Set masks
+                graph_obs["graph_node_mask"][:num_nodes] = 1
+                graph_obs["graph_edge_mask"][:num_edges] = 1
+
+                # Copy node and edge types
+                if (
+                    hasattr(graph_data, "node_types")
+                    and graph_data.node_types is not None
+                ):
+                    graph_obs["graph_node_types"][:num_nodes] = graph_data.node_types[
+                        :num_nodes
+                    ]
+
+                if (
+                    hasattr(graph_data, "edge_types")
+                    and graph_data.edge_types is not None
+                ):
+                    graph_obs["graph_edge_types"][:num_edges] = graph_data.edge_types[
+                        :num_edges
+                    ]
+
+            return graph_obs
 
     def close(self):
         """Clean up resources."""

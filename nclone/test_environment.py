@@ -773,7 +773,6 @@ if args.record:
     print("=" * 60 + "\n")
 
 graph_debug_enabled = False
-exploration_debug_enabled = False
 grid_debug_enabled = False
 tile_rendering_enabled = True
 tile_types_debug_enabled = False
@@ -1102,14 +1101,6 @@ while running:
                         f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
                     )
                     print(f"Category: {level.get('category', 'unknown')}")
-
-                if event.key == pygame.K_e:
-                    # Toggle exploration debug overlay
-                    exploration_debug_enabled = not exploration_debug_enabled
-                    try:
-                        env.set_exploration_debug_enabled(exploration_debug_enabled)
-                    except Exception:
-                        pass
                 if event.key == pygame.K_c:
                     # Toggle grid outline debug overlay
                     grid_debug_enabled = not grid_debug_enabled
@@ -1589,22 +1580,6 @@ if hasattr(env, "door_feature_cache"):
     print(f"  - Cache misses: {door_stats['cache_misses']}")
     print(f"  - Hit rate: {door_stats['hit_rate']:.1%}")
     print(f"  - Memory: {door_stats['memory_mb']:.2f} MB")
-
-# Entity cache statistics
-if hasattr(env, "nplay_headless") and hasattr(env.nplay_headless, "entity_cache"):
-    entity_cache = env.nplay_headless.entity_cache
-    if entity_cache.is_cache_built():
-        print("\nEntity Cache:")
-        print("  - Cache built: True")
-        print(f"  - Total entities: {entity_cache.cache.n_entities}")
-        print(f"  - Toggle mines: {entity_cache.cache.n_toggle_mines}")
-        memory_kb = (
-            entity_cache.cache.positions.nbytes
-            + entity_cache.cache.types.nbytes
-            + entity_cache.cache.active_states.nbytes
-            + entity_cache.cache.mine_states.nbytes
-        ) / 1024
-        print(f"  - Memory: {memory_kb:.2f} KB")
 
 # Finalize memory profiling if active
 if memory_profiler is not None:

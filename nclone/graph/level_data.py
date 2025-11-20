@@ -10,53 +10,51 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Union, Tuple
 from dataclasses import dataclass, field
 from ..constants.entity_types import EntityType
-from ..constants import TILE_PIXEL_SIZE
 
 
 def extract_start_position_from_map_data(map_data: List[int]) -> Tuple[int, int]:
     """
-    Extract ninja spawn position from map_data and convert to tile data coordinates.
+    Extract ninja spawn position from map_data in world space coordinates.
 
     This function provides a centralized way to extract the ninja spawn position
-    from map_data for use in LevelData. It handles the conversion from map_data
-    coordinates to tile data coordinate space.
+    from map_data for use in LevelData. Returns coordinates in world space (full
+    map space including 1-tile padding).
 
     Args:
         map_data: List of integers representing the map data in simulator format.
                  Ninja spawn is stored at indices 1231-1232 in map_data_units.
 
     Returns:
-        Tuple[int, int]: Start position in tile data coordinate space (pixel coordinates).
-                        The coordinates are offset by -24px (1 tile) from full map space
-                        to account for the 1-tile solid padding around the level.
+        Tuple[int, int]: Start position in world space (pixel coordinates).
+                        This is the same coordinate space used by ninja_position()
+                        and entity positions.
 
     Conversion Process:
         1. Read map_data[1231] and map_data[1232] (map_data_units)
         2. Convert to pixels: multiply by 6 (map_data_units -> pixels)
-        3. Apply -24px offset to convert from full map space to tile data coordinate space
-           (tile data excludes the 1-tile solid padding around the level)
+        3. Return world space coordinates (no offset needed)
 
     Example:
         >>> map_data = [0] * 1233
         >>> map_data[1231] = 20  # Example spawn x in map_data_units
         >>> map_data[1232] = 30  # Example spawn y in map_data_units
         >>> pos = extract_start_position_from_map_data(map_data)
-        >>> # pos = (20*6 - 24, 30*6 - 24) = (96, 156)
+        >>> # pos = (20*6, 30*6) = (120, 180)
     """
     # Map data stores spawn at indices 1231-1232 in map_data_units
     spawn_x_map_units = map_data[1231]
     spawn_y_map_units = map_data[1232]
 
-    # Convert map_data_units to pixels (full map space)
+    # Convert map_data_units to pixels (world space)
     # Map data units are multiplied by 6 to get pixel coordinates
     spawn_x_pixels = spawn_x_map_units * 6
     spawn_y_pixels = spawn_y_map_units * 6
 
-    # Apply negative offset to convert to tile data coordinate space
-    # Tile data excludes the 1-tile solid padding, so coordinates are offset by -1 tile (-24px)
+    # Return world space coordinates (no offset needed)
+    # World space includes the 1-tile padding around the level
     start_position = (
-        int(spawn_x_pixels - TILE_PIXEL_SIZE),
-        int(spawn_y_pixels - TILE_PIXEL_SIZE),
+        int(spawn_x_pixels),
+        int(spawn_y_pixels),
     )
 
     return start_position
@@ -240,6 +238,31 @@ class LevelData:
             active: New active state
         """
         self.switch_states[switch_id] = active
+
+    def get_cache_key_for_reachability(self, include_switch_states: bool = True) -> str:
+        """
+        Generate a consistent cache key for reachability calculations.
+
+        This method ensures all reachability caching uses the same key format,
+        preventing cache mismatches between components.
+
+        Args:
+            include_switch_states: Whether to include switch states in the key.
+                Set to True (default) to invalidate cache when switches change.
+                Set to False for calculations unaffected by switch states.
+
+        Returns:
+            Cache key string that uniquely identifies this level configuration
+        """
+        base_key = self.level_id or f"level_{id(self)}"
+
+        if include_switch_states and self.switch_states:
+            # Sort switch states for deterministic key
+            sorted_switches = tuple(sorted(self.switch_states.items()))
+            switch_hash = hash(sorted_switches)
+            return f"{base_key}_switches_{switch_hash}"
+
+        return base_key
 
     def get_entities_in_region(
         self, x_min: float, y_min: float, x_max: float, y_max: float

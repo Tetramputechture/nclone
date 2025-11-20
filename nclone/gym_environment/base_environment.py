@@ -30,6 +30,7 @@ from .constants import (
     FEATURES_PER_DOOR,
 )
 from .reward_calculation.main_reward_calculator import RewardCalculator
+from .reward_calculation.reward_config import RewardConfig
 from .observation_processor import ObservationProcessor
 from .truncation_checker import TruncationChecker
 from .entity_extractor import EntityExtractor
@@ -73,6 +74,9 @@ class BaseNppEnvironment(gymnasium.Env):
         augmentation_config: Optional[Dict[str, Any]] = None,
         pbrs_gamma: float = PBRS_GAMMA,
         enable_visual_observations: bool = False,
+        reward_config: Optional[
+            RewardConfig
+        ] = None,  # RewardConfig for curriculum-aware reward system
     ):
         """
         Initialize the base N++ environment.
@@ -153,7 +157,9 @@ class BaseNppEnvironment(gymnasium.Env):
             enable_visual_processing=enable_visual_observations,
         )
 
-        self.reward_calculator = RewardCalculator(pbrs_gamma=pbrs_gamma)
+        self.reward_calculator = RewardCalculator(
+            reward_config=reward_config, pbrs_gamma=pbrs_gamma
+        )
 
         # Initialize truncation checker
         self.truncation_checker = TruncationChecker(self)
@@ -216,7 +222,7 @@ class BaseNppEnvironment(gymnasium.Env):
             high=1,
             shape=(
                 GAME_STATE_CHANNELS,
-            ),  # Now 52: 29 physics + 15 objectives + 5 mines + 3 progress
+            ),  # Now 41: enhanced physics state (40) + time_remaining (1)
             dtype=np.float32,
         )
         # Action mask for invalid action filtering - always available
@@ -226,6 +232,9 @@ class BaseNppEnvironment(gymnasium.Env):
             shape=(6,),  # 6 actions in N++
             dtype=np.int8,
         )
+
+        # Note: time_remaining is now included as the 41st feature in game_state
+
         return SpacesDict(obs_spaces)
 
     def _actions_to_execute(self, action: int) -> Tuple[int, int]:
@@ -321,7 +330,13 @@ class BaseNppEnvironment(gymnasium.Env):
             # Calculate reward (pass action for NOOP penalty)
             reward = self._calculate_reward(curr_obs, prev_obs, action)
 
+            # Update dynamic truncation limit if PBRS surface area is now available
+            self._update_dynamic_truncation_if_needed()
+
             # Apply death penalty for truncation (treat truncation as failure)
+            # Note: Truncation policy is curriculum-aware and aligns with reward config:
+            # - Early phase: No time penalty + generous truncation (exploration focus)
+            # - Late phase: Full time penalty + standard truncation (efficiency focus)
             if truncated and not terminated:
                 from .reward_calculation.reward_constants import DEATH_PENALTY
 
@@ -481,6 +496,132 @@ class BaseNppEnvironment(gymnasium.Env):
 
         return metrics
 
+    def _check_curriculum_aware_truncation(
+        self, ninja_x: float, ninja_y: float
+    ) -> Tuple[bool, str]:
+        """Check truncation with curriculum-aware policy that respects reward config.
+
+        Philosophy: Truncation serves computational efficiency and training stability,
+        but should align with reward curriculum phases:
+
+        - Early phase (no time penalty): 2.0x more generous (more exploration time)
+        - Mid phase (conditional penalty): 1.5x more generous (balanced approach)
+        - Late phase (full time penalty): 1.0x standard (efficiency focus)
+
+        This balances computational limits with curriculum consistency.
+
+        Args:
+            ninja_x: Current ninja x position
+            ninja_y: Current ninja y position
+
+        Returns:
+            Tuple of (should_truncate: bool, reason: str)
+        """
+        reward_config = self.reward_calculator.config
+
+        # Determine curriculum-aware truncation multiplier
+        if reward_config is not None:
+            phase = reward_config.training_phase
+
+            if phase == "early":
+                # No time penalty in rewards -> more generous truncation for exploration
+                multiplier = 2.0
+            elif phase == "mid":
+                # Conditional time penalty -> moderate truncation
+                multiplier = 1.5
+            elif phase == "late":
+                # Full time penalty -> standard truncation for efficiency
+                multiplier = 1.0
+            else:
+                # Unknown phase -> conservative standard truncation
+                multiplier = 1.0
+        else:
+            # No reward config -> use standard truncation
+            multiplier = 1.0
+
+        # Apply curriculum-aware truncation limit
+        base_limit = self.truncation_checker.current_truncation_limit
+        curriculum_limit = int(base_limit * multiplier)
+
+        # Add current position to history (always do this)
+        self.truncation_checker.position_history.append((ninja_x, ninja_y))
+
+        # Check against curriculum-adjusted limit
+        frames_elapsed = len(self.truncation_checker.position_history)
+        should_truncate = frames_elapsed >= curriculum_limit
+
+        if should_truncate:
+            if reward_config is not None:
+                reason = f"Max frames reached ({curriculum_limit}) [curriculum: {reward_config.training_phase} phase, {multiplier:.1f}x base limit of {base_limit}]"
+            else:
+                reason = f"Max frames reached ({curriculum_limit})"
+        else:
+            reason = ""
+
+        return should_truncate, reason
+
+    def _get_curriculum_aware_truncation_limit(self) -> int:
+        """Get the curriculum-aware truncation limit without side effects.
+
+        Used for time_remaining calculation in observations to ensure consistency
+        between what the agent observes and when truncation actually occurs.
+
+        Returns:
+            Curriculum-adjusted truncation limit in frames
+        """
+        reward_config = self.reward_calculator.config
+        base_limit = self.truncation_checker.current_truncation_limit
+
+        # Determine curriculum-aware truncation multiplier
+        if reward_config is not None:
+            phase = reward_config.training_phase
+
+            if phase == "early":
+                # No time penalty in rewards -> more generous truncation for exploration
+                multiplier = 4.0
+            elif phase == "mid":
+                # Conditional time penalty -> moderate truncation
+                multiplier = 2.0
+            elif phase == "late":
+                # Full time penalty -> standard truncation for efficiency
+                multiplier = 1.0
+            else:
+                # Unknown phase -> conservative standard truncation
+                multiplier = 1.0
+        else:
+            # No reward config -> use standard truncation
+            multiplier = 1.0
+
+        return int(base_limit * multiplier)
+
+    def _update_dynamic_truncation_if_needed(self):
+        """Update dynamic truncation limit if PBRS surface area becomes available.
+
+        This ensures that dynamic truncation is applied as soon as the level complexity
+        can be determined from PBRS calculations, even if it wasn't available during
+        initial level loading.
+        """
+        from .constants import MAX_TIME_IN_FRAMES
+
+        pbrs_calculator = self.reward_calculator.pbrs_calculator
+        if (
+            pbrs_calculator._cached_surface_area is not None
+            and self.truncation_checker.current_truncation_limit == MAX_TIME_IN_FRAMES
+        ):
+            # Surface area is now available but we're still using fallback limit
+            surface_area = pbrs_calculator._cached_surface_area
+            reachable_mine_count = 0  # Simplified reward system
+
+            truncation_limit = self.truncation_checker.set_level_truncation_limit(
+                surface_area, reachable_mine_count
+            )
+
+            if self.enable_logging:
+                logger.info(
+                    f"Updated to dynamic truncation limit: {truncation_limit} frames "
+                    f"(surface_area={surface_area:.0f})"
+                )
+
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Hook to add additional fields to info dictionary.
 
@@ -489,11 +630,7 @@ class BaseNppEnvironment(gymnasium.Env):
 
         Subclasses can override this to add custom info fields.
         """
-        # Generate comprehensive diagnostic metrics for TensorBoard
-        curr_obs = self._get_observation()
-        diagnostic_metrics = self.reward_calculator.get_diagnostic_metrics(curr_obs)
-        # Add to info dict for callback to log
-        info["diagnostic_metrics"] = diagnostic_metrics
+        pass
 
     def _build_episode_info(
         self, player_won: bool, terminated: bool, truncated: bool
@@ -603,27 +740,32 @@ class BaseNppEnvironment(gymnasium.Env):
         if self._cached_observation is not None:
             return self._cached_observation
 
-        # Calculate time remaining feature using dynamic truncation limit
-        # This ensures agents see accurate time pressure based on level complexity
-        time_remaining = (
-            self.truncation_checker.current_truncation_limit
-            - self.nplay_headless.sim.frame
-        ) / self.truncation_checker.current_truncation_limit
+        # Calculate time remaining feature using curriculum-aware truncation limit
+        # This ensures agents see accurate time pressure that aligns with actual truncation behavior
+        current_frame = self.nplay_headless.sim.frame
+        curriculum_limit = self._get_curriculum_aware_truncation_limit()
+
+        # Robust time_remaining calculation (avoid division by zero, clamp to [0, 1])
+        if curriculum_limit <= 0:
+            time_remaining = 1.0  # Fallback: full time remaining
+        else:
+            time_remaining = max(
+                0.0, (curriculum_limit - current_frame) / curriculum_limit
+            )
 
         ninja_state = self.nplay_headless.get_ninja_state()
 
-        # game_state contains ninja_state (29 features) + path-aware objectives (15) +
-        # mine features (8) + progress features (3) + sequential goals (3) = 58 total features
-        # Start with ninja_state, will be extended by NppEnvironment if path-aware features enabled
-        game_state = ninja_state
+        # game_state contains ninja_state (40 enhanced physics features) + time_remaining (1) = 41 total
+        # This is the complete physics state - path-aware objectives, mines, etc. are now in the graph
+        # Always append time_remaining to create consistent 41D state
+        import numpy as np
+
+        game_state = np.append(ninja_state, time_remaining)
 
         # Get entity states for PBRS hazard detection
         # Try to use reachable area scale if available (from GraphMixin)
-        area_scale = None
-        area_scale = self._get_reachable_area_scale()
-        entity_states_raw = self.nplay_headless.get_entity_states(area_scale=area_scale)
-
         entities = []
+
         # Extract entities relevant for Deep RL agent:
         # - Toggle mines (hazards)
         toggle_mines = self.nplay_headless.sim.entity_dic.get(
@@ -680,9 +822,7 @@ class BaseNppEnvironment(gymnasium.Env):
             "switch_y": switch_pos[1],
             "exit_door_x": exit_pos[0],
             "exit_door_y": exit_pos[1],
-            "time_remaining": time_remaining,
             "sim_frame": self.nplay_headless.sim.frame,
-            "entity_states": entity_states_raw,  # For PBRS hazard detection
             "entities": entities,  # Entity objects (mines, locked doors, switches)
             "locked_doors": locked_doors,
             "locked_door_switches": locked_door_switches,
@@ -852,6 +992,11 @@ class BaseNppEnvironment(gymnasium.Env):
         """
         Check if the episode should be terminated.
 
+        Uses curriculum-aware truncation that respects reward config phases:
+        - Early phase (no time penalty): More generous truncation for exploration
+        - Mid phase (optional time penalty): Moderate truncation
+        - Late phase (full time penalty): Standard truncation for efficiency
+
         Returns:
             Tuple containing:
             - terminated: True if episode should be terminated, False otherwise
@@ -862,11 +1007,21 @@ class BaseNppEnvironment(gymnasium.Env):
         player_dead = self.nplay_headless.ninja_has_died()
         terminated = player_won or player_dead
 
-        # Check truncation using our truncation checker
+        # Check truncation using curriculum-aware policy
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
-        should_truncate, reason = self.truncation_checker.update(ninja_x, ninja_y)
+        should_truncate, reason = self._check_curriculum_aware_truncation(
+            ninja_x, ninja_y
+        )
+
         if should_truncate and self.enable_logging:
-            print(f"Episode truncated due to time: {reason}")
+            reward_config = self.reward_calculator.config
+            phase = reward_config.training_phase if reward_config else "N/A"
+            time_penalty = (
+                reward_config.time_penalty_per_step if reward_config else "N/A"
+            )
+            print(
+                f"Episode truncated in {phase} phase (time_penalty={time_penalty}): {reason}"
+            )
 
         # Return proper truncated flag (don't merge with terminated)
         # Truncation is now treated separately so we can apply death penalty

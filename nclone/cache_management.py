@@ -121,49 +121,6 @@ def clear_door_feature_caches(env: Any, verbose: bool = False) -> None:
         print("Cleared door feature caches")
 
 
-def clear_entity_caches(nplay_headless: Any, verbose: bool = False) -> None:
-    """
-    Clear entity caches in NPlayHeadless.
-
-    Clears:
-    - entity_cache: EntityCacheManager
-
-    Args:
-        nplay_headless: NPlayHeadless instance
-        verbose: If True, print cache clearing operations
-
-    Example:
-        >>> clear_entity_caches(nplay_headless, verbose=True)
-        Cleared entity cache
-    """
-    if hasattr(nplay_headless, "entity_cache"):
-        nplay_headless.entity_cache.clear_cache()
-        if verbose:
-            print("  - Cleared entity_cache")
-            print("Cleared entity cache")
-
-
-def rebuild_entity_cache(nplay_headless: Any, verbose: bool = False) -> None:
-    """
-    Rebuild entity cache in NPlayHeadless.
-
-    Builds the entity cache from the current simulator state.
-    Call this after loading a new map.
-
-    Args:
-        nplay_headless: NPlayHeadless instance
-        verbose: If True, print cache building operations
-
-    Example:
-        >>> rebuild_entity_cache(nplay_headless, verbose=True)
-        Rebuilt entity cache
-    """
-    if hasattr(nplay_headless, "entity_cache"):
-        nplay_headless.entity_cache.build_cache(nplay_headless.sim, verbose=verbose)
-        if verbose and not verbose:  # Only print if not already printed by build_cache
-            print("Rebuilt entity cache")
-
-
 def clear_render_caches(nplay_headless: Any, verbose: bool = False) -> None:
     """
     Clear rendering caches in NPlayHeadless.
@@ -247,37 +204,6 @@ def clear_renderer_surface_caches(sim_renderer: Any, verbose: bool = False) -> N
         print("Cleared renderer surface caches")
 
 
-def clear_terminal_velocity_cache(verbose: bool = False) -> None:
-    """
-    Clear terminal velocity predictor class-level cache.
-
-    Clears:
-    - TerminalVelocityPredictor._lookup_table_cache: Per-level lookup tables
-
-    This cache is keyed by level_id (tile hash), so it should only be cleared
-    when explicitly requested or when memory is a concern. Normal level changes
-    don't require clearing since each level has its own cache entry.
-
-    Args:
-        verbose: If True, print cache clearing operations
-
-    Example:
-        >>> clear_terminal_velocity_cache(verbose=True)
-        Cleared terminal velocity predictor cache
-    """
-    try:
-        from .terminal_velocity_predictor import TerminalVelocityPredictor
-
-        TerminalVelocityPredictor.clear_cache()
-        if verbose:
-            print("  - Cleared terminal velocity predictor cache")
-            print("Cleared terminal velocity predictor cache")
-    except ImportError:
-        # Graceful handling if module not available
-        if verbose:
-            print("  - Terminal velocity predictor not available")
-
-
 def clear_pathfinding_caches(
     debug_overlay_renderer: Any, verbose: bool = False
 ) -> None:
@@ -346,6 +272,32 @@ def clear_debug_overlay_caches(
         print("Cleared debug overlay caches")
 
 
+def clear_pathfinding_utility_caches(verbose: bool = False) -> None:
+    """
+    Clear module-level caches in pathfinding_utils.
+
+    Clears:
+    - _surface_area_cache: Reachable surface area by level ID
+
+    This should be called on environment reset to prevent stale cache entries
+    across level changes.
+
+    Args:
+        verbose: If True, print cache clearing operations
+
+    Example:
+        >>> clear_pathfinding_utility_caches(verbose=True)
+        Cleared pathfinding utility caches
+    """
+    from nclone.graph.reachability.pathfinding_utils import clear_surface_area_cache
+
+    clear_surface_area_cache()  # Clear all entries
+
+    if verbose:
+        print("  - Cleared pathfinding_utils._surface_area_cache")
+        print("Cleared pathfinding utility caches")
+
+
 def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
     """
     Reset graph and state caches in the environment.
@@ -353,6 +305,9 @@ def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
     Calls environment methods to reset:
     - Graph state (_reset_graph_state)
     - Reachability state (_reset_reachability_state)
+
+    Also clears:
+    - Pathfinding utility caches (surface area cache)
 
     Args:
         env: Environment instance (NppEnvironment or similar)
@@ -371,6 +326,9 @@ def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
         env._reset_reachability_state()
         if verbose:
             print("  - Reset reachability state")
+
+    # Clear pathfinding utility caches
+    clear_pathfinding_utility_caches(verbose=verbose)
 
     if verbose:
         print("Reset graph state caches")
@@ -393,6 +351,7 @@ def clear_all_caches_for_new_level(env: Any, verbose: bool = False) -> None:
     - Renderer surface caches (in sim_renderer)
     - Pathfinding caches (in debug_overlay_renderer)
     - Debug overlay caches (in debug_overlay_renderer)
+    - Pathfinding utility caches (surface area cache)
 
     Does NOT reset graph state - call reset_graph_state_caches() separately if needed.
 
@@ -415,12 +374,12 @@ def clear_all_caches_for_new_level(env: Any, verbose: bool = False) -> None:
     clear_level_data_caches(env, verbose=verbose)
     clear_door_feature_caches(env, verbose=verbose)
 
+    # Clear pathfinding utility caches (module-level caches)
+    clear_pathfinding_utility_caches(verbose=verbose)
+
     # NPlayHeadless caches
     if hasattr(env, "nplay_headless"):
         nplay_headless = env.nplay_headless
-
-        # Entity cache
-        clear_entity_caches(nplay_headless, verbose=verbose)
 
         # Render caches
         clear_render_caches(nplay_headless, verbose=verbose)
@@ -453,6 +412,7 @@ def clear_all_caches_for_reset(env: Any, verbose: bool = False) -> None:
     - Door feature caches
     - Render caches (in nplay_headless)
     - Pathfinding caches (in debug_overlay_renderer)
+    - Pathfinding utility caches (surface area cache)
 
     Does NOT clear:
     - Entity caches (rebuilt separately)
@@ -477,6 +437,9 @@ def clear_all_caches_for_reset(env: Any, verbose: bool = False) -> None:
     # Environment-level caches
     clear_level_data_caches(env, verbose=verbose)
     clear_door_feature_caches(env, verbose=verbose)
+
+    # Clear pathfinding utility caches (module-level caches)
+    clear_pathfinding_utility_caches(verbose=verbose)
 
     # NPlayHeadless caches
     if hasattr(env, "nplay_headless"):

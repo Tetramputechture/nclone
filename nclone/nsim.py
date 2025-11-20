@@ -36,6 +36,13 @@ class Simulator:
         # Set by gym environment to enable performance optimizations
         self.gym_env = None
 
+        # Cache SimConfig flags to avoid repeated attribute lookups in tick()
+        self._enable_anim = sc.enable_anim
+        self._log_data = sc.log_data
+
+        # Cache clear optimization - track next frame to clear instead of using modulo
+        self._next_cache_clear = CACHE_CLEAR_INTERVAL
+
     def load(self, map_data):
         """From the given map data, initiate the level geometry, the entities and the ninja."""
         self.map_data = map_data
@@ -56,6 +63,8 @@ class Simulator:
         else:
             self.collisionlog = None
         self.ninja = None
+        # Reset cache clear counter when frame is reset
+        self._next_cache_clear = CACHE_CLEAR_INTERVAL
         self.reset_map_entity_data()
         self.map_loader.load_map_entities()
 
@@ -69,6 +78,9 @@ class Simulator:
         # Remove door segments from segment_dic before clearing entity_dic
         # Door entities are types 5 (Regular), 6 (Locked), 8 (Trap)
         door_types = [5, 6, 8]
+        # Cache segment_dic.items() to avoid repeated dictionary access
+        segment_dic_items = list(self.segment_dic.items())
+
         for door_type in door_types:
             if door_type in self.entity_dic:
                 for door_entity in self.entity_dic[door_type]:
@@ -83,7 +95,7 @@ class Simulator:
                         # Find the cell containing this segment and remove it
                         # We need to find which cell contains the segment
                         # Segments are stored by their cell location
-                        for cell_key, segments_list in self.segment_dic.items():
+                        for cell_key, segments_list in segment_dic_items:
                             if segment in segments_list:
                                 segments_list.remove(segment)
                                 break
@@ -102,20 +114,16 @@ class Simulator:
                                     )
 
         # Now clear entity data structures
-        self.grid_entity = {}
-        for x in range(44):
-            for y in range(25):
-                self.grid_entity[(x, y)] = []
+        # Use dict comprehension for grid_entity initialization (44x25 = 1,100 entries)
+        self.grid_entity = {(x, y): [] for x in range(44) for y in range(25)}
         self.entity_dic = {
             i: [] for i in range(1, 29)
         }  # Initialize with expected entity types
 
     def reset_map_tile_data(self):
         """Reset the map cell data. This is used when a new map is loaded."""
-        self.segment_dic = {}
-        for x in range(44):  # map_width_tiles + a buffer often
-            for y in range(25):  # map_height_tiles + a buffer often
-                self.segment_dic[(x, y)] = []
+        # Use dict comprehension for segment_dic initialization (44x25 = 1,100 entries)
+        self.segment_dic = {(x, y): [] for x in range(44) for y in range(25)}
 
         self.tile_dic = {}  # Clear tile_dic as well
 
@@ -124,22 +132,20 @@ class Simulator:
         self.spatial_segment_index = None
         self.level_hash = None
 
-        # Initialize horizontal grid edges, with outer edges set to 1 (solid)
-        for x in range(89):
-            for y in range(51):
-                self.hor_grid_edge_dic[(x, y)] = 1 if y in (0, 50) else 0
-        # Initialize vertical grid edges, with outer edges set to 1 (solid)
-        for x in range(89):
-            for y in range(51):
-                self.ver_grid_edge_dic[(x, y)] = 1 if x in (0, 88) else 0
-        # Initialize horizontal segment dictionary
-        for x in range(89):
-            for y in range(51):
-                self.hor_segment_dic[(x, y)] = 0
-        # Initialize vertical segment dictionary
-        for x in range(89):
-            for y in range(51):
-                self.ver_segment_dic[(x, y)] = 0
+        # Initialize grid edge dictionaries with dict comprehensions (89x51 = 4,539 entries each)
+        # Horizontal grid edges: outer edges (y=0, y=50) set to 1 (solid)
+        self.hor_grid_edge_dic = {
+            (x, y): 1 if y in (0, 50) else 0 for x in range(89) for y in range(51)
+        }
+
+        # Vertical grid edges: outer edges (x=0, x=88) set to 1 (solid)
+        self.ver_grid_edge_dic = {
+            (x, y): 1 if x in (0, 88) else 0 for x in range(89) for y in range(51)
+        }
+
+        # Initialize segment dictionaries (89x51 = 4,539 entries each)
+        self.hor_segment_dic = {(x, y): 0 for x in range(89) for y in range(51)}
+        self.ver_segment_dic = {(x, y): 0 for x in range(89) for y in range(51)}
 
     def tick(self, hor_input, jump_input):
         """Gets called every frame to update the whole physics simulation."""
@@ -154,18 +160,13 @@ class Simulator:
         self.ninja.record_action_start_position()
 
         # Cache active entities to avoid repeated filtering
-        active_movable_entities = []
-        active_thinkable_entities = []
-
-        # Single pass to categorize entities
-        for entity_list in self.entity_dic.values():
-            for entity in entity_list:
-                if not entity.active:
-                    continue
-                if entity.is_movable:
-                    active_movable_entities.append(entity)
-                if entity.is_thinkable:
-                    active_thinkable_entities.append(entity)
+        # Use list comprehensions for faster entity filtering
+        all_entities = (
+            e for entity_list in self.entity_dic.values() for e in entity_list
+        )
+        active_entities = [e for e in all_entities if e.active]
+        active_movable_entities = [e for e in active_entities if e.is_movable]
+        active_thinkable_entities = [e for e in active_entities if e.is_thinkable]
 
         # Move all movable entities
         for entity in active_movable_entities:
@@ -193,15 +194,15 @@ class Simulator:
 
                 ninja_to_update.post_collision()  # Do post collision calculations.
             self.ninja.think()  # Make ninja think
-            if self.sim_config.enable_anim:
+            if self._enable_anim:
                 self.ninja.update_graphics()  # Update limbs of ninja
 
-        if self.ninja.state == 6 and self.sim_config.enable_anim:  # Ragdoll state
+        if self.ninja.state == 6 and self._enable_anim:  # Ragdoll state
             self.ninja.anim_frame = 105  # Specific animation frame for ragdoll
             self.ninja.anim_state = 7  # Specific animation state for ragdoll
             self.ninja.calc_ninja_position()
 
-        if self.sim_config.log_data:
+        if self._log_data:
             # Update all the logs for debugging purposes and for tracing the route.
             self.ninja.log()
 
@@ -212,5 +213,6 @@ class Simulator:
                 entity.log_position()
 
         # Clear physics caches periodically to prevent memory bloat or stale data
-        if self.frame % CACHE_CLEAR_INTERVAL == 0:
+        if self.frame >= self._next_cache_clear:
             clear_caches()
+            self._next_cache_clear = self.frame + CACHE_CLEAR_INTERVAL

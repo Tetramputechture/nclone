@@ -70,6 +70,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
             enable_augmentation=self.config.augmentation.enable_augmentation,
+            reward_config=self.config.reward_config,
             augmentation_config={
                 "p": self.config.augmentation.p,
                 "intensity": self.config.augmentation.intensity,
@@ -85,6 +86,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._init_reachability_system(self.config.reachability.debug)
         self._init_debug_system(self.config.render.enable_debug_overlay)
 
+        # Initialize reset retry counter for handling degenerate maps
+        self._reset_retry_count = 0
+        self._max_reset_retries = 3
+
         # Update configuration flags with new options
         self.config_flags.update(
             {"debug": self.config.graph.debug or self.config.reachability.debug}
@@ -94,9 +99,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self.observation_space = self._build_extended_observation_space()
 
         # Pre-allocate observation buffers
-        self._game_state_buffer = np.zeros(
-            GAME_STATE_CHANNELS, dtype=np.float32
-        )  # Now 29 (only ninja physics)
+        self._game_state_buffer = np.zeros(GAME_STATE_CHANNELS, dtype=np.float32)
 
         # Cache for locked door features (keyed by switch state hash + ninja grid cell)
         #   1. Switch states (rarely change)
@@ -115,17 +118,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Level-specific locked door caches (static for level duration)
         self._has_locked_doors: bool = False  # Flag: does level have locked doors?
         self._cached_locked_doors: list = []  # Cached locked door entities (static)
-        self._cached_switch_states: Optional[np.ndarray] = (
-            None  # Cached switch states (updated on invalidation)
-        )
+        self._cached_switch_states: Optional[np.ndarray] = None
 
         # Exit features cache (position-based invalidation)
-        # PERFORMANCE: Avoids recomputing path distances when ninja hasn't moved significantly
+        # Avoids recomputing path distances when ninja hasn't moved significantly
         self._cached_exit_features: Optional[np.ndarray] = None
         self._last_exit_cache_ninja_pos: Optional[tuple] = None
-        self._exit_cache_grid_size: int = (
-            24  # Pixels - invalidate when ninja moves to new grid cell
-        )
+        self._exit_cache_grid_size: int = 24
 
         # Set environment reference in simulator for cache invalidation
         self.nplay_headless.sim.gym_env = self
@@ -179,7 +178,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         return distance
 
     def _build_extended_observation_space(self) -> SpacesDict:
-        """Build the extended observation space with graph and reachability features."""
+        """Build the extended observation space with graph and reachability features.
+
+        Note: Sparse graph observations (graph_*_sparse keys) are variable-sized and
+        passed through the observation dict without being part of the formal Gym space.
+        They are handled specially by the sparse rollout buffer for memory efficiency.
+        """
         obs_spaces = dict(self.observation_space.spaces)
 
         # Add reachability features (always available)
@@ -213,7 +217,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             low=0, high=MAX_LOCKED_DOORS_ATTENTION, shape=(1,), dtype=np.int32
         )
 
-        # Add graph observation spaces
+        # Add graph observation spaces (DENSE FORMAT - backward compatibility)
+        # Note: Use sparse format (graph_*_sparse) for ~95% memory reduction
         obs_spaces["graph_node_feats"] = box.Box(
             low=-np.inf,
             high=np.inf,
@@ -403,6 +408,152 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Build graph from the newly loaded map
         self._update_graph_from_env_state()
 
+        # DEBUG: Check if tiles are properly loaded
+        if hasattr(self, "current_graph_data") and self.current_graph_data:
+            adjacency = self.current_graph_data.get("adjacency")
+            if adjacency and len(adjacency) < 10:
+                # Graph is suspiciously small - diagnose tile loading issue
+                tile_dic = self.nplay_headless.get_tile_data()
+                num_tiles = len(tile_dic)
+                non_solid_tiles = sum(1 for t in tile_dic.values() if t != 1)
+
+                # Check what's in the level_data tiles array
+                if hasattr(self, "_cached_level_data") and self._cached_level_data:
+                    tiles_array = self._cached_level_data.tiles
+                    tiles_shape = (
+                        tiles_array.shape if hasattr(tiles_array, "shape") else "N/A"
+                    )
+                    tiles_nonzero = (
+                        (tiles_array != 0).sum()
+                        if hasattr(tiles_array, "sum")
+                        else "N/A"
+                    )
+                    tiles_non_solid = (
+                        (tiles_array != 1).sum()
+                        if hasattr(tiles_array, "sum")
+                        else "N/A"
+                    )
+
+                    # Check what tile types are actually present
+                    import numpy as np
+
+                    if isinstance(tiles_array, np.ndarray):
+                        unique_types = np.unique(tiles_array)
+                        type_counts = {
+                            int(t): int((tiles_array == t).sum()) for t in unique_types
+                        }
+                        logger.error(
+                            f"DIAGNOSTIC: Small graph detected! "
+                            f"Nodes: {len(adjacency)}, "
+                            f"Tiles in tile_dic: {num_tiles}, "
+                            f"Non-solid in tile_dic: {non_solid_tiles}, "
+                            f"Tiles array shape: {tiles_shape}, "
+                            f"Tile type distribution: {type_counts}, "
+                            f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
+                        )
+
+                        # Save debug visualization of degenerate map
+                        self._save_degenerate_map_debug_image(
+                            tile_dic, adjacency, len(adjacency)
+                        )
+                    else:
+                        logger.error(
+                            f"DIAGNOSTIC: Small graph detected! "
+                            f"Nodes: {len(adjacency)}, "
+                            f"Tiles in tile_dic: {num_tiles}, "
+                            f"Non-solid in tile_dic: {non_solid_tiles}, "
+                            f"Tiles array shape: {tiles_shape}, "
+                            f"Tiles array nonzero: {tiles_nonzero}, "
+                            f"Tiles array non-solid: {tiles_non_solid}, "
+                            f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
+                        )
+                else:
+                    logger.error(
+                        f"DIAGNOSTIC: Small graph detected! "
+                        f"Nodes: {len(adjacency)}, "
+                        f"Tiles in tile_dic: {num_tiles}, "
+                        f"Non-solid tiles: {non_solid_tiles}, "
+                        f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}, "
+                        f"No cached level_data available"
+                    )
+
+        # Validate spawn position can reach graph nodes (detect degenerate maps early)
+        if hasattr(self, "current_graph_data") and self.current_graph_data:
+            adjacency = self.current_graph_data.get("adjacency")
+            if adjacency:
+                # Warn if graph is very small
+                if len(adjacency) < 10:
+                    logger.warning(
+                        f"Small graph detected: {len(adjacency)} nodes. "
+                        f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
+                    )
+
+                # Validate spawn can reach at least one graph node
+                # First verify simulator and ninja entity are properly initialized
+                if not (
+                    hasattr(self.nplay_headless, "sim")
+                    and hasattr(self.nplay_headless.sim, "ninja")
+                    and hasattr(self.nplay_headless.sim.ninja, "xpos")
+                    and hasattr(self.nplay_headless.sim.ninja, "ypos")
+                ):
+                    # Simulator not fully initialized - skip validation
+                    # This can happen in multiprocessing environments during unpickling
+                    logger.warning(
+                        "Simulator not fully initialized during reset - skipping spawn validation. "
+                        "This is expected in multiprocessing environments."
+                    )
+                else:
+                    from nclone.graph.reachability.pathfinding_utils import (
+                        find_closest_node_to_position,
+                    )
+
+                    # Get ninja position (already in world space with 1-tile padding)
+                    ninja_pos = self.nplay_headless.ninja_position()
+                    start_pos = (
+                        int(ninja_pos[0]),
+                        int(ninja_pos[1]),
+                    )  # Use world space coordinates directly
+
+                    closest = find_closest_node_to_position(
+                        start_pos,
+                        adjacency,
+                        threshold=50.0,
+                        spatial_hash=self.current_graph_data.get("spatial_hash"),
+                        subcell_lookup=None,
+                    )
+
+                    if closest is None:
+                        # Critical: Spawn unreachable from graph
+                        self._reset_retry_count += 1
+
+                        if self._reset_retry_count >= self._max_reset_retries:
+                            # All retries failed - raise with full diagnostics
+                            sample_nodes = list(adjacency.keys())[:10]
+                            raise RuntimeError(
+                                f"Failed to generate valid map after {self._max_reset_retries} attempts. "
+                                f"Spawn consistently unreachable from graph. "
+                                f"Last attempt: spawn={start_pos} (world space), "
+                                f"graph_nodes={len(adjacency)}, sample_nodes={sample_nodes}. "
+                                f"This is a critical bug in map generation."
+                            )
+
+                        # Log and retry with new map
+                        sample_nodes = list(adjacency.keys())[:5]
+                        logger.error(
+                            f"CRITICAL: Spawn unreachable from graph! "
+                            f"Retry {self._reset_retry_count}/{self._max_reset_retries}. "
+                            f"spawn={start_pos} (world space), graph_nodes={len(adjacency)}, "
+                            f"sample_nodes={sample_nodes}. "
+                            f"Regenerating map..."
+                        )
+
+                        # Regenerate map and retry reset
+                        self.map_loader.load_map()
+                        return self.reset(seed=seed, options=options)
+
+                    # Success - reset retry counter
+                    self._reset_retry_count = 0
+
         # Build precomputed door feature cache after graph is ready
         # PERFORMANCE: Precomputes ALL path distances for O(1) runtime lookup
         self._build_door_feature_cache()
@@ -412,15 +563,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._initialize_locked_door_caches()
 
         # Set dynamic truncation limit based on level complexity
-        # Uses PBRS surface area and reachable mine count (both already cached)
+        # Uses PBRS surface area (mine count set to 0 since simplified reward system doesn't use mine proximity)
         pbrs_calculator = self.reward_calculator.pbrs_calculator
         if pbrs_calculator._cached_surface_area is not None:
             surface_area = pbrs_calculator._cached_surface_area
-            reachable_mine_count = (
-                len(pbrs_calculator._cached_reachable_mines)
-                if pbrs_calculator._cached_reachable_mines
-                else 0
-            )
+            # Simplified reward system: mine proximity removed, so mine count = 0 for truncation
+            # Truncation now based purely on level size (surface area)
+            reachable_mine_count = 0
 
             truncation_limit = self.truncation_checker.set_level_truncation_limit(
                 surface_area, reachable_mine_count
@@ -445,7 +594,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         from .constants import NINJA_STATE_DIM
 
-        # Phase 4: Only keep ninja physics state (29 dims)
+        # Phase 4: Only keep ninja physics state (40 enhanced dims)
         # All other features (path objectives, mines, progress, etc.) are now in the graph
         base_game_state = obs["game_state"]
         self._game_state_buffer[:NINJA_STATE_DIM] = base_game_state[:NINJA_STATE_DIM]
@@ -458,6 +607,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Extract locked door switch states from environment
         switch_states_dict = self._get_switch_states_from_env()
+
+        # Update level_data.switch_states for consistent cache key generation
+        # CRITICAL: This must be done before adding level_data to observation
+        # so that PBRS cache keys include correct switch states
+        if hasattr(self, "level_data") and self.level_data is not None:
+            self.level_data.switch_states = switch_states_dict
 
         # Store dict version for ICM and reachability systems
         obs["switch_states_dict"] = switch_states_dict
@@ -1209,6 +1364,173 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         from nclone.cache_management import clear_all_caches_for_new_level
 
         clear_all_caches_for_new_level(self, verbose=verbose)
+
+    def _save_degenerate_map_debug_image(self, tile_dic, adjacency, num_nodes):
+        """Save a debug visualization when a degenerate map (tiny graph) is detected.
+
+        Args:
+            tile_dic: Dictionary mapping (x, y) coordinates to tile type values
+            adjacency: Graph adjacency structure
+            num_nodes: Number of nodes in the graph
+        """
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+            from datetime import datetime
+            import os
+
+            # Get spawn position
+            ninja_pos = self.nplay_headless.ninja_position()
+            spawn_x, spawn_y = int(ninja_pos[0]), int(ninja_pos[1])
+
+            # Create output directory
+            output_dir = "debug_degenerate_maps"
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate filename with timestamp and map name
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            map_name = getattr(self.map_loader, "current_map_name", "unknown")
+            filename = f"{output_dir}/{timestamp}_{map_name}_nodes{num_nodes}.png"
+
+            # Create figure
+            fig, ax = plt.subplots(figsize=(16, 10))
+
+            # Render tiles - import from npp-rl if available, otherwise skip
+            try:
+                import sys
+
+                # Try to import from npp-rl project
+                npp_rl_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    "npp-rl",
+                )
+                if os.path.exists(npp_rl_path):
+                    sys.path.insert(0, npp_rl_path)
+
+                from npp_rl.rendering.matplotlib_tile_renderer import (
+                    render_tiles_to_axis,
+                )
+
+                render_tiles_to_axis(
+                    ax,
+                    tile_dic,
+                    tile_size=24.0,
+                    tile_color="#808080",
+                    alpha=0.6,
+                    show_tile_labels=False,
+                )
+            except ImportError:
+                # Fallback: render simple rectangles for solid tiles
+                for (x, y), tile_type in tile_dic.items():
+                    if tile_type == 1:  # Solid tiles
+                        rect = mpatches.Rectangle(
+                            (x * 24, y * 24), 24, 24, facecolor="#808080", alpha=0.6
+                        )
+                        ax.add_patch(rect)
+
+            # Draw graph nodes
+            for node_pos in adjacency.keys():
+                x, y = node_pos
+                # Convert from tile data space (subtracts 24px) to display space
+                screen_x = x + 24  # Add back the offset
+                screen_y = y + 24
+                circle = mpatches.Circle(
+                    (screen_x, screen_y),
+                    5,
+                    facecolor="green",
+                    edgecolor="black",
+                    linewidth=1,
+                    alpha=0.8,
+                )
+                ax.add_patch(circle)
+
+            # Draw graph edges
+            for node_pos, neighbors in adjacency.items():
+                x1, y1 = node_pos
+                screen_x1 = x1 + 24
+                screen_y1 = y1 + 24
+                for neighbor_pos, _ in neighbors:
+                    x2, y2 = neighbor_pos
+                    screen_x2 = x2 + 24
+                    screen_y2 = y2 + 24
+                    ax.plot(
+                        [screen_x1, screen_x2],
+                        [screen_y1, screen_y2],
+                        "y-",
+                        alpha=0.5,
+                        linewidth=1,
+                    )
+
+            # Mark spawn position
+            spawn_circle = mpatches.Circle(
+                (spawn_x, spawn_y),
+                8,
+                facecolor="red",
+                edgecolor="white",
+                linewidth=2,
+                alpha=1.0,
+            )
+            ax.add_patch(spawn_circle)
+
+            # Add text annotation for spawn
+            ax.text(
+                spawn_x,
+                spawn_y - 20,
+                f"SPAWN\n({spawn_x}, {spawn_y})",
+                ha="center",
+                va="top",
+                fontsize=10,
+                color="red",
+                weight="bold",
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="white", alpha=0.8),
+            )
+
+            # Configure plot
+            ax.set_xlim(0, 44 * 24)  # Full map width with padding
+            ax.set_ylim(25 * 24, 0)  # Full map height with padding (inverted Y)
+            ax.set_aspect("equal")
+            ax.set_title(
+                f"Degenerate Map Debug: {map_name}\n"
+                f"Nodes: {num_nodes}, Spawn: ({spawn_x}, {spawn_y})",
+                fontsize=14,
+                weight="bold",
+            )
+            ax.set_xlabel("X (pixels)", fontsize=10)
+            ax.set_ylabel("Y (pixels)", fontsize=10)
+
+            # Add grid
+            ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
+
+            # Add legend
+            legend_elements = [
+                mpatches.Circle(
+                    (0, 0),
+                    1,
+                    facecolor="red",
+                    edgecolor="white",
+                    linewidth=2,
+                    label="Spawn Position",
+                ),
+                mpatches.Circle(
+                    (0, 0), 1, facecolor="green", edgecolor="black", label="Graph Node"
+                ),
+                mpatches.Patch(facecolor="yellow", alpha=0.5, label="Graph Edge"),
+                mpatches.Patch(facecolor="#808080", alpha=0.6, label="Solid Tile"),
+            ]
+            ax.legend(handles=legend_elements, loc="upper right", fontsize=9)
+
+            # Save figure
+            plt.tight_layout()
+            plt.savefig(filename, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+
+            logger.info(f"Saved degenerate map debug image: {filename}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save degenerate map debug image: {e}")
 
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects and support vectorization."""

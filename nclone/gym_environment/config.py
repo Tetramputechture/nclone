@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 import logging
 
+# Import RewardConfig for reward system integration
+from .reward_calculation.reward_config import RewardConfig
+
 
 @dataclass
 class FrameStackConfig:
@@ -150,6 +153,9 @@ class EnvironmentConfig:
     graph: GraphConfig = field(default_factory=GraphConfig)
     reachability: ReachabilityConfig = field(default_factory=ReachabilityConfig)
 
+    # Reward system configuration (curriculum-aware)
+    reward_config: Optional[RewardConfig] = None
+
     def __post_init__(self):
         """Validate environment configuration."""
         if self.enable_logging:
@@ -218,6 +224,17 @@ class EnvironmentConfig:
             "enable_debug_overlay": self.render.enable_debug_overlay,
             # PBRS settings
             "pbrs_gamma": self.pbrs.pbrs_gamma,
+            # Reward system settings
+            "reward_config_enabled": self.reward_config is not None,
+            "reward_phase": self.reward_config.training_phase
+            if self.reward_config
+            else "N/A",
+            "pbrs_objective_weight": self.reward_config.pbrs_objective_weight
+            if self.reward_config
+            else "N/A",
+            "time_penalty_per_step": self.reward_config.time_penalty_per_step
+            if self.reward_config
+            else "N/A",
             # Debug settings
             "debug": self.graph.debug or self.reachability.debug,
         }

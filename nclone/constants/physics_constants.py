@@ -9,6 +9,7 @@ from pathlib import Path
 # === ENTITY PHYSICS CONSTANTS ===
 # Basic entity properties
 NINJA_RADIUS = 10  # Ninja collision radius in pixels
+NINJA_RADIUS_SQ = NINJA_RADIUS * NINJA_RADIUS  # Precomputed squared radius for performance
 DRONE_RADIUS = 7.5  # Drone collision radius in pixels
 MINI_DRONE_RADIUS = 4.0  # Mini drone collision radius in pixels
 

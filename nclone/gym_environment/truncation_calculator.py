@@ -3,10 +3,10 @@
 import numpy as np
 
 # Heuristic parameters (tunable)
-BASE_TIME_PER_NODE = 5.0  # frames per sqrt(node)
+BASE_TIME_PER_NODE = 10.0  # frames per sqrt(node)
 TIME_PER_MINE = 50.0  # frames per reachable mine
 TRUNCATION_MULTIPLIER = 10  # generous multiplier for learning
-MIN_TRUNCATION_FRAMES = 300  # minimum for tiny levels
+MIN_TRUNCATION_FRAMES = 600  # minimum for tiny levels
 MAX_TRUNCATION_FRAMES = 4000  # cap for extremely large/complex levels
 
 
