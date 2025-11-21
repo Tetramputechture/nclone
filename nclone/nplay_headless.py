@@ -458,6 +458,24 @@ class NPlayHeadless:
 
         return mines
 
+    def get_death_probabilities(self) -> Dict[str, float]:
+        """Get deterministic death probabilities calculated by ninja physics.
+
+        Returns deterministic probabilities for mine collision and terminal impact death.
+        Uses the exact same calculations that determine actual death in the game.
+
+        Returns:
+            Dictionary with:
+            - mine_death_probability: 0.0 (safe) to 1.0 (certain death from mine collision)
+            - terminal_impact_probability: 0.0 (safe) to 1.0 (certain death from terminal impact)
+        """
+        return {
+            "mine_death_probability": float(self.sim.ninja.mine_death_probability),
+            "terminal_impact_probability": float(
+                self.sim.ninja.terminal_impact_probability
+            ),
+        }
+
     def locked_doors(self):
         """Return locked door entities (type 6). Includes their switch coordinates."""
         return list(self.sim.entity_dic.get(6, []))

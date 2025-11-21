@@ -795,6 +795,9 @@ class BaseNppEnvironment(gymnasium.Env):
         # Get current ninja velocity for momentum rewards
         ninja_vel = self.nplay_headless.ninja_velocity()
 
+        # Get deterministic death probabilities for auxiliary learning
+        death_probabilities = self.nplay_headless.get_death_probabilities()
+
         # DIAGNOSTIC: Log what positions we're extracting from simulator
         ninja_pos = self.nplay_headless.ninja_position()
         switch_pos = self.nplay_headless.exit_switch_position()
@@ -817,6 +820,11 @@ class BaseNppEnvironment(gymnasium.Env):
             "floor_normal_y": ninja_floor_norm[1],
             "ceiling_normal_x": ninja_ceiling_norm[0],
             "ceiling_normal_y": ninja_ceiling_norm[1],
+            # Deterministic death probabilities for auxiliary learning
+            "mine_death_probability": death_probabilities["mine_death_probability"],
+            "terminal_impact_probability": death_probabilities[
+                "terminal_impact_probability"
+            ],
             "switch_activated": self.nplay_headless.exit_switch_activated(),
             "switch_x": switch_pos[0],
             "switch_y": switch_pos[1],
