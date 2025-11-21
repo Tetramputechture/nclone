@@ -31,7 +31,6 @@ from ..constants.physics_constants import (
 )
 from ..gym_environment.constants import (
     LEVEL_DIAGONAL,
-    NINJA_STATE_DIM,
     MAX_LOCKED_DOORS,
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,

@@ -53,9 +53,9 @@ Add derived physics features to current 32D state:
 ### 3.2 AttentiveStateMLP Enhancement
 
 - **Adaptive Component Dimensions**: Variable encoder sizes based on physics complexity
-                                - Contact/Forces: 64D (high complexity)
-                                - Velocity/Movement: 32D (medium complexity)  
-                                - Input/Buffers: 16D (low complexity)
+                                                                - Contact/Forces: 64D (high complexity)
+                                                                - Velocity/Movement: 32D (medium complexity)  
+                                                                - Input/Buffers: 16D (low complexity)
 - **Hierarchical Physics Attention**: Multi-scale attention (component-level → interaction-level)
 - **Physics Context Gates**: Learned gating based on current physics state (airborne vs grounded)
 
@@ -111,9 +111,9 @@ Since multi-frame physics prediction is infeasible, focus on single-frame tempor
 ### 6.2 Physics Pattern Recognition
 
 - **Auxiliary Physics Tasks**: Train heads to recognize current physics patterns (not predict future)
-                                - Current movement efficiency classification
-                                - Physics state stability assessment
-                                - Optimal action availability detection
+                                                                - Current movement efficiency classification
+                                                                - Physics state stability assessment
+                                                                - Optimal action availability detection
 - **Physics Embedding Learning**: Contrastive learning on physics states to group similar physics contexts
 
 ## 7. Emergent Behavior Discovery

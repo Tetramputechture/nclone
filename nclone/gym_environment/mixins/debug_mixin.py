@@ -5,7 +5,6 @@ This module contains all debug overlay and visualization functionality that was
 previously integrated into the main NppEnvironment class.
 """
 
-import numpy as np
 from typing import Dict, Any, Optional
 
 
