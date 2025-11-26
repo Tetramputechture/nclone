@@ -3,7 +3,6 @@ import random
 import math
 from typing import Optional, Dict, Any
 from .nsim import Simulator
-from .nsim_renderer import NSimRenderer
 from .map_generation.map_generator import generate_map
 from .sim_config import SimConfig
 import numpy as np
@@ -68,6 +67,7 @@ class NPlayHeadless:
         # Only initialize rendering if needed
         if self.enable_rendering:
             import pygame
+            from .nsim_renderer import NSimRenderer
 
             # OPTIMIZATION: Always use grayscale in headless mode (grayscale_array)
             # RGB only used for human viewing (render_mode="human")
@@ -457,24 +457,6 @@ class NPlayHeadless:
                     )
 
         return mines
-
-    def get_death_probabilities(self) -> Dict[str, float]:
-        """Get deterministic death probabilities calculated by ninja physics.
-
-        Returns deterministic probabilities for mine collision and terminal impact death.
-        Uses the exact same calculations that determine actual death in the game.
-
-        Returns:
-            Dictionary with:
-            - mine_death_probability: 0.0 (safe) to 1.0 (certain death from mine collision)
-            - terminal_impact_probability: 0.0 (safe) to 1.0 (certain death from terminal impact)
-        """
-        return {
-            "mine_death_probability": float(self.sim.ninja.mine_death_probability),
-            "terminal_impact_probability": float(
-                self.sim.ninja.terminal_impact_probability
-            ),
-        }
 
     def locked_doors(self):
         """Return locked door entities (type 6). Includes their switch coordinates."""

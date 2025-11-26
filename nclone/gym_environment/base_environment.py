@@ -6,6 +6,7 @@ mixins for graph, reachability, and debug features.
 """
 
 import logging
+import time
 import gymnasium
 from gymnasium.spaces import box, discrete, Dict as SpacesDict
 import random
@@ -32,6 +33,7 @@ from .constants import (
 from .reward_calculation.main_reward_calculator import RewardCalculator
 from .reward_calculation.reward_config import RewardConfig
 from .observation_processor import ObservationProcessor
+from .profiling_mixin import ProfilingMixin
 from .truncation_checker import TruncationChecker
 from .entity_extractor import EntityExtractor
 from .env_map_loader import EnvMapLoader
@@ -42,7 +44,7 @@ from ..entity_classes.entity_door_locked import EntityDoorLocked
 logger = logging.getLogger(__name__)
 
 
-class BaseNppEnvironment(gymnasium.Env):
+class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     """
     Base N++ environment class with core functionality.
 
@@ -74,9 +76,11 @@ class BaseNppEnvironment(gymnasium.Env):
         augmentation_config: Optional[Dict[str, Any]] = None,
         pbrs_gamma: float = PBRS_GAMMA,
         enable_visual_observations: bool = False,
+        enable_profiling: bool = False,
         reward_config: Optional[
             RewardConfig
         ] = None,  # RewardConfig for curriculum-aware reward system
+        frame_skip: int = 4,  # Frame skip (action repeat) for temporal abstraction
     ):
         """
         Initialize the base N++ environment.
@@ -95,8 +99,16 @@ class BaseNppEnvironment(gymnasium.Env):
             pbrs_gamma: PBRS discount factor
             enable_visual_observations: If False, skip rendering and visual observation processing
                 (graph + state + reachability contain all necessary information)
+            enable_profiling: Enable detailed performance profiling (~5% overhead)
         """
+        _init_start = time.perf_counter()
+        _logger = logging.getLogger(__name__)
+        print("[PROFILE] BaseNppEnvironment.__init__ starting...")
+
         super().__init__()
+
+        # Initialize profiling before other components
+        self._init_profiling(enable_profiling)
 
         self.render_mode = render_mode
         self.enable_animation = enable_animation
@@ -132,9 +144,21 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Track reward for the current episode
         self.current_ep_reward = 0
+        self._last_episode_reward = 0  # For reset validation
 
         # Track last action for death context learning
         self.last_action = None
+
+        # Track episode count for periodic cache clearing in worker processes
+        # Used by SharedMemorySubprocVecEnv to trigger cache clearing every N episodes
+        self._episode_count = 0
+
+        # Position tracking for route visualization (integrated directly)
+        self.current_route = []
+        self._warned_about_position = False
+
+        # Frame skip for temporal abstraction (always enabled)
+        self.frame_skip = max(1, frame_skip)  # Ensure at least 1
 
         # Initialize entity extractor
         self.entity_extractor = EntityExtractor(self.nplay_headless)
@@ -276,7 +300,10 @@ class BaseNppEnvironment(gymnasium.Env):
         return hoz_input, jump_input
 
     def step(self, action: int):
-        """Execute one environment step with enhanced episode info.
+        """Execute one environment step with frame skip and enhanced episode info.
+
+        With frame_skip enabled, repeats the action for N frames and calculates
+        reward once using the initial→final transition.
 
         Template method that defines the step execution flow with hooks
         for subclasses to extend behavior at specific points.
@@ -284,14 +311,10 @@ class BaseNppEnvironment(gymnasium.Env):
         logger = logging.getLogger(__name__)
 
         try:
-            # Get previous observation for reward calculation
-            # Note: We don't validate actions against prev_obs mask because:
-            # 1. The policy already validated with the mask from _last_obs
-            # 2. The environment state may have changed since policy selection
-            # 3. Validation belongs at policy level, not environment level
-            prev_obs = self._prev_obs_cache
-            if prev_obs is None:
-                prev_obs = self._get_observation()
+            # Get initial observation for frame skip reward calculation
+            initial_obs = self._prev_obs_cache
+            if initial_obs is None:
+                initial_obs = self._get_observation()
 
             # Record action for debug visualization
             if hasattr(self, "_record_action_for_debug"):
@@ -300,9 +323,27 @@ class BaseNppEnvironment(gymnasium.Env):
             # Track last action for death context
             self.last_action = action
 
-            # Execute action
+            # Execute action for frame_skip frames
             action_hoz, action_jump = self._actions_to_execute(action)
-            self.nplay_headless.tick(action_hoz, action_jump)
+            terminated = False
+            truncated = False
+            frames_executed = 0
+
+            for i in range(self.frame_skip):
+                # Execute physics tick
+                t_physics = self._profile_start("physics_tick")
+                self.nplay_headless.tick(action_hoz, action_jump)
+                self._profile_end("physics_tick", t_physics)
+
+                # Track position for route visualization
+                self._track_position_after_step()
+
+                frames_executed = i + 1
+
+                # Check if episode ended (don't execute more frames after death)
+                terminated, truncated, _ = self._check_termination()
+                if terminated or truncated:
+                    break
 
             # Invalidate observation cache since game state changed
             self._cached_observation = None
@@ -310,48 +351,50 @@ class BaseNppEnvironment(gymnasium.Env):
             # Hook: After action execution, before observation
             self._post_action_hook()
 
-            # Get current observation
-            curr_obs = self._get_observation()
+            # Get final observation - OBSERVATION GENERATION
+            t_obs = self._profile_start("observation_get")
+            final_obs = self._get_observation()
+            self._profile_end("observation_get", t_obs)
 
             # Cache observation for reward calculation in next step
-            # Shallow copy dict + explicit action_mask copy prevents wrapper mutations
-            self._prev_obs_cache = curr_obs.copy()
-            self._prev_obs_cache["action_mask"] = curr_obs["action_mask"].copy()
+            self._prev_obs_cache = final_obs
 
-            # Return a copy so wrappers can't mutate our cached observation
-            obs_to_return = curr_obs.copy()
-            obs_to_return["action_mask"] = curr_obs["action_mask"].copy()
-
-            terminated, truncated, player_won = self._check_termination()
+            # Get player_won for reward calculation
+            player_won = final_obs.get("player_won", False)
 
             # Hook: After observation, before reward calculation
-            self._pre_reward_hook(curr_obs, player_won)
+            self._pre_reward_hook(final_obs, player_won)
 
-            # Calculate reward (pass action for NOOP penalty)
-            reward = self._calculate_reward(curr_obs, prev_obs, action)
+            # Calculate reward using initial→final transition with frame count scaling
+            reward = self.reward_calculator.calculate_reward(
+                final_obs, initial_obs, action, frames_executed=frames_executed
+            )
 
             # Update dynamic truncation limit if PBRS surface area is now available
             self._update_dynamic_truncation_if_needed()
 
             # Apply death penalty for truncation (treat truncation as failure)
-            # Note: Truncation policy is curriculum-aware and aligns with reward config:
-            # - Early phase: No time penalty + generous truncation (exploration focus)
-            # - Late phase: Full time penalty + standard truncation (efficiency focus)
             if truncated and not terminated:
                 from .reward_calculation.reward_constants import DEATH_PENALTY
 
                 reward += DEATH_PENALTY
 
             # Hook: Modify reward if needed
-            reward = self._modify_reward_hook(reward, curr_obs, player_won, terminated)
+            reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
 
             self.current_ep_reward += reward
 
-            # Process observation for training (use returned copy, not original)
-            processed_obs = self._process_observation(obs_to_return)
+            # Process observation for training
+            processed_obs = self._process_observation(final_obs)
 
             # Build episode info
             info = self._build_episode_info(player_won, terminated, truncated)
+
+            # Add frame skip stats to info
+            info["frame_skip_stats"] = {
+                "skip_value": self.frame_skip,
+                "frames_executed": frames_executed,
+            }
 
             # Hook: Add additional info fields
             self._extend_info_hook(info)
@@ -366,6 +409,120 @@ class BaseNppEnvironment(gymnasium.Env):
             )
             # Re-raise to maintain normal error handling
             raise
+
+    def get_observation(self) -> Dict[str, Any]:
+        """Public accessor for current observation (for frame skip wrapper).
+
+        Note: Returns observation directly without copying. The caller should not
+        mutate the returned dictionary. If mutation is needed, the caller should
+        make their own copy.
+        """
+        return self._get_observation()
+
+    def step_without_reward(
+        self, action: int, generate_observation: bool = True
+    ) -> Tuple[Dict[str, Any], bool, bool, Dict[str, Any]]:
+        """Execute one physics frame without reward calculation (for frame skip).
+
+        Args:
+            action: Action to execute
+            generate_observation: If False, returns None for observation (for intermediate frames)
+
+        Returns:
+            Tuple of (observation, terminated, truncated, info)
+            observation will be None if generate_observation=False
+        """
+        logger = logging.getLogger(__name__)
+
+        try:
+            # Record action for debug visualization
+            if hasattr(self, "_record_action_for_debug"):
+                self._record_action_for_debug(action)
+
+            # Track last action for death context
+            self.last_action = action
+
+            # Execute action
+            action_hoz, action_jump = self._actions_to_execute(action)
+            self.nplay_headless.tick(action_hoz, action_jump)
+
+            # Track position for route visualization
+            self._track_position_after_step()
+
+            # Invalidate observation cache since game state changed
+            self._cached_observation = None
+
+            # Hook: After action execution, before observation
+            self._post_action_hook()
+
+            # Get current observation only if needed
+            if generate_observation:
+                curr_obs = self._get_observation()
+                # Cache observation reference for next step (no copy needed)
+                self._prev_obs_cache = curr_obs
+            else:
+                curr_obs = None
+
+            # Check termination
+            terminated, truncated, _ = self._check_termination()
+
+            # Minimal info dict (extended info added later by wrapper)
+            info = {}
+
+            # Return observation directly (no copy needed - wrapper will handle if needed)
+            return curr_obs, terminated, truncated, info
+
+        except Exception as e:
+            logger.error(
+                f"[STEP_EXCEPTION] Exception in step_without_reward(): {type(e).__name__}: {e}. "
+                f"Action: {action}"
+            )
+            raise
+
+    def calculate_reward_transition(
+        self,
+        initial_obs: Dict[str, Any],
+        final_obs: Dict[str, Any],
+        action: int,
+        frames_executed: int = 1,
+    ) -> float:
+        """Calculate reward for a multi-frame transition (for frame skip).
+
+        Args:
+            initial_obs: Observation at start of frame skip
+            final_obs: Observation at end of frame skip
+            action: Action executed
+            frames_executed: Number of frames executed (for time penalty scaling)
+
+        Returns:
+            Total reward for the transition
+        """
+        # Hook: After observation, before reward calculation
+        player_won = final_obs.get("player_won", False)
+        self._pre_reward_hook(final_obs, player_won)
+
+        # Calculate reward with frame count for time penalty scaling
+        reward = self.reward_calculator.calculate_reward(
+            final_obs, initial_obs, action, frames_executed=frames_executed
+        )
+
+        # Update dynamic truncation limit if PBRS surface area is now available
+        self._update_dynamic_truncation_if_needed()
+
+        # Apply death penalty for truncation (treat truncation as failure)
+        terminated = final_obs.get("player_dead", False)
+        truncated = self._check_curriculum_aware_truncation()
+        if truncated and not terminated:
+            from .reward_calculation.reward_constants import DEATH_PENALTY
+
+            reward += DEATH_PENALTY
+
+        # Hook: Modify reward if needed
+        reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
+
+        self.current_ep_reward += reward
+
+        return reward
 
     def _post_action_hook(self):
         """Hook called after action execution, before getting observation.
@@ -496,9 +653,7 @@ class BaseNppEnvironment(gymnasium.Env):
 
         return metrics
 
-    def _check_curriculum_aware_truncation(
-        self, ninja_x: float, ninja_y: float
-    ) -> Tuple[bool, str]:
+    def _check_curriculum_aware_truncation(self) -> bool:
         """Check truncation with curriculum-aware policy that respects reward config.
 
         Philosophy: Truncation serves computational efficiency and training stability,
@@ -510,12 +665,8 @@ class BaseNppEnvironment(gymnasium.Env):
 
         This balances computational limits with curriculum consistency.
 
-        Args:
-            ninja_x: Current ninja x position
-            ninja_y: Current ninja y position
-
         Returns:
-            Tuple of (should_truncate: bool, reason: str)
+            True if truncation should occur, False otherwise
         """
         reward_config = self.reward_calculator.config
 
@@ -539,26 +690,8 @@ class BaseNppEnvironment(gymnasium.Env):
             # No reward config -> use standard truncation
             multiplier = 1.0
 
-        # Apply curriculum-aware truncation limit
-        base_limit = self.truncation_checker.current_truncation_limit
-        curriculum_limit = int(base_limit * multiplier)
-
-        # Add current position to history (always do this)
-        self.truncation_checker.position_history.append((ninja_x, ninja_y))
-
         # Check against curriculum-adjusted limit
-        frames_elapsed = len(self.truncation_checker.position_history)
-        should_truncate = frames_elapsed >= curriculum_limit
-
-        if should_truncate:
-            if reward_config is not None:
-                reason = f"Max frames reached ({curriculum_limit}) [curriculum: {reward_config.training_phase} phase, {multiplier:.1f}x base limit of {base_limit}]"
-            else:
-                reason = f"Max frames reached ({curriculum_limit})"
-        else:
-            reason = ""
-
-        return should_truncate, reason
+        return self.truncation_checker.update_and_check_for_truncation(multiplier)
 
     def _get_curriculum_aware_truncation_limit(self) -> int:
         """Get the curriculum-aware truncation limit without side effects.
@@ -632,6 +765,29 @@ class BaseNppEnvironment(gymnasium.Env):
         """
         pass
 
+    def _track_position_after_step(self):
+        """Track ninja position after physics step for route visualization.
+
+        Called after each physics tick to record the ninja's trajectory.
+        """
+        try:
+            position = self.nplay_headless.ninja_position()
+            if position is not None:
+                self.current_route.append((float(position[0]), float(position[1])))
+            else:
+                if not self._warned_about_position:
+                    logger.warning(
+                        "ninja_position() returned None during route tracking"
+                    )
+                    self._warned_about_position = True
+        except Exception as e:
+            if not self._warned_about_position:
+                logger.warning(
+                    f"Exception in _track_position_after_step: {e}",
+                    exc_info=True,
+                )
+                self._warned_about_position = True
+
     def _build_episode_info(
         self, player_won: bool, terminated: bool, truncated: bool
     ) -> Dict[str, Any]:
@@ -649,16 +805,67 @@ class BaseNppEnvironment(gymnasium.Env):
             "is_success": player_won,
             "terminated": terminated,
             "truncated": truncated,
-            "r": self.current_ep_reward,
-            "l": self.nplay_headless.sim.frame,
+            "r": self.current_ep_reward,  # Cumulative reward for entire episode
+            "l": self.nplay_headless.sim.frame,  # Total frames executed (not actions)
             "level_id": self.map_loader.current_map_name,
             "config_flags": self.config_flags.copy(),
             "terminal_impact": self.nplay_headless.get_ninja_terminal_impact(),
         }
 
-        # Add PBRS component rewards if available
+        # Add episode route for visualization if episode is ending
+        if terminated or truncated:
+            route_length = len(self.current_route)
+            if route_length > 0:
+                info["episode_route"] = list(self.current_route)
+                info["route_length"] = route_length
+
+                # NOTE: Route is NOT cleared here - it will be cleared in reset()
+                # This ensures proper interaction with VecEnv autoreset behavior
+            else:
+                logger.warning(
+                    f"Episode ended with EMPTY route! "
+                    f"frames={self.nplay_headless.sim.frame}"
+                )
+
+        # DIAGNOSTIC: Validate episode stats are reasonable
+        if (terminated or truncated) and self.enable_logging:
+            if self.current_ep_reward == 0.0:
+                logger.warning(
+                    f"Episode ended with zero cumulative reward. "
+                    f"Won: {player_won}, Dead: {self.nplay_headless.ninja_has_died()}, "
+                    f"Frames: {self.nplay_headless.sim.frame}"
+                )
+
+        # Store last episode reward for reset validation
+        self._last_episode_reward = self.current_ep_reward
+
+        # Store last episode reward for reset validation
+        self._last_episode_reward = self.current_ep_reward
+
+        # Add curriculum info if using custom map (for route visualization)
+        if self.custom_map_path:
+            info["curriculum_stage"] = "custom_map"
+            info["curriculum_generator"] = "custom"
+
+        # Add PBRS component rewards (always available for TensorBoard logging)
+        # This provides detailed breakdown: pbrs_reward, time_penalty, total_reward, etc.
         if hasattr(self.reward_calculator, "last_pbrs_components"):
             info["pbrs_components"] = self.reward_calculator.last_pbrs_components.copy()
+        else:
+            # Fallback: provide empty dict if reward calculator doesn't track components
+            info["pbrs_components"] = {}
+
+        # Add episode-level PBRS metrics for PBRSLoggingCallback (SubprocVecEnv compatible)
+        # Only include when episode ends (terminated or truncated)
+        if terminated or truncated:
+            if hasattr(self.reward_calculator, "get_episode_reward_metrics"):
+                info["episode_pbrs_metrics"] = (
+                    self.reward_calculator.get_episode_reward_metrics()
+                )
+
+            # Add reward config state for curriculum tracking
+            if hasattr(self.reward_calculator, "get_config_state"):
+                info["reward_config_state"] = self.reward_calculator.get_config_state()
 
         return info
 
@@ -691,11 +898,28 @@ class BaseNppEnvironment(gymnasium.Env):
         # Reset truncation checker
         self.truncation_checker.reset()
 
-        # Reset episode reward
+        # Reset episode reward (CRITICAL: must be 0 at episode start)
         self.current_ep_reward = 0
+
+        # SAFETY: Verify reward was properly accumulated in previous episode
+        # This catches bugs where reward might not be reset or accumulated correctly
+        if hasattr(self, "_last_episode_reward"):
+            if self._last_episode_reward != 0 and self.enable_logging:
+                logger.debug(
+                    f"Previous episode reward: {self._last_episode_reward:.2f}, "
+                    f"resetting to 0 for new episode"
+                )
+
+        # Increment episode counter for periodic cache clearing
+        # Worker processes use this to trigger cache clearing every 100 episodes
+        self._episode_count += 1
 
         # Reset last action tracking for death context
         self.last_action = None
+
+        # Reset position tracking for route visualization
+        self.current_route = []
+        self._warned_about_position = False
 
         # Invalidate observation cache
         self._cached_observation = None
@@ -717,6 +941,14 @@ class BaseNppEnvironment(gymnasium.Env):
             # If map loading is skipped, we still need to reset the sim
             # This happens when curriculum wrapper loads the map externally
             self.nplay_headless.reset()
+
+        # Track initial position for route visualization
+        try:
+            position = self.nplay_headless.ninja_position()
+            if position is not None:
+                self.current_route.append((float(position[0]), float(position[1])))
+        except Exception as e:
+            logger.warning(f"Could not get initial position for route tracking: {e}")
 
         # Get initial observation and process it
         initial_obs = self._get_observation()
@@ -789,14 +1021,9 @@ class BaseNppEnvironment(gymnasium.Env):
 
         # Get ninja properties for PBRS impact risk calculation
         ninja_vel_old = self.nplay_headless.ninja_velocity_old()
-        ninja_floor_norm = self.nplay_headless.ninja_floor_normal()
-        ninja_ceiling_norm = self.nplay_headless.ninja_ceiling_normal()
 
         # Get current ninja velocity for momentum rewards
         ninja_vel = self.nplay_headless.ninja_velocity()
-
-        # Get deterministic death probabilities for auxiliary learning
-        death_probabilities = self.nplay_headless.get_death_probabilities()
 
         # DIAGNOSTIC: Log what positions we're extracting from simulator
         ninja_pos = self.nplay_headless.ninja_position()
@@ -815,16 +1042,6 @@ class BaseNppEnvironment(gymnasium.Env):
             "player_xspeed_old": ninja_vel_old[0],
             "player_yspeed_old": ninja_vel_old[1],
             "player_airborn_old": self.nplay_headless.ninja_airborn_old(),
-            "buffered_jump_executed": self.nplay_headless.ninja_last_jump_was_buffered(),
-            "floor_normal_x": ninja_floor_norm[0],
-            "floor_normal_y": ninja_floor_norm[1],
-            "ceiling_normal_x": ninja_ceiling_norm[0],
-            "ceiling_normal_y": ninja_ceiling_norm[1],
-            # Deterministic death probabilities for auxiliary learning
-            "mine_death_probability": death_probabilities["mine_death_probability"],
-            "terminal_impact_probability": death_probabilities[
-                "terminal_impact_probability"
-            ],
             "switch_activated": self.nplay_headless.exit_switch_activated(),
             "switch_x": switch_pos[0],
             "switch_y": switch_pos[1],
@@ -834,25 +1051,11 @@ class BaseNppEnvironment(gymnasium.Env):
             "entities": entities,  # Entity objects (mines, locked doors, switches)
             "locked_doors": locked_doors,
             "locked_door_switches": locked_door_switches,
-            # Update path guidance predictor before getting action mask
-            # This ensures path-based masking has current data
-            "action_mask": self._get_action_mask_with_path_update(
-                ninja_pos, switch_pos, exit_pos
-            ),
-            "death_context": self._get_death_context(),
+            "action_mask": self._get_action_mask_with_path_update(),
         }
 
-        # DEFENSIVE FIX: Validate mask consistency before returning observation
-        # This catches corrupted masks early before they cause issues in the policy
         action_mask = obs["action_mask"]
-        if action_mask.shape != (6,):
-            logger.error(
-                f"[MASK_VALIDATION] Invalid action_mask shape: {action_mask.shape}, expected (6,). "
-                f"This indicates a critical bug in mask generation."
-            )
-            # Force correct shape with all actions valid as fallback
-            obs["action_mask"] = np.ones(6, dtype=np.int8)
-        elif not action_mask.any():
+        if not action_mask.any():
             logger.error(
                 f"[MASK_VALIDATION] All actions masked! Mask: {action_mask}. "
                 f"This should never happen - at least one action must be valid. "
@@ -863,23 +1066,6 @@ class BaseNppEnvironment(gymnasium.Env):
             action_mask[0] = 1
             obs["action_mask"] = action_mask
 
-        # Add ninja debug state for masked action bug detection
-        # This is stored in the observation so reward calculator can access it
-        # when a masked action is detected
-        ninja = self.nplay_headless.sim.ninja
-        if hasattr(ninja, "_mask_debug_state"):
-            obs["_ninja_debug_state"] = ninja._mask_debug_state.copy()
-
-        # Add debug tracking info when debug mode is enabled
-        if self.nplay_headless.sim.sim_config.debug:
-            obs["_env_id"] = id(self)
-            obs["_step_num"] = self.nplay_headless.sim.frame
-            if hasattr(ninja, "_mask_debug_state"):
-                obs["_mask_fingerprint"] = ninja._mask_debug_state.get(
-                    "mask_fingerprint"
-                )
-                obs["_mask_timestamp"] = ninja._mask_debug_state.get("mask_timestamp")
-
         # Only add screen if visual observations enabled
         # When disabled, graph + state + reachability contain all necessary information
         if self.enable_visual_observations:
@@ -889,12 +1075,7 @@ class BaseNppEnvironment(gymnasium.Env):
         self._cached_observation = obs
         return obs
 
-    def _get_action_mask_with_path_update(
-        self,
-        ninja_pos: Tuple[float, float],
-        switch_pos: Tuple[float, float],
-        exit_pos: Tuple[float, float],
-    ) -> np.ndarray:
+    def _get_action_mask_with_path_update(self) -> np.ndarray:
         """Get action mask with path guidance predictor updated.
 
         Updates the path guidance predictor's cached path before retrieving
@@ -909,92 +1090,7 @@ class BaseNppEnvironment(gymnasium.Env):
         Returns:
             Action mask as numpy array of int8 (defensive copy to prevent memory sharing)
         """
-        # Get action mask from ninja and force deep copy
-        # DEFENSIVE FIX: Use np.array(..., copy=True) to ensure unique memory allocation
-        # This prevents memory sharing issues in SubprocVecEnv where arrays might be
-        # shared across process boundaries via IPC, leading to race conditions where
-        # the mask used by the policy differs from the mask computed in the environment
-        mask = np.array(self.nplay_headless.get_action_mask(), dtype=np.int8, copy=True)
-
-        # Ensure C-contiguous layout to prevent memory aliasing
-        if not mask.flags["C_CONTIGUOUS"]:
-            mask = np.ascontiguousarray(mask, dtype=np.int8)
-
-        # DIAGNOSTIC: Track mask creation for debugging (only in debug mode)
-        if self.nplay_headless.sim.sim_config.debug:
-            import os
-
-            logger.debug(
-                f"[MASK_CREATE] pid={os.getpid()} env_frame={self.nplay_headless.sim.frame} "
-                f"id={id(mask)} owns_data={mask.flags['OWNDATA']} "
-                f"c_contiguous={mask.flags['C_CONTIGUOUS']} hash={hash(mask.tobytes())}"
-            )
-
-        return mask
-
-    def _get_death_context(self) -> np.ndarray:
-        """Extract rich death context for agent learning.
-
-        Provides 9 features describing what led to death:
-        [0] death_occurred: 1.0 if died this step, 0.0 otherwise
-        [1] death_velocity_magnitude: Speed at death (normalized 0-1)
-        [2] death_velocity_x: X velocity at death (normalized -1 to 1)
-        [3] death_velocity_y: Y velocity at death (normalized -1 to 1)
-        [4] death_impact_normal_x: Surface normal X at impact (-1 to 1)
-        [5] death_impact_normal_y: Surface normal Y at impact (-1 to 1)
-        [6] frames_airborne_before_death: Frames airborne before death (normalized 0-1)
-        [7] last_action_before_death: Action that led to death (normalized -1 to 1)
-        [8] death_type: Categorical encoding (0=none, 0.25=mine, 0.5=terminal_impact, 0.75=hazard, 1.0=other)
-
-        Returns:
-            Array of shape (9,) with death context features
-        """
-        context = np.zeros(9, dtype=np.float32)
-
-        if not self.nplay_headless.ninja_has_died():
-            return context
-
-        ninja = self.nplay_headless.sim.ninja
-        context[0] = 1.0  # death_occurred flag
-
-        # Velocity at death (from ninja.death_xspeed/yspeed)
-        from ..constants.physics_constants import MAX_HOR_SPEED
-
-        death_vel_mag = np.sqrt(ninja.death_xspeed**2 + ninja.death_yspeed**2)
-        context[1] = np.clip(death_vel_mag / (MAX_HOR_SPEED * 2), 0, 1)
-        context[2] = np.clip(ninja.death_xspeed / MAX_HOR_SPEED, -1, 1)
-        context[3] = np.clip(ninja.death_yspeed / MAX_HOR_SPEED, -1, 1)
-
-        # Surface normal (for terminal impact)
-        if getattr(ninja, "terminal_impact", False):
-            # Use floor or ceiling normal depending on impact type
-            if ninja.floor_count > 0:
-                context[4] = ninja.floor_normalized_x
-                context[5] = ninja.floor_normalized_y
-            elif ninja.ceiling_count > 0:
-                context[4] = ninja.ceiling_normalized_x
-                context[5] = ninja.ceiling_normalized_y
-
-        # Frames airborne (tracked in ninja.py)
-        if hasattr(ninja, "frames_airborne"):
-            context[6] = np.clip(ninja.frames_airborne / 100.0, 0, 1)
-
-        # Last action (tracked in environment)
-        if hasattr(self, "last_action") and self.last_action is not None:
-            context[7] = (self.last_action / 5.0) * 2 - 1  # Normalize 0-5 to [-1, 1]
-
-        # Death type encoding
-        death_cause = ninja.death_cause or "other"
-        type_map = {
-            None: 0.0,
-            "mine": 0.25,
-            "terminal_impact": 0.5,
-            "hazard": 0.75,
-            "other": 1.0,
-        }
-        context[8] = type_map.get(death_cause, 0.0)
-
-        return context
+        return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
 
     def _check_termination(self) -> Tuple[bool, bool, bool]:
         """
@@ -1016,20 +1112,7 @@ class BaseNppEnvironment(gymnasium.Env):
         terminated = player_won or player_dead
 
         # Check truncation using curriculum-aware policy
-        ninja_x, ninja_y = self.nplay_headless.ninja_position()
-        should_truncate, reason = self._check_curriculum_aware_truncation(
-            ninja_x, ninja_y
-        )
-
-        if should_truncate and self.enable_logging:
-            reward_config = self.reward_calculator.config
-            phase = reward_config.training_phase if reward_config else "N/A"
-            time_penalty = (
-                reward_config.time_penalty_per_step if reward_config else "N/A"
-            )
-            print(
-                f"Episode truncated in {phase} phase (time_penalty={time_penalty}): {reason}"
-            )
+        should_truncate = self._check_curriculum_aware_truncation()
 
         # Return proper truncated flag (don't merge with terminated)
         # Truncation is now treated separately so we can apply death penalty

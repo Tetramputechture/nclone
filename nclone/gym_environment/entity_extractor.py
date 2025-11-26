@@ -204,7 +204,7 @@ class EntityExtractor:
                         "x": getattr(mine, "xpos", 0.0),
                         "y": getattr(mine, "ypos", 0.0),
                         "active": getattr(mine, "active", True),
-                        "state": 1.0 if getattr(mine, "active", True) else 0.0,
+                        "state": mine_state,  # FIX: Use actual state (0/1/2)
                         "entity_id": f"mine_{i}",
                         "entity_ref": mine,
                     }

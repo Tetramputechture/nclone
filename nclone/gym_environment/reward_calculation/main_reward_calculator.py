@@ -1,15 +1,19 @@
-"""Simplified reward calculator with curriculum-aware component lifecycle.
+"""Policy-invariant reward calculator using true PBRS for path guidance.
 
-Focused reward system with clear hierarchy:
+Implements Potential-Based Reward Shaping (Ng et al. 1999) with clear hierarchy:
 1. Terminal rewards (completion, death) - Define task success/failure
-2. PBRS objective potential - Policy-invariant guidance to goal
+2. PBRS shaping: F(s,s') = γ * Φ(s') - Φ(s) - Dense, policy-invariant path guidance
 3. Time penalty - Efficiency pressure (curriculum-controlled)
 
-All redundant components removed for clarity.
+PBRS provides:
+- Dense reward signal at every step (not sparse achievement bonuses)
+- Automatic backtracking penalties (moving away from goal reduces potential)
+- Policy invariance guarantee (optimal policy unchanged by shaping)
+- Markov property (no episode history dependencies)
 """
 
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from .reward_config import RewardConfig
 from .pbrs_potentials import PBRSCalculator
 from .reward_constants import (
@@ -28,20 +32,31 @@ logger = logging.getLogger(__name__)
 
 
 class RewardCalculator:
-    """Simplified reward calculator with curriculum-aware lifecycle.
+    """Policy-invariant reward calculator using true PBRS for path guidance.
 
     Components:
     - Terminal rewards: Always active (completion, death, switch milestone)
-    - PBRS objective potential: Always active (curriculum-scaled weight)
-    - Time penalty: Conditionally active (curriculum-controlled)
+    - PBRS shaping: F(s,s') = γ * Φ(s') - Φ(s) for dense, policy-invariant path guidance
+    - Time penalty: Efficiency pressure (curriculum-controlled)
 
-    Removed components (redundant/confusing):
-    - Exploration rewards (PBRS provides via potential gradients)
-    - Progress bonuses (PBRS already rewards progress)
-    - Backtrack penalties (confusing, PBRS handles naturally)
-    - NOOP penalties (let PBRS guide, don't punish stillness)
-    - Buffer bonuses (gameplay mechanic, not learning signal)
-    - Hazard/impact PBRS (death penalty is clearer signal)
+    PBRS Implementation:
+    - Uses potential function Φ(s) based on shortest path distance to objective
+    - Applies Ng et al. (1999) formula with γ=1.0 for heuristic potentials
+    - Guarantees policy invariance while providing dense reward gradients
+    - Automatically rewards distance decreases and penalizes distance increases
+    - Curriculum-aware weight and normalization scaling
+
+    PBRS Gamma Choice (γ=1.0):
+    - Eliminates negative bias from (γ-1)*Σ Φ term
+    - For heuristic potentials, γ=1.0 is standard (not tied to MDP discount)
+    - Accumulated PBRS = Φ(goal) - Φ(start) exactly (clean telescoping)
+    - Policy invariance holds for ANY γ (Ng et al. 1999 Theorem 1)
+
+    Removed components (policy-invariant alternative):
+    - Discrete achievement bonuses (replaced with dense PBRS)
+    - Episode length normalization (violated Markov property)
+    - Per-episode caps (violated Markov property)
+    - Physics discovery rewards (disabled for clean path focus)
     """
 
     def __init__(
@@ -81,50 +96,115 @@ class RewardCalculator:
         self.closest_distance_to_switch = float("inf")
         self.closest_distance_to_exit = float("inf")
 
-        # Track best path distances for discrete achievement bonuses
-        self.best_path_distance_to_switch = float("inf")
-        self.best_path_distance_to_exit = float("inf")
+        # Track previous potential for PBRS calculation: F(s,s') = γ * Φ(s') - Φ(s)
+        self.prev_potential = None
 
-        # Track total distance bonuses awarded this episode
-        self.total_distance_bonuses_awarded = 0.0
+        # Episode-level tracking for TensorBoard logging
+        self.episode_pbrs_rewards = []  # List of PBRS rewards per step
+        self.episode_time_penalties = []  # List of time penalties per step
+        self.episode_forward_steps = 0  # Count of steps with potential increase
+        self.episode_backtrack_steps = 0  # Count of steps with potential decrease
+        self.episode_terminal_reward = 0.0  # Terminal reward (completion/death)
+        self.current_potential = None  # Current potential for logging
+
+        # Path optimality tracking for efficiency metrics
+        self.episode_path_length = 0.0  # Actual path taken (accumulated movement)
+        self.optimal_path_length = None  # Shortest possible path (spawn→switch→exit)
+        self.prev_player_pos = None  # Track previous position for movement calculation
+
+        # Step-level component tracking for TensorBoard callback
+        # Always populated after calculate_reward() for info dict logging
+        self.last_pbrs_components = {}
 
     def calculate_reward(
         self,
         obs: Dict[str, Any],
         prev_obs: Dict[str, Any],
         action: Optional[int] = None,
+        frames_executed: int = 1,
     ) -> float:
-        """Calculate simplified, curriculum-aware reward.
+        """Calculate policy-invariant reward using true PBRS.
 
         Components:
         1. Terminal rewards (always active)
-        2. Time penalty (curriculum-controlled via config)
-        3. PBRS objective potential (curriculum-scaled via config)
+        2. Time penalty (curriculum-controlled via config, scaled by frames_executed)
+        3. PBRS shaping: F(s,s') = γ * Φ(s') - Φ(s) for dense path guidance
+
+        PBRS ensures:
+        - Dense reward signal at every step (not just improvements)
+        - Automatic penalty for distance increases (backtracking)
+        - Policy invariance (optimal policy unchanged)
+        - Markov property (reward depends only on current state transition)
+
+        Goal Transition Handling:
+        - When switch is activated, goal changes from switch → exit
+        - Potential function Φ changes (switch distance → exit distance)
+        - To maintain policy invariance, we reset prev_potential = None
+        - This treats the transition like hierarchical RL "option termination"
+        - Next step starts fresh with exit-based potential (no PBRS comparison)
+
+        Frame Skip Integration:
+        - With frame skip, we calculate reward once per action (not per frame)
+        - PBRS telescopes identically: Φ(final) - Φ(initial) regardless of intermediate frames
+        - Time penalty scales by frames_executed for correct per-action magnitude
+        - This provides 75% computational savings with 4-frame skip
 
         Args:
-            obs: Current game state
+            obs: Current game state (must include _adjacency_graph, level_data)
             prev_obs: Previous game state
-            action: Action taken (optional, unused in simplified version)
+            action: Action taken (optional, unused)
+            frames_executed: Number of frames executed in this action (for time penalty scaling)
 
         Returns:
             float: Total reward for the transition
         """
-        self.steps_taken += 1
+        self.steps_taken += frames_executed
 
         # === TERMINAL REWARDS (always active) ===
 
         # Death penalties
         if obs.get("player_dead", False):
             death_cause = obs.get("death_cause", None)
-            return MINE_DEATH_PENALTY if death_cause == "mine" else DEATH_PENALTY
+            terminal_reward = (
+                MINE_DEATH_PENALTY if death_cause == "mine" else DEATH_PENALTY
+            )
+            self.episode_terminal_reward = terminal_reward
+
+            # Populate PBRS components for TensorBoard logging (terminal state)
+            self.last_pbrs_components = {
+                "terminal_reward": terminal_reward,
+                "pbrs_reward": 0.0,
+                "time_penalty": 0.0,
+                "total_reward": terminal_reward,
+                "is_terminal": True,
+                "terminal_type": "death",
+                "death_cause": death_cause or "unknown",
+            }
+            return terminal_reward
 
         # Completion reward
         if obs.get("player_won", False):
+            self.episode_terminal_reward = LEVEL_COMPLETION_REWARD
+
+            # Populate PBRS components for TensorBoard logging (terminal state)
+            self.last_pbrs_components = {
+                "terminal_reward": LEVEL_COMPLETION_REWARD,
+                "pbrs_reward": 0.0,
+                "time_penalty": 0.0,
+                "total_reward": LEVEL_COMPLETION_REWARD,
+                "is_terminal": True,
+                "terminal_type": "win",
+            }
             return LEVEL_COMPLETION_REWARD
 
-        # === TIME PENALTY (curriculum-controlled) ===
+        # === TIME PENALTY (curriculum-controlled, scaled by frame skip) ===
         # Config determines if active and magnitude based on training phase
-        reward = self.config.time_penalty_per_step
+        # Scale by frames_executed to account for frame skip (e.g., 4 frames per action)
+        time_penalty = self.config.time_penalty_per_step * frames_executed
+        reward = time_penalty
+
+        # Track time penalty for logging (store scaled penalty per action)
+        self.episode_time_penalties.append(time_penalty)
 
         # === MILESTONE REWARD ===
         switch_just_activated = obs.get("switch_activated", False) and not prev_obs.get(
@@ -133,27 +213,103 @@ class RewardCalculator:
         if switch_just_activated:
             reward += SWITCH_ACTIVATION_REWARD
 
-        # === DISCRETE DISTANCE ACHIEVEMENT BONUSES (curriculum-scaled) ===
+        # === PBRS OBJECTIVE POTENTIAL (curriculum-scaled, policy-invariant) ===
+        # Calculate F(s,s') = γ * Φ(s') - Φ(s) for dense, policy-invariant path guidance
         adjacency = obs.get("_adjacency_graph")
         level_data = obs.get("level_data")
         graph_data = obs.get("_graph_data")
 
-        # Validate required data for distance calculation
+        # Validate required data for PBRS calculation
         if not adjacency or not level_data:
             raise ValueError(
-                "Distance calculation requires adjacency graph and level_data in observation. "
+                "PBRS calculation requires adjacency graph and level_data in observation. "
                 "Ensure graph building is enabled in environment config."
             )
 
-        # Calculate discrete distance achievement bonuses
-        distance_bonus = self._calculate_distance_achievement_bonus(
-            obs,
+        # Calculate current potential Φ(s')
+        current_potential = self.pbrs_calculator.calculate_combined_potential(
+            state=obs,
             adjacency=adjacency,
             level_data=level_data,
             graph_data=graph_data,
-            switch_just_activated=switch_just_activated,
+            objective_weight=self.config.pbrs_objective_weight,
+            scale_factor=self.config.pbrs_normalization_scale,
         )
-        reward += distance_bonus
+
+        # Track actual path length for efficiency metrics
+        current_player_pos = (obs["player_x"], obs["player_y"])
+        if self.prev_player_pos is not None:
+            # Calculate Euclidean distance moved (approximation of actual path)
+            dx = current_player_pos[0] - self.prev_player_pos[0]
+            dy = current_player_pos[1] - self.prev_player_pos[1]
+            movement_distance = (dx * dx + dy * dy) ** 0.5
+            self.episode_path_length += movement_distance
+        self.prev_player_pos = current_player_pos
+
+        # Store optimal path length (combined path distance) on first step
+        if self.optimal_path_length is None:
+            self.optimal_path_length = obs.get("_pbrs_combined_path_distance", 0.0)
+
+        # Calculate PBRS shaping reward: F(s,s') = γ * Φ(s') - Φ(s)
+        pbrs_reward = 0.0
+
+        # Handle goal transition (switch activation) for policy invariance
+        if switch_just_activated:
+            # When goal changes (switch → exit), reset potential tracking
+            # This treats the transition like a hierarchical RL "option termination"
+            # Prevents comparing incompatible potentials (switch-distance vs exit-distance)
+            logger.debug(
+                f"Switch activated: Resetting PBRS potential tracking for goal transition "
+                f"(switch → exit). New potential Φ(s')={current_potential:.4f}"
+            )
+            self.prev_potential = None  # Reset for new goal
+        elif self.prev_potential is not None:
+            # Apply PBRS formula for policy-invariant shaping
+            pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
+
+            # Log PBRS components for debugging and verification
+            potential_change = current_potential - self.prev_potential
+            logger.debug(
+                f"PBRS: Φ(s)={self.prev_potential:.4f}, "
+                f"Φ(s')={current_potential:.4f}, "
+                f"ΔΦ={potential_change:.4f}, "
+                f"F(s,s')={pbrs_reward:.4f} "
+                f"(γ={self.pbrs_gamma})"
+            )
+
+            # Track forward/backtracking steps for logging
+            if potential_change > 0.001:  # Forward progress
+                self.episode_forward_steps += 1
+            elif potential_change < -0.001:  # Backtracking
+                self.episode_backtrack_steps += 1
+
+            # Warn if potential decreased significantly (backtracking detected)
+            if potential_change < -0.05:
+                logger.debug(
+                    f"Backtracking detected: potential decreased by {-potential_change:.4f} "
+                    f"(PBRS penalty: {pbrs_reward:.4f})"
+                )
+            # Log significant progress
+            elif potential_change > 0.05:
+                logger.debug(
+                    f"Progress detected: potential increased by {potential_change:.4f} "
+                    f"(PBRS reward: {pbrs_reward:.4f})"
+                )
+
+            # Store current potential for next step (only after successful comparison)
+            self.prev_potential = current_potential
+        else:
+            # First step of episode or after goal transition - initialize potential
+            self.prev_potential = current_potential
+            logger.debug(f"Initializing PBRS potential: Φ(s')={current_potential:.4f}")
+
+        # Store current potential for logging
+        self.current_potential = current_potential
+
+        # Track PBRS reward for logging
+        self.episode_pbrs_rewards.append(pbrs_reward)
+
+        reward += pbrs_reward
 
         # Track diagnostic metrics (Euclidean distance)
         from ..util.util import calculate_distance
@@ -172,218 +328,98 @@ class RewardCalculator:
                 self.closest_distance_to_exit = distance_to_exit
 
         # === PHYSICS DISCOVERY REWARDS (curriculum-controlled) ===
+        physics_reward = 0.0
         if self.config.enable_physics_discovery and self.physics_discovery is not None:
             physics_rewards = self.physics_discovery.calculate_physics_rewards(
                 obs, prev_obs, action
             )
-            total_physics_reward = (
+            physics_reward = (
                 sum(physics_rewards.values()) * self.config.physics_discovery_weight
             )
-            reward += total_physics_reward
+            reward += physics_reward
 
-        return reward
+        # Populate PBRS components for TensorBoard logging (non-terminal state)
+        # This provides detailed breakdown of reward components for analysis
+        milestone_reward = SWITCH_ACTIVATION_REWARD if switch_just_activated else 0.0
 
-    def _calculate_distance_achievement_bonus(
-        self,
-        obs: Dict[str, Any],
-        adjacency: Dict[Tuple[int, int], list],
-        level_data: Any,
-        graph_data: Optional[Dict[str, Any]] = None,
-        switch_just_activated: bool = False,
-    ) -> float:
-        """Calculate discrete distance achievement bonuses for new closest distances.
+        # Extract diagnostic metrics from observation (set by objective_distance_potential)
+        area_scale = obs.get("_pbrs_area_scale", 0.0)
+        normalized_distance = obs.get("_pbrs_normalized_distance", 0.0)
+        combined_path_distance = obs.get("_pbrs_combined_path_distance", 0.0)
 
-        Uses identical path calculation logic as original PBRS system but only awards
-        bonuses when agent achieves new closest path distance to current objective.
-
-        Args:
-            obs: Current game state
-            adjacency: Graph adjacency structure
-            level_data: Level data object
-            graph_data: Graph data dict with spatial_hash for optimization
-            switch_just_activated: Whether switch was just activated this step
-
-        Returns:
-            Distance achievement bonus (0.0 if no improvement)
-        """
-        from ...constants.physics_constants import (
-            EXIT_SWITCH_RADIUS,
-            EXIT_DOOR_RADIUS,
-            NINJA_RADIUS,
-        )
-
-        # No bonus during switch activation transition (consistent with original PBRS)
-        if switch_just_activated:
-            return 0.0
-
-        # Determine current objective and goal position
+        # Calculate current distance to goal (shortest path)
         if not obs.get("switch_activated", False):
             goal_pos = (int(obs["switch_x"]), int(obs["switch_y"]))
             cache_key = "switch"
-            entity_radius = EXIT_SWITCH_RADIUS
-            current_best = self.best_path_distance_to_switch
         else:
             goal_pos = (int(obs["exit_door_x"]), int(obs["exit_door_y"]))
             cache_key = "exit"
-            entity_radius = EXIT_DOOR_RADIUS
-            current_best = self.best_path_distance_to_exit
 
         player_pos = (int(obs["player_x"]), int(obs["player_y"]))
 
-        # Calculate current path distance using same logic as PBRS
+        # Get distance to goal (use cached value if available from PBRS calculation)
         try:
-            current_distance = self.pbrs_calculator.path_calculator.get_distance(
+            from ...constants.physics_constants import (
+                EXIT_SWITCH_RADIUS,
+                EXIT_DOOR_RADIUS,
+                NINJA_RADIUS,
+            )
+
+            entity_radius = (
+                EXIT_SWITCH_RADIUS if cache_key == "switch" else EXIT_DOOR_RADIUS
+            )
+            base_adjacency = (
+                graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+            )
+            distance_to_goal = self.pbrs_calculator.path_calculator.get_distance(
                 player_pos,
                 goal_pos,
                 adjacency,
+                base_adjacency,
                 cache_key=cache_key,
                 level_data=level_data,
                 graph_data=graph_data,
                 entity_radius=entity_radius,
                 ninja_radius=NINJA_RADIUS,
             )
-        except Exception as e:
-            # Fallback: no bonus if distance calculation fails
-            logger.warning(f"Distance calculation failed: {e}")
-            return 0.0
+        except Exception:
+            distance_to_goal = 0.0
 
-        # Get surface area for level-adaptive thresholds
-        surface_area = obs.get("_pbrs_surface_area", 200.0)  # Default fallback
+        self.last_pbrs_components = {
+            "pbrs_reward": pbrs_reward,
+            "time_penalty": time_penalty,  # Use scaled penalty (per action, not per frame)
+            "milestone_reward": milestone_reward,
+            "physics_reward": physics_reward,
+            "total_reward": reward,
+            "is_terminal": False,
+            # Include potential information for debugging
+            "current_potential": current_potential
+            if self.current_potential is not None
+            else 0.0,
+            "prev_potential": self.prev_potential
+            if self.prev_potential is not None
+            else 0.0,
+            "potential_change": (current_potential - self.prev_potential)
+            if self.prev_potential is not None
+            else 0.0,
+            # Enhanced diagnostic fields for PBRS verification
+            "potential_gradient": abs(current_potential - self.prev_potential)
+            if self.prev_potential is not None
+            else 0.0,
+            "pbrs_gamma": self.pbrs_gamma,
+            "theoretical_pbrs": (current_potential - self.prev_potential)
+            if self.prev_potential is not None
+            else 0.0,  # For γ=1.0, this should equal pbrs_reward
+            # New diagnostic fields for monitoring and analysis
+            "distance_to_goal": distance_to_goal,
+            "area_scale": area_scale,
+            "combined_path_distance": combined_path_distance,
+            "normalized_distance": normalized_distance,
+            # Frame skip information
+            "frames_executed": frames_executed,
+        }
 
-        # Estimate max path distance as 4x sqrt(surface_area) as suggested
-        import math
-
-        estimated_max_path_distance = 4.0 * math.sqrt(surface_area)
-
-        # Set meaningful improvement threshold proportional to level size
-        min_improvement_threshold = max(
-            5.0, estimated_max_path_distance * 0.02
-        )  # 2% of max distance
-
-        if current_distance < current_best:
-            # Calculate improvement amount
-            if current_best == float("inf"):
-                # First distance measurement - baseline proportional to level size
-                distance_improvement = (
-                    estimated_max_path_distance * 0.1
-                )  # 10% of estimated max
-            else:
-                distance_improvement = current_best - current_distance
-
-                # Only award bonus for meaningful improvements relative to level size
-                if distance_improvement < min_improvement_threshold:
-                    return 0.0
-
-            # Apply curriculum scaling (same as original PBRS)
-            curriculum_weight = self.config.pbrs_objective_weight
-            scale_factor = self.config.pbrs_normalization_scale
-
-            # Normalize improvement by estimated max distance for level-adaptive scaling
-            normalized_improvement = distance_improvement / estimated_max_path_distance
-
-            # Calculate base bonus proportional to normalized improvement
-            # This ensures similar bonus magnitudes across different level sizes
-            base_bonus = (
-                normalized_improvement * curriculum_weight * scale_factor * 2.0
-            )  # Scale factor for reasonable magnitudes
-
-            # Apply episode length normalization to discourage inefficient meandering
-            bonus = self._apply_episode_length_normalization(base_bonus, obs)
-
-            # Cap bonus to prevent excessive rewards (max ~0.2 per achievement)
-            bonus = min(bonus, 0.2)
-
-            # Check episode total bonus cap to prevent accumulation exploitation
-            max_total_bonuses_per_episode = (
-                1.0  # Very conservative maximum total bonuses per episode
-            )
-            if (
-                self.total_distance_bonuses_awarded + bonus
-                > max_total_bonuses_per_episode
-            ):
-                # Reduce bonus to stay within episode limit
-                bonus = max(
-                    0.0,
-                    max_total_bonuses_per_episode - self.total_distance_bonuses_awarded,
-                )
-
-            # Track total bonuses awarded this episode
-            self.total_distance_bonuses_awarded += bonus
-
-            # Update best distance tracking
-            if not obs.get("switch_activated", False):
-                self.best_path_distance_to_switch = current_distance
-            else:
-                self.best_path_distance_to_exit = current_distance
-
-            logger.debug(
-                f"Distance achievement bonus: {bonus:.3f} "
-                f"(improvement: {distance_improvement:.1f}, "
-                f"objective: {cache_key}, distance: {current_distance:.1f})"
-            )
-
-            return bonus
-
-        # No improvement - no bonus
-        return 0.0
-
-    def _apply_episode_length_normalization(
-        self, base_bonus: float, obs: Dict[str, Any]
-    ) -> float:
-        """Apply episode length normalization to discourage inefficient meandering.
-
-        Reduces bonuses for episodes that are taking much longer than optimal,
-        while preserving rewards for complex navigation in large levels.
-
-        Args:
-            base_bonus: Unnormalized distance achievement bonus
-            obs: Current game state (contains surface area info)
-
-        Returns:
-            Normalized bonus scaled by episode efficiency
-        """
-        # Get surface area for optimal length estimation
-        surface_area = obs.get("_pbrs_surface_area")
-        if not surface_area:
-            # No normalization if surface area unavailable
-            return base_bonus
-
-        # Estimate optimal episode length based on level complexity
-        # Formula: base time for navigation + complexity scaling
-        # Larger levels get proportionally more time
-        import math
-
-        base_optimal_steps = 150  # Base time for simple levels (reduced)
-        complexity_factor = (
-            math.sqrt(surface_area) * 1.5
-        )  # Scale with sqrt(area) (reduced)
-        optimal_episode_length = base_optimal_steps + complexity_factor
-
-        # Current episode length
-        current_length = self.steps_taken
-
-        # Apply normalization: longer episodes get reduced bonuses
-        # Formula: min(1.0, optimal_length / current_length)
-        # - Episodes at or below optimal length: full bonus (ratio >= 1.0)
-        # - Episodes above optimal length: reduced bonus proportional to efficiency
-        if current_length <= optimal_episode_length:
-            efficiency_factor = 1.0  # Full bonus for efficient episodes
-        else:
-            efficiency_factor = optimal_episode_length / current_length
-            # Don't penalize too harshly - minimum 0.1x multiplier
-            efficiency_factor = max(efficiency_factor, 0.1)
-
-        normalized_bonus = base_bonus * efficiency_factor
-
-        # Log normalization for debugging
-        if efficiency_factor < 1.0:
-            logger.debug(
-                f"Episode length normalization: {efficiency_factor:.3f} "
-                f"(steps: {current_length}, optimal: {optimal_episode_length:.0f}, "
-                f"surface_area: {surface_area:.0f})"
-            )
-
-        return normalized_bonus
+        return reward
 
     def reset(self):
         """Reset episode state for new episode."""
@@ -393,10 +429,25 @@ class RewardCalculator:
         self.closest_distance_to_switch = float("inf")
         self.closest_distance_to_exit = float("inf")
 
-        # Reset distance achievement tracking
-        self.best_path_distance_to_switch = float("inf")
-        self.best_path_distance_to_exit = float("inf")
-        self.total_distance_bonuses_awarded = 0.0
+        # Reset PBRS potential tracking for new episode
+        # Ensures F(s,s') calculation starts fresh
+        self.prev_potential = None
+        self.current_potential = None
+
+        # Reset episode-level tracking for TensorBoard logging
+        self.episode_pbrs_rewards = []
+        self.episode_time_penalties = []
+        self.episode_forward_steps = 0
+        self.episode_backtrack_steps = 0
+        self.episode_terminal_reward = 0.0
+
+        # Reset path optimality tracking
+        self.episode_path_length = 0.0
+        self.optimal_path_length = None
+        self.prev_player_pos = None
+
+        # Reset step-level component tracking
+        self.last_pbrs_components = {}
 
         # Reset PBRS calculator state
         if self.pbrs_calculator is not None:
@@ -439,3 +490,105 @@ class RewardCalculator:
             Dictionary with current configuration values
         """
         return self.config.get_active_components()
+
+    def get_pbrs_metrics(self) -> Dict[str, Any]:
+        """Get current PBRS metrics for monitoring and verification.
+
+        Useful for TensorBoard logging and debugging to verify:
+        - PBRS formula is being applied correctly
+        - Potentials are changing as expected
+        - Markov property holds (same state → same potential)
+
+        Returns:
+            Dictionary with PBRS state:
+            - prev_potential: Previous state's potential Φ(s)
+            - pbrs_gamma: Discount factor γ used in F(s,s') formula
+            - closest_distance_to_switch: Diagnostic Euclidean distance
+            - closest_distance_to_exit: Diagnostic Euclidean distance
+        """
+        return {
+            "prev_potential": self.prev_potential,
+            "pbrs_gamma": self.pbrs_gamma,
+            "closest_distance_to_switch": self.closest_distance_to_switch,
+            "closest_distance_to_exit": self.closest_distance_to_exit,
+        }
+
+    def get_episode_reward_metrics(self) -> Dict[str, Any]:
+        """Get episode-level reward component metrics for TensorBoard logging.
+
+        Returns:
+            Dictionary with episode reward metrics:
+            - pbrs_total: Sum of all PBRS rewards in episode
+            - time_penalty_total: Sum of all time penalties in episode
+            - terminal_reward: Terminal reward (completion/death)
+            - pbrs_to_penalty_ratio: |PBRS sum| / |penalty sum| (0 if no penalties)
+            - forward_steps: Count of steps with potential increase
+            - backtrack_steps: Count of steps with potential decrease
+            - pbrs_mean: Mean PBRS reward per step
+            - pbrs_std: Standard deviation of PBRS rewards
+            - current_potential: Current potential Φ(s')
+            - prev_potential: Previous potential Φ(s)
+        """
+        import numpy as np
+
+        pbrs_total = (
+            sum(self.episode_pbrs_rewards) if self.episode_pbrs_rewards else 0.0
+        )
+        penalty_total = (
+            sum(self.episode_time_penalties) if self.episode_time_penalties else 0.0
+        )
+
+        # Calculate ratio (avoid division by zero)
+        if penalty_total < 0:
+            ratio = abs(pbrs_total) / abs(penalty_total)
+        else:
+            ratio = 0.0
+
+        # Calculate statistics
+        pbrs_mean = (
+            np.mean(self.episode_pbrs_rewards) if self.episode_pbrs_rewards else 0.0
+        )
+        pbrs_std = (
+            np.std(self.episode_pbrs_rewards) if self.episode_pbrs_rewards else 0.0
+        )
+
+        # Calculate path optimality (ratio of optimal to actual path length)
+        # Values closer to 1.0 indicate more efficient navigation
+        if (
+            self.episode_path_length > 0
+            and self.optimal_path_length is not None
+            and self.optimal_path_length > 0
+        ):
+            path_optimality = self.optimal_path_length / self.episode_path_length
+        else:
+            path_optimality = 0.0
+
+        # Calculate forward progress and backtracking percentages
+        total_steps = self.episode_forward_steps + self.episode_backtrack_steps
+        if total_steps > 0:
+            forward_progress_pct = (self.episode_forward_steps / total_steps) * 100
+            backtracking_pct = (self.episode_backtrack_steps / total_steps) * 100
+        else:
+            forward_progress_pct = 0.0
+            backtracking_pct = 0.0
+
+        return {
+            "pbrs_total": pbrs_total,
+            "time_penalty_total": penalty_total,
+            "terminal_reward": self.episode_terminal_reward,
+            "pbrs_to_penalty_ratio": ratio,
+            "forward_steps": self.episode_forward_steps,
+            "backtrack_steps": self.episode_backtrack_steps,
+            "pbrs_mean": pbrs_mean,
+            "pbrs_std": pbrs_std,
+            "current_potential": self.current_potential,
+            "prev_potential": self.prev_potential,
+            # New path efficiency metrics
+            "path_optimality": path_optimality,
+            "forward_progress_pct": forward_progress_pct,
+            "backtracking_pct": backtracking_pct,
+            "episode_path_length": self.episode_path_length,
+            "optimal_path_length": self.optimal_path_length
+            if self.optimal_path_length is not None
+            else 0.0,
+        }

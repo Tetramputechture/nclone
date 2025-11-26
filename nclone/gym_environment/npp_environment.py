@@ -7,12 +7,13 @@ mixins for better code organization and maintainability.
 """
 
 import logging
+import time
 import numpy as np
 from gymnasium.spaces import box, Dict as SpacesDict
 from typing import Dict, Any, Optional
 
 
-from ..graph.common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
+from ..graph.common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM
 from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 from .constants import (
     GAME_STATE_CHANNELS,
@@ -22,7 +23,6 @@ from .constants import (
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
     MAX_LOCKED_DOORS_ATTENTION,
-    LOCKED_DOOR_FEATURES_DIM,
 )
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
@@ -58,6 +58,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         Args:
             config: Environment configuration object
         """
+        _init_start = time.perf_counter()
+        _logger = logging.getLogger(__name__)
+        print(f"[PROFILE] NppEnvironment.__init__ starting...")
+
         self.config = config
         super().__init__(
             render_mode=self.config.render.render_mode,
@@ -70,6 +74,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
             enable_augmentation=self.config.augmentation.enable_augmentation,
+            enable_profiling=self.config.enable_profiling,
             reward_config=self.config.reward_config,
             augmentation_config={
                 "p": self.config.augmentation.p,
@@ -77,14 +82,21 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 "disable_validation": self.config.augmentation.disable_validation,
             },
             enable_visual_observations=self.config.enable_visual_observations,
+            frame_skip=getattr(
+                self.config, "frame_skip", 4
+            ),  # Get from config or default to 4
         )
 
         # Initialize mixin systems using config
+        _mixin_start = time.perf_counter()
+        print(f"[PROFILE] Initializing mixins...")
         self._init_graph_system(
             debug=self.config.graph.debug,
         )
         self._init_reachability_system(self.config.reachability.debug)
         self._init_debug_system(self.config.render.enable_debug_overlay)
+        _mixin_time = time.perf_counter() - _mixin_start
+        print(f"[PROFILE] Mixin initialization: {_mixin_time:.3f}s")
 
         # Initialize reset retry counter for handling degenerate maps
         self._reset_retry_count = 0
@@ -122,12 +134,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Exit features cache (position-based invalidation)
         # Avoids recomputing path distances when ninja hasn't moved significantly
-        self._cached_exit_features: Optional[np.ndarray] = None
         self._last_exit_cache_ninja_pos: Optional[tuple] = None
         self._exit_cache_grid_size: int = 24
 
         # Set environment reference in simulator for cache invalidation
         self.nplay_headless.sim.gym_env = self
+
+        _init_time = time.perf_counter() - _init_start
+        print(f"[PROFILE] NppEnvironment.__init__ COMPLETE: {_init_time:.3f}s")
 
     def _safe_path_distance(
         self,
@@ -158,10 +172,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         """
         from ..constants.physics_constants import NINJA_RADIUS
 
+        base_adjacency = (
+            graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+        )
         distance = self._path_calculator.get_distance(
             start_pos,
             goal_pos,
             adjacency,
+            base_adjacency,
             level_data=level_data,
             graph_data=graph_data,
             entity_radius=entity_radius,
@@ -178,12 +196,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         return distance
 
     def _build_extended_observation_space(self) -> SpacesDict:
-        """Build the extended observation space with graph and reachability features.
-
-        Note: Sparse graph observations (graph_*_sparse keys) are variable-sized and
-        passed through the observation dict without being part of the formal Gym space.
-        They are handled specially by the sparse rollout buffer for memory efficiency.
-        """
+        """Build the extended observation space with graph and reachability features."""
         obs_spaces = dict(self.observation_space.spaces)
 
         # Add reachability features (always available)
@@ -191,64 +204,32 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             low=0.0, high=1.0, shape=(REACHABILITY_FEATURES_DIM,), dtype=np.float32
         )
 
-        # Add death context features (always available for learning from terminal states)
-        obs_spaces["death_context"] = box.Box(
-            low=-1.0, high=1.0, shape=(9,), dtype=np.float32
-        )
-
-        # Add exit features for objective attention (always available)
-        obs_spaces["exit_features"] = box.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(
-                7,
-            ),  # [switch_x, switch_y, switch_activated, switch_path_dist, door_x, door_y, door_path_dist]
-            dtype=np.float32,
-        )
-
-        # Add locked door features for objective attention (always available)
-        obs_spaces["locked_door_features"] = box.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(MAX_LOCKED_DOORS_ATTENTION, LOCKED_DOOR_FEATURES_DIM),
-            dtype=np.float32,
-        )
-        obs_spaces["num_locked_doors"] = box.Box(
-            low=0, high=MAX_LOCKED_DOORS_ATTENTION, shape=(1,), dtype=np.int32
-        )
-
-        # Add graph observation spaces (DENSE FORMAT - backward compatibility)
-        # Note: Use sparse format (graph_*_sparse) for ~95% memory reduction
+        # Add GCN-optimized minimal graph observation spaces
+        # Only includes data actually used by GCN encoder (no edge features, no types)
+        # This keeps SubprocVecEnv serialization overhead low
         obs_spaces["graph_node_feats"] = box.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(N_MAX_NODES, NODE_FEATURE_DIM),
+            shape=(N_MAX_NODES, NODE_FEATURE_DIM),  # 7-dim features
             dtype=np.float32,
         )
-        # Graph edge index: [2, max_edges] connectivity matrix
         obs_spaces["graph_edge_index"] = box.Box(
-            low=0, high=N_MAX_NODES - 1, shape=(2, E_MAX_EDGES), dtype=np.int32
+            low=0,
+            high=N_MAX_NODES - 1,
+            shape=(2, E_MAX_EDGES),
+            dtype=np.int32,
         )
-        # Graph edge features: comprehensive features from graph builder
-        obs_spaces["graph_edge_feats"] = box.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(E_MAX_EDGES, EDGE_FEATURE_DIM),
-            dtype=np.float32,
-        )
-        # Graph masks for variable-size graphs
         obs_spaces["graph_node_mask"] = box.Box(
-            low=0, high=1, shape=(N_MAX_NODES,), dtype=np.int32
+            low=0,
+            high=1,
+            shape=(N_MAX_NODES,),
+            dtype=np.int32,
         )
         obs_spaces["graph_edge_mask"] = box.Box(
-            low=0, high=1, shape=(E_MAX_EDGES,), dtype=np.int32
-        )
-        # Graph node and edge types
-        obs_spaces["graph_node_types"] = box.Box(
-            low=0, high=10, shape=(N_MAX_NODES,), dtype=np.int32
-        )
-        obs_spaces["graph_edge_types"] = box.Box(
-            low=0, high=10, shape=(E_MAX_EDGES,), dtype=np.int32
+            low=0,
+            high=1,
+            shape=(E_MAX_EDGES,),
+            dtype=np.int32,
         )
 
         return SpacesDict(obs_spaces)
@@ -256,8 +237,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     def _post_action_hook(self):
         """Update graph after action execution if needed."""
         # Graph building happens if either flag is True
-        if self._should_update_graph():
+        t_check = self._profile_start("graph_check")
+        should_update = self._should_update_graph()
+        self._profile_end("graph_check", t_check)
+
+        if should_update:
+            t_build = self._profile_start("graph_build")
             self._update_graph_from_env_state()
+            self._profile_end("graph_build", t_build)
 
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Add NppEnvironment-specific info fields."""
@@ -620,15 +607,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         switch_states_array = self._build_switch_states_array(obs)
         obs["switch_states"] = switch_states_array
 
-        # Add locked door features for objective attention
-        obs["locked_door_features"] = self._compute_locked_door_features()
-        obs["num_locked_doors"] = np.array(
-            [len(obs.get("locked_doors", []))], dtype=np.int32
-        )
-
-        # Add exit features for objective attention
-        obs["exit_features"] = self._compute_exit_features()
-
         obs["level_data"] = self.level_data
 
         # Add adjacency graph and full graph data for PBRS path-aware reward shaping
@@ -721,59 +699,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         return switch_states_array
 
-    def _compute_locked_door_features(self) -> np.ndarray:
-        """
-        Compute features for all locked doors (up to 16) for objective attention.
-
-        Uses PRECOMPUTED CACHE + CACHED SWITCH STATES for maximum performance.
-        All path distances are precomputed at level load, and switch states are
-        only updated when invalidate_switch_cache() is called (rare event).
-
-        PERFORMANCE OPTIMIZATION:
-        - Levels with no doors: Immediate return (zero cost)
-        - Levels with doors: Cached switch states + O(1) precomputed lookup
-        - Switch state updates: Only when _switch_states_changed flag is True
-
-        Returns (16, 8) array where each row contains:
-        [switch_x, switch_y, switch_collected, switch_path_dist, door_x, door_y, door_open, door_path_dist]
-
-        Rows beyond actual door count are zero-padded.
-        """
-        # FAST PATH: Early exit if level has no locked doors
-        if not self._has_locked_doors:
-            return np.zeros(
-                (MAX_LOCKED_DOORS_ATTENTION, LOCKED_DOOR_FEATURES_DIM), dtype=np.float32
-            )
-
-        # Update cached switch states only when switches have changed
-        if self._switch_states_changed:
-            # Extract current switch collection states from cached door entities
-            for idx, door in enumerate(self._cached_locked_doors):
-                # active=True means switch not collected, active=False means collected
-                switch_collected = 0.0 if getattr(door, "active", True) else 1.0
-                self._cached_switch_states[idx] = switch_collected
-
-            # Mark states as up-to-date
-            self._switch_states_changed = False
-
-        # Get ninja position directly (no full observation needed)
-        ninja_x, ninja_y = self.nplay_headless.ninja_position()
-
-        # Use precomputed cache with cached switch states (ultra-fast path)
-        if self.door_feature_cache.cache_built:
-            # PERFORMANCE: No loops, just O(1) dict lookup + array copy
-            features = self.door_feature_cache.get_features(
-                ninja_x, ninja_y, self._cached_switch_states
-            )
-            return features
-
-        # Fallback: Cache not built yet (should not happen in normal operation)
-        # Return zeros to avoid crashes
-        logger.warning("Door feature cache not built, returning zeros")
-        return np.zeros(
-            (MAX_LOCKED_DOORS_ATTENTION, LOCKED_DOOR_FEATURES_DIM), dtype=np.float32
-        )
-
     def _hash_switch_states(self, switch_states: Dict[int, bool]) -> str:
         """
         Create hashable key from switch states.
@@ -787,206 +712,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if not switch_states:
             return "empty"
         return ",".join(f"{k}:{int(v)}" for k, v in sorted(switch_states.items()))
-
-    def _compute_exit_features(self) -> np.ndarray:
-        """
-        Compute features for exit switch and exit door for objective attention.
-
-        Returns (7,) array containing:
-        [switch_x, switch_y, switch_activated, switch_path_dist, door_x, door_y, door_path_dist]
-
-        All positions are relative to ninja and normalized to [-1, 1].
-        Path distances are normalized to [0, 1].
-
-        PERFORMANCE: Uses caching to avoid expensive path distance calculations when
-        ninja hasn't moved significantly (>24px grid cell).
-        """
-        from ..constants.entity_types import EntityType
-        from ..constants.physics_constants import (
-            EXIT_SWITCH_RADIUS,
-            EXIT_DOOR_RADIUS,
-            NINJA_RADIUS,
-            LEVEL_WIDTH_PX,
-            LEVEL_HEIGHT_PX,
-        )
-
-        # Get ninja position
-        ninja_x, ninja_y = self.nplay_headless.ninja_position()
-
-        # Check if cache is valid (ninja in same grid cell)
-        if (
-            self._cached_exit_features is not None
-            and self._last_exit_cache_ninja_pos is not None
-        ):
-            last_x, last_y = self._last_exit_cache_ninja_pos
-            # Check if ninja moved to a new grid cell
-            ninja_grid_x = int(ninja_x // self._exit_cache_grid_size)
-            ninja_grid_y = int(ninja_y // self._exit_cache_grid_size)
-            last_grid_x = int(last_x // self._exit_cache_grid_size)
-            last_grid_y = int(last_y // self._exit_cache_grid_size)
-
-            if ninja_grid_x == last_grid_x and ninja_grid_y == last_grid_y:
-                # Cache hit: ninja in same grid cell, return cached features
-                return self._cached_exit_features
-
-        features = np.zeros(7, dtype=np.float32)
-
-        # Get current entities
-        level_data = self.level_data
-        entities = level_data.entities if hasattr(level_data, "entities") else []
-
-        # Find exit switch
-        exit_switch = None
-        for entity in entities:
-            entity_type = getattr(entity, "type", None)
-            if entity_type == EntityType.EXIT_SWITCH:
-                exit_switch = entity
-                break
-
-        # Extract exit switch features
-        if exit_switch is not None:
-            switch_x = int(getattr(exit_switch, "xpos", 0))
-            switch_y = int(getattr(exit_switch, "ypos", 0))
-            switch_active = getattr(exit_switch, "active", True)
-
-            # Relative position normalized to [-1, 1]
-            rel_switch_x = (switch_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
-            rel_switch_y = (switch_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
-            features[0] = np.clip(rel_switch_x, -1.0, 1.0)
-            features[1] = np.clip(rel_switch_y, -1.0, 1.0)
-
-            # Switch activation status (0.0 = active/not collected, 1.0 = collected)
-            features[2] = 0.0 if switch_active else 1.0
-
-            # Path distance to switch
-            if (
-                hasattr(self, "path_distance_calculator")
-                and self.path_distance_calculator is not None
-            ):
-                adjacency = self._get_adjacency_for_rewards()
-                graph_data = self.current_graph_data
-
-                if adjacency and graph_data:
-                    switch_path_dist = self.path_distance_calculator.get_distance(
-                        (ninja_x, ninja_y),
-                        (switch_x, switch_y),
-                        adjacency,
-                        level_data=level_data,
-                        graph_data=graph_data,
-                        entity_radius=EXIT_SWITCH_RADIUS,
-                        ninja_radius=NINJA_RADIUS,
-                    )
-
-                    if switch_path_dist != float("inf"):
-                        # Normalize by area scale (similar to reachability features)
-                        from ..gym_environment.constants import LEVEL_DIAGONAL
-
-                        area_scale = LEVEL_DIAGONAL  # Fallback
-
-                        # Try to use actual reachable area scale
-                        try:
-                            reach_feats = self._get_reachability_features()
-                            if reach_feats is not None and len(reach_feats) > 0:
-                                reachable_ratio = reach_feats[0]
-                                if reachable_ratio > 0:
-                                    from ..graph.reachability.subcell_node_lookup import (
-                                        SUB_NODE_SIZE,
-                                    )
-                                    from ..constants.physics_constants import (
-                                        MAP_TILE_WIDTH,
-                                        MAP_TILE_HEIGHT,
-                                    )
-
-                                    total_possible_nodes = (
-                                        MAP_TILE_WIDTH * MAP_TILE_HEIGHT
-                                    )
-                                    reachable_nodes = (
-                                        reachable_ratio * total_possible_nodes
-                                    )
-                                    area_scale = (
-                                        np.sqrt(reachable_nodes) * SUB_NODE_SIZE
-                                    )
-                        except Exception:
-                            pass
-
-                        features[3] = np.clip(switch_path_dist / area_scale, 0.0, 1.0)
-
-        # Find exit door
-        exit_door = None
-        for entity in entities:
-            entity_type = getattr(entity, "type", None)
-            if entity_type == EntityType.EXIT_DOOR:
-                exit_door = entity
-                break
-
-        # Extract exit door features
-        if exit_door is not None:
-            door_x = int(getattr(exit_door, "xpos", 0))
-            door_y = int(getattr(exit_door, "ypos", 0))
-
-            # Relative position normalized to [-1, 1]
-            rel_door_x = (door_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
-            rel_door_y = (door_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
-            features[4] = np.clip(rel_door_x, -1.0, 1.0)
-            features[5] = np.clip(rel_door_y, -1.0, 1.0)
-
-            # Path distance to door
-            if (
-                hasattr(self, "path_distance_calculator")
-                and self.path_distance_calculator is not None
-            ):
-                adjacency = self._get_adjacency_for_rewards()
-                graph_data = self.current_graph_data
-
-                if adjacency and graph_data:
-                    door_path_dist = self.path_distance_calculator.get_distance(
-                        (ninja_x, ninja_y),
-                        (door_x, door_y),
-                        adjacency,
-                        level_data=level_data,
-                        graph_data=graph_data,
-                        entity_radius=EXIT_DOOR_RADIUS,
-                        ninja_radius=NINJA_RADIUS,
-                    )
-
-                    if door_path_dist != float("inf"):
-                        # Use same area scale as switch
-                        from ..gym_environment.constants import LEVEL_DIAGONAL
-
-                        area_scale = LEVEL_DIAGONAL
-
-                        try:
-                            reach_feats = self._get_reachability_features()
-                            if reach_feats is not None and len(reach_feats) > 0:
-                                reachable_ratio = reach_feats[0]
-                                if reachable_ratio > 0:
-                                    from ..graph.reachability.subcell_node_lookup import (
-                                        SUB_NODE_SIZE,
-                                    )
-                                    from ..constants.physics_constants import (
-                                        MAP_TILE_WIDTH,
-                                        MAP_TILE_HEIGHT,
-                                    )
-
-                                    total_possible_nodes = (
-                                        MAP_TILE_WIDTH * MAP_TILE_HEIGHT
-                                    )
-                                    reachable_nodes = (
-                                        reachable_ratio * total_possible_nodes
-                                    )
-                                    area_scale = (
-                                        np.sqrt(reachable_nodes) * SUB_NODE_SIZE
-                                    )
-                        except Exception:
-                            pass
-
-                        features[6] = np.clip(door_path_dist / area_scale, 0.0, 1.0)
-
-        # Cache the computed features and ninja position
-        self._cached_exit_features = features.copy()
-        self._last_exit_cache_ninja_pos = (ninja_x, ninja_y)
-
-        return features
 
     def invalidate_switch_cache(self):
         """
@@ -1007,12 +732,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # CRITICAL: level_data.entities may be stale after switch activation
         if hasattr(self, "_cached_level_data"):
             self._cached_level_data = None
-
-        # Clear exit features cache since switch activation changes goals
-        # PERFORMANCE: Forces recomputation with updated switch states
-        if hasattr(self, "_cached_exit_features"):
-            self._cached_exit_features = None
-            self._last_exit_cache_ninja_pos = None
 
         # Clear pathfinding visualization cache in debug overlay renderer
         # This ensures path visualizations update when switch state changes
@@ -1317,37 +1036,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         ]
         for key in internal_only_keys:
             processed_obs.pop(key, None)
-
-        # Add death_context if not already added (always present in raw obs)
-        if "death_context" not in processed_obs:
-            processed_obs["death_context"] = obs.get(
-                "death_context",
-                np.zeros(9, dtype=np.float32),  # Default: all zeros (no death)
-            )
-
-        # Add exit features if not already added (for objective attention)
-        if "exit_features" not in processed_obs:
-            processed_obs["exit_features"] = obs.get(
-                "exit_features",
-                np.zeros(7, dtype=np.float32),  # Default: all zeros
-            )
-
-        # Add locked door features if not already added (for objective attention)
-        if "locked_door_features" not in processed_obs:
-            from .constants import MAX_LOCKED_DOORS_ATTENTION, LOCKED_DOOR_FEATURES_DIM
-
-            processed_obs["locked_door_features"] = obs.get(
-                "locked_door_features",
-                np.zeros(
-                    (MAX_LOCKED_DOORS_ATTENTION, LOCKED_DOOR_FEATURES_DIM),
-                    dtype=np.float32,
-                ),
-            )
-        if "num_locked_doors" not in processed_obs:
-            processed_obs["num_locked_doors"] = obs.get(
-                "num_locked_doors",
-                np.array([0], dtype=np.int32),
-            )
 
         return processed_obs
 

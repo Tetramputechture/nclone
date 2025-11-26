@@ -231,8 +231,9 @@ class UnifiedObservationExtractor:
                 # Build level cache for path calculator
                 adjacency = graph_data.get("adjacency")
                 if adjacency:
+                    base_adjacency = graph_data.get("base_adjacency", adjacency)
                     self._path_calculator.build_level_cache(
-                        level_data, adjacency, graph_data
+                        level_data, adjacency, base_adjacency, graph_data
                     )
             else:
                 graph_data = self._graph_cache[level_id]

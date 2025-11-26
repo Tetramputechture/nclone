@@ -189,10 +189,6 @@ class Ninja:
         self.consecutive_floor_frames = 0
         self.consecutive_wall_frames = 0
 
-        # Deterministic death probabilities (calculated each frame)
-        self.mine_death_probability = 0.0
-        self.terminal_impact_probability = 0.0
-
         self.log()
 
     def integrate(self):
@@ -535,75 +531,6 @@ class Ninja:
                 < MIN_SURVIVABLE_CRUSHING
             ):
                 self.kill(2, self.xpos, self.ypos, 0, 0)
-
-        # Calculate deterministic death probabilities for auxiliary learning
-        if not skip_entities:
-            self.calculate_death_probabilities()
-
-    def calculate_death_probabilities(self):
-        """Calculate deterministic death probabilities for mine collision and terminal impact.
-
-        Uses the exact same physics calculations that determine actual death in the game.
-        Called during post_collision() to provide perfect supervision for auxiliary learning.
-        """
-        # 1. MINE DEATH PROBABILITY
-        mine_death_risk = 0.0
-
-        # Use existing cached entities from pre_collision()
-        for entity in self._cached_entities:
-            if (
-                entity.type in (1, 21)
-                and hasattr(entity, "state")
-                and entity.state == 0
-            ):  # Deadly toggled mine
-                distance = math.sqrt(
-                    (self.xpos - entity.xpos) ** 2 + (self.ypos - entity.ypos) ** 2
-                )
-                collision_dist = NINJA_RADIUS + getattr(entity, "RADIUS", 4.0)
-
-                if distance < collision_dist:
-                    mine_death_risk = 1.0  # Direct collision = certain death
-                    break
-                elif distance < collision_dist + 20:  # Near-miss prediction zone
-                    proximity_risk = 1.0 - ((distance - collision_dist) / 20.0)
-                    velocity_mag = math.sqrt(self.xspeed**2 + self.yspeed**2)
-                    velocity_risk = min(velocity_mag / 10.0, 1.0)
-                    mine_death_risk = max(
-                        mine_death_risk, proximity_risk * velocity_risk
-                    )
-
-        self.mine_death_probability = mine_death_risk
-
-        # 2. TERMINAL IMPACT PROBABILITY
-        terminal_impact_risk = 0.0
-
-        # Floor impact risk (uses existing calculation from lines 460-466)
-        if self.floor_count > 0 and self.airborn_old:
-            impact_vel = -(
-                self.floor_normalized_x * self.xspeed_old
-                + self.floor_normalized_y * self.yspeed_old
-            )
-            death_threshold = MAX_SURVIVABLE_IMPACT - 4 / 3 * abs(
-                self.floor_normalized_y
-            )
-            if impact_vel > 0 and death_threshold > 0:  # Only consider downward impacts
-                floor_risk = min(impact_vel / death_threshold, 1.0)
-                terminal_impact_risk = max(terminal_impact_risk, floor_risk)
-
-        # Ceiling impact risk (uses existing calculation from lines 508-514)
-        if self.ceiling_count > 0:
-            impact_vel = -(
-                self.ceiling_normalized_x * self.xspeed_old
-                + self.ceiling_normalized_y * self.yspeed_old
-            )
-            death_threshold = MAX_SURVIVABLE_IMPACT - 4 / 3 * abs(
-                self.ceiling_normalized_y
-            )
-            if impact_vel > 0 and death_threshold > 0:  # Only consider upward impacts
-                ceiling_risk = min(impact_vel / death_threshold, 1.0)
-                terminal_impact_risk = max(terminal_impact_risk, ceiling_risk)
-
-        self.terminal_impact_probability = terminal_impact_risk
 
     def floor_jump(self, was_buffered: bool = False):
         """Perform floor jump depending on slope angle and direction.

@@ -126,8 +126,9 @@ class ReachabilityMixin:
             raise RuntimeError("adjacency not found in current_graph_data")
 
         # Ensure level cache is built
+        base_adjacency = self.current_graph_data.get("base_adjacency", adjacency)
         self._path_calculator.build_level_cache(
-            level_data, adjacency, self.current_graph_data
+            level_data, adjacency, base_adjacency, self.current_graph_data
         )
 
         # Compute all reachability features (7 dims)

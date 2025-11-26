@@ -25,7 +25,7 @@ class PathVisualizationCache:
         self._cached_adjacency_signature: Optional[int] = None
         self._cached_level_data: Optional[LevelData] = None
         self._cached_mine_signature: Optional[Tuple] = None
-        self._ninja_move_threshold = 12.0  # pixels
+        self._ninja_move_threshold = 3.0  # pixels - update paths more frequently
 
     def get_cached_paths(
         self,
@@ -146,4 +146,3 @@ class PathVisualizationCache:
         self._cached_adjacency_signature = None
         self._cached_level_data = None
         self._cached_mine_signature = None
-

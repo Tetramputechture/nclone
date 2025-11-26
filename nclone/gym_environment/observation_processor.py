@@ -187,10 +187,6 @@ class ObservationProcessor:
         ):
             self.augmentation_config["disable_validation"] = training_mode
 
-        # OPTIMIZATION: Cache for stabilized frames to avoid redundant conversions
-        self._frame_cache = None
-        self._frame_cache_id = None
-
         # MEMORY OPTIMIZATION: Pre-allocate reusable buffers to avoid repeated allocations
         # These buffers are reused across observations to minimize memory churn
         if self.enable_visual_processing:
@@ -377,29 +373,23 @@ class ObservationProcessor:
             # Pass through additional keys that don't need processing
             passthrough_keys = [
                 "action_mask",
-                "death_context",
-                # Dense graph format (backward compatibility)
-                "graph_node_feats",
-                "graph_edge_index",
-                "graph_edge_feats",
-                "graph_node_mask",
-                "graph_edge_mask",
-                "graph_node_types",
-                "graph_edge_types",
-                # Sparse graph format (memory optimized)
-                "graph_node_feats_sparse",
-                "graph_edge_index_sparse",
-                "graph_edge_feats_sparse",
-                "graph_node_types_sparse",
-                "graph_edge_types_sparse",
+                # Graph observations (GCN-optimized: only what GCN needs)
                 "graph_num_nodes",
                 "graph_num_edges",
-                # Other features
-                "locked_door_features",
-                "num_locked_doors",
+                "graph_node_feats",
+                "graph_edge_index",
+                "graph_node_mask",
+                "graph_edge_mask",
                 "reachability_features",
                 "switch_states",
-                "exit_features",
+                # Position data (needed for waypoint extraction in replay processing)
+                "player_x",
+                "player_y",
+                "switch_x",
+                "switch_y",
+                "exit_door_x",
+                "exit_door_y",
+                "switch_activated",
             ]
             for key in passthrough_keys:
                 if key in obs:
@@ -433,27 +423,13 @@ class ObservationProcessor:
         # Pass through additional keys that don't need processing
         passthrough_keys = [
             "action_mask",
-            "death_context",  # Death context for auxiliary learning
-            # Dense graph format (backward compatibility)
-            "graph_node_feats",
-            "graph_edge_index",
-            "graph_edge_feats",
-            "graph_node_mask",
-            "graph_edge_mask",
-            "graph_node_types",
-            "graph_edge_types",
-            # Sparse graph format (memory optimized)
-            "graph_node_feats_sparse",
-            "graph_edge_index_sparse",
-            "graph_edge_feats_sparse",
-            "graph_node_types_sparse",
-            "graph_edge_types_sparse",
+            # Graph observations (GCN-optimized: only what GCN needs)
             "graph_num_nodes",
             "graph_num_edges",
-            # Other features
-            "exit_features",  # Exit features for objective attention
-            "locked_door_features",
-            "num_locked_doors",
+            "graph_node_feats",
+            "graph_edge_index",
+            "graph_node_mask",
+            "graph_edge_mask",
         ]
         for key in passthrough_keys:
             if key in obs:

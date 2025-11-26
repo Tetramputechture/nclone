@@ -194,12 +194,16 @@ class PrecomputedDoorFeatureCache:
             features[idx, 1] = np.clip(rel_switch_y, -1.0, 1.0)
             # features[idx, 2] = switch_collected (set at runtime)
             
+            # Extract base_adjacency for physics checks
+            base_adjacency = graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+            
             # Switch path distance
             switch_pos = (int(switch_x), int(switch_y))
             switch_path_dist = path_calculator.get_distance(
                 ninja_pos,
                 switch_pos,
                 adjacency,
+                base_adjacency,
                 level_data=level_data,
                 graph_data=graph_data,
                 entity_radius=LOCKED_DOOR_SWITCH_RADIUS
@@ -226,6 +230,7 @@ class PrecomputedDoorFeatureCache:
                 ninja_pos,
                 door_pos,
                 adjacency,
+                base_adjacency,
                 level_data=level_data,
                 graph_data=graph_data,
                 entity_radius=0

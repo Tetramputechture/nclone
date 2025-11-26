@@ -115,7 +115,6 @@ Each edge represents a potential movement between two nodes. Edges capture conne
 | 6 | dx_norm | [-1, +1] | Normalized x-direction of movement |
 | 7 | dy_norm | [-1, +1] | Normalized y-direction of movement |
 | 8 | distance | [0, 1] | Normalized Euclidean distance |
-| 9 | movement_category | [0, 1] | 0=horizontal, 0.33=mixed, 0.66=upward, 1.0=downward |
 | 10 | nearest_mine_distance | [0, 1] | Distance from edge to nearest mine |
 | 11 | passes_deadly_mine | {0, 1} | 1 if edge passes through deadly mine radius |
 
@@ -153,14 +152,6 @@ One-hot encoding of connectivity type:
   ```python
   distance_norm = euclidean_dist / sqrt(1056² + 600²)
   ```
-
-- `movement_category`: Categorical encoding of movement type
-  - `0.0`: Horizontal (|dx| > |dy| × 2)
-  - `0.33`: Mixed/diagonal
-  - `0.66`: Upward (|dy| > |dx| × 2 and dy < 0)
-  - `1.0`: Downward (|dy| > |dx| × 2 and dy > 0)
-  
-  **Design rationale**: Downward edges are easier (can fall), upward edges are harder (require jump), helping agent learn physics-aware navigation.
 
 #### Mine Danger Features (Indices 10-13)
 

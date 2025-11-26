@@ -106,12 +106,6 @@ def clear_door_feature_caches(env: Any, verbose: bool = False) -> None:
         if verbose:
             print("  - Reset _cached_switch_states")
 
-    # Exit features cache (position-based caching for performance)
-    if hasattr(env, "_cached_exit_features"):
-        env._cached_exit_features = None
-        if verbose:
-            print("  - Reset _cached_exit_features")
-
     if hasattr(env, "_last_exit_cache_ninja_pos"):
         env._last_exit_cache_ninja_pos = None
         if verbose:
@@ -327,6 +321,13 @@ def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
         if verbose:
             print("  - Reset reachability state")
 
+    # Clear graph builder cache (_level_graph_cache and _flood_fill_cache)
+    # This prevents accumulation of level graphs across resets
+    if hasattr(env, "graph_builder") and env.graph_builder is not None:
+        env.graph_builder.clear_cache()
+        if verbose:
+            print("  - Cleared graph builder cache")
+
     # Clear pathfinding utility caches
     clear_pathfinding_utility_caches(verbose=verbose)
 
@@ -453,6 +454,9 @@ def clear_all_caches_for_reset(env: Any, verbose: bool = False) -> None:
             if hasattr(nplay_headless.sim_renderer, "debug_overlay_renderer"):
                 debug_renderer = nplay_headless.sim_renderer.debug_overlay_renderer
                 clear_pathfinding_caches(debug_renderer, verbose=verbose)
+                # CRITICAL FIX: Clear debug overlay caches including text_cache
+                # This prevents unbounded growth of text_cache across episodes
+                clear_debug_overlay_caches(debug_renderer, verbose=verbose)
 
     if verbose:
         print("All caches cleared for reset")

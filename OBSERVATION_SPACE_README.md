@@ -23,18 +23,14 @@ observation_space = SpacesDict({
     'global_view': Box(0, 255, (176, 100, 1), np.uint8),
     
     # Game state (OPTIMIZED)
-    'game_state': Box(-1, 1, (29,), np.float32),  # Only ninja physics
+    'game_state': Box(-1, 1, (41,), np.float32),  # 40 ninja physics + 1 time_remaining
     'reachability_features': Box(0, 1, (7,), np.float32),  # 4 base + 2 mine context + 1 phase
-    'time_remaining': Box(0, 1, (), np.float32),  # Dynamic truncation-based time pressure
     
-    # Graph (with mine navigation features)
-    'graph_node_feats': Box(-inf, inf, (max_nodes, 21), np.float32),  # Added topological features
+    # Graph (GCN-optimized: minimal features)
+    'graph_node_feats': Box(-inf, inf, (max_nodes, 6), np.float32),  # GCN-optimized: 6 dims
     'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), np.int32),
-    'graph_edge_feats': Box(-inf, inf, (max_edges, 14), np.float32),  # Added geometric + mine danger
     'graph_node_mask': Box(0, 1, (max_nodes,), np.int32),
     'graph_edge_mask': Box(0, 1, (max_edges,), np.int32),
-    'graph_node_types': Box(0, 10, (max_nodes,), np.int32),
-    'graph_edge_types': Box(0, 10, (max_edges,), np.int32),
 })
 ```
 
@@ -70,11 +66,11 @@ Visual modalities are available but not used for training. The agent learns pure
 ## State Vectors
 
 ### `game_state`
-`(29,)` float32, range [-1, 1] or [0, 1]
+`(41,)` float32, range [-1, 1] or [0, 1]
 
 **Only contains ninja physics state** - all other features moved to graph.
 
-**Indices 0-28: Ninja Physics State (29 features)**
+**Indices 0-40: Ninja Physics State (40 features) + Time Remaining (1 feature)**
 - `[0]` Velocity magnitude (normalized)
 - `[1:3]` Velocity direction (unit vector x, y)
 - `[3:7]` Movement categories (ground/air/wall/special states)
@@ -94,6 +90,8 @@ Visual modalities are available but not used for training. The agent learns pure
 - `[25:26]` Ceiling normal vector (x, y)
 - `[27]` Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
 - `[28]` Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
+- `[29:39]` Enhanced physics features (kinetic energy, potential energy, force magnitude, etc.)
+- `[40]` Time remaining [0, 1] (curriculum-aware dynamic truncation)
 
 ### `reachability_features`
 `(7,)` float32, range [0, 1]
@@ -139,73 +137,44 @@ This feature ensures agents understand the actual time constraints they will fac
 See [GRAPH_FEATURES.md](docs/GRAPH_FEATURES.md) for detailed feature descriptions.
 
 ### `graph_node_feats`
-`(max_nodes, 21)` float32
+`(max_nodes, 6)` float32
 
-21-dimensional node features with mine-specific and topological information:
+6-dimensional GCN-optimized node features:
 
 **Spatial (2)**: x, y position normalized
 
-**Type (7)**: One-hot node type (EMPTY, WALL, TOGGLE_MINE, LOCKED_DOOR, SPAWN, EXIT_SWITCH, EXIT_DOOR)
-
-**Mine-Specific (3)**: 
-- is_mine: Binary flag
-- mine_state: -1.0 (deadly), 0.0 (transitioning), +1.0 (safe)
-- mine_radius: Normalized collision radius
+**Mine-Specific (2)**: 
+- mine_state: -1.0 (deadly), 0.0 (transitioning), +1.0 (safe), 0.0 (non-mine)
+- mine_radius: Normalized collision radius (0.0 for non-mines)
 
 **Entity State (2)**:
-- entity_active: For switches/doors
-- door_closed: For locked doors
+- entity_active: For switches/doors (1.0=active, 0.0=inactive)
+- door_closed: For locked doors (1.0=closed, 0.0=open)
 
-**Reachability (1)**: Flood-fill reachability from ninja
-
-**Topological (6)**:
-- in_degree: Normalized in-degree
-- out_degree: Normalized out-degree
-- objective_dx: X-distance to objective
-- objective_dy: Y-distance to objective
-- objective_hops: Graph hops to objective
-- betweenness: Centrality score
+**Note**: Removed features for GCN optimization:
+- Type one-hot encoding (7 dims): GCN learns types from features and structure
+- Topological features (6 dims): Redundant with PBRS shortest paths
+- Reachability (1 dim): All nodes in graph are reachable (flood fill filtered)
 
 ### `graph_edge_index`
 `(2, max_edges)` int32
 
 COO format edge list: `[[sources], [targets]]`
 
-### `graph_edge_feats`
-`(max_edges, 14)` float32
-
-14-dimensional edge features with geometric and mine danger information:
-
-**Edge Type (4)**: One-hot (ADJACENT, REACHABLE, FUNCTIONAL, BLOCKED)
-
-**Connectivity (2)**:
-- weight: Traversal weight
-- reachability_confidence: From flood-fill system
-
-**Geometric (4)**:
-- dx_norm: Normalized x-direction [-1, 1]
-- dy_norm: Normalized y-direction [-1, 1]
-- distance: Normalized Euclidean distance [0, 1]
-- movement_category: [0, 1] (0=horizontal, 0.33=mixed, 0.66=upward, 1.0=downward)
-
-**Mine Danger (4)**:
-- nearest_mine_distance: Distance to nearest mine [0, 1]
-- passes_deadly_mine: Binary flag if edge passes through deadly mine
-- mine_threat_level: Aggregate danger score [0, 1]
-- num_mines_nearby: Count of mines near edge [0, 1]
+All edges represent simple adjacency between reachable nodes. GCN doesn't use edge features or types.
 
 ### `graph_node_mask` / `graph_edge_mask`
-Binary masks {0, 1} indicating valid nodes/edges (vs padding).
+`(max_nodes,)` / `(max_edges,)` int32
 
-### `graph_node_types` / `graph_edge_types`
-Integer type IDs for each node/edge.
+Binary masks {0, 1} indicating valid nodes/edges (vs padding).
 
 ## Performance Characteristics
 
 - **Graph building**: <200ms per level (target maintained)
-- **Node features**: 21 dims (down from 50) - faster processing
-- **Edge features**: 14 dims (up from 6) - richer information
-- **Game state**: 29 dims (down from 64) - minimal state MLP
-- **Total observation**: Graph-centric with no redundancy
+- **Node features**: 6 dims (GCN-optimized) - minimal, efficient processing
+- **Edge features**: None (GCN uses graph structure only)
+- **Game state**: 41 dims (40 ninja physics + 1 time_remaining)
+- **Total observation**: GCN-optimized with minimal redundancy
+- **Memory savings**: 65% reduction from original 17-dim node features
 
-All geometric and mine danger computations are vectorized using numpy for performance.
+All computations are vectorized using numpy for performance. Observation space optimized for sparse batching in GCN encoder.

@@ -6,7 +6,9 @@ curriculum learning and procedural generation.
 """
 
 import json
+import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -54,6 +56,9 @@ class EnvMapLoader:
                              See curriculum_config.CATEGORY_NAMES for options
             test_dataset_path: Path to test dataset directory for evaluation (defaults to "datasets/test")
         """
+        _init_start = time.perf_counter()
+        logger = logging.getLogger(__name__)
+        
         self.nplay_headless = nplay_headless
         self.rng = rng
         self.eval_mode = eval_mode
@@ -85,6 +90,9 @@ class EnvMapLoader:
 
         # Curriculum weights (category name -> relative weight)
         self._curriculum_weights = get_default_weights()
+        
+        _init_time = time.perf_counter() - _init_start
+        logger.info(f"[TIMING] EnvMapLoader.__init__: {_init_time:.3f}s")
 
     def load_initial_map(self):
         """Load the first map based on configuration."""
@@ -113,6 +121,17 @@ class EnvMapLoader:
                 map_name = os.path.basename(os.path.dirname(self.custom_map_path))
             self.current_map_name = map_name
             self.random_map_type = None
+
+            # Add logging to make custom map usage clear
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.info(f"Custom map path set: {self.custom_map_path}")
+            logger.info("  → Bypassing ALL dataset selection (train/test/curriculum)")
+            logger.info(
+                "  → This single level will be used for all training and evaluation"
+            )
+
             self.nplay_headless.load_map(self.custom_map_path)
             return
 

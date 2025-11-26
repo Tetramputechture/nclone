@@ -147,6 +147,11 @@ def compute_reachability_features_from_graph(
     # Uses objective hierarchy: exit switch -> locked door switches -> exit door
     next_obj_distances = []
 
+    # Extract base_adjacency for physics checks
+    base_adjacency = (
+        graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+    )
+
     # First priority: Exit switch (if not collected)
     for switch in exit_switches:
         # Check if switch is collected (for exit switch, check if active=False)
@@ -157,6 +162,7 @@ def compute_reachability_features_from_graph(
                 ninja_pos,
                 switch_pos,
                 adjacency,
+                base_adjacency,
                 level_data=level_data,
                 graph_data=graph_data,
                 entity_radius=EXIT_SWITCH_RADIUS,
@@ -178,6 +184,7 @@ def compute_reachability_features_from_graph(
                     ninja_pos,
                     switch_pos,
                     adjacency,
+                    base_adjacency,
                     level_data=level_data,
                     graph_data=graph_data,
                     entity_radius=LOCKED_DOOR_SWITCH_RADIUS,
@@ -194,6 +201,7 @@ def compute_reachability_features_from_graph(
                 ninja_pos,
                 exit_pos,
                 adjacency,
+                base_adjacency,
                 level_data=level_data,
                 graph_data=graph_data,
                 entity_radius=EXIT_DOOR_RADIUS,
@@ -214,6 +222,7 @@ def compute_reachability_features_from_graph(
             ninja_pos,
             exit_pos,
             adjacency,
+            base_adjacency,
             level_data=level_data,
             graph_data=graph_data,
             entity_radius=EXIT_DOOR_RADIUS,

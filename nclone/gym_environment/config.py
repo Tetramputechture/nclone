@@ -97,9 +97,13 @@ class RenderConfig:
 
 @dataclass
 class PBRSConfig:
-    """Configuration for Potential-Based Reward Shaping."""
+    """Configuration for Potential-Based Reward Shaping.
 
-    pbrs_gamma: float = 0.99
+    For heuristic potential functions (path distance), γ=1.0 eliminates negative bias.
+    Policy invariance holds for ANY γ, but γ=1.0 ensures clean telescoping in episodic tasks.
+    """
+
+    pbrs_gamma: float = 1.0  # Changed from 0.995 to eliminate systematic negative bias
 
     def __post_init__(self):
         """Validate PBRS configuration."""
@@ -141,6 +145,9 @@ class EnvironmentConfig:
     custom_map_path: Optional[str] = None
     test_dataset_path: Optional[str] = None  # Path to test dataset for evaluation
     enable_logging: bool = False
+    enable_profiling: bool = (
+        False  # Enable detailed performance profiling (~5% overhead)
+    )
     enable_visual_observations: bool = (
         False  # If False, skip rendering entirely (graph+state+reachability sufficient)
     )

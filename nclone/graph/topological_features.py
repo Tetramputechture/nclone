@@ -81,9 +81,22 @@ def compute_objective_relative_positions(
     Returns:
         Tuple of (dx_norm, dy_norm, graph_hops_norm) arrays [num_nodes]
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     num_nodes = node_positions.shape[0]
 
     if num_nodes == 0 or not adjacency:
+        return np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes)
+    
+    # DEFENSIVE: Check for valid objective_pos
+    if objective_pos is None or not isinstance(objective_pos, tuple) or len(objective_pos) != 2:
+        logger.warning(f"Invalid objective_pos: {objective_pos}, using zeros for topological features")
+        return np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes)
+    
+    # DEFENSIVE: Check for NaN/Inf in objective_pos
+    if not np.isfinite(objective_pos[0]) or not np.isfinite(objective_pos[1]):
+        logger.warning(f"NaN/Inf in objective_pos: {objective_pos}, using zeros for topological features")
         return np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes)
 
     # Compute geometric distances (always available, even if no graph path)
@@ -163,6 +176,29 @@ def compute_objective_relative_positions(
         1.0,  # Unreachable nodes
         hop_distances / max(max_hops, 1.0),
     )
+    
+    # DEFENSIVE: Check for NaN/Inf in output features
+    if np.isnan(dx_norm).any() or np.isinf(dx_norm).any():
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("NaN/Inf detected in dx_norm after computation")
+        logger.warning(f"  objective_pos: {objective_pos}")
+        logger.warning(f"  node_positions sample: {node_positions[:5]}")
+        dx_norm = np.nan_to_num(dx_norm, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    if np.isnan(dy_norm).any() or np.isinf(dy_norm).any():
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("NaN/Inf detected in dy_norm after computation")
+        dy_norm = np.nan_to_num(dy_norm, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    if np.isnan(hop_distances_norm).any() or np.isinf(hop_distances_norm).any():
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("NaN/Inf detected in hop_distances_norm after computation")
+        logger.warning(f"  max_hops: {max_hops}")
+        logger.warning(f"  hop_distances sample: {hop_distances[:10]}")
+        hop_distances_norm = np.nan_to_num(hop_distances_norm, nan=0.0, posinf=0.0, neginf=0.0)
 
     return dx_norm, dy_norm, hop_distances_norm
 

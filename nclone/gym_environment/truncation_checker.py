@@ -9,7 +9,6 @@ The episode will be truncated if:
 - The dynamically calculated max amount of frames has been reached (based on level complexity)
 """
 
-from typing import Tuple
 
 from .constants import MAX_TIME_IN_FRAMES  # Keep as fallback
 from .truncation_calculator import calculate_truncation_limit
@@ -23,7 +22,7 @@ class TruncationChecker:
             env: The NppEnvironment environment instance
         """
         self.env = env
-        self.position_history = []  # List of (x, y) tuples
+        self.positions_visited_count = 0
         self.current_truncation_limit = MAX_TIME_IN_FRAMES  # fallback
 
     def set_level_truncation_limit(
@@ -45,23 +44,13 @@ class TruncationChecker:
         )
         return self.current_truncation_limit
 
-    def update(self, x: float, y: float) -> Tuple[bool, str]:
-        """Update position history and check for stuck conditions.
-
-        Args:
-            x: Current x position of the ninja
-            y: Current y position of the ninja
-
-        Returns:
-            Tuple of (should_truncate: bool, reason: str)
-        """
-        self.position_history.append((x, y))
-
-        if len(self.position_history) >= self.current_truncation_limit:
-            return True, f"Max frames reached ({self.current_truncation_limit})"
-
-        return False, ""
+    def update_and_check_for_truncation(self, multiplier: float) -> bool:
+        """Update position history and check for stuck conditions."""
+        self.positions_visited_count += 1
+        return self.positions_visited_count >= int(
+            self.current_truncation_limit * multiplier
+        )
 
     def reset(self):
         """Reset position history but keep truncation limit (per-level cache)."""
-        self.position_history = []
+        self.positions_visited_count = 0

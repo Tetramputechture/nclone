@@ -377,6 +377,13 @@ parser.add_argument(
     help="Starting seed for generator testing (default: 10000)",
 )
 
+# Official maps testing arguments
+parser.add_argument(
+    "--test-official-maps",
+    action="store_true",
+    help="Enable official maps testing mode - cycle through maps in nclone/maps/official/SI",
+)
+
 # Input mode arguments
 parser.add_argument(
     "--discrete-actions",
@@ -417,6 +424,19 @@ if args.test_generators:
     print("  L - List all generators in current category")
     print("  1-9 - Jump to generator number in category")
     print("  V - Toggle ASCII visualization output")
+    print("=" * 60 + "\n")
+
+# Display help information for official maps testing
+if args.test_official_maps:
+    print("\n" + "=" * 60)
+    print("OFFICIAL MAPS TESTING MODE")
+    print("=" * 60)
+    print("• Testing maps from: nclone/maps/official/SI")
+    print("\nControls:")
+    print("  R - Reset (reload current map)")
+    print("  G - Next map")
+    print("  Shift+G - Previous map")
+    print("  1-9 - Jump to map number (1-9)")
     print("=" * 60 + "\n")
 
 # Display help information for test suite loading
@@ -709,6 +729,95 @@ if args.test_generators:
         traceback.print_exc()
         sys.exit(1)
 
+# Initialize official maps testing if enabled
+official_map_tester = None
+
+if args.test_official_maps:
+    try:
+        import os
+
+        class OfficialMapTester:
+            """Manages cycling through official maps in the SI folder."""
+
+            def __init__(self):
+                # Get the path to the SI maps folder
+                # Maps are in nclone/nclone/maps/official/SI
+                # Use same pattern as nplay_headless.py for consistency
+                current_file_dir = os.path.dirname(__file__)
+                self.maps_dir = os.path.join(current_file_dir, "maps", "official", "SL")
+
+                if not os.path.exists(self.maps_dir):
+                    raise FileNotFoundError(
+                        f"Official maps directory not found: {self.maps_dir}"
+                    )
+
+                # Get all map files and sort by filename (which includes numeric prefix)
+                map_files = [
+                    f
+                    for f in os.listdir(self.maps_dir)
+                    if os.path.isfile(os.path.join(self.maps_dir, f))
+                ]
+                # Sort naturally by filename (000, 001, 002, etc.)
+                map_files.sort()
+                self.map_files = map_files
+                self.current_map_idx = 0
+
+                if not self.map_files:
+                    raise ValueError(f"No map files found in {self.maps_dir}")
+
+                print(f"Found {len(self.map_files)} official maps")
+
+            def get_current_map_path(self):
+                """Get the full path to the current map file."""
+                return os.path.join(self.maps_dir, self.map_files[self.current_map_idx])
+
+            def get_current_map_name(self):
+                """Get the name of the current map file."""
+                return self.map_files[self.current_map_idx]
+
+            def next_map(self):
+                """Move to next map."""
+                self.current_map_idx = (self.current_map_idx + 1) % len(self.map_files)
+                return self.get_current_map_path()
+
+            def prev_map(self):
+                """Move to previous map."""
+                self.current_map_idx = (self.current_map_idx - 1) % len(self.map_files)
+                return self.get_current_map_path()
+
+            def jump_to_map(self, index):
+                """Jump to a specific map by index (0-based)."""
+                if 0 <= index < len(self.map_files):
+                    self.current_map_idx = index
+                    return True
+                return False
+
+            def get_info_string(self):
+                """Get current state info string."""
+                return (
+                    f"Map {self.current_map_idx + 1}/{len(self.map_files)}: "
+                    f"{self.get_current_map_name()}"
+                )
+
+        official_map_tester = OfficialMapTester()
+
+        # Load initial map
+        initial_map_path = official_map_tester.get_current_map_path()
+        env.nplay_headless.load_map(initial_map_path)
+        env._reset_graph_state()
+        env._update_graph_from_env_state()
+        env._build_door_feature_cache()
+
+        print("Official Maps Testing Initialized")
+        print(f"  {official_map_tester.get_info_string()}")
+
+    except Exception as e:
+        print(f"Error initializing official maps testing: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
 # Initialize test suite loader if test suite mode is enabled
 test_suite_loader = None
 test_suite_level_ids = []
@@ -749,7 +858,7 @@ if args.test_suite:
         sys.exit(1)
 
 # Normal environment initialization - call reset only if not in special modes
-if not args.test_generators and not args.test_suite:
+if not args.test_generators and not args.test_suite and not args.test_official_maps:
     env.reset()
 
 # Initialize replay recorder if enabled
@@ -1026,6 +1135,28 @@ while running:
                             import traceback
 
                             traceback.print_exc()
+                    elif official_map_tester is not None:
+                        # Official maps testing mode: reload current map
+                        try:
+                            current_map_path = (
+                                official_map_tester.get_current_map_path()
+                            )
+                            env.nplay_headless.load_map(current_map_path)
+
+                            manual_reset(env)
+
+                            # Get initial observation
+                            initial_obs = env._get_observation()
+                            observation = env._process_observation(initial_obs)
+
+                            print(
+                                f"Reloaded map: {official_map_tester.get_info_string()}"
+                            )
+                        except Exception as e:
+                            print(f"Error reloading map: {e}")
+                            import traceback
+
+                            traceback.print_exc()
                     else:
                         # Normal reset for non-generator-testing mode
                         observation, info = env.reset()
@@ -1173,6 +1304,33 @@ while running:
                     except Exception as e:
                         print(f"Error switching generator: {e}")
 
+                # Official maps testing controls
+                if event.key == pygame.K_g and official_map_tester is not None:
+                    # Next/previous map
+                    mods = pygame.key.get_mods()
+                    try:
+                        if mods & pygame.KMOD_SHIFT:
+                            # Shift+G: Previous map
+                            map_path = official_map_tester.prev_map()
+                        else:
+                            # G: Next map
+                            map_path = official_map_tester.next_map()
+
+                        env.nplay_headless.load_map(map_path)
+
+                        manual_reset(env)
+
+                        # Get initial observation
+                        initial_obs = env._get_observation()
+                        observation = env._process_observation(initial_obs)
+
+                        print(f"Switched map: {official_map_tester.get_info_string()}")
+                    except Exception as e:
+                        print(f"Error switching map: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+
                 if event.key == pygame.K_k and generator_tester is not None:
                     # Next/previous category
                     mods = pygame.key.get_mods()
@@ -1257,6 +1415,44 @@ while running:
                         else:
                             print(
                                 f"Generator #{target_idx + 1} does not exist in current category"
+                            )
+
+                # Number keys 1-9 to jump to specific map (for official maps testing)
+                if official_map_tester is not None:
+                    number_key_map = {
+                        pygame.K_1: 0,
+                        pygame.K_2: 1,
+                        pygame.K_3: 2,
+                        pygame.K_4: 3,
+                        pygame.K_5: 4,
+                        pygame.K_6: 5,
+                        pygame.K_7: 6,
+                        pygame.K_8: 7,
+                        pygame.K_9: 8,
+                    }
+                    if event.key in number_key_map:
+                        target_idx = number_key_map[event.key]
+                        if official_map_tester.jump_to_map(target_idx):
+                            try:
+                                map_path = official_map_tester.get_current_map_path()
+                                env.nplay_headless.load_map(map_path)
+
+                                manual_reset(env)
+
+                                initial_obs = env._get_observation()
+                                observation = env._process_observation(initial_obs)
+
+                                print(
+                                    f"Jumped to map: {official_map_tester.get_info_string()}"
+                                )
+                            except Exception as e:
+                                print(f"Error jumping to map: {e}")
+                                import traceback
+
+                                traceback.print_exc()
+                        else:
+                            print(
+                                f"Map #{target_idx + 1} does not exist (only {len(official_map_tester.map_files)} maps available)"
                             )
 
                 # Path-aware reward shaping controls
@@ -1458,8 +1654,16 @@ while running:
                 path_aware_system["current_graph"]
                 and "adjacency" in path_aware_system["current_graph"]
             ):
+                adjacency = path_aware_system["current_graph"]["adjacency"]
+                base_adjacency = path_aware_system["current_graph"].get(
+                    "base_adjacency", adjacency
+                )
+                # PERFORMANCE OPTIMIZATION: Pass graph_data containing physics cache
                 path_aware_system["path_calculator"].build_level_cache(
-                    level_data, path_aware_system["current_graph"]["adjacency"]
+                    level_data,
+                    adjacency,
+                    base_adjacency,
+                    path_aware_system["current_graph"],
                 )
             # Cache the level data and switch states for comparison on next frame
             path_aware_system["cached_level_data"] = level_data
@@ -1520,7 +1724,7 @@ while running:
                 f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
             )
 
-        # Generate new map in generator testing mode, otherwise normal reset
+        # Generate new map in generator testing mode, reload map in official maps mode, otherwise normal reset
         if generator_tester is not None:
             try:
                 new_map = generator_tester.generate_map()
@@ -1542,6 +1746,25 @@ while running:
                     print()
             except Exception as e:
                 print(f"Error generating new map on episode end: {e}")
+                import traceback
+
+                traceback.print_exc()
+        elif official_map_tester is not None:
+            # Reload current map on episode completion
+            try:
+                current_map_path = official_map_tester.get_current_map_path()
+                env.nplay_headless.load_map(current_map_path)
+
+                manual_reset(env)
+
+                initial_obs = env._get_observation()
+                observation = env._process_observation(initial_obs)
+
+                print(
+                    f"Episode complete! Reloaded map: {official_map_tester.get_info_string()}"
+                )
+            except Exception as e:
+                print(f"Error reloading map on episode end: {e}")
                 import traceback
 
                 traceback.print_exc()

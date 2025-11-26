@@ -6,6 +6,7 @@ Leverages the completely deterministic nature of N++ physics simulation.
 """
 
 from typing import Dict, List, Any, Optional
+import logging
 import numpy as np
 
 from ..nplay_headless import NPlayHeadless
@@ -17,7 +18,6 @@ from ..graph.common import (
     N_MAX_NODES,
     E_MAX_EDGES,
     NODE_FEATURE_DIM,
-    EDGE_FEATURE_DIM,
 )
 from ..graph.reachability.graph_builder import GraphBuilder
 from ..graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
@@ -139,6 +139,10 @@ class ReplayExecutor:
         self._graph_data_cache: Dict[str, Any] = {}
         self._current_graph: Optional[Any] = None
 
+        # Cache for graph observation arrays (avoid regenerating numpy arrays every frame)
+        self._graph_obs_cache: Optional[Dict[str, np.ndarray]] = None
+        self._graph_obs_cache_level_id: Optional[str] = None
+
     def _safe_path_distance(
         self,
         start_pos,
@@ -168,10 +172,14 @@ class ReplayExecutor:
         """
         from ..constants.physics_constants import NINJA_RADIUS
 
+        base_adjacency = (
+            graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+        )
         distance = self.path_calculator.get_distance(
             start_pos,
             goal_pos,
             adjacency,
+            base_adjacency,
             level_data=level_data,
             graph_data=graph_data,
             entity_radius=entity_radius,
@@ -318,35 +326,87 @@ class ReplayExecutor:
 
         # Extract level data and build graph once per replay
         level_data = self._extract_level_data()
-        level_id = getattr(level_data, "level_id", None)
+        # Use consistent level_id generation (hash-based) to match _convert_graph_data_to_graphdata
+        level_id = f"level_{hash(level_data.tiles.tobytes())}"
 
         # Only rebuild graph if level changed
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         if level_id != self._cached_level_id or self._cached_graph_data is None:
             # Build graph once for the entire replay
-            # CRITICAL: Use filter_by_reachability=False for replays
-            # Replays may navigate through doors that close, creating isolated regions
-            # We need the full graph to properly compute features throughout the replay
+            # Use flood fill filtering from spawn point to constrain graph size
+            # Graph building is fast (<0.2ms), and filtering ensures we stay within
+            # theoretical max nodes/edges (N_MAX_NODES=4500, E_MAX_EDGES=18500)
             ninja_pos = (
                 int(self.nplay_headless.ninja_position()[0]),
                 int(self.nplay_headless.ninja_position()[1]),
             )
-            self._cached_graph_data = self.graph_builder.build_graph(
-                level_data,
-                ninja_pos=ninja_pos,
-                filter_by_reachability=False,  # Full graph needed for replay execution
-            )
+            logger.info(f"Building graph for level {level_id}, ninja_pos={ninja_pos}")
+
+            try:
+                self._cached_graph_data = self.graph_builder.build_graph(
+                    level_data,
+                    ninja_pos=ninja_pos,
+                    filter_by_reachability=True,  # Filter to reachable nodes only
+                )
+            except Exception as e:
+                logger.error(f"Graph building failed for level {level_id}: {e}")
+                logger.error(f"  Ninja position: {ninja_pos}")
+                logger.error(f"  Level data tiles shape: {level_data.tiles.shape}")
+                import traceback
+
+                logger.error(f"  Traceback:\n{traceback.format_exc()}")
+                # Create empty graph data as fallback
+                self._cached_graph_data = {"adjacency": {}}
+
+            # DEFENSIVE: Log graph build results and validate
+            adjacency = self._cached_graph_data.get("adjacency")
+            if adjacency:
+                num_nodes = len(adjacency)
+                # Count total edges
+                num_edges = sum(len(neighbors) for neighbors in adjacency.values())
+                logger.info(
+                    f"Built graph with {num_nodes} nodes, {num_edges} edges for level {level_id}"
+                )
+                if num_nodes == 0:
+                    logger.warning(
+                        "  Graph has ZERO nodes - this will cause training issues!"
+                    )
+                if num_edges > E_MAX_EDGES:
+                    logger.warning(
+                        f"  Graph has {num_edges} edges, exceeding E_MAX_EDGES={E_MAX_EDGES}"
+                    )
+            else:
+                logger.error(
+                    f"Graph builder returned NO adjacency for level {level_id}"
+                )
+                logger.error(f"  Ninja position: {ninja_pos}")
+                logger.error(f"  Level data: {level_data}")
+                # Ensure we have an empty adjacency dict
+                self._cached_graph_data = {"adjacency": {}}
+
             self._cached_level_data = level_data
             self._cached_level_id = level_id
 
             # Initialize switch states cache for new level
             self._cached_switch_states = {}
 
+            # Clear graph observation cache for new level
+            self._graph_obs_cache = None
+            self._graph_obs_cache_level_id = None
+
             # Build level cache once
-            adjacency = self._cached_graph_data.get("adjacency")
             if adjacency:
-                self.path_calculator.build_level_cache(
-                    level_data, adjacency, self._cached_graph_data
+                base_adjacency = self._cached_graph_data.get(
+                    "base_adjacency", adjacency
                 )
+                self.path_calculator.build_level_cache(
+                    level_data, adjacency, base_adjacency, self._cached_graph_data
+                )
+        else:
+            logger.info(f"Using cached graph for level {level_id}")
 
         observations = []
 
@@ -421,9 +481,19 @@ class ReplayExecutor:
                 # Rebuild level cache with new graph
                 adjacency = self._cached_graph_data.get("adjacency")
                 if adjacency:
-                    self.path_calculator.build_level_cache(
-                        self._cached_level_data, adjacency, self._cached_graph_data
+                    base_adjacency = self._cached_graph_data.get(
+                        "base_adjacency", adjacency
                     )
+                    self.path_calculator.build_level_cache(
+                        self._cached_level_data,
+                        adjacency,
+                        base_adjacency,
+                        self._cached_graph_data,
+                    )
+
+                # Clear graph observation cache since graph changed
+                self._graph_obs_cache = None
+                self._graph_obs_cache_level_id = None
 
         # Get ninja position
         ninja_x, ninja_y = self.nplay_headless.ninja_position()
@@ -462,13 +532,25 @@ class ReplayExecutor:
         # Generate graph observations
         # Convert cached graph_data to GraphData format for observations
         ninja_pos_int = (int(ninja_x), int(ninja_y))
-        self._current_graph = self._convert_graph_data_to_graphdata(
-            self._cached_graph_data, self._cached_level_data, ninja_pos_int
-        )
+        try:
+            self._current_graph = self._convert_graph_data_to_graphdata(
+                self._cached_graph_data, self._cached_level_data, ninja_pos_int
+            )
+            if self._current_graph is None:
+                logger = logging.getLogger(__name__)
+                logger.error(
+                    f"Graph conversion returned None for level {self._cached_level_id}"
+                )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Graph conversion failed: {e}")
+            import traceback
+
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            self._current_graph = None
 
         # Get graph observations matching GraphMixin output
         graph_obs = self._get_graph_observations()
-
         # Get locked doors for switch states
         locked_doors = self.nplay_headless.locked_doors()
 
@@ -497,13 +579,6 @@ class ReplayExecutor:
         # Add switch states (for hierarchical PPO and other components)
         obs["switch_states_dict"] = self._get_switch_states_from_env()
         obs["switch_states"] = self._build_switch_states_array(obs)
-
-        # Add exit features and locked door features for objective attention
-        obs["exit_features"] = self._compute_exit_features()
-        obs["locked_door_features"] = self._compute_locked_door_features()
-        obs["num_locked_doors"] = np.array(
-            [len(obs.get("locked_doors", []))], dtype=np.int32
-        )
 
         return obs
 
@@ -604,162 +679,6 @@ class ReplayExecutor:
             switch_states_array[base_idx + 4] = switch_collected
 
         return switch_states_array
-
-    def _compute_exit_features(self) -> np.ndarray:
-        """
-        Compute features for exit switch and exit door for objective attention.
-
-        Returns (7,) array containing:
-        [switch_x, switch_y, switch_activated, switch_path_dist, door_x, door_y, door_path_dist]
-
-        All positions are relative to ninja and normalized to [-1, 1].
-        Path distances are normalized to [0, 1].
-        """
-        from ..constants.physics_constants import (
-            EXIT_SWITCH_RADIUS,
-            EXIT_DOOR_RADIUS,
-        )
-
-        features = np.zeros(7, dtype=np.float32)
-
-        # Get ninja position
-        ninja_x, ninja_y = self.nplay_headless.ninja_position()
-
-        # Get exit switch position and status
-        switch_x, switch_y = self._get_switch_position()
-        switch_activated = self._is_switch_activated()
-
-        # Relative position normalized to [-1, 1]
-        rel_switch_x = (switch_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
-        rel_switch_y = (switch_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
-        features[0] = np.clip(rel_switch_x, -1.0, 1.0)
-        features[1] = np.clip(rel_switch_y, -1.0, 1.0)
-
-        # Switch activation status (0.0 = not collected, 1.0 = collected)
-        features[2] = 1.0 if switch_activated else 0.0
-
-        # Path distance to switch
-        if self._cached_graph_data and self.path_calculator:
-            adjacency = self._cached_graph_data.get("adjacency")
-            if adjacency:
-                switch_path_dist = self._safe_path_distance(
-                    (int(ninja_x), int(ninja_y)),
-                    (int(switch_x), int(switch_y)),
-                    adjacency,
-                    "exit_switch",
-                    level_data=self._cached_level_data,
-                    graph_data=self._cached_graph_data,
-                    entity_radius=EXIT_SWITCH_RADIUS,
-                )
-
-                if switch_path_dist != float("inf"):
-                    # Normalize by area scale
-                    area_scale = self._get_area_scale()
-                    features[3] = np.clip(switch_path_dist / area_scale, 0.0, 1.0)
-
-        # Get exit door position
-        door_x, door_y = self._get_exit_door_position()
-
-        # Relative position normalized to [-1, 1]
-        rel_door_x = (door_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
-        rel_door_y = (door_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
-        features[4] = np.clip(rel_door_x, -1.0, 1.0)
-        features[5] = np.clip(rel_door_y, -1.0, 1.0)
-
-        # Path distance to door
-        if self._cached_graph_data and self.path_calculator:
-            adjacency = self._cached_graph_data.get("adjacency")
-            if adjacency:
-                door_path_dist = self._safe_path_distance(
-                    (int(ninja_x), int(ninja_y)),
-                    (int(door_x), int(door_y)),
-                    adjacency,
-                    "exit_door",
-                    level_data=self._cached_level_data,
-                    graph_data=self._cached_graph_data,
-                    entity_radius=EXIT_DOOR_RADIUS,
-                )
-
-                if door_path_dist != float("inf"):
-                    area_scale = self._get_area_scale()
-                    features[6] = np.clip(door_path_dist / area_scale, 0.0, 1.0)
-
-        return features
-
-    def _compute_locked_door_features(self) -> np.ndarray:
-        """
-        Compute features for all locked doors (up to 16) for objective attention.
-
-        Returns (16, 8) array where each row contains:
-        [switch_x, switch_y, switch_collected, switch_path_dist, door_x, door_y, door_open, door_path_dist]
-
-        Rows beyond actual door count are zero-padded.
-        """
-        from ..constants.physics_constants import LOCKED_DOOR_SWITCH_RADIUS
-        from ..gym_environment.precomputed_door_features import (
-            MAX_LOCKED_DOORS_ATTENTION,
-            LOCKED_DOOR_FEATURES_DIM,
-        )
-
-        features = np.zeros(
-            (MAX_LOCKED_DOORS_ATTENTION, LOCKED_DOOR_FEATURES_DIM), dtype=np.float32
-        )
-
-        # Get locked doors
-        locked_doors = self.nplay_headless.locked_doors()
-
-        if not locked_doors:
-            return features
-
-        # Get ninja position
-        ninja_x, ninja_y = self.nplay_headless.ninja_position()
-
-        # Get area scale for normalization
-        area_scale = self._get_area_scale()
-
-        # Process each locked door
-        for idx, locked_door in enumerate(locked_doors[:MAX_LOCKED_DOORS_ATTENTION]):
-            switch_x, switch_y, door_x, door_y, switch_collected = (
-                self._extract_locked_door_positions(locked_door)
-            )
-
-            # Switch features
-            rel_switch_x = (switch_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
-            rel_switch_y = (switch_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
-            features[idx, 0] = np.clip(rel_switch_x, -1.0, 1.0)
-            features[idx, 1] = np.clip(rel_switch_y, -1.0, 1.0)
-            features[idx, 2] = switch_collected
-
-            # Switch path distance
-            if self._cached_graph_data and self.path_calculator:
-                adjacency = self._cached_graph_data.get("adjacency")
-                if adjacency:
-                    switch_path_dist = self._safe_path_distance(
-                        (int(ninja_x), int(ninja_y)),
-                        (int(switch_x), int(switch_y)),
-                        adjacency,
-                        f"locked_switch_{idx}",
-                        level_data=self._cached_level_data,
-                        graph_data=self._cached_graph_data,
-                        entity_radius=LOCKED_DOOR_SWITCH_RADIUS,
-                    )
-
-                    if switch_path_dist != float("inf"):
-                        features[idx, 3] = np.clip(
-                            switch_path_dist / area_scale, 0.0, 1.0
-                        )
-
-            # Door features
-            rel_door_x = (door_x - ninja_x) / (LEVEL_WIDTH_PX / 2)
-            rel_door_y = (door_y - ninja_y) / (LEVEL_HEIGHT_PX / 2)
-            features[idx, 4] = np.clip(rel_door_x, -1.0, 1.0)
-            features[idx, 5] = np.clip(rel_door_y, -1.0, 1.0)
-            features[idx, 6] = switch_collected  # door_open = switch_collected
-
-            # Door path distance (same as switch for locked doors)
-            features[idx, 7] = features[idx, 3]
-
-        return features
 
     def _get_area_scale(self) -> float:
         """Get area scale for distance normalization.
@@ -886,6 +805,11 @@ class ReplayExecutor:
         if not isinstance(level_data, LevelData):
             return None
 
+        # Import logger first
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         # Generate level_id from tiles hash (same strategy as GraphBuilder)
         level_id = f"level_{hash(level_data.tiles.tobytes())}"
 
@@ -893,31 +817,55 @@ class ReplayExecutor:
         cached_graph_data = self._graph_data_cache.get(level_id)
         if cached_graph_data is not None and level_id == self._cached_level_id:
             # Reuse cached GraphData since level hasn't changed
+            logger.debug(f"Cache HIT for level {level_id}")
             return cached_graph_data
 
+        logger.debug(
+            f"Cache MISS for level {level_id} (cached_id={self._cached_level_id})"
+        )
+
         # Convert adjacency dict to Edge list
-        from ..graph.common import Edge, EdgeType
+        from ..graph.common import Edge
 
         edges = []
         for source_pos, neighbors in adjacency.items():
+            # DEFENSIVE: Ensure source_pos is a 2-tuple (x, y)
+            if not isinstance(source_pos, tuple) or len(source_pos) != 2:
+                logger.warning(
+                    f"source_pos is not a 2-tuple: {type(source_pos)} = {source_pos}"
+                )
+                continue
+
             for neighbor_info in neighbors:
-                if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
-                    target_pos = (neighbor_info[0], neighbor_info[1])
-                    weight = neighbor_info[2] if len(neighbor_info) > 2 else 1.0
+                if isinstance(neighbor_info, tuple):
+                    # Check if neighbor_info is (target_pos, weight, edge_type) format
+                    # or just (x, y) format
+                    if len(neighbor_info) >= 2:
+                        first_elem = neighbor_info[0]
 
-                    # Determine edge type (default to ADJACENT)
-                    edge_type = EdgeType.ADJACENT
-                    if len(neighbor_info) > 3:
-                        edge_type = neighbor_info[3]
+                        # Case 1: neighbor_info = ((x, y), ...)
+                        if isinstance(first_elem, tuple) and len(first_elem) == 2:
+                            target_pos = first_elem
+                        # Case 2: neighbor_info = (x, y, ...)
+                        elif isinstance(first_elem, (int, float)):
+                            target_pos = (neighbor_info[0], neighbor_info[1])
+                        else:
+                            logger.warning(
+                                f"Unexpected neighbor_info format: {neighbor_info}"
+                            )
+                            continue
 
-                    edges.append(
-                        Edge(
-                            source=source_pos,
-                            target=target_pos,
-                            edge_type=edge_type,
-                            weight=weight,
+                        # Ensure target_pos is a 2-tuple
+                        if not isinstance(target_pos, tuple) or len(target_pos) != 2:
+                            logger.warning(f"target_pos is not a 2-tuple: {target_pos}")
+                            continue
+
+                        edges.append(
+                            Edge(
+                                source=source_pos,
+                                target=target_pos,
+                            )
                         )
-                    )
 
         # Convert edges to GraphData using existing function
         from ..graph.edge_building import create_graph_data
@@ -930,163 +878,62 @@ class ReplayExecutor:
             self._graph_data_cache[level_id] = graph_data
 
             return graph_data
-        except Exception:
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(f"Exception in _convert_graph_data_to_graphdata: {e}")
+            logger.error(f"  Level ID: {level_id}")
+            logger.error(f"  Number of edges: {len(edges)}")
+            logger.error(f"  Adjacency keys: {len(adjacency)} nodes")
+            import traceback
+
+            logger.error(f"  Traceback: {traceback.format_exc()}")
             return None
 
-    def _get_graph_observations(self, use_sparse: bool = True) -> Dict[str, np.ndarray]:
-        """Get complete graph observations matching GraphMixin output.
+    def _get_graph_observations(self) -> Dict[str, np.ndarray]:
+        """Get minimal graph observations matching GraphMixin output (GCN-optimized).
 
-        Args:
-            use_sparse: If True, return sparse format (default). If False, return dense format.
-
-        Returns graph observations with proper feature dimensions:
-        - Sparse format: Only valid nodes/edges (~95% memory reduction)
-        - Dense format: Padded to N_MAX_NODES/E_MAX_EDGES (backward compatibility)
+        Returns graph observations with only what GCN needs:
+        - Dense format: Padded to N_MAX_NODES/E_MAX_EDGES
+        - No edge features, no node/edge types (GCN doesn't use them)
         """
-        if use_sparse:
-            # SPARSE FORMAT: Return only valid nodes/edges without padding
-            # Also include dummy dense arrays for VecEnv compatibility
-            if self._current_graph is None:
-                # Return empty sparse observation
-                obs_dict = {
-                    "graph_node_feats_sparse": np.zeros(
-                        (0, NODE_FEATURE_DIM), dtype=np.float32
-                    ),
-                    "graph_edge_index_sparse": np.zeros((2, 0), dtype=np.uint16),
-                    "graph_edge_feats_sparse": np.zeros(
-                        (0, EDGE_FEATURE_DIM), dtype=np.float32
-                    ),
-                    "graph_node_types_sparse": np.zeros(0, dtype=np.uint8),
-                    "graph_edge_types_sparse": np.zeros(0, dtype=np.uint8),
-                    "graph_num_nodes": np.array([0], dtype=np.int32),
-                    "graph_num_edges": np.array([0], dtype=np.int32),
-                }
-                # Add dummy dense arrays for VecEnv
-                obs_dict.update(
-                    {
-                        "graph_node_feats": np.zeros(
-                            (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
-                        ),
-                        "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-                        "graph_edge_feats": np.zeros(
-                            (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
-                        ),
-                        "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
-                        "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
-                        "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
-                        "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
-                    }
-                )
-                return obs_dict
 
+        graph_obs = {
+            "graph_node_feats": np.zeros(
+                (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
+            ),
+            "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
+            "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
+            "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
+        }
+
+        # Fill with actual graph data if available
+        if self._current_graph is not None:
             graph_data = self._current_graph
-            num_nodes = graph_data.num_nodes
-            num_edges = graph_data.num_edges
 
-            # Extract only valid data (no padding)
-            node_features = graph_data.node_features[:num_nodes].astype(np.float32)
-            edge_index = graph_data.edge_index[:, :num_edges].astype(np.uint16)
-            edge_features = graph_data.edge_features[:num_edges].astype(np.float32)
-            node_types = graph_data.node_types[:num_nodes].astype(np.uint8)
-            edge_types = graph_data.edge_types[:num_edges].astype(np.uint8)
+            # Copy node features (up to max nodes)
+            num_nodes = min(graph_data.num_nodes, N_MAX_NODES)
+            if (
+                hasattr(graph_data, "node_features")
+                and graph_data.node_features is not None
+            ):
+                graph_obs["graph_node_feats"][:num_nodes] = graph_data.node_features[
+                    :num_nodes
+                ]
 
-            obs_dict = {
-                "graph_node_feats_sparse": node_features,
-                "graph_edge_index_sparse": edge_index,
-                "graph_edge_feats_sparse": edge_features,
-                "graph_node_types_sparse": node_types,
-                "graph_edge_types_sparse": edge_types,
-                "graph_num_nodes": np.array([num_nodes], dtype=np.int32),
-                "graph_num_edges": np.array([num_edges], dtype=np.int32),
-            }
-            # Add dummy dense arrays for VecEnv compatibility
-            obs_dict.update(
-                {
-                    "graph_node_feats": np.zeros(
-                        (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
-                    ),
-                    "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-                    "graph_edge_feats": np.zeros(
-                        (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
-                    ),
-                    "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
-                    "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
-                    "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
-                    "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
-                }
-            )
-            return obs_dict
-        else:
-            # DENSE FORMAT (backward compatibility): Padded to N_MAX_NODES/E_MAX_EDGES
-            graph_obs = {
-                "graph_node_feats": np.zeros(
-                    (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
-                ),
-                "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-                "graph_edge_feats": np.zeros(
-                    (E_MAX_EDGES, EDGE_FEATURE_DIM), dtype=np.float32
-                ),
-                "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
-                "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
-                "graph_node_types": np.zeros(N_MAX_NODES, dtype=np.int32),
-                "graph_edge_types": np.zeros(E_MAX_EDGES, dtype=np.int32),
-            }
+            # Copy edge index (up to max edges)
+            num_edges = min(graph_data.num_edges, E_MAX_EDGES)
+            if hasattr(graph_data, "edge_index") and graph_data.edge_index is not None:
+                graph_obs["graph_edge_index"][:, :num_edges] = graph_data.edge_index[
+                    :, :num_edges
+                ]
 
-            # Fill with actual graph data if available
-            if self._current_graph is not None:
-                graph_data = self._current_graph
+            # Set masks
+            graph_obs["graph_node_mask"][:num_nodes] = 1
+            graph_obs["graph_edge_mask"][:num_edges] = 1
 
-                # Copy node features (up to max nodes)
-                num_nodes = min(graph_data.num_nodes, N_MAX_NODES)
-                if (
-                    hasattr(graph_data, "node_features")
-                    and graph_data.node_features is not None
-                ):
-                    graph_obs["graph_node_feats"][:num_nodes] = (
-                        graph_data.node_features[:num_nodes]
-                    )
-
-                # Copy edge index (up to max edges)
-                num_edges = min(graph_data.num_edges, E_MAX_EDGES)
-                if (
-                    hasattr(graph_data, "edge_index")
-                    and graph_data.edge_index is not None
-                ):
-                    graph_obs["graph_edge_index"][:, :num_edges] = (
-                        graph_data.edge_index[:, :num_edges]
-                    )
-
-                # Copy edge features (up to max edges)
-                if (
-                    hasattr(graph_data, "edge_features")
-                    and graph_data.edge_features is not None
-                ):
-                    graph_obs["graph_edge_feats"][:num_edges] = (
-                        graph_data.edge_features[:num_edges]
-                    )
-
-                # Set masks
-                graph_obs["graph_node_mask"][:num_nodes] = 1
-                graph_obs["graph_edge_mask"][:num_edges] = 1
-
-                # Copy node and edge types
-                if (
-                    hasattr(graph_data, "node_types")
-                    and graph_data.node_types is not None
-                ):
-                    graph_obs["graph_node_types"][:num_nodes] = graph_data.node_types[
-                        :num_nodes
-                    ]
-
-                if (
-                    hasattr(graph_data, "edge_types")
-                    and graph_data.edge_types is not None
-                ):
-                    graph_obs["graph_edge_types"][:num_edges] = graph_data.edge_types[
-                        :num_edges
-                    ]
-
-            return graph_obs
+        return graph_obs
 
     def close(self):
         """Clean up resources."""
