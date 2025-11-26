@@ -6,8 +6,12 @@ used by both performance-critical pathfinding and visualization systems.
 """
 
 import logging
+import heapq
 from typing import Dict, Tuple, List, Optional, Any
-from collections import deque
+from collections import deque, OrderedDict
+
+# Import physics-aware cost calculation from pathfinding_algorithms
+from .pathfinding_algorithms import _calculate_physics_aware_cost
 
 # Node coordinate offset for world coordinate conversion
 # Nodes are in tile data space, entity positions in world space differ by 24px
@@ -20,7 +24,215 @@ _logger = logging.getLogger(__name__)
 _subcell_lookup_loader_cache = None
 
 # Module-level cache for surface area by level ID
-_surface_area_cache: Dict[str, float] = {}
+# Uses OrderedDict for LRU eviction to prevent unbounded growth
+_surface_area_cache: OrderedDict[str, float] = OrderedDict()
+_SURFACE_AREA_CACHE_MAX_SIZE = 1000  # Limit to 1000 levels to prevent memory growth
+
+# Constants for horizontal edge validation
+SUB_NODE_SIZE = 12  # Sub-node spacing
+
+
+def _is_node_grounded_util(
+    node_pos: Tuple[int, int],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+) -> bool:
+    """
+    Check if a node is grounded (has solid surface below).
+
+    Uses base_adjacency (pre-entity-mask) to determine actual level geometry.
+    """
+    x, y = node_pos
+    below_pos = (x, y + SUB_NODE_SIZE)
+
+    if below_pos not in base_adjacency:
+        return True
+
+    if node_pos in base_adjacency:
+        for neighbor_pos, _ in base_adjacency[node_pos]:
+            if neighbor_pos == below_pos:
+                return False
+
+    return True
+
+
+def _is_horizontal_edge_util(
+    from_pos: Tuple[int, int], to_pos: Tuple[int, int]
+) -> bool:
+    """Check if edge is horizontal."""
+    return to_pos[1] == from_pos[1] and to_pos[0] != from_pos[0]
+
+
+def _violates_horizontal_rule_util(
+    current: Tuple[int, int],
+    neighbor: Tuple[int, int],
+    parents: Dict[Tuple[int, int], Optional[Tuple[int, int]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+) -> bool:
+    """
+    Check if edge violates consecutive horizontal non-grounded rule.
+
+    Uses physics cache for O(1) grounding checks if available, otherwise falls back
+    to base_adjacency traversal.
+    """
+    if not _is_horizontal_edge_util(current, neighbor):
+        return False
+
+    # PERFORMANCE OPTIMIZATION: Use pre-computed physics cache if available
+    if physics_cache is not None:
+        current_physics = physics_cache.get(
+            current, {"grounded": True, "walled": False}
+        )
+        neighbor_physics = physics_cache.get(
+            neighbor, {"grounded": True, "walled": False}
+        )
+        current_grounded = current_physics["grounded"]
+        neighbor_grounded = neighbor_physics["grounded"]
+    else:
+        raise ValueError("Physics cache is required for horizontal rule validation")
+
+    if current_grounded and neighbor_grounded:
+        return False
+
+    parent = parents.get(current)
+    if parent is None:
+        return False
+
+    if _is_horizontal_edge_util(parent, current):
+        return True
+
+    return False
+
+
+def classify_edge_type(
+    src_pos: Tuple[int, int],
+    dst_pos: Tuple[int, int],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+) -> str:
+    """
+    Classify edge type based on movement physics.
+
+    Returns edge type as string matching the 8 cases in physics-aware cost calculation.
+
+    Args:
+        src_pos: Source node position (x, y) in pixels
+        dst_pos: Destination node position (x, y) in pixels
+        base_adjacency: Base graph adjacency for grounding checks (pre-entity-mask)
+
+    Returns:
+        Edge type string: one of "diagonal_jump_grounded", "diagonal_fall_air", "diagonal_up_air",
+        "jump_grounded", "vertical_air_up", "falling", "grounded_horizontal", "air_horizontal"
+    """
+    dx = dst_pos[0] - src_pos[0]
+    dy = dst_pos[1] - src_pos[1]
+
+    # Check grounding for both nodes
+    src_grounded = _is_node_grounded_util(src_pos, base_adjacency)
+    dst_grounded = _is_node_grounded_util(dst_pos, base_adjacency)
+
+    # Match the exact classification logic from _calculate_physics_aware_cost (pathfinding_algorithms.py)
+    # Special case: Diagonal falling from air
+    if dx != 0 and dy > 0 and not src_grounded:
+        return "diagonal_fall_air"
+    # Special case: Diagonal upward from air
+    elif dx != 0 and dy < 0 and not src_grounded:
+        return "diagonal_up_air"
+    # Special case: Diagonal upward from ground (efficient)
+    elif dx != 0 and dy < 0 and src_grounded:
+        return "diagonal_jump_grounded"
+    elif dy < 0:  # Moving up (against gravity) - vertical only
+        if src_grounded:
+            return "jump_grounded"
+        else:
+            return "vertical_air_up"
+    elif dy > 0:  # Moving down (with gravity)
+        return "falling"
+    else:  # Horizontal (dy == 0)
+        if src_grounded and dst_grounded:
+            return "grounded_horizontal"
+        else:
+            return "air_horizontal"
+
+
+def get_edge_type_color(edge_type: str) -> Tuple[int, int, int, int]:
+    """
+    Get RGBA color for edge type visualization.
+
+    Colors are chosen to show cost gradient: green (cheap) -> red (expensive).
+
+    Args:
+        edge_type: Edge type string from classify_edge_type
+
+    Returns:
+        RGBA color tuple (red, green, blue, alpha)
+    """
+    color_map = {
+        "diagonal_jump_grounded": (
+            50,
+            255,
+            50,
+            220,
+        ),  # Very bright green - very cheap (0.2x)
+        "grounded_horizontal": (100, 255, 100, 220),  # Bright green - cheap (0.5x)
+        "jump_grounded": (150, 255, 100, 220),  # Yellow-green - moderate (0.5x)
+        "diagonal_fall_air": (100, 220, 255, 220),  # Cyan - very cheap (0.6x)
+        "falling": (150, 255, 150, 220),  # Light green - cheap (0.8x)
+        "air_horizontal": (255, 150, 100, 220),  # Orange-red - expensive (2.0x)
+        "vertical_air_up": (255, 100, 50, 220),  # Dark orange - very expensive (3.0x)
+        "diagonal_up_air": (255, 50, 150, 220),  # Magenta - most expensive (10.0x)
+    }
+    return color_map.get(edge_type, (255, 255, 255, 220))  # Default white
+
+
+def get_edge_type_label(edge_type: str) -> str:
+    """
+    Get human-readable label for edge type.
+
+    Args:
+        edge_type: Edge type string from classify_edge_type
+
+    Returns:
+        Human-readable label string
+    """
+    label_map = {
+        "diagonal_jump_grounded": "Diagonal Jump (Ground)",
+        "grounded_horizontal": "Grounded Horiz.",
+        "diagonal_fall_air": "Diagonal Fall (Air)",
+        "falling": "Falling",
+        "jump_grounded": "Jump (Ground)",
+        "air_horizontal": "Air Horizontal",
+        "vertical_air_up": "Vertical Up (Air)",
+        "diagonal_up_air": "Diagonal Up (Air)",
+    }
+    return label_map.get(edge_type, "Unknown")
+
+
+def get_edge_type_cost_multiplier(edge_type: str) -> float:
+    """
+    Get actual edge cost for edge type (for display purposes).
+
+    Computes edge cost = base_cost * multiplier, matching the calculation
+    in _calculate_physics_aware_cost from pathfinding_algorithms.py.
+
+    Args:
+        edge_type: Edge type string from classify_edge_type
+
+    Returns:
+        Actual edge cost (float)
+    """
+    # Edge costs: base_cost (1.0 for cardinal, 1.414 for diagonal) * multiplier
+    cost_map = {
+        "grounded_horizontal": 1.0 * 0.5,  # 0.5 - horizontal movement on ground
+        "diagonal_fall_air": 1.414 * 0.6,  # 0.848 - diagonal falling from air
+        "falling": 1.0 * 0.8,  # 0.8 - vertical falling
+        "jump_grounded": 1.0
+        * 1.5,  # 1.5 - vertical jump from ground (also applies to diagonal)
+        "air_horizontal": 1.0 * 2.0,  # 2.0 - horizontal movement in air
+        "vertical_air_up": 1.0 * 3.0,  # 3.0 - vertical upward in air
+        "diagonal_up_air": 1.414
+        * 10.0,  # 14.14 - diagonal upward from air (very expensive)
+    }
+    return cost_map.get(edge_type, 1.0)
 
 
 def _get_subcell_lookup_loader():
@@ -152,6 +364,7 @@ def find_closest_node_to_position(
     ninja_radius: float = 10.0,
     spatial_hash: Optional[any] = None,
     subcell_lookup: Optional[any] = None,
+    prefer_grounded: bool = False,
 ) -> Optional[Tuple[int, int]]:
     """
     Find the closest node to a world position with optional spatial indexing.
@@ -174,6 +387,7 @@ def find_closest_node_to_position(
         ninja_radius: Collision radius of the ninja (default 10.0)
         spatial_hash: Optional SpatialHash instance for O(1) lookup
         subcell_lookup: Optional SubcellNodeLookupLoader instance for fastest lookup
+        prefer_grounded: If True, prioritize grounded nodes over air nodes
 
     Returns:
         Closest node position (in tile data space), or None if no node within threshold
@@ -204,13 +418,17 @@ def find_closest_node_to_position(
         try:
             # Use threshold as max_radius for entity radius handling (4-12px entities)
             closest_node = subcell_lookup.find_closest_node_position(
-                query_x, query_y, adjacency, max_radius=threshold
+                query_x,
+                query_y,
+                adjacency,
+                max_radius=threshold,
+                prefer_grounded=prefer_grounded,
             )
             if closest_node is not None:
                 return closest_node
         except Exception as e:
             # Other errors (e.g., lookup table not loaded)
-            _logger(
+            _logger.debug(
                 f"Subcell lookup failed: {e}. Falling back to spatial hash or linear search."
             )
 
@@ -252,6 +470,54 @@ def find_closest_node_to_position(
     return None
 
 
+def _is_node_grounded(
+    node_pos: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+) -> bool:
+    """
+    Check if a node is grounded (has solid/blocked surface directly below).
+
+    A node is grounded if there's a solid surface preventing downward movement.
+    In screen coordinates: y=0 is top, y increases going DOWN.
+
+    A node is grounded if the position 12px directly below (same x, y+12):
+    - Does NOT exist in the adjacency graph (solid tile below), OR
+    - Exists but there's NO direct vertical edge to it (blocked by geometry)
+
+    Args:
+        node_pos: Node position (x, y) in pixels
+        adjacency: Adjacency graph structure
+
+    Returns:
+        True if node is grounded (on a surface), False otherwise (mid-air)
+    """
+    x, y = node_pos
+    below_pos = (x, y + 12)  # 12px down (y increases downward)
+
+    # If node directly below doesn't exist in graph, this node is on solid surface
+    if below_pos not in adjacency:
+        return True
+
+    # Node below exists - check if we have a direct vertical edge to it
+    # If we CAN fall to it (edge exists), we're NOT grounded
+    # If we CAN'T fall to it (no edge), we ARE grounded
+    if node_pos in adjacency:
+        neighbors = adjacency[node_pos]
+        for neighbor_info in neighbors:
+            # Handle both tuple format (neighbor_pos, cost) and just neighbor_pos
+            if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
+                neighbor_pos = neighbor_info[0]
+            else:
+                neighbor_pos = neighbor_info
+
+            if neighbor_pos == below_pos:
+                # Found direct vertical edge downward - NOT grounded (can fall)
+                return False
+
+    # No direct downward edge found - node is grounded
+    return True
+
+
 def find_start_node_for_player(
     player_pos: Tuple[int, int],
     adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
@@ -259,15 +525,18 @@ def find_start_node_for_player(
     spatial_hash: Optional[any] = None,
     subcell_lookup: Optional[any] = None,
     goal_pos: Optional[Tuple[int, int]] = None,
+    prefer_grounded: bool = True,
 ) -> Optional[Tuple[int, int]]:
     """
-    Find best start node for player position, preferring overlapped nodes.
+    Find best start node for player position, preferring grounded nodes.
 
     Priority:
-    1. Nodes whose centers are within player radius (overlapped)
+    1. If prefer_grounded=True: Grounded nodes within player radius
+       - Among grounded, prefer closest to goal or topmost
+    2. If no grounded or prefer_grounded=False: Any overlapped nodes
        - If multiple overlapped and goal_pos provided: select closest to goal
        - Otherwise: select topmost (lowest y value)
-    2. If no overlapped nodes, closest node within threshold
+    3. If no overlapped nodes, closest node within threshold
 
     Args:
         player_pos: Player world position (x, y) in pixels
@@ -276,6 +545,7 @@ def find_start_node_for_player(
         spatial_hash: Optional SpatialHash for fast lookup
         subcell_lookup: Optional SubcellNodeLookupLoader for fastest lookup
         goal_pos: Optional goal position to prefer nodes in goal direction
+        prefer_grounded: If True, prioritize grounded nodes (default True)
 
     Returns:
         Best start node, or None if none found
@@ -290,8 +560,10 @@ def find_start_node_for_player(
     # Get candidates within larger search radius
     search_radius = player_radius * 2.0  # Search wider initially
 
-    overlapped_nodes = []
-    nearby_nodes = []
+    overlapped_grounded = []
+    overlapped_air = []
+    nearby_grounded = []
+    nearby_air = []
 
     # Get subcell_lookup if not provided
     if subcell_lookup is None:
@@ -337,40 +609,63 @@ def find_start_node_for_player(
     if not candidates:
         candidates = list(adjacency.keys())
 
-    # Categorize candidates
+    # Categorize candidates by overlap and grounding
     for node in candidates:
         nx, ny = node
         dist_sq = (nx - query_x) ** 2 + (ny - query_y) ** 2
         dist = dist_sq**0.5
 
+        is_grounded = _is_node_grounded(node, adjacency) if prefer_grounded else False
+
         if dist <= player_radius:
             # Node center is within player radius (overlapped)
-            overlapped_nodes.append((node, dist))
+            if prefer_grounded:
+                if is_grounded:
+                    overlapped_grounded.append((node, dist))
+                else:
+                    overlapped_air.append((node, dist))
+            else:
+                overlapped_air.append(
+                    (node, dist)
+                )  # Use air list as "all" when not preferring
         elif dist <= search_radius:
-            nearby_nodes.append((node, dist))
+            if prefer_grounded:
+                if is_grounded:
+                    nearby_grounded.append((node, dist))
+                else:
+                    nearby_air.append((node, dist))
+            else:
+                nearby_air.append(
+                    (node, dist)
+                )  # Use air list as "all" when not preferring
 
-    # Prefer overlapped nodes
-    if overlapped_nodes:
-        if len(overlapped_nodes) > 1:
+    # Selection priority: overlapped grounded > overlapped air > nearby grounded > nearby air
+    selection_candidates = None
+    if overlapped_grounded:
+        selection_candidates = overlapped_grounded
+    elif overlapped_air:
+        selection_candidates = overlapped_air
+    elif nearby_grounded:
+        selection_candidates = nearby_grounded
+    elif nearby_air:
+        selection_candidates = nearby_air
+
+    if selection_candidates:
+        if len(selection_candidates) > 1:
             if goal_pos is not None:
                 # Prefer node closest to goal (most relevant direction)
                 goal_x = goal_pos[0] - NODE_WORLD_COORD_OFFSET
                 goal_y = goal_pos[1] - NODE_WORLD_COORD_OFFSET
-                overlapped_nodes.sort(
+                selection_candidates.sort(
                     key=lambda x: (x[0][0] - goal_x) ** 2 + (x[0][1] - goal_y) ** 2
                 )
-                return overlapped_nodes[0][0]
+                return selection_candidates[0][0]
             else:
                 # Prefer topmost node (lowest y value) for consistency
-                overlapped_nodes.sort(key=lambda x: x[0][1])
-                return overlapped_nodes[0][0]
+                selection_candidates.sort(key=lambda x: x[0][1])
+                return selection_candidates[0][0]
         else:
-            return overlapped_nodes[0][0]
-
-    # Fallback to closest nearby node
-    if nearby_nodes:
-        nearby_nodes.sort(key=lambda x: x[1])
-        return nearby_nodes[0][0]
+            return selection_candidates[0][0]
 
     return None
 
@@ -477,35 +772,132 @@ def find_goal_node_closest_to_start(
     return best_node
 
 
+def find_ninja_node(
+    ninja_pos: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    spatial_hash: Optional[any] = None,
+    subcell_lookup: Optional[any] = None,
+    ninja_radius: float = 10.0,
+    goal_node: Optional[Tuple[int, int]] = None,
+) -> Optional[Tuple[int, int]]:
+    """
+    Find the node representing the ninja's current position.
+
+    This is the canonical function for finding the start node for the ninja,
+    used by both pathfinding and debug visualization to ensure consistency.
+
+    Strategy:
+    1. Find all nodes within ninja_radius (10px by default - player collision radius)
+    2. Among overlapping nodes:
+       - If goal_node provided and multiple candidates: return node closest to goal (Euclidean)
+       - Otherwise: return the closest one to ninja center
+    3. If no nodes overlap, fall back to visual matching (within 5px for blue highlight)
+
+    Args:
+        ninja_pos: Ninja world position (x, y) in pixels
+        adjacency: Graph adjacency structure
+        spatial_hash: Optional SpatialHash for fast lookup
+        subcell_lookup: Optional SubcellNodeLookupLoader for fastest lookup
+        ninja_radius: Ninja collision radius in pixels (default 10.0)
+        goal_node: Optional goal node for path-aware start node selection (uses Euclidean heuristic)
+
+    Returns:
+        Ninja node position, or None if no suitable node found
+    """
+    if not ninja_pos or not adjacency:
+        return None
+
+    # Convert ninja position to tile data space for comparison with nodes
+    ninja_x = ninja_pos[0] - NODE_WORLD_COORD_OFFSET
+    ninja_y = ninja_pos[1] - NODE_WORLD_COORD_OFFSET
+
+    # Find all nodes within ninja radius (overlapping nodes)
+    overlapping_nodes = []
+    for pos in adjacency.keys():
+        x, y = pos
+        dist_sq = (x - ninja_x) ** 2 + (y - ninja_y) ** 2
+        if dist_sq <= ninja_radius * ninja_radius:
+            overlapping_nodes.append((pos, dist_sq))
+
+    # If we found overlapping nodes, select the best one
+    if overlapping_nodes:
+        # # If goal provided and multiple candidates, pick node closest to goal
+        # # Use Euclidean distance as efficient heuristic (candidates are close together)
+        # if goal_node is not None and len(overlapping_nodes) > 1:
+        #     best_node = None
+        #     best_distance = float("inf")
+        #     gx, gy = goal_node
+        #     for node_pos, _ in overlapping_nodes:
+        #         nx, ny = node_pos
+        #         # Euclidean distance to goal
+        #         dist_to_goal = ((gx - nx) ** 2 + (gy - ny) ** 2) ** 0.5
+        #         if dist_to_goal < best_distance:
+        #             best_distance = dist_to_goal
+        #             best_node = node_pos
+        #     if best_node is not None:
+        #         return best_node
+
+        # Otherwise, return closest to ninja center
+        overlapping_nodes.sort(key=lambda node: node[1])  # Sort by distance
+        return overlapping_nodes[0][0]
+
+    # Fallback: visual matching within 5 pixels (for blue node coloring consistency)
+    # This handles edge cases where ninja is very close but not quite overlapping
+    for pos in adjacency.keys():
+        x, y = pos
+        if (
+            abs(x + NODE_WORLD_COORD_OFFSET - ninja_pos[0]) < 5
+            and abs(y + NODE_WORLD_COORD_OFFSET - ninja_pos[1]) < 5
+        ):
+            return pos
+
+    return None
+
+
 def bfs_distance_from_start(
     start_node: Tuple[int, int],
     target_node: Optional[Tuple[int, int]],
     adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
     max_distance: Optional[float] = None,
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
 ) -> Tuple[Dict[Tuple[int, int], float], Optional[float]]:
     """
-    Calculate distances from start node using BFS.
+    Calculate distances from start node using Dijkstra's algorithm with physics validation.
 
-    Matches the exact logic used in debug_overlay_renderer.py visualization.
-    Returns distances dict and optionally the distance to target_node if specified.
+    Applies same physics-aware costs and validation as find_shortest_path:
+    - Horizontal edges: Checks consecutive non-grounded rule
+    - Diagonal upward edges: Requires source to be grounded
+    - Edge costs: Physics-based (grounded horizontal fastest, upward expensive, etc.)
+
+    Uses Dijkstra's algorithm (priority queue) to find lowest-cost distances according to physics costs.
 
     Args:
         start_node: Starting node position
         target_node: Optional target node to find distance to (early termination)
-        adjacency: Graph adjacency structure
+        adjacency: Masked graph adjacency structure (for pathfinding)
+        base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
         max_distance: Optional maximum distance to compute (for early termination)
+        physics_cache: Optional pre-computed physics properties for O(1) lookups
 
     Returns:
         Tuple of (distances_dict, target_distance):
         - distances_dict: Map of node -> distance from start
         - target_distance: Distance to target_node if found, None otherwise
     """
+    # Priority queue: (distance, node)
+    pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
-    queue = deque([start_node])
+    parents = {start_node: None}  # Track parents for horizontal rule
+    visited = set()
 
-    while queue:
-        current = queue.popleft()
-        current_dist = distances[current]
+    while pq:
+        current_dist, current = heapq.heappop(pq)
+
+        # Skip if already visited
+        if current in visited:
+            continue
+        visited.add(current)
 
         # Early termination if we found target and it's requested
         if target_node is not None and current == target_node:
@@ -517,10 +909,35 @@ def bfs_distance_from_start(
 
         neighbors = adjacency.get(current, [])
         for neighbor_info in neighbors:
-            neighbor_pos, cost = neighbor_info
-            if neighbor_pos not in distances:
-                distances[neighbor_pos] = current_dist + cost
-                queue.append(neighbor_pos)
+            neighbor_pos, _ = (
+                neighbor_info  # Ignore stored cost, calculate physics-aware cost
+            )
+
+            if neighbor_pos in visited:
+                continue
+
+            # Check horizontal rule before accepting edge (uses physics cache)
+            if _violates_horizontal_rule_util(
+                current, neighbor_pos, parents, base_adjacency, physics_cache
+            ):
+                continue
+
+            # Calculate physics-aware edge cost with parent for momentum checking (uses base_adjacency)
+            cost = _calculate_physics_aware_cost(
+                current,
+                neighbor_pos,
+                base_adjacency,
+                parents.get(current),
+                physics_cache,
+            )
+
+            new_dist = current_dist + cost
+
+            # Only update if we found a better path
+            if new_dist < distances.get(neighbor_pos, float("inf")):
+                distances[neighbor_pos] = new_dist
+                parents[neighbor_pos] = current  # Track parent for horizontal rule
+                heapq.heappush(pq, (new_dist, neighbor_pos))
 
     # Return distances dict and target distance (None if target not found)
     target_distance = distances.get(target_node) if target_node else None
@@ -531,32 +948,48 @@ def find_shortest_path(
     start_node: Tuple[int, int],
     end_node: Tuple[int, int],
     adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
 ) -> Tuple[Optional[List[Tuple[int, int]]], float]:
     """
-    Find shortest path from start to end node using BFS.
+    Find shortest path from start to end node using Dijkstra's algorithm with physics validation.
 
     Returns both the path (list of nodes) and the distance.
-    Matches the logic used in debug_overlay_renderer.py visualization.
+    Applies physics-aware costs and validation rules during search:
+    - Horizontal edges: Checks consecutive non-grounded rule
+    - Diagonal upward edges: Requires source to be grounded
+    - Edge costs: Physics-based (grounded horizontal fastest, upward expensive, etc.)
+
+    Uses Dijkstra's algorithm (priority queue) to find the lowest-cost path according to physics costs.
 
     Args:
         start_node: Starting node position
         end_node: Target node position
-        adjacency: Graph adjacency structure
+        adjacency: Masked graph adjacency structure (for pathfinding)
+        base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
+        physics_cache: Optional pre-computed physics properties for O(1) lookups
 
     Returns:
         Tuple of (path, distance):
         - path: List of node positions from start to end, or None if unreachable
-        - distance: Total path distance, or float('inf') if unreachable
+        - distance: Total path distance (physics-aware), or float('inf') if unreachable
     """
     if start_node == end_node:
         return [start_node], 0.0
 
+    # Priority queue: (distance, node)
+    pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
     parents = {start_node: None}
-    queue = deque([start_node])
+    visited = set()
 
-    while queue:
-        current = queue.popleft()
+    while pq:
+        current_dist, current = heapq.heappop(pq)
+
+        # Skip if already visited
+        if current in visited:
+            continue
+        visited.add(current)
 
         if current == end_node:
             # Reconstruct path
@@ -568,14 +1001,37 @@ def find_shortest_path(
             path.reverse()
             return path, distances[end_node]
 
-        current_dist = distances[current]
         neighbors = adjacency.get(current, [])
         for neighbor_info in neighbors:
-            neighbor_pos, cost = neighbor_info
-            if neighbor_pos not in distances:
-                distances[neighbor_pos] = current_dist + cost
+            neighbor_pos, _ = (
+                neighbor_info  # Ignore stored cost, calculate physics-aware cost
+            )
+
+            if neighbor_pos in visited:
+                continue
+
+            # Check horizontal rule before accepting edge (uses physics cache)
+            if _violates_horizontal_rule_util(
+                current, neighbor_pos, parents, base_adjacency, physics_cache
+            ):
+                continue
+
+            # Calculate physics-aware edge cost with parent for momentum checking (uses base_adjacency)
+            cost = _calculate_physics_aware_cost(
+                current,
+                neighbor_pos,
+                base_adjacency,
+                parents.get(current),
+                physics_cache,
+            )
+
+            new_dist = current_dist + cost
+
+            # Only update if we found a better path
+            if new_dist < distances.get(neighbor_pos, float("inf")):
+                distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current
-                queue.append(neighbor_pos)
+                heapq.heappush(pq, (new_dist, neighbor_pos))
 
     return None, float("inf")
 
@@ -586,6 +1042,7 @@ def flood_fill_reachable_nodes(
     spatial_hash: Optional[any] = None,
     subcell_lookup: Optional[any] = None,
     player_radius: float = 10.0,
+    prefer_grounded_start: bool = True,
 ) -> set:
     """
     Perform flood fill from start position to find all reachable nodes.
@@ -604,6 +1061,7 @@ def flood_fill_reachable_nodes(
         spatial_hash: Optional SpatialHash instance for O(1) lookup
         subcell_lookup: Optional SubcellNodeLookupLoader instance
         player_radius: Player collision radius in pixels (default 10.0)
+        prefer_grounded_start: If True, prefer grounded start nodes (default True)
 
     Returns:
         Set of reachable node positions (in tile data space)
@@ -621,17 +1079,18 @@ def flood_fill_reachable_nodes(
         subcell_lookup = _get_subcell_lookup_loader()
 
     # Find closest node(s) within player radius using optimal lookups
-    # Try with player radius first
+    # Try with player radius first, preferring grounded nodes for better path quality
     closest_node = find_closest_node_to_position(
         start_pos,
         adjacency,
         threshold=player_radius,
         spatial_hash=spatial_hash,
         subcell_lookup=subcell_lookup,
+        prefer_grounded=prefer_grounded_start,
     )
 
     _logger.debug(
-        f"[FLOOD_FILL] First attempt (radius={player_radius}): "
+        f"[FLOOD_FILL] First attempt (radius={player_radius}, prefer_grounded={prefer_grounded_start}): "
         f"closest_node={closest_node}"
     )
 
@@ -643,9 +1102,11 @@ def flood_fill_reachable_nodes(
             threshold=50.0,
             spatial_hash=spatial_hash,
             subcell_lookup=subcell_lookup,
+            prefer_grounded=prefer_grounded_start,
         )
         _logger.debug(
-            f"[FLOOD_FILL] Fallback attempt (radius=50.0): closest_node={closest_node}"
+            f"[FLOOD_FILL] Fallback attempt (radius=50.0, prefer_grounded={prefer_grounded_start}): "
+            f"closest_node={closest_node}"
         )
 
     # Check if we found a valid starting node
@@ -795,6 +1256,8 @@ def get_cached_surface_area(
     # Check cache unless force recompute requested
     if not force_recompute and level_id in _surface_area_cache:
         cached_value = _surface_area_cache[level_id]
+        # Move to end to maintain LRU ordering
+        _surface_area_cache.move_to_end(level_id)
         _logger.debug(
             f"[SURFACE_AREA_CACHE] HIT - cache_key={level_id[:50]}..., "
             f"surface_area={cached_value:.1f}"
@@ -809,8 +1272,18 @@ def get_cached_surface_area(
     # Compute surface area
     surface_area = compute_reachable_surface_area(start_pos, adjacency, graph_data)
 
-    # Cache the result
+    # Cache the result with LRU eviction
     _surface_area_cache[level_id] = surface_area
+    _surface_area_cache.move_to_end(level_id)
+
+    # Evict oldest entry if cache exceeds max size
+    if len(_surface_area_cache) > _SURFACE_AREA_CACHE_MAX_SIZE:
+        evicted_key, _ = _surface_area_cache.popitem(last=False)
+        _logger.debug(
+            f"[SURFACE_AREA_CACHE] EVICTED - cache_key={evicted_key[:50]}..., "
+            f"cache_size={len(_surface_area_cache)}"
+        )
+
     _logger.debug(
         f"[SURFACE_AREA_CACHE] CACHED - cache_key={level_id[:50]}..., "
         f"surface_area={surface_area:.1f}, cache_size={len(_surface_area_cache)}"

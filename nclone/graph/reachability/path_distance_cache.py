@@ -66,6 +66,7 @@ class LevelBasedPathDistanceCache:
         self,
         goals: List[Tuple[Tuple[int, int], str]],
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         graph_data: Optional[Dict[str, Any]] = None,
     ):
         """
@@ -77,8 +78,8 @@ class LevelBasedPathDistanceCache:
 
         Args:
             goals: List of (goal_position, goal_id) tuples
-            adjacency: Graph adjacency structure (should be filtered to only reachable nodes)
-                       from GraphBuilder.build_graph()
+            adjacency: Masked graph adjacency structure (for pathfinding)
+            base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
             graph_data: Optional graph data dict with spatial_hash for fast lookup
         """
         # Clear existing cache and mappings
@@ -89,6 +90,11 @@ class LevelBasedPathDistanceCache:
         # Extract spatial hash and subcell lookup from graph_data if available
         spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
             graph_data
+        )
+
+        # PERFORMANCE OPTIMIZATION: Extract pre-computed physics cache from graph_data
+        physics_cache = (
+            graph_data.get("node_physics") if graph_data is not None else None
         )
 
         # For each goal, run BFS to compute distances to all reachable nodes
@@ -114,7 +120,9 @@ class LevelBasedPathDistanceCache:
 
             # Run BFS from goal node position using shared utility
             # This matches the visualization logic exactly
-            distances, _ = bfs_distance_from_start(goal_node, None, adjacency)
+            distances, _ = bfs_distance_from_start(
+                goal_node, None, adjacency, base_adjacency, None, physics_cache
+            )
 
             # Store all computed distances in cache
             for node_pos, distance in distances.items():
@@ -124,6 +132,7 @@ class LevelBasedPathDistanceCache:
         self,
         level_data: LevelData,
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         graph_data: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
@@ -134,7 +143,8 @@ class LevelBasedPathDistanceCache:
 
         Args:
             level_data: Current level data
-            adjacency: Graph adjacency structure (should be filtered to only reachable nodes)
+            adjacency: Masked graph adjacency structure (should be filtered to only reachable nodes)
+            base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
             graph_data: Optional graph data dict with spatial_hash for fast lookup
 
         Returns:
@@ -155,7 +165,9 @@ class LevelBasedPathDistanceCache:
             # Note: BFS traversal will only reach nodes in adjacency, so if adjacency
             # is filtered to reachable nodes, all cached distances will be for reachable areas
             goals = extract_goal_positions(level_data)
-            self._precompute_distances_from_goals(goals, adjacency, graph_data)
+            self._precompute_distances_from_goals(
+                goals, adjacency, base_adjacency, graph_data
+            )
 
             # Update cached state
             self._cached_level_data = level_data

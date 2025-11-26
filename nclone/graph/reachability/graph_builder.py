@@ -14,6 +14,7 @@ Improved implementation with sub-tile nodes:
 import time
 import numpy as np
 from typing import Dict, Set, Tuple, List, Any, Optional
+from collections import OrderedDict
 
 from .tile_connectivity_loader import TileConnectivityLoader
 from .entity_mask import EntityMask
@@ -70,9 +71,9 @@ def _check_subnode_validity_simple(tile_type: int, pixel_x: int, pixel_y: int) -
         return pixel_y > (24 - pixel_x)
     if tile_type == 7:  # Slope / - Triangle vertices: (0,0), (24,24), (0,24)
         # Fills left half. Line: y = x from top-left to bottom-right
-        # Solid is LEFT of diagonal (x <= y region)
-        # Traversable is RIGHT of diagonal (x > y region)
-        return pixel_x > pixel_y
+        # Solid is LEFT of diagonal (x >= y region)
+        # Traversable is RIGHT of diagonal (x < y region)
+        return pixel_x < pixel_y
     if tile_type == 8:  # Slope / inverted - Triangle vertices: (24,0), (0,24), (24,24)
         # Fills bottom-right triangle. Line: y = 24 - x
         # Solid is BELOW/RIGHT of diagonal (larger y values)
@@ -438,14 +439,18 @@ class GraphBuilder:
         self.connectivity_loader = TileConnectivityLoader()
         self.debug = debug
 
-        # Per-level caching
-        self._level_graph_cache = {}  # level_id -> base graph
+        # Per-level caching with LRU eviction to prevent unbounded growth
+        # Uses OrderedDict for O(1) LRU operations
+        self._level_graph_cache = OrderedDict()  # level_id -> base graph
+        self._flood_fill_cache = (
+            OrderedDict()
+        )  # level_id -> (last_ninja_pos, reachable_set)
+        self._max_cache_size = 100  # Reasonable limit for level graphs
         self._current_level_id = None
 
         # Flood fill caching (per level)
-        # Only recompute flood fill when player moves >= 12px from last cached position
-        self._flood_fill_cache = {}  # level_id -> (last_ninja_pos, reachable_set)
-        self._flood_fill_distance_threshold = SUB_NODE_SIZE  # 12px
+        # Only recompute flood fill when player moves >= 3px from last cached position
+        self._flood_fill_distance_threshold = 3  # 3px - update paths more frequently
 
         # Performance tracking
         self.build_times = []
@@ -462,6 +467,8 @@ class GraphBuilder:
             "blocked_by_geometry": 0,
             "blocked_by_connectivity": 0,
             "blocked_by_diagonal": 0,
+            "physics_filtered_horizontal": 0,  # Long horizontal edges filtered by physics
+            "physics_filtered_diagonal_upward": 0,  # Diagonal upward edges filtered by physics
         }
         self.cache_misses = 0
 
@@ -582,21 +589,36 @@ class GraphBuilder:
         if level_id in self._level_graph_cache:
             # Use cached base graph
             base_graph = self._level_graph_cache[level_id]
+            # Move to end to maintain LRU ordering
+            self._level_graph_cache.move_to_end(level_id)
             self.cache_hits += 1
         else:
             # Build new base graph (includes tile connectivity, entity positions)
             base_graph = self._build_base_graph(tiles, level_data_dict)
             self._level_graph_cache[level_id] = base_graph
+            self._level_graph_cache.move_to_end(level_id)
+
+            # Evict oldest entry if cache exceeds max size
+            if len(self._level_graph_cache) > self._max_cache_size:
+                self._level_graph_cache.popitem(last=False)
+
             self.cache_misses += 1
 
         # Apply dynamic entity state mask
         entity_mask = EntityMask(level_data_dict)
-        blocked_positions = entity_mask.get_blocked_positions()
+
+        # Get all node positions from base graph for radius-based blocking
+        all_nodes = set(base_graph["adjacency"].keys())
+
+        # Get blocked pixel positions (radius-based for mines, tile-based for doors)
+        blocked_pixel_positions = entity_mask.get_blocked_pixel_positions(all_nodes)
+
+        # Get blocked edges (currently none, but extensible)
         blocked_edges = entity_mask.get_blocked_edges()
 
         # Create final adjacency by filtering blocked positions/edges
         adjacency = self._apply_entity_mask(
-            base_graph["adjacency"], blocked_positions, blocked_edges
+            base_graph["adjacency"], blocked_pixel_positions, blocked_edges
         )
 
         # Filter adjacency to only include nodes reachable from initial player position
@@ -626,13 +648,22 @@ class GraphBuilder:
         spatial_hash = SpatialHash(cell_size=CELL_SIZE)
         spatial_hash.build(list(adjacency.keys()))
 
+        # PERFORMANCE OPTIMIZATION: Pre-compute node physics properties
+        # Caching grounded/walled status eliminates expensive per-edge checks during pathfinding
+        # This trades O(nodes) upfront cost for O(1) lookups during A* (called frequently)
+        node_physics_cache = self._compute_node_physics_cache(base_graph["adjacency"])
+
         result = {
-            "adjacency": adjacency,
-            "blocked_positions": blocked_positions,
+            "adjacency": adjacency,  # Masked adjacency (for pathfinding)
+            "base_adjacency": base_graph[
+                "adjacency"
+            ],  # Unmasked adjacency (for physics checks)
+            "blocked_positions": blocked_pixel_positions,
             "blocked_edges": blocked_edges,
             "base_graph_cached": level_id in self._level_graph_cache,
             "spatial_hash": spatial_hash,  # For fast node lookup
             "reachable_node_count": len(adjacency),  # For adaptive caching strategy
+            "node_physics": node_physics_cache,  # Pre-computed physics properties (grounded, walled)
         }
 
         # If ninja position provided, compute reachable set for that position
@@ -648,6 +679,56 @@ class GraphBuilder:
         self.build_times.append(elapsed_ms)
 
         return result
+
+    def _compute_node_physics_cache(
+        self,
+        base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    ) -> Dict[Tuple[int, int], Dict[str, bool]]:
+        """
+        Pre-compute physics properties for all nodes to optimize pathfinding.
+
+        Caches grounded and walled status for each node, eliminating expensive
+        per-edge checks during A* pathfinding. This is a one-time O(nodes) cost
+        that enables O(1) lookups during physics-aware cost calculations.
+
+        Args:
+            base_adjacency: Base graph adjacency (pre-entity-mask) for physics checks
+
+        Returns:
+            Dict mapping node positions to {"grounded": bool, "walled": bool}
+        """
+        SUB_NODE_SIZE = 12  # Sub-node spacing in pixels
+
+        physics_cache = {}
+
+        for node_pos in base_adjacency.keys():
+            x, y = node_pos
+
+            # Check if node is grounded (has solid surface below)
+            below_pos = (x, y + SUB_NODE_SIZE)
+            is_grounded = True
+
+            if below_pos in base_adjacency:
+                # If there's a neighbor below, node is airborne
+                neighbors = base_adjacency[node_pos]
+                for neighbor_pos, _ in neighbors:
+                    if neighbor_pos == below_pos:
+                        is_grounded = False
+                        break
+
+            # Check if node has a wall (left or right neighbor unreachable)
+            left_pos = (x - SUB_NODE_SIZE, y)
+            right_pos = (x + SUB_NODE_SIZE, y)
+            is_walled = (
+                left_pos not in base_adjacency or right_pos not in base_adjacency
+            )
+
+            physics_cache[node_pos] = {
+                "grounded": is_grounded,
+                "walled": is_walled,
+            }
+
+        return physics_cache
 
     def _build_base_graph(
         self, tiles: np.ndarray, level_data: Dict[str, Any]
@@ -800,35 +881,80 @@ class GraphBuilder:
 
         return sub_nodes
 
-    def _build_reachable_adjacency(
+    def _is_node_grounded(
+        self,
+        node_pos: Tuple[int, int],
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    ) -> bool:
+        """
+        Check if a node is grounded (has solid/blocked surface directly below).
+
+        A node is grounded if there's a solid surface preventing downward movement.
+        In screen coordinates: y=0 is top, y increases going DOWN.
+
+        A node is grounded if the position 12px directly below (same x, y+12):
+        - Does NOT exist in the adjacency graph (solid tile below), OR
+        - Exists but there's NO direct vertical edge to it (blocked by geometry)
+
+        This is O(N) where N is the number of neighbors (typically small).
+
+        Args:
+            node_pos: Node position (x, y) in pixels
+            adjacency: Current adjacency graph being built
+
+        Returns:
+            True if node is grounded (on a surface), False otherwise (mid-air)
+        """
+        x, y = node_pos
+        below_pos = (x, y + SUB_NODE_SIZE)  # 12px down (y increases downward)
+
+        # If node directly below doesn't exist in graph, this node is on solid surface
+        if below_pos not in adjacency:
+            return True
+
+        # Node below exists - check if we have a direct vertical edge to it
+        # If we CAN fall to it (edge exists), we're NOT grounded
+        # If we CAN'T fall to it (no edge), we ARE grounded
+        if node_pos in adjacency:
+            neighbors = adjacency[node_pos]
+            for neighbor_pos, _ in neighbors:
+                if neighbor_pos == below_pos:
+                    # Found direct vertical edge downward - NOT grounded (can fall)
+                    return False
+
+        # No direct downward edge found - node is grounded
+        return True
+
+    def _build_full_adjacency(
         self,
         tiles: np.ndarray,
         all_sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],
-        player_spawn: Tuple[int, int],
     ) -> Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]:
         """
-        Build adjacency graph for all valid sub-nodes.
+        Build full adjacency graph without physics filtering.
 
-        Note: This builds adjacency for ALL traversable nodes. Filtering to only
-        reachable nodes from initial player position is done in build_graph() after
-        applying entity masks and flood fill from player spawn.
+        This method builds the complete adjacency graph based on tile connectivity
+        and traversability, without applying physics-based movement constraints.
 
         Args:
             tiles: 2D numpy array of tile types
             all_sub_nodes: Dict mapping node positions to (tile_x, tile_y, sub_x, sub_y)
-            player_spawn: Player spawn position (used for naming, filtering done later)
 
         Returns:
-            Adjacency dictionary for all traversable sub-nodes
+            Full adjacency dictionary for all traversable sub-nodes
         """
         adjacency = {}
 
-        # Direction mappings for 4-connectivity (cardinal directions only, no diagonals)
+        # Direction mappings for 8-connectivity (cardinal and diagonal directions)
         directions = {
             "N": (0, -12),
             "E": (12, 0),
             "S": (0, 12),
             "W": (-12, 0),
+            "NE": (12, -12),
+            "SE": (12, 12),
+            "SW": (-12, 12),
+            "NW": (-12, -12),
         }
 
         # Build adjacency for all nodes
@@ -866,24 +992,94 @@ class GraphBuilder:
                     neighbor_x,
                     neighbor_y,
                 ):
-                    # All edges have equal weight for physics-agnostic pathfinding
+                    # Use uniform cost in graph building
+                    # Physics-aware costs are now applied during pathfinding
                     cost = 1.0
+
                     neighbors.append((neighbor_pos, cost))
 
             adjacency[current_pos] = neighbors
 
         return adjacency
 
+    def _apply_physics_filtering(
+        self,
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    ) -> Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]:
+        """
+        Apply physics-based filtering to remove invalid movement edges.
+
+        NOTE: Physics constraints (horizontal grounding, diagonal upward grounding)
+        have been moved to pathfinding for more flexible path planning.
+        This method currently returns the adjacency graph unchanged but is kept
+        for future physics constraints that should apply at the graph level.
+
+        Args:
+            adjacency: Full adjacency graph
+
+        Returns:
+            Adjacency graph (currently unchanged, physics applied during pathfinding)
+        """
+        # Physics filtering moved to pathfinding - return graph unchanged
+        # This allows more flexible path planning with physics constraints applied
+        # at search time rather than graph build time
+        return adjacency
+
+    def _build_reachable_adjacency(
+        self,
+        tiles: np.ndarray,
+        all_sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],
+        player_spawn: Tuple[int, int],
+    ) -> Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]:
+        """
+        Build adjacency graph with uniform edge costs.
+
+        Two-phase approach:
+        1. Build full adjacency based on tile connectivity (uniform cost)
+        2. Apply physics filtering (currently none, kept for extensibility)
+
+        Physics constraints (costs, grounding rules) are now applied during
+        pathfinding for more flexible path planning.
+
+        Note: Filtering to only reachable nodes from initial player position
+        is done in build_graph() after applying entity masks and flood fill.
+
+        Args:
+            tiles: 2D numpy array of tile types
+            all_sub_nodes: Dict mapping node positions to (tile_x, tile_y, sub_x, sub_y)
+            player_spawn: Player spawn position (used for naming, filtering done later)
+
+        Returns:
+            Adjacency dictionary with uniform edge costs
+        """
+        # Phase 1: Build full adjacency without physics filtering
+        adjacency_full = self._build_full_adjacency(tiles, all_sub_nodes)
+
+        # Phase 2: Apply physics filtering to remove invalid edges
+        adjacency_filtered = self._apply_physics_filtering(adjacency_full)
+
+        return adjacency_filtered
+
     def _find_closest_node(
         self,
         pos: Tuple[int, int],
         sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],
+        adjacency: Optional[
+            Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+        ] = None,
+        prefer_grounded: bool = False,
     ) -> Optional[Tuple[int, int]]:
         """
         Find closest sub-node to given position - O(1) with grid snapping.
 
         Uses the fact that sub-nodes are on a 12px grid at positions:
         tile*24 + {6, 18} for each dimension.
+
+        Args:
+            pos: Query position (x, y) in pixels
+            sub_nodes: Dict mapping node positions to tile info
+            adjacency: Optional adjacency graph for grounding checks
+            prefer_grounded: If True and adjacency provided, prefer grounded nodes
         """
         if not sub_nodes:
             return None
@@ -897,17 +1093,66 @@ class GraphBuilder:
 
         # Check if snapped position exists
         if (snap_x, snap_y) in sub_nodes:
-            return (snap_x, snap_y)
+            snapped_node = (snap_x, snap_y)
+            # If not preferring grounded or no adjacency, return immediately
+            if not prefer_grounded or adjacency is None:
+                return snapped_node
+            # If snapped node is grounded, return it
+            if self._is_node_grounded(snapped_node, adjacency):
+                return snapped_node
+            # Otherwise, continue searching for grounded alternative
 
-        # Check 8 neighboring sub-nodes (still O(1) since checking exactly 8 positions)
+        # Collect candidates from 8 neighboring sub-nodes
+        candidates = []
+        if (snap_x, snap_y) in sub_nodes:
+            candidates.append((snap_x, snap_y))
+
         for dx in [-12, 0, 12]:
             for dy in [-12, 0, 12]:
                 if dx == 0 and dy == 0:
                     continue  # Already checked above
                 candidate = (snap_x + dx, snap_y + dy)
                 if candidate in sub_nodes:
-                    # Return first found neighbor (all are equidistant on grid)
-                    return candidate
+                    candidates.append(candidate)
+
+        # If preferring grounded and we have adjacency, separate candidates
+        if prefer_grounded and adjacency is not None and candidates:
+            grounded_candidates = []
+            air_candidates = []
+
+            for candidate in candidates:
+                if self._is_node_grounded(candidate, adjacency):
+                    grounded_candidates.append(candidate)
+                else:
+                    air_candidates.append(candidate)
+
+            # Prefer grounded candidates, fall back to air if none grounded
+            search_list = grounded_candidates if grounded_candidates else air_candidates
+
+            # Among preferred candidates, find closest
+            min_dist = float("inf")
+            closest = None
+            for candidate in search_list:
+                nx, ny = candidate
+                dist_sq = (nx - px) ** 2 + (ny - py) ** 2
+                if dist_sq < min_dist:
+                    min_dist = dist_sq
+                    closest = candidate
+
+            if closest is not None:
+                return closest
+
+        # Standard path: return closest candidate without grounding preference
+        if candidates:
+            min_dist = float("inf")
+            closest = None
+            for candidate in candidates:
+                nx, ny = candidate
+                dist_sq = (nx - px) ** 2 + (ny - py) ** 2
+                if dist_sq < min_dist:
+                    min_dist = dist_sq
+                    closest = candidate
+            return closest
 
         # Rare fallback: Linear search if grid snapping fails
         # This only happens if pos is very far from any sub-node
@@ -927,6 +1172,10 @@ class GraphBuilder:
         pos: Tuple[int, int],
         sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],
         radius: float = PLAYER_RADIUS,
+        adjacency: Optional[
+            Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+        ] = None,
+        prefer_grounded: bool = False,
     ) -> List[Tuple[int, int]]:
         """
         Find all sub-nodes within radius of given position.
@@ -938,16 +1187,19 @@ class GraphBuilder:
             pos: Center position (player position)
             sub_nodes: Dictionary of all sub-nodes
             radius: Search radius in pixels (default: PLAYER_RADIUS = 10px)
+            adjacency: Optional adjacency graph for grounding checks
+            prefer_grounded: If True and adjacency provided, prioritize grounded nodes
 
         Returns:
-            List of node positions within radius, sorted by distance
+            List of node positions within radius, sorted by priority (grounded first) and distance
         """
         if not sub_nodes:
             return []
 
         px, py = pos
         radius_sq = radius * radius
-        nodes_within_radius = []
+        grounded_nodes = []
+        air_nodes = []
 
         # Fast grid-based search: only check sub-nodes in nearby tiles
         # Player radius is 10px, sub-nodes are 12px apart
@@ -963,11 +1215,30 @@ class GraphBuilder:
                     nx, ny = candidate
                     dist_sq = (nx - px) ** 2 + (ny - py) ** 2
                     if dist_sq <= radius_sq:
-                        nodes_within_radius.append((candidate, dist_sq))
+                        # Separate grounded vs air nodes if preferring grounded
+                        if prefer_grounded and adjacency is not None:
+                            if self._is_node_grounded(candidate, adjacency):
+                                grounded_nodes.append((candidate, dist_sq))
+                            else:
+                                air_nodes.append((candidate, dist_sq))
+                        else:
+                            grounded_nodes.append((candidate, dist_sq))
 
-        # Sort by distance (closest first)
-        nodes_within_radius.sort(key=lambda x: x[1])
-        return [node for node, _ in nodes_within_radius]
+        # Sort each category by distance
+        grounded_nodes.sort(key=lambda x: x[1])
+        air_nodes.sort(key=lambda x: x[1])
+
+        # Prioritize grounded nodes if preference enabled
+        if prefer_grounded and adjacency is not None:
+            # Return grounded first, then air
+            result = [node for node, _ in grounded_nodes] + [
+                node for node, _ in air_nodes
+            ]
+        else:
+            # Just return all nodes sorted by distance
+            result = [node for node, _ in grounded_nodes]
+
+        return result
 
     def _is_sub_node_traversable(
         self,
@@ -1252,40 +1523,33 @@ class GraphBuilder:
     def _apply_entity_mask(
         self,
         base_adjacency: Dict,
-        blocked_positions: Set[Tuple[int, int]],
+        blocked_pixel_positions: Set[Tuple[int, int]],
         blocked_edges: Set[Tuple[Tuple[int, int], Tuple[int, int]]],
     ) -> Dict:
         """
         Apply entity state mask to base adjacency graph.
 
-        Filters out blocked positions and edges based on current entity states.
-        For sub-node system: block all 4 sub-nodes in a blocked tile.
+        Args:
+            base_adjacency: Base adjacency graph
+            blocked_pixel_positions: Set of blocked pixel positions (sub-nodes)
+            blocked_edges: Set of blocked edges
+
+        Returns:
+            Filtered adjacency graph
         """
-        # Convert blocked tile positions to sub-node pixel positions
-        # Each blocked tile blocks all 4 sub-nodes within it
-        blocked_pixels = set()
-        sub_offsets = [(6, 6), (18, 6), (6, 18), (18, 18)]
-
-        for tile_x, tile_y in blocked_positions:
-            # Block all 4 sub-nodes in this tile
-            for offset_x, offset_y in sub_offsets:
-                pixel_x = tile_x * CELL_SIZE + offset_x
-                pixel_y = tile_y * CELL_SIZE + offset_y
-                blocked_pixels.add((pixel_x, pixel_y))
-
         # Build filtered adjacency
         filtered = {}
 
         for pos, neighbors in base_adjacency.items():
             # Skip if position itself is blocked
-            if pos in blocked_pixels:
+            if pos in blocked_pixel_positions:
                 continue
 
             # Filter neighbors
             valid_neighbors = []
             for neighbor_pos, cost in neighbors:
                 # Skip if neighbor is blocked
-                if neighbor_pos in blocked_pixels:
+                if neighbor_pos in blocked_pixel_positions:
                     continue
 
                 # Skip if edge is blocked
@@ -1372,6 +1636,8 @@ class GraphBuilder:
 
             # If player hasn't moved significantly, return cached result
             if distance_moved < self._flood_fill_distance_threshold:
+                # Move to end to maintain LRU ordering
+                self._flood_fill_cache.move_to_end(level_id)
                 return cached_reachable
 
         # Need to recompute flood fill (either no cache or player moved enough)
@@ -1383,8 +1649,13 @@ class GraphBuilder:
             player_radius=PLAYER_RADIUS,
         )
 
-        # Cache the result
+        # Cache the result with LRU eviction
         self._flood_fill_cache[level_id] = (ninja_pos, reachable)
+        self._flood_fill_cache.move_to_end(level_id)
+
+        # Evict oldest entry if cache exceeds max size
+        if len(self._flood_fill_cache) > self._max_cache_size:
+            self._flood_fill_cache.popitem(last=False)
 
         return reachable
 
