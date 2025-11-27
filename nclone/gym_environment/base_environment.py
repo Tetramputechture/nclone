@@ -373,11 +373,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Update dynamic truncation limit if PBRS surface area is now available
             self._update_dynamic_truncation_if_needed()
 
-            # Apply death penalty for truncation (treat truncation as failure)
+            # Apply timeout penalty for truncation (distinct from death)
+            # Timeout indicates inefficient navigation or getting stuck - should be strongly discouraged
             if truncated and not terminated:
-                from .reward_calculation.reward_constants import DEATH_PENALTY
+                from .reward_calculation.reward_constants import TIMEOUT_PENALTY
 
-                reward += DEATH_PENALTY
+                reward += TIMEOUT_PENALTY
 
             # Hook: Modify reward if needed
             reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)

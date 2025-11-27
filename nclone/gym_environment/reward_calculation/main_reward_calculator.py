@@ -14,12 +14,14 @@ PBRS provides:
 
 import logging
 from typing import Dict, Any, Optional
+from collections import deque
 from .reward_config import RewardConfig
 from .pbrs_potentials import PBRSCalculator
 from .reward_constants import (
     LEVEL_COMPLETION_REWARD,
     DEATH_PENALTY,
-    MINE_DEATH_PENALTY,
+    IMPACT_DEATH_PENALTY,
+    HAZARD_DEATH_PENALTY,
     SWITCH_ACTIVATION_REWARD,
     PBRS_GAMMA,
 )
@@ -82,14 +84,6 @@ class RewardCalculator:
         )
         self.pbrs_calculator = PBRSCalculator(path_calculator=path_calculator)
 
-        # Physics discovery rewards (NEW)
-        if self.config.enable_physics_discovery:
-            from .physics_discovery_rewards import PhysicsDiscoveryRewards
-
-            self.physics_discovery = PhysicsDiscoveryRewards()
-        else:
-            self.physics_discovery = None
-
         self.steps_taken = 0
 
         # Track closest distances for diagnostic metrics only
@@ -115,6 +109,12 @@ class RewardCalculator:
         # Step-level component tracking for TensorBoard callback
         # Always populated after calculate_reward() for info dict logging
         self.last_pbrs_components = {}
+
+        # Position revisit tracking for oscillation penalty (Phase 4 improvement)
+        self.position_visit_counts: Dict[tuple, int] = {}  # Grid cell visit counts
+        self.position_history_window = 100  # Track last 100 positions
+        self.position_history = deque(maxlen=100)  # Sliding window
+        self.revisit_penalty_weight = 0.001  # Penalty per revisit
 
     def calculate_reward(
         self,
@@ -162,12 +162,21 @@ class RewardCalculator:
 
         # === TERMINAL REWARDS (always active) ===
 
-        # Death penalties
+        # Death penalties - differentiated by cause for better learning signal
         if obs.get("player_dead", False):
             death_cause = obs.get("death_cause", None)
-            terminal_reward = (
-                MINE_DEATH_PENALTY if death_cause == "mine" else DEATH_PENALTY
-            )
+
+            # Determine appropriate penalty based on death cause
+            if death_cause == "impact":
+                # High-velocity collision with ceiling/floor
+                terminal_reward = IMPACT_DEATH_PENALTY
+            elif death_cause in ("mine", "drone", "thwump", "hazard"):
+                # Contact with deadly entities (highly preventable)
+                terminal_reward = HAZARD_DEATH_PENALTY
+            else:
+                # Generic/unknown death cause
+                terminal_reward = DEATH_PENALTY
+
             self.episode_terminal_reward = terminal_reward
 
             # Populate PBRS components for TensorBoard logging (terminal state)
@@ -175,6 +184,7 @@ class RewardCalculator:
                 "terminal_reward": terminal_reward,
                 "pbrs_reward": 0.0,
                 "time_penalty": 0.0,
+                "revisit_penalty": 0.0,
                 "total_reward": terminal_reward,
                 "is_terminal": True,
                 "terminal_type": "death",
@@ -311,6 +321,34 @@ class RewardCalculator:
 
         reward += pbrs_reward
 
+        # === POSITION REVISIT PENALTY (oscillation deterrent) ===
+        # Track position visits to discourage meandering and oscillation
+        # Snap to 12px grid for coarse detection (sub-node size)
+        grid_x = int(obs["player_x"] // 12) * 12
+        grid_y = int(obs["player_y"] // 12) * 12
+        grid_pos = (grid_x, grid_y)
+
+        # Update position history (sliding window)
+        self.position_history.append(grid_pos)
+        visit_count = self.position_visit_counts.get(grid_pos, 0)
+        self.position_visit_counts[grid_pos] = visit_count + 1
+
+        # Apply revisit penalty (scaled by square root of frequency to avoid harsh penalties)
+        revisit_penalty = 0.0
+        if visit_count > 0:
+            import math
+
+            revisit_penalty = -self.revisit_penalty_weight * math.sqrt(visit_count)
+            reward += revisit_penalty
+
+        # Clear old visits when history full (maintain sliding window)
+        if len(self.position_history) == self.position_history_window:
+            oldest_pos = self.position_history[0]
+            if oldest_pos in self.position_visit_counts:
+                self.position_visit_counts[oldest_pos] -= 1
+                if self.position_visit_counts[oldest_pos] == 0:
+                    del self.position_visit_counts[oldest_pos]
+
         # Track diagnostic metrics (Euclidean distance)
         from ..util.util import calculate_distance
 
@@ -326,17 +364,6 @@ class RewardCalculator:
             )
             if distance_to_exit < self.closest_distance_to_exit:
                 self.closest_distance_to_exit = distance_to_exit
-
-        # === PHYSICS DISCOVERY REWARDS (curriculum-controlled) ===
-        physics_reward = 0.0
-        if self.config.enable_physics_discovery and self.physics_discovery is not None:
-            physics_rewards = self.physics_discovery.calculate_physics_rewards(
-                obs, prev_obs, action
-            )
-            physics_reward = (
-                sum(physics_rewards.values()) * self.config.physics_discovery_weight
-            )
-            reward += physics_reward
 
         # Populate PBRS components for TensorBoard logging (non-terminal state)
         # This provides detailed breakdown of reward components for analysis
@@ -389,7 +416,7 @@ class RewardCalculator:
             "pbrs_reward": pbrs_reward,
             "time_penalty": time_penalty,  # Use scaled penalty (per action, not per frame)
             "milestone_reward": milestone_reward,
-            "physics_reward": physics_reward,
+            "revisit_penalty": revisit_penalty,  # New: position revisit penalty
             "total_reward": reward,
             "is_terminal": False,
             # Include potential information for debugging
@@ -417,6 +444,9 @@ class RewardCalculator:
             "normalized_distance": normalized_distance,
             # Frame skip information
             "frames_executed": frames_executed,
+            # Position revisit tracking
+            "unique_positions_visited": len(self.position_visit_counts),
+            "total_position_visits": len(self.position_history),
         }
 
         return reward
@@ -449,13 +479,13 @@ class RewardCalculator:
         # Reset step-level component tracking
         self.last_pbrs_components = {}
 
+        # Reset position revisit tracking
+        self.position_visit_counts.clear()
+        self.position_history.clear()
+
         # Reset PBRS calculator state
         if self.pbrs_calculator is not None:
             self.pbrs_calculator.reset()
-
-        # Reset physics discovery rewards
-        if self.physics_discovery is not None:
-            self.physics_discovery.reset()
 
     def update_config(self, timesteps: int, success_rate: float) -> None:
         """Update reward configuration based on training progress.

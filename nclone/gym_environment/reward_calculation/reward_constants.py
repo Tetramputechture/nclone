@@ -34,15 +34,33 @@ References:
 # to reach the goal. Terminal reward defines WHAT success means.
 LEVEL_COMPLETION_REWARD = 20.0
 
-# Death penalty
-# Rationale: Moderate negative reward (-2.0) discourages death without dominating learning.
-# 10% of completion reward balances learning signal strength.
-DEATH_PENALTY = -2.0
+# Death penalties - REBALANCED to match new PBRS magnitude
+# With PBRS weights of 6.0-20.0, PBRS can contribute ±6 to ±20 per episode.
+# Death penalties must be significant relative to this to deter risky behavior.
 
-# Mine death penalty
-# Rationale: Stronger penalty (-3.0) for preventable mine deaths.
-# 15% of completion reward emphasizes the importance of hazard avoidance.
-MINE_DEATH_PENALTY = -3.0
+# Impact death (ceiling/floor collision at high velocity)
+# Rationale: Physics-based failure, somewhat preventable with careful movement.
+# 20% of completion reward, provides moderate deterrent.
+IMPACT_DEATH_PENALTY = -4.0
+
+# Hazard death (mines, drones, thwumps, other deadly entities)
+# Rationale: Highly preventable through observation and planning.
+# 30% of completion reward, strong deterrent for reckless navigation.
+HAZARD_DEATH_PENALTY = -6.0
+
+# Generic death penalty (fallback for unspecified death causes)
+# Rationale: Conservative middle ground between impact and hazard.
+# 25% of completion reward.
+DEATH_PENALTY = -5.0
+
+# Timeout/truncation penalty (episode time limit exceeded)
+# Rationale: Indicates inefficient navigation or getting stuck.
+# 35% of completion reward - strongest penalty to discourage wasting time.
+# Timeout is entirely preventable with efficient pathing.
+TIMEOUT_PENALTY = -7.0
+
+# Legacy constant for backward compatibility (maps to hazard death)
+MINE_DEATH_PENALTY = HAZARD_DEATH_PENALTY
 
 # Switch activation reward
 # Rationale: Milestone reward (10% of completion) provides intermediate signal
@@ -80,21 +98,22 @@ PBRS_EXIT_DISTANCE_SCALE = 1.0
 
 # Path-based normalization factor
 # Controls how combined path distance (spawn→switch + switch→exit) is used for normalization
-# Lower values = stronger gradients, higher values = weaker gradients
+# **CRITICAL**: Lower values = stronger gradients (smaller area_scale), higher values = weaker gradients
 # Replaces surface-area-based normalization for better handling of open levels with focused paths
 #
-# IMPORTANT: Used with NON-LINEAR normalization: Φ(s) = 1 / (1 + distance/area_scale)
+# IMPORTANT: Used with HYBRID normalization: Φ(s) = 1 - d/area_scale (linear near goal)
 # where area_scale = combined_path_distance * PBRS_PATH_NORMALIZATION_FACTOR * scale_factor
 #
-# Non-linear normalization ensures gradients at ALL distances (no "dead zone" at far distances)
-# This fixes the issue where linear capping (min(1.0, distance/area_scale)) caused
-# potential=0 beyond certain distances, resulting in zero PBRS rewards for most steps.
+# Formula analysis for typical level (combined_path = 2000px, mid-phase scale_factor=0.5):
+# - Factor = 0.6: area_scale = 600px → 6px movement = 0.01 potential change → 0.12 PBRS (w=12)
+# - Factor = 1.0: area_scale = 1000px → 6px movement = 0.006 potential change → 0.072 PBRS (w=12)
+# - Factor = 2.5: area_scale = 2500px → 6px movement = 0.0024 potential change → 0.029 PBRS (w=12)
 #
-# Increased from 0.8 to 1.5 to provide stronger potentials and gradients:
-# - With scale_factor=0.3 (early training): area_scale = 0.45 * combined_path (was 0.24)
-# - Potentials will be in ~0.4-0.6 range instead of 0.2-0.4 range
-# - Stronger per-step PBRS rewards for better learning signal
-PBRS_PATH_NORMALIZATION_FACTOR = 1.5  # Tunable: 0.5-2.0 range
+# FIXED: Decreased from 2.5 to 0.6 for 4× stronger gradients per unit movement.
+# Previous increase to 2.5 was BACKWARDS - made gradients weaker, not stronger!
+PBRS_PATH_NORMALIZATION_FACTOR = (
+    0.6  # Was 2.5 (wrong direction!) - target 0.1-0.15 PBRS per 6px move
+)
 
 
 # =============================================================================

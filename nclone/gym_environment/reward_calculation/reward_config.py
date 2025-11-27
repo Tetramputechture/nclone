@@ -58,80 +58,59 @@ class RewardConfig:
         Applied to the potential function Φ(s) in F(s,s') = γ * Φ(s') - Φ(s).
         Higher weights provide stronger gradients for learning efficient paths.
 
-        NOTE: Weights increased to compensate for realistic small movements (6-8px typical)
-        with frame skip. With acceleration physics, ninja moves ~6-8px per action (4 frames),
-        not the theoretical max of ~13px. This requires stronger PBRS weights to maintain
-        sufficient learning signal relative to time penalty.
+        With DIRECT path normalization (Φ = 1 - d/total_path):
+        - Typical level: combined_path = 2000px
+        - Typical movement: 1-8px per action (slow at start, faster when skilled)
+        - Without weight: ΔΦ = 0.0005-0.004 per action (TOO WEAK!)
+        - With weight 40: ΔΦ = 0.02-0.16 per action (GOOD RANGE)
+
+        Target PBRS magnitude: 0.05-0.20 per action to dominate time penalty (-0.00032)
+        and provide clear learning signal relative to death penalties (-4 to -7).
 
         Returns:
-            5.0 (early): Strong guidance for initial learning with small movements
-            3.0 (mid): Moderate guidance as policy improves
-            1.5 (late): Light shaping for fine-tuning
+            60.0 (early): Very strong guidance for slow initial movement
+            40.0 (mid): Strong guidance as agent learns to move faster
+            20.0 (late): Moderate guidance for fine-tuning efficient paths
         """
         if self.training_phase == "early":
-            return 5.0  # Increased from 3.0 to account for realistic movement physics
+            return 60.0  # Strong signal even with 1-2px movement
         elif self.training_phase == "mid":
-            return 3.0  # Increased from 2.0 for stronger mid-phase gradients
-        return 1.5  # Increased from 1.0 for continued guidance
-
-    @property
-    def enable_physics_discovery(self) -> bool:
-        """Enable physics discovery rewards for exploration.
-
-        DISABLED: Physics discovery adds noise to the path distance objective.
-        With proper PBRS providing dense guidance, physics discovery is not needed.
-
-        Returns:
-            False: Physics discovery rewards are disabled for clean path focus
-        """
-        return False
-
-    @property
-    def physics_discovery_weight(self) -> float:
-        """Total weight for physics discovery rewards.
-
-        Reduced to prevent reward exploitation while still encouraging exploration.
-
-        Returns:
-            0.1: Conservative weight for physics discovery components
-        """
-        return 0.02
+            return 40.0  # Balanced signal for 4-6px movement
+        return 20.0  # Refined signal for 6-12px movement
 
     @property
     def time_penalty_per_step(self) -> float:
         """Per-step time penalty (enabled from start for baseline training).
 
-        UPDATED: Further reduced based on realistic movement analysis (6-8px per action).
-        With frame skip (4 frames), this becomes -0.0012 per action, allowing PBRS
-        signals (0.025-0.030) to dominate with a 20-25× ratio.
+        UPDATED: Reduced by 75% to prevent time penalty from overpowering PBRS signal.
+        Previous configuration had time penalty equal to or stronger than PBRS rewards,
+        causing agent to minimize steps rather than follow PBRS gradients.
+
+        With frame skip (4 frames), this becomes -0.00032 per action, allowing PBRS
+        signals (0.02-0.05) to dominate with a 62-156× ratio instead of <1× ratio.
 
         Time penalty provides efficiency incentive without overwhelming PBRS gradients.
 
         Returns:
-            -0.0003 (all phases): Light time pressure optimized for frame skip
+            -0.00008 (all phases): Very light time pressure, PBRS-dominated learning
         """
-        # BASELINE MODE: Immediate time pressure from start
-        # Reduced from -0.0005 to -0.0003 (40% reduction) for stronger PBRS/penalty ratio
-        # With 4-frame skip: -0.0003 × 4 = -0.0012 per action
-        return -0.0003  # Was -0.0005 (40% reduction)
+        # REBALANCED: Reduced by 75% (from -0.0003 to -0.00008)
+        # With 4-frame skip: -0.00008 × 4 = -0.00032 per action (was -0.0012)
+        # Target: PBRS reward magnitude >> time penalty for gradient-based learning
+        return -0.00008  # Was -0.0003 (75% reduction)
 
     @property
     def pbrs_normalization_scale(self) -> float:
-        """Scale factor for PBRS distance normalization.
+        """DEPRECATED: Scale factor no longer used with direct path normalization.
 
-        Reduces normalization early for stronger gradients on large levels,
-        gradually increases to full normalization as policy improves.
+        Kept for backward compatibility with code that passes this parameter,
+        but it's ignored in the new direct normalization approach.
+        Gradient strength is now controlled entirely by pbrs_objective_weight.
 
         Returns:
-            0.3 (early): 30% normalization = 3.3x gradient strength (was 0.5)
-            0.5 (mid): Half normalization = 2x gradient strength (was 0.75)
-            1.0 (late): Full normalization
+            1.0: Always 1.0 (no scaling effect)
         """
-        if self.training_phase == "early":
-            return 0.3  # 3.3x gradient strength (was 0.5)
-        elif self.training_phase == "mid":
-            return 0.5  # 2x gradient strength (was 0.75)
-        return 1.0  # Full normalization
+        return 1.0  # No longer used - gradient control via weights only
 
     def update(self, timesteps: int, success_rate: float) -> None:
         """Update configuration with current training metrics.
@@ -159,8 +138,6 @@ class RewardConfig:
             "pbrs_objective_weight": self.pbrs_objective_weight,
             "time_penalty_per_step": self.time_penalty_per_step,
             "pbrs_normalization_scale": self.pbrs_normalization_scale,
-            "enable_physics_discovery": self.enable_physics_discovery,
-            "physics_discovery_weight": self.physics_discovery_weight,
         }
 
     def __str__(self) -> str:

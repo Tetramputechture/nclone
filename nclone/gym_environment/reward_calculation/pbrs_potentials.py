@@ -28,7 +28,6 @@ All constants defined in reward_constants.py with full documentation.
 """
 
 import logging
-import numpy as np
 from typing import Dict, Any, List, Tuple, Optional
 from .reward_constants import (
     PBRS_SWITCH_DISTANCE_SCALE,
@@ -65,33 +64,30 @@ class PBRSPotentials:
         graph_data: Optional[Dict[str, Any]] = None,
         scale_factor: float = 1.0,
     ) -> float:
-        """Potential based on shortest path distance to objective (non-linear, curriculum-aware).
+        """Potential based on shortest path distance to objective (direct path normalization).
 
         STRICT REQUIREMENTS:
         - adjacency, level_data, and path_calculator are REQUIRED
         - No fallback to Euclidean distance
 
-        Uses non-linear normalization: Φ(s) = 1 / (1 + distance/area_scale)
-        This ensures gradients at ALL distances, preventing the "dead zone" problem
-        of linear normalization where potential=0 beyond a certain distance.
+        Uses DIRECT path normalization: Φ(s) = 1 - (distance / combined_path_distance)
+        This provides simple, predictable gradients controlled only by curriculum weights.
 
         Returns higher potential when closer to the current objective:
         - Switch when inactive
         - Exit when switch is active
 
         Args:
-            state: Game state dictionary (must contain _pbrs_surface_area)
+            state: Game state dictionary (must contain _pbrs_combined_path_distance)
             adjacency: Graph adjacency structure (REQUIRED)
             level_data: Level data object (REQUIRED)
             path_calculator: CachedPathDistanceCalculator instance (REQUIRED)
             graph_data: Graph data dict with spatial_hash for O(1) node lookup (optional)
-            scale_factor: Curriculum normalization adjustment (default 1.0)
-                         <1.0 = stronger gradients (early training)
-                         1.0 = full normalization (late training)
+            scale_factor: DEPRECATED - no longer used, kept for backward compatibility
 
         Returns:
-            float: Potential in range (0.0, 1.0], higher when closer to objective.
-                   Never returns exactly 0.0 unless goal is unreachable (distance=inf)
+            float: Potential in range [0.0, 1.0], linearly proportional to progress.
+                   0.0 at spawn, 1.0 at goal.
 
         Raises:
             RuntimeError: If required data is missing or invalid
@@ -110,7 +106,6 @@ class PBRSPotentials:
             EXIT_DOOR_RADIUS,
             NINJA_RADIUS,
         )
-        from ..constants import LEVEL_DIAGONAL
 
         if not state["switch_activated"]:
             goal_pos = (int(state["switch_x"]), int(state["switch_y"]))
@@ -147,7 +142,7 @@ class PBRSPotentials:
                 "Check player/goal positions are within level bounds."
             ) from e
 
-        # Get combined path distance for path-based normalization
+        # Get combined path distance for DIRECT path normalization (no scaling factors)
         combined_path_distance = state.get("_pbrs_combined_path_distance")
         if combined_path_distance is None:
             raise RuntimeError(
@@ -155,63 +150,59 @@ class PBRSPotentials:
                 "Should be set by PBRSCalculator.calculate_combined_potential()."
             )
 
-        # Import path normalization factor
-        from .reward_constants import PBRS_PATH_NORMALIZATION_FACTOR
-
         # Handle unreachable goals
-        if distance == float("inf"):
+        if distance == float("inf") or combined_path_distance == float("inf"):
             # Unreachable: return zero potential (no gradient)
-            state["_pbrs_area_scale"] = 0.0
             state["_pbrs_normalized_distance"] = float("inf")
             return 0.0
-        elif combined_path_distance == float("inf"):
-            # Fallback to surface area if path distance is infinite (unreachable)
-            logger.warning(
-                "Combined path distance is infinite, falling back to surface area normalization"
-            )
-            surface_area = state.get("_pbrs_surface_area")
-            if not surface_area:
-                raise RuntimeError(
-                    "Missing '_pbrs_surface_area' in state for fallback normalization"
-                )
-            area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE * scale_factor
-            max_scale = LEVEL_DIAGONAL * 0.3
-            area_scale = min(area_scale, max_scale)
-        else:
-            # Path-based normalization: use combined path distance
-            # area_scale = combined_path_distance * normalization_factor * curriculum_scale
-            area_scale = (
-                combined_path_distance * PBRS_PATH_NORMALIZATION_FACTOR * scale_factor
-            )
 
-        # Store area_scale in state for diagnostic logging
-        state["_pbrs_area_scale"] = area_scale
+        # CAPPED NORMALIZATION: Balance strong gradients for slow movement with long path support
+        #
+        # Problem: Pure combined_path normalization gives weak signals for:
+        #   1. Slow initial movement (0.66px at episode start)
+        #   2. Very long paths (>2500px)
+        #
+        # Solution: Cap normalization distance at 800px to guarantee minimum gradient strength
+        # - Short paths (400px): Uses actual path → natural gradient scaling
+        # - Medium paths (800-1500px): Uses 800px cap → stronger gradients
+        # - Long paths (>1500px): Uses 800px cap → prevents gradient vanishing
+        #
+        # This ensures even 0.66px movement gives meaningful PBRS signal:
+        #   - ΔΦ = 0.66/800 = 0.000825
+        #   - With weight 60: PBRS = 0.05 (good signal!)
+        #   - With weight 40: PBRS = 0.033 (adequate signal)
+        MAX_NORMALIZATION_DISTANCE = 800.0  # Tunable: 600-1000 range
+        effective_normalization = min(
+            combined_path_distance, MAX_NORMALIZATION_DISTANCE
+        )
 
-        # NON-LINEAR NORMALIZATION: Provides gradients at ALL distances
-        # Formula: Φ(s) = 1 / (1 + distance/area_scale)
+        # CAPPED PATH NORMALIZATION: Strong gradients for slow movement + long path support
+        # Φ(s) = 1 - (distance_to_goal / min(combined_path, 800px))
+        #
         # Properties:
-        # - Range: (0, 1] (never reaches zero, always provides gradient)
-        # - Monotonic: closer distance → higher potential
-        # - Natural decay: gradient strength decreases with distance
+        # - Linear gradient throughout: dΦ/dd = -1/effective_normalization
+        # - Gradient strength guaranteed even for slow movement and long paths
+        # - At spawn: potential depends on path length (0 to ~0.7 for very long paths)
+        # - At goal: potential = 1.0 (reached goal)
         # - PBRS-compatible: F(s,s') = γ * Φ(s') - Φ(s) maintains policy invariance
         #
-        # Example gradients (area_scale=300px):
-        #   distance=0:    potential=1.000 (at goal)
-        #   distance=100:  potential=0.750 (strong gradient)
-        #   distance=300:  potential=0.500 (moderate gradient)
-        #   distance=600:  potential=0.333 (weak but non-zero gradient)
-        #   distance=1200: potential=0.200 (very weak but still provides signal)
-        normalized_distance = distance / area_scale
-        potential = 1.0 / (1.0 + normalized_distance)
+        # Movement signal strength (with effective_norm = 800px):
+        #   Slow start (0.66px):  ΔΦ = 0.00082 → PBRS = 0.05 (weight=60) ✓ Good!
+        #   Medium speed (3px):   ΔΦ = 0.00375 → PBRS = 0.23 (weight=60) ✓ Strong!
+        #   Fast movement (8px):  ΔΦ = 0.01000 → PBRS = 0.60 (weight=60) ✓ Very strong!
+        #
+        # Curriculum scaling (via objective_weight in calculate_combined_potential):
+        #   - Early (weight=60): Strong signal even for 0.66px movement
+        #   - Mid (weight=40): Moderate signal, encourages faster movement
+        #   - Late (weight=20): Refined signal, assumes skilled fast movement
+
+        normalized_distance = distance / effective_normalization
+        potential = 1.0 - normalized_distance
 
         # Store normalized distance for diagnostic logging
         state["_pbrs_normalized_distance"] = normalized_distance
 
         return max(0.0, min(1.0, potential))
-
-    # REMOVED: hazard_proximity_potential() - Death penalty provides clearer signal
-    # REMOVED: impact_risk_potential() - Death penalty provides clearer signal
-    # REMOVED: exploration_potential() - PBRS provides via distance gradients
 
 
 class PBRSCalculator:
@@ -451,14 +442,7 @@ class PBRSCalculator:
 
         combined_distance = spawn_to_switch_dist + switch_to_exit_dist
 
-        logger.debug(
-            f"Combined path distance: {combined_distance:.1f}px "
-            f"(spawn→switch: {spawn_to_switch_dist:.1f}px, switch→exit: {switch_to_exit_dist:.1f}px)"
-        )
-
         return combined_distance
-
-    # REMOVED: _precompute_reachable_mines() - No longer needed (hazard potential removed)
 
     def calculate_combined_potential(
         self,
@@ -562,50 +546,15 @@ class PBRSCalculator:
             self._cached_combined_path_distance
         )
 
-        # OPTIMIZATION: Position-based caching to avoid expensive pathfinding
-        # Only recalculate if ninja moved 3+ pixels or goal changed
-        player_pos = (int(state["player_x"]), int(state["player_y"]))
-
-        # Determine current goal position
-        if not state["switch_activated"]:
-            goal_pos = (int(state["switch_x"]), int(state["switch_y"]))
-        else:
-            goal_pos = (int(state["exit_door_x"]), int(state["exit_door_y"]))
-
-        # Check if we can use cached potential
-        use_cached_potential = False
-        if (
-            self._last_player_pos is not None
-            and self._last_goal_pos is not None
-            and self._cached_objective_potential is not None
-        ):
-            # Check if goal changed
-            if self._last_goal_pos == goal_pos:
-                # Goal unchanged, check player movement (Manhattan distance)
-                distance_moved = abs(player_pos[0] - self._last_player_pos[0]) + abs(
-                    player_pos[1] - self._last_player_pos[1]
-                )
-                if distance_moved < 6:
-                    # PERFORMANCE OPTIMIZATION: Only recalculate if moved 6+ pixels
-                    # Reduces pathfinding calls by ~50% while maintaining accurate potentials
-                    use_cached_potential = True
-                    objective_pot = self._cached_objective_potential
-
-        # Calculate potential if cache miss
-        if not use_cached_potential:
-            objective_pot = PBRSPotentials.objective_distance_potential(
-                state_with_metrics,
-                adjacency=adjacency,
-                level_data=level_data,
-                path_calculator=self.path_calculator,
-                graph_data=graph_data,
-                scale_factor=scale_factor,  # Apply curriculum scaling
-            )
-
-            # Update cache
-            self._last_player_pos = player_pos
-            self._last_goal_pos = goal_pos
-            self._cached_objective_potential = objective_pot
+        # Always calculate fresh potential for accurate PBRS gradients
+        objective_pot = PBRSPotentials.objective_distance_potential(
+            state_with_metrics,
+            adjacency=adjacency,
+            level_data=level_data,
+            path_calculator=self.path_calculator,
+            graph_data=graph_data,
+            scale_factor=scale_factor,  # Apply curriculum scaling
+        )
 
         # Copy diagnostic values back to original state for logging
         # These are set by objective_distance_potential() in state_with_metrics
@@ -625,11 +574,6 @@ class PBRSCalculator:
             potential = PBRS_EXIT_DISTANCE_SCALE * objective_pot * objective_weight
 
         return max(0.0, potential)
-
-    # REMOVED: _update_visited_positions() - No longer needed (exploration potential removed)
-
-    # REMOVED: get_potential_components() - No longer needed with simplified PBRS
-    # For debugging, use calculate_combined_potential() directly which returns the only component (objective)
 
     def reset(self) -> None:
         """Reset calculator state for new episode.
