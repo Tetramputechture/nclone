@@ -568,6 +568,8 @@ class ReplayExecutor:
             "player_won": player_won,
             "player_dead": player_dead,
             "locked_doors": locked_doors,
+            # All actions are valid during replay (expert took valid actions)
+            "action_mask": np.ones(6, dtype=np.int8),
         }
 
         if self.enable_rendering:
