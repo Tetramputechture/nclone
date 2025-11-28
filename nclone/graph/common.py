@@ -47,10 +47,11 @@ SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 84 sub-cells wide (42*2
 SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 46 sub-cells tall (23*2)
 
 # Feature dimensions for observation space
-# GCN-optimized: Reduced from 17 to 6 to 4 (removed type one-hot, topological, reachability, and spatial)
-NODE_FEATURE_DIM = 4  # Mine(2) + Entity(2) - Spatial removed (redundant with graph structure)
+# GCN-optimized: Reduced from 17 to 6 to 4, then restored spatial for goal-directed navigation
+NODE_FEATURE_DIM = 6  # Spatial(2) + Mine(2) + Entity(2)
 # Note: Reachability removed - all nodes in graph are reachable (flood fill filtered)
-# Note: Spatial features removed - position implicit in graph structure, GNN learns from connectivity
+# Note: Spatial features restored - explicit coordinates help with precise distance estimation
+#       and goal-directed navigation, enabling faster convergence in early training
 EDGE_FEATURE_DIM = (
     0  # No edge features - all edges are simple adjacency between reachable nodes
 )

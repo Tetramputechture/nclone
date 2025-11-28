@@ -26,39 +26,41 @@ import numpy as np
 from typing import Dict, Tuple, Optional, Any
 
 from ..constants.entity_types import EntityType
-from ..constants.physics_constants import NINJA_RADIUS
+from ..constants.physics_constants import NINJA_RADIUS, LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 from .common import NodeType, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 
 class NodeFeatureBuilder:
     """
-    Builds GCN-optimized 4-dimensional node feature vectors.
+    Builds GCN-optimized 6-dimensional node feature vectors.
 
     Feature breakdown:
+    - Spatial (2): x_normalized (0-1), y_normalized (0-1)
     - Mine-specific (2): mine_state (-1/0/+1), mine_radius
     - Entity state (2): entity_active, door_closed
 
-    Total: 2 + 2 = 4 features (was 6, originally 17)
+    Total: 2 + 2 + 2 = 6 features
+
+    Spatial features restored for goal-directed navigation:
+    - Explicit coordinates help with precise distance estimation
+    - Enables faster convergence in early training
+    - Complements graph structure learning with direct positional information
 
     Removed for memory optimization:
-    - Spatial (2): x, y position - REDUNDANT with graph structure
-      GNNs learn spatial relationships from edge connectivity patterns,
-      not raw coordinates. Graph structure implicitly encodes positions.
     - Type one-hot (7): Redundant, GCN doesn't use type embeddings
     - Topological (3): Redundant with PBRS shortest paths in reward
     - Reachability (1): Redundant, all nodes in graph are reachable (flood fill filtered)
-
-    Memory savings: 77% reduction in node feature storage (17 → 4 dims)
-    Additional Phase 2 savings: 36 KB per observation (33% reduction from 6 → 4 dims)
     """
 
     def __init__(self):
         """Initialize the node feature builder."""
-        # Feature index boundaries (4 features total - Spatial removed for memory optimization)
-        self.MINE_START = 0  # Was 2, now starts at 0
-        self.MINE_END = 2  # 2 mine features: mine_state, mine_radius
-        self.ENTITY_STATE_START = 2  # Was 4, now at 2
-        self.ENTITY_STATE_END = 4  # 2 entity state features: active, door_closed
+        # Feature index boundaries (6 features total)
+        self.SPATIAL_START = 0
+        self.SPATIAL_END = 2  # 2 spatial features: x_normalized, y_normalized
+        self.MINE_START = 2
+        self.MINE_END = 4  # 2 mine features: mine_state, mine_radius
+        self.ENTITY_STATE_START = 4
+        self.ENTITY_STATE_END = 6  # 2 entity state features: active, door_closed
 
         assert self.ENTITY_STATE_END == NODE_FEATURE_DIM, "Feature dimensions mismatch!"
 
@@ -69,20 +71,23 @@ class NodeFeatureBuilder:
         entity_info: Optional[Dict[str, Any]] = None,
     ) -> np.ndarray:
         """
-        Build GCN-optimized 4-dimensional node features.
+        Build GCN-optimized 6-dimensional node features.
 
-        Spatial features removed - position is implicit in graph structure.
-        GNNs learn spatial relationships from edge connectivity patterns.
+        Spatial features restored for goal-directed navigation.
+        Explicit coordinates help with precise distance estimation.
 
         Args:
-            node_pos: (x, y) position of node in pixels (kept for API compatibility, not used in features)
+            node_pos: (x, y) position of node in pixels
             node_type: NodeType enum value (used for mine detection, not encoded)
             entity_info: Dict with entity-specific information (type, state, radius, closed for doors)
 
         Returns:
-            np.ndarray of shape (4,) with normalized features
+            np.ndarray of shape (6,) with normalized features
         """
         features = np.zeros(NODE_FEATURE_DIM, dtype=np.float32)
+
+        # ===== Spatial Features (2 dims) =====
+        self._add_spatial_features(features, node_pos)
 
         # ===== Mine-Specific Features (2 dims) =====
         # Always compute mine features (will be zeros for non-mines)
@@ -94,6 +99,25 @@ class NodeFeatureBuilder:
             self._add_entity_state_features(features, entity_info)
 
         return features
+
+    def _add_spatial_features(
+        self, features: np.ndarray, node_pos: Tuple[float, float]
+    ):
+        """
+        Add spatial position features (indices 0-1, 2 features).
+
+        Args:
+            features: Feature array to modify
+            node_pos: (x, y) position of node in pixels
+
+        Features:
+        - x_normalized (index 0): x / LEVEL_WIDTH_PX (0-1 range)
+        - y_normalized (index 1): y / LEVEL_HEIGHT_PX (0-1 range)
+        """
+        x, y = node_pos
+        # Normalize to 0-1 range using full level dimensions
+        features[self.SPATIAL_START] = np.clip(x / LEVEL_WIDTH_PX, 0.0, 1.0)
+        features[self.SPATIAL_START + 1] = np.clip(y / LEVEL_HEIGHT_PX, 0.0, 1.0)
 
     def _add_mine_features(
         self, features: np.ndarray, entity_info: Dict[str, Any], node_type: NodeType

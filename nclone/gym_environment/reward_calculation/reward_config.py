@@ -122,30 +122,18 @@ class RewardConfig:
 
     @property
     def exploration_bonus(self) -> float:
-        """Per-cell exploration bonus during discovery phase.
+        """Per-cell exploration bonus - DISABLED.
 
-        TUNED based on trajectory analysis:
-        - Earlier episodes (604 frames) were more direct than later (2552-2938 frames)
-        - Agent regressing to excessive wandering suggests exploration bonus too high
-        - Reduced from 0.05 to 0.03 to maintain exploration while encouraging efficiency
-
-        For 42×23 tile level (966 tiles), max exploration reward ≈ 29 per episode,
-        still sufficient to encourage broad search without overwhelming PBRS gradient.
-
-        Active only when success_rate < 0.30 (controlled in main_reward_calculator).
+        Exploration is now handled by RND (Random Network Distillation) at the
+        training level via RNDCallback. This provides better exploration signals:
+        - RND rewards novelty based on neural network prediction error
+        - Works across episodes (not just within-episode cell tracking)
+        - Scales with long-chain exploration (50-200 step chains)
 
         Returns:
-            0.03 (0-10% success): Moderate exploration encouragement
-            0.02 (10-20% success): Reduced as agent learns level layout
-            0.01 (20-30% success): Minimal, PBRS now dominates
+            0.0: Always disabled - RND handles exploration
         """
-        if self.recent_success_rate < 0.10:
-            return 0.03  # Moderate exploration during discovery
-        elif self.recent_success_rate < 0.20:
-            return 0.02  # Reduced as agent learns
-        elif self.recent_success_rate < 0.30:
-            return 0.01  # Minimal, PBRS dominates
-        return 0.0  # Disabled after 30% success
+        return 0.0  # RND handles exploration at training level
 
     @property
     def revisit_penalty_weight(self) -> float:

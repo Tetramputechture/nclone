@@ -66,10 +66,6 @@ class PBRSPotentials:
     ) -> float:
         """Potential based on shortest path distance to objective (direct path normalization).
 
-        STRICT REQUIREMENTS:
-        - adjacency, level_data, and path_calculator are REQUIRED
-        - No fallback to Euclidean distance
-
         Uses DIRECT path normalization: Φ(s) = 1 - (distance / combined_path_distance)
         This provides simple, predictable gradients controlled only by curriculum weights.
 
@@ -79,40 +75,18 @@ class PBRSPotentials:
 
         Args:
             state: Game state dictionary (must contain _pbrs_combined_path_distance)
-            adjacency: Graph adjacency structure (REQUIRED)
-            level_data: Level data object (REQUIRED)
-            path_calculator: CachedPathDistanceCalculator instance (REQUIRED)
-            graph_data: Graph data dict with spatial_hash for O(1) node lookup (optional)
+            adjacency: Graph adjacency structure (always present)
+            level_data: Level data object (always present)
+            path_calculator: CachedPathDistanceCalculator instance (always present)
+            graph_data: Graph data dict with spatial_hash for O(1) node lookup
             scale_factor: DEPRECATED - no longer used, kept for backward compatibility
 
         Returns:
             float: Potential in range [0.0, 1.0], linearly proportional to progress.
                    0.0 at spawn, 1.0 at goal.
-
-        Raises:
-            RuntimeError: If required data is missing or invalid
         """
-        # Validate required parameters
-        if not adjacency:
-            raise RuntimeError("PBRS requires adjacency graph")
-        if not level_data:
-            raise RuntimeError("PBRS requires level_data")
-        if not path_calculator:
-            raise RuntimeError("PBRS requires path_calculator")
-
-        # Validate that graph_data contains physics cache for accurate path calculations
-        if graph_data is None:
-            raise RuntimeError(
-                "PBRS requires graph_data for physics-aware pathfinding. "
-                "Ensure graph building is enabled with physics cache precomputation."
-            )
-
-        if not graph_data.get("node_physics"):
-            raise RuntimeError(
-                "PBRS requires physics cache (node_physics) in graph_data. "
-                "Physics cache is critical for accurate shortest path distance calculations. "
-                "Ensure graph building includes physics cache precomputation."
-            )
+        # Note: adjacency, level_data, path_calculator, and graph_data are assumed
+        # to always be present. Validation removed for performance.
 
         # Determine goal position
         from ...constants.physics_constants import (
@@ -268,49 +242,21 @@ class PBRSCalculator:
     ) -> float:
         """Compute total reachable surface area as number of sub-nodes with caching.
 
-        STRICT - NO FALLBACKS: Throws error if adjacency is empty or None.
-
         Uses flood-fill from player start position to count only nodes actually
         reachable from spawn, matching the behavior shown in debug overlay visualization.
-        This ensures surface area calculation respects actual navigable space,
-        not just all nodes in the adjacency graph.
-
-        Surface area scaling rationale:
-        - Small confined levels: fewer nodes → less normalization → stronger gradients
-        - Large open levels: more nodes → more normalization → consistent gradients
-        - Scale-invariant: gradient strength proportional to level complexity
 
         Args:
-            adjacency: Graph adjacency structure (may include unreachable nodes)
-            level_data: Level data object (must have start_position attribute)
-            graph_data: Optional graph data dict with spatial_hash for O(1) node lookup
+            adjacency: Graph adjacency structure (always present)
+            level_data: Level data object with start_position attribute
+            graph_data: Graph data dict with spatial_hash for O(1) node lookup
 
         Returns:
             Total number of reachable sub-nodes from start position (surface area metric)
-
-        Raises:
-            RuntimeError: If adjacency is None or empty, or start_position is missing
         """
         from ...graph.reachability.pathfinding_utils import get_cached_surface_area
 
-        if not adjacency:
-            raise RuntimeError(
-                "PBRS surface area calculation failed: adjacency graph is empty or None.\n"
-                "PBRS requires valid graph data to compute surface-area-based normalization.\n"
-                "This typically means:\n"
-                "  1. Graph building is not enabled in environment config\n"
-                "  2. Graph builder failed to create reachable nodes\n"
-                "  3. Level has no traversable space\n"
-            )
-
         # Get player start position from level_data
         start_position = getattr(level_data, "start_position", None)
-        if start_position is None:
-            raise RuntimeError(
-                "PBRS surface area calculation failed: level_data missing start_position.\n"
-                "Surface area calculation requires player start position to compute reachability.\n"
-                "Verify that level_data.start_position is set correctly."
-            )
 
         # Generate cache key using LevelData utility method for consistency
         # This ensures all components use the same cache key format
@@ -348,20 +294,16 @@ class PBRSCalculator:
         """Compute combined path distance from spawn→switch + switch→exit with caching.
 
         This provides path-based normalization that better handles open levels where
-        the player takes focused paths. Uses actual shortest path distances rather
-        than surface area for normalization.
+        the player takes focused paths.
 
         Args:
-            adjacency: Graph adjacency structure
-            level_data: Level data object (must have start_position and entities)
-            graph_data: Optional graph data dict with spatial_hash for O(1) node lookup
+            adjacency: Graph adjacency structure (always present)
+            level_data: Level data object with start_position and entities
+            graph_data: Graph data dict with spatial_hash for O(1) node lookup
 
         Returns:
             Combined path distance in pixels (spawn→switch + switch→exit)
             Returns float('inf') if either path is unreachable
-
-        Raises:
-            RuntimeError: If required data is missing or entities not found
         """
         from ...constants.entity_types import EntityType
         from ...constants.physics_constants import (
@@ -370,51 +312,17 @@ class PBRSCalculator:
             NINJA_RADIUS,
         )
 
-        if not adjacency:
-            raise RuntimeError(
-                "PBRS combined path distance calculation failed: adjacency graph is empty or None"
-            )
-
-        # Validate that graph_data contains physics cache for accurate path calculations
-        if graph_data is None:
-            raise RuntimeError(
-                "PBRS combined path distance calculation requires graph_data. "
-                "Ensure graph building is enabled with physics cache precomputation."
-            )
-
-        if not graph_data.get("node_physics"):
-            raise RuntimeError(
-                "PBRS combined path distance calculation requires physics cache (node_physics). "
-                "Physics cache is critical for accurate shortest path calculations. "
-                "Ensure graph building includes physics cache precomputation."
-            )
-
         # Get spawn position from level_data
         start_position = getattr(level_data, "start_position", None)
-        if start_position is None:
-            raise RuntimeError(
-                "PBRS combined path distance calculation failed: level_data missing start_position"
-            )
-
         spawn_pos = (int(start_position[0]), int(start_position[1]))
 
-        # Get switch position from first active exit switch
+        # Get switch position from first exit switch
         exit_switches = level_data.get_entities_by_type(EntityType.EXIT_SWITCH)
-        if not exit_switches:
-            raise RuntimeError(
-                "PBRS combined path distance calculation failed: no exit switch found in level"
-            )
-
-        # Use first active switch
         switch = exit_switches[0]
         switch_pos = (int(switch.get("x", 0)), int(switch.get("y", 0)))
 
         # Get exit door position from first exit door
         exit_doors = level_data.get_entities_by_type(EntityType.EXIT_DOOR)
-        if not exit_doors:
-            raise RuntimeError(
-                "PBRS combined path distance calculation failed: no exit door found in level"
-            )
 
         exit_door = exit_doors[0]
         exit_pos = (int(exit_door.get("x", 0)), int(exit_door.get("y", 0)))
@@ -481,45 +389,21 @@ class PBRSCalculator:
         objective_weight: float = 1.0,
         scale_factor: float = 1.0,
     ) -> float:
-        """Calculate ONLY objective distance potential (simplified, curriculum-aware).
-
-        Removed components:
-        - Hazard proximity potential (death penalty is clearer signal)
-        - Impact risk potential (death penalty is clearer signal)
-        - Exploration potential (PBRS provides via distance gradients)
+        """Calculate objective distance potential (simplified, curriculum-aware).
 
         Args:
             state: Game state dictionary
-            adjacency: Graph adjacency structure (REQUIRED)
-            level_data: Level data object (REQUIRED)
-            graph_data: Graph data dict with spatial_hash for O(1) node lookup (optional)
+            adjacency: Graph adjacency structure (always present)
+            level_data: Level data object (always present)
+            graph_data: Graph data dict with spatial_hash for O(1) node lookup
             objective_weight: Curriculum-scaled weight from RewardConfig (default 1.0)
             scale_factor: Normalization adjustment from RewardConfig (default 1.0)
 
         Returns:
             float: Objective distance potential (curriculum-scaled)
-
-        Raises:
-            RuntimeError: If required data is missing or invalid
         """
-        # Strict validation
-        if adjacency is None:
-            raise RuntimeError(
-                "PBRS requires adjacency graph. "
-                "Ensure graph building is enabled in environment config."
-            )
-
-        if level_data is None:
-            raise RuntimeError(
-                "PBRS requires level_data. "
-                "This indicates a configuration error in the environment."
-            )
-
-        if self.path_calculator is None:
-            raise RuntimeError(
-                "PBRS calculator missing path_calculator. "
-                "Check PBRSCalculator initialization in RewardCalculator."
-            )
+        # Note: adjacency, level_data, and path_calculator are assumed to always
+        # be present. Validation removed for performance.
 
         # Get level ID for caching
         level_id = getattr(level_data, "level_id", None)
