@@ -820,8 +820,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 info["episode_route"] = list(self.current_route)
                 info["route_length"] = route_length
 
-                # NOTE: Route is NOT cleared here - it will be cleared in reset()
-                # This ensures proper interaction with VecEnv autoreset behavior
+                # CRITICAL: Clear route immediately after copying to prevent accumulation
+                # This fixes a bug where routes would leak across episodes if reset()
+                # was not called reliably (e.g., in SubprocVecEnv worker scenarios)
+                self.current_route = []
             else:
                 logger.warning(
                     f"Episode ended with EMPTY route! "
