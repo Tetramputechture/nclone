@@ -102,9 +102,9 @@ Multi-modal observations for CNN, MLP, and GNN architectures.
     'entity_positions': Box(0, 1, (6,), float32),
     'switch_states': Box(0, 1, (25,), float32),
     
-    # Graph (GNNs, optional)
-    'graph_node_feats': Box(-inf, inf, (max_nodes, 50), float32),
-    'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), int32),
+    # Graph (GNNs, optional - memory-optimized)
+    'graph_node_feats': Box(-inf, inf, (max_nodes, 4), float32),  # Memory-optimized: 4 dims
+    'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), uint16),
     ...
 }
 ```

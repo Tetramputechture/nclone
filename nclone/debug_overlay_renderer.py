@@ -30,8 +30,12 @@ class DebugOverlayRenderer:
         from nclone.graph.reachability.path_visualization_cache import (
             PathVisualizationCache,
         )
+        from nclone.graph.reachability.mine_proximity_cache import (
+            MineProximityCostCache,
+        )
 
         self._path_visualization_cache = PathVisualizationCache()
+        self._mine_proximity_cache = MineProximityCostCache()
 
         self.frame_throttle_interval = 5
         self.last_mine_predictor_frame = -999
@@ -393,6 +397,7 @@ class DebugOverlayRenderer:
         base_adjacency = graph_data.get("base_adjacency", adjacency)
         ninja_pos = path_aware_info.get("ninja_position", (0, 0))
         entities = path_aware_info.get("entities", [])
+        level_data = path_aware_info.get("level_data", None)
 
         # Import shared utilities from pathfinding modules
         from nclone.graph.reachability.pathfinding_utils import (
@@ -556,44 +561,6 @@ class DebugOverlayRenderer:
                 # Draw node circle
                 pygame.draw.circle(surface, node_color, (screen_x, screen_y), 3)
 
-        # Draw path distances from ninja position
-        if show_distances and ninja_pos:
-            try:
-                font = pygame.font.Font(None, 16)
-            except pygame.error:
-                font = pygame.font.SysFont("arial", 14)
-
-            # Use the same logic as blue node highlighting to find starting node
-            closest_node = find_ninja_node(
-                ninja_pos,
-                adjacency,
-                spatial_hash=spatial_hash,
-                subcell_lookup=subcell_lookup,
-                ninja_radius=10.0,
-            )
-
-            # Only proceed if we found a valid ninja node and it's reachable
-            if closest_node and (reachable is None or closest_node in reachable):
-                # Use shared BFS utility to calculate distances
-                distances, _ = bfs_distance_from_start(
-                    closest_node, None, adjacency, base_adjacency, None, physics_cache
-                )
-
-                # Draw distances on screen (only for reachable nodes)
-                for pos, dist in distances.items():
-                    # Skip unreachable nodes
-                    if reachable is not None and pos not in reachable:
-                        continue
-                    if dist > 1000:  # Don't show very far nodes
-                        continue
-                    x, y = pos
-                    screen_x = int(x * self.adjust + self.tile_x_offset)
-                    screen_y = int(y * self.adjust + self.tile_y_offset)
-
-                    # Draw distance text
-                    text = font.render(f"{int(dist)}", True, TEXT_COLOR)
-                    surface.blit(text, (screen_x + 5, screen_y - 10))
-
         # Find and visualize switches and exits
         switch_positions = []
         exit_positions = []
@@ -648,6 +615,10 @@ class DebugOverlayRenderer:
                     start_position=(0, 0),
                 )
 
+            # Build mine proximity cache for hazard avoidance in pathfinding
+            if level_data and hasattr(self, "_mine_proximity_cache"):
+                self._mine_proximity_cache.build_cache(level_data, adjacency)
+
             # Try to get cached paths
             cached_data = None
             if level_data and hasattr(self, "_path_visualization_cache"):
@@ -701,6 +672,8 @@ class DebugOverlayRenderer:
                                     adjacency,
                                     base_adjacency,
                                     physics_cache,
+                                    level_data,
+                                    self._mine_proximity_cache,
                                 )
                                 if path:
                                     switch_path = path
@@ -731,6 +704,8 @@ class DebugOverlayRenderer:
                                     adjacency,
                                     base_adjacency,
                                     physics_cache,
+                                    level_data,
+                                    self._mine_proximity_cache,
                                 )
                                 if path:
                                     exit_path = path
@@ -865,13 +840,16 @@ class DebugOverlayRenderer:
 
                     if switch_node is not None:
                         # BFS from ninja to switch using shared utility
+                        # Use mine proximity cache for consistent path distances with training
                         distances, target_dist = bfs_distance_from_start(
                             closest_node,
                             switch_node,
                             adjacency,
                             base_adjacency,
-                            None,
+                            None,  # max_distance
                             physics_cache,
+                            level_data,
+                            self._mine_proximity_cache,
                         )
 
                         if target_dist is not None:
@@ -893,13 +871,16 @@ class DebugOverlayRenderer:
 
                     if exit_node is not None:
                         # BFS from ninja to exit using shared utility
+                        # Use mine proximity cache for consistent path distances with training
                         distances, target_dist = bfs_distance_from_start(
                             closest_node,
                             exit_node,
                             adjacency,
                             base_adjacency,
-                            None,
+                            None,  # max_distance
                             physics_cache,
+                            level_data,
+                            self._mine_proximity_cache,
                         )
 
                         if target_dist is not None:

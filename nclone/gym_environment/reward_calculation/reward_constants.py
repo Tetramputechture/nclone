@@ -117,6 +117,32 @@ PBRS_PATH_NORMALIZATION_FACTOR = (
 
 
 # =============================================================================
+# PATHFINDING HAZARD AVOIDANCE (for PBRS-based safe navigation)
+# =============================================================================
+# Applied during A* pathfinding to make paths near deadly hazards more expensive
+# This makes PBRS naturally guide agent along safer paths while preserving policy invariance
+
+# Mine hazard avoidance radius (pixels)
+# Rationale: Paths within this distance of deadly mines incur cost penalty
+# - Deadly toggle mines have radius ~4px (state 0)
+# - Ninja has radius 10px
+# - Safe buffer: 30-50px prevents risky close approaches
+MINE_HAZARD_RADIUS = 40.0  # pixels
+
+# Mine hazard cost multiplier
+# Rationale: How much more expensive are paths near mines?
+# - 1.0 = no penalty (disabled)
+# - 2.0 = twice as expensive (moderate avoidance)
+# - 5.0 = five times more expensive (strong avoidance)
+# - 10.0 = ten times more expensive (extreme avoidance)
+# Start with 3.0 for balanced risk/reward tradeoff
+MINE_HAZARD_COST_MULTIPLIER = 10.0
+
+# Only penalize deadly mines (state 0), not safe mines (state 1)
+MINE_PENALIZE_DEADLY_ONLY = True
+
+
+# =============================================================================
 # REMOVED COMPONENTS (No Longer Used)
 # =============================================================================
 # The following components have been removed in favor of true PBRS:

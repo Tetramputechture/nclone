@@ -903,9 +903,9 @@ class ReplayExecutor:
             "graph_node_feats": np.zeros(
                 (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
             ),
-            "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-            "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
-            "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
+            "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.uint16),
+            "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.uint8),
+            "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.uint8),
         }
 
         # Fill with actual graph data if available

@@ -15,6 +15,7 @@ from .pathfinding_utils import (
     find_ninja_node,
 )
 from .path_distance_cache import LevelBasedPathDistanceCache
+from .mine_proximity_cache import MineProximityCostCache
 from .performance_timer import PerformanceTimer
 
 # Hardcoded cell size as per N++ constants
@@ -54,6 +55,11 @@ class CachedPathDistanceCalculator:
             LevelBasedPathDistanceCache()
         )
         self.level_data: Optional[LevelData] = None
+
+        # Mine proximity cost cache for hazard avoidance
+        self.mine_proximity_cache: Optional[MineProximityCostCache] = (
+            MineProximityCostCache()
+        )
 
         # Track current level to avoid redundant cache rebuilds
         self._current_level_id: Optional[str] = None
@@ -95,11 +101,19 @@ class CachedPathDistanceCalculator:
         if self.level_cache is None:
             self.level_cache = LevelBasedPathDistanceCache()
 
+        # Build mine proximity cache FIRST (needed for level cache building)
+        mine_cache_rebuilt = False
+        if self.mine_proximity_cache is not None:
+            mine_cache_rebuilt = self.mine_proximity_cache.build_cache(
+                level_data, adjacency
+            )
+
+        # Then build level cache (uses mine proximity cache during BFS)
         rebuilt = self.level_cache.build_cache(
-            level_data, adjacency, base_adjacency, graph_data
+            level_data, adjacency, base_adjacency, graph_data, self.mine_proximity_cache
         )
 
-        if rebuilt:
+        if rebuilt or mine_cache_rebuilt:
             self.level_data = level_data
             # Update level ID tracking so get_distance() knows cache is ready
             # LevelData.__post_init__ always sets level_id, so we can trust it exists
@@ -115,7 +129,7 @@ class CachedPathDistanceCalculator:
             else:
                 self._adjacency_bounds = None
 
-        return rebuilt
+        return rebuilt or mine_cache_rebuilt
 
     def get_distance(
         self,
@@ -317,14 +331,30 @@ class CachedPathDistanceCalculator:
             return float("inf")
 
         # PERFORMANCE OPTIMIZATION: Extract pre-computed physics cache from graph_data
-        physics_cache = (
-            graph_data.get("node_physics") if graph_data is not None else None
-        )
+        # Ensure we raise clear error if graph_data or physics cache is missing
+        if graph_data is None:
+            raise ValueError(
+                "graph_data is required for physics cache extraction. "
+                "Ensure graph building includes physics cache precomputation."
+            )
+
+        physics_cache = graph_data.get("node_physics")
+        if physics_cache is None:
+            raise ValueError(
+                "Physics cache (node_physics) not found in graph_data. "
+                "Ensure graph building includes physics cache precomputation."
+            )
 
         self.misses += 1
         with self.timer.measure("pathfinding_compute"):
             distance = self.calculator.calculate_distance(
-                start_node, goal_node, adjacency, base_adjacency, physics_cache
+                start_node,
+                goal_node,
+                adjacency,
+                base_adjacency,
+                physics_cache,
+                level_data,
+                self.mine_proximity_cache,
             )
 
         # Cache raw node-to-node distance (before adjustment)
@@ -350,110 +380,6 @@ class CachedPathDistanceCalculator:
         )
         return max(0.0, total_dist)
 
-    def get_path_and_distance(
-        self,
-        start: Tuple[int, int],
-        goal: Tuple[int, int],
-        adjacency: Dict,
-        base_adjacency: Dict,
-        cache_key: Optional[str] = None,
-        level_data: Optional[LevelData] = None,
-        graph_data: Optional[Dict] = None,
-        entity_radius: float = 0.0,
-        ninja_radius: float = 10.0,
-    ) -> Tuple[Optional[List[Tuple[int, int]]], float]:
-        """
-        Get both path sequence and distance with caching and spatial indexing.
-
-        This extends get_distance() to also return the actual path waypoints,
-        which is useful for path-based action masking and visualization.
-
-        Args:
-            start: Start position (world/full map space)
-            goal: Goal position (world/full map space)
-            adjacency: Masked graph adjacency (filtered to only reachable nodes)
-            base_adjacency: Base graph adjacency (pre-entity-mask, for physics checks)
-            cache_key: Optional key for cache invalidation (e.g., entity type)
-            level_data: Optional level data for level-based caching
-            graph_data: Optional graph data dict with spatial_hash for fast lookup
-            entity_radius: Collision radius of the goal entity (default 0.0)
-            ninja_radius: Collision radius of the ninja (default 10.0)
-
-        Returns:
-            Tuple of (path, distance) where:
-            - path: List of (x,y) waypoints from start to goal, or None if unreachable
-            - distance: Shortest path distance in pixels, or float('inf') if unreachable
-        """
-        # Extract spatial hash and subcell lookup from graph_data if available
-        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
-            graph_data
-        )
-
-        # Store spatial_hash for later use if available
-        if spatial_hash is not None:
-            self._spatial_hash = spatial_hash
-
-        # Find nodes for start and goal using smart selection
-        from .pathfinding_utils import (
-            find_goal_node_closest_to_start,
-        )
-
-        # Find goal node first (needed for optimal start node selection)
-        # Use a temporary start node for goal selection
-        temp_start_node = find_ninja_node(
-            start,
-            adjacency,
-            spatial_hash=self._spatial_hash,
-            subcell_lookup=subcell_lookup,
-            ninja_radius=ninja_radius,
-        )
-
-        # Find goal node (prefer closest to start among goal candidates)
-        goal_node = find_goal_node_closest_to_start(
-            goal,
-            temp_start_node,
-            adjacency,
-            entity_radius=entity_radius,
-            ninja_radius=ninja_radius,
-            spatial_hash=self._spatial_hash,
-            subcell_lookup=subcell_lookup,
-        )
-
-        # Now find the optimal start node with goal_node known
-        start_node = find_ninja_node(
-            start,
-            adjacency,
-            spatial_hash=self._spatial_hash,
-            subcell_lookup=subcell_lookup,
-            ninja_radius=ninja_radius,
-            goal_node=goal_node,
-        )
-
-        # If we can't find nodes for start or goal, path is unreachable
-        if start_node is None or goal_node is None:
-            return None, float("inf")
-
-        with self.timer.measure("pathfinding_compute"):
-            path, distance = find_shortest_path(
-                start_node, goal_node, adjacency, base_adjacency
-            )
-
-        # Add Euclidean distances for dense reward signal (inlined for speed)
-        dx_start = start[0] - start_node[0]
-        dy_start = start[1] - start_node[1]
-        euclidean_start = (dx_start * dx_start + dy_start * dy_start) ** 0.5
-
-        dx_goal = goal[0] - goal_node[0]
-        dy_goal = goal[1] - goal_node[1]
-        euclidean_goal = (dx_goal * dx_goal + dy_goal * dy_goal) ** 0.5
-
-        # Total distance includes exact positions to node centers
-        total_distance = (
-            euclidean_start + distance + euclidean_goal - (ninja_radius + entity_radius)
-        )
-        adjusted_distance = max(0.0, total_distance)
-        return path, adjusted_distance
-
     def clear_cache(self):
         """Clear cache (call on level change)."""
         self.cache.clear()
@@ -464,6 +390,10 @@ class CachedPathDistanceCalculator:
         if self.level_cache is not None:
             self.level_cache.clear_cache()
         self.level_data = None
+
+        # Clear mine proximity cache
+        if self.mine_proximity_cache is not None:
+            self.mine_proximity_cache.clear_cache()
 
         # Clear level tracking, spatial hash, and adjacency bounds
         self._current_level_id = None
@@ -487,6 +417,11 @@ class CachedPathDistanceCalculator:
         if self.level_cache is not None:
             level_stats = self.level_cache.get_statistics()
             stats["level_cache"] = level_stats
+
+        # Add mine proximity cache statistics if available
+        if self.mine_proximity_cache is not None:
+            mine_stats = self.mine_proximity_cache.get_statistics()
+            stats["mine_proximity_cache"] = mine_stats
 
         # Add timing statistics if enabled
         if self.enable_timing:

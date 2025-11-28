@@ -217,19 +217,19 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             low=0,
             high=N_MAX_NODES - 1,
             shape=(2, E_MAX_EDGES),
-            dtype=np.int32,
+            dtype=np.uint16,
         )
         obs_spaces["graph_node_mask"] = box.Box(
             low=0,
             high=1,
             shape=(N_MAX_NODES,),
-            dtype=np.int32,
+            dtype=np.uint8,
         )
         obs_spaces["graph_edge_mask"] = box.Box(
             low=0,
             high=1,
             shape=(E_MAX_EDGES,),
-            dtype=np.int32,
+            dtype=np.uint8,
         )
 
         return SpacesDict(obs_spaces)

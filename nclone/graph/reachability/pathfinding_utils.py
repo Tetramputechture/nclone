@@ -861,6 +861,8 @@ def bfs_distance_from_start(
     base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
     max_distance: Optional[float] = None,
     physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    level_data: Optional[Any] = None,
+    mine_proximity_cache: Optional[Any] = None,
 ) -> Tuple[Dict[Tuple[int, int], float], Optional[float]]:
     """
     Calculate distances from start node using Dijkstra's algorithm with physics validation.
@@ -879,6 +881,8 @@ def bfs_distance_from_start(
         base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
         max_distance: Optional maximum distance to compute (for early termination)
         physics_cache: Optional pre-computed physics properties for O(1) lookups
+        level_data: Optional LevelData for mine proximity checks (fallback)
+        mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
 
     Returns:
         Tuple of (distances_dict, target_distance):
@@ -929,6 +933,8 @@ def bfs_distance_from_start(
                 base_adjacency,
                 parents.get(current),
                 physics_cache,
+                level_data,
+                mine_proximity_cache,
             )
 
             new_dist = current_dist + cost
@@ -950,6 +956,8 @@ def find_shortest_path(
     adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
     base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
     physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    level_data: Optional[Any] = None,
+    mine_proximity_cache: Optional[Any] = None,
 ) -> Tuple[Optional[List[Tuple[int, int]]], float]:
     """
     Find shortest path from start to end node using Dijkstra's algorithm with physics validation.
@@ -968,6 +976,8 @@ def find_shortest_path(
         adjacency: Masked graph adjacency structure (for pathfinding)
         base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
         physics_cache: Optional pre-computed physics properties for O(1) lookups
+        level_data: Optional LevelData for mine proximity checks (fallback)
+        mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
 
     Returns:
         Tuple of (path, distance):
@@ -976,6 +986,15 @@ def find_shortest_path(
     """
     if start_node == end_node:
         return [start_node], 0.0
+
+    if physics_cache is None:
+        raise ValueError("Physics cache is required for physics-aware cost calculation")
+    if level_data is None:
+        raise ValueError("Level data is required for mine proximity cost calculation")
+    if mine_proximity_cache is None:
+        raise ValueError(
+            "Mine proximity cache is required for mine proximity cost calculation"
+        )
 
     # Priority queue: (distance, node)
     pq = [(0.0, start_node)]
@@ -1023,6 +1042,8 @@ def find_shortest_path(
                 base_adjacency,
                 parents.get(current),
                 physics_cache,
+                level_data,
+                mine_proximity_cache,
             )
 
             new_dist = current_dist + cost
