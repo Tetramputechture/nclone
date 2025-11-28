@@ -26,42 +26,39 @@ import numpy as np
 from typing import Dict, Tuple, Optional, Any
 
 from ..constants.entity_types import EntityType
-from ..constants.physics_constants import (
-    FULL_MAP_WIDTH_PX,
-    FULL_MAP_HEIGHT_PX,
-    NINJA_RADIUS,
-)
+from ..constants.physics_constants import NINJA_RADIUS
 from .common import NodeType, NODE_FEATURE_DIM, EDGE_FEATURE_DIM
 
 
 class NodeFeatureBuilder:
     """
-    Builds GCN-optimized 6-dimensional node feature vectors.
+    Builds GCN-optimized 4-dimensional node feature vectors.
 
-    Feature breakdown (GCN doesn't use type embeddings or topological features):
-    - Spatial (2): position (x, y) normalized
+    Feature breakdown:
     - Mine-specific (2): mine_state (-1/0/+1), mine_radius
     - Entity state (2): entity_active, door_closed
 
-    Total: 2 + 2 + 2 = 6 features (was 17)
+    Total: 2 + 2 = 4 features (was 6, originally 17)
 
-    Removed for GCN optimization:
+    Removed for memory optimization:
+    - Spatial (2): x, y position - REDUNDANT with graph structure
+      GNNs learn spatial relationships from edge connectivity patterns,
+      not raw coordinates. Graph structure implicitly encodes positions.
     - Type one-hot (7): Redundant, GCN doesn't use type embeddings
     - Topological (3): Redundant with PBRS shortest paths in reward
     - Reachability (1): Redundant, all nodes in graph are reachable (flood fill filtered)
 
-    Memory savings: 65% reduction in node feature storage (17 → 6 dims)
+    Memory savings: 77% reduction in node feature storage (17 → 4 dims)
+    Additional Phase 2 savings: 36 KB per observation (33% reduction from 6 → 4 dims)
     """
 
     def __init__(self):
         """Initialize the node feature builder."""
-        # Feature index boundaries (6 features total - GCN optimized)
-        self.SPATIAL_START = 0
-        self.SPATIAL_END = 2
-        self.MINE_START = 2
-        self.MINE_END = 4  # 2 mine features: mine_state, mine_radius
-        self.ENTITY_STATE_START = 4
-        self.ENTITY_STATE_END = 6  # 2 entity state features: active, door_closed
+        # Feature index boundaries (4 features total - Spatial removed for memory optimization)
+        self.MINE_START = 0  # Was 2, now starts at 0
+        self.MINE_END = 2  # 2 mine features: mine_state, mine_radius
+        self.ENTITY_STATE_START = 2  # Was 4, now at 2
+        self.ENTITY_STATE_END = 4  # 2 entity state features: active, door_closed
 
         assert self.ENTITY_STATE_END == NODE_FEATURE_DIM, "Feature dimensions mismatch!"
 
@@ -72,21 +69,20 @@ class NodeFeatureBuilder:
         entity_info: Optional[Dict[str, Any]] = None,
     ) -> np.ndarray:
         """
-        Build GCN-optimized 6-dimensional node features.
+        Build GCN-optimized 4-dimensional node features.
+
+        Spatial features removed - position is implicit in graph structure.
+        GNNs learn spatial relationships from edge connectivity patterns.
 
         Args:
-            node_pos: (x, y) position of node in pixels
+            node_pos: (x, y) position of node in pixels (kept for API compatibility, not used in features)
             node_type: NodeType enum value (used for mine detection, not encoded)
             entity_info: Dict with entity-specific information (type, state, radius, closed for doors)
 
         Returns:
-            np.ndarray of shape (6,) with normalized features
+            np.ndarray of shape (4,) with normalized features
         """
         features = np.zeros(NODE_FEATURE_DIM, dtype=np.float32)
-
-        # ===== Spatial Features (2 dims) =====
-        features[0] = np.clip(node_pos[0] / FULL_MAP_WIDTH_PX, 0.0, 1.0)
-        features[1] = np.clip(node_pos[1] / FULL_MAP_HEIGHT_PX, 0.0, 1.0)
 
         # ===== Mine-Specific Features (2 dims) =====
         # Always compute mine features (will be zeros for non-mines)
@@ -103,7 +99,7 @@ class NodeFeatureBuilder:
         self, features: np.ndarray, entity_info: Dict[str, Any], node_type: NodeType
     ):
         """
-        Add mine-specific features (indices 2-3, 2 features).
+        Add mine-specific features (indices 0-1, 2 features).
 
         Args:
             features: Feature array to modify
@@ -114,8 +110,8 @@ class NodeFeatureBuilder:
             node_type: NodeType to check if this is a mine node
 
         Mine state encoding:
-        - mine_state (index 2): -1.0=deadly, 0.0=transitioning, +1.0=safe (0.0 for non-mines)
-        - mine_radius (index 3): normalized collision radius (0.0 for non-mines)
+        - mine_state (index 0): -1.0=deadly, 0.0=transitioning, +1.0=safe (0.0 for non-mines)
+        - mine_radius (index 1): normalized collision radius (0.0 for non-mines)
         """
         entity_type = entity_info.get("type", 0)
         is_mine = (
@@ -123,7 +119,7 @@ class NodeFeatureBuilder:
             or node_type == NodeType.TOGGLE_MINE
         )
 
-        # Index 9: mine_state (-1/0/+1 for deadly/transitioning/safe)
+        # Index 0: mine_state (-1/0/+1 for deadly/transitioning/safe)
         if is_mine:
             raw_state = entity_info.get("state", 0.0)
             # Toggle mine states: 0=toggled (deadly), 1=untoggled (safe), 2=transitioning
@@ -137,7 +133,7 @@ class NodeFeatureBuilder:
         else:
             features[self.MINE_START] = 0.0
 
-        # Index 10: mine_radius (normalized)
+        # Index 1: mine_radius (normalized)
         if is_mine:
             mine_radius = entity_info.get("radius", 0.0)
             max_radius = NINJA_RADIUS * 2  # Max expected mine radius
@@ -149,7 +145,7 @@ class NodeFeatureBuilder:
         self, features: np.ndarray, entity_info: Dict[str, Any]
     ):
         """
-        Add general entity state features (indices 4-5, 2 features).
+        Add general entity state features (indices 2-3, 2 features).
 
         Args:
             features: Feature array to modify
@@ -158,15 +154,15 @@ class NodeFeatureBuilder:
                 - closed: bool (for doors, True if closed)
 
         Features:
-        - entity_active (index 4): 1.0 if active, 0.0 otherwise
-        - door_closed (index 5): 1.0 if door is closed, 0.0 if open or not a door
+        - entity_active (index 2): 1.0 if active, 0.0 otherwise
+        - door_closed (index 3): 1.0 if door is closed, 0.0 if open or not a door
         """
-        # Index 11: entity_active (for switches and doors)
+        # Index 2: entity_active (for switches and doors)
         features[self.ENTITY_STATE_START] = (
             1.0 if entity_info.get("active", True) else 0.0
         )
 
-        # Index 12: door_closed (for locked doors only)
+        # Index 3: door_closed (for locked doors only)
         entity_type = entity_info.get("type", 0)
         if entity_type == EntityType.LOCKED_DOOR:
             features[self.ENTITY_STATE_START + 1] = (
@@ -219,15 +215,8 @@ def validate_node_features(features: np.ndarray) -> bool:
     if not np.all(np.isfinite(features)):
         return False
 
-    # Use feature builder constants for maintainability
-    builder = NodeFeatureBuilder()
-
-    # Check that one-hot encodings are valid (sum to 0 or 1)
-    # Type one-hot: indices 2-9 (7 node types)
-    type_onehot = features[..., builder.TYPE_START : builder.TYPE_END]
-
-    if not np.all((type_onehot.sum(axis=-1) == 0) | (type_onehot.sum(axis=-1) == 1)):
-        return False
+    # No additional validation needed - continuous features only
+    # (mine_state, mine_radius, entity_active, door_closed)
     return True
 
 

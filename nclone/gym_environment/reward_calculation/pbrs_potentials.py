@@ -100,6 +100,20 @@ class PBRSPotentials:
         if not path_calculator:
             raise RuntimeError("PBRS requires path_calculator")
 
+        # Validate that graph_data contains physics cache for accurate path calculations
+        if graph_data is None:
+            raise RuntimeError(
+                "PBRS requires graph_data for physics-aware pathfinding. "
+                "Ensure graph building is enabled with physics cache precomputation."
+            )
+
+        if not graph_data.get("node_physics"):
+            raise RuntimeError(
+                "PBRS requires physics cache (node_physics) in graph_data. "
+                "Physics cache is critical for accurate shortest path distance calculations. "
+                "Ensure graph building includes physics cache precomputation."
+            )
+
         # Determine goal position
         from ...constants.physics_constants import (
             EXIT_SWITCH_RADIUS,
@@ -361,6 +375,20 @@ class PBRSCalculator:
                 "PBRS combined path distance calculation failed: adjacency graph is empty or None"
             )
 
+        # Validate that graph_data contains physics cache for accurate path calculations
+        if graph_data is None:
+            raise RuntimeError(
+                "PBRS combined path distance calculation requires graph_data. "
+                "Ensure graph building is enabled with physics cache precomputation."
+            )
+
+        if not graph_data.get("node_physics"):
+            raise RuntimeError(
+                "PBRS combined path distance calculation requires physics cache (node_physics). "
+                "Physics cache is critical for accurate shortest path calculations. "
+                "Ensure graph building includes physics cache precomputation."
+            )
+
         # Get spawn position from level_data
         start_position = getattr(level_data, "start_position", None)
         if start_position is None:
@@ -558,7 +586,6 @@ class PBRSCalculator:
 
         # Copy diagnostic values back to original state for logging
         # These are set by objective_distance_potential() in state_with_metrics
-        state["_pbrs_area_scale"] = state_with_metrics.get("_pbrs_area_scale", 0.0)
         state["_pbrs_normalized_distance"] = state_with_metrics.get(
             "_pbrs_normalized_distance", 0.0
         )

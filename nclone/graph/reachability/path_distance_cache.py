@@ -68,6 +68,8 @@ class LevelBasedPathDistanceCache:
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         graph_data: Optional[Dict[str, Any]] = None,
+        level_data: Optional[Any] = None,
+        mine_proximity_cache: Optional[Any] = None,
     ):
         """
         Precompute distances from all reachable nodes to each goal using flood fill.
@@ -81,6 +83,8 @@ class LevelBasedPathDistanceCache:
             adjacency: Masked graph adjacency structure (for pathfinding)
             base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
             graph_data: Optional graph data dict with spatial_hash for fast lookup
+            level_data: Optional LevelData for mine proximity checks (fallback)
+            mine_proximity_cache: Optional MineProximityCostCache for mine cost lookup
         """
         # Clear existing cache and mappings
         self.cache.clear()
@@ -96,6 +100,14 @@ class LevelBasedPathDistanceCache:
         physics_cache = (
             graph_data.get("node_physics") if graph_data is not None else None
         )
+
+        # Validate physics cache is available (required for physics-aware pathfinding)
+        if physics_cache is None:
+            raise ValueError(
+                "Physics cache (node_physics) not found in graph_data. "
+                "Level cache building requires physics cache for accurate path distances. "
+                "Ensure graph building includes physics cache precomputation."
+            )
 
         # For each goal, run BFS to compute distances to all reachable nodes
         # Use exact same logic as visualization in debug_overlay_renderer.py
@@ -121,7 +133,14 @@ class LevelBasedPathDistanceCache:
             # Run BFS from goal node position using shared utility
             # This matches the visualization logic exactly
             distances, _ = bfs_distance_from_start(
-                goal_node, None, adjacency, base_adjacency, None, physics_cache
+                goal_node,
+                None,
+                adjacency,
+                base_adjacency,
+                None,
+                physics_cache,
+                level_data,
+                mine_proximity_cache,
             )
 
             # Store all computed distances in cache
@@ -134,6 +153,7 @@ class LevelBasedPathDistanceCache:
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         graph_data: Optional[Dict[str, Any]] = None,
+        mine_proximity_cache: Optional[Any] = None,
     ) -> bool:
         """
         Build or rebuild cache if needed.
@@ -146,6 +166,7 @@ class LevelBasedPathDistanceCache:
             adjacency: Masked graph adjacency structure (should be filtered to only reachable nodes)
             base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
             graph_data: Optional graph data dict with spatial_hash for fast lookup
+            mine_proximity_cache: Optional MineProximityCostCache for mine cost lookup
 
         Returns:
             True if cache was rebuilt, False if cache was valid
@@ -166,7 +187,12 @@ class LevelBasedPathDistanceCache:
             # is filtered to reachable nodes, all cached distances will be for reachable areas
             goals = extract_goal_positions(level_data)
             self._precompute_distances_from_goals(
-                goals, adjacency, base_adjacency, graph_data
+                goals,
+                adjacency,
+                base_adjacency,
+                graph_data,
+                level_data,
+                mine_proximity_cache,
             )
 
             # Update cached state

@@ -4,7 +4,7 @@ Core pathfinding algorithms for shortest path calculation.
 Provides BFS and A* implementations for finding shortest paths on traversability graphs.
 """
 
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Any
 from collections import deque
 import heapq
 
@@ -105,15 +105,93 @@ def _violates_horizontal_rule(
     return False
 
 
+def _calculate_mine_proximity_cost(
+    pos: Tuple[int, int],
+    level_data: Optional[Any],
+    mine_proximity_cache: Optional[Any] = None,
+) -> float:
+    """Calculate cost multiplier based on proximity to deadly mines.
+
+    Uses cached values when available for O(1) lookup. Falls back to
+    direct calculation only if cache is not provided (backward compatibility).
+
+    Args:
+        pos: Node position (x, y) in pixels
+        level_data: LevelData instance containing mine entities (optional)
+        mine_proximity_cache: MineProximityCostCache instance (optional)
+
+    Returns:
+        float: Cost multiplier in range [1.0, MINE_HAZARD_COST_MULTIPLIER]
+               1.0 if far from mines or no penalty applies
+               Higher values when close to deadly mines
+    """
+    from ...gym_environment.reward_calculation.reward_constants import (
+        MINE_HAZARD_COST_MULTIPLIER,
+        MINE_HAZARD_RADIUS,
+        MINE_PENALIZE_DEADLY_ONLY,
+    )
+    from ...constants.entity_types import EntityType
+
+    # Early exit if hazard avoidance is disabled
+    if MINE_HAZARD_COST_MULTIPLIER <= 1.0:
+        return 1.0
+
+    # Use cache if available (O(1) lookup)
+    if mine_proximity_cache is not None:
+        return mine_proximity_cache.get_cost_multiplier(pos)
+
+    # Fallback: Direct calculation if no cache provided (backward compatibility)
+    if level_data is None:
+        return 1.0
+
+    # Get all toggle mines from level_data
+    mines = level_data.get_entities_by_type(
+        EntityType.TOGGLE_MINE
+    ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+
+    if not mines:
+        return 1.0
+
+    # Find closest deadly mine
+    min_distance = float("inf")
+    for mine in mines:
+        # Check if mine is deadly (state 0 = toggled/deadly)
+        mine_state = mine.get("state", 0)
+        if MINE_PENALIZE_DEADLY_ONLY and mine_state != 0:
+            continue  # Skip safe mines (state 1) and toggling mines (state 2)
+
+        mine_x = mine.get("x", 0)
+        mine_y = mine.get("y", 0)
+
+        dx = pos[0] - mine_x
+        dy = pos[1] - mine_y
+        distance = (dx * dx + dy * dy) ** 0.5
+
+        min_distance = min(min_distance, distance)
+
+    # Apply cost based on proximity
+    if min_distance < MINE_HAZARD_RADIUS:
+        # Linear interpolation:
+        # - At mine center: full multiplier
+        # - At radius edge: 1.0 (no penalty)
+        proximity_factor = 1.0 - (min_distance / MINE_HAZARD_RADIUS)
+        multiplier = 1.0 + proximity_factor * (MINE_HAZARD_COST_MULTIPLIER - 1.0)
+        return multiplier
+
+    return 1.0
+
+
 def _calculate_physics_aware_cost(
     src_pos: Tuple[int, int],
     dst_pos: Tuple[int, int],
     base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
     parent_pos: Optional[Tuple[int, int]] = None,
     physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    level_data: Optional[Any] = None,
+    mine_proximity_cache: Optional[Any] = None,
 ) -> float:
     """
-    Calculate edge cost based on N++ movement physics.
+    Calculate edge cost based on N++ movement physics and mine hazard proximity.
 
     Movement costs reflect actual N++ physics (from sim_mechanics_doc.md):
     - Grounded horizontal: FAST (ground accel 0.0667, max speed 3.333)
@@ -122,6 +200,11 @@ def _calculate_physics_aware_cost(
     - Vertical down: CHEAP (gravity assists 0.0667)
     - Diagonal movement: Combines horizontal and vertical physics
     - Momentum preservation: Continuing in same X direction is cheaper than changing
+
+    Hazard avoidance (NEW):
+    - Paths near deadly mines incur additional cost multiplier
+    - Makes PBRS naturally guide agent along safer paths
+    - Preserves policy invariance (optimal policy still reaches goal)
 
     Cost multipliers are tuned so A* naturally prefers physically efficient paths
     (e.g., running on ground > air movement, falling > jumping).
@@ -132,6 +215,8 @@ def _calculate_physics_aware_cost(
         base_adjacency: Base graph adjacency for grounding/wall checks (pre-entity-mask)
         parent_pos: Optional parent position for momentum/direction checking
         physics_cache: Optional pre-computed physics properties for O(1) lookups
+        level_data: Optional LevelData for mine proximity checks (fallback)
+        mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
 
     Returns:
         Edge cost (float) where 1.0 = baseline movement cost
@@ -239,7 +324,14 @@ def _calculate_physics_aware_cost(
             # Higher cost to prefer diagonal falling over horizontal air movement
             multiplier = 5.0
 
-    return base_cost * multiplier
+    # Apply mine hazard proximity cost multiplier
+    # This makes paths near deadly mines more expensive, guiding PBRS toward safer routes
+    # Uses cache for O(1) lookup when available
+    mine_multiplier = _calculate_mine_proximity_cost(
+        dst_pos, level_data, mine_proximity_cache
+    )
+
+    return base_cost * multiplier * mine_multiplier
 
 
 class PathDistanceCalculator:
@@ -268,6 +360,8 @@ class PathDistanceCalculator:
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        level_data: Optional[Any] = None,
+        mine_proximity_cache: Optional[Any] = None,
     ) -> float:
         """
         Calculate shortest navigable path distance.
@@ -278,6 +372,8 @@ class PathDistanceCalculator:
             adjacency: Masked graph adjacency structure (for pathfinding)
             base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
             physics_cache: Optional pre-computed physics properties for O(1) lookups
+            level_data: Optional LevelData for mine proximity checks (fallback)
+            mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
 
         Returns:
             Shortest path distance in pixels, or float('inf') if unreachable
@@ -288,14 +384,39 @@ class PathDistanceCalculator:
         if start == goal:
             return 0.0
 
+        if physics_cache is None:
+            raise ValueError(
+                "Physics cache is required for physics-aware cost calculation"
+            )
+        if level_data is None:
+            raise ValueError(
+                "Level data is required for mine proximity cost calculation"
+            )
+        if mine_proximity_cache is None:
+            raise ValueError(
+                "Mine proximity cache is required for mine proximity cost calculation"
+            )
+
         # Choose algorithm
         if self.use_astar:
             return self._astar_distance(
-                start, goal, adjacency, base_adjacency, physics_cache
+                start,
+                goal,
+                adjacency,
+                base_adjacency,
+                physics_cache,
+                level_data,
+                mine_proximity_cache,
             )
         else:
             return self._bfs_distance(
-                start, goal, adjacency, base_adjacency, physics_cache
+                start,
+                goal,
+                adjacency,
+                base_adjacency,
+                physics_cache,
+                level_data,
+                mine_proximity_cache,
             )
 
     def _bfs_distance(
@@ -305,6 +426,8 @@ class PathDistanceCalculator:
         adjacency: Dict,
         base_adjacency: Dict,
         physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        level_data: Optional[Any] = None,
+        mine_proximity_cache: Optional[Any] = None,
     ) -> float:
         """BFS pathfinding - guaranteed shortest path with physics validation."""
         queue = deque([(start, 0.0)])
@@ -333,6 +456,8 @@ class PathDistanceCalculator:
                         base_adjacency,
                         parents.get(current),
                         physics_cache,
+                        level_data,
+                        mine_proximity_cache,
                     )
 
                     visited.add(neighbor)
@@ -348,6 +473,8 @@ class PathDistanceCalculator:
         adjacency: Dict,
         base_adjacency: Dict,
         physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        level_data: Optional[Any] = None,
+        mine_proximity_cache: Optional[Any] = None,
     ) -> float:
         """A* pathfinding - faster than BFS with heuristic and physics validation."""
 
@@ -389,6 +516,8 @@ class PathDistanceCalculator:
                     base_adjacency,
                     parents.get(current),
                     physics_cache,
+                    level_data,
+                    mine_proximity_cache,
                 )
 
                 tentative_g = current_g + edge_cost

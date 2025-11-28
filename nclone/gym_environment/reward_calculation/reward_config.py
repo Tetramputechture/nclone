@@ -53,51 +53,130 @@ class RewardConfig:
 
     @property
     def pbrs_objective_weight(self) -> float:
-        """Curriculum-scaled PBRS objective potential weight.
+        """Emergency curriculum for 0% success rate - PBRS must dominate death penalties.
 
-        Applied to the potential function Φ(s) in F(s,s') = γ * Φ(s') - Φ(s).
-        Higher weights provide stronger gradients for learning efficient paths.
+        For 800px path with agent at 0% success:
+        - Emergency (200×): Total PBRS ~125, death penalty -6, ratio 20:1
+        - Agent can die 20 times and still break even on reaching goal
+        - Enables learning through trial-and-error mine avoidance
 
-        With DIRECT path normalization (Φ = 1 - d/total_path):
-        - Typical level: combined_path = 2000px
-        - Typical movement: 1-8px per action (slow at start, faster when skilled)
-        - Without weight: ΔΦ = 0.0005-0.004 per action (TOO WEAK!)
-        - With weight 40: ΔΦ = 0.02-0.16 per action (GOOD RANGE)
-
-        Target PBRS magnitude: 0.05-0.20 per action to dominate time penalty (-0.00032)
-        and provide clear learning signal relative to death penalties (-4 to -7).
+        Gradually reduce as agent learns successful navigation.
 
         Returns:
-            60.0 (early): Very strong guidance for slow initial movement
-            40.0 (mid): Strong guidance as agent learns to move faster
-            20.0 (late): Moderate guidance for fine-tuning efficient paths
+            200.0 (0-5% success): EMERGENCY - PBRS >> death penalties for discovery
+            100.0 (5-20% success): Strong guidance for early learning
+            60.0 (20-40% success): Moderate guidance for mid learning
+            40.0 (early phase): Normal early training
+            30.0 (mid phase): Normal mid training
+            20.0 (late phase): Normal late training
         """
-        if self.training_phase == "early":
-            return 60.0  # Strong signal even with 1-2px movement
+        if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
+            return 200.0  # EMERGENCY: 5× normal, PBRS >> death penalties
+        elif self.recent_success_rate < 0.20:  # Early learning (5-20% success)
+            return 100.0  # Strong guidance, 2.5× normal
+        elif self.recent_success_rate < 0.40:  # Mid learning (20-40% success)
+            return 60.0  # Moderate guidance
+        elif self.training_phase == "early":
+            return 40.0  # Normal early training
         elif self.training_phase == "mid":
-            return 40.0  # Balanced signal for 4-6px movement
-        return 20.0  # Refined signal for 6-12px movement
+            return 30.0  # Normal mid training
+        return 20.0  # Normal late training
 
     @property
     def time_penalty_per_step(self) -> float:
-        """Per-step time penalty (enabled from start for baseline training).
+        """Curriculum-based time penalty - scales with success rate.
 
-        UPDATED: Reduced by 75% to prevent time penalty from overpowering PBRS signal.
-        Previous configuration had time penalty equal to or stronger than PBRS rewards,
-        causing agent to minimize steps rather than follow PBRS gradients.
+        UPDATED: Increased by 200-1000× to create meaningful efficiency pressure.
+        Previous values were ~0.003% of episode reward (effectively irrelevant).
 
-        With frame skip (4 frames), this becomes -0.00032 per action, allowing PBRS
-        signals (0.02-0.05) to dominate with a 62-156× ratio instead of <1× ratio.
+        Diagnostic showed agent barely moving (0.02px/action), creating weak PBRS.
+        Time penalty now creates noticeable pressure to move faster and more directly.
 
-        Time penalty provides efficiency incentive without overwhelming PBRS gradients.
+        Analysis with 4-frame skip (600 frame typical episode):
+        - Discovery (<5%):   -0.0002 × 600 = -0.12 total (0.6% of completion reward)
+        - Early (5-30%):     -0.0005 × 600 = -0.30 total (1.5% of completion reward)
+        - Mid (30-50%):      -0.001 × 600 = -0.60 total (3.0% of completion reward)
+        - Refinement (>50%): -0.002 × 600 = -1.20 total (6.0% of completion reward)
+
+        These create gradual time pressure without overwhelming PBRS guidance.
 
         Returns:
-            -0.00008 (all phases): Very light time pressure, PBRS-dominated learning
+            -0.0002 (<5% success): 200× stronger, minimal but present
+            -0.0005 (5-30% success): 500× stronger, light pressure
+            -0.001 (30-50% success): 1000× stronger, moderate pressure
+            -0.0004 (early phase): 100× stronger
+            -0.0008 (mid phase): 100× stronger
+            -0.001 (late phase): 100× stronger, efficiency incentive
         """
-        # REBALANCED: Reduced by 75% (from -0.0003 to -0.00008)
-        # With 4-frame skip: -0.00008 × 4 = -0.00032 per action (was -0.0012)
-        # Target: PBRS reward magnitude >> time penalty for gradient-based learning
-        return -0.00008  # Was -0.0003 (75% reduction)
+        if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
+            return -0.0002  # 400× stronger: -0.0008/action (4-frame skip)
+        elif self.recent_success_rate < 0.30:  # Early learning (5-30% success)
+            return -0.0005  # 500× stronger: -0.002/action
+        elif self.recent_success_rate < 0.50:  # Mid learning (30-50%)
+            return -0.001  # 500× stronger: -0.004/action
+        elif self.training_phase == "early":
+            return -0.0004  # 100× stronger
+        elif self.training_phase == "mid":
+            return -0.0008  # 100× stronger
+        return -0.001  # 100× stronger: strong efficiency pressure
+
+    @property
+    def exploration_bonus(self) -> float:
+        """Per-cell exploration bonus during discovery phase.
+
+        TUNED based on trajectory analysis:
+        - Earlier episodes (604 frames) were more direct than later (2552-2938 frames)
+        - Agent regressing to excessive wandering suggests exploration bonus too high
+        - Reduced from 0.05 to 0.03 to maintain exploration while encouraging efficiency
+
+        For 42×23 tile level (966 tiles), max exploration reward ≈ 29 per episode,
+        still sufficient to encourage broad search without overwhelming PBRS gradient.
+
+        Active only when success_rate < 0.30 (controlled in main_reward_calculator).
+
+        Returns:
+            0.03 (0-10% success): Moderate exploration encouragement
+            0.02 (10-20% success): Reduced as agent learns level layout
+            0.01 (20-30% success): Minimal, PBRS now dominates
+        """
+        if self.recent_success_rate < 0.10:
+            return 0.03  # Moderate exploration during discovery
+        elif self.recent_success_rate < 0.20:
+            return 0.02  # Reduced as agent learns
+        elif self.recent_success_rate < 0.30:
+            return 0.01  # Minimal, PBRS dominates
+        return 0.0  # Disabled after 30% success
+
+    @property
+    def revisit_penalty_weight(self) -> float:
+        """Penalty weight for revisiting same position (oscillation deterrent).
+
+        UPDATED: Changed from sqrt scaling to LINEAR scaling with 5× stronger weights
+        to aggressively combat oscillation/meandering observed in trajectories.
+
+        Previous sqrt scaling allowed 100+ revisits before strong penalty.
+        Linear scaling reaches breakeven with exploration bonus at 2-3 visits.
+
+        Penalty = -weight × visit_count (LINEAR, not sqrt) using 100-step sliding window.
+
+        Examples with weight=0.015 (linear):
+        - 2 visits: -0.030 penalty (breakeven with exploration bonus)
+        - 5 visits: -0.075 penalty (strong deterrent)
+        - 10 visits: -0.150 penalty (very strong deterrent against looping)
+        - 20 visits: -0.300 penalty (extreme penalty for oscillation)
+
+        This creates immediate pressure against revisiting, forcing more directed exploration.
+
+        Returns:
+            0.015 (0-20% success): Very strong deterrent (5× stronger than before)
+            0.010 (20-40% success): Strong as agent improves
+            0.005 (40%+ success): Moderate refinement penalty
+        """
+        if self.recent_success_rate < 0.20:
+            return 0.015  # Very strong deterrent: 5× stronger, linear scaling
+        elif self.recent_success_rate < 0.40:
+            return 0.010  # Strong: 5× stronger
+        return 0.005  # Moderate: 5× stronger
 
     @property
     def pbrs_normalization_scale(self) -> float:
@@ -137,6 +216,8 @@ class RewardConfig:
             "success_rate": self.recent_success_rate,
             "pbrs_objective_weight": self.pbrs_objective_weight,
             "time_penalty_per_step": self.time_penalty_per_step,
+            "exploration_bonus": self.exploration_bonus,
+            "revisit_penalty_weight": self.revisit_penalty_weight,
             "pbrs_normalization_scale": self.pbrs_normalization_scale,
         }
 

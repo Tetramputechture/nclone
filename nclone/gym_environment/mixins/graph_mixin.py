@@ -422,8 +422,8 @@ class GraphMixin:
             Dictionary with dense graph observations:
             - graph_node_feats: [N_MAX_NODES, NODE_FEATURE_DIM] float32
             - graph_edge_index: [2, E_MAX_EDGES] int32
-            - graph_node_mask: [N_MAX_NODES] int32 (1 for valid, 0 for padding)
-            - graph_edge_mask: [E_MAX_EDGES] int32 (1 for valid, 0 for padding)
+            - graph_node_mask: [N_MAX_NODES] uint8 (1 for valid, 0 for padding)
+            - graph_edge_mask: [E_MAX_EDGES] uint8 (1 for valid, 0 for padding)
         """
         # Empty graph case
         if self.current_graph is None:
@@ -431,21 +431,21 @@ class GraphMixin:
                 "graph_node_feats": np.zeros(
                     (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
                 ),
-                "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.int32),
-                "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.int32),
-                "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.int32),
+                "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.uint16),
+                "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.uint8),
+                "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.uint8),
             }
 
         # Minimal format: only what GCN needs
         graph_data = self.current_graph
         return {
             "graph_node_feats": graph_data.node_features.astype(np.float32),
-            "graph_edge_index": graph_data.edge_index.astype(np.int32),
+            "graph_edge_index": graph_data.edge_index.astype(np.uint16),
             "graph_node_mask": (np.arange(N_MAX_NODES) < graph_data.num_nodes).astype(
-                np.int32
+                np.uint8
             ),
             "graph_edge_mask": (np.arange(E_MAX_EDGES) < graph_data.num_edges).astype(
-                np.int32
+                np.uint8
             ),
         }
 

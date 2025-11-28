@@ -10,10 +10,15 @@ PBRS provides:
 - Automatic backtracking penalties (moving away from goal reduces potential)
 - Policy invariance guarantee (optimal policy unchanged by shaping)
 - Markov property (no episode history dependencies)
+
+Phase 2 Enhancements (Break Policy Invariance):
+- Waypoint guidance: Intermediate rewards along optimal path
+- Progress preservation: Penalty for regressing past best distance
+Trade-off: Lose theoretical guarantees for practical learning at low success rates.
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from collections import deque
 from .reward_config import RewardConfig
 from .pbrs_potentials import PBRSCalculator
@@ -31,6 +36,189 @@ from ...graph.reachability.path_distance_calculator import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class WaypointGuidanceSystem:
+    """Provides intermediate rewards along optimal path.
+
+    BREAKS POLICY INVARIANCE: Waypoint rewards are not potential-based.
+    Trade-off: Lose theoretical guarantees, gain practical learning signal.
+
+    Justification: With 0-5% success at 1.2M steps, strict policy invariance
+    prevents learning. Agent can't discover optimal policy if it never finds
+    ANY successful paths. Waypoints provide intermediate guidance through
+    long corridors where single distant goal gives insufficient gradient.
+    """
+
+    def __init__(self, waypoint_spacing: int = 100):
+        """Initialize waypoint guidance system.
+
+        Args:
+            waypoint_spacing: Distance between waypoints in pixels (default 100px)
+        """
+        self.waypoint_spacing = waypoint_spacing
+        self.waypoints: List[Tuple[int, int]] = []
+        self.reached_waypoints: set = set()
+        self.waypoint_reward = 0.3  # Small but meaningful (~1.5% of completion)
+
+    def generate_waypoints_from_path(self, path: List[Tuple[int, int]]) -> None:
+        """Generate waypoints every N pixels along optimal path.
+
+        Args:
+            path: List of (x, y) positions along optimal path
+        """
+        self.waypoints.clear()
+        self.reached_waypoints.clear()
+
+        if not path or len(path) < 2:
+            return
+
+        cumulative_dist = 0.0
+        for i in range(1, len(path)):
+            dx = path[i][0] - path[i - 1][0]
+            dy = path[i][1] - path[i - 1][1]
+            cumulative_dist += (dx * dx + dy * dy) ** 0.5
+
+            if cumulative_dist >= self.waypoint_spacing:
+                self.waypoints.append(path[i])
+                cumulative_dist = 0.0
+
+        # Always add goal as final waypoint
+        if path:
+            self.waypoints.append(path[-1])
+
+        logger.info(f"Generated {len(self.waypoints)} waypoints along optimal path")
+
+    def check_waypoint_reached(
+        self, position: Tuple[int, int], threshold: float = 30.0
+    ) -> float:
+        """Check if next waypoint reached in sequence.
+
+        Args:
+            position: Current agent position (x, y)
+            threshold: Distance to consider waypoint "reached" (default 30px)
+
+        Returns:
+            Reward if waypoint reached (0.3), else 0.0
+        """
+        next_idx = len(self.reached_waypoints)
+        if next_idx >= len(self.waypoints):
+            return 0.0  # All waypoints reached
+
+        waypoint = self.waypoints[next_idx]
+        dx = position[0] - waypoint[0]
+        dy = position[1] - waypoint[1]
+        distance = (dx * dx + dy * dy) ** 0.5
+
+        if distance <= threshold:
+            self.reached_waypoints.add(next_idx)
+            logger.debug(
+                f"Waypoint {next_idx + 1}/{len(self.waypoints)} reached at {position}"
+            )
+            return self.waypoint_reward
+
+        return 0.0
+
+    def reset(self):
+        """Reset for new episode."""
+        self.waypoints.clear()
+        self.reached_waypoints.clear()
+
+
+class PositionTracker:
+    """Unified position tracking for exploration rewards and revisit penalties.
+
+    Combines two related systems into one efficient tracker:
+    1. Exploration bonus: Rewards visiting new cells during discovery phase
+    2. Revisit penalty: Discourages oscillation/looping using sliding window
+
+    This eliminates redundant grid lookups and provides clearer semantics.
+    """
+
+    def __init__(self, grid_size: int = 24, window_size: int = 100):
+        """Initialize position tracker.
+
+        Args:
+            grid_size: Cell size in pixels for position discretization (default: 24px tile size)
+            window_size: Number of recent positions to track for revisit penalty
+        """
+        self.grid_size = grid_size
+        self.visited_cells: set = set()  # Episode-wide tracking for exploration
+        self.position_history = deque(maxlen=window_size)  # Sliding window
+        self.position_counts: Dict[tuple, int] = {}  # Visit counts in current window
+        self.cells_visited_this_episode = 0
+
+    def get_position_reward(
+        self,
+        position: tuple,
+        exploration_bonus: float = 0.05,
+        revisit_penalty_weight: float = 0.001,
+        enable_exploration: bool = True,
+    ) -> tuple:
+        """Calculate combined exploration + revisit reward for current position.
+
+        Args:
+            position: (x, y) position in pixels
+            exploration_bonus: Reward for visiting new cell (default: 0.05)
+            revisit_penalty_weight: Penalty weight for revisits (default: 0.001)
+            enable_exploration: Whether to give exploration bonuses (default: True)
+
+        Returns:
+            Tuple of (total_reward, exploration_reward, revisit_penalty, is_new_cell)
+        """
+
+        # Snap to grid
+        grid_x = int(position[0] // self.grid_size) * self.grid_size
+        grid_y = int(position[1] // self.grid_size) * self.grid_size
+        cell = (grid_x, grid_y)
+
+        total_reward = 0.0
+        exploration_reward = 0.0
+        revisit_penalty = 0.0
+        is_new = cell not in self.visited_cells
+
+        # Exploration bonus (discovery phase only)
+        if is_new and enable_exploration:
+            self.visited_cells.add(cell)
+            self.cells_visited_this_episode += 1
+            exploration_reward = exploration_bonus
+            total_reward += exploration_reward
+        elif is_new:
+            # Still track as visited even if not rewarding
+            self.visited_cells.add(cell)
+            self.cells_visited_this_episode += 1
+
+        # Revisit penalty (always active, uses sliding window)
+        # UPDATED: Changed from sqrt to LINEAR scaling for stronger oscillation deterrent
+        visit_count = self.position_counts.get(cell, 0)
+        if visit_count > 0:
+            revisit_penalty = -revisit_penalty_weight * visit_count  # Linear, not sqrt
+            total_reward += revisit_penalty
+
+        # Save reference to oldest cell before appending (will be expelled if window full)
+        oldest_cell = None
+        if len(self.position_history) == self.position_history.maxlen:
+            oldest_cell = self.position_history[0]
+
+        # Update sliding window (appending to full deque expels oldest automatically)
+        self.position_history.append(cell)
+        self.position_counts[cell] = visit_count + 1
+
+        # Decrement count for cell that was just expelled from window
+        if oldest_cell is not None:
+            if oldest_cell in self.position_counts:
+                self.position_counts[oldest_cell] -= 1
+                if self.position_counts[oldest_cell] == 0:
+                    del self.position_counts[oldest_cell]
+
+        return total_reward, exploration_reward, revisit_penalty, is_new
+
+    def reset(self):
+        """Reset tracking for new episode."""
+        self.visited_cells.clear()
+        self.position_history.clear()
+        self.position_counts.clear()
+        self.cells_visited_this_episode = 0
 
 
 class RewardCalculator:
@@ -110,11 +298,17 @@ class RewardCalculator:
         # Always populated after calculate_reward() for info dict logging
         self.last_pbrs_components = {}
 
-        # Position revisit tracking for oscillation penalty (Phase 4 improvement)
-        self.position_visit_counts: Dict[tuple, int] = {}  # Grid cell visit counts
-        self.position_history_window = 100  # Track last 100 positions
-        self.position_history = deque(maxlen=100)  # Sliding window
-        self.revisit_penalty_weight = 0.001  # Penalty per revisit
+        # Unified position tracking (exploration + revisit penalty)
+        # Combines exploration bonus and oscillation deterrent into single efficient system
+        self.position_tracker = PositionTracker(grid_size=24, window_size=100)
+
+        # Waypoint guidance system (Phase 2 - breaks policy invariance)
+        # Provides intermediate rewards along optimal path for better learning signal
+        self.waypoint_system = WaypointGuidanceSystem(waypoint_spacing=100)
+
+        # Progress preservation tracking (Phase 2 - breaks policy invariance)
+        # Tracks closest distance to goal and penalizes regression
+        self.closest_distance_this_episode = float("inf")
 
     def calculate_reward(
         self,
@@ -159,6 +353,11 @@ class RewardCalculator:
             float: Total reward for the transition
         """
         self.steps_taken += frames_executed
+
+        # Run validation check if needed (once per 10K steps)
+        if hasattr(self, "_needs_validation") and self._needs_validation:
+            self.validate_level_solvability(obs)
+            self._needs_validation = False
 
         # === TERMINAL REWARDS (always active) ===
 
@@ -234,6 +433,20 @@ class RewardCalculator:
             raise ValueError(
                 "PBRS calculation requires adjacency graph and level_data in observation. "
                 "Ensure graph building is enabled in environment config."
+            )
+
+        # Validate that graph_data contains required physics cache
+        if not graph_data:
+            raise ValueError(
+                "PBRS calculation requires graph_data in observation. "
+                "Ensure graph building is enabled with physics cache precomputation."
+            )
+
+        if not graph_data.get("node_physics"):
+            raise ValueError(
+                "PBRS calculation requires physics cache (node_physics) in graph_data. "
+                "Ensure graph building includes physics cache precomputation. "
+                "This is critical for physics-aware shortest path calculations."
             )
 
         # Calculate current potential Φ(s')
@@ -321,59 +534,23 @@ class RewardCalculator:
 
         reward += pbrs_reward
 
-        # === POSITION REVISIT PENALTY (oscillation deterrent) ===
-        # Track position visits to discourage meandering and oscillation
-        # Snap to 12px grid for coarse detection (sub-node size)
-        grid_x = int(obs["player_x"] // 12) * 12
-        grid_y = int(obs["player_y"] // 12) * 12
-        grid_pos = (grid_x, grid_y)
-
-        # Update position history (sliding window)
-        self.position_history.append(grid_pos)
-        visit_count = self.position_visit_counts.get(grid_pos, 0)
-        self.position_visit_counts[grid_pos] = visit_count + 1
-
-        # Apply revisit penalty (scaled by square root of frequency to avoid harsh penalties)
-        revisit_penalty = 0.0
-        if visit_count > 0:
-            import math
-
-            revisit_penalty = -self.revisit_penalty_weight * math.sqrt(visit_count)
-            reward += revisit_penalty
-
-        # Clear old visits when history full (maintain sliding window)
-        if len(self.position_history) == self.position_history_window:
-            oldest_pos = self.position_history[0]
-            if oldest_pos in self.position_visit_counts:
-                self.position_visit_counts[oldest_pos] -= 1
-                if self.position_visit_counts[oldest_pos] == 0:
-                    del self.position_visit_counts[oldest_pos]
-
-        # Track diagnostic metrics (Euclidean distance)
-        from ..util.util import calculate_distance
-
-        distance_to_switch = calculate_distance(
-            obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
+        # === UNIFIED POSITION TRACKING (exploration + revisit penalty) ===
+        # Combines exploration bonus (discovery phase) and revisit penalty (always active)
+        # into single efficient system with one grid lookup
+        (
+            position_reward,
+            exploration_reward,
+            revisit_penalty,
+            is_new_cell,
+        ) = self.position_tracker.get_position_reward(
+            position=(obs["player_x"], obs["player_y"]),
+            exploration_bonus=self.config.exploration_bonus,
+            revisit_penalty_weight=self.config.revisit_penalty_weight,
+            enable_exploration=(self.config.recent_success_rate < 0.30),
         )
-        if distance_to_switch < self.closest_distance_to_switch:
-            self.closest_distance_to_switch = distance_to_switch
+        reward += position_reward
 
-        if obs.get("switch_activated", False):
-            distance_to_exit = calculate_distance(
-                obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
-            )
-            if distance_to_exit < self.closest_distance_to_exit:
-                self.closest_distance_to_exit = distance_to_exit
-
-        # Populate PBRS components for TensorBoard logging (non-terminal state)
-        # This provides detailed breakdown of reward components for analysis
-        milestone_reward = SWITCH_ACTIVATION_REWARD if switch_just_activated else 0.0
-
-        # Extract diagnostic metrics from observation (set by objective_distance_potential)
-        area_scale = obs.get("_pbrs_area_scale", 0.0)
-        normalized_distance = obs.get("_pbrs_normalized_distance", 0.0)
-        combined_path_distance = obs.get("_pbrs_combined_path_distance", 0.0)
-
+        # === CALCULATE DISTANCE TO GOAL (needed for progress tracking) ===
         # Calculate current distance to goal (shortest path)
         if not obs.get("switch_activated", False):
             goal_pos = (int(obs["switch_x"]), int(obs["switch_y"]))
@@ -412,11 +589,64 @@ class RewardCalculator:
         except Exception:
             distance_to_goal = 0.0
 
+        # === WAYPOINT GUIDANCE (Phase 2 - breaks policy invariance) ===
+        # Provides intermediate rewards along optimal path for long corridors
+        # where single distant goal provides insufficient gradient
+        waypoint_reward = self.waypoint_system.check_waypoint_reached(
+            (obs["player_x"], obs["player_y"])
+        )
+        reward += waypoint_reward
+
+        # === PROGRESS PRESERVATION (Phase 2 - breaks policy invariance) ===
+        # Tracks best progress and penalizes significant regression
+        # Helps prevent backtracking after making good progress
+        progress_penalty = 0.0
+        if distance_to_goal < self.closest_distance_this_episode:
+            # New best progress - update tracker
+            self.closest_distance_this_episode = distance_to_goal
+        elif (
+            distance_to_goal > self.closest_distance_this_episode + 50
+        ):  # Regressed >50px
+            # Significant backtracking detected - apply penalty
+            regression_amount = distance_to_goal - self.closest_distance_this_episode
+            progress_penalty = -0.05 * (regression_amount / 50.0)
+            reward += progress_penalty
+            logger.debug(
+                f"Progress regression penalty: regressed {regression_amount:.1f}px, penalty={progress_penalty:.4f}"
+            )
+
+        # Track diagnostic metrics (Euclidean distance)
+        from ..util.util import calculate_distance
+
+        distance_to_switch = calculate_distance(
+            obs["player_x"], obs["player_y"], obs["switch_x"], obs["switch_y"]
+        )
+        if distance_to_switch < self.closest_distance_to_switch:
+            self.closest_distance_to_switch = distance_to_switch
+
+        if obs.get("switch_activated", False):
+            distance_to_exit = calculate_distance(
+                obs["player_x"], obs["player_y"], obs["exit_door_x"], obs["exit_door_y"]
+            )
+            if distance_to_exit < self.closest_distance_to_exit:
+                self.closest_distance_to_exit = distance_to_exit
+
+        # Populate PBRS components for TensorBoard logging (non-terminal state)
+        # This provides detailed breakdown of reward components for analysis
+        milestone_reward = SWITCH_ACTIVATION_REWARD if switch_just_activated else 0.0
+
+        # Extract diagnostic metrics from observation (set by objective_distance_potential)
+        normalized_distance = obs.get("_pbrs_normalized_distance", 0.0)
+        combined_path_distance = obs.get("_pbrs_combined_path_distance", 0.0)
+
         self.last_pbrs_components = {
             "pbrs_reward": pbrs_reward,
             "time_penalty": time_penalty,  # Use scaled penalty (per action, not per frame)
             "milestone_reward": milestone_reward,
-            "revisit_penalty": revisit_penalty,  # New: position revisit penalty
+            "revisit_penalty": revisit_penalty,
+            "exploration_reward": exploration_reward,
+            "position_reward": position_reward,  # Combined exploration + revisit
+            "exploration_cells_visited": len(self.position_tracker.visited_cells),
             "total_reward": reward,
             "is_terminal": False,
             # Include potential information for debugging
@@ -439,17 +669,122 @@ class RewardCalculator:
             else 0.0,  # For γ=1.0, this should equal pbrs_reward
             # New diagnostic fields for monitoring and analysis
             "distance_to_goal": distance_to_goal,
-            "area_scale": area_scale,
             "combined_path_distance": combined_path_distance,
             "normalized_distance": normalized_distance,
             # Frame skip information
             "frames_executed": frames_executed,
-            # Position revisit tracking
-            "unique_positions_visited": len(self.position_visit_counts),
-            "total_position_visits": len(self.position_history),
+            # Position tracking (unified)
+            "unique_positions_visited": len(self.position_tracker.position_counts),
+            "total_position_visits": len(self.position_tracker.position_history),
+            # Phase 2: Waypoint and progress tracking (breaks policy invariance)
+            "waypoint_reward": waypoint_reward,
+            "waypoints_reached": len(self.waypoint_system.reached_waypoints),
+            "waypoints_total": len(self.waypoint_system.waypoints),
+            "progress_penalty": progress_penalty,
+            "closest_distance_episode": self.closest_distance_this_episode,
         }
 
         return reward
+
+    def validate_level_solvability(self, obs: Dict[str, Any]) -> bool:
+        """Validate that goals are reachable from spawn.
+
+        Call at episode start to detect impossible levels.
+        With 0% success rate, this confirms whether the issue is reward structure
+        or actual level unsolvability.
+
+        Args:
+            obs: Game state observation with graph and level data
+
+        Returns:
+            True if level is solvable, False if unreachable, None if check failed
+        """
+        try:
+            from ...constants.physics_constants import (
+                EXIT_SWITCH_RADIUS,
+                EXIT_DOOR_RADIUS,
+                NINJA_RADIUS,
+            )
+
+            adjacency = obs.get("_adjacency_graph")
+            level_data = obs.get("level_data")
+            graph_data = obs.get("_graph_data")
+
+            if not adjacency or not level_data:
+                logger.warning(
+                    "Cannot validate solvability: missing graph or level data"
+                )
+                return None
+
+            player_pos = (int(obs["player_x"]), int(obs["player_y"]))
+            switch_pos = (int(obs["switch_x"]), int(obs["switch_y"]))
+            exit_pos = (int(obs["exit_door_x"]), int(obs["exit_door_y"]))
+
+            base_adjacency = (
+                graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+            )
+
+            # Check spawn→switch path
+            switch_dist = self.pbrs_calculator.path_calculator.get_distance(
+                player_pos,
+                switch_pos,
+                adjacency,
+                base_adjacency,
+                cache_key="validation_switch",
+                level_data=level_data,
+                graph_data=graph_data,
+                entity_radius=EXIT_SWITCH_RADIUS,
+                ninja_radius=NINJA_RADIUS,
+            )
+
+            # Check switch→exit path
+            exit_dist = self.pbrs_calculator.path_calculator.get_distance(
+                switch_pos,
+                exit_pos,
+                adjacency,
+                base_adjacency,
+                cache_key="validation_exit",
+                level_data=level_data,
+                graph_data=graph_data,
+                entity_radius=EXIT_DOOR_RADIUS,
+                ninja_radius=NINJA_RADIUS,
+            )
+
+            if switch_dist == float("inf"):
+                logger.error(
+                    f"❌ LEVEL UNSOLVABLE: Switch unreachable from spawn!\n"
+                    f"   Spawn: {player_pos}\n"
+                    f"   Switch: {switch_pos}\n"
+                    f"   This explains 0% success rate!"
+                )
+                return False
+
+            if exit_dist == float("inf"):
+                logger.error(
+                    f"❌ LEVEL UNSOLVABLE: Exit unreachable from switch!\n"
+                    f"   Switch: {switch_pos}\n"
+                    f"   Exit: {exit_pos}\n"
+                    f"   This explains 0% success rate!"
+                )
+                return False
+
+            combined_dist = switch_dist + exit_dist
+            logger.info(
+                f"✓ Level validated as solvable:\n"
+                f"   Spawn→Switch: {switch_dist:.0f}px\n"
+                f"   Switch→Exit: {exit_dist:.0f}px\n"
+                f"   Combined: {combined_dist:.0f}px\n"
+                f"   Expected PBRS (weight={self.config.pbrs_objective_weight}): "
+                f"{self.config.pbrs_objective_weight * (1.0 - 0.0):.1f}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to validate level solvability: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return None
 
     def reset(self):
         """Reset episode state for new episode."""
@@ -479,13 +814,26 @@ class RewardCalculator:
         # Reset step-level component tracking
         self.last_pbrs_components = {}
 
-        # Reset position revisit tracking
-        self.position_visit_counts.clear()
-        self.position_history.clear()
+        # Reset unified position tracking (exploration + revisit)
+        self.position_tracker.reset()
 
         # Reset PBRS calculator state
         if self.pbrs_calculator is not None:
             self.pbrs_calculator.reset()
+
+        # Reset Phase 2 systems (waypoint guidance + progress tracking)
+        self.waypoint_system.reset()
+        self.closest_distance_this_episode = float("inf")
+
+        # Validation: Check level is solvable (helpful for debugging 0% success rate)
+        # Only run occasionally to avoid performance impact
+        if self.steps_taken == 0 or (
+            hasattr(self, "_last_validation_step")
+            and self.steps_taken - self._last_validation_step > 10000
+        ):
+            # Will be called with first obs in calculate_reward
+            self._needs_validation = True
+            self._last_validation_step = self.steps_taken
 
     def update_config(self, timesteps: int, success_rate: float) -> None:
         """Update reward configuration based on training progress.
@@ -621,4 +969,8 @@ class RewardCalculator:
             "optimal_path_length": self.optimal_path_length
             if self.optimal_path_length is not None
             else 0.0,
+            # Exploration metrics (from unified position tracker)
+            "exploration_cells_visited": len(self.position_tracker.visited_cells),
+            "exploration_coverage": len(self.position_tracker.visited_cells)
+            / max(1, (1056 // 24) * (600 // 24)),  # % of level explored
         }
