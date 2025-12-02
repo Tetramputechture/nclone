@@ -262,6 +262,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         info["player_won"] = self.nplay_headless.ninja_has_won()
         info["death_cause"] = self.nplay_headless.ninja_death_cause()
 
+        # Additional fields for Go-Explore checkpoint system
+        # These are needed for doomed checkpoint invalidation (falling into mines)
+        ninja_vel = self.nplay_headless.ninja_velocity()
+        info["player_xspeed"] = ninja_vel[0]
+        info["player_yspeed"] = ninja_vel[1]
+        info["airborne"] = self.nplay_headless.sim.ninja.airborn
+
     def _build_door_feature_cache(self):
         """
         Build precomputed door feature cache.

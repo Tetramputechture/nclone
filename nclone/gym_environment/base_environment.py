@@ -1341,12 +1341,25 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             error = (dx * dx + dy * dy) ** 0.5
             position_valid = error < 0.1
             if not position_valid:
+                # Sample actions for debugging
+                first_10 = (
+                    action_sequence[:10]
+                    if len(action_sequence) >= 10
+                    else action_sequence
+                )
+                last_10 = action_sequence[-10:] if len(action_sequence) >= 10 else []
+                # Count action distribution to detect corruption
+                action_dist = {}
+                for a in action_sequence:
+                    action_dist[a] = action_dist.get(a, 0) + 1
                 logger.warning(
                     f"Checkpoint replay position mismatch: "
                     f"expected={expected_position}, actual={actual_position}, "
                     f"error={error:.6f}px | "
                     f"spawn={spawn_pos}, actions={actions_replayed}/{len(action_sequence)}, "
-                    f"frames={frames_replayed}, died={ninja_died_during_replay}"
+                    f"frames={frames_replayed}, died={ninja_died_during_replay} | "
+                    f"first_actions={first_10}, last_actions={last_10}, "
+                    f"action_dist={action_dist}"
                 )
 
         # Get observation after replay
