@@ -134,7 +134,6 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
         level_data: LevelData object
     """
     from .feature_builder import NodeFeatureBuilder
-    from .reachability.reachability_system import ReachabilitySystem
 
     # Extract unique positions from edges
     positions = set()

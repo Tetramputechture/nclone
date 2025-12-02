@@ -38,35 +38,6 @@ def _is_node_grounded(
     return True
 
 
-def _is_node_walled(
-    node_pos: Tuple[int, int],
-    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
-) -> bool:
-    """
-    Check if a node has a wall on its left or right side.
-
-    A wall is defined as an unreachable node (not in adjacency graph).
-    This enables wall-jumping mechanics where the ninja can push off walls
-    for diagonal movement similar to ground-based jumps.
-
-    Uses base_adjacency (pre-entity-mask) to determine actual level geometry,
-    not affected by mines or other dynamic entities.
-
-    Args:
-        node_pos: Node position (x, y) in pixels
-        base_adjacency: Base graph adjacency structure (pre-entity-mask)
-
-    Returns:
-        True if left or right neighbor is unreachable (wall present)
-    """
-    x, y = node_pos
-    left_pos = (x - SUB_NODE_SIZE, y)
-    right_pos = (x + SUB_NODE_SIZE, y)
-
-    # A node is walled if either left or right is unreachable (not in adjacency)
-    return left_pos not in base_adjacency or right_pos not in base_adjacency
-
-
 def _is_horizontal_edge(from_pos: Tuple[int, int], to_pos: Tuple[int, int]) -> bool:
     """Check if edge is horizontal (dy == 0, dx != 0)."""
     return to_pos[1] == from_pos[1] and to_pos[0] != from_pos[0]

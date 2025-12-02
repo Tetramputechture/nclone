@@ -114,10 +114,9 @@ class NPlayHeadless:
         Converts a Pygame surface to a grayscaled NumPy array (H, W, 1).
         OPTIMIZED: If surface is already grayscale (8-bit), use fast path.
         """
-        # OPTIMIZATION: Check if surface is already grayscale (8-bit with palette)
-        if surface.get_bytesize() == 1:
-            import pygame
+        import pygame
 
+        if surface.get_bytesize() == 1:
             # Grayscale surface - use fast pixels2d (no RGB conversion needed!)
             try:
                 # Get direct reference to pixel data (W, H)
