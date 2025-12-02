@@ -232,16 +232,27 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
             )
 
     # Fill edge connectivity (no features or types - all edges are simple adjacency)
-    for i, edge in enumerate(edges):
-        if i >= E_MAX_EDGES:
+    # CRITICAL: Filter edges to only include those where both source and target
+    # indices are within N_MAX_NODES to prevent invalid index errors in GNN forward pass
+    valid_edge_count = 0
+    for edge in edges:
+        if valid_edge_count >= E_MAX_EDGES:
             break
 
         source_idx = pos_to_idx[edge.source]
         target_idx = pos_to_idx[edge.target]
 
-        edge_index[0, i] = source_idx
-        edge_index[1, i] = target_idx
-        edge_mask[i] = 1
+        # Skip edges that reference truncated nodes
+        if source_idx >= N_MAX_NODES or target_idx >= N_MAX_NODES:
+            continue
+
+        edge_index[0, valid_edge_count] = source_idx
+        edge_index[1, valid_edge_count] = target_idx
+        edge_mask[valid_edge_count] = 1
+        valid_edge_count += 1
+
+    # Cap num_nodes at N_MAX_NODES and use actual valid edge count
+    actual_num_nodes = min(num_nodes, N_MAX_NODES)
 
     return GraphData(
         node_features=node_features,
@@ -249,6 +260,6 @@ def create_graph_data(edges: List[Edge], level_data: LevelData) -> GraphData:
         node_mask=node_mask,
         edge_mask=edge_mask,
         node_types=node_types,
-        num_nodes=num_nodes,
-        num_edges=num_edges,
+        num_nodes=actual_num_nodes,
+        num_edges=valid_edge_count,
     )
