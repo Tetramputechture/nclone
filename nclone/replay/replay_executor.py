@@ -343,7 +343,6 @@ class ReplayExecutor:
                 int(self.nplay_headless.ninja_position()[0]),
                 int(self.nplay_headless.ninja_position()[1]),
             )
-            logger.info(f"Building graph for level {level_id}, ninja_pos={ninja_pos}")
 
             try:
                 self._cached_graph_data = self.graph_builder.build_graph(
@@ -367,9 +366,7 @@ class ReplayExecutor:
                 num_nodes = len(adjacency)
                 # Count total edges
                 num_edges = sum(len(neighbors) for neighbors in adjacency.values())
-                logger.info(
-                    f"Built graph with {num_nodes} nodes, {num_edges} edges for level {level_id}"
-                )
+
                 if num_nodes == 0:
                     logger.warning(
                         "  Graph has ZERO nodes - this will cause training issues!"

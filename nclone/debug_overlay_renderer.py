@@ -92,6 +92,70 @@ class DebugOverlayRenderer:
 
         return self.text_cache[cache_key]
 
+    def _draw_arrow(
+        self,
+        surface: pygame.Surface,
+        start: Tuple[float, float],
+        direction: Tuple[float, float],
+        length: float,
+        color: Tuple[int, int, int, int],
+        width: int = 3,
+        head_size: float = 8,
+    ):
+        """Draw an arrow from start position in the given direction.
+
+        Args:
+            surface: Surface to draw on
+            start: Starting position (screen coordinates)
+            direction: Normalized direction vector (dx, dy)
+            length: Length of the arrow in pixels
+            color: RGBA color tuple
+            width: Line width
+            head_size: Size of the arrowhead
+        """
+        import math
+
+        dx, dy = direction
+        if abs(dx) < 0.001 and abs(dy) < 0.001:
+            return  # Zero direction, nothing to draw
+
+        # Calculate end point
+        end_x = start[0] + dx * length
+        end_y = start[1] + dy * length
+
+        # Draw main line
+        pygame.draw.line(
+            surface,
+            color,
+            (int(start[0]), int(start[1])),
+            (int(end_x), int(end_y)),
+            width,
+        )
+
+        # Draw arrowhead
+        # Calculate perpendicular vector for arrowhead wings
+        angle = math.atan2(dy, dx)
+        head_angle = math.pi / 6  # 30 degrees
+
+        # Left wing
+        left_x = end_x - head_size * math.cos(angle - head_angle)
+        left_y = end_y - head_size * math.sin(angle - head_angle)
+
+        # Right wing
+        right_x = end_x - head_size * math.cos(angle + head_angle)
+        right_y = end_y - head_size * math.sin(angle + head_angle)
+
+        # Draw arrowhead as filled triangle
+        pygame.draw.polygon(
+            surface,
+            color,
+            [
+                (int(end_x), int(end_y)),
+                (int(left_x), int(left_y)),
+                (int(right_x), int(right_y)),
+            ],
+        )
+
     def _get_area_color(
         self,
         base_color: tuple[int, int, int],
@@ -809,6 +873,114 @@ class DebugOverlayRenderer:
                                 4,  # Thicker for better visibility
                             )
 
+            # === MOVEMENT VECTOR VISUALIZATION ===
+            # Draw optimal direction (next_hop) and actual velocity vectors
+            if ninja_pos and closest_node:
+                ninja_x, ninja_y = ninja_pos
+                ninja_screen_x = int(ninja_x * self.adjust + self.tile_x_offset)
+                ninja_screen_y = int(ninja_y * self.adjust + self.tile_y_offset)
+
+                # Determine current goal and get next_hop from cached path
+                # The next hop is the second node in the path (first is current position)
+                next_hop = None
+                if cached_data:
+                    if exit_switch_activated:
+                        # Use exit path
+                        path = cached_data.get("exit_path")
+                    else:
+                        # Use switch path
+                        path = cached_data.get("switch_path")
+
+                    if path and len(path) >= 2:
+                        # Path starts at closest_node, so path[1] is the next hop
+                        next_hop = path[1]
+
+                # Draw optimal direction arrow (green) from next_hop
+                if next_hop is not None:
+                    # Compute direction from current node to next_hop
+                    dx = next_hop[0] - closest_node[0]
+                    dy = next_hop[1] - closest_node[1]
+                    length = (dx * dx + dy * dy) ** 0.5
+                    if length > 0.001:
+                        # Normalize direction
+                        opt_dir = (dx / length, dy / length)
+                        # Draw arrow (length 40 pixels, bright green)
+                        self._draw_arrow(
+                            surface,
+                            (ninja_screen_x, ninja_screen_y),
+                            opt_dir,
+                            40,  # Arrow length
+                            (50, 255, 50, 255),  # Bright green
+                            width=3,
+                            head_size=10,
+                        )
+
+                # Draw actual velocity arrow (cyan) from ninja velocity
+                ninja_velocity = path_aware_info.get("ninja_velocity")
+                if ninja_velocity is not None:
+                    vx, vy = ninja_velocity
+                    speed = (vx * vx + vy * vy) ** 0.5
+                    if speed > 0.5:  # Only draw if moving with some velocity
+                        # Normalize velocity direction
+                        vel_dir = (vx / speed, vy / speed)
+                        # Scale arrow length by speed (min 20, max 60 pixels)
+                        arrow_len = min(60, max(20, speed * 10))
+                        # Draw arrow (cyan/light blue)
+                        self._draw_arrow(
+                            surface,
+                            (ninja_screen_x, ninja_screen_y),
+                            vel_dir,
+                            arrow_len,
+                            (100, 220, 255, 255),  # Cyan
+                            width=2,
+                            head_size=8,
+                        )
+
+                # Draw legend for movement vectors
+                try:
+                    vector_font = pygame.font.Font(None, 16)
+                except pygame.error:
+                    vector_font = pygame.font.SysFont("arial", 12)
+
+                legend_x = ninja_screen_x + 50
+                legend_y = ninja_screen_y - 30
+
+                # Keep legend on screen
+                if legend_x + 100 > self.screen.get_width():
+                    legend_x = ninja_screen_x - 150
+                if legend_y < 20:
+                    legend_y = ninja_screen_y + 50
+
+                # Draw mini legend
+                pygame.draw.rect(
+                    surface,
+                    (0, 0, 0, 180),
+                    (legend_x, legend_y, 95, 36),
+                    border_radius=3,
+                )
+
+                # Optimal direction indicator
+                pygame.draw.line(
+                    surface,
+                    (50, 255, 50, 255),
+                    (legend_x + 5, legend_y + 10),
+                    (legend_x + 20, legend_y + 10),
+                    2,
+                )
+                opt_text = vector_font.render("Optimal", True, (200, 255, 200))
+                surface.blit(opt_text, (legend_x + 25, legend_y + 4))
+
+                # Velocity indicator
+                pygame.draw.line(
+                    surface,
+                    (100, 220, 255, 255),
+                    (legend_x + 5, legend_y + 24),
+                    (legend_x + 20, legend_y + 24),
+                    2,
+                )
+                vel_text = vector_font.render("Velocity", True, (180, 230, 255))
+                surface.blit(vel_text, (legend_x + 25, legend_y + 18))
+
         # Calculate and display switch/exit distances
         if show_distances and ninja_pos and adjacency:
             # Extract ninja position for screen coordinates
@@ -841,7 +1013,7 @@ class DebugOverlayRenderer:
                     if switch_node is not None:
                         # BFS from ninja to switch using shared utility
                         # Use mine proximity cache for consistent path distances with training
-                        distances, target_dist = bfs_distance_from_start(
+                        distances, target_dist, _ = bfs_distance_from_start(
                             closest_node,
                             switch_node,
                             adjacency,
@@ -872,7 +1044,7 @@ class DebugOverlayRenderer:
                     if exit_node is not None:
                         # BFS from ninja to exit using shared utility
                         # Use mine proximity cache for consistent path distances with training
-                        distances, target_dist = bfs_distance_from_start(
+                        distances, target_dist, _ = bfs_distance_from_start(
                             closest_node,
                             exit_node,
                             adjacency,

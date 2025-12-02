@@ -11,7 +11,6 @@ from .pathfinding_algorithms import PathDistanceCalculator
 from .pathfinding_utils import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
-    find_shortest_path,
     find_ninja_node,
 )
 from .path_distance_cache import LevelBasedPathDistanceCache
@@ -230,6 +229,7 @@ class CachedPathDistanceCalculator:
                             dx <= 12 and dy <= 12
                         ):  # Within half tile (matching old validation logic)
                             # Find ninja node using canonical ninja node selection
+                            # FIX: Pass level_cache to use PATH distance instead of Euclidean
                             with self.timer.measure("find_start_node"):
                                 start_node = find_ninja_node(
                                     start,
@@ -238,6 +238,8 @@ class CachedPathDistanceCalculator:
                                     subcell_lookup=subcell_lookup,
                                     ninja_radius=ninja_radius,
                                     goal_node=goal_node,
+                                    level_cache=self.level_cache,
+                                    goal_id=goal_id,
                                 )
 
                             # Try level cache with snapped start position
@@ -246,27 +248,86 @@ class CachedPathDistanceCalculator:
                                     start_node, goal_pos, goal_id
                                 )
                                 if cached_dist != float("inf"):
-                                    # Add Euclidean distances for dense reward signal (inlined for speed)
-                                    dx_start = start[0] - start_node[0]
-                                    dy_start = start[1] - start_node[1]
-                                    euclidean_start = (
-                                        dx_start * dx_start + dy_start * dy_start
-                                    ) ** 0.5
-
-                                    dx_goal = goal[0] - goal_node[0]
-                                    dy_goal = goal[1] - goal_node[1]
-                                    euclidean_goal = (
-                                        dx_goal * dx_goal + dy_goal * dy_goal
-                                    ) ** 0.5
-
-                                    # Total distance includes exact positions to node centers
-                                    total_dist = (
-                                        euclidean_start
-                                        + cached_dist
-                                        + euclidean_goal
-                                        - (ninja_radius + entity_radius)
+                                    # SUB-NODE PBRS RESOLUTION: Dense rewards for slow movement
+                                    # (0.66-3px per action vs 12px node spacing)
+                                    #
+                                    # APPROACH: Next-hop directional projection
+                                    #
+                                    # The next_hop is the neighbor node that's one step closer
+                                    # to the goal on the optimal A* path. Direction from player
+                                    # to next_hop IS the optimal path direction, respecting
+                                    # the adjacency graph (walls, corridors, etc.).
+                                    #
+                                    # Example: Goal is upper-right, but path goes LEFT first
+                                    # - start_node's next_hop points LEFT (toward optimal path)
+                                    # - Moving LEFT = positive projection = distance decreases
+                                    # - Moving RIGHT = negative projection = distance increases
+                                    #
+                                    # This is simpler and faster than searching nearby nodes,
+                                    # and correctly handles cases where path != Euclidean.
+                                    from .pathfinding_utils import (
+                                        NODE_WORLD_COORD_OFFSET,
                                     )
-                                    return max(0.0, total_dist)
+
+                                    # Get next hop toward goal
+                                    next_hop = self.level_cache.get_next_hop(
+                                        start_node, goal_id
+                                    )
+
+                                    if next_hop is not None:
+                                        # Convert positions to world coordinates
+                                        start_node_world_x = (
+                                            start_node[0] + NODE_WORLD_COORD_OFFSET
+                                        )
+                                        start_node_world_y = (
+                                            start_node[1] + NODE_WORLD_COORD_OFFSET
+                                        )
+                                        next_hop_world_x = (
+                                            next_hop[0] + NODE_WORLD_COORD_OFFSET
+                                        )
+                                        next_hop_world_y = (
+                                            next_hop[1] + NODE_WORLD_COORD_OFFSET
+                                        )
+
+                                        # Vector from start_node to next_hop (optimal direction)
+                                        path_dx = next_hop_world_x - start_node_world_x
+                                        path_dy = next_hop_world_y - start_node_world_y
+                                        path_len = (
+                                            path_dx * path_dx + path_dy * path_dy
+                                        ) ** 0.5
+
+                                        if path_len > 0.001:
+                                            # Normalize path direction
+                                            path_dir_x = path_dx / path_len
+                                            path_dir_y = path_dy / path_len
+
+                                            # Vector from start_node to player
+                                            player_dx = start[0] - start_node_world_x
+                                            player_dy = start[1] - start_node_world_y
+
+                                            # Project player offset onto path direction
+                                            # Positive = player ahead (toward next_hop) = closer
+                                            # Negative = player behind = further
+                                            projection = (
+                                                player_dx * path_dir_x
+                                                + player_dy * path_dir_y
+                                            )
+
+                                            # Subtract projection from cached distance
+                                            # (positive projection = closer to goal)
+                                            total_dist = max(
+                                                0.0,
+                                                cached_dist
+                                                - projection
+                                                - (ninja_radius + entity_radius),
+                                            )
+                                            return total_dist
+
+                                    # Fallback: no next_hop (at goal) or path too short
+                                    return max(
+                                        0.0,
+                                        cached_dist - (ninja_radius + entity_radius),
+                                    )
             else:
                 # Check if goal is even within reachable area using cached bounds
                 if self._adjacency_bounds is not None:
@@ -365,20 +426,136 @@ class CachedPathDistanceCalculator:
 
         self.cache[key] = distance
 
-        # Add Euclidean distances for dense reward signal (inlined for speed)
-        dx_start = start[0] - start_node[0]
-        dy_start = start[1] - start_node[1]
-        euclidean_start = (dx_start * dx_start + dy_start * dy_start) ** 0.5
+        # SUB-NODE PBRS RESOLUTION (cache miss path)
+        # For cache misses, we don't have precomputed distances for nearby nodes,
+        # so we use a simpler approach: just the computed distance without sub-node
+        # interpolation. This is acceptable because cache misses are rare after warmup.
+        #
+        # The primary path (level cache hit) handles sub-node resolution properly
+        # by checking minimum distance among nearby nodes.
+        total_dist = max(0.0, distance - (ninja_radius + entity_radius))
+        return total_dist
 
-        dx_goal = goal[0] - goal_node[0]
-        dy_goal = goal[1] - goal_node[1]
-        euclidean_goal = (dx_goal * dx_goal + dy_goal * dy_goal) ** 0.5
+    def get_geometric_distance(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        adjacency: Dict,
+        base_adjacency: Dict,
+        level_data: Optional[LevelData] = None,
+        graph_data: Optional[Dict] = None,
+        entity_radius: float = 0.0,
+        ninja_radius: float = 10.0,
+    ) -> float:
+        """
+        Get GEOMETRIC path distance (actual pixels) with caching.
 
-        # Total distance includes exact positions to node centers
-        total_dist = (
-            euclidean_start + distance + euclidean_goal - (ninja_radius + entity_radius)
+        Unlike get_distance() which returns physics-weighted costs, this returns
+        the actual path length in pixels. Use this for PBRS normalization where
+        you need the true geometric distance, not the physics-optimal cost.
+
+        For example, an 800px horizontal path returns ~800px (not ~36 with physics costs).
+
+        Args:
+            start: Start position (world/full map space)
+            goal: Goal position (world/full map space)
+            adjacency: Masked graph adjacency (filtered to only reachable nodes, for pathfinding)
+            base_adjacency: Base graph adjacency (pre-entity-mask, for physics checks)
+            level_data: Optional level data for level-based caching
+            graph_data: Optional graph data dict with spatial_hash for fast lookup
+            entity_radius: Collision radius of the goal entity (default 0.0)
+            ninja_radius: Collision radius of the ninja (default 10.0)
+
+        Returns:
+            Geometric path distance in pixels, or float('inf') if unreachable
+        """
+        # Extract spatial hash and subcell lookup from graph_data if available
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
         )
-        return max(0.0, total_dist)
+
+        # Store spatial_hash for later use if available
+        if spatial_hash is not None:
+            self._spatial_hash = spatial_hash
+
+        # Try level cache first if level_data is provided
+        if level_data is not None and self.level_cache is not None:
+            # Only rebuild cache if level actually changed
+            level_id = level_data.level_id
+
+            if level_id != self._current_level_id:
+                self.build_level_cache(
+                    level_data, adjacency, base_adjacency, graph_data
+                )
+                self._current_level_id = level_id
+
+            # Find goal node using spatial hash for O(1) lookup
+            goal_node = find_closest_node_to_position(
+                goal,
+                adjacency,
+                threshold=None,  # Will be calculated from radii
+                entity_radius=entity_radius,
+                ninja_radius=ninja_radius,
+                spatial_hash=self._spatial_hash,
+                subcell_lookup=subcell_lookup,
+            )
+
+            # Only proceed if we found a valid goal node within threshold
+            if goal_node is not None:
+                # Look up goal_id from goal_node using the cache's mapping
+                goal_id = self.level_cache.get_goal_id_from_node(goal_node)
+
+                if goal_id is not None:
+                    # Get goal_pos for validation
+                    goal_pos = self.level_cache.get_goal_pos_from_id(goal_id)
+
+                    if goal_pos is not None:
+                        # Validate that cached goal_pos matches input goal (within tolerance)
+                        dx = abs(goal_pos[0] - goal[0])
+                        dy = abs(goal_pos[1] - goal[1])
+                        if dx <= 12 and dy <= 12:
+                            # Find ninja node
+                            # FIX: Pass level_cache to use PATH distance instead of Euclidean
+                            start_node = find_ninja_node(
+                                start,
+                                adjacency,
+                                spatial_hash=self._spatial_hash,
+                                subcell_lookup=subcell_lookup,
+                                ninja_radius=ninja_radius,
+                                goal_node=goal_node,
+                                level_cache=self.level_cache,
+                                goal_id=goal_id,
+                            )
+
+                            # Try level cache with snapped start position
+                            if start_node is not None and start_node in adjacency:
+                                # Get GEOMETRIC distance from cache
+                                cached_dist = self.level_cache.get_geometric_distance(
+                                    start_node, goal_pos, goal_id
+                                )
+                                if cached_dist != float("inf"):
+                                    # Adjust for collision radii
+                                    return max(
+                                        0.0,
+                                        cached_dist - (ninja_radius + entity_radius),
+                                    )
+
+        # Cache miss - compute directly using BFS with geometric costs
+        from .pathfinding_utils import calculate_geometric_path_distance
+
+        physics_cache = graph_data.get("node_physics") if graph_data else None
+
+        return calculate_geometric_path_distance(
+            start,
+            goal,
+            adjacency,
+            base_adjacency,
+            physics_cache=physics_cache,
+            spatial_hash=self._spatial_hash,
+            subcell_lookup=subcell_lookup,
+            entity_radius=entity_radius,
+            ninja_radius=ninja_radius,
+        )
 
     def clear_cache(self):
         """Clear cache (call on level change)."""

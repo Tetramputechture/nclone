@@ -28,10 +28,13 @@ All constants defined in reward_constants.py with full documentation.
 """
 
 import logging
+import math
 from typing import Dict, Any, List, Tuple, Optional
 from .reward_constants import (
     PBRS_SWITCH_DISTANCE_SCALE,
     PBRS_EXIT_DISTANCE_SCALE,
+    VELOCITY_ALIGNMENT_MIN_SPEED,
+    VELOCITY_ALIGNMENT_WEIGHT,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,72 @@ logger = logging.getLogger(__name__)
 # The graph builder creates a 2x2 grid of sub-nodes per 24px tile
 SUB_NODE_SIZE = 12  # pixels per sub-node
 PLAYER_RADIUS = 10  # Player collision radius in pixels (from graph_builder)
+
+# Node coordinate offset for world coordinate conversion (same as pathfinding_utils)
+NODE_WORLD_COORD_OFFSET = 24
+
+
+def get_path_gradient_from_next_hop(
+    player_pos: Tuple[float, float],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    level_cache: Any,
+    goal_id: str,
+    spatial_hash: Optional[Any] = None,
+    subcell_lookup: Optional[Any] = None,
+) -> Optional[Tuple[float, float]]:
+    """Get path gradient using next_hop direction (respects winding paths).
+
+    Instead of computing direction toward goal (Euclidean), this computes
+    direction toward the next_hop node on the optimal path. This correctly
+    handles levels where the path goes away from the goal first.
+
+    Args:
+        player_pos: Current player position (x, y) in world coordinates
+        adjacency: Graph adjacency structure
+        level_cache: LevelBasedPathDistanceCache with precomputed next_hop data
+        goal_id: Goal identifier ("switch" or "exit")
+        spatial_hash: Optional spatial hash for fast node lookup
+        subcell_lookup: Optional subcell lookup for node snapping
+
+    Returns:
+        Normalized direction vector (dx, dy) pointing toward next_hop,
+        or None if at goal or no path available.
+    """
+    from ...graph.reachability.pathfinding_utils import find_ninja_node
+
+    if level_cache is None:
+        return None
+
+    # Find current node the player is on/near
+    ninja_node = find_ninja_node(
+        (int(player_pos[0]), int(player_pos[1])),
+        adjacency,
+        spatial_hash=spatial_hash,
+        subcell_lookup=subcell_lookup,
+        ninja_radius=PLAYER_RADIUS,
+    )
+
+    if ninja_node is None:
+        return None
+
+    # Get next hop toward goal from precomputed cache
+    next_hop = level_cache.get_next_hop(ninja_node, goal_id)
+    if next_hop is None:
+        # At goal or no path - no gradient
+        return None
+
+    # Compute direction from current node to next_hop (in tile data space)
+    # Both nodes are in tile data space, so we can directly compute direction
+    dx = next_hop[0] - ninja_node[0]
+    dy = next_hop[1] - ninja_node[1]
+    length = (dx * dx + dy * dy) ** 0.5
+
+    if length < 0.001:
+        # next_hop is same as current node (shouldn't happen)
+        return None
+
+    # Return normalized direction vector
+    return (dx / length, dy / length)
 
 
 class PBRSPotentials:
@@ -64,10 +133,14 @@ class PBRSPotentials:
         graph_data: Optional[Dict[str, Any]] = None,
         scale_factor: float = 1.0,
     ) -> float:
-        """Potential based on shortest path distance to objective (direct path normalization).
+        """Potential based on GEOMETRIC path distance to objective (in pixels).
 
-        Uses DIRECT path normalization: Φ(s) = 1 - (distance / combined_path_distance)
-        This provides simple, predictable gradients controlled only by curriculum weights.
+        Uses geometric path normalization: Φ(s) = 1 - (distance / combined_path_distance)
+        where both distance and combined_path_distance are actual pixel distances.
+
+        IMPORTANT: Uses geometric distances (actual path length in pixels), NOT
+        physics-weighted costs. This ensures PBRS gradients are proportional to
+        actual movement and provides predictable, meaningful reward signals.
 
         Returns higher potential when closer to the current objective:
         - Switch when inactive
@@ -77,7 +150,7 @@ class PBRSPotentials:
             state: Game state dictionary (must contain _pbrs_combined_path_distance)
             adjacency: Graph adjacency structure (always present)
             level_data: Level data object (always present)
-            path_calculator: CachedPathDistanceCalculator instance (always present)
+            path_calculator: CachedPathDistanceCalculator instance (uses cached geometric distances)
             graph_data: Graph data dict with spatial_hash for O(1) node lookup
             scale_factor: DEPRECATED - no longer used, kept for backward compatibility
 
@@ -85,7 +158,7 @@ class PBRSPotentials:
             float: Potential in range [0.0, 1.0], linearly proportional to progress.
                    0.0 at spawn, 1.0 at goal.
         """
-        # Note: adjacency, level_data, path_calculator, and graph_data are assumed
+        # Note: adjacency, level_data, and graph_data are assumed
         # to always be present. Validation removed for performance.
 
         # Determine goal position
@@ -97,28 +170,26 @@ class PBRSPotentials:
 
         if not state["switch_activated"]:
             goal_pos = (int(state["switch_x"]), int(state["switch_y"]))
-            cache_key = "switch"
             entity_radius = EXIT_SWITCH_RADIUS
         else:
             goal_pos = (int(state["exit_door_x"]), int(state["exit_door_y"]))
-            cache_key = "exit"
             entity_radius = EXIT_DOOR_RADIUS
 
         player_pos = (int(state["player_x"]), int(state["player_y"]))
 
-        # Extract base_adjacency for physics checks
+        # Extract base_adjacency for pathfinding
         base_adjacency = (
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
 
-        # Calculate shortest path distance
+        # Calculate GEOMETRIC path distance using cached values when available
+        # This returns actual pixel distance, not physics-weighted cost
         try:
-            distance = path_calculator.get_distance(
+            distance = path_calculator.get_geometric_distance(
                 player_pos,
                 goal_pos,
                 adjacency,
                 base_adjacency,
-                cache_key=cache_key,
                 level_data=level_data,
                 graph_data=graph_data,
                 entity_radius=entity_radius,
@@ -126,7 +197,7 @@ class PBRSPotentials:
             )
         except Exception as e:
             raise RuntimeError(
-                f"PBRS path distance calculation failed: {e}\n"
+                f"PBRS geometric path distance calculation failed: {e}\n"
                 "Check player/goal positions are within level bounds."
             ) from e
 
@@ -144,45 +215,45 @@ class PBRSPotentials:
             state["_pbrs_normalized_distance"] = float("inf")
             return 0.0
 
-        # CAPPED NORMALIZATION: Balance strong gradients for slow movement with long path support
+        # ADAPTIVE NORMALIZATION: Full-path gradient coverage
         #
-        # Problem: Pure combined_path normalization gives weak signals for:
-        #   1. Slow initial movement (0.66px at episode start)
-        #   2. Very long paths (>2500px)
+        # Problem with fixed 800px cap or ADAPTIVE_FACTOR < 1.0:
+        #   - Long levels (>800px): spawn potential = 1 - 1200/800 = -0.5 → clamped to 0
+        #   - This creates a "dead zone" where first portion produces zero PBRS reward
+        #   - With factor=0.5 and 1300px path: dead zone = 500px (38% of path!)
         #
-        # Solution: Cap normalization distance at 800px to guarantee minimum gradient strength
-        # - Short paths (400px): Uses actual path → natural gradient scaling
-        # - Medium paths (800-1500px): Uses 800px cap → stronger gradients
-        # - Long paths (>1500px): Uses 800px cap → prevents gradient vanishing
+        # Solution: Adaptive cap = max(800, combined_path * 1.0)
+        # - Short paths (400px): max(800, 400) = 800 → strong gradients
+        # - Medium paths (1000px): max(800, 1000) = 1000 → no dead zone, spawn Φ=0.0
+        # - Long paths (1300px): max(800, 1300) = 1300 → no dead zone, spawn Φ=0.0
+        # - Very long paths (3000px): max(800, 3000) = 3000 → full gradient coverage
         #
-        # This ensures even 0.66px movement gives meaningful PBRS signal:
-        #   - ΔΦ = 0.66/800 = 0.000825
-        #   - With weight 60: PBRS = 0.05 (good signal!)
-        #   - With weight 40: PBRS = 0.033 (adequate signal)
-        MAX_NORMALIZATION_DISTANCE = 800.0  # Tunable: 600-1000 range
-        effective_normalization = min(
-            combined_path_distance, MAX_NORMALIZATION_DISTANCE
+        # Gradient strength examples (with effective_norm = max(800, path)):
+        #   Short level (800px):   ΔΦ = 1px/800 = 0.00125 → strong signal
+        #   Long level (1300px):   ΔΦ = 1px/1300 = 0.00077 → adequate signal
+        #   Very long (3000px):    ΔΦ = 1px/3000 = 0.00033 → weaker but present
+        MIN_NORMALIZATION_DISTANCE = (
+            800.0  # Minimum cap for strong gradients on short levels
+        )
+        ADAPTIVE_FACTOR = 1.0  # Use full path for normalization to eliminate dead zone
+        effective_normalization = max(
+            MIN_NORMALIZATION_DISTANCE, combined_path_distance * ADAPTIVE_FACTOR
         )
 
-        # CAPPED PATH NORMALIZATION: Strong gradients for slow movement + long path support
-        # Φ(s) = 1 - (distance_to_goal / min(combined_path, 800px))
+        # ADAPTIVE PATH NORMALIZATION: Full gradient coverage, no dead zones
+        # Φ(s) = 1 - (distance_to_goal / max(800, combined_path))
         #
         # Properties:
         # - Linear gradient throughout: dΦ/dd = -1/effective_normalization
-        # - Gradient strength guaranteed even for slow movement and long paths
-        # - At spawn: potential depends on path length (0 to ~0.7 for very long paths)
-        # - At goal: potential = 1.0 (reached goal)
+        # - At spawn: potential = 0.0 exactly (normalized_distance = 1.0)
+        # - At goal: potential = 1.0 (distance = 0)
+        # - No dead zones: spawn potential is exactly 0, any progress gives positive reward
         # - PBRS-compatible: F(s,s') = γ * Φ(s') - Φ(s) maintains policy invariance
         #
-        # Movement signal strength (with effective_norm = 800px):
-        #   Slow start (0.66px):  ΔΦ = 0.00082 → PBRS = 0.05 (weight=60) ✓ Good!
-        #   Medium speed (3px):   ΔΦ = 0.00375 → PBRS = 0.23 (weight=60) ✓ Strong!
-        #   Fast movement (8px):  ΔΦ = 0.01000 → PBRS = 0.60 (weight=60) ✓ Very strong!
-        #
         # Curriculum scaling (via objective_weight in calculate_combined_potential):
-        #   - Early (weight=60): Strong signal even for 0.66px movement
-        #   - Mid (weight=40): Moderate signal, encourages faster movement
-        #   - Late (weight=20): Refined signal, assumes skilled fast movement
+        #   - Discovery (weight=15): Strong signal for exploration
+        #   - Early (weight=8-12): Moderate guidance
+        #   - Late (weight=4): Light shaping for refinement
 
         normalized_distance = distance / effective_normalization
         potential = 1.0 - normalized_distance
@@ -191,6 +262,84 @@ class PBRSPotentials:
         state["_pbrs_normalized_distance"] = normalized_distance
 
         return max(0.0, min(1.0, potential))
+
+    @staticmethod
+    def velocity_alignment_potential(
+        state: Dict[str, Any],
+        path_gradient: Optional[Tuple[float, float]] = None,
+    ) -> float:
+        """Potential based on velocity alignment with optimal path direction.
+
+        Uses the pre-computed path gradient (direction of steepest potential increase)
+        to determine if velocity is aligned with the optimal path, not just Euclidean
+        direction to goal. This respects obstacles and level geometry.
+
+        When path_gradient is not provided, falls back to Euclidean direction.
+
+        This is policy-invariant as part of the potential function:
+        F(s,s') = γ * Φ(s') - Φ(s) where Φ includes velocity alignment.
+
+        Args:
+            state: Game state dictionary with velocity and goal positions
+            path_gradient: Optional (gx, gy) normalized direction toward goal via optimal path.
+                          If None, falls back to Euclidean direction.
+
+        Returns:
+            float: Potential in range [-1.0, 1.0]
+                   1.0 = moving directly along optimal path toward goal
+                   0.0 = moving perpendicular or too slow
+                   -1.0 = moving directly away from goal on optimal path
+        """
+        # Get velocity components
+        vx = state.get("player_xspeed", 0.0)
+        vy = state.get("player_yspeed", 0.0)
+
+        # Calculate speed
+        speed = math.sqrt(vx * vx + vy * vy)
+
+        # Return 0 if speed is below threshold (direction too noisy)
+        if speed < VELOCITY_ALIGNMENT_MIN_SPEED:
+            return 0.0
+
+        # Normalize velocity direction
+        vel_dir_x = vx / speed
+        vel_dir_y = vy / speed
+
+        # Use path gradient if available, otherwise fall back to Euclidean direction
+        if path_gradient is not None:
+            grad_x, grad_y = path_gradient
+            grad_mag = math.sqrt(grad_x * grad_x + grad_y * grad_y)
+            if grad_mag > 0.001:
+                # Normalize gradient direction
+                path_dir_x = grad_x / grad_mag
+                path_dir_y = grad_y / grad_mag
+            else:
+                # Gradient too small (at or very close to goal)
+                return 1.0
+        else:
+            # Fallback: Euclidean direction to goal
+            if not state.get("switch_activated", False):
+                goal_x = state["switch_x"]
+                goal_y = state["switch_y"]
+            else:
+                goal_x = state["exit_door_x"]
+                goal_y = state["exit_door_y"]
+
+            dx = goal_x - state["player_x"]
+            dy = goal_y - state["player_y"]
+            dist_to_goal = math.sqrt(dx * dx + dy * dy)
+
+            if dist_to_goal < 1.0:
+                return 1.0  # At goal
+
+            path_dir_x = dx / dist_to_goal
+            path_dir_y = dy / dist_to_goal
+
+        # Calculate cosine of angle between velocity and path direction (dot product)
+        # Range: [-1, 1] where 1 = same direction, -1 = opposite direction
+        alignment = vel_dir_x * path_dir_x + vel_dir_y * path_dir_y
+
+        return alignment
 
 
 class PBRSCalculator:
@@ -291,10 +440,15 @@ class PBRSCalculator:
         level_data: Any,
         graph_data: Optional[Dict[str, Any]] = None,
     ) -> float:
-        """Compute combined path distance from spawn→switch + switch→exit with caching.
+        """Compute combined GEOMETRIC path distance from spawn→switch + switch→exit.
 
-        This provides path-based normalization that better handles open levels where
-        the player takes focused paths.
+        IMPORTANT: This returns the actual geometric path length in PIXELS, not physics-
+        weighted costs. The physics-aware pathfinder uses costs like 0.5 for grounded
+        horizontal movement, which would return ~36 for an 800px path. For PBRS
+        normalization, we need the actual path length (~800px).
+
+        Uses BFS with geometric edge costs (12px for cardinal, ~17px for diagonal)
+        to calculate the true path distance following the adjacency graph.
 
         Args:
             adjacency: Graph adjacency structure (always present)
@@ -302,7 +456,7 @@ class PBRSCalculator:
             graph_data: Graph data dict with spatial_hash for O(1) node lookup
 
         Returns:
-            Combined path distance in pixels (spawn→switch + switch→exit)
+            Combined geometric path distance in pixels (spawn→switch + switch→exit)
             Returns float('inf') if either path is unreachable
         """
         from ...constants.entity_types import EntityType
@@ -310,6 +464,10 @@ class PBRSCalculator:
             EXIT_SWITCH_RADIUS,
             EXIT_DOOR_RADIUS,
             NINJA_RADIUS,
+        )
+        from ...graph.reachability.pathfinding_utils import (
+            calculate_geometric_path_distance,
+            extract_spatial_lookups_from_graph_data,
         )
 
         # Get spawn position from level_data
@@ -327,21 +485,25 @@ class PBRSCalculator:
         exit_door = exit_doors[0]
         exit_pos = (int(exit_door.get("x", 0)), int(exit_door.get("y", 0)))
 
-        # Extract base_adjacency for physics checks
+        # Extract base_adjacency and spatial lookups for pathfinding
         base_adjacency = (
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
+        )
+        physics_cache = graph_data.get("node_physics") if graph_data else None
 
-        # Calculate spawn→switch distance
+        # Calculate spawn→switch GEOMETRIC distance (actual pixels, not physics costs)
         try:
-            spawn_to_switch_dist = self.path_calculator.get_distance(
+            spawn_to_switch_dist = calculate_geometric_path_distance(
                 spawn_pos,
                 switch_pos,
                 adjacency,
                 base_adjacency,
-                cache_key="spawn_to_switch",
-                level_data=level_data,
-                graph_data=graph_data,
+                physics_cache=physics_cache,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
                 entity_radius=EXIT_SWITCH_RADIUS,
                 ninja_radius=NINJA_RADIUS,
             )
@@ -351,16 +513,16 @@ class PBRSCalculator:
             )
             spawn_to_switch_dist = float("inf")
 
-        # Calculate switch→exit distance
+        # Calculate switch→exit GEOMETRIC distance (actual pixels, not physics costs)
         try:
-            switch_to_exit_dist = self.path_calculator.get_distance(
+            switch_to_exit_dist = calculate_geometric_path_distance(
                 switch_pos,
                 exit_pos,
                 adjacency,
                 base_adjacency,
-                cache_key="switch_to_exit",
-                level_data=level_data,
-                graph_data=graph_data,
+                physics_cache=physics_cache,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
                 entity_radius=EXIT_DOOR_RADIUS,
                 ninja_radius=NINJA_RADIUS,
             )
@@ -377,6 +539,38 @@ class PBRSCalculator:
             return float("inf")
 
         combined_distance = spawn_to_switch_dist + switch_to_exit_dist
+
+        # DEBUG: Log combined path distance calculation details
+        # Calculate Euclidean distances for comparison
+        spawn_to_switch_euclidean = (
+            (switch_pos[0] - spawn_pos[0]) ** 2 + (switch_pos[1] - spawn_pos[1]) ** 2
+        ) ** 0.5
+        switch_to_exit_euclidean = (
+            (exit_pos[0] - switch_pos[0]) ** 2 + (exit_pos[1] - switch_pos[1]) ** 2
+        ) ** 0.5
+        euclidean_combined = spawn_to_switch_euclidean + switch_to_exit_euclidean
+
+        logger.info(
+            f"[PBRS DEBUG] Combined path distance calculation:\n"
+            f"  Spawn position: {spawn_pos}\n"
+            f"  Switch position: {switch_pos}\n"
+            f"  Exit position: {exit_pos}\n"
+            f"  Spawn→Switch path distance: {spawn_to_switch_dist:.1f}px\n"
+            f"  Switch→Exit path distance: {switch_to_exit_dist:.1f}px\n"
+            f"  Combined path distance: {combined_distance:.1f}px\n"
+            f"  Spawn→Switch Euclidean: {spawn_to_switch_euclidean:.1f}px\n"
+            f"  Switch→Exit Euclidean: {switch_to_exit_euclidean:.1f}px\n"
+            f"  Euclidean combined: {euclidean_combined:.1f}px\n"
+            f"  Path/Euclidean ratio: {combined_distance / euclidean_combined:.2f}x"
+        )
+
+        # CRITICAL: Warn if combined distance is suspiciously low
+        if combined_distance < 100 and euclidean_combined > 200:
+            logger.error(
+                f"[PBRS BUG] Combined path distance ({combined_distance:.1f}px) is "
+                f"much smaller than Euclidean distance ({euclidean_combined:.1f}px)! "
+                f"This indicates a pathfinding bug."
+            )
 
         return combined_distance
 
@@ -478,11 +672,56 @@ class PBRSCalculator:
         )
         state["_pbrs_surface_area"] = state_with_metrics.get("_pbrs_surface_area")
 
+        # === VELOCITY ALIGNMENT WITH NEXT-HOP GRADIENT ===
+        # Uses next_hop direction (respects winding paths) instead of Euclidean direction.
+        # This provides continuous directional guidance even when optimal path goes away
+        # from the goal first.
+        velocity_alignment = 0.0
+        path_gradient = None
+
+        # Only compute if we have a level cache with next_hop data
+        if (
+            self.path_calculator is not None
+            and self.path_calculator.level_cache is not None
+            and VELOCITY_ALIGNMENT_WEIGHT > 0
+        ):
+            # Determine goal_id based on switch state
+            goal_id = "switch" if not state.get("switch_activated", False) else "exit"
+
+            # Extract spatial lookup from graph_data
+            spatial_hash = graph_data.get("spatial_hash") if graph_data else None
+            subcell_lookup = graph_data.get("subcell_lookup") if graph_data else None
+
+            # Get path gradient from next_hop (respects winding paths)
+            path_gradient = get_path_gradient_from_next_hop(
+                player_pos=(state["player_x"], state["player_y"]),
+                adjacency=adjacency,
+                level_cache=self.path_calculator.level_cache,
+                goal_id=goal_id,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+            )
+
+            if path_gradient is not None:
+                # Compute velocity alignment with path gradient
+                velocity_alignment = PBRSPotentials.velocity_alignment_potential(
+                    state, path_gradient=path_gradient
+                )
+
+        # Store for TensorBoard logging
+        state["_pbrs_velocity_alignment"] = velocity_alignment
+        state["_pbrs_velocity_weight"] = VELOCITY_ALIGNMENT_WEIGHT
+        state["_pbrs_path_gradient"] = path_gradient
+
         # Apply phase-specific scaling (switch vs exit) and curriculum weight
         if not state.get("switch_activated", False):
             potential = PBRS_SWITCH_DISTANCE_SCALE * objective_pot * objective_weight
         else:
             potential = PBRS_EXIT_DISTANCE_SCALE * objective_pot * objective_weight
+
+        # Add velocity alignment bonus (scaled by weight)
+        # This is additive, not multiplicative, to preserve PBRS structure
+        potential += VELOCITY_ALIGNMENT_WEIGHT * velocity_alignment
 
         return max(0.0, potential)
 

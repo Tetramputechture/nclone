@@ -58,11 +58,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         Args:
             config: Environment configuration object
         """
-        _init_start = time.perf_counter()
         _logger = logging.getLogger(__name__)
-        print(f"[PROFILE] NppEnvironment.__init__ starting...")
 
         self.config = config
+
         super().__init__(
             render_mode=self.config.render.render_mode,
             enable_animation=self.config.render.enable_animation,
@@ -82,21 +81,15 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 "disable_validation": self.config.augmentation.disable_validation,
             },
             enable_visual_observations=self.config.enable_visual_observations,
-            frame_skip=getattr(
-                self.config, "frame_skip", 4
-            ),  # Get from config or default to 4
+            frame_skip=self.config.frame_skip,
         )
 
         # Initialize mixin systems using config
-        _mixin_start = time.perf_counter()
-        print(f"[PROFILE] Initializing mixins...")
         self._init_graph_system(
             debug=self.config.graph.debug,
         )
         self._init_reachability_system(self.config.reachability.debug)
         self._init_debug_system(self.config.render.enable_debug_overlay)
-        _mixin_time = time.perf_counter() - _mixin_start
-        print(f"[PROFILE] Mixin initialization: {_mixin_time:.3f}s")
 
         # Initialize reset retry counter for handling degenerate maps
         self._reset_retry_count = 0
@@ -139,9 +132,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Set environment reference in simulator for cache invalidation
         self.nplay_headless.sim.gym_env = self
-
-        _init_time = time.perf_counter() - _init_start
-        print(f"[PROFILE] NppEnvironment.__init__ COMPLETE: {_init_time:.3f}s")
 
     def _safe_path_distance(
         self,
@@ -232,6 +222,15 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             dtype=np.uint8,
         )
 
+        # Switch states for locked doors (25 total: 5 doors * 5 features each)
+        # Features: [switch_x, switch_y, door_x, door_y, collected] per door
+        obs_spaces["switch_states"] = box.Box(
+            low=0.0,
+            high=1.0,
+            shape=(SWITCH_STATES_DIM,),
+            dtype=np.float32,
+        )
+
         return SpacesDict(obs_spaces)
 
     def _post_action_hook(self):
@@ -261,6 +260,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         info["exit_door_y"] = self.nplay_headless.exit_door_position()[1]
         info["player_dead"] = self.nplay_headless.ninja_has_died()
         info["player_won"] = self.nplay_headless.ninja_has_won()
+        info["death_cause"] = self.nplay_headless.ninja_death_cause()
 
     def _build_door_feature_cache(self):
         """

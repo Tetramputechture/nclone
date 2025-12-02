@@ -20,6 +20,8 @@ from .tile_connectivity_loader import TileConnectivityLoader
 from .entity_mask import EntityMask
 from .spatial_hash import SpatialHash
 from .pathfinding_utils import flood_fill_reachable_nodes
+from .graph_truncation import truncate_graph_if_needed
+from ..common import N_MAX_NODES
 
 # Hardcoded cell size as per N++ constants
 CELL_SIZE = 24
@@ -644,6 +646,21 @@ class GraphBuilder:
             # Critical: This ensures all cached distances are for reachable areas only
             adjacency = self._filter_adjacency_to_reachable(adjacency, reachable_nodes)
 
+            # Apply smart truncation if graph exceeds N_MAX_NODES
+            # This preserves full exploration space when possible, only truncating
+            # when the level is exceptionally open
+            if len(reachable_nodes) > N_MAX_NODES:
+                # Extract goal positions from entities
+                goal_positions = self._extract_goal_positions(level_data_dict)
+
+                adjacency, reachable_nodes, was_truncated = truncate_graph_if_needed(
+                    adjacency=adjacency,
+                    reachable_nodes=reachable_nodes,
+                    start_pos=initial_player_pos,
+                    goal_positions=goal_positions,
+                    max_nodes=N_MAX_NODES,
+                )
+
         # Build spatial hash for O(1) node lookup
         spatial_hash = SpatialHash(cell_size=CELL_SIZE)
         spatial_hash.build(list(adjacency.keys()))
@@ -796,6 +813,33 @@ class GraphBuilder:
         center_x = (width // 2) * CELL_SIZE + CELL_SIZE // 2
         center_y = (height // 2) * CELL_SIZE + CELL_SIZE // 2
         return (center_x, center_y)
+
+    def _extract_goal_positions(
+        self, level_data: Dict[str, Any]
+    ) -> List[Tuple[int, int]]:
+        """
+        Extract goal positions (exit switch, exit door) from level data.
+
+        Used for smart truncation to prioritize nodes on paths to objectives.
+
+        Args:
+            level_data: Level data dict with entities
+
+        Returns:
+            List of goal positions (x, y) in pixels
+        """
+        goal_positions = []
+
+        entities = level_data.get("entities", [])
+        for entity in entities:
+            entity_type = entity.get("type")
+            # Exit switch (type 3) and exit door (type 4)
+            if entity_type in [3, 4]:
+                x = entity.get("x", 0)
+                y = entity.get("y", 0)
+                goal_positions.append((int(x), int(y)))
+
+        return goal_positions
 
     def _is_position_in_non_solid_area(
         self, pixel_x: int, pixel_y: int, tile_type: int, tile_x: int, tile_y: int

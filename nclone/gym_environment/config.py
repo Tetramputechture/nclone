@@ -163,6 +163,9 @@ class EnvironmentConfig:
     # Reward system configuration (curriculum-aware)
     reward_config: Optional[RewardConfig] = None
 
+    # Frame skip
+    frame_skip: int = 4
+
     def __post_init__(self):
         """Validate environment configuration."""
         if self.enable_logging:
@@ -206,6 +209,16 @@ class EnvironmentConfig:
         )
         return config
 
+    def for_visual_testing(cls, **kwargs) -> "EnvironmentConfig":
+        """Create configuration optimized for visual testing."""
+        config = cls(
+            **kwargs,
+            render=RenderConfig(render_mode="human"),
+            enable_visual_observations=True,
+            frame_skip=1,
+        )
+        return config
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary for backward compatibility."""
         return {
@@ -244,6 +257,8 @@ class EnvironmentConfig:
             else "N/A",
             # Debug settings
             "debug": self.graph.debug or self.reachability.debug,
+            # Frame skip settings
+            "frame_skip": self.frame_skip,
         }
 
 

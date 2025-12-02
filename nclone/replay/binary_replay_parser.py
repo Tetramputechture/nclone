@@ -316,7 +316,7 @@ class BinaryReplayParser:
             print(f"Failed to parse single replay file {replay_file}: {e}")
             import traceback
 
-            logger.debug(f"Full traceback: {traceback.format_exc()}")
+            print(f"Full traceback: {traceback.format_exc()}")
             self.stats["replays_failed"] += 1
             return False
 

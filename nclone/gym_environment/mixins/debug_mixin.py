@@ -78,6 +78,7 @@ class DebugMixin:
                 "level_data": self._path_aware_level_data
                 or (self.level_data if hasattr(self, "level_data") else None),
                 "ninja_position": self.nplay_headless.ninja_position(),
+                "ninja_velocity": self.nplay_headless.ninja_velocity(),
                 "entities": self.level_data.entities
                 if hasattr(self, "level_data")
                 else [],

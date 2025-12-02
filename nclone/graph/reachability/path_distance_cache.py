@@ -25,12 +25,24 @@ class LevelBasedPathDistanceCache:
     ensuring all cached distances are for reachable areas only.
 
     Cache invalidates when level or mine states change.
+
+    Stores TWO types of distances:
+    1. Physics-weighted costs (for pathfinding optimization)
+    2. Geometric distances (for PBRS normalization - actual pixels)
     """
 
     def __init__(self):
         """Initialize level-based path distance cache."""
-        # Cache mapping (node_position, goal_id) -> distance
+        # Cache mapping (node_position, goal_id) -> physics-weighted distance
         self.cache: Dict[Tuple[Tuple[int, int], str], float] = {}
+        # Cache mapping (node_position, goal_id) -> geometric distance (pixels)
+        # Used for PBRS normalization where actual path length is needed
+        self.geometric_cache: Dict[Tuple[Tuple[int, int], str], float] = {}
+        # Cache mapping (node_position, goal_id) -> next_hop_node (toward goal)
+        # Used for sub-node PBRS resolution: direction to next_hop = optimal path direction
+        self.next_hop_cache: Dict[
+            Tuple[Tuple[int, int], str], Optional[Tuple[int, int]]
+        ] = {}
         # Mapping of goal_node -> goal_id for quick lookup
         self._goal_node_to_goal_id: Dict[Tuple[int, int], str] = {}
         # Mapping of goal_id -> goal_pos for validation
@@ -39,12 +51,14 @@ class LevelBasedPathDistanceCache:
         self._cached_mine_signature: Optional[Tuple] = None
         self.level_cache_hits = 0
         self.level_cache_misses = 0
+        self.geometric_cache_hits = 0
+        self.geometric_cache_misses = 0
 
     def get_distance(
         self, node_pos: Tuple[int, int], goal_pos: Tuple[int, int], goal_id: str
     ) -> float:
         """
-        Get cached distance from node to goal.
+        Get cached physics-weighted distance from node to goal.
 
         Args:
             node_pos: Node position (x, y) in pixels
@@ -52,7 +66,7 @@ class LevelBasedPathDistanceCache:
             goal_id: Unique identifier for the goal
 
         Returns:
-            Cached distance in pixels, or float('inf') if not cached
+            Cached physics-weighted distance, or float('inf') if not cached
         """
         key = (node_pos, goal_id)
         if key in self.cache:
@@ -61,6 +75,51 @@ class LevelBasedPathDistanceCache:
 
         self.level_cache_misses += 1
         return float("inf")
+
+    def get_geometric_distance(
+        self, node_pos: Tuple[int, int], goal_pos: Tuple[int, int], goal_id: str
+    ) -> float:
+        """
+        Get cached GEOMETRIC distance from node to goal (actual pixels).
+
+        Unlike get_distance() which returns physics-weighted costs, this returns
+        the actual path length in pixels. Use this for PBRS normalization.
+
+        Args:
+            node_pos: Node position (x, y) in pixels
+            goal_pos: Goal position (x, y) in pixels (for validation)
+            goal_id: Unique identifier for the goal
+
+        Returns:
+            Cached geometric distance in pixels, or float('inf') if not cached
+        """
+        key = (node_pos, goal_id)
+        if key in self.geometric_cache:
+            self.geometric_cache_hits += 1
+            return self.geometric_cache[key]
+
+        self.geometric_cache_misses += 1
+        return float("inf")
+
+    def get_next_hop(
+        self, node_pos: Tuple[int, int], goal_id: str
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Get the next hop node toward the goal from the given node.
+
+        The next hop is the neighbor that's one step closer to the goal
+        along the optimal path. This is used for sub-node PBRS resolution:
+        the direction from player to next_hop is the optimal path direction,
+        respecting the adjacency graph (walls, corridors, etc.).
+
+        Args:
+            node_pos: Current node position
+            goal_id: Goal identifier
+
+        Returns:
+            Next hop node position, or None if not cached or at goal
+        """
+        return self.next_hop_cache.get((node_pos, goal_id))
 
     def _precompute_distances_from_goals(
         self,
@@ -73,6 +132,10 @@ class LevelBasedPathDistanceCache:
     ):
         """
         Precompute distances from all reachable nodes to each goal using flood fill.
+
+        Computes TWO types of distances for each node:
+        1. Physics-weighted costs (for pathfinding optimization)
+        2. Geometric distances (for PBRS normalization - actual pixels)
 
         The adjacency graph should only contain nodes reachable from the initial
         player position. BFS traversal will only reach nodes in the adjacency graph,
@@ -88,6 +151,7 @@ class LevelBasedPathDistanceCache:
         """
         # Clear existing cache and mappings
         self.cache.clear()
+        self.geometric_cache.clear()
         self._goal_node_to_goal_id.clear()
         self._goal_id_to_goal_pos.clear()
 
@@ -130,9 +194,10 @@ class LevelBasedPathDistanceCache:
             # Store mapping of goal_id -> goal_pos for validation
             self._goal_id_to_goal_pos[goal_id] = goal_pos
 
-            # Run BFS from goal node position using shared utility
-            # This matches the visualization logic exactly
-            distances, _ = bfs_distance_from_start(
+            # Run BFS with PHYSICS-WEIGHTED costs (for pathfinding)
+            # Request parents dict to compute next_hop for each node
+            # Since we flood from goal, parent[node] = neighbor closer to goal = next_hop
+            physics_distances, _, parents = bfs_distance_from_start(
                 goal_node,
                 None,
                 adjacency,
@@ -141,11 +206,37 @@ class LevelBasedPathDistanceCache:
                 physics_cache,
                 level_data,
                 mine_proximity_cache,
+                return_parents=True,
+                use_geometric_costs=False,  # Physics-weighted costs
             )
 
-            # Store all computed distances in cache
-            for node_pos, distance in distances.items():
+            # Run BFS with GEOMETRIC costs (for PBRS normalization)
+            # This gives actual path length in pixels
+            geometric_distances, _, _ = bfs_distance_from_start(
+                goal_node,
+                None,
+                adjacency,
+                base_adjacency,
+                None,
+                physics_cache,
+                level_data,
+                mine_proximity_cache,
+                return_parents=False,  # Don't need parents for geometric
+                use_geometric_costs=True,  # Actual pixel distances
+            )
+
+            # Store physics-weighted distances and next_hop for all computed nodes
+            for node_pos, distance in physics_distances.items():
                 self.cache[(node_pos, goal_id)] = distance
+
+                # Parent in BFS from goal = next hop toward goal
+                # (since we flooded outward from goal, parent is closer to goal)
+                next_hop = parents.get(node_pos) if parents else None
+                self.next_hop_cache[(node_pos, goal_id)] = next_hop
+
+            # Store geometric distances for PBRS normalization
+            for node_pos, distance in geometric_distances.items():
+                self.geometric_cache[(node_pos, goal_id)] = distance
 
     def build_cache(
         self,
@@ -206,12 +297,16 @@ class LevelBasedPathDistanceCache:
     def clear_cache(self):
         """Clear the cache."""
         self.cache.clear()
+        self.geometric_cache.clear()
+        self.next_hop_cache.clear()
         self._goal_node_to_goal_id.clear()
         self._goal_id_to_goal_pos.clear()
         self._cached_level_data = None
         self._cached_mine_signature = None
         self.level_cache_hits = 0
         self.level_cache_misses = 0
+        self.geometric_cache_hits = 0
+        self.geometric_cache_misses = 0
 
     def get_goal_id_from_node(self, goal_node: Tuple[int, int]) -> Optional[str]:
         """
@@ -242,10 +337,17 @@ class LevelBasedPathDistanceCache:
         total_queries = self.level_cache_hits + self.level_cache_misses
         hit_rate = self.level_cache_hits / total_queries if total_queries > 0 else 0.0
 
+        geo_total = self.geometric_cache_hits + self.geometric_cache_misses
+        geo_hit_rate = self.geometric_cache_hits / geo_total if geo_total > 0 else 0.0
+
         return {
             "hits": self.level_cache_hits,
             "misses": self.level_cache_misses,
             "total_queries": total_queries,
             "hit_rate": hit_rate,
             "cache_size": len(self.cache),
+            "geometric_cache_size": len(self.geometric_cache),
+            "geometric_hits": self.geometric_cache_hits,
+            "geometric_misses": self.geometric_cache_misses,
+            "geometric_hit_rate": geo_hit_rate,
         }

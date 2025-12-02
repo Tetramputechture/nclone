@@ -779,6 +779,8 @@ def find_ninja_node(
     subcell_lookup: Optional[any] = None,
     ninja_radius: float = 10.0,
     goal_node: Optional[Tuple[int, int]] = None,
+    level_cache: Optional[any] = None,
+    goal_id: Optional[str] = None,
 ) -> Optional[Tuple[int, int]]:
     """
     Find the node representing the ninja's current position.
@@ -789,7 +791,8 @@ def find_ninja_node(
     Strategy:
     1. Find all nodes within ninja_radius (10px by default - player collision radius)
     2. Among overlapping nodes:
-       - If goal_node provided and multiple candidates: return node closest to goal (Euclidean)
+       - If level_cache provided: use cached PATH distance to goal (correct behavior)
+       - Else if goal_node provided: use Euclidean distance (legacy, may cause issues)
        - Otherwise: return the closest one to ninja center
     3. If no nodes overlap, fall back to visual matching (within 5px for blue highlight)
 
@@ -799,7 +802,9 @@ def find_ninja_node(
         spatial_hash: Optional SpatialHash for fast lookup
         subcell_lookup: Optional SubcellNodeLookupLoader for fastest lookup
         ninja_radius: Ninja collision radius in pixels (default 10.0)
-        goal_node: Optional goal node for path-aware start node selection (uses Euclidean heuristic)
+        goal_node: Optional goal node for path-aware start node selection
+        level_cache: Optional LevelBasedPathDistanceCache for correct path distance selection
+        goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
 
     Returns:
         Ninja node position, or None if no suitable node found
@@ -821,21 +826,77 @@ def find_ninja_node(
 
     # If we found overlapping nodes, select the best one
     if overlapping_nodes:
-        # # If goal provided and multiple candidates, pick node closest to goal
-        # # Use Euclidean distance as efficient heuristic (candidates are close together)
-        # if goal_node is not None and len(overlapping_nodes) > 1:
-        #     best_node = None
-        #     best_distance = float("inf")
-        #     gx, gy = goal_node
-        #     for node_pos, _ in overlapping_nodes:
-        #         nx, ny = node_pos
-        #         # Euclidean distance to goal
-        #         dist_to_goal = ((gx - nx) ** 2 + (gy - ny) ** 2) ** 0.5
-        #         if dist_to_goal < best_distance:
-        #             best_distance = dist_to_goal
-        #             best_node = node_pos
-        #     if best_node is not None:
-        #         return best_node
+        # If goal provided and multiple candidates, pick node closest to goal
+        if goal_node is not None and len(overlapping_nodes) > 1:
+            best_node = None
+            best_distance = float("inf")
+            gx, gy = goal_node
+            candidate_info = []  # For diagnostic logging
+            use_path_distance = level_cache is not None and goal_id is not None
+
+            # Track if any fallbacks occurred for diagnostic logging
+            euclidean_fallback_count = 0
+
+            for node_pos, dist_sq_to_ninja in overlapping_nodes:
+                nx, ny = node_pos
+
+                if use_path_distance:
+                    # FIX: Use cached PATH distance instead of Euclidean distance
+                    # This correctly handles levels where the path goes away from the goal first
+                    dist_to_goal = level_cache.get_geometric_distance(
+                        node_pos, goal_node, goal_id
+                    )
+                    # Fallback to Euclidean if cache miss (can happen for nodes outside flood-fill)
+                    if dist_to_goal == float("inf"):
+                        dist_to_goal = ((gx - nx) ** 2 + (gy - ny) ** 2) ** 0.5
+                        euclidean_fallback_count += 1
+                        _logger.debug(
+                            f"[PBRS] Cache miss for node {node_pos}, using Euclidean fallback."
+                        )
+                else:
+                    # Legacy: Euclidean distance to goal
+                    # WARNING: This can cause incorrect node selection when path requires
+                    # going away from the goal first (e.g., going left when goal is right)
+                    dist_to_goal = ((gx - nx) ** 2 + (gy - ny) ** 2) ** 0.5
+                    euclidean_fallback_count += 1
+
+                candidate_info.append((node_pos, dist_to_goal, dist_sq_to_ninja**0.5))
+                if dist_to_goal < best_distance:
+                    best_distance = dist_to_goal
+                    best_node = node_pos
+
+            # DIAGNOSTIC: Log when multiple nodes compete or Euclidean fallback was used
+            if best_node is not None:
+                # Check if nodes have significantly different distances
+                distances = [info[1] for info in candidate_info]
+                dist_spread = (
+                    max(distances) - min(distances) if len(distances) > 1 else 0
+                )
+
+                # Log at debug level if Euclidean fallback was used (no level_cache)
+                # This is expected in some code paths (e.g., visualization, cache miss)
+                if not use_path_distance and len(overlapping_nodes) > 1:
+                    _logger.debug(
+                        f"[PBRS] Node selection without path cache. "
+                        f"Using Euclidean distance. "
+                        f"ninja_pos={ninja_pos}, candidates={len(overlapping_nodes)}"
+                    )
+                elif dist_spread > 10.0:  # Nodes differ by >10px
+                    distance_type = "PATH" if use_path_distance else "EUCLIDEAN"
+                    log_level = _logger.debug if use_path_distance else _logger.warning
+                    log_level(
+                        f"[PBRS_DIAG] Node selection using {distance_type} distance to goal. "
+                        f"ninja_pos={ninja_pos}, selected={best_node}, "
+                        f"dist_to_goal={best_distance:.1f}px, "
+                        f"candidates (node, dist_to_goal, dist_to_ninja): {candidate_info}, "
+                        f"spread={dist_spread:.1f}px."
+                        + (
+                            ""
+                            if use_path_distance
+                            else " WARNING: May select wrong node if path goes away from goal first!"
+                        )
+                    )
+                return best_node
 
         # Otherwise, return closest to ninja center
         overlapping_nodes.sort(key=lambda node: node[1])  # Sort by distance
@@ -863,7 +924,9 @@ def bfs_distance_from_start(
     physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
     level_data: Optional[Any] = None,
     mine_proximity_cache: Optional[Any] = None,
-) -> Tuple[Dict[Tuple[int, int], float], Optional[float]]:
+    return_parents: bool = False,
+    use_geometric_costs: bool = False,
+) -> Tuple[Dict[Tuple[int, int], float], Optional[float], Optional[Dict]]:
     """
     Calculate distances from start node using Dijkstra's algorithm with physics validation.
 
@@ -883,11 +946,16 @@ def bfs_distance_from_start(
         physics_cache: Optional pre-computed physics properties for O(1) lookups
         level_data: Optional LevelData for mine proximity checks (fallback)
         mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
+        return_parents: If True, return the parents dict for path reconstruction
+        use_geometric_costs: If True, use actual geometric distances (pixels) instead of
+            physics-weighted costs. Use this for PBRS normalization where you need the
+            actual path length in pixels, not the physics-optimal cost.
 
     Returns:
-        Tuple of (distances_dict, target_distance):
+        Tuple of (distances_dict, target_distance, parents_dict):
         - distances_dict: Map of node -> distance from start
         - target_distance: Distance to target_node if found, None otherwise
+        - parents_dict: Map of node -> parent node (only if return_parents=True, else None)
     """
     # Priority queue: (distance, node)
     pq = [(0.0, start_node)]
@@ -905,7 +973,8 @@ def bfs_distance_from_start(
 
         # Early termination if we found target and it's requested
         if target_node is not None and current == target_node:
-            return distances, current_dist
+            parents_result = parents if return_parents else None
+            return distances, current_dist, parents_result
 
         # Early termination if we've exceeded max distance
         if max_distance is not None and current_dist > max_distance:
@@ -926,16 +995,25 @@ def bfs_distance_from_start(
             ):
                 continue
 
-            # Calculate physics-aware edge cost with parent for momentum checking (uses base_adjacency)
-            cost = _calculate_physics_aware_cost(
-                current,
-                neighbor_pos,
-                base_adjacency,
-                parents.get(current),
-                physics_cache,
-                level_data,
-                mine_proximity_cache,
-            )
+            # Calculate edge cost
+            if use_geometric_costs:
+                # Use actual geometric distance in pixels
+                # Sub-nodes are spaced 12 pixels apart
+                dx = neighbor_pos[0] - current[0]
+                dy = neighbor_pos[1] - current[1]
+                # Cardinal: 12px, Diagonal: ~17px (12 * sqrt(2))
+                cost = (dx * dx + dy * dy) ** 0.5
+            else:
+                # Calculate physics-aware edge cost with parent for momentum checking (uses base_adjacency)
+                cost = _calculate_physics_aware_cost(
+                    current,
+                    neighbor_pos,
+                    base_adjacency,
+                    parents.get(current),
+                    physics_cache,
+                    level_data,
+                    mine_proximity_cache,
+                )
 
             new_dist = current_dist + cost
 
@@ -945,9 +1023,88 @@ def bfs_distance_from_start(
                 parents[neighbor_pos] = current  # Track parent for horizontal rule
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 
-    # Return distances dict and target distance (None if target not found)
+    # Return distances dict, target distance, and optionally parents
     target_distance = distances.get(target_node) if target_node else None
-    return distances, target_distance
+    parents_result = parents if return_parents else None
+    return distances, target_distance, parents_result
+
+
+def calculate_geometric_path_distance(
+    start_pos: Tuple[int, int],
+    goal_pos: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    spatial_hash: Optional[Any] = None,
+    subcell_lookup: Optional[Any] = None,
+    entity_radius: float = 0.0,
+    ninja_radius: float = 10.0,
+) -> float:
+    """
+    Calculate the geometric (pixel) path distance between two positions.
+
+    Unlike the physics-weighted pathfinding, this returns the actual path length
+    in pixels. This is used for PBRS normalization where we need the true geometric
+    distance, not the physics-optimal cost.
+
+    The path follows the same graph structure as physics-aware pathfinding, but
+    edges are weighted by their actual geometric length (12px for cardinal, ~17px
+    for diagonal) instead of physics-based costs.
+
+    Args:
+        start_pos: Start position (x, y) in pixels
+        goal_pos: Goal position (x, y) in pixels
+        adjacency: Masked graph adjacency structure (for pathfinding)
+        base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
+        physics_cache: Pre-computed physics properties for O(1) lookups
+        spatial_hash: Optional spatial hash for fast node lookup
+        subcell_lookup: Optional subcell lookup for node snapping
+        entity_radius: Collision radius of the goal entity (default 0.0)
+        ninja_radius: Collision radius of the ninja (default 10.0)
+
+    Returns:
+        Geometric path distance in pixels, or float('inf') if unreachable
+    """
+    # Find closest nodes to start and goal positions
+    start_node = find_ninja_node(
+        start_pos,
+        adjacency,
+        spatial_hash=spatial_hash,
+        subcell_lookup=subcell_lookup,
+        ninja_radius=ninja_radius,
+    )
+
+    goal_node = find_closest_node_to_position(
+        goal_pos,
+        adjacency,
+        threshold=None,  # Will be calculated from radii
+        entity_radius=entity_radius,
+        ninja_radius=ninja_radius,
+        spatial_hash=spatial_hash,
+        subcell_lookup=subcell_lookup,
+    )
+
+    if start_node is None or goal_node is None:
+        return float("inf")
+
+    if start_node == goal_node:
+        return 0.0
+
+    # Use BFS with geometric costs to find path
+    distances, target_distance, _ = bfs_distance_from_start(
+        start_node=start_node,
+        target_node=goal_node,
+        adjacency=adjacency,
+        base_adjacency=base_adjacency,
+        physics_cache=physics_cache,
+        use_geometric_costs=True,  # Use actual pixel distances
+    )
+
+    if target_distance is None or target_distance == float("inf"):
+        return float("inf")
+
+    # Adjust for collision radii
+    return max(0.0, target_distance - (ninja_radius + entity_radius))
 
 
 def find_shortest_path(

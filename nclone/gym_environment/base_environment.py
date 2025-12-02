@@ -160,6 +160,22 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Frame skip for temporal abstraction (always enabled)
         self.frame_skip = max(1, frame_skip)  # Ensure at least 1
 
+        # Action sequence tracking for Go-Explore checkpoint replay
+        # Stores all actions since last reset for deterministic replay
+        self._action_sequence: List[int] = []
+        self._checkpoint_replay_in_progress: bool = False
+
+        # Checkpoint route for visualization (stores path from checkpoint replay)
+        # Persists through episode so it can be included in episode end info
+        self._checkpoint_route: List[Tuple[float, float]] = []
+
+        # Checkpoint episode tracking for logging/analysis
+        # Allows distinguishing checkpoint vs spawn episodes in TensorBoard
+        self._from_checkpoint: bool = False
+        self._checkpoint_base_reward: float = (
+            0.0  # Cumulative reward to reach checkpoint
+        )
+
         # Initialize entity extractor
         self.entity_extractor = EntityExtractor(self.nplay_headless)
 
@@ -211,6 +227,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Cache for observation (invalidated after each action execution)
         # PERFORMANCE: Eliminates redundant _get_observation() calls within single step
         self._cached_observation: Optional[Dict[str, Any]] = None
+
+        # Cache for STATIC positions/entities (invalidated only on reset/new level)
+        # MEMORY OPTIMIZATION: These values never change during an episode
+        self._cached_switch_pos: Optional[Tuple[float, float]] = None
+        self._cached_exit_pos: Optional[Tuple[float, float]] = None
+        self._cached_locked_doors: Optional[list] = None
+        self._cached_locked_door_switches: Optional[list] = None
+        self._cached_toggle_mines: Optional[list] = None
 
         # Load the initial map
         self.map_loader.load_map()
@@ -323,27 +347,48 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Track last action for death context
             self.last_action = action
 
+            # Track action in action sequence for Go-Explore checkpoint replay
+            self._action_sequence.append(action)
+
             # Execute action for frame_skip frames
+            # OPTIMIZATION: Compute action inputs once before loop
             action_hoz, action_jump = self._actions_to_execute(action)
             terminated = False
             truncated = False
             frames_executed = 0
 
-            for i in range(self.frame_skip):
-                # Execute physics tick
-                t_physics = self._profile_start("physics_tick")
-                self.nplay_headless.tick(action_hoz, action_jump)
-                self._profile_end("physics_tick", t_physics)
+            # OPTIMIZATION: Cache headless reference to avoid attribute lookup in loop
+            headless = self.nplay_headless
 
-                # Track position for route visualization
-                self._track_position_after_step()
+            # OPTIMIZATION: Check profiling state once before loop
+            _profile = getattr(self, "profile_enabled", False)
+
+            for i in range(self.frame_skip):
+                # Execute physics tick (inline profiling check to avoid function call overhead)
+                if _profile:
+                    t_physics = self._profile_start("physics_tick")
+                    headless.tick(action_hoz, action_jump)
+                    self._profile_end("physics_tick", t_physics)
+                else:
+                    headless.tick(action_hoz, action_jump)
 
                 frames_executed = i + 1
 
-                # Check if episode ended (don't execute more frames after death)
-                terminated, truncated, _ = self._check_termination()
-                if terminated or truncated:
+                # OPTIMIZATION: Only check death/win per frame (cheap attribute lookup)
+                # Skip truncation check in intermediate frames (it's time-based, won't change in 4 frames)
+                player_won = headless.ninja_has_won()
+                player_dead = headless.ninja_has_died()
+                if player_won or player_dead:
+                    terminated = True
                     break
+
+            # Check truncation only once after all frames (expensive curriculum-aware check)
+            if not terminated:
+                truncated = self._check_curriculum_aware_truncation()
+
+            # OPTIMIZATION: Track position only at end of frame_skip (not every physics frame)
+            # Route visualization doesn't need sub-frame granularity
+            self._track_position_after_step()
 
             # Invalidate observation cache since game state changed
             self._cached_observation = None
@@ -510,13 +555,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Update dynamic truncation limit if PBRS surface area is now available
         self._update_dynamic_truncation_if_needed()
 
-        # Apply death penalty for truncation (treat truncation as failure)
+        # Apply timeout penalty for truncation (treat truncation as failure)
         terminated = final_obs.get("player_dead", False)
         truncated = self._check_curriculum_aware_truncation()
         if truncated and not terminated:
-            from .reward_calculation.reward_constants import DEATH_PENALTY
+            from .reward_calculation.reward_constants import TIMEOUT_PENALTY
 
-            reward += DEATH_PENALTY
+            reward += TIMEOUT_PENALTY
 
         # Hook: Modify reward if needed
         reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
@@ -811,6 +856,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "level_id": self.map_loader.current_map_name,
             "config_flags": self.config_flags.copy(),
             "terminal_impact": self.nplay_headless.get_ninja_terminal_impact(),
+            "exit_switch_pos": self._cached_switch_pos,
+            "exit_door_pos": self._cached_exit_pos,
         }
 
         # Add episode route for visualization if episode is ending
@@ -828,6 +875,23 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 logger.warning(
                     f"Episode ended with EMPTY route! "
                     f"frames={self.nplay_headless.sim.frame}"
+                )
+
+            # Add checkpoint route if this episode started from a Go-Explore checkpoint
+            # This path was recorded during checkpoint replay at episode start
+            if self._checkpoint_route and len(self._checkpoint_route) > 0:
+                info["checkpoint_route"] = list(self._checkpoint_route)
+                # Clear after copying to prevent leaking to next episode
+                self._checkpoint_route = []
+
+            # Add checkpoint tracking for logging/analysis
+            # Allows distinguishing checkpoint vs spawn episodes in TensorBoard
+            info["from_checkpoint"] = self._from_checkpoint
+            if self._from_checkpoint:
+                info["checkpoint_base_reward"] = self._checkpoint_base_reward
+                # Total cumulative reward = base (to reach checkpoint) + episode (from checkpoint)
+                info["total_cumulative_reward"] = (
+                    self._checkpoint_base_reward + self.current_ep_reward
                 )
 
         # DIAGNOSTIC: Validate episode stats are reasonable
@@ -881,6 +945,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 - skip_map_load (bool): If True, skip loading a new map.
                   Use this when map has already been loaded externally
                   (e.g., by curriculum wrapper).
+                - checkpoint: StateCheckpoint or CheckpointEntry to restore via action replay.
+                  If provided, the environment will reset and replay the checkpoint's
+                  action sequence to restore the exact game state.
         """
         # Clear observation cache on reset
         self._prev_obs_cache = None
@@ -920,6 +987,17 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset last action tracking for death context
         self.last_action = None
 
+        # Reset action sequence tracking for Go-Explore
+        self._action_sequence = []
+        self._checkpoint_replay_in_progress = False
+
+        # Reset checkpoint route for visualization (will be populated if checkpoint replay)
+        self._checkpoint_route = []
+
+        # Reset checkpoint episode tracking (will be set if checkpoint used)
+        self._from_checkpoint = False
+        self._checkpoint_base_reward = 0.0
+
         # Reset position tracking for route visualization
         self.current_route = []
         self._warned_about_position = False
@@ -932,10 +1010,19 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_level_data = None
         self._cached_entities = None
 
+        # Invalidate static position caches (new level = new positions)
+        self._cached_switch_pos = None
+        self._cached_exit_pos = None
+        self._cached_locked_doors = None
+        self._cached_locked_door_switches = None
+        self._cached_toggle_mines = None
+
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
+        checkpoint = None
         if options is not None and isinstance(options, dict):
             skip_map_load = options.get("skip_map_load", False)
+            checkpoint = options.get("checkpoint", None)
 
         if not skip_map_load:
             # Load map - this calls sim.load() which calls sim.reset()
@@ -944,6 +1031,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # If map loading is skipped, we still need to reset the sim
             # This happens when curriculum wrapper loads the map externally
             self.nplay_headless.reset()
+
+        # If checkpoint provided, replay action sequence to restore state
+        if checkpoint is not None:
+            return self._reset_to_checkpoint(checkpoint)
 
         # Track initial position for route visualization
         try:
@@ -958,6 +1049,326 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         processed_obs = self._process_observation(initial_obs)
 
         return (processed_obs, {})
+
+    def _reset_to_checkpoint(self, checkpoint) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Reset environment to a checkpoint state via action replay.
+
+        Since N++ physics is fully deterministic, replaying the same action
+        sequence from spawn will always produce identical results.
+
+        Args:
+            checkpoint: StateCheckpoint or CheckpointEntry with action_sequence
+
+        Returns:
+            Tuple of (processed_observation, info_dict)
+        """
+        self._checkpoint_replay_in_progress = True
+
+        # Extract action sequence from checkpoint
+        action_sequence = getattr(checkpoint, "action_sequence", None)
+
+        # Check if action_sequence is empty (avoid numpy array boolean ambiguity)
+        # Use explicit length check instead of "if not action_sequence"
+        if action_sequence is None:
+            has_actions = False
+        elif hasattr(action_sequence, "__len__"):
+            has_actions = len(action_sequence) > 0
+        else:
+            has_actions = False
+
+        if not has_actions:
+            logger.warning("Checkpoint has empty action_sequence, starting from spawn")
+            self._checkpoint_replay_in_progress = False
+            # Get initial observation and return
+            initial_obs = self._get_observation()
+            processed_obs = self._process_observation(initial_obs)
+            return (processed_obs, {"checkpoint_replay": False, "replay_frames": 0})
+
+        # Convert numpy array to list if needed (do this early to avoid further ambiguity)
+        if hasattr(action_sequence, "tolist"):
+            action_sequence = action_sequence.tolist()
+        elif not isinstance(action_sequence, list):
+            action_sequence = list(action_sequence)
+
+        # Mark this episode as starting from checkpoint for logging/analysis
+        self._from_checkpoint = True
+        self._checkpoint_base_reward = getattr(checkpoint, "cumulative_reward", 0.0)
+
+        # Track replay statistics for debugging
+        actions_replayed = 0
+        frames_replayed = 0
+        ninja_died_during_replay = False
+
+        # Track positions during checkpoint replay for visualization
+        # This captures the path taken during action replay
+        checkpoint_route = []
+
+        # Get spawn position for debugging and add to checkpoint route
+        spawn_pos = self.nplay_headless.ninja_position()
+        if spawn_pos is not None:
+            checkpoint_route.append((float(spawn_pos[0]), float(spawn_pos[1])))
+
+        # Replay action sequence with frame skip matching original step() behavior
+        # Each action in the sequence was executed for frame_skip frames originally
+        hor_input, jump_input = 0, 0
+        for action in action_sequence:
+            hor_input, jump_input = self._actions_to_execute(action)
+            # Replay for frame_skip ticks to match original step() execution
+            for _ in range(self.frame_skip):
+                self.nplay_headless.tick(hor_input, jump_input)
+                frames_replayed += 1
+
+                # Track position for checkpoint route visualization
+                pos = self.nplay_headless.ninja_position()
+                if pos is not None:
+                    checkpoint_route.append((float(pos[0]), float(pos[1])))
+
+                # Check if ninja died during replay - stop if so
+                if self.nplay_headless.ninja_has_died():
+                    ninja_died_during_replay = True
+                    logger.warning(
+                        f"Ninja died during checkpoint replay at frame {frames_replayed} "
+                        f"(action {actions_replayed + 1}/{len(action_sequence)})"
+                    )
+                    break
+
+            # Track action in current sequence (checkpoint actions become our history)
+            self._action_sequence.append(action)
+            actions_replayed += 1
+
+            if ninja_died_during_replay:
+                break
+
+        self._checkpoint_replay_in_progress = False
+
+        # Store checkpoint route for inclusion in episode end info
+        # This persists through the episode so route visualization can access it
+        self._checkpoint_route = checkpoint_route
+
+        # Track position after replay for current_route (exploration phase starts here)
+        actual_position = None
+        try:
+            actual_position = self.nplay_headless.ninja_position()
+            if actual_position is not None:
+                # Start current_route fresh for exploration phase
+                self.current_route.append(
+                    (float(actual_position[0]), float(actual_position[1]))
+                )
+        except Exception as e:
+            logger.warning(f"Could not get position after checkpoint replay: {e}")
+
+        # Validate position if checkpoint has expected position
+        expected_position = getattr(checkpoint, "ninja_position", None)
+        position_valid = True
+        if expected_position is not None and actual_position is not None:
+            dx = actual_position[0] - expected_position[0]
+            dy = actual_position[1] - expected_position[1]
+            error = (dx * dx + dy * dy) ** 0.5
+            position_valid = error < 0.1  # Allow small floating point error
+            if not position_valid:
+                logger.warning(
+                    f"Checkpoint replay position mismatch: "
+                    f"expected={expected_position}, actual={actual_position}, "
+                    f"error={error:.6f}px | "
+                    f"spawn={spawn_pos}, actions={actions_replayed}/{len(action_sequence)}, "
+                    f"frames={frames_replayed}, died={ninja_died_during_replay}"
+                )
+
+        # Get observation after replay
+        initial_obs = self._get_observation()
+        processed_obs = self._process_observation(initial_obs)
+
+        info = {
+            "checkpoint_replay": True,
+            "replay_frames": len(action_sequence),
+            "position_valid": position_valid,
+            "checkpoint_cell": getattr(checkpoint, "cell", None),
+            "checkpoint_distance": getattr(checkpoint, "distance_to_goal", None),
+            "checkpoint_route": checkpoint_route,  # Path taken during checkpoint replay
+        }
+
+        if self.enable_logging:
+            logger.debug(
+                f"Checkpoint replay complete: {len(action_sequence)} actions, "
+                f"position_valid={position_valid}, "
+                f"checkpoint_route has {len(checkpoint_route)} positions"
+            )
+
+        return (processed_obs, info)
+
+    def get_current_action_sequence(self) -> List[int]:
+        """Get the action sequence since last reset.
+
+        Used by Go-Explore callback to save checkpoints with action sequences
+        for deterministic replay.
+
+        Returns:
+            List of action indices executed since last reset
+        """
+        return list(self._action_sequence)
+
+    def get_action_sequence_length(self) -> int:
+        """Get the number of actions in current episode.
+
+        Returns:
+            Number of actions executed since last reset
+        """
+        return len(self._action_sequence)
+
+    def is_checkpoint_replay_active(self) -> bool:
+        """Check if checkpoint replay is currently in progress.
+
+        Returns:
+            True if currently replaying a checkpoint's action sequence
+        """
+        return self._checkpoint_replay_in_progress
+
+    def _reset_to_checkpoint_from_wrapper(
+        self, checkpoint
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Reset to checkpoint from VecEnv wrapper (for Go-Explore integration).
+
+        This method is called via env_method from GoExploreVecEnv wrapper
+        to apply checkpoint resets after environment auto-resets.
+
+        Since the environment has already auto-reset (VecEnv behavior after done=True),
+        we replay the checkpoint's action sequence from the current spawn state.
+
+        Args:
+            checkpoint: CheckpointEntry or StateCheckpoint with action_sequence
+
+        Returns:
+            Tuple of (processed_observation, info_dict)
+        """
+        # The environment is already at spawn (auto-reset happened)
+        # We just need to replay the action sequence
+        action_sequence = getattr(checkpoint, "action_sequence", None)
+
+        # Check if action_sequence is empty (avoid numpy array boolean ambiguity)
+        # Use explicit length check instead of "if not action_sequence"
+        if action_sequence is None:
+            has_actions = False
+        elif hasattr(action_sequence, "__len__"):
+            has_actions = len(action_sequence) > 0
+        else:
+            has_actions = False
+
+        if not has_actions:
+            # No actions to replay - just return current state
+            obs = self._get_observation()
+            processed_obs = self._process_observation(obs)
+            return (processed_obs, {"checkpoint_replay": False, "replay_frames": 0})
+
+        # Convert numpy array to list if needed (do this early to avoid further ambiguity)
+        if hasattr(action_sequence, "tolist"):
+            action_sequence = action_sequence.tolist()
+        elif not isinstance(action_sequence, list):
+            action_sequence = list(action_sequence)
+
+        self._checkpoint_replay_in_progress = True
+
+        # Mark this episode as starting from checkpoint for logging/analysis
+        self._from_checkpoint = True
+        self._checkpoint_base_reward = getattr(checkpoint, "cumulative_reward", 0.0)
+
+        # Track replay statistics for debugging
+        actions_replayed = 0
+        frames_replayed = 0
+        ninja_died_during_replay = False
+
+        # Track positions during checkpoint replay for visualization
+        # This captures the path taken during action replay
+        checkpoint_route = []
+
+        # Get spawn position for debugging and add to checkpoint route
+        spawn_pos = self.nplay_headless.ninja_position()
+        if spawn_pos is not None:
+            checkpoint_route.append((float(spawn_pos[0]), float(spawn_pos[1])))
+
+        # Replay action sequence with frame skip matching original step() behavior
+        # Each action in the sequence was executed for frame_skip frames originally
+        for action in action_sequence:
+            hor_input, jump_input = self._actions_to_execute(action)
+            # Replay for frame_skip ticks to match original step() execution
+            for _ in range(self.frame_skip):
+                self.nplay_headless.tick(hor_input, jump_input)
+                frames_replayed += 1
+
+                # Track position for checkpoint route visualization
+                pos = self.nplay_headless.ninja_position()
+                if pos is not None:
+                    checkpoint_route.append((float(pos[0]), float(pos[1])))
+
+                # Check if ninja died during replay - stop if so
+                if self.nplay_headless.ninja_has_died():
+                    ninja_died_during_replay = True
+                    logger.warning(
+                        f"Ninja died during checkpoint replay at frame {frames_replayed} "
+                        f"(action {actions_replayed + 1}/{len(action_sequence)})"
+                    )
+                    break
+
+            self._action_sequence.append(action)
+            actions_replayed += 1
+
+            if ninja_died_during_replay:
+                break
+
+        self._checkpoint_replay_in_progress = False
+
+        # Store checkpoint route for inclusion in episode end info
+        # This persists through the episode so route visualization can access it
+        self._checkpoint_route = checkpoint_route
+
+        # Track position after replay for current_route (exploration phase starts here)
+        actual_position = None
+        try:
+            actual_position = self.nplay_headless.ninja_position()
+            if actual_position is not None:
+                # Start current_route fresh for exploration phase
+                self.current_route.append(
+                    (float(actual_position[0]), float(actual_position[1]))
+                )
+        except Exception as e:
+            logger.warning(f"Could not get position after checkpoint replay: {e}")
+
+        # Validate position if checkpoint has expected position
+        expected_position = getattr(checkpoint, "ninja_position", None)
+        position_valid = True
+        if expected_position is not None and actual_position is not None:
+            dx = actual_position[0] - expected_position[0]
+            dy = actual_position[1] - expected_position[1]
+            error = (dx * dx + dy * dy) ** 0.5
+            position_valid = error < 0.1
+            if not position_valid:
+                logger.warning(
+                    f"Checkpoint replay position mismatch: "
+                    f"expected={expected_position}, actual={actual_position}, "
+                    f"error={error:.6f}px | "
+                    f"spawn={spawn_pos}, actions={actions_replayed}/{len(action_sequence)}, "
+                    f"frames={frames_replayed}, died={ninja_died_during_replay}"
+                )
+
+        # Get observation after replay
+        obs = self._get_observation()
+        processed_obs = self._process_observation(obs)
+
+        info = {
+            "checkpoint_replay": True,
+            "replay_frames": len(action_sequence),
+            "position_valid": position_valid,
+            "checkpoint_cell": getattr(checkpoint, "cell", None),
+            "checkpoint_distance": getattr(checkpoint, "distance_to_goal", None),
+            "checkpoint_route": checkpoint_route,  # Path taken during checkpoint replay
+        }
+
+        if self.enable_logging:
+            logger.debug(
+                f"Checkpoint replay from wrapper complete: {len(action_sequence)} actions, "
+                f"checkpoint_route has {len(checkpoint_route)} positions"
+            )
+
+        return (processed_obs, info)
 
     def render(self):
         """Render the environment."""
@@ -998,28 +1409,41 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         game_state = np.append(ninja_state, time_remaining)
 
         # Get entity states for PBRS hazard detection
-        # Try to use reachable area scale if available (from GraphMixin)
+        # MEMORY OPTIMIZATION: Use cached static entity/position data
+        # These values never change during an episode, only on reset
+
+        # Cache static positions on first access
+        if self._cached_switch_pos is None:
+            self._cached_switch_pos = self.nplay_headless.exit_switch_position()
+        if self._cached_exit_pos is None:
+            self._cached_exit_pos = self.nplay_headless.exit_door_position()
+        if self._cached_locked_doors is None:
+            self._cached_locked_doors = self.nplay_headless.locked_doors()
+        if self._cached_locked_door_switches is None:
+            self._cached_locked_door_switches = (
+                self.nplay_headless.locked_door_switches()
+            )
+        if self._cached_toggle_mines is None:
+            self._cached_toggle_mines = self.nplay_headless.sim.entity_dic.get(
+                EntityType.TOGGLE_MINE, []
+            )
+
+        # Use cached static values
+        switch_pos = self._cached_switch_pos
+        exit_pos = self._cached_exit_pos
+        locked_doors = self._cached_locked_doors
+        locked_door_switches = self._cached_locked_door_switches
+
+        # Build entity list from cached static entities
         entities = []
+        entities.extend(self._cached_toggle_mines)
 
-        # Extract entities relevant for Deep RL agent:
-        # - Toggle mines (hazards)
-        toggle_mines = self.nplay_headless.sim.entity_dic.get(
-            EntityType.TOGGLE_MINE, []
-        )
-        entities.extend(toggle_mines)
-
-        # - Toggled mines (active hazards)
+        # Toggled mines need fresh lookup (state can change during episode)
         toggled_mines = self.nplay_headless.sim.entity_dic.get(
             EntityType.TOGGLE_MINE_TOGGLED, []
         )
         entities.extend(toggled_mines)
-
-        # - Locked doors (obstacles requiring switch activation)
-        locked_doors = self.nplay_headless.locked_doors()
         entities.extend(locked_doors)
-
-        # - Locked door switches (objectives for opening locked doors)
-        locked_door_switches = self.nplay_headless.locked_door_switches()
         entities.extend(locked_door_switches)
 
         # Get ninja properties for PBRS impact risk calculation
@@ -1028,10 +1452,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Get current ninja velocity for momentum rewards
         ninja_vel = self.nplay_headless.ninja_velocity()
 
-        # DIAGNOSTIC: Log what positions we're extracting from simulator
+        # Get current ninja position (this is dynamic, not cached)
         ninja_pos = self.nplay_headless.ninja_position()
-        switch_pos = self.nplay_headless.exit_switch_position()
-        exit_pos = self.nplay_headless.exit_door_position()
 
         obs = {
             "game_state": game_state,
