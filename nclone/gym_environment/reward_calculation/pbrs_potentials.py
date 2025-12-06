@@ -24,6 +24,11 @@ With γ < 1.0, accumulated PBRS = γ*Φ(goal) - Φ(start) + (γ-1)*Σ Φ(interme
 The (γ-1)*Σ term is negative and grows with episode length, causing systematic negative bias.
 With γ=1.0, this bias term vanishes, giving clean telescoping: Φ(goal) - Φ(start).
 
+Momentum-Aware Enhancements:
+- Momentum waypoints: Intermediate goals for momentum-building strategies
+- Multi-stage potentials: Route via waypoints when momentum is required
+- Extracted from expert demonstrations to identify necessary "detours"
+
 All constants defined in reward_constants.py with full documentation.
 """
 
@@ -176,6 +181,19 @@ class PBRSPotentials:
             entity_radius = EXIT_DOOR_RADIUS
 
         player_pos = (int(state["player_x"]), int(state["player_y"]))
+
+        # CRITICAL: Validate goal position is not (0, 0) which indicates entity loading issue
+        # Return 0 potential (neutral) if goal position is invalid to avoid cache pollution
+        if goal_pos[0] == 0 and goal_pos[1] == 0:
+            import logging
+
+            _logger = logging.getLogger(__name__)
+            _logger.warning(
+                f"PBRS: Invalid goal position (0, 0) detected! "
+                f"switch_activated={state.get('switch_activated', False)}, "
+                f"Returning 0 potential to avoid cache pollution."
+            )
+            return 0.0
 
         # Extract base_adjacency for pathfinding
         base_adjacency = (
@@ -341,6 +359,292 @@ class PBRSPotentials:
 
         return alignment
 
+    @staticmethod
+    def objective_distance_potential_with_waypoints(
+        state: Dict[str, Any],
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        level_data: Any,
+        path_calculator: Any,
+        momentum_waypoints: Optional[List[Any]] = None,
+        graph_data: Optional[Dict[str, Any]] = None,
+        scale_factor: float = 1.0,
+    ) -> float:
+        """Potential based on path distance with momentum waypoint routing.
+
+        When momentum waypoints are present, this potential function routes the agent
+        through intermediate waypoints before heading to the goal. This prevents PBRS
+        from penalizing necessary momentum-building "detours."
+
+        The potential function becomes multi-stage:
+        - Stage 1: current → nearest_waypoint (if waypoint needed)
+        - Stage 2: waypoint → goal
+
+        Waypoint is "needed" if:
+        1. Agent hasn't reached it yet (distance > threshold)
+        2. Waypoint is on the path toward goal (not behind agent)
+        3. Agent doesn't have sufficient momentum to skip it
+
+        Args:
+            state: Game state dictionary
+            adjacency: Graph adjacency structure
+            level_data: Level data object
+            path_calculator: CachedPathDistanceCalculator instance
+            momentum_waypoints: Optional list of MomentumWaypoint objects
+            graph_data: Graph data dict with spatial_hash
+            scale_factor: Normalization adjustment (deprecated, kept for compatibility)
+
+        Returns:
+            float: Potential in range [0.0, 1.0]
+        """
+        # If no waypoints provided, fall back to standard potential
+        if not momentum_waypoints:
+            return PBRSPotentials.objective_distance_potential(
+                state, adjacency, level_data, path_calculator, graph_data, scale_factor
+            )
+
+        from ...constants.physics_constants import (
+            EXIT_SWITCH_RADIUS,
+            EXIT_DOOR_RADIUS,
+            NINJA_RADIUS,
+        )
+
+        # Determine current goal
+        if not state["switch_activated"]:
+            goal_pos = (int(state["switch_x"]), int(state["switch_y"]))
+            entity_radius = EXIT_SWITCH_RADIUS
+        else:
+            goal_pos = (int(state["exit_door_x"]), int(state["exit_door_y"]))
+            entity_radius = EXIT_DOOR_RADIUS
+
+        player_pos = (int(state["player_x"]), int(state["player_y"]))
+
+        # Validate goal position
+        if goal_pos[0] == 0 and goal_pos[1] == 0:
+            logger.warning(
+                "PBRS Waypoint: Invalid goal position (0, 0), using standard potential"
+            )
+            return PBRSPotentials.objective_distance_potential(
+                state, adjacency, level_data, path_calculator, graph_data, scale_factor
+            )
+
+        # Extract base_adjacency for pathfinding
+        base_adjacency = (
+            graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+        )
+
+        # Find relevant momentum waypoint (if any)
+        active_waypoint = _find_active_momentum_waypoint(
+            player_pos=player_pos,
+            goal_pos=goal_pos,
+            player_velocity=(
+                state.get("player_xspeed", 0.0),
+                state.get("player_yspeed", 0.0),
+            ),
+            waypoints=momentum_waypoints,
+            path_calculator=path_calculator,
+            adjacency=adjacency,
+            base_adjacency=base_adjacency,
+            level_data=level_data,
+            graph_data=graph_data,
+        )
+
+        if active_waypoint is not None:
+            # Route via waypoint: current → waypoint → goal
+            waypoint_pos = (
+                int(active_waypoint.position[0]),
+                int(active_waypoint.position[1]),
+            )
+
+            try:
+                # Distance to waypoint (momentum-aware pathfinding)
+                dist_to_waypoint = path_calculator.get_geometric_distance(
+                    player_pos,
+                    waypoint_pos,
+                    adjacency,
+                    base_adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    entity_radius=0.0,  # Waypoint is a position, not an entity
+                    ninja_radius=NINJA_RADIUS,
+                )
+
+                # Distance from waypoint to goal (momentum-aware pathfinding)
+                dist_waypoint_to_goal = path_calculator.get_geometric_distance(
+                    waypoint_pos,
+                    goal_pos,
+                    adjacency,
+                    base_adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    entity_radius=entity_radius,
+                    ninja_radius=NINJA_RADIUS,
+                )
+
+                # Check for unreachable paths
+                if dist_to_waypoint == float("inf") or dist_waypoint_to_goal == float(
+                    "inf"
+                ):
+                    # Waypoint routing failed, fall back to direct path
+                    logger.debug(
+                        "Waypoint routing failed (unreachable), using direct potential"
+                    )
+                    return PBRSPotentials.objective_distance_potential(
+                        state,
+                        adjacency,
+                        level_data,
+                        path_calculator,
+                        graph_data,
+                        scale_factor,
+                    )
+
+                # Normalize using same adaptive strategy as standard potential
+                combined_path_distance = state.get(
+                    "_pbrs_combined_path_distance", 800.0
+                )
+                MIN_NORMALIZATION_DISTANCE = 800.0
+                ADAPTIVE_FACTOR = 1.0
+                effective_normalization = max(
+                    MIN_NORMALIZATION_DISTANCE, combined_path_distance * ADAPTIVE_FACTOR
+                )
+
+                # Calculate potential: 1.0 at waypoint, 0.0 at spawn
+                normalized_distance = dist_to_waypoint / effective_normalization
+                potential = 1.0 - normalized_distance
+
+                # Store diagnostic info
+                state["_pbrs_normalized_distance"] = normalized_distance
+                state["_pbrs_using_waypoint"] = True
+                state["_pbrs_waypoint_pos"] = waypoint_pos
+                state["_pbrs_dist_to_waypoint"] = dist_to_waypoint
+                state["_pbrs_dist_waypoint_to_goal"] = dist_waypoint_to_goal
+
+                logger.debug(
+                    f"Using waypoint routing: player→waypoint={dist_to_waypoint:.1f}px, "
+                    f"waypoint→goal={dist_waypoint_to_goal:.1f}px, potential={potential:.4f}"
+                )
+
+                return max(0.0, min(1.0, potential))
+
+            except Exception as e:
+                logger.warning(
+                    "Waypoint potential calculation failed: %s, using standard potential",
+                    e,
+                )
+                return PBRSPotentials.objective_distance_potential(
+                    state,
+                    adjacency,
+                    level_data,
+                    path_calculator,
+                    graph_data,
+                    scale_factor,
+                )
+        else:
+            # No active waypoint, use standard direct potential
+            state["_pbrs_using_waypoint"] = False
+            return PBRSPotentials.objective_distance_potential(
+                state, adjacency, level_data, path_calculator, graph_data, scale_factor
+            )
+
+
+def _find_active_momentum_waypoint(
+    player_pos: Tuple[int, int],
+    goal_pos: Tuple[int, int],
+    player_velocity: Tuple[float, float],
+    waypoints: List[Any],
+    path_calculator: Any,
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    level_data: Any,
+    graph_data: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
+    """Find the active momentum waypoint that agent should route through.
+
+    A waypoint is "active" if:
+    1. Agent hasn't reached it yet (distance > 20px threshold)
+    2. Waypoint is between agent and goal (on the path)
+    3. Agent doesn't have sufficient momentum to bypass it
+
+    Args:
+        player_pos: Current player position (x, y)
+        goal_pos: Current goal position (x, y)
+        player_velocity: Current player velocity (vx, vy)
+        waypoints: List of MomentumWaypoint objects
+        path_calculator: Path calculator for distance queries
+        adjacency: Graph adjacency structure
+        base_adjacency: Base adjacency for pathfinding
+        level_data: Level data object
+        graph_data: Optional graph data dict
+
+    Returns:
+        MomentumWaypoint if one is active, None otherwise
+    """
+    if not waypoints:
+        return None
+
+    WAYPOINT_REACHED_THRESHOLD = (
+        20.0  # pixels - consider waypoint "reached" within this distance
+    )
+    MOMENTUM_SUFFICIENT_SPEED = (
+        2.5  # pixels/frame - if moving this fast, can skip waypoint
+    )
+
+    # Calculate player speed
+    vx, vy = player_velocity
+    player_speed = math.sqrt(vx * vx + vy * vy)
+
+    # Find waypoints that are:
+    # 1. Not yet reached (distance > threshold)
+    # 2. Between player and goal (routing makes sense)
+    candidate_waypoints = []
+
+    for waypoint in waypoints:
+        waypoint_pos = (int(waypoint.position[0]), int(waypoint.position[1]))
+
+        # Check if waypoint already reached
+        dx = waypoint_pos[0] - player_pos[0]
+        dy = waypoint_pos[1] - player_pos[1]
+        distance_to_waypoint = math.sqrt(dx * dx + dy * dy)
+
+        if distance_to_waypoint < WAYPOINT_REACHED_THRESHOLD:
+            continue  # Already at waypoint, skip
+
+        # Check if player has sufficient momentum to bypass waypoint
+        # If moving fast in the right direction, don't force waypoint routing
+        if player_speed >= MOMENTUM_SUFFICIENT_SPEED:
+            # Check if velocity is aligned with waypoint's approach direction
+            vel_dir_x = vx / player_speed
+            vel_dir_y = vy / player_speed
+            waypoint_dir_x, waypoint_dir_y = waypoint.approach_direction
+
+            # Dot product: alignment check
+            alignment = vel_dir_x * waypoint_dir_x + vel_dir_y * waypoint_dir_y
+
+            if alignment > 0.7:  # Moving in similar direction with good speed
+                continue  # Skip waypoint - agent already has momentum
+
+        # Check if waypoint is "between" player and goal (heuristic)
+        # Waypoint should be closer to goal than player is
+        dist_player_to_goal = math.sqrt(
+            (goal_pos[0] - player_pos[0]) ** 2 + (goal_pos[1] - player_pos[1]) ** 2
+        )
+        dist_waypoint_to_goal = math.sqrt(
+            (goal_pos[0] - waypoint_pos[0]) ** 2 + (goal_pos[1] - waypoint_pos[1]) ** 2
+        )
+
+        if dist_waypoint_to_goal >= dist_player_to_goal:
+            continue  # Waypoint is not between player and goal, skip
+
+        candidate_waypoints.append((waypoint, distance_to_waypoint))
+
+    if not candidate_waypoints:
+        return None  # No active waypoints
+
+    # Select closest waypoint as active (prioritize nearest momentum-building point)
+    candidate_waypoints.sort(key=lambda x: x[1])
+    active_waypoint = candidate_waypoints[0][0]
+
+    return active_waypoint
+
 
 class PBRSCalculator:
     """Calculator for completion-focused potential functions.
@@ -359,14 +663,24 @@ class PBRSCalculator:
     def __init__(
         self,
         path_calculator: Optional[Any] = None,
+        momentum_waypoints: Optional[List[Any]] = None,
+        kinodynamic_db: Optional[Any] = None,
     ):
-        """Initialize simplified PBRS calculator (objective potential only).
+        """Initialize PBRS calculator with optional momentum waypoint and kinodynamic support.
 
         Args:
             path_calculator: CachedPathDistanceCalculator instance for shortest path distances
+            momentum_waypoints: Optional list of MomentumWaypoint objects for momentum-aware routing
+            kinodynamic_db: Optional KinodynamicDatabase for perfect velocity-aware pathfinding
         """
         # Initialize path distance calculator for path-aware reward shaping
         self.path_calculator = path_calculator
+
+        # Momentum waypoints for momentum-aware potential routing
+        self.momentum_waypoints = momentum_waypoints or []
+
+        # Kinodynamic database for perfect velocity-aware reachability (100% accurate)
+        self.kinodynamic_db = kinodynamic_db
 
         # Cache for surface area per level (invalidated when level or switch states change)
         self._cached_surface_area: Optional[float] = None
@@ -378,10 +692,23 @@ class PBRSCalculator:
         self._path_distance_cache_key: Optional[str] = None
 
         # OPTIMIZATION: Position-based caching to avoid repeated pathfinding
-        # Only recalculate path distance if ninja moves 3+ pixels
-        self._last_player_pos: Optional[Tuple[int, int]] = None
-        self._last_goal_pos: Optional[Tuple[int, int]] = None
-        self._cached_objective_potential: Optional[float] = None
+        # Only recalculate path distance if ninja moves beyond threshold
+        # 6px threshold: typical action moves 0.66-3px, so this allows 2-9 cached steps
+        # Increased from 3px for better performance on large levels
+        self._position_cache_threshold_sq = 6.0 * 6.0  # 6px squared (avoid sqrt)
+
+        # PROFILING: Track cache hit/miss rates for optimization tuning
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._last_player_pos: Optional[Tuple[float, float]] = None
+        self._last_goal_id: Optional[str] = (
+            None  # Track goal changes (switch activation)
+        )
+        self._cached_distance: Optional[float] = None  # Cached geometric distance
+        self._cached_start_node: Optional[Tuple[int, int]] = None  # Cached node lookup
+        self._cached_next_hop: Optional[Tuple[int, int]] = (
+            None  # Cached next_hop for interpolation
+        )
 
     def _compute_reachable_surface_area(
         self,
@@ -476,16 +803,43 @@ class PBRSCalculator:
 
         # Get switch position from first exit switch
         exit_switches = level_data.get_entities_by_type(EntityType.EXIT_SWITCH)
+        if not exit_switches:
+            logger.warning(
+                "calculate_level_surface_area: No exit switches found in level_data! "
+                "Entity extraction may have failed."
+            )
+            return float("inf")
         switch = exit_switches[0]
-        switch_pos = (int(switch.get("x", 0)), int(switch.get("y", 0)))
+        switch_x = switch.get("x", 0)
+        switch_y = switch.get("y", 0)
+        if switch_x == 0 and switch_y == 0:
+            logger.warning(
+                f"calculate_level_surface_area: Switch position is (0, 0), "
+                f"entity data may be incomplete. Switch entity: {switch}"
+            )
+        switch_pos = (int(switch_x), int(switch_y))
 
         # Get exit door position from first exit door
         exit_doors = level_data.get_entities_by_type(EntityType.EXIT_DOOR)
-
+        if not exit_doors:
+            logger.warning(
+                "calculate_level_surface_area: No exit doors found in level_data! "
+                "Entity extraction may have failed."
+            )
+            return float("inf")
         exit_door = exit_doors[0]
-        exit_pos = (int(exit_door.get("x", 0)), int(exit_door.get("y", 0)))
+        exit_x = exit_door.get("x", 0)
+        exit_y = exit_door.get("y", 0)
+        if exit_x == 0 and exit_y == 0:
+            logger.warning(
+                f"calculate_level_surface_area: Exit door position is (0, 0), "
+                f"entity data may be incomplete. Exit door entity: {exit_door}"
+            )
+        exit_pos = (int(exit_x), int(exit_y))
 
         # Extract base_adjacency and spatial lookups for pathfinding
+        # IMPORTANT: Use base_adjacency for surface area calculation to disregard locked doors
+        # This gives the theoretical path distance as if all doors were open
         base_adjacency = (
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
@@ -495,11 +849,12 @@ class PBRSCalculator:
         physics_cache = graph_data.get("node_physics") if graph_data else None
 
         # Calculate spawn→switch GEOMETRIC distance (actual pixels, not physics costs)
+        # Uses base_adjacency to ignore locked door blocking
         try:
             spawn_to_switch_dist = calculate_geometric_path_distance(
                 spawn_pos,
                 switch_pos,
-                adjacency,
+                base_adjacency,  # Use base_adjacency to ignore locked doors
                 base_adjacency,
                 physics_cache=physics_cache,
                 spatial_hash=spatial_hash,
@@ -514,11 +869,12 @@ class PBRSCalculator:
             spawn_to_switch_dist = float("inf")
 
         # Calculate switch→exit GEOMETRIC distance (actual pixels, not physics costs)
+        # Uses base_adjacency to ignore locked door blocking
         try:
             switch_to_exit_dist = calculate_geometric_path_distance(
                 switch_pos,
                 exit_pos,
-                adjacency,
+                base_adjacency,  # Use base_adjacency to ignore locked doors
                 base_adjacency,
                 physics_cache=physics_cache,
                 spatial_hash=spatial_hash,
@@ -526,6 +882,29 @@ class PBRSCalculator:
                 entity_radius=EXIT_DOOR_RADIUS,
                 ninja_radius=NINJA_RADIUS,
             )
+            # Debug: Log if exit is unreachable even with base_adjacency
+            if switch_to_exit_dist == float("inf"):
+                from ...graph.reachability.pathfinding_utils import (
+                    find_ninja_node,
+                    find_closest_node_to_position,
+                )
+
+                # Check if nodes can be found in base_adjacency
+                switch_node = find_ninja_node(
+                    switch_pos, base_adjacency, spatial_hash=spatial_hash
+                )
+                exit_node = find_closest_node_to_position(
+                    exit_pos,
+                    base_adjacency,
+                    entity_radius=EXIT_DOOR_RADIUS,
+                    spatial_hash=spatial_hash,
+                )
+                logger.warning(
+                    f"DEBUG switch→exit=inf: switch_pos={switch_pos}, exit_pos={exit_pos}, "
+                    f"switch_node={'found' if switch_node else 'NOT FOUND'}, "
+                    f"exit_node={'found' if exit_node else 'NOT FOUND'}, "
+                    f"base_adjacency_size={len(base_adjacency)}"
+                )
         except Exception as e:
             logger.warning(f"Failed to calculate switch→exit distance: {e}. Using inf.")
             switch_to_exit_dist = float("inf")
@@ -534,7 +913,8 @@ class PBRSCalculator:
         if spawn_to_switch_dist == float("inf") or switch_to_exit_dist == float("inf"):
             logger.warning(
                 f"Combined path distance is infinite (unreachable goal). "
-                f"spawn→switch: {spawn_to_switch_dist:.1f}, switch→exit: {switch_to_exit_dist:.1f}"
+                f"spawn→switch: {spawn_to_switch_dist:.1f}, switch→exit: {switch_to_exit_dist:.1f}. "
+                f"Positions: spawn={spawn_pos}, switch={switch_pos}, exit={exit_pos}"
             )
             return float("inf")
 
@@ -573,6 +953,415 @@ class PBRSCalculator:
             )
 
         return combined_distance
+
+    def _get_cached_or_compute_potential(
+        self,
+        current_pos: Tuple[float, float],
+        goal_id: str,
+        state_with_metrics: Dict[str, Any],
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        level_data: Any,
+        graph_data: Optional[Dict[str, Any]] = None,
+        scale_factor: float = 1.0,
+    ) -> float:
+        """Get potential with position-based caching for small movements.
+
+        OPTIMIZATION: When player moves < 6px from last cached position, use
+        sub-node interpolation instead of full path distance recalculation.
+        This provides dense per-step rewards without expensive pathfinding.
+
+        The interpolation uses the cached next_hop direction to project
+        small movements onto the optimal path, giving accurate PBRS gradients.
+
+        Args:
+            current_pos: Current player position (x, y)
+            goal_id: "switch" or "exit"
+            state_with_metrics: State dict with PBRS metrics
+            adjacency: Graph adjacency structure
+            level_data: Level data object
+            graph_data: Graph data dict
+            scale_factor: Normalization scale factor
+
+        Returns:
+            Objective distance potential [0, 1]
+        """
+        import time
+
+        t_start = time.perf_counter()
+
+        # Check if we can use cached value with interpolation
+        use_cache = (
+            self._last_player_pos is not None
+            and self._last_goal_id == goal_id
+            and self._cached_distance is not None
+            and self._cached_start_node is not None
+        )
+
+        if use_cache:
+            # Calculate squared distance moved (avoid sqrt for speed)
+            dx = current_pos[0] - self._last_player_pos[0]
+            dy = current_pos[1] - self._last_player_pos[1]
+            dist_sq = dx * dx + dy * dy
+
+            if dist_sq < self._position_cache_threshold_sq:
+                # Small movement: use cached distance with sub-node interpolation
+                # This provides dense per-step rewards without recalculating path
+
+                if self._cached_next_hop is not None:
+                    # Interpolate using next_hop direction
+                    # Direction from cached node to next_hop is optimal path direction
+                    start_node = self._cached_start_node
+                    next_hop = self._cached_next_hop
+
+                    # Convert to world coordinates
+                    start_node_x = start_node[0] + NODE_WORLD_COORD_OFFSET
+                    start_node_y = start_node[1] + NODE_WORLD_COORD_OFFSET
+                    next_hop_x = next_hop[0] + NODE_WORLD_COORD_OFFSET
+                    next_hop_y = next_hop[1] + NODE_WORLD_COORD_OFFSET
+
+                    # Path direction (normalized)
+                    path_dx = next_hop_x - start_node_x
+                    path_dy = next_hop_y - start_node_y
+                    path_len = (path_dx * path_dx + path_dy * path_dy) ** 0.5
+
+                    if path_len > 0.001:
+                        path_dir_x = path_dx / path_len
+                        path_dir_y = path_dy / path_len
+
+                        # Project current position onto path direction relative to cached node
+                        player_offset_x = current_pos[0] - start_node_x
+                        player_offset_y = current_pos[1] - start_node_y
+
+                        # Projection: positive = moved toward next_hop = closer to goal
+                        projection = (
+                            player_offset_x * path_dir_x + player_offset_y * path_dir_y
+                        )
+
+                        # Calculate interpolated distance
+                        # cached_distance is from cached_start_node to goal
+                        # Subtract projection (positive projection = closer)
+                        interpolated_distance = max(
+                            0.0, self._cached_distance - projection
+                        )
+
+                        # Convert to potential using same normalization as full calculation
+                        combined_path = state_with_metrics.get(
+                            "_pbrs_combined_path_distance", 800.0
+                        )
+                        MIN_NORMALIZATION = 800.0
+                        effective_norm = max(MIN_NORMALIZATION, combined_path)
+
+                        normalized_distance = interpolated_distance / effective_norm
+                        potential = max(0.0, min(1.0, 1.0 - normalized_distance))
+
+                        # Store for diagnostics
+                        state_with_metrics["_pbrs_normalized_distance"] = (
+                            normalized_distance
+                        )
+                        state_with_metrics["_pbrs_cache_hit"] = True
+                        self._cache_hits += 1
+                        state_with_metrics["_pbrs_time_ms"] = (
+                            time.perf_counter() - t_start
+                        ) * 1000
+
+                        return potential
+
+                # No next_hop (at goal) - use cached potential directly
+                # Small movements at goal don't need recalculation
+                state_with_metrics["_pbrs_cache_hit"] = True
+                self._cache_hits += 1
+                state_with_metrics["_pbrs_time_ms"] = (
+                    time.perf_counter() - t_start
+                ) * 1000
+                return (
+                    self._cached_distance
+                )  # This is actually cached potential in this case
+
+        # Cache miss or large movement: compute full path distance
+        self._cache_misses += 1
+        t_potential = time.perf_counter()
+        objective_pot = PBRSPotentials.objective_distance_potential(
+            state_with_metrics,
+            adjacency=adjacency,
+            level_data=level_data,
+            path_calculator=self.path_calculator,
+            graph_data=graph_data,
+            scale_factor=scale_factor,
+        )
+        t_after_potential = time.perf_counter()
+        state_with_metrics["_pbrs_potential_calc_ms"] = (
+            t_after_potential - t_potential
+        ) * 1000
+
+        # Update cache for next step
+        self._last_player_pos = current_pos
+        self._last_goal_id = goal_id
+
+        # Cache the geometric distance and node info for interpolation
+        # OPTIMIZATION: Reuse node info from path_calculator if available
+        # This avoids redundant find_ninja_node calls (saves ~1.3ms per step)
+        t_cache_update = time.perf_counter()
+        if self.path_calculator is not None:
+            # Check if path_calculator has cached the node from get_geometric_distance
+            # Note: goal_id here is "switch" or "exit" but path_calculator uses
+            # "exit_switch_0" or "exit_door_0" - check if types match
+            cached_goal_id = self.path_calculator._last_goal_id or ""
+            goal_type_matches = (
+                goal_id == "switch" and "switch" in cached_goal_id
+            ) or (goal_id == "exit" and "door" in cached_goal_id)
+            if self.path_calculator._last_start_node is not None and goal_type_matches:
+                # Reuse cached node info from path_calculator
+                self._cached_start_node = self.path_calculator._last_start_node
+                self._cached_distance = self.path_calculator._last_geometric_distance
+                self._cached_next_hop = self.path_calculator._last_next_hop
+                state_with_metrics["_pbrs_node_find_ms"] = 0.0  # No extra lookup needed
+            elif self.path_calculator.level_cache is not None:
+                # Fallback: find node manually (shouldn't normally happen)
+                from ...graph.reachability.pathfinding_utils import (
+                    find_ninja_node,
+                    extract_spatial_lookups_from_graph_data,
+                )
+
+                spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+                    graph_data
+                )
+
+                # Find current node
+                t_node_find = time.perf_counter()
+                start_node = find_ninja_node(
+                    (int(current_pos[0]), int(current_pos[1])),
+                    adjacency,
+                    spatial_hash=spatial_hash,
+                    subcell_lookup=subcell_lookup,
+                    ninja_radius=PLAYER_RADIUS,
+                )
+                state_with_metrics["_pbrs_node_find_ms"] = (
+                    time.perf_counter() - t_node_find
+                ) * 1000
+
+                if start_node is not None:
+                    self._cached_start_node = start_node
+
+                    # Get cached distance from level cache
+                    goal_pos = (
+                        self.path_calculator.level_cache._goal_id_to_goal_pos.get(
+                            goal_id
+                        )
+                    )
+                    if goal_pos is not None:
+                        cached_dist = (
+                            self.path_calculator.level_cache.get_geometric_distance(
+                                start_node, goal_pos, goal_id
+                            )
+                        )
+                        if cached_dist != float("inf"):
+                            self._cached_distance = cached_dist
+
+                    # Cache next_hop for interpolation
+                    self._cached_next_hop = (
+                        self.path_calculator.level_cache.get_next_hop(
+                            start_node, goal_id
+                        )
+                    )
+
+        state_with_metrics["_pbrs_cache_update_ms"] = (
+            time.perf_counter() - t_cache_update
+        ) * 1000
+
+        state_with_metrics["_pbrs_cache_hit"] = False
+        state_with_metrics["_pbrs_time_ms"] = (time.perf_counter() - t_start) * 1000
+        return objective_pot
+
+    def _get_cached_or_compute_potential_with_waypoints(
+        self,
+        current_pos: Tuple[float, float],
+        goal_id: str,
+        state_with_metrics: Dict[str, Any],
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        level_data: Any,
+        graph_data: Optional[Dict[str, Any]] = None,
+        scale_factor: float = 1.0,
+    ) -> float:
+        """Get potential with waypoint routing and position-based caching.
+
+        Similar to _get_cached_or_compute_potential but uses waypoint-aware potential
+        function when momentum waypoints are available.
+
+        Args:
+            current_pos: Current player position (x, y)
+            goal_id: "switch" or "exit"
+            state_with_metrics: State dict with PBRS metrics
+            adjacency: Graph adjacency structure
+            level_data: Level data object
+            graph_data: Graph data dict
+            scale_factor: Normalization scale factor
+
+        Returns:
+            Objective distance potential [0, 1] with waypoint routing
+        """
+        import time
+
+        t_start = time.perf_counter()
+
+        # For waypoint routing, we skip position caching since waypoint selection
+        # depends on velocity and may change even with small position changes
+        # This is acceptable since waypoints are only used on specific levels
+
+        t_potential = time.perf_counter()
+        objective_pot = PBRSPotentials.objective_distance_potential_with_waypoints(
+            state_with_metrics,
+            adjacency=adjacency,
+            level_data=level_data,
+            path_calculator=self.path_calculator,
+            momentum_waypoints=self.momentum_waypoints,
+            graph_data=graph_data,
+            scale_factor=scale_factor,
+        )
+        t_after_potential = time.perf_counter()
+        state_with_metrics["_pbrs_potential_calc_ms"] = (
+            t_after_potential - t_potential
+        ) * 1000
+
+        # Update cache for next step (simplified for waypoint case)
+        self._last_player_pos = current_pos
+        self._last_goal_id = goal_id
+
+        state_with_metrics["_pbrs_cache_hit"] = False
+        state_with_metrics["_pbrs_time_ms"] = (time.perf_counter() - t_start) * 1000
+        return objective_pot
+
+    def _get_potential_with_kinodynamic_db(
+        self,
+        current_pos: Tuple[float, float],
+        goal_id: str,
+        state_with_metrics: Dict[str, Any],
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        level_data: Any,
+        graph_data: Optional[Dict[str, Any]] = None,
+        scale_factor: float = 1.0,
+    ) -> float:
+        """Get potential using kinodynamic database (perfect velocity-aware pathfinding).
+
+        Uses exhaustive precomputed reachability to find optimal path given current velocity.
+        This is 100% accurate and O(1) runtime.
+
+        Args:
+            current_pos: Current player position (x, y)
+            goal_id: "switch" or "exit"
+            state_with_metrics: State dict with PBRS metrics
+            adjacency: Graph adjacency structure
+            level_data: Level data object
+            graph_data: Graph data dict
+            scale_factor: Normalization scale factor
+
+        Returns:
+            Objective distance potential [0, 1] with velocity awareness
+        """
+        import time
+        from ...graph.reachability.pathfinding_utils import (
+            find_ninja_node,
+            extract_spatial_lookups_from_graph_data,
+        )
+        from ...constants.physics_constants import (
+            EXIT_SWITCH_RADIUS,
+            EXIT_DOOR_RADIUS,
+            NINJA_RADIUS,
+        )
+
+        t_start = time.perf_counter()
+
+        # Determine goal position
+        if not state_with_metrics["switch_activated"]:
+            goal_pos = (
+                int(state_with_metrics["switch_x"]),
+                int(state_with_metrics["switch_y"]),
+            )
+            entity_radius = EXIT_SWITCH_RADIUS
+        else:
+            goal_pos = (
+                int(state_with_metrics["exit_door_x"]),
+                int(state_with_metrics["exit_door_y"]),
+            )
+            entity_radius = EXIT_DOOR_RADIUS
+
+        player_pos = (
+            int(state_with_metrics["player_x"]),
+            int(state_with_metrics["player_y"]),
+        )
+        player_velocity = (
+            state_with_metrics.get("player_xspeed", 0.0),
+            state_with_metrics.get("player_yspeed", 0.0),
+        )
+
+        # Find current node
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
+        )
+        current_node = find_ninja_node(
+            player_pos,
+            adjacency,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+            ninja_radius=NINJA_RADIUS,
+        )
+
+        # Find goal node
+        from ...graph.reachability.pathfinding_utils import (
+            find_closest_node_to_position,
+        )
+
+        goal_node = find_closest_node_to_position(
+            goal_pos,
+            adjacency,
+            entity_radius=entity_radius,
+            spatial_hash=spatial_hash,
+        )
+
+        if current_node is None or goal_node is None:
+            # Fallback to standard potential
+            logger.debug("Kinodynamic: node lookup failed, using standard potential")
+            return PBRSPotentials.objective_distance_potential(
+                state_with_metrics,
+                adjacency,
+                level_data,
+                self.path_calculator,
+                graph_data,
+                scale_factor,
+            )
+
+        # Query kinodynamic database for distance given current velocity
+        reachable, distance = self.kinodynamic_db.query_reachability(
+            current_node, player_velocity, goal_node
+        )
+
+        if not reachable or distance == float("inf"):
+            # Goal unreachable from current (node, velocity) state
+            # This is CRITICAL info: agent needs to change velocity first!
+            state_with_metrics["_pbrs_kinodynamic_unreachable"] = True
+            state_with_metrics["_pbrs_normalized_distance"] = float("inf")
+            return 0.0  # Zero potential (no gradient)
+
+        # Calculate potential using kinodynamic distance
+        combined_path_distance = state_with_metrics.get(
+            "_pbrs_combined_path_distance", 800.0
+        )
+        MIN_NORMALIZATION_DISTANCE = 800.0
+        ADAPTIVE_FACTOR = 1.0
+        effective_normalization = max(
+            MIN_NORMALIZATION_DISTANCE, combined_path_distance * ADAPTIVE_FACTOR
+        )
+
+        normalized_distance = distance / effective_normalization
+        potential = 1.0 - normalized_distance
+
+        # Store diagnostic info
+        state_with_metrics["_pbrs_normalized_distance"] = normalized_distance
+        state_with_metrics["_pbrs_kinodynamic_distance"] = distance
+        state_with_metrics["_pbrs_using_kinodynamic"] = True
+        state_with_metrics["_pbrs_kinodynamic_unreachable"] = False
+        state_with_metrics["_pbrs_time_ms"] = (time.perf_counter() - t_start) * 1000
+
+        return max(0.0, min(1.0, potential))
 
     def calculate_combined_potential(
         self,
@@ -627,8 +1416,10 @@ class PBRSCalculator:
 
             # Clear position-based cache when level/switch state changes
             self._last_player_pos = None
-            self._last_goal_pos = None
-            self._cached_objective_potential = None
+            self._last_goal_id = None
+            self._cached_distance = None
+            self._cached_start_node = None
+            self._cached_next_hop = None
 
         # Compute and cache combined path distance for path-based normalization
         # Cache key includes level_id to invalidate on level change
@@ -652,15 +1443,46 @@ class PBRSCalculator:
             self._cached_combined_path_distance
         )
 
-        # Always calculate fresh potential for accurate PBRS gradients
-        objective_pot = PBRSPotentials.objective_distance_potential(
-            state_with_metrics,
-            adjacency=adjacency,
-            level_data=level_data,
-            path_calculator=self.path_calculator,
-            graph_data=graph_data,
-            scale_factor=scale_factor,  # Apply curriculum scaling
+        # OPTIMIZATION: Skip full path recalculation if player hasn't moved much
+        # This uses cached node + sub-node interpolation for dense rewards
+        current_pos = (float(state["player_x"]), float(state["player_y"]))
+        current_goal_id = (
+            "switch" if not state.get("switch_activated", False) else "exit"
         )
+
+        # Use kinodynamic database if available (most accurate)
+        if self.kinodynamic_db:
+            objective_pot = self._get_potential_with_kinodynamic_db(
+                current_pos=current_pos,
+                goal_id=current_goal_id,
+                state_with_metrics=state_with_metrics,
+                adjacency=adjacency,
+                level_data=level_data,
+                graph_data=graph_data,
+                scale_factor=scale_factor,
+            )
+        # Otherwise use waypoint-aware potential if waypoints available
+        elif self.momentum_waypoints:
+            objective_pot = self._get_cached_or_compute_potential_with_waypoints(
+                current_pos=current_pos,
+                goal_id=current_goal_id,
+                state_with_metrics=state_with_metrics,
+                adjacency=adjacency,
+                level_data=level_data,
+                graph_data=graph_data,
+                scale_factor=scale_factor,
+            )
+        # Fall back to momentum-aware geometric pathfinding
+        else:
+            objective_pot = self._get_cached_or_compute_potential(
+                current_pos=current_pos,
+                goal_id=current_goal_id,
+                state_with_metrics=state_with_metrics,
+                adjacency=adjacency,
+                level_data=level_data,
+                graph_data=graph_data,
+                scale_factor=scale_factor,
+            )
 
         # Copy diagnostic values back to original state for logging
         # These are set by objective_distance_potential() in state_with_metrics
@@ -671,6 +1493,18 @@ class PBRSCalculator:
             "_pbrs_combined_path_distance"
         )
         state["_pbrs_surface_area"] = state_with_metrics.get("_pbrs_surface_area")
+
+        # Copy timing data for profiling
+        state["_pbrs_cache_hit"] = state_with_metrics.get("_pbrs_cache_hit", False)
+        state["_pbrs_time_ms"] = state_with_metrics.get("_pbrs_time_ms", 0.0)
+        if "_pbrs_potential_calc_ms" in state_with_metrics:
+            state["_pbrs_potential_calc_ms"] = state_with_metrics[
+                "_pbrs_potential_calc_ms"
+            ]
+        if "_pbrs_node_find_ms" in state_with_metrics:
+            state["_pbrs_node_find_ms"] = state_with_metrics["_pbrs_node_find_ms"]
+        if "_pbrs_cache_update_ms" in state_with_metrics:
+            state["_pbrs_cache_update_ms"] = state_with_metrics["_pbrs_cache_update_ms"]
 
         # === VELOCITY ALIGNMENT WITH NEXT-HOP GRADIENT ===
         # Uses next_hop direction (respects winding paths) instead of Euclidean direction.
@@ -725,19 +1559,53 @@ class PBRSCalculator:
 
         return max(0.0, potential)
 
+    def set_momentum_waypoints(self, waypoints: Optional[List[Any]]) -> None:
+        """Set momentum waypoints for current level.
+
+        Called when level changes or waypoints are loaded from cache.
+
+        Args:
+            waypoints: List of MomentumWaypoint objects, or None to disable waypoint routing
+        """
+        self.momentum_waypoints = waypoints or []
+        logger.debug(f"Set {len(self.momentum_waypoints)} momentum waypoints for PBRS")
+
+    def set_kinodynamic_database(self, kinodynamic_db: Optional[Any]) -> None:
+        """Set kinodynamic database for current level.
+
+        Called when level changes. Enables perfect velocity-aware pathfinding.
+
+        Args:
+            kinodynamic_db: KinodynamicDatabase instance, or None to disable
+        """
+        self.kinodynamic_db = kinodynamic_db
+        if kinodynamic_db:
+            stats = kinodynamic_db.get_statistics()
+            logger.info(
+                f"Kinodynamic database loaded: {stats['num_nodes']} nodes, "
+                f"{stats['num_velocity_bins']} velocity bins, "
+                f"{stats['reachable_pairs']:,} reachable pairs"
+            )
+
     def reset(self) -> None:
         """Reset calculator state for new episode.
 
         Clears position-based caching to ensure fresh potential calculations
         for the new episode. Surface area and combined path distance caches
         are kept as they are level-specific, not episode-specific.
+
+        Momentum waypoints are NOT reset here - they are level-specific and
+        should persist across episodes on the same level.
         """
         # Clear position-based cache for fresh potential calculations
         # CRITICAL: Must reset when episode restarts (including same level reload)
         self._last_player_pos = None
-        self._last_goal_pos = None
-        self._cached_objective_potential = None
+        self._last_goal_id = None
+        self._cached_distance = None
+        self._cached_start_node = None
+        self._cached_next_hop = None
 
         # Keep surface area cache - it's per level, not per episode
         # Keep combined path distance cache - it's per level, not per episode
+        # Keep momentum waypoints - they're per level, not per episode
         # These will be invalidated when level_data or switch_states change

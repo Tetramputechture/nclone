@@ -20,6 +20,7 @@ class DebugMixin:
     - Tile type debug visualization
     - Reachability debug visualization
     - Subgoal visualization
+    - Mine SDF (Signed Distance Field) visualization
     """
 
     def _init_debug_system(self, enable_debug_overlay: bool = False):
@@ -49,6 +50,9 @@ class DebugMixin:
 
         # Reachable wall debug visualization state
         self._reachable_walls_debug_enabled: bool = False
+
+        # Mine SDF (Signed Distance Field) debug visualization state
+        self._mine_sdf_debug_enabled: bool = False
 
     def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
@@ -83,6 +87,12 @@ class DebugMixin:
                 if hasattr(self, "level_data")
                 else [],
             }
+
+        # Add mine SDF visualization payload if enabled
+        if self._mine_sdf_debug_enabled:
+            mine_sdf_data = self._get_mine_sdf_data()
+            if mine_sdf_data:
+                info["mine_sdf"] = mine_sdf_data
 
         # Add other debug info only if general debug overlay is enabled
         if self._enable_debug_overlay:
@@ -210,3 +220,55 @@ class DebugMixin:
     def _record_action_for_debug(self, action: int):
         """Record the action taken for debug visualization."""
         self._last_action_taken = action
+
+    def set_mine_sdf_debug_enabled(self, enabled: bool):
+        """Enable/disable mine SDF (Signed Distance Field) debug visualization.
+
+        Shows a heatmap overlay of the precomputed distance field to deadly mines.
+        Red = danger zone (close to mines), Green = safe (far from mines).
+        Also shows escape direction arrows at each tile.
+        """
+        self._mine_sdf_debug_enabled = bool(enabled)
+
+    def _get_mine_sdf_data(self) -> Optional[Dict[str, Any]]:
+        """Get mine SDF data for visualization.
+
+        Returns:
+            Dictionary with SDF grid, gradient grid, ninja position, and
+            deadly mine positions, or None if SDF is not available.
+        """
+        # Try to get the mine SDF from the path calculator
+        if not hasattr(self, "_path_calculator") or self._path_calculator is None:
+            return None
+
+        if not hasattr(self._path_calculator, "mine_sdf"):
+            return None
+
+        mine_sdf = self._path_calculator.mine_sdf
+        if mine_sdf.sdf_grid is None:
+            return None
+
+        # Extract deadly mine positions from level_data
+        deadly_mine_positions = []
+        if hasattr(self, "level_data") and self.level_data is not None:
+            from ...constants.entity_types import EntityType
+
+            mines = self.level_data.get_entities_by_type(
+                EntityType.TOGGLE_MINE
+            ) + self.level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+
+            for mine in mines:
+                mine_state = mine.get("state", 0)
+                # State 0 = deadly (toggled), per EntityToggleMine
+                if mine_state == 0:
+                    mine_x = mine.get("x", 0)
+                    mine_y = mine.get("y", 0)
+                    deadly_mine_positions.append((mine_x, mine_y))
+
+        return {
+            "sdf_grid": mine_sdf.sdf_grid,
+            "gradient_grid": mine_sdf.gradient_grid,
+            "danger_radius": mine_sdf.danger_radius,
+            "ninja_position": self.nplay_headless.ninja_position(),
+            "deadly_mine_positions": deadly_mine_positions,
+        }

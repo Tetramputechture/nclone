@@ -151,6 +151,7 @@ class EnvironmentConfig:
     enable_visual_observations: bool = (
         False  # If False, skip rendering entirely (graph+state+reachability sufficient)
     )
+    enable_graph_observations: bool = True  # If False, skip graph arrays in observation space (spatial_context sufficient)  # Memory optimization: saves ~21KB per observation when using graph_free architecture
 
     # Component configurations
     frame_stack: FrameStackConfig = field(default_factory=FrameStackConfig)
@@ -259,6 +260,8 @@ class EnvironmentConfig:
             "debug": self.graph.debug or self.reachability.debug,
             # Frame skip settings
             "frame_skip": self.frame_skip,
+            # Graph observation settings
+            "enable_graph_observations": self.enable_graph_observations,
         }
 
 

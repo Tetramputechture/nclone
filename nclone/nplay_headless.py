@@ -1,6 +1,7 @@
 import os
 import random
 import math
+import logging
 from typing import Optional, Dict, Any
 from .nsim import Simulator
 from .map_generation.map_generator import generate_map
@@ -21,6 +22,8 @@ from .constants.physics_constants import (
     LEVEL_HEIGHT_PX,
 )
 from . import render_utils
+
+logger = logging.getLogger(__name__)
 
 
 class NPlayHeadless:
@@ -170,16 +173,37 @@ class NPlayHeadless:
     def load_map_from_map_data(self, map_data: List[int]):
         """
         Load a map from a list of integers.
+
+        NOTE: When using curriculum learning, the caller should call
+        clear_graph_caches_for_curriculum_load() on the environment AFTER
+        this method to ensure all graph and path caches are invalidated.
+        This prevents "graph pollution" where goal positions from previous
+        levels persist in SubprocVecEnv scenarios.
         """
         self.sim.load(map_data)
         self.current_map_data = map_data
-        # Clear pathfinding cache when map changes
+
+        # Set flag to indicate a new map was loaded (can be checked by environment)
+        self._map_just_loaded = True
+
+        # Clear pathfinding visualization cache when map changes
         if hasattr(self, "sim_renderer") and hasattr(
             self.sim_renderer, "debug_overlay_renderer"
         ):
-            from nclone.cache_management import clear_pathfinding_caches
+            from nclone.cache_management import (
+                clear_pathfinding_caches,
+                clear_debug_overlay_caches,
+            )
 
             clear_pathfinding_caches(self.sim_renderer.debug_overlay_renderer)
+            # Also clear debug overlay caches to prevent stale visualizations
+            clear_debug_overlay_caches(self.sim_renderer.debug_overlay_renderer)
+
+        # Clear render caches to force fresh rendering of new map
+        if hasattr(self, "cached_render_surface"):
+            self.cached_render_surface = None
+        if hasattr(self, "cached_render_buffer"):
+            self.cached_render_buffer = None
 
     def load_map(self, map_path: str):
         """
@@ -252,7 +276,7 @@ class NPlayHeadless:
         if self.enable_rendering:
             self.cached_render_surface = None
             self.cached_render_buffer = None
-            self.clock.tick(60)
+            self.clock.tick(120)
 
     def render(self, debug_info: Optional[dict] = None):
         """
@@ -365,6 +389,96 @@ class NPlayHeadless:
         """Get normalized ceiling normal vector for impact risk calculation."""
         return self.sim.ninja.ceiling_normalized_x, self.sim.ninja.ceiling_normalized_y
 
+    def _ensure_entities_loaded(self) -> bool:
+        """
+        Verify that entities are loaded and ready to query.
+
+        Returns:
+            True if entities are loaded, False otherwise.
+
+        If entities are not loaded, this logs detailed diagnostics to help
+        identify the cause of the issue.
+        """
+        # Check if entity_dic exists and has exit switch (type 3)
+        if not hasattr(self.sim, "entity_dic"):
+            logger.error("ENTITY_LOAD_CHECK: sim.entity_dic does not exist!")
+            return False
+
+        exit_entities = self.sim.entity_dic.get(3, [])
+        if len(exit_entities) == 0:
+            # No exit switch - this could be normal for empty maps or a loading issue
+            entity_keys = list(self.sim.entity_dic.keys())
+            entity_counts = {k: len(v) for k, v in self.sim.entity_dic.items()}
+
+            # If entity_dic is completely empty, that's a loading problem
+            if len(entity_keys) == 0:
+                logger.error(
+                    f"ENTITY_LOAD_CHECK: entity_dic is empty! "
+                    f"Frame: {self.sim.frame}, map_data length: {len(self.sim.map_data) if self.sim.map_data else 0}"
+                )
+                return False
+            else:
+                # Some entities exist but no exit switch - might be intentional (test maps)
+                logger.debug(
+                    f"ENTITY_LOAD_CHECK: No exit switch (type 3). "
+                    f"Available types: {entity_keys}, counts: {entity_counts}"
+                )
+                return True  # Entities are loaded, just no exit switch
+
+        return True
+
+    def _reload_entities_if_needed(self):
+        """
+        Force reload entities if they appear to be missing.
+
+        This is a recovery mechanism for curriculum learning where entity loading
+        might fail silently.
+        """
+        if not self._ensure_entities_loaded():
+            logger.warning(
+                "Entities not loaded - attempting to reload via map_loader.load_map_entities()"
+            )
+            try:
+                self.sim.map_loader.load_map_entities()
+                if self._ensure_entities_loaded():
+                    logger.info("Entity reload successful!")
+                else:
+                    logger.error("Entity reload failed - entities still not loaded")
+            except Exception as e:
+                logger.error(f"Entity reload raised exception: {e}")
+
+    def verify_entities_loaded(self) -> bool:
+        """
+        Public method to verify entities are properly loaded after a map load.
+
+        Should be called by curriculum environments after load_map_from_map_data()
+        to ensure entities are available for position queries.
+
+        Returns:
+            True if entities are loaded (exit switch available), False otherwise.
+        """
+        exit_switch = self._sim_exit_switch()
+        if exit_switch is None:
+            # Log detailed diagnostics
+            entity_keys = list(self.sim.entity_dic.keys())
+            entity_counts = {k: len(v) for k, v in self.sim.entity_dic.items()}
+            logger.warning(
+                f"verify_entities_loaded: No exit switch found! "
+                f"entity_dic keys: {entity_keys}, counts: {entity_counts}, "
+                f"frame: {self.sim.frame}"
+            )
+            return False
+
+        # Verify switch has valid position
+        if exit_switch.xpos == 0 and exit_switch.ypos == 0:
+            logger.warning(
+                "verify_entities_loaded: Exit switch has (0, 0) position! "
+                "This may indicate incomplete entity loading."
+            )
+            return False
+
+        return True
+
     def _sim_exit_switch(self):
         """Get exit switch entity (type 4, stored in entity_dic[3])."""
         # Safely check if entity type 3 exists and has entries
@@ -380,9 +494,20 @@ class NPlayHeadless:
         return not exit_switch.active
 
     def exit_switch_position(self):
+        """
+        Get exit switch position.
+
+        Returns:
+            Tuple (x, y) of exit switch position, or (0, 0) if no exit switch.
+
+        IMPORTANT: Returns (0, 0) if entities are not loaded. Callers should
+        validate the returned position is not (0, 0) before caching it.
+        """
         exit_switch = self._sim_exit_switch()
         if exit_switch is None:
-            return (0, 0)  # Default position for empty maps
+            # Check if this is expected (no exit switch) vs unexpected (entities not loaded)
+            self._ensure_entities_loaded()
+            return (0, 0)
         return exit_switch.xpos, exit_switch.ypos
 
     def _sim_exit_door(self):
@@ -393,9 +518,20 @@ class NPlayHeadless:
         return exit_switch.parent
 
     def exit_door_position(self):
+        """
+        Get exit door position.
+
+        Returns:
+            Tuple (x, y) of exit door position, or (0, 0) if no exit door.
+
+        IMPORTANT: Returns (0, 0) if entities are not loaded. Callers should
+        validate the returned position is not (0, 0) before caching it.
+        """
         exit_door = self._sim_exit_door()
         if exit_door is None:
-            return (0, 0)  # Default position for empty maps
+            # Check if this is expected (no exit door) vs unexpected (entities not loaded)
+            self._ensure_entities_loaded()
+            return (0, 0)
         return exit_door.xpos, exit_door.ypos
 
     def mines(self):

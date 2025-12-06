@@ -56,6 +56,7 @@ def clear_door_feature_caches(env: Any, verbose: bool = False) -> None:
     - door_feature_cache: Precomputed door features
     - _has_locked_doors: Level door presence flag
     - _cached_locked_doors: Cached door entities
+    - _cached_locked_door_switches: Cached door switch entities
     - _cached_switch_states: Cached switch collection states
 
     Args:
@@ -67,7 +68,8 @@ def clear_door_feature_caches(env: Any, verbose: bool = False) -> None:
         Cleared door feature caches
     """
     if hasattr(env, "_locked_door_cache"):
-        env._locked_door_cache.clear()
+        if env._locked_door_cache is not None and hasattr(env._locked_door_cache, "clear"):
+            env._locked_door_cache.clear()
         if verbose:
             print("  - Cleared _locked_door_cache")
 
@@ -87,7 +89,8 @@ def clear_door_feature_caches(env: Any, verbose: bool = False) -> None:
             print("  - Set _switch_states_changed = True")
 
     if hasattr(env, "door_feature_cache"):
-        env.door_feature_cache.clear()
+        if env.door_feature_cache is not None and hasattr(env.door_feature_cache, "clear"):
+            env.door_feature_cache.clear()
         if verbose:
             print("  - Cleared door_feature_cache")
 
@@ -96,10 +99,17 @@ def clear_door_feature_caches(env: Any, verbose: bool = False) -> None:
         if verbose:
             print("  - Reset _has_locked_doors")
 
+    # CRITICAL: These are Optional[list] types - set to None to invalidate
+    # (they get re-populated on first access from nplay_headless)
     if hasattr(env, "_cached_locked_doors"):
-        env._cached_locked_doors.clear()
+        env._cached_locked_doors = None
         if verbose:
             print("  - Cleared _cached_locked_doors")
+
+    if hasattr(env, "_cached_locked_door_switches"):
+        env._cached_locked_door_switches = None
+        if verbose:
+            print("  - Cleared _cached_locked_door_switches")
 
     if hasattr(env, "_cached_switch_states"):
         env._cached_switch_states = None
@@ -397,6 +407,189 @@ def clear_all_caches_for_new_level(env: Any, verbose: bool = False) -> None:
 
     if verbose:
         print("All caches cleared for new level")
+
+
+def clear_graph_caches_for_curriculum_load(env: Any, verbose: bool = False) -> None:
+    """
+    Clear graph and path-related caches when curriculum loads a new level.
+
+    This function should be called AFTER load_map_from_map_data() but BEFORE
+    env.reset() to ensure graph caches are cleared before the new level's
+    graph is built.
+
+    CRITICAL: This fixes the "graph pollution" bug where goal positions from
+    previous levels persist when using curriculum learning with SubprocVecEnv.
+
+    Clears:
+    - Level data caches (_cached_level_data, _cached_entities)
+    - Static position caches (_cached_switch_pos, _cached_exit_pos)
+    - Locked door caches from base_environment.py:
+      - _cached_locked_doors, _cached_locked_door_switches, _cached_toggle_mines
+    - Locked door caches from npp_environment.py:
+      - _has_locked_doors, _cached_switch_states
+      - _locked_door_cache, door_feature_cache
+      - _last_switch_state_hash, _last_ninja_grid_cell
+    - Graph builder cache (_level_graph_cache, _flood_fill_cache)
+    - Graph state (current_graph, current_graph_data, _graph_data_cache)
+    - Graph debug caches (_graph_debug_cached_door_states)
+    - Path calculator cache (level_cache, mine_proximity_cache)
+    - Reachability state
+    - Pathfinding utility caches (surface area cache)
+
+    Args:
+        env: Environment instance (NppEnvironment or similar)
+        verbose: If True, print cache clearing operations
+
+    Example:
+        >>> # In curriculum wrapper reset:
+        >>> base_env.nplay_headless.load_map_from_map_data(map_data)
+        >>> clear_graph_caches_for_curriculum_load(base_env, verbose=True)
+        >>> obs, info = env.reset(options={"skip_map_load": True})
+    """
+    if verbose:
+        print("Clearing graph caches for curriculum level load...")
+
+    # Clear level data caches first (ensures fresh level_data extraction)
+    clear_level_data_caches(env, verbose=verbose)
+
+    # Clear static position caches (goal positions from previous level)
+    if hasattr(env, "_cached_switch_pos"):
+        env._cached_switch_pos = None
+        if verbose:
+            print("  - Cleared _cached_switch_pos")
+
+    if hasattr(env, "_cached_exit_pos"):
+        env._cached_exit_pos = None
+        if verbose:
+            print("  - Cleared _cached_exit_pos")
+
+    # Clear locked door caches from base_environment.py (Optional[list] types)
+    if hasattr(env, "_cached_locked_doors"):
+        # Handle both list and None types - always set to None for fresh reload
+        env._cached_locked_doors = None
+        if verbose:
+            print("  - Cleared _cached_locked_doors (base)")
+
+    if hasattr(env, "_cached_locked_door_switches"):
+        env._cached_locked_door_switches = None
+        if verbose:
+            print("  - Cleared _cached_locked_door_switches")
+
+    if hasattr(env, "_cached_toggle_mines"):
+        env._cached_toggle_mines = None
+        if verbose:
+            print("  - Cleared _cached_toggle_mines")
+
+    # Clear locked door caches from npp_environment.py (level-specific)
+    # These are set in _initialize_locked_door_caches() and must be reset
+    if hasattr(env, "_has_locked_doors"):
+        env._has_locked_doors = False
+        if verbose:
+            print("  - Reset _has_locked_doors")
+
+    if hasattr(env, "_cached_switch_states"):
+        env._cached_switch_states = None
+        if verbose:
+            print("  - Cleared _cached_switch_states")
+
+    if hasattr(env, "_switch_states_changed"):
+        env._switch_states_changed = True  # Mark as changed to force rebuild
+        if verbose:
+            print("  - Reset _switch_states_changed")
+
+    # Clear door path distance cache (Dict from npp_environment.py)
+    if hasattr(env, "_locked_door_cache"):
+        if env._locked_door_cache is not None and hasattr(env._locked_door_cache, "clear"):
+            env._locked_door_cache.clear()
+        if verbose:
+            print("  - Cleared _locked_door_cache")
+
+    # Clear precomputed door feature cache (PrecomputedDoorFeatureCache from npp_environment.py)
+    if hasattr(env, "door_feature_cache"):
+        if env.door_feature_cache is not None and hasattr(env.door_feature_cache, "clear"):
+            env.door_feature_cache.clear()
+        if verbose:
+            print("  - Cleared door_feature_cache")
+
+    # Clear door cache invalidation keys
+    if hasattr(env, "_last_switch_state_hash"):
+        env._last_switch_state_hash = None
+        if verbose:
+            print("  - Reset _last_switch_state_hash")
+
+    if hasattr(env, "_last_ninja_grid_cell"):
+        env._last_ninja_grid_cell = None
+        if verbose:
+            print("  - Reset _last_ninja_grid_cell")
+
+    # Clear graph debug door states cache (from graph_mixin.py)
+    if hasattr(env, "_graph_debug_cached_door_states"):
+        env._graph_debug_cached_door_states = None
+        if verbose:
+            print("  - Cleared _graph_debug_cached_door_states")
+
+    # Clear graph builder cache (prevents stale graph nodes/edges)
+    if hasattr(env, "graph_builder") and env.graph_builder is not None:
+        env.graph_builder.clear_cache()
+        if verbose:
+            print("  - Cleared graph builder cache")
+
+    # Clear graph state
+    if hasattr(env, "current_graph"):
+        env.current_graph = None
+        if verbose:
+            print("  - Cleared current_graph")
+
+    if hasattr(env, "current_graph_data"):
+        env.current_graph_data = None
+        if verbose:
+            print("  - Cleared current_graph_data")
+
+    # Clear graph data cache (per-level GraphData cache)
+    if hasattr(env, "_graph_data_cache"):
+        env._graph_data_cache.clear()
+        if verbose:
+            print("  - Cleared _graph_data_cache")
+
+    if hasattr(env, "_current_level_id"):
+        env._current_level_id = None
+        if verbose:
+            print("  - Cleared _current_level_id")
+
+    # Clear reachable area scale cache
+    if hasattr(env, "_reachable_area_scale_cache"):
+        env._reachable_area_scale_cache.clear()
+        if verbose:
+            print("  - Cleared _reachable_area_scale_cache")
+
+    # Clear path calculator cache (goal positions stored here!)
+    if hasattr(env, "_path_calculator") and env._path_calculator is not None:
+        env._path_calculator.clear_cache()
+        if verbose:
+            print("  - Cleared path calculator cache (goal positions)")
+
+    # Clear door feature cache
+    if hasattr(env, "door_feature_cache"):
+        env.door_feature_cache.clear()
+        if verbose:
+            print("  - Cleared door_feature_cache")
+
+    # Clear switch/mine state tracking
+    if hasattr(env, "last_switch_states"):
+        env.last_switch_states.clear()
+        if verbose:
+            print("  - Cleared last_switch_states")
+
+    if hasattr(env, "last_mine_states"):
+        env.last_mine_states = {}
+        if verbose:
+            print("  - Cleared last_mine_states")
+
+    # Clear pathfinding utility caches (module-level surface area cache)
+    clear_pathfinding_utility_caches(verbose=verbose)
+
+    if verbose:
+        print("Graph caches cleared for curriculum level load")
 
 
 def clear_all_caches_for_reset(env: Any, verbose: bool = False) -> None:

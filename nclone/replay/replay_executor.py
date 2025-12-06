@@ -35,6 +35,7 @@ from ..gym_environment.constants import (
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
 )
+from ..gym_environment.spatial_context import compute_spatial_context
 from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 
 
@@ -365,16 +366,16 @@ class ReplayExecutor:
             if adjacency:
                 num_nodes = len(adjacency)
                 # Count total edges
-                num_edges = sum(len(neighbors) for neighbors in adjacency.values())
+                # num_edges = sum(len(neighbors) for neighbors in adjacency.values())
 
                 if num_nodes == 0:
                     logger.warning(
                         "  Graph has ZERO nodes - this will cause training issues!"
                     )
-                if num_edges > E_MAX_EDGES:
-                    logger.warning(
-                        f"  Graph has {num_edges} edges, exceeding E_MAX_EDGES={E_MAX_EDGES}"
-                    )
+                # if num_edges > E_MAX_EDGES:
+                #     logger.warning(
+                #         f"  Graph has {num_edges} edges, exceeding E_MAX_EDGES={E_MAX_EDGES}"
+                #     )
             else:
                 logger.error(
                     f"Graph builder returned NO adjacency for level {level_id}"
@@ -578,6 +579,20 @@ class ReplayExecutor:
         # Add switch states (for hierarchical PPO and other components)
         obs["switch_states_dict"] = self._get_switch_states_from_env()
         obs["switch_states"] = self._build_switch_states_array(obs)
+
+        # Add spatial context (graph-free local geometry features)
+        # Computes 112-dim features: 64 local tile grid + 48 nearest mines overlay
+        # (6 features per mine including velocity-hazard alignment)
+        if self._cached_level_data is not None:
+            ninja_velocity = self.nplay_headless.ninja_velocity()
+            obs["spatial_context"] = compute_spatial_context(
+                ninja_pos=(ninja_x, ninja_y),
+                ninja_velocity=ninja_velocity,
+                tiles=self._cached_level_data.tiles,
+                entities=self._cached_level_data.entities,
+                level_width=LEVEL_WIDTH_PX,
+                level_height=LEVEL_HEIGHT_PX,
+            )
 
         return obs
 

@@ -382,6 +382,8 @@ class ObservationProcessor:
                 "graph_edge_mask",
                 "reachability_features",
                 "switch_states",
+                # Spatial context (graph-free local geometry features)
+                "spatial_context",
                 # Position data (needed for waypoint extraction in replay processing)
                 "player_x",
                 "player_y",
@@ -430,6 +432,8 @@ class ObservationProcessor:
             "graph_edge_index",
             "graph_node_mask",
             "graph_edge_mask",
+            # Spatial context (graph-free local geometry features)
+            "spatial_context",
         ]
         for key in passthrough_keys:
             if key in obs:

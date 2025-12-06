@@ -65,7 +65,15 @@ class ReachabilityMixin:
             self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
-        """Get 7-dimensional reachability features (includes mine context + phase indicator)."""
+        """Get 13-dimensional reachability features.
+
+        Features include:
+        - Base (4): reachable_area_ratio, dist_to_switch_inv, dist_to_exit_inv, exit_reachable
+        - Path distances (2): path_dist_to_switch_norm, path_dist_to_exit_norm
+        - Direction vectors (4): dir_to_switch_x/y, dir_to_exit_x/y
+        - Mine context (2): total_mines_norm, deadly_mine_ratio
+        - Phase indicator (1): switch_activated
+        """
         reachability_features = self._compute_reachability(
             self.nplay_headless.ninja_position()
         )
@@ -74,20 +82,30 @@ class ReachabilityMixin:
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
-        Compute 7-dimensional reachability features using adjacency graph.
+        Compute 13-dimensional reachability features using adjacency graph.
 
         Base features (4 dims):
-        1. Reachable area ratio (0-1)
-        2. Distance to nearest switch (normalized)
-        3. Distance to exit (normalized)
-        4. Exit reachable flag (0-1)
+        0. Reachable area ratio (0-1)
+        1. Distance to nearest switch (normalized, inverted)
+        2. Distance to exit (normalized, inverted)
+        3. Exit reachable flag (0-1)
+
+        Path distances (2 dims):
+        4. Path distance to switch (normalized 0-1)
+        5. Path distance to exit (normalized 0-1)
+
+        Direction vectors (4 dims):
+        6. Direction to switch X (-1 to 1)
+        7. Direction to switch Y (-1 to 1)
+        8. Direction to exit X (-1 to 1)
+        9. Direction to exit Y (-1 to 1)
 
         Mine context features (2 dims):
-        5. Total mines normalized (0-1)
-        6. Deadly mine ratio (0-1)
+        10. Total mines normalized (0-1)
+        11. Deadly mine ratio (0-1)
 
         Phase indicator (1 dim):
-        7. Switch activated flag (0-1) - CRITICAL for Markov property
+        12. Switch activated flag (0-1) - CRITICAL for Markov property
 
         PERFORMANCE: Uses grid-based caching to avoid recomputing when ninja
         hasn't moved significantly (>24px grid cell).

@@ -23,7 +23,9 @@ from .constants import (
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
     MAX_LOCKED_DOORS_ATTENTION,
+    SPATIAL_CONTEXT_DIM,
 )
+from .spatial_context import compute_spatial_context
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
@@ -99,6 +101,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self.config_flags.update(
             {"debug": self.config.graph.debug or self.config.reachability.debug}
         )
+
+        # Store graph observation flag for conditional observation space building
+        # When False, graph arrays are excluded from observation space (memory optimization)
+        # Graph is still built internally for PBRS reward calculation
+        self.enable_graph_observations = self.config.enable_graph_observations
 
         # Extend observation space with graph, reachability features
         self.observation_space = self._build_extended_observation_space()
@@ -186,7 +193,15 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         return distance
 
     def _build_extended_observation_space(self) -> SpacesDict:
-        """Build the extended observation space with graph and reachability features."""
+        """Build the extended observation space with graph and reachability features.
+
+        Graph observation spaces are conditionally included based on enable_graph_observations:
+        - When True (default): Full graph arrays included (~21KB per observation)
+        - When False: Graph arrays excluded (memory optimization for graph_free architecture)
+
+        Note: Graph is still built internally for PBRS reward calculation regardless of this flag.
+        This only controls whether graph arrays appear in the observation space.
+        """
         obs_spaces = dict(self.observation_space.spaces)
 
         # Add reachability features (always available)
@@ -197,30 +212,32 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Add GCN-optimized minimal graph observation spaces
         # Only includes data actually used by GCN encoder (no edge features, no types)
         # This keeps SubprocVecEnv serialization overhead low
-        obs_spaces["graph_node_feats"] = box.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(N_MAX_NODES, NODE_FEATURE_DIM),  # 7-dim features
-            dtype=np.float32,
-        )
-        obs_spaces["graph_edge_index"] = box.Box(
-            low=0,
-            high=N_MAX_NODES - 1,
-            shape=(2, E_MAX_EDGES),
-            dtype=np.uint16,
-        )
-        obs_spaces["graph_node_mask"] = box.Box(
-            low=0,
-            high=1,
-            shape=(N_MAX_NODES,),
-            dtype=np.uint8,
-        )
-        obs_spaces["graph_edge_mask"] = box.Box(
-            low=0,
-            high=1,
-            shape=(E_MAX_EDGES,),
-            dtype=np.uint8,
-        )
+        # MEMORY OPTIMIZATION: Skip when enable_graph_observations=False (saves ~21KB per obs)
+        if self.enable_graph_observations:
+            obs_spaces["graph_node_feats"] = box.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(N_MAX_NODES, NODE_FEATURE_DIM),  # 7-dim features
+                dtype=np.float32,
+            )
+            obs_spaces["graph_edge_index"] = box.Box(
+                low=0,
+                high=N_MAX_NODES - 1,
+                shape=(2, E_MAX_EDGES),
+                dtype=np.uint16,
+            )
+            obs_spaces["graph_node_mask"] = box.Box(
+                low=0,
+                high=1,
+                shape=(N_MAX_NODES,),
+                dtype=np.uint8,
+            )
+            obs_spaces["graph_edge_mask"] = box.Box(
+                low=0,
+                high=1,
+                shape=(E_MAX_EDGES,),
+                dtype=np.uint8,
+            )
 
         # Switch states for locked doors (25 total: 5 doors * 5 features each)
         # Features: [switch_x, switch_y, door_x, door_y, collected] per door
@@ -231,19 +248,25 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             dtype=np.float32,
         )
 
+        # Spatial context for graph-free observation (96 dims)
+        # 64 dims: 8×8 local tile grid (simplified categories)
+        # 32 dims: 8 nearest mines (relative_pos + state + radius)
+        obs_spaces["spatial_context"] = box.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(SPATIAL_CONTEXT_DIM,),
+            dtype=np.float32,
+        )
+
         return SpacesDict(obs_spaces)
 
     def _post_action_hook(self):
         """Update graph after action execution if needed."""
         # Graph building happens if either flag is True
-        t_check = self._profile_start("graph_check")
         should_update = self._should_update_graph()
-        self._profile_end("graph_check", t_check)
 
         if should_update:
-            t_build = self._profile_start("graph_build")
             self._update_graph_from_env_state()
-            self._profile_end("graph_build", t_build)
 
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Add NppEnvironment-specific info fields."""
@@ -253,11 +276,40 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # These fields are removed during observation processing but needed for reward calculation
         info["player_x"] = self.nplay_headless.ninja_position()[0]
         info["player_y"] = self.nplay_headless.ninja_position()[1]
-        info["switch_x"] = self.nplay_headless.exit_switch_position()[0]
-        info["switch_y"] = self.nplay_headless.exit_switch_position()[1]
+
+        # CRITICAL: Use cached positions instead of direct simulator calls
+        # Direct calls may return (0, 0) if entities not loaded during curriculum resets
+        # The cached values are validated in base_environment._get_observation()
+        switch_pos = self._cached_switch_pos
+        if switch_pos is None:
+            switch_pos = self.nplay_headless.exit_switch_position()
+            # Log if we're falling back to (0, 0)
+            if switch_pos == (0, 0):
+                import logging
+
+                _logger = logging.getLogger(__name__)
+                _logger.warning(
+                    f"_extend_info_hook: switch_pos is (0, 0)! "
+                    f"_cached_switch_pos was None, entities may not be loaded. "
+                    f"frame={self.nplay_headless.sim.frame}"
+                )
+        exit_pos = self._cached_exit_pos
+        if exit_pos is None:
+            exit_pos = self.nplay_headless.exit_door_position()
+            if exit_pos == (0, 0):
+                import logging
+
+                _logger = logging.getLogger(__name__)
+                _logger.warning(
+                    "_extend_info_hook: exit_pos is (0, 0)! "
+                    "_cached_exit_pos was None, entities may not be loaded."
+                )
+
+        info["switch_x"] = switch_pos[0]
+        info["switch_y"] = switch_pos[1]
         info["switch_activated"] = self.nplay_headless.exit_switch_activated()
-        info["exit_door_x"] = self.nplay_headless.exit_door_position()[0]
-        info["exit_door_y"] = self.nplay_headless.exit_door_position()[1]
+        info["exit_door_x"] = exit_pos[0]
+        info["exit_door_y"] = exit_pos[1]
         info["player_dead"] = self.nplay_headless.ninja_has_died()
         info["player_won"] = self.nplay_headless.ninja_has_won()
         info["death_cause"] = self.nplay_headless.ninja_death_cause()
@@ -268,6 +320,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         info["player_xspeed"] = ninja_vel[0]
         info["player_yspeed"] = ninja_vel[1]
         info["airborne"] = self.nplay_headless.sim.ninja.airborn
+
+        # Graph size info for level-size-aware optimizations
+        # Used by Go-Explore to scale checkpoint thresholds for larger levels
+        if hasattr(self, "current_graph") and self.current_graph is not None:
+            info["graph_num_nodes"] = self.current_graph.num_nodes
+        else:
+            info["graph_num_nodes"] = 0
 
     def _build_door_feature_cache(self):
         """
@@ -402,151 +461,82 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Build graph from the newly loaded map
         self._update_graph_from_env_state()
 
-        # DEBUG: Check if tiles are properly loaded
-        if hasattr(self, "current_graph_data") and self.current_graph_data:
-            adjacency = self.current_graph_data.get("adjacency")
-            if adjacency and len(adjacency) < 10:
-                # Graph is suspiciously small - diagnose tile loading issue
-                tile_dic = self.nplay_headless.get_tile_data()
-                num_tiles = len(tile_dic)
-                non_solid_tiles = sum(1 for t in tile_dic.values() if t != 1)
+        # # Validate spawn position can reach graph nodes (detect degenerate maps early)
+        # if hasattr(self, "current_graph_data") and self.current_graph_data:
+        #     adjacency = self.current_graph_data.get("adjacency")
+        #     if adjacency:
+        #         # Warn if graph is very small
+        #         if len(adjacency) < 10:
+        #             logger.warning(
+        #                 f"Small graph detected: {len(adjacency)} nodes. "
+        #                 f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
+        #             )
 
-                # Check what's in the level_data tiles array
-                if hasattr(self, "_cached_level_data") and self._cached_level_data:
-                    tiles_array = self._cached_level_data.tiles
-                    tiles_shape = (
-                        tiles_array.shape if hasattr(tiles_array, "shape") else "N/A"
-                    )
-                    tiles_nonzero = (
-                        (tiles_array != 0).sum()
-                        if hasattr(tiles_array, "sum")
-                        else "N/A"
-                    )
-                    tiles_non_solid = (
-                        (tiles_array != 1).sum()
-                        if hasattr(tiles_array, "sum")
-                        else "N/A"
-                    )
+        #         # Validate spawn can reach at least one graph node
+        #         # First verify simulator and ninja entity are properly initialized
+        #         if not (
+        #             hasattr(self.nplay_headless, "sim")
+        #             and hasattr(self.nplay_headless.sim, "ninja")
+        #             and hasattr(self.nplay_headless.sim.ninja, "xpos")
+        #             and hasattr(self.nplay_headless.sim.ninja, "ypos")
+        #         ):
+        #             # Simulator not fully initialized - skip validation
+        #             # This can happen in multiprocessing environments during unpickling
+        #             logger.warning(
+        #                 "Simulator not fully initialized during reset - skipping spawn validation. "
+        #                 "This is expected in multiprocessing environments."
+        #             )
+        #         else:
+        #             from nclone.graph.reachability.pathfinding_utils import (
+        #                 find_closest_node_to_position,
+        #             )
 
-                    # Check what tile types are actually present
-                    import numpy as np
+        #             # Get ninja position (already in world space with 1-tile padding)
+        #             ninja_pos = self.nplay_headless.ninja_position()
+        #             start_pos = (
+        #                 int(ninja_pos[0]),
+        #                 int(ninja_pos[1]),
+        #             )  # Use world space coordinates directly
 
-                    if isinstance(tiles_array, np.ndarray):
-                        unique_types = np.unique(tiles_array)
-                        type_counts = {
-                            int(t): int((tiles_array == t).sum()) for t in unique_types
-                        }
-                        logger.error(
-                            f"DIAGNOSTIC: Small graph detected! "
-                            f"Nodes: {len(adjacency)}, "
-                            f"Tiles in tile_dic: {num_tiles}, "
-                            f"Non-solid in tile_dic: {non_solid_tiles}, "
-                            f"Tiles array shape: {tiles_shape}, "
-                            f"Tile type distribution: {type_counts}, "
-                            f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
-                        )
+        #             closest = find_closest_node_to_position(
+        #                 start_pos,
+        #                 adjacency,
+        #                 threshold=50.0,
+        #                 spatial_hash=self.current_graph_data.get("spatial_hash"),
+        #                 subcell_lookup=None,
+        #             )
 
-                        # Save debug visualization of degenerate map
-                        self._save_degenerate_map_debug_image(
-                            tile_dic, adjacency, len(adjacency)
-                        )
-                    else:
-                        logger.error(
-                            f"DIAGNOSTIC: Small graph detected! "
-                            f"Nodes: {len(adjacency)}, "
-                            f"Tiles in tile_dic: {num_tiles}, "
-                            f"Non-solid in tile_dic: {non_solid_tiles}, "
-                            f"Tiles array shape: {tiles_shape}, "
-                            f"Tiles array nonzero: {tiles_nonzero}, "
-                            f"Tiles array non-solid: {tiles_non_solid}, "
-                            f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
-                        )
-                else:
-                    logger.error(
-                        f"DIAGNOSTIC: Small graph detected! "
-                        f"Nodes: {len(adjacency)}, "
-                        f"Tiles in tile_dic: {num_tiles}, "
-                        f"Non-solid tiles: {non_solid_tiles}, "
-                        f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}, "
-                        f"No cached level_data available"
-                    )
+        #             if closest is None:
+        #                 # Critical: Spawn unreachable from graph
+        #                 self._reset_retry_count += 1
 
-        # Validate spawn position can reach graph nodes (detect degenerate maps early)
-        if hasattr(self, "current_graph_data") and self.current_graph_data:
-            adjacency = self.current_graph_data.get("adjacency")
-            if adjacency:
-                # Warn if graph is very small
-                if len(adjacency) < 10:
-                    logger.warning(
-                        f"Small graph detected: {len(adjacency)} nodes. "
-                        f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
-                    )
+        #                 if self._reset_retry_count >= self._max_reset_retries:
+        #                     # All retries failed - raise with full diagnostics
+        #                     sample_nodes = list(adjacency.keys())[:10]
+        #                     raise RuntimeError(
+        #                         f"Failed to generate valid map after {self._max_reset_retries} attempts. "
+        #                         f"Spawn consistently unreachable from graph. "
+        #                         f"Last attempt: spawn={start_pos} (world space), "
+        #                         f"graph_nodes={len(adjacency)}, sample_nodes={sample_nodes}. "
+        #                         f"This is a critical bug in map generation."
+        #                     )
 
-                # Validate spawn can reach at least one graph node
-                # First verify simulator and ninja entity are properly initialized
-                if not (
-                    hasattr(self.nplay_headless, "sim")
-                    and hasattr(self.nplay_headless.sim, "ninja")
-                    and hasattr(self.nplay_headless.sim.ninja, "xpos")
-                    and hasattr(self.nplay_headless.sim.ninja, "ypos")
-                ):
-                    # Simulator not fully initialized - skip validation
-                    # This can happen in multiprocessing environments during unpickling
-                    logger.warning(
-                        "Simulator not fully initialized during reset - skipping spawn validation. "
-                        "This is expected in multiprocessing environments."
-                    )
-                else:
-                    from nclone.graph.reachability.pathfinding_utils import (
-                        find_closest_node_to_position,
-                    )
+        #                 # Log and retry with new map
+        #                 sample_nodes = list(adjacency.keys())[:5]
+        #                 logger.error(
+        #                     f"CRITICAL: Spawn unreachable from graph! "
+        #                     f"Retry {self._reset_retry_count}/{self._max_reset_retries}. "
+        #                     f"spawn={start_pos} (world space), graph_nodes={len(adjacency)}, "
+        #                     f"sample_nodes={sample_nodes}. "
+        #                     f"Regenerating map..."
+        #                 )
 
-                    # Get ninja position (already in world space with 1-tile padding)
-                    ninja_pos = self.nplay_headless.ninja_position()
-                    start_pos = (
-                        int(ninja_pos[0]),
-                        int(ninja_pos[1]),
-                    )  # Use world space coordinates directly
+        #                 # Regenerate map and retry reset
+        #                 self.map_loader.load_map()
+        #                 return self.reset(seed=seed, options=options)
 
-                    closest = find_closest_node_to_position(
-                        start_pos,
-                        adjacency,
-                        threshold=50.0,
-                        spatial_hash=self.current_graph_data.get("spatial_hash"),
-                        subcell_lookup=None,
-                    )
-
-                    if closest is None:
-                        # Critical: Spawn unreachable from graph
-                        self._reset_retry_count += 1
-
-                        if self._reset_retry_count >= self._max_reset_retries:
-                            # All retries failed - raise with full diagnostics
-                            sample_nodes = list(adjacency.keys())[:10]
-                            raise RuntimeError(
-                                f"Failed to generate valid map after {self._max_reset_retries} attempts. "
-                                f"Spawn consistently unreachable from graph. "
-                                f"Last attempt: spawn={start_pos} (world space), "
-                                f"graph_nodes={len(adjacency)}, sample_nodes={sample_nodes}. "
-                                f"This is a critical bug in map generation."
-                            )
-
-                        # Log and retry with new map
-                        sample_nodes = list(adjacency.keys())[:5]
-                        logger.error(
-                            f"CRITICAL: Spawn unreachable from graph! "
-                            f"Retry {self._reset_retry_count}/{self._max_reset_retries}. "
-                            f"spawn={start_pos} (world space), graph_nodes={len(adjacency)}, "
-                            f"sample_nodes={sample_nodes}. "
-                            f"Regenerating map..."
-                        )
-
-                        # Regenerate map and retry reset
-                        self.map_loader.load_map()
-                        return self.reset(seed=seed, options=options)
-
-                    # Success - reset retry counter
-                    self._reset_retry_count = 0
+        #             # Success - reset retry counter
+        #             self._reset_retry_count = 0
 
         # Build precomputed door feature cache after graph is ready
         # PERFORMANCE: Precomputes ALL path distances for O(1) runtime lookup
@@ -1011,7 +1001,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         return features
 
     def _process_observation(self, obs):
-        """Process the observation from the environment."""
+        """Process the observation from the environment.
+
+        Graph observations are conditionally included based on enable_graph_observations:
+        - When True (default): Graph arrays added to observation (~21KB per obs)
+        - When False: Graph arrays excluded (memory optimization for graph_free architecture)
+
+        Note: Graph is still built internally for PBRS reward calculation regardless.
+        """
         processed_obs = super()._process_observation(obs)
 
         # Add reachability features if not already added (always present in raw obs)
@@ -1021,16 +1018,22 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 np.zeros(REACHABILITY_FEATURES_DIM, dtype=np.float32),
             )
 
-        # Add graph observations if enabled and not already added
-        graph_obs = self._get_graph_observations()
-        for key, value in graph_obs.items():
-            if key not in processed_obs:
-                processed_obs[key] = value
+        # Add graph observations only if enabled (memory optimization)
+        # Graph is still built internally for PBRS, but arrays excluded from obs when disabled
+        if self.enable_graph_observations:
+            graph_obs = self._get_graph_observations()
+            for key, value in graph_obs.items():
+                if key not in processed_obs:
+                    processed_obs[key] = value
 
         if "switch_states" not in processed_obs:
             processed_obs["switch_states"] = obs.get(
                 "switch_states", np.zeros(SWITCH_STATES_DIM, dtype=np.float32)
             )
+
+        # Add spatial_context (graph-free local geometry features)
+        if "spatial_context" not in processed_obs:
+            processed_obs["spatial_context"] = self._compute_spatial_context()
 
         # MEMORY OPTIMIZATION: Remove internal-only observations that are not needed for training
         # These are only used during environment step for PBRS reward computation
@@ -1045,6 +1048,36 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             processed_obs.pop(key, None)
 
         return processed_obs
+
+    def _compute_spatial_context(self) -> np.ndarray:
+        """Compute spatial context features (graph-free local geometry).
+
+        Returns 112-dimensional array:
+        - 64 dims: 8×8 local tile grid (simplified tile categories)
+        - 48 dims: 8 nearest mines (6 features each):
+          - relative_pos (2), state (1), radius (1)
+          - velocity_dot_direction (1), distance_rate (1)
+
+        Markov Property: All features depend only on current state (position, velocity).
+
+        Returns:
+            np.ndarray: 112-dimensional spatial context features
+        """
+        # Get ninja position and velocity (current state only - Markovian)
+        ninja_pos = self.nplay_headless.ninja_position()
+        ninja_velocity = self.nplay_headless.ninja_velocity()
+
+        # Get level data for tiles and entities
+        level_data = self.level_data
+
+        return compute_spatial_context(
+            ninja_pos=ninja_pos,
+            ninja_velocity=ninja_velocity,
+            tiles=level_data.tiles,
+            entities=level_data.entities,
+            level_width=LEVEL_WIDTH_PX,
+            level_height=LEVEL_HEIGHT_PX,
+        )
 
     def clear_caches(self, verbose: bool = False):
         """

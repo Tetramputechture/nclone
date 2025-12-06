@@ -281,6 +281,161 @@ class DebugOverlayRenderer:
 
         return surface
 
+    def _draw_mine_sdf(self, mine_sdf_info: dict) -> Optional[pygame.Surface]:
+        """Draw mine SDF (Signed Distance Field) heatmap visualization.
+
+        Shows a heatmap of distance to nearest deadly mine:
+        - Dark red = at mine location (most dangerous)
+        - Orange/Yellow = danger zone boundary
+        - Green = safe zone (far from mines)
+        - White arrows = direction TO nearest mine (danger indicator)
+        - Dark red circles = exact mine positions
+
+        Args:
+            mine_sdf_info: Dictionary containing:
+                - sdf_grid: 2D numpy array [rows, cols] with normalized distances (12px resolution)
+                - gradient_grid: 3D numpy array [rows, cols, 2] with directions away from mine
+                - ninja_position: Current ninja position (x, y)
+                - deadly_mine_positions: List of (x, y) tuples for deadly mines
+
+        Returns:
+            pygame.Surface with SDF heatmap overlay
+        """
+        import numpy as np
+
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        sdf_grid = mine_sdf_info.get("sdf_grid")
+        gradient_grid = mine_sdf_info.get("gradient_grid")
+        ninja_pos = mine_sdf_info.get("ninja_position", (0, 0))
+        deadly_mine_positions = mine_sdf_info.get("deadly_mine_positions", [])
+
+        if sdf_grid is None:
+            return surface
+
+        rows, cols = sdf_grid.shape
+        # SDF uses 12px cells (sub-node resolution) for higher accuracy
+        sdf_cell_size = 12 * self.adjust
+
+        # Draw SDF heatmap at 12px resolution
+        for row in range(rows):
+            for col in range(cols):
+                sdf_value = sdf_grid[row, col]
+
+                # Map SDF to color (dark red=at mine, orange=danger, green=safe)
+                if sdf_value < -0.7:
+                    # Very close to mine: dark red (saturated)
+                    r, g, b = 180, 0, 0
+                    alpha = 200
+                elif sdf_value < 0:
+                    # Danger zone: dark red to orange
+                    # sdf_value goes from -0.7 to 0 (boundary)
+                    t = (-sdf_value) / 0.7  # 1 at -0.7, 0 at boundary
+                    r = 180 + int(75 * (1 - t))  # 180 -> 255
+                    g = int(165 * (1 - t))  # 0 -> 165 (orange)
+                    b = 0
+                    alpha = int(120 + 80 * t)  # More opaque closer to mine
+                elif sdf_value < 0.3:
+                    # Transition zone: orange to yellow-green
+                    t = sdf_value / 0.3  # 0 to 1
+                    r = int(255 * (1 - t))
+                    g = 165 + int(90 * t)  # 165 -> 255
+                    b = 0
+                    alpha = int(100 * (1 - t) + 40)
+                else:
+                    # Safe zone: light green, mostly transparent
+                    r, g, b, alpha = 50, 200, 50, 15
+
+                screen_x = col * sdf_cell_size + self.tile_x_offset
+                screen_y = row * sdf_cell_size + self.tile_y_offset
+                rect = pygame.Rect(screen_x, screen_y, sdf_cell_size, sdf_cell_size)
+                pygame.draw.rect(surface, (r, g, b, alpha), rect)
+
+        # # Draw exact mine position markers
+        # for mine_x, mine_y in deadly_mine_positions:
+        #     screen_x = int(mine_x * self.adjust) + self.tile_x_offset
+        #     screen_y = int(mine_y * self.adjust) + self.tile_y_offset
+        #     # Dark red filled circle with white border
+        #     pygame.draw.circle(surface, (140, 0, 0, 255), (screen_x, screen_y), 6)
+        #     pygame.draw.circle(surface, (255, 255, 255, 200), (screen_x, screen_y), 6, 2)
+
+        # Draw danger approach arrows at regular 24px intervals (2 cells × 12px)
+        # Static grid showing direction TO nearest mine - doesn't change with player position
+        # Dense grid with shorter arrows for clearer visualization
+        if gradient_grid is not None:
+            arrow_spacing = 2  # Every 2 cells = 24px intervals (denser)
+            for row in range(arrow_spacing // 2, rows, arrow_spacing):
+                for col in range(arrow_spacing // 2, cols, arrow_spacing):
+                    gx, gy = gradient_grid[row, col]
+                    # Only draw if there's a meaningful gradient (not at mine center or no mines)
+                    if abs(gx) > 0.01 or abs(gy) > 0.01:
+                        cx = (
+                            col * sdf_cell_size + self.tile_x_offset + sdf_cell_size / 2
+                        )
+                        cy = (
+                            row * sdf_cell_size + self.tile_y_offset + sdf_cell_size / 2
+                        )
+
+                        # Arrow opacity/color based on distance to mine
+                        sdf_val = sdf_grid[row, col]
+                        if sdf_val < 0:
+                            # In danger zone: bright white arrows
+                            arrow_color = (255, 255, 255, 220)
+                            arrow_len = sdf_cell_size * 0.8
+                        elif sdf_val < 0.5:
+                            # Transition zone: semi-transparent
+                            arrow_color = (255, 255, 255, 140)
+                            arrow_len = sdf_cell_size * 0.7
+                        else:
+                            # Safe zone: faint arrows
+                            arrow_color = (255, 255, 255, 60)
+                            arrow_len = sdf_cell_size * 0.6
+
+                        # Negate to point TOWARD mine (gradient points away)
+                        self._draw_arrow(
+                            surface,
+                            (cx, cy),
+                            (-gx, -gy),
+                            arrow_len,
+                            arrow_color,
+                            width=1,
+                            head_size=3,
+                        )
+
+        # Draw ninja indicator
+        # nx = int(ninja_pos[0] * self.adjust) + self.tile_x_offset
+        # ny = int(ninja_pos[1] * self.adjust) + self.tile_y_offset
+        # pygame.draw.circle(surface, (0, 200, 255, 255), (nx, ny), 8)
+        # pygame.draw.circle(surface, (255, 255, 255, 255), (nx, ny), 8, 2)
+
+        # # Draw legend
+        # try:
+        #     font = pygame.font.Font(None, 18)
+        # except pygame.error:
+        #     font = pygame.font.SysFont("arial", 14)
+
+        # lx, ly, lw, lh = self.screen.get_width() - 170, 20, 150, 110
+        # pygame.draw.rect(surface, (0, 0, 0, 200), (lx, ly, lw, lh), border_radius=5)
+        # pygame.draw.rect(surface, (100, 200, 255), (lx, ly, lw, lh), 2, border_radius=5)
+
+        # surface.blit(
+        #     font.render("Mine SDF (12px)", True, (255, 255, 255)), (lx + 10, ly + 8)
+        # )
+        # for i, (color, label) in enumerate(
+        #     [
+        #         ((140, 0, 0), "Mine Position"),
+        #         ((180, 0, 0), "At Mine"),
+        #         ((255, 100, 0), "Danger Zone"),
+        #         ((255, 200, 0), "Transition"),
+        #         ((50, 200, 50), "Safe"),
+        #     ]
+        # ):
+        #     y = ly + 28 + i * 16
+        #     pygame.draw.rect(surface, color + (200,), (lx + 10, y, 12, 12))
+        #     surface.blit(font.render(label, True, (255, 255, 255)), (lx + 28, y - 1))
+
+        return surface
+
     def _draw_action_mask(self, action_mask_info: dict) -> Optional[pygame.Surface]:
         """Draw action mask visualization showing allowed vs masked actions.
 
@@ -548,6 +703,8 @@ class DebugOverlayRenderer:
         if show_blocked and graph_data.get("blocked_edges"):
             blocked_edges = graph_data["blocked_edges"]
 
+        used_edge_types = set()  # Track edge types used in paths for legend
+
         # Draw adjacency graph edges first (so they appear behind nodes)
         if show_adjacency:
             for pos, neighbors in adjacency.items():
@@ -804,9 +961,6 @@ class DebugOverlayRenderer:
             switch_path = cached_data.get("switch_path")
             exit_path = cached_data.get("exit_path")
 
-            # Track edge types used in paths for legend
-            used_edge_types = set()
-
             # Draw paths (from cache or newly computed)
             if closest_node and cached_data:
                 # Draw switch path
@@ -1013,7 +1167,7 @@ class DebugOverlayRenderer:
                     if switch_node is not None:
                         # BFS from ninja to switch using shared utility
                         # Use mine proximity cache for consistent path distances with training
-                        distances, target_dist, _ = bfs_distance_from_start(
+                        distances, target_dist, _, _ = bfs_distance_from_start(
                             closest_node,
                             switch_node,
                             adjacency,
@@ -1044,7 +1198,7 @@ class DebugOverlayRenderer:
                     if exit_node is not None:
                         # BFS from ninja to exit using shared utility
                         # Use mine proximity cache for consistent path distances with training
-                        distances, target_dist, _ = bfs_distance_from_start(
+                        distances, target_dist, _, _ = bfs_distance_from_start(
                             closest_node,
                             exit_node,
                             adjacency,
@@ -1200,6 +1354,12 @@ class DebugOverlayRenderer:
             action_mask_surface = self._draw_action_mask(debug_info["action_mask"])
             if action_mask_surface:
                 surface.blit(action_mask_surface, (0, 0))
+
+        # Draw mine SDF visualization if provided
+        if debug_info and "mine_sdf" in debug_info:
+            mine_sdf_surface = self._draw_mine_sdf(debug_info["mine_sdf"])
+            if mine_sdf_surface:
+                surface.blit(mine_sdf_surface, (0, 0))
 
         return surface
 

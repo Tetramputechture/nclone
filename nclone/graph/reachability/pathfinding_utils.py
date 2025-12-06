@@ -678,6 +678,7 @@ def find_goal_node_closest_to_start(
     ninja_radius: float = 10.0,
     spatial_hash: Optional[any] = None,
     subcell_lookup: Optional[any] = None,
+    search_radius_override: Optional[float] = None,
 ) -> Optional[Tuple[int, int]]:
     """
     Find goal node closest to start among nodes overlapped by entity radius.
@@ -695,6 +696,7 @@ def find_goal_node_closest_to_start(
         ninja_radius: Ninja collision radius
         spatial_hash: Optional SpatialHash
         subcell_lookup: Optional SubcellNodeLookupLoader
+        search_radius_override: Optional override for search radius (default: ninja_radius + entity_radius)
 
     Returns:
         Best goal node, or None if none found
@@ -717,8 +719,12 @@ def find_goal_node_closest_to_start(
     overlapped_nodes = []
     nearby_nodes = []
 
-    # Search radius for candidates
-    search_radius = ninja_radius + entity_radius
+    # Search radius for candidates (use override if provided)
+    search_radius = (
+        search_radius_override
+        if search_radius_override is not None
+        else (ninja_radius + entity_radius)
+    )
 
     # Get candidates within search radius
     candidates = []
@@ -781,6 +787,7 @@ def find_ninja_node(
     goal_node: Optional[Tuple[int, int]] = None,
     level_cache: Optional[any] = None,
     goal_id: Optional[str] = None,
+    search_radius_override: Optional[float] = None,
 ) -> Optional[Tuple[int, int]]:
     """
     Find the node representing the ninja's current position.
@@ -805,6 +812,7 @@ def find_ninja_node(
         goal_node: Optional goal node for path-aware start node selection
         level_cache: Optional LevelBasedPathDistanceCache for correct path distance selection
         goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
+        search_radius_override: Optional override for search radius (default: ninja_radius)
 
     Returns:
         Ninja node position, or None if no suitable node found
@@ -816,12 +824,17 @@ def find_ninja_node(
     ninja_x = ninja_pos[0] - NODE_WORLD_COORD_OFFSET
     ninja_y = ninja_pos[1] - NODE_WORLD_COORD_OFFSET
 
-    # Find all nodes within ninja radius (overlapping nodes)
+    # Use search_radius_override if provided, otherwise use ninja_radius
+    search_radius = (
+        search_radius_override if search_radius_override is not None else ninja_radius
+    )
+
+    # Find all nodes within search radius (overlapping nodes)
     overlapping_nodes = []
     for pos in adjacency.keys():
         x, y = pos
         dist_sq = (x - ninja_x) ** 2 + (y - ninja_y) ** 2
-        if dist_sq <= ninja_radius * ninja_radius:
+        if dist_sq <= search_radius * search_radius:
             overlapping_nodes.append((pos, dist_sq))
 
     # If we found overlapping nodes, select the best one
@@ -926,7 +939,13 @@ def bfs_distance_from_start(
     mine_proximity_cache: Optional[Any] = None,
     return_parents: bool = False,
     use_geometric_costs: bool = False,
-) -> Tuple[Dict[Tuple[int, int], float], Optional[float], Optional[Dict]]:
+    track_geometric_distances: bool = False,
+) -> Tuple[
+    Dict[Tuple[int, int], float],
+    Optional[float],
+    Optional[Dict],
+    Optional[Dict[Tuple[int, int], float]],
+]:
     """
     Calculate distances from start node using Dijkstra's algorithm with physics validation.
 
@@ -950,18 +969,31 @@ def bfs_distance_from_start(
         use_geometric_costs: If True, use actual geometric distances (pixels) instead of
             physics-weighted costs. Use this for PBRS normalization where you need the
             actual path length in pixels, not the physics-optimal cost.
+        track_geometric_distances: If True AND use_geometric_costs=False, also track
+            geometric distances (pixels) along the physics-optimal path. This allows
+            returning the pixel length of the physics-optimal path. The priority queue
+            still uses physics costs for ordering.
 
     Returns:
-        Tuple of (distances_dict, target_distance, parents_dict):
-        - distances_dict: Map of node -> distance from start
+        Tuple of (distances_dict, target_distance, parents_dict, geometric_distances_dict):
+        - distances_dict: Map of node -> distance from start (physics or geometric based on use_geometric_costs)
         - target_distance: Distance to target_node if found, None otherwise
         - parents_dict: Map of node -> parent node (only if return_parents=True, else None)
+        - geometric_distances_dict: Map of node -> geometric distance along physics-optimal path
+          (only if track_geometric_distances=True AND use_geometric_costs=False, else None)
     """
     # Priority queue: (distance, node)
     pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
     parents = {start_node: None}  # Track parents for horizontal rule
+    grandparents = {start_node: None}  # Track grandparents for momentum inference
     visited = set()
+
+    # Track geometric distances along physics-optimal path if requested
+    # This gives us the pixel length of the physics-optimal path
+    geometric_distances: Optional[Dict[Tuple[int, int], float]] = None
+    if track_geometric_distances and not use_geometric_costs:
+        geometric_distances = {start_node: 0.0}
 
     while pq:
         current_dist, current = heapq.heappop(pq)
@@ -974,7 +1006,7 @@ def bfs_distance_from_start(
         # Early termination if we found target and it's requested
         if target_node is not None and current == target_node:
             parents_result = parents if return_parents else None
-            return distances, current_dist, parents_result
+            return distances, current_dist, parents_result, geometric_distances
 
         # Early termination if we've exceeded max distance
         if max_distance is not None and current_dist > max_distance:
@@ -1004,7 +1036,7 @@ def bfs_distance_from_start(
                 # Cardinal: 12px, Diagonal: ~17px (12 * sqrt(2))
                 cost = (dx * dx + dy * dy) ** 0.5
             else:
-                # Calculate physics-aware edge cost with parent for momentum checking (uses base_adjacency)
+                # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
                 cost = _calculate_physics_aware_cost(
                     current,
                     neighbor_pos,
@@ -1013,6 +1045,10 @@ def bfs_distance_from_start(
                     physics_cache,
                     level_data,
                     mine_proximity_cache,
+                    0,  # aerial_upward_chain not tracked here (optimization)
+                    grandparents.get(
+                        current
+                    ),  # Pass grandparent for momentum inference
                 )
 
             new_dist = current_dist + cost
@@ -1021,12 +1057,25 @@ def bfs_distance_from_start(
             if new_dist < distances.get(neighbor_pos, float("inf")):
                 distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current  # Track parent for horizontal rule
+                grandparents[neighbor_pos] = parents.get(
+                    current
+                )  # Track grandparent for momentum
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 
-    # Return distances dict, target distance, and optionally parents
+                # Track geometric distance along physics-optimal path
+                if geometric_distances is not None:
+                    dx = neighbor_pos[0] - current[0]
+                    dy = neighbor_pos[1] - current[1]
+                    geometric_edge_cost = (dx * dx + dy * dy) ** 0.5
+                    current_geometric_dist = geometric_distances.get(current, 0.0)
+                    geometric_distances[neighbor_pos] = (
+                        current_geometric_dist + geometric_edge_cost
+                    )
+
+    # Return distances dict, target distance, optionally parents, and optionally geometric distances
     target_distance = distances.get(target_node) if target_node else None
     parents_result = parents if return_parents else None
-    return distances, target_distance, parents_result
+    return distances, target_distance, parents_result, geometric_distances
 
 
 def calculate_geometric_path_distance(
@@ -1041,15 +1090,15 @@ def calculate_geometric_path_distance(
     ninja_radius: float = 10.0,
 ) -> float:
     """
-    Calculate the geometric (pixel) path distance between two positions.
+    Calculate the geometric (pixel) path distance along the physics-optimal path.
 
-    Unlike the physics-weighted pathfinding, this returns the actual path length
-    in pixels. This is used for PBRS normalization where we need the true geometric
-    distance, not the physics-optimal cost.
+    Uses physics-aware costs for pathfinding (to find the "easiest" path according
+    to N++ physics), but returns the actual path length in pixels. This ensures
+    PBRS uses the physics-optimal path's length, not the geometrically-shortest path.
 
-    The path follows the same graph structure as physics-aware pathfinding, but
-    edges are weighted by their actual geometric length (12px for cardinal, ~17px
-    for diagonal) instead of physics-based costs.
+    This is important for levels where the physics-optimal path differs from the
+    geometrically-shortest path (e.g., taking a longer but easier route that
+    avoids difficult jumps).
 
     Args:
         start_pos: Start position (x, y) in pixels
@@ -1063,7 +1112,8 @@ def calculate_geometric_path_distance(
         ninja_radius: Collision radius of the ninja (default 10.0)
 
     Returns:
-        Geometric path distance in pixels, or float('inf') if unreachable
+        Geometric path distance in pixels along the physics-optimal path,
+        or float('inf') if unreachable
     """
     # Find closest nodes to start and goal positions
     start_node = find_ninja_node(
@@ -1090,21 +1140,28 @@ def calculate_geometric_path_distance(
     if start_node == goal_node:
         return 0.0
 
-    # Use BFS with geometric costs to find path
-    distances, target_distance, _ = bfs_distance_from_start(
+    # Use physics costs for pathfinding, but track geometric distances along the path
+    # This gives us the pixel length of the physics-optimal path
+    _, _, _, geometric_distances = bfs_distance_from_start(
         start_node=start_node,
         target_node=goal_node,
         adjacency=adjacency,
         base_adjacency=base_adjacency,
         physics_cache=physics_cache,
-        use_geometric_costs=True,  # Use actual pixel distances
+        use_geometric_costs=False,  # Use physics costs for pathfinding priority
+        track_geometric_distances=True,  # Track pixel distances along physics path
     )
 
-    if target_distance is None or target_distance == float("inf"):
+    if geometric_distances is None:
+        return float("inf")
+
+    # Get the geometric distance to the goal node along the physics-optimal path
+    target_geometric_distance = geometric_distances.get(goal_node)
+    if target_geometric_distance is None or target_geometric_distance == float("inf"):
         return float("inf")
 
     # Adjust for collision radii
-    return max(0.0, target_distance - (ninja_radius + entity_radius))
+    return max(0.0, target_geometric_distance - (ninja_radius + entity_radius))
 
 
 def find_shortest_path(
@@ -1157,6 +1214,7 @@ def find_shortest_path(
     pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
     parents = {start_node: None}
+    grandparents = {start_node: None}  # Track grandparents for momentum inference
     visited = set()
 
     while pq:
@@ -1192,7 +1250,7 @@ def find_shortest_path(
             ):
                 continue
 
-            # Calculate physics-aware edge cost with parent for momentum checking (uses base_adjacency)
+            # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
             cost = _calculate_physics_aware_cost(
                 current,
                 neighbor_pos,
@@ -1201,6 +1259,8 @@ def find_shortest_path(
                 physics_cache,
                 level_data,
                 mine_proximity_cache,
+                0,  # aerial_upward_chain not tracked here (optimization)
+                grandparents.get(current),  # Pass grandparent for momentum inference
             )
 
             new_dist = current_dist + cost
@@ -1209,6 +1269,7 @@ def find_shortest_path(
             if new_dist < distances.get(neighbor_pos, float("inf")):
                 distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current
+                grandparents[neighbor_pos] = parents.get(current)  # Track grandparent
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 
     return None, float("inf")
@@ -1484,3 +1545,189 @@ def clear_surface_area_cache(level_id: Optional[str] = None) -> None:
         _surface_area_cache.clear()
     else:
         _surface_area_cache.pop(level_id, None)
+
+
+def find_path_subgoals(
+    path_nodes: List[Tuple[int, int]],
+    threshold_angle_degrees: float = 45.0,
+    min_segment_length: float = 24.0,
+) -> List[Tuple[int, int]]:
+    """
+    Find subgoals from path inflection points.
+
+    Subgoals are positions where the path direction changes significantly
+    (> threshold angle). These represent key decision points where the
+    agent needs to make important navigation choices.
+
+    Uses for RL:
+    - Intermediate milestone rewards without breaking PBRS guarantees
+    - Hierarchical reward structure without hierarchical policies
+    - Debug visualization of optimal path structure
+
+    Args:
+        path_nodes: List of (x, y) positions forming the path (in any coord space)
+        threshold_angle_degrees: Minimum angle change to consider as inflection point
+                                (default 45 degrees = significant turn)
+        min_segment_length: Minimum distance between path segments to consider
+                           (default 24px = 1 tile, filters out micro-adjustments)
+
+    Returns:
+        List of (x, y) positions representing subgoals (inflection points)
+        Does NOT include start or end of path.
+    """
+    import math
+
+    if len(path_nodes) < 3:
+        return []  # Need at least 3 nodes to have an inflection
+
+    subgoals = []
+    threshold_radians = math.radians(threshold_angle_degrees)
+
+    for i in range(1, len(path_nodes) - 1):
+        prev_node = path_nodes[i - 1]
+        curr_node = path_nodes[i]
+        next_node = path_nodes[i + 1]
+
+        # Direction vector from prev to current
+        dir_in_x = curr_node[0] - prev_node[0]
+        dir_in_y = curr_node[1] - prev_node[1]
+        len_in = math.sqrt(dir_in_x**2 + dir_in_y**2)
+
+        # Direction vector from current to next
+        dir_out_x = next_node[0] - curr_node[0]
+        dir_out_y = next_node[1] - curr_node[1]
+        len_out = math.sqrt(dir_out_x**2 + dir_out_y**2)
+
+        # Skip if segments are too short (noise filtering)
+        if len_in < min_segment_length or len_out < min_segment_length:
+            continue
+
+        # Normalize directions
+        dir_in_x /= len_in
+        dir_in_y /= len_in
+        dir_out_x /= len_out
+        dir_out_y /= len_out
+
+        # Compute angle between directions using dot product
+        # dot = cos(angle), so angle = arccos(dot)
+        dot_product = dir_in_x * dir_out_x + dir_in_y * dir_out_y
+        # Clamp to [-1, 1] to avoid numerical issues with arccos
+        dot_product = max(-1.0, min(1.0, dot_product))
+        angle = math.acos(dot_product)
+
+        # If angle exceeds threshold, this is a subgoal
+        if angle > threshold_radians:
+            subgoals.append(curr_node)
+
+    return subgoals
+
+
+def find_path_subgoals_from_cache(
+    level_cache: Any,
+    start_pos: Tuple[int, int],
+    goal_id: str,
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    spatial_hash: Optional[Any] = None,
+    subcell_lookup: Optional[Any] = None,
+    threshold_angle_degrees: float = 45.0,
+) -> List[Tuple[int, int]]:
+    """
+    Find subgoals by tracing the optimal path using cached next_hop data.
+
+    This reconstructs the optimal path from current position to goal using
+    the level cache's precomputed shortest path data, then finds inflection
+    points where the path direction changes significantly.
+
+    Args:
+        level_cache: LevelBasedPathDistanceCache with precomputed paths
+        start_pos: Starting position in world space (x, y) pixels
+        goal_id: Goal identifier ("switch" or "exit")
+        adjacency: Graph adjacency structure
+        spatial_hash: Optional SpatialHash for O(1) node lookup
+        subcell_lookup: Optional subcell lookup for node snapping
+        threshold_angle_degrees: Minimum angle for inflection detection
+
+    Returns:
+        List of subgoal positions (world space coordinates)
+    """
+    if level_cache is None:
+        return []
+
+    # Find starting node
+    start_node = find_ninja_node(
+        (int(start_pos[0]), int(start_pos[1])),
+        adjacency,
+        spatial_hash=spatial_hash,
+        subcell_lookup=subcell_lookup,
+        ninja_radius=10.0,
+    )
+
+    if start_node is None:
+        return []
+
+    # Reconstruct path by following next_hop chain
+    path_nodes = [start_node]
+    current_node = start_node
+    max_hops = 500  # Safety limit to prevent infinite loops
+
+    for _ in range(max_hops):
+        next_hop = level_cache.get_next_hop(current_node, goal_id)
+        if next_hop is None:
+            break  # Reached goal or no path
+
+        path_nodes.append(next_hop)
+        current_node = next_hop
+
+        # Check if we've reached a goal node (would have no next_hop)
+        if level_cache.get_next_hop(next_hop, goal_id) is None:
+            break
+
+    # Find inflection points
+    subgoals_tile_space = find_path_subgoals(
+        path_nodes, threshold_angle_degrees=threshold_angle_degrees
+    )
+
+    # Convert to world space
+    subgoals_world = [
+        (node[0] + NODE_WORLD_COORD_OFFSET, node[1] + NODE_WORLD_COORD_OFFSET)
+        for node in subgoals_tile_space
+    ]
+
+    return subgoals_world
+
+
+def compute_distance_to_nearest_subgoal(
+    player_pos: Tuple[float, float],
+    subgoals: List[Tuple[int, int]],
+) -> Tuple[float, Optional[Tuple[int, int]]]:
+    """
+    Compute Euclidean distance to nearest subgoal.
+
+    Used for intermediate milestone rewards - agent gets bonus when
+    reaching a subgoal for the first time.
+
+    Args:
+        player_pos: Player position (x, y) in world space
+        subgoals: List of subgoal positions in world space
+
+    Returns:
+        Tuple of (distance_to_nearest, nearest_subgoal)
+        Returns (inf, None) if no subgoals
+    """
+    import math
+
+    if not subgoals:
+        return float("inf"), None
+
+    min_dist = float("inf")
+    nearest = None
+
+    for subgoal in subgoals:
+        dx = player_pos[0] - subgoal[0]
+        dy = player_pos[1] - subgoal[1]
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist < min_dist:
+            min_dist = dist
+            nearest = subgoal
+
+    return min_dist, nearest

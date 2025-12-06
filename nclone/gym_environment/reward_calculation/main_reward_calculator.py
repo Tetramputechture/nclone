@@ -38,6 +38,13 @@ from .reward_constants import (
     OSCILLATION_PENALTY,
     GLOBAL_REWARD_SCALE,
 )
+
+# Get distance to goal (use cached value if available from PBRS calculation)
+from ...constants.physics_constants import (
+    EXIT_SWITCH_RADIUS,
+    EXIT_DOOR_RADIUS,
+    NINJA_RADIUS,
+)
 from ...graph.reachability.path_distance_calculator import (
     CachedPathDistanceCalculator,
 )
@@ -291,6 +298,14 @@ class RewardCalculator:
             self.validate_level_solvability(obs)
             self._needs_validation = False
 
+        # === MILESTONE REWARD (checked BEFORE terminal to credit even on death) ===
+        # CRITICAL: Switch activation must be credited even if agent dies on same step.
+        # This ensures routes that achieve the switch are valued over those that don't.
+        switch_just_activated = obs.get("switch_activated", False) and not prev_obs.get(
+            "switch_activated", False
+        )
+        milestone_reward = SWITCH_ACTIVATION_REWARD if switch_just_activated else 0.0
+
         # === TERMINAL REWARDS (always active) ===
 
         # Death penalties - differentiated by cause for better learning signal
@@ -308,23 +323,27 @@ class RewardCalculator:
                 # Generic/unknown death cause
                 terminal_reward = DEATH_PENALTY
 
-            self.episode_terminal_reward = terminal_reward
+            # Add milestone reward to terminal reward (switch activated before death)
+            total_terminal = terminal_reward + milestone_reward
+            self.episode_terminal_reward = total_terminal
 
             # Apply global reward scaling for value function stability
-            scaled_reward = terminal_reward * GLOBAL_REWARD_SCALE
+            scaled_reward = total_terminal * GLOBAL_REWARD_SCALE
 
             # Populate PBRS components for TensorBoard logging (terminal state)
             # Log UNSCALED values for interpretability
             self.last_pbrs_components = {
                 "terminal_reward": terminal_reward,
+                "milestone_reward": milestone_reward,
                 "pbrs_reward": 0.0,
                 "time_penalty": 0.0,
                 "revisit_penalty": 0.0,
-                "total_reward": terminal_reward,
+                "total_reward": total_terminal,
                 "scaled_reward": scaled_reward,
                 "is_terminal": True,
                 "terminal_type": "death",
                 "death_cause": death_cause or "unknown",
+                "switch_activated_on_death": switch_just_activated,
             }
             return scaled_reward
 
@@ -349,18 +368,21 @@ class RewardCalculator:
                 )
                 terminal_reward += efficiency_bonus
 
-            self.episode_terminal_reward = terminal_reward
+            # Include milestone if switch was activated on same step as win (edge case)
+            total_terminal = terminal_reward + milestone_reward
+            self.episode_terminal_reward = total_terminal
 
             # Apply global reward scaling for value function stability
-            scaled_reward = terminal_reward * GLOBAL_REWARD_SCALE
+            scaled_reward = total_terminal * GLOBAL_REWARD_SCALE
 
             # Populate PBRS components for TensorBoard logging (terminal state)
             # Log UNSCALED values for interpretability
             self.last_pbrs_components = {
                 "terminal_reward": terminal_reward,
+                "milestone_reward": milestone_reward,
                 "pbrs_reward": 0.0,
                 "time_penalty": 0.0,
-                "total_reward": terminal_reward,
+                "total_reward": total_terminal,
                 "scaled_reward": scaled_reward,
                 "is_terminal": True,
                 "terminal_type": "win",
@@ -378,10 +400,9 @@ class RewardCalculator:
         # Track time penalty for logging (store scaled penalty per action)
         self.episode_time_penalties.append(time_penalty)
 
-        # === MILESTONE REWARD ===
-        switch_just_activated = obs.get("switch_activated", False) and not prev_obs.get(
-            "switch_activated", False
-        )
+        # === MILESTONE REWARD (already computed above, add to running reward) ===
+        # Switch activation was checked before terminal rewards to credit even on death.
+        # Now add it to the running reward for non-terminal steps.
         if switch_just_activated:
             reward += SWITCH_ACTIVATION_REWARD
 
@@ -878,34 +899,23 @@ class RewardCalculator:
 
         player_pos = (int(obs["player_x"]), int(obs["player_y"]))
 
-        # Get distance to goal (use cached value if available from PBRS calculation)
-        try:
-            from ...constants.physics_constants import (
-                EXIT_SWITCH_RADIUS,
-                EXIT_DOOR_RADIUS,
-                NINJA_RADIUS,
-            )
-
-            entity_radius = (
-                EXIT_SWITCH_RADIUS if cache_key == "switch" else EXIT_DOOR_RADIUS
-            )
-            base_adjacency = (
-                graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
-            )
-            distance_to_goal = self.pbrs_calculator.path_calculator.get_distance(
-                player_pos,
-                goal_pos,
-                adjacency,
-                base_adjacency,
-                cache_key=cache_key,
-                level_data=level_data,
-                graph_data=graph_data,
-                entity_radius=entity_radius,
-                ninja_radius=NINJA_RADIUS,
-            )
-        except Exception:
-            distance_to_goal = 0.0
-
+        entity_radius = (
+            EXIT_SWITCH_RADIUS if cache_key == "switch" else EXIT_DOOR_RADIUS
+        )
+        base_adjacency = (
+            graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+        )
+        distance_to_goal = self.pbrs_calculator.path_calculator.get_distance(
+            player_pos,
+            goal_pos,
+            adjacency,
+            base_adjacency,
+            cache_key=cache_key,
+            level_data=level_data,
+            graph_data=graph_data,
+            entity_radius=entity_radius,
+            ninja_radius=NINJA_RADIUS,
+        )
         # === PROGRESS TRACKING (diagnostic only, no penalty) ===
         # Track closest distance for logging - PBRS already handles backtracking
         # via potential decrease, so no explicit penalty is needed.
@@ -930,78 +940,78 @@ class RewardCalculator:
             if distance_to_exit < self.closest_distance_to_exit:
                 self.closest_distance_to_exit = distance_to_exit
 
-        # === PATH vs EUCLIDEAN DISTANCE DIVERGENCE DIAGNOSTIC ===
-        # NOTE: distance_to_goal is PHYSICS-WEIGHTED (not geometric pixels)
-        # Physics costs are ~0.04 per horizontal pixel, so a 1000px path = ~40 physics cost
-        # We need GEOMETRIC distance for meaningful comparison with Euclidean
-        euclidean_to_current_goal_raw = (
-            distance_to_switch
-            if not obs.get("switch_activated", False)
-            else distance_to_exit
-        )
+        # # === PATH vs EUCLIDEAN DISTANCE DIVERGENCE DIAGNOSTIC ===
+        # # NOTE: distance_to_goal is PHYSICS-WEIGHTED (not geometric pixels)
+        # # Physics costs are ~0.04 per horizontal pixel, so a 1000px path = ~40 physics cost
+        # # We need GEOMETRIC distance for meaningful comparison with Euclidean
+        # euclidean_to_current_goal_raw = (
+        #     distance_to_switch
+        #     if not obs.get("switch_activated", False)
+        #     else distance_to_exit
+        # )
 
-        # Get geometric path distance for proper comparison (not physics-weighted)
-        geometric_path_distance = 0.0
-        try:
-            geometric_path_distance = (
-                self.pbrs_calculator.path_calculator.get_geometric_distance(
-                    player_pos,
-                    goal_pos,
-                    adjacency,
-                    base_adjacency,
-                    level_data=level_data,
-                    graph_data=graph_data,
-                    entity_radius=entity_radius,
-                    ninja_radius=NINJA_RADIUS,
-                )
-            )
-        except Exception:
-            geometric_path_distance = 0.0
+        # # Get geometric path distance for proper comparison (not physics-weighted)
+        # geometric_path_distance = 0.0
+        # try:
+        #     geometric_path_distance = (
+        #         self.pbrs_calculator.path_calculator.get_geometric_distance(
+        #             player_pos,
+        #             goal_pos,
+        #             adjacency,
+        #             base_adjacency,
+        #             level_data=level_data,
+        #             graph_data=graph_data,
+        #             entity_radius=entity_radius,
+        #             ninja_radius=NINJA_RADIUS,
+        #         )
+        #     )
+        # except Exception:
+        #     geometric_path_distance = 0.0
 
         # FIX: Apply same radius adjustment to Euclidean for fair comparison
         # geometric_path_distance already has (ninja_radius + entity_radius) subtracted
         # so we must apply the same adjustment to Euclidean distance
-        combined_radius = NINJA_RADIUS + entity_radius
-        euclidean_adjusted = max(0.0, euclidean_to_current_goal_raw - combined_radius)
+        # combined_radius = NINJA_RADIUS + entity_radius
+        # euclidean_adjusted = max(0.0, euclidean_to_current_goal_raw - combined_radius)
 
         # Only compute ratio for meaningful distances (> 30px to avoid grid-snapping artifacts)
         # Path distance is computed between 12px grid nodes, so small distances have high error
-        if euclidean_adjusted > 30.0 and geometric_path_distance > 0:
-            divergence_ratio = geometric_path_distance / euclidean_adjusted
+        # if euclidean_adjusted > 30.0 and geometric_path_distance > 0:
+        #     divergence_ratio = geometric_path_distance / euclidean_adjusted
 
-            # Store for TensorBoard logging
-            obs["_pbrs_path_euclidean_ratio"] = divergence_ratio
+        #     # Store for TensorBoard logging
+        #     obs["_pbrs_path_euclidean_ratio"] = divergence_ratio
 
-            # Log anomalies: path should be longer than Euclidean for complex levels
-            # Using 0.80 threshold (20% tolerance) because:
-            # - Path is computed between 12px grid nodes, not exact positions
-            # - Node snapping can cause up to ~17px discrepancy (diagonal of 12px cell)
-            # - This is a diagnostic, not a critical error
-            if divergence_ratio < 0.80:
-                # Path is significantly shorter than Euclidean - likely a real bug
-                logger.warning(
-                    f"[PATH_DIAG] Geometric path < Euclidean distance! "
-                    f"ratio={divergence_ratio:.3f}, "
-                    f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
-                    f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
-                    f"goal=({goal_pos[0]},{goal_pos[1]}). "
-                    f"Pathfinding may be broken!"
-                )
-            elif divergence_ratio > 5.0 and self.steps_taken == 1:
-                # Very high divergence on first step - level has complex geometry
-                # This is expected for levels where path goes away from goal first
-                logger.debug(
-                    f"[PATH_DIAG] High path/Euclidean divergence at spawn. "
-                    f"ratio={divergence_ratio:.2f}, "
-                    f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
-                    f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
-                    f"goal=({goal_pos[0]},{goal_pos[1]}). "
-                    f"Level geometry requires going away from goal first."
-                )
+        #     # Log anomalies: path should be longer than Euclidean for complex levels
+        #     # Using 0.80 threshold (20% tolerance) because:
+        #     # - Path is computed between 12px grid nodes, not exact positions
+        #     # - Node snapping can cause up to ~17px discrepancy (diagonal of 12px cell)
+        #     # - This is a diagnostic, not a critical error
+        #     if divergence_ratio < 0.80:
+        #         # Path is significantly shorter than Euclidean - likely a real bug
+        #         logger.warning(
+        #             f"[PATH_DIAG] Geometric path < Euclidean distance! "
+        #             f"ratio={divergence_ratio:.3f}, "
+        #             f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
+        #             f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
+        #             f"goal=({goal_pos[0]},{goal_pos[1]}). "
+        #             f"Pathfinding may be broken!"
+        #         )
+        #     elif divergence_ratio > 5.0 and self.steps_taken == 1:
+        #         # Very high divergence on first step - level has complex geometry
+        #         # This is expected for levels where path goes away from goal first
+        #         logger.debug(
+        #             f"[PATH_DIAG] High path/Euclidean divergence at spawn. "
+        #             f"ratio={divergence_ratio:.2f}, "
+        #             f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
+        #             f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
+        #             f"goal=({goal_pos[0]},{goal_pos[1]}). "
+        #             f"Level geometry requires going away from goal first."
+        #         )
 
-        # Populate PBRS components for TensorBoard logging (non-terminal state)
+        # # Populate PBRS components for TensorBoard logging (non-terminal state)
         # This provides detailed breakdown of reward components for analysis
-        milestone_reward = SWITCH_ACTIVATION_REWARD if switch_just_activated else 0.0
+        # (milestone_reward was computed above, before terminal rewards check)
 
         # Extract diagnostic metrics from observation (set by objective_distance_potential)
         normalized_distance = obs.get("_pbrs_normalized_distance", 0.0)
@@ -1057,6 +1067,13 @@ class RewardCalculator:
             # Oscillation penalty (catches moving but not progressing)
             "oscillation_penalty": oscillation_penalty,
             "oscillation_penalty_count": self.oscillation_penalty_count,
+            # === PBRS PROFILING DATA ===
+            # Timing data for performance analysis
+            "_pbrs_cache_hit": obs.get("_pbrs_cache_hit", False),
+            "_pbrs_time_ms": obs.get("_pbrs_time_ms", 0.0),
+            "_pbrs_potential_calc_ms": obs.get("_pbrs_potential_calc_ms", 0.0),
+            "_pbrs_node_find_ms": obs.get("_pbrs_node_find_ms", 0.0),
+            "_pbrs_cache_update_ms": obs.get("_pbrs_cache_update_ms", 0.0),
             # === PBRS DIRECTION AND STUCK DIAGNOSTICS ===
             # For debugging policy collapse and wrong-direction PBRS
             "euclidean_alignment": obs.get("_pbrs_euclidean_alignment", 0.0),
