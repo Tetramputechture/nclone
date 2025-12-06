@@ -133,9 +133,13 @@ class LevelBasedPathDistanceCache:
         """
         Precompute distances from all reachable nodes to each goal using flood fill.
 
-        Computes TWO types of distances for each node:
+        Computes TWO types of distances for each node in a SINGLE BFS pass:
         1. Physics-weighted costs (for pathfinding optimization)
-        2. Geometric distances (for PBRS normalization - actual pixels)
+        2. Geometric distances along the physics-optimal path (for PBRS normalization)
+
+        IMPORTANT: The geometric distances are computed along the PHYSICS-OPTIMAL path,
+        not a separate geometrically-shortest path. This ensures PBRS uses the correct
+        path length when the physics-optimal path differs from the geometric-shortest.
 
         The adjacency graph should only contain nodes reachable from the initial
         player position. BFS traversal will only reach nodes in the adjacency graph,
@@ -194,35 +198,25 @@ class LevelBasedPathDistanceCache:
             # Store mapping of goal_id -> goal_pos for validation
             self._goal_id_to_goal_pos[goal_id] = goal_pos
 
-            # Run BFS with PHYSICS-WEIGHTED costs (for pathfinding)
-            # Request parents dict to compute next_hop for each node
+            # Run SINGLE BFS with physics costs, tracking geometric distances along the path
+            # This computes both physics costs (for pathfinding) and pixel distances
+            # along the physics-optimal path (for PBRS normalization) in one pass.
+            # Request parents dict to compute next_hop for each node.
             # Since we flood from goal, parent[node] = neighbor closer to goal = next_hop
-            physics_distances, _, parents = bfs_distance_from_start(
-                goal_node,
-                None,
-                adjacency,
-                base_adjacency,
-                None,
-                physics_cache,
-                level_data,
-                mine_proximity_cache,
-                return_parents=True,
-                use_geometric_costs=False,  # Physics-weighted costs
-            )
-
-            # Run BFS with GEOMETRIC costs (for PBRS normalization)
-            # This gives actual path length in pixels
-            geometric_distances, _, _ = bfs_distance_from_start(
-                goal_node,
-                None,
-                adjacency,
-                base_adjacency,
-                None,
-                physics_cache,
-                level_data,
-                mine_proximity_cache,
-                return_parents=False,  # Don't need parents for geometric
-                use_geometric_costs=True,  # Actual pixel distances
+            physics_distances, _, parents, geometric_distances = (
+                bfs_distance_from_start(
+                    goal_node,
+                    None,
+                    adjacency,
+                    base_adjacency,
+                    None,
+                    physics_cache,
+                    level_data,
+                    mine_proximity_cache,
+                    return_parents=True,
+                    use_geometric_costs=False,  # Physics-weighted costs for priority
+                    track_geometric_distances=True,  # Also track pixel distances along physics path
+                )
             )
 
             # Store physics-weighted distances and next_hop for all computed nodes
@@ -234,9 +228,12 @@ class LevelBasedPathDistanceCache:
                 next_hop = parents.get(node_pos) if parents else None
                 self.next_hop_cache[(node_pos, goal_id)] = next_hop
 
-            # Store geometric distances for PBRS normalization
-            for node_pos, distance in geometric_distances.items():
-                self.geometric_cache[(node_pos, goal_id)] = distance
+            # Store geometric distances along physics-optimal path for PBRS normalization
+            # These are the pixel lengths of the physics-optimal paths, NOT separate
+            # geometrically-shortest paths
+            if geometric_distances is not None:
+                for node_pos, distance in geometric_distances.items():
+                    self.geometric_cache[(node_pos, goal_id)] = distance
 
     def build_cache(
         self,

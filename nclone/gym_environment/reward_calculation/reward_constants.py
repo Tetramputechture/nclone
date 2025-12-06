@@ -116,9 +116,20 @@ TIMEOUT_PENALTY = -10.0
 MINE_DEATH_PENALTY = HAZARD_DEATH_PENALTY
 
 # Switch activation reward
-# Rationale: Milestone reward (10% of completion) provides intermediate signal
-# for two-phase task (switch → exit). Scaled 2.5× with completion reward.
-SWITCH_ACTIVATION_REWARD = 5.0
+# Rationale: CRITICAL MILESTONE reward (30% of completion) - ensures routes that
+# actually achieve the switch are significantly more valuable than routes that
+# just get close. This is the key differentiator between "almost" and "success".
+#
+# Why 30% of completion (15.0):
+# - Switch is the halfway point of the two-phase task (switch → exit)
+# - Must be large enough that switch activation is ALWAYS worth pursuing
+# - Even with death immediately after: +15 (switch) - 12 (death) = +3 net
+# - Compare to oscillating near switch: 0 (no activation) + penalties = negative
+#
+# With PBRS: An agent 50% through switch phase + activation + death:
+#   +3.75 (PBRS to switch) + 15 (activation) - 12 (death) = +6.75 (positive!)
+# Without activation: +7.5 (PBRS) - 12 (death) = -4.5 (negative!)
+SWITCH_ACTIVATION_REWARD = 15.0
 
 
 # =============================================================================
@@ -273,17 +284,16 @@ VELOCITY_ALIGNMENT_WEIGHT_RATIO = 0.0  # DEPRECATED
 # Rationale: Paths within this distance of deadly mines incur cost penalty
 # - Deadly toggle mines have radius ~4px (state 0)
 # - Ninja has radius 10px
-# - Safe buffer: 30-50px prevents risky close approaches
-MINE_HAZARD_RADIUS = 40.0  # pixels
+# - Safe buffer: 50-60px prevents risky close approaches
+MINE_HAZARD_RADIUS = 50.0  # pixels
 
 # Mine hazard cost multiplier
 # Rationale: How much more expensive are paths near mines?
 # - 1.0 = no penalty (disabled)
 # - 2.0 = twice as expensive (moderate avoidance)
 # - 5.0 = five times more expensive (strong avoidance)
-# - 10.0 = ten times more expensive (extreme avoidance)
-# Start with 3.0 for balanced risk/reward tradeoff
-MINE_HAZARD_COST_MULTIPLIER = 10.0
+# - 10.0+ = extreme avoidance
+MINE_HAZARD_COST_MULTIPLIER = 15.0
 
 # Only penalize deadly mines (state 0), not safe mines (state 1)
 MINE_PENALIZE_DEADLY_ONLY = True

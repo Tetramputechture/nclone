@@ -11,6 +11,7 @@ Improved implementation with sub-tile nodes:
 - More accurate pathfinding for 10px radius player
 """
 
+import logging
 import time
 import numpy as np
 from typing import Dict, Set, Tuple, List, Any, Optional
@@ -20,8 +21,8 @@ from .tile_connectivity_loader import TileConnectivityLoader
 from .entity_mask import EntityMask
 from .spatial_hash import SpatialHash
 from .pathfinding_utils import flood_fill_reachable_nodes
-from .graph_truncation import truncate_graph_if_needed
-from ..common import N_MAX_NODES
+
+logger = logging.getLogger(__name__)
 
 # Hardcoded cell size as per N++ constants
 CELL_SIZE = 24
@@ -79,53 +80,60 @@ def _check_subnode_validity_simple(tile_type: int, pixel_x: int, pixel_y: int) -
     if tile_type == 8:  # Slope / inverted - Triangle vertices: (24,0), (0,24), (24,24)
         # Fills bottom-right triangle. Line: y = 24 - x
         # Solid is BELOW/RIGHT of diagonal (larger y values)
-        # Traversable is ABOVE/LEFT of diagonal (smaller y values)
-        return pixel_y < (24 - pixel_x)
+        # Traversable is ABOVE/LEFT of diagonal (smaller y values) OR on the diagonal (y = x)
+        return pixel_y < (24 - pixel_x) or pixel_y == pixel_x
     if tile_type == 9:  # Slope \ inverted - Triangle vertices: (24,24), (0,0), (0,24)
         # Fills left side except top-right corner. Line: y = x
         # Solid is LEFT of or ON diagonal (x <= y region)
         # Traversable is RIGHT of diagonal (x > y region)
         return pixel_x > pixel_y
 
-    # Quarter circles (10-13): convex corners (solid in corner)
-    # These render as filled pie slices from the corner
-    # The filled region is the SOLID platform/ground
-    # The unfilled region is TRAVERSABLE space
-    if tile_type == 10:  # Bottom-right quarter circle (solid in bottom-right corner)
-        # Circle center at (0, 0) per TILE_SEGMENT_CIRCULAR_MAP
-        # Renders pie slice from angles 0 to π/2 (bottom-right quadrant)
-        # Solid is the filled pie: distance <= 24 AND in quadrant
-        dx = pixel_x - 0
-        dy = pixel_y - 0
-        dist_sq = dx * dx + dy * dy
-        return dist_sq >= 24 * 24  # Traversable if outside the circle
-    if tile_type == 11:  # Bottom-left quarter circle (solid in bottom-left corner)
-        # Circle center at (24, 0) per TILE_SEGMENT_CIRCULAR_MAP
-        # Renders pie slice from angles π/2 to π (bottom-left quadrant)
+    # Quarter circles (10-13): solid fills most of tile with curved edge in one corner
+    # Arc center positions match shared_tile_renderer.py exactly:
+    #   dx = tile_size if (tile_type == 11 or tile_type == 12) else 0
+    #   dy = tile_size if (tile_type == 12 or tile_type == 13) else 0
+    # Solid is INSIDE the arc (dist < 24), traversable is OUTSIDE (dist >= 24)
+    # Only 1 of the 4 sub-nodes is traversable (the corner opposite the arc center)
+    if tile_type == 10:  # Arc center at (0, 0) - only bottom-right corner traversable
+        dist_sq = pixel_x * pixel_x + pixel_y * pixel_y
+        return dist_sq >= 24 * 24
+    if tile_type == 11:  # Arc center at (24, 0) - only bottom-left corner traversable
         dx = pixel_x - 24
-        dy = pixel_y - 0
-        dist_sq = dx * dx + dy * dy
-        return dist_sq >= 24 * 24  # Traversable if outside the circle
-    if tile_type == 12:  # Top-left quarter circle (solid in top-left corner)
-        # Circle center at (24, 24) per TILE_SEGMENT_CIRCULAR_MAP
-        # Renders pie slice from angles π to 3π/2 (top-left quadrant)
+        dist_sq = dx * dx + pixel_y * pixel_y
+        return dist_sq >= 24 * 24
+    if tile_type == 12:  # Arc center at (24, 24) - only top-left corner traversable
         dx = pixel_x - 24
         dy = pixel_y - 24
         dist_sq = dx * dx + dy * dy
-        return dist_sq >= 24 * 24  # Traversable if outside the circle
-    if tile_type == 13:  # Top-right quarter circle (solid in top-right corner)
-        # Circle center at (0, 24) per TILE_SEGMENT_CIRCULAR_MAP
-        # Renders pie slice from angles 3π/2 to 2π (top-right quadrant)
-        dx = pixel_x - 0
+        return dist_sq >= 24 * 24
+    if tile_type == 13:  # Arc center at (0, 24) - only top-right corner traversable
         dy = pixel_y - 24
-        dist_sq = dx * dx + dy * dy
-        return dist_sq >= 24 * 24  # Traversable if outside the circle
+        dist_sq = pixel_x * pixel_x + dy * dy
+        return dist_sq >= 24 * 24
 
-    # Quarter pipes (14-17): All positions are traversable for navigation
-    # Visual rendering shows small solid corner, but it's non-solid for collision/pathfinding
-    # This allows the ninja to move through these tiles freely
-    if tile_type in [14, 15, 16, 17]:
-        return True
+    # Quarter pipes (14-17): "inverted" quarter circles - solid OUTSIDE the arc
+    # Arc center positions match shared_tile_renderer.py exactly:
+    #   dx2 = tile_size if (tile_type == 14 or tile_type == 17) else 0
+    #   dy2 = tile_size if (tile_type == 14 or tile_type == 15) else 0
+
+    # Traversable is INSIDE the arc (dist < 24), solid is OUTSIDE (dist >= 24)
+    # Only 1 of the 4 sub-nodes is solid (the corner opposite the arc center)
+    if tile_type == 14:  # Arc center at (24, 24) - top-left corner solid
+        dx = pixel_x - 24
+        dy = pixel_y - 24
+        dist_sq = dx * dx + dy * dy
+        return dist_sq < 24 * 24
+    if tile_type == 15:  # Arc center at (0, 24) - top-right corner solid
+        dy = pixel_y - 24
+        dist_sq = pixel_x * pixel_x + dy * dy
+        return dist_sq < 24 * 24
+    if tile_type == 16:  # Arc center at (0, 0) - bottom-right corner solid
+        dist_sq = pixel_x * pixel_x + pixel_y * pixel_y
+        return dist_sq < 24 * 24
+    if tile_type == 17:  # Arc center at (24, 0) - bottom-left corner solid
+        dx = pixel_x - 24
+        dist_sq = dx * dx + pixel_y * pixel_y
+        return dist_sq < 24 * 24
 
     # Short mild slopes (18-21)
     if tile_type == 18:  # Mild slope up-left, short rise from left edge to middle
@@ -163,17 +171,15 @@ def _check_subnode_validity_simple(tile_type: int, pixel_x: int, pixel_y: int) -
         # Line from (24, 12) to (0, 0)
         # Solid is above line
         return pixel_y <= (12 - pixel_x * 12 / 24)
-
     # Short steep slopes (26-29)
     if tile_type == 26:  # Steep slope up-left, sharp rise from left edge to middle
         # Line from (0, 24) to (12, 0)
         # Solid is below line
         return pixel_y >= (24 - pixel_x * 24 / 12) if pixel_x <= 12 else True
-    if tile_type == 27:  # Steep slope up-right, sharp rise from middle to right edge
-        # Line from (12, 0) to (24, 24)
-        # Solid is right triangle: vertices (12,0), (24,0), (24,24)
-        # Traversable is left of x=12 OR above diagonal
-        return pixel_x < 12 or pixel_y < ((pixel_x - 12) * 24 / 12)
+    if tile_type == 27:  # Steep slope down-left, starts middle descends right
+        # Line from (12, 24) to (0, 0)
+        # Solid is below line
+        return pixel_y >= (pixel_x * 24 / 12)
     if tile_type == 28:  # Steep slope down-right, sharp drop from middle to right edge
         # Line from (12, 24) to (24, 0)
         # Solid is above line
@@ -296,6 +302,60 @@ def _line_crosses_circle(
     return inside1 != inside2
 
 
+def _line_passes_through_circle(
+    p1: Tuple[int, int], p2: Tuple[int, int], center: Tuple[int, int], radius: float
+) -> bool:
+    """
+    Check if line segment p1-p2 passes through or is inside a circular region.
+
+    More comprehensive than _line_crosses_circle - also detects:
+    - Both endpoints inside the circle (entirely blocked)
+    - Line passing through circle even if both endpoints outside
+
+    Args:
+        p1, p2: Line segment endpoints (tile-relative coordinates)
+        center: Circle center
+        radius: Circle radius
+
+    Returns:
+        True if any part of the line is inside the circle (blocked)
+    """
+    cx, cy = center
+    x1, y1 = p1
+    x2, y2 = p2
+    radius_sq = radius * radius
+
+    # Distance from center to endpoints
+    dist1_sq = (x1 - cx) ** 2 + (y1 - cy) ** 2
+    dist2_sq = (x2 - cx) ** 2 + (y2 - cy) ** 2
+
+    # If either endpoint is inside the circle, line passes through solid
+    if dist1_sq < radius_sq or dist2_sq < radius_sq:
+        return True
+
+    # Check if line segment passes through circle (both endpoints outside)
+    # Find closest point on line segment to circle center
+    dx = x2 - x1
+    dy = y2 - y1
+    len_sq = dx * dx + dy * dy
+
+    if len_sq == 0:
+        # Degenerate line (single point), already checked above
+        return False
+
+    # Project center onto line, clamped to segment
+    t = max(0, min(1, ((cx - x1) * dx + (cy - y1) * dy) / len_sq))
+
+    # Closest point on segment to center
+    closest_x = x1 + t * dx
+    closest_y = y1 + t * dy
+
+    # Distance from closest point to center
+    closest_dist_sq = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
+
+    return closest_dist_sq < radius_sq
+
+
 def _can_traverse_within_tile(
     tile_type: int, src_sub: Tuple[int, int], dst_sub: Tuple[int, int]
 ) -> bool:
@@ -379,6 +439,142 @@ def _can_traverse_within_tile(
     return True
 
 
+def _check_line_crosses_tile_geometry(
+    tile_type: int,
+    src_pixel: Tuple[int, int],
+    dst_pixel: Tuple[int, int],
+    tile_x: int,
+    tile_y: int,
+) -> bool:
+    """
+    Check if a line segment crosses solid geometry within a tile.
+
+    Used for cross-tile edge validation to ensure the path segment within
+    each tile doesn't pass through solid areas (slopes, circles, etc.).
+
+    Args:
+        tile_type: Tile type ID (0-37)
+        src_pixel: Source pixel position (absolute coordinates)
+        dst_pixel: Destination pixel position (absolute coordinates)
+        tile_x: Tile X coordinate
+        tile_y: Tile Y coordinate
+
+    Returns:
+        True if line crosses solid geometry (invalid), False if clear (valid)
+    """
+    # Convert to tile-relative coordinates
+    tile_origin_x = tile_x * CELL_SIZE
+    tile_origin_y = tile_y * CELL_SIZE
+
+    src_rel = (src_pixel[0] - tile_origin_x, src_pixel[1] - tile_origin_y)
+    dst_rel = (dst_pixel[0] - tile_origin_x, dst_pixel[1] - tile_origin_y)
+
+    # Type 0: entirely non-solid - no obstruction
+    if tile_type == 0:
+        return False
+
+    # Type 1: entirely solid - always blocked
+    if tile_type == 1:
+        return True
+
+    # Quarter pipes (14-17): All traversable
+    if tile_type in [14, 15, 16, 17]:
+        return False
+
+    # Half tiles (2-5): Check if line crosses the half-tile boundary into solid area
+    if tile_type == 2:  # Top half solid (y < 12 is solid)
+        # Line crosses if it goes through the y=12 boundary into solid region
+        return _line_crosses_diagonal(src_rel, dst_rel, (0, 12), (24, 12))
+    if tile_type == 3:  # Right half solid (x >= 12 is solid)
+        return _line_crosses_diagonal(src_rel, dst_rel, (12, 0), (12, 24))
+    if tile_type == 4:  # Bottom half solid (y >= 12 is solid)
+        return _line_crosses_diagonal(src_rel, dst_rel, (0, 12), (24, 12))
+    if tile_type == 5:  # Left half solid (x < 12 is solid)
+        return _line_crosses_diagonal(src_rel, dst_rel, (12, 0), (12, 24))
+
+    # Diagonal slopes (6-9): Check if line crosses the slope
+    if tile_type == 6:  # Slope \ - solid is top-right
+        return _line_crosses_diagonal(src_rel, dst_rel, (0, 24), (24, 0))
+    if tile_type == 7:  # Slope / - solid is top-left
+        return _line_crosses_diagonal(src_rel, dst_rel, (0, 0), (24, 24))
+    if tile_type == 8:  # Slope / inverted - solid is bottom-right
+        return _line_crosses_diagonal(src_rel, dst_rel, (24, 0), (0, 24))
+    if tile_type == 9:  # Slope \ inverted - solid is bottom-left
+        return _line_crosses_diagonal(src_rel, dst_rel, (24, 24), (0, 0))
+
+    # Quarter circles (10-13): Check if line passes through solid curved region
+    # Use _line_passes_through_circle which catches:
+    # - Both endpoints inside solid region
+    # - Line passing through solid even if both endpoints outside
+    if tile_type == 10:  # Bottom-right quarter circle, center at (0,0)
+        return _line_passes_through_circle(src_rel, dst_rel, (0, 0), 24)
+    if tile_type == 11:  # Bottom-left quarter circle, center at (24,0)
+        return _line_passes_through_circle(src_rel, dst_rel, (24, 0), 24)
+    if tile_type == 12:  # Top-left quarter circle, center at (24,24)
+        return _line_passes_through_circle(src_rel, dst_rel, (24, 24), 24)
+    if tile_type == 13:  # Top-right quarter circle, center at (0,24)
+        return _line_passes_through_circle(src_rel, dst_rel, (0, 24), 24)
+
+    # Mild and steep slopes (18-33): Check if line crosses the slope
+    if tile_type in [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]:
+        from ...tile_definitions import TILE_SEGMENT_DIAG_MAP
+
+        if tile_type in TILE_SEGMENT_DIAG_MAP:
+            line_start, line_end = TILE_SEGMENT_DIAG_MAP[tile_type]
+            return _line_crosses_diagonal(src_rel, dst_rel, line_start, line_end)
+
+    # Default: assume no obstruction (conservative for unknown types)
+    return False
+
+
+def _check_cross_tile_line_clear(
+    src_pixel_x: int,
+    src_pixel_y: int,
+    dst_pixel_x: int,
+    dst_pixel_y: int,
+    src_tile_type: int,
+    dst_tile_type: int,
+    src_tile_x: int,
+    src_tile_y: int,
+    dst_tile_x: int,
+    dst_tile_y: int,
+) -> bool:
+    """
+    Check if a cross-tile edge path is clear of solid geometry in both tiles.
+
+    For cardinal direction cross-tile edges, validates that the line segment
+    doesn't pass through solid areas (slopes, quarter circles, etc.) in either
+    the source or destination tile.
+
+    Args:
+        src_pixel_x, src_pixel_y: Source sub-node pixel position
+        dst_pixel_x, dst_pixel_y: Destination sub-node pixel position
+        src_tile_type: Source tile type
+        dst_tile_type: Destination tile type
+        src_tile_x, src_tile_y: Source tile coordinates
+        dst_tile_x, dst_tile_y: Destination tile coordinates
+
+    Returns:
+        True if path is clear, False if blocked by geometry
+    """
+    src_pixel = (src_pixel_x, src_pixel_y)
+    dst_pixel = (dst_pixel_x, dst_pixel_y)
+
+    # Check if line crosses solid geometry in source tile
+    if _check_line_crosses_tile_geometry(
+        src_tile_type, src_pixel, dst_pixel, src_tile_x, src_tile_y
+    ):
+        return False
+
+    # Check if line crosses solid geometry in destination tile
+    if _check_line_crosses_tile_geometry(
+        dst_tile_type, src_pixel, dst_pixel, dst_tile_x, dst_tile_y
+    ):
+        return False
+
+    return True
+
+
 def _precompute_within_tile_connectivity() -> Dict[
     int, Dict[Tuple[int, int], Set[Tuple[int, int]]]
 ]:
@@ -451,8 +647,10 @@ class GraphBuilder:
         self._current_level_id = None
 
         # Flood fill caching (per level)
-        # Only recompute flood fill when player moves >= 3px from last cached position
-        self._flood_fill_distance_threshold = 3  # 3px - update paths more frequently
+        # Only recompute flood fill when player moves >= 12px from last cached position
+        # 12px matches sub-node spacing - recomputing more frequently adds overhead without
+        # improving PBRS accuracy (sub-node interpolation handles dense rewards within a cell)
+        self._flood_fill_distance_threshold = 12  # 12px - one sub-node spacing
 
         # Performance tracking
         self.build_times = []
@@ -642,24 +840,35 @@ class GraphBuilder:
                 player_radius=PLAYER_RADIUS,
             )
 
+            # Validate that flood fill found reachable nodes
+            # If empty, the level may have invalid spawn location or broken tile connectivity
+            if len(reachable_nodes) == 0:
+                logger.error(
+                    f"CRITICAL: Flood fill found ZERO reachable nodes from spawn position "
+                    f"{initial_player_pos}. Level may have invalid spawn location or broken "
+                    f"tile connectivity. Using ALL adjacency nodes as fallback."
+                )
+                # Use all adjacency nodes as fallback to prevent complete failure
+                reachable_nodes = set(adjacency.keys())
+
             # Filter adjacency to only reachable nodes
             # Critical: This ensures all cached distances are for reachable areas only
             adjacency = self._filter_adjacency_to_reachable(adjacency, reachable_nodes)
 
-            # Apply smart truncation if graph exceeds N_MAX_NODES
-            # This preserves full exploration space when possible, only truncating
-            # when the level is exceptionally open
-            if len(reachable_nodes) > N_MAX_NODES:
-                # Extract goal positions from entities
-                goal_positions = self._extract_goal_positions(level_data_dict)
+            # # Apply smart truncation if graph exceeds N_MAX_NODES
+            # # This preserves full exploration space when possible, only truncating
+            # # when the level is exceptionally open
+            # if len(reachable_nodes) > N_MAX_NODES:
+            #     # Extract goal positions from entities
+            #     goal_positions = self._extract_goal_positions(level_data_dict)
 
-                adjacency, reachable_nodes, was_truncated = truncate_graph_if_needed(
-                    adjacency=adjacency,
-                    reachable_nodes=reachable_nodes,
-                    start_pos=initial_player_pos,
-                    goal_positions=goal_positions,
-                    max_nodes=N_MAX_NODES,
-                )
+            #     adjacency, reachable_nodes, was_truncated = truncate_graph_if_needed(
+            #         adjacency=adjacency,
+            #         reachable_nodes=reachable_nodes,
+            #         start_pos=initial_player_pos,
+            #         goal_positions=goal_positions,
+            #         max_nodes=N_MAX_NODES,
+            #     )
 
         # Build spatial hash for O(1) node lookup
         spatial_hash = SpatialHash(cell_size=CELL_SIZE)
@@ -1412,6 +1621,32 @@ class GraphBuilder:
                         direction,
                         False,
                         "Diagonal movement blocked by intermediate tiles",
+                    )
+                return False
+
+        # For cardinal cross-tile movements, check if line crosses solid geometry
+        # in either source or destination tile (slopes, quarter circles, etc.)
+        if direction in ["N", "S", "E", "W"]:
+            if not _check_cross_tile_line_clear(
+                src_pixel_x,
+                src_pixel_y,
+                dst_pixel_x,
+                dst_pixel_y,
+                src_tile_type,
+                dst_tile_type,
+                src_tile_x,
+                src_tile_y,
+                dst_tile_x,
+                dst_tile_y,
+            ):
+                if self.debug:
+                    self.debug_stats["blocked_by_geometry"] += 1
+                    self._debug_log_traversability_decision(
+                        src_tile_type,
+                        dst_tile_type,
+                        direction,
+                        False,
+                        "Cardinal cross-tile movement blocked by slope/geometry",
                     )
                 return False
 

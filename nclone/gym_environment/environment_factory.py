@@ -28,7 +28,6 @@ def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
             env,
             visual_stack_size=config.frame_stack.visual_stack_size,
             state_stack_size=config.frame_stack.state_stack_size,
-            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
             enable_state_stacking=config.frame_stack.enable_state_stacking,
             padding_type=config.frame_stack.padding_type,
         )

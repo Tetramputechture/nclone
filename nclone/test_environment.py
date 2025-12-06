@@ -503,6 +503,8 @@ if (
     print("  P - Toggle path to goals visualization (with colored segments)")
     print("      • Cyan: Right | Magenta: Left | Gold: Down | Green: Up")
     print("      • Thicker line = current segment")
+    print("  M - Toggle Mine SDF (Signed Distance Field) heatmap")
+    print("      • Red=danger zone | Yellow=boundary | Green=safe")
     print("  T - Run pathfinding benchmark at current position")
     print("  X - Export path analysis screenshot")
     print("  R - Reset environment")
@@ -746,7 +748,7 @@ if args.test_official_maps:
                 # Maps are in nclone/nclone/maps/official/SI
                 # Use same pattern as nplay_headless.py for consistency
                 current_file_dir = os.path.dirname(__file__)
-                self.maps_dir = os.path.join(current_file_dir, "maps", "official", "SL")
+                self.maps_dir = os.path.join(current_file_dir, "maps", "official", "SI")
 
                 if not os.path.exists(self.maps_dir):
                     raise FileNotFoundError(
@@ -889,6 +891,7 @@ tile_rendering_enabled = True
 tile_types_debug_enabled = False
 action_mask_debug_enabled = False
 reachable_walls_debug_enabled = False
+mine_sdf_debug_enabled = False
 path_aware_system = None
 adjacency_graph_debug_enabled = False
 blocked_entities_debug_enabled = False
@@ -1272,6 +1275,17 @@ while running:
                         )
                     except Exception as e:
                         print(f"Could not toggle tile type overlay: {e}")
+
+                if event.key == pygame.K_m:
+                    # Toggle mine SDF (Signed Distance Field) overlay
+                    mine_sdf_debug_enabled = not mine_sdf_debug_enabled
+                    try:
+                        env.set_mine_sdf_debug_enabled(mine_sdf_debug_enabled)
+                        print(
+                            f"Mine SDF overlay: {'ON' if mine_sdf_debug_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Could not toggle mine SDF overlay: {e}")
 
                 # Generator testing controls
                 if event.key == pygame.K_g and generator_tester is not None:

@@ -222,6 +222,47 @@ class FrameStackWrapper(ObservationWrapper):
 
         return self.observation(obs), info
 
+    def _reset_to_checkpoint_from_wrapper(
+        self, checkpoint
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Forward checkpoint reset to underlying environment and reinitialize frame buffers.
+
+        Called by GoExploreVecEnv to restore environment state from a checkpoint.
+        After forwarding to the underlying env, reinitializes frame buffers similar
+        to reset() so the frame stack starts fresh from the checkpoint position.
+
+        Args:
+            checkpoint: CheckpointEntry with action_sequence for replay
+
+        Returns:
+            Tuple of (stacked_observation, info_dict)
+        """
+        # Forward to underlying environment
+        obs, info = self.env._reset_to_checkpoint_from_wrapper(checkpoint)
+
+        # Reset buffer initialization flag to reinitialize on first observation
+        self._initialized_buffers = False
+
+        # Reinitialize buffers with padding (stack_size - 1 frames)
+        # The observation() call will add the real frame as the last element
+        if "player_frame" in obs and self.enable_visual_stacking:
+            padding = self._get_padding_value("player_frame", obs["player_frame"])
+            self.player_frame_buffer.clear()
+            for _ in range(self.visual_stack_size - 1):
+                self.player_frame_buffer.append(padding)
+        elif "player_frame" in obs:
+            self.player_frame_buffer.clear()
+
+        if "game_state" in obs and self.enable_state_stacking:
+            padding = self._get_padding_value("game_state", obs["game_state"])
+            self.game_state_buffer.clear()
+            for _ in range(self.state_stack_size - 1):
+                self.game_state_buffer.append(padding)
+        elif "game_state" in obs:
+            self.game_state_buffer.clear()
+
+        return self.observation(obs), info
+
     def _init_stack_buffers(self, observation: Dict[str, Any]) -> None:
         """Initialize pre-allocated stacking buffers from observation shapes."""
         if self._initialized_buffers:

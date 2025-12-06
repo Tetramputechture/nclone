@@ -5,7 +5,10 @@ Provides CachedPathDistanceCalculator which combines pathfinding algorithms
 with both per-query caching and level-based precomputed caching.
 """
 
+import logging
 from typing import Dict, Tuple, Optional, Any, List
+
+logger = logging.getLogger(__name__)
 from ..level_data import LevelData
 from .pathfinding_algorithms import PathDistanceCalculator
 from .pathfinding_utils import (
@@ -14,7 +17,7 @@ from .pathfinding_utils import (
     find_ninja_node,
 )
 from .path_distance_cache import LevelBasedPathDistanceCache
-from .mine_proximity_cache import MineProximityCostCache
+from .mine_proximity_cache import MineProximityCostCache, MineSignedDistanceField
 from .performance_timer import PerformanceTimer
 
 # Hardcoded cell size as per N++ constants
@@ -60,6 +63,10 @@ class CachedPathDistanceCalculator:
             MineProximityCostCache()
         )
 
+        # Signed Distance Field to mines for O(1) observation space features
+        # Precomputed at tile resolution (44x25) - zero runtime cost
+        self.mine_sdf: MineSignedDistanceField = MineSignedDistanceField()
+
         # Track current level to avoid redundant cache rebuilds
         self._current_level_id: Optional[str] = None
 
@@ -72,6 +79,13 @@ class CachedPathDistanceCalculator:
         # Performance timing
         self.timer = PerformanceTimer(enabled=enable_timing)
         self.enable_timing = enable_timing
+
+        # OPTIMIZATION: Cache last computed node info for PBRS reuse
+        # This avoids redundant find_ninja_node calls when computing potentials
+        self._last_start_node: Optional[Tuple[int, int]] = None
+        self._last_goal_id: Optional[str] = None
+        self._last_next_hop: Optional[Tuple[int, int]] = None
+        self._last_geometric_distance: Optional[float] = None
 
     def build_level_cache(
         self,
@@ -107,12 +121,16 @@ class CachedPathDistanceCalculator:
                 level_data, adjacency
             )
 
+        # Build mine SDF for O(1) observation space features
+        # This is precomputed at tile resolution (44x25) for zero runtime cost
+        sdf_rebuilt = self.mine_sdf.build_sdf(level_data)
+
         # Then build level cache (uses mine proximity cache during BFS)
         rebuilt = self.level_cache.build_cache(
             level_data, adjacency, base_adjacency, graph_data, self.mine_proximity_cache
         )
 
-        if rebuilt or mine_cache_rebuilt:
+        if rebuilt or mine_cache_rebuilt or sdf_rebuilt:
             self.level_data = level_data
             # Update level ID tracking so get_distance() knows cache is ready
             # LevelData.__post_init__ always sets level_id, so we can trust it exists
@@ -128,7 +146,7 @@ class CachedPathDistanceCalculator:
             else:
                 self._adjacency_bounds = None
 
-        return rebuilt or mine_cache_rebuilt
+        return rebuilt or mine_cache_rebuilt or sdf_rebuilt
 
     def get_distance(
         self,
@@ -162,6 +180,11 @@ class CachedPathDistanceCalculator:
         Returns:
             Shortest path distance in pixels
         """
+        # CRITICAL: Early exit for invalid goal positions
+        # Goals at (0, 0) indicate entity loading failure - return inf to avoid cache pollution
+        if goal[0] == 0 and goal[1] == 0:
+            return float("inf")
+
         # Extract spatial hash and subcell lookup from graph_data if available
         spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
             graph_data
@@ -170,6 +193,17 @@ class CachedPathDistanceCalculator:
         # Store spatial_hash for later use if available
         if spatial_hash is not None:
             self._spatial_hash = spatial_hash
+
+        # EARLY EXIT: If start and goal are within combined collision radii,
+        # the ninja is already touching/overlapping the goal - distance is 0.
+        # This handles the edge case where player spawns in the same cell as a goal
+        # (common in curriculum-generated levels).
+        combined_radius = ninja_radius + entity_radius
+        dx = start[0] - goal[0]
+        dy = start[1] - goal[1]
+        dist_sq = dx * dx + dy * dy
+        if dist_sq <= combined_radius * combined_radius:
+            return 0.0
 
         # OPTIMIZATION: Early per-query cache check before expensive operations
         # Snap to grid for cache consistency (24 pixel tiles)
@@ -203,12 +237,31 @@ class CachedPathDistanceCalculator:
                 goal_node = find_closest_node_to_position(
                     goal,
                     adjacency,
-                    threshold=None,  # Will be calculated from radii
+                    threshold=None,  # Will be calculated from radii (16px default)
                     entity_radius=entity_radius,
                     ninja_radius=ninja_radius,
                     spatial_hash=self._spatial_hash,
                     subcell_lookup=subcell_lookup,
                 )
+
+                # Fallback: If 16px threshold fails, try with larger threshold (32px)
+                # This handles edge cases where the nearest node is slightly further
+                # than the combined collision radii (e.g., entities at cell boundaries)
+                if goal_node is None:
+                    goal_node = find_closest_node_to_position(
+                        goal,
+                        adjacency,
+                        threshold=32.0,  # Increased from default 16px
+                        entity_radius=entity_radius,
+                        ninja_radius=ninja_radius,
+                        spatial_hash=self._spatial_hash,
+                        subcell_lookup=subcell_lookup,
+                    )
+                    if goal_node is not None:
+                        logger.debug(
+                            f"Goal node found with extended threshold (32px): "
+                            f"goal={goal}, node={goal_node}"
+                        )
 
             # Only proceed if we found a valid goal node within threshold
             if goal_node is not None:
@@ -329,15 +382,21 @@ class CachedPathDistanceCalculator:
                                         cached_dist - (ninja_radius + entity_radius),
                                     )
             else:
+                # Goal node not found even with extended threshold - log for debugging
+                from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
+
+                goal_tile_x = goal[0] - NODE_WORLD_COORD_OFFSET
+                goal_tile_y = goal[1] - NODE_WORLD_COORD_OFFSET
+                logger.debug(
+                    f"Goal node not found in level cache path. "
+                    f"goal={goal} (tile_data: {goal_tile_x}, {goal_tile_y}), "
+                    f"adjacency_size={len(adjacency)}, "
+                    f"bounds={self._adjacency_bounds}"
+                )
+
                 # Check if goal is even within reachable area using cached bounds
                 if self._adjacency_bounds is not None:
                     min_x, max_x, min_y, max_y = self._adjacency_bounds
-
-                    # Convert goal to tile data space for comparison
-                    from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
-
-                    goal_tile_x = goal[0] - NODE_WORLD_COORD_OFFSET
-                    goal_tile_y = goal[1] - NODE_WORLD_COORD_OFFSET
 
                     # If goal is way outside bounds, this is likely a stale position from previous level
                     # Return a safe max distance instead of inf to avoid warnings
@@ -358,8 +417,8 @@ class CachedPathDistanceCalculator:
             find_goal_node_closest_to_start,
         )
 
-        # Find goal node first (needed for optimal start node selection)
-        # Use a temporary start node for goal selection
+        # Find start node (temp_start_node) for goal selection
+        # Use standard radius first, then fallback to extended radius
         temp_start_node = find_ninja_node(
             start,
             adjacency,
@@ -367,6 +426,64 @@ class CachedPathDistanceCalculator:
             subcell_lookup=subcell_lookup,
             ninja_radius=ninja_radius,
         )
+
+        # Fallback: If default radius (10px) fails for start, try with progressively larger radii
+        # This handles cases where the start position (e.g., switch) is far from any graph node
+        if temp_start_node is None:
+            temp_start_node = find_ninja_node(
+                start,
+                adjacency,
+                spatial_hash=self._spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=ninja_radius,
+                search_radius_override=48.0,
+            )
+            if temp_start_node is not None:
+                logger.debug(
+                    f"Start node found with extended search radius (48px): "
+                    f"start={start}, node={temp_start_node}"
+                )
+
+        # Last resort: Try with very large radius (150px)
+        if temp_start_node is None:
+            temp_start_node = find_ninja_node(
+                start,
+                adjacency,
+                spatial_hash=self._spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=ninja_radius,
+                search_radius_override=150.0,
+            )
+            if temp_start_node is not None:
+                logger.debug(
+                    f"Start node found with large search radius (150px): "
+                    f"start={start}, node={temp_start_node}"
+                )
+
+        # Ultimate fallback: Find ANY closest node in the entire adjacency graph
+        if temp_start_node is None and adjacency:
+            from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
+
+            start_tile_x = start[0] - NODE_WORLD_COORD_OFFSET
+            start_tile_y = start[1] - NODE_WORLD_COORD_OFFSET
+
+            min_dist_sq = float("inf")
+            closest_node = None
+            for node_pos in adjacency.keys():
+                nx, ny = node_pos
+                dist_sq = (nx - start_tile_x) ** 2 + (ny - start_tile_y) ** 2
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    closest_node = node_pos
+
+            if closest_node is not None:
+                temp_start_node = closest_node
+                logger.warning(
+                    f"Start node found via unlimited search (dist={min_dist_sq**0.5:.1f}px): "
+                    f"start={start}, node={temp_start_node}"
+                )
+
+        # Find goal node (needed for optimal start node selection)
         goal_node = find_goal_node_closest_to_start(
             goal,
             temp_start_node,
@@ -376,6 +493,79 @@ class CachedPathDistanceCalculator:
             spatial_hash=self._spatial_hash,
             subcell_lookup=subcell_lookup,
         )
+
+        # Fallback: If default radius (16px) fails for goal, try with progressively larger radii
+        # This handles edge cases where nodes near the goal are further than collision radii
+        if goal_node is None and temp_start_node is not None:
+            # Try 48px first
+            goal_node = find_goal_node_closest_to_start(
+                goal,
+                temp_start_node,
+                adjacency,
+                entity_radius=entity_radius,
+                ninja_radius=ninja_radius,
+                spatial_hash=self._spatial_hash,
+                subcell_lookup=subcell_lookup,
+                search_radius_override=48.0,
+            )
+            if goal_node is not None:
+                logger.debug(
+                    f"Goal node found with extended search radius (48px): "
+                    f"goal={goal}, node={goal_node}"
+                )
+
+        # Last resort: Try with very large radius (150px - ~6 tiles)
+        # This handles extreme cases where entity is positioned far from any graph node
+        if goal_node is None and temp_start_node is not None:
+            goal_node = find_goal_node_closest_to_start(
+                goal,
+                temp_start_node,
+                adjacency,
+                entity_radius=entity_radius,
+                ninja_radius=ninja_radius,
+                spatial_hash=self._spatial_hash,
+                subcell_lookup=subcell_lookup,
+                search_radius_override=150.0,
+            )
+            if goal_node is not None:
+                logger.debug(
+                    f"Goal node found with large search radius (150px): "
+                    f"goal={goal}, node={goal_node}"
+                )
+
+        # Ultimate fallback: Find ANY closest node in the entire adjacency graph
+        # This handles cases where the goal is extremely far from any graph node
+        if goal_node is None and temp_start_node is not None and adjacency:
+            from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
+
+            goal_tile_x = goal[0] - NODE_WORLD_COORD_OFFSET
+            goal_tile_y = goal[1] - NODE_WORLD_COORD_OFFSET
+
+            min_dist_sq = float("inf")
+            closest_node = None
+            for node_pos in adjacency.keys():
+                nx, ny = node_pos
+                dist_sq = (nx - goal_tile_x) ** 2 + (ny - goal_tile_y) ** 2
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    closest_node = node_pos
+
+            if closest_node is not None:
+                goal_node = closest_node
+                # Only log warning if goal is near origin (likely a bug)
+                # Valid goals at (0, 0) are extremely rare in actual levels
+                if goal[0] < 50 and goal[1] < 50:
+                    logger.warning(
+                        f"Goal node found via unlimited search (dist={min_dist_sq**0.5:.1f}px): "
+                        f"goal={goal}, node={goal_node}. "
+                        f"Goal near origin likely indicates cache pollution or entity loading issue. "
+                        f"Check curriculum cache clearing and entity extraction."
+                    )
+                else:
+                    logger.debug(
+                        f"Goal node found via unlimited search (dist={min_dist_sq**0.5:.1f}px): "
+                        f"goal={goal}, node={goal_node}"
+                    )
 
         # Now find the optimal start node with goal_node known
         start_node = find_ninja_node(
@@ -387,8 +577,57 @@ class CachedPathDistanceCalculator:
             goal_node=goal_node,
         )
 
+        # Fallback: If default radius fails for final start_node, try with progressively larger radii
+        if start_node is None:
+            start_node = find_ninja_node(
+                start,
+                adjacency,
+                spatial_hash=self._spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=ninja_radius,
+                goal_node=goal_node,
+                search_radius_override=48.0,
+            )
+
+        if start_node is None:
+            start_node = find_ninja_node(
+                start,
+                adjacency,
+                spatial_hash=self._spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=ninja_radius,
+                goal_node=goal_node,
+                search_radius_override=150.0,
+            )
+
+        # Ultimate fallback for final start_node
+        if start_node is None and adjacency:
+            from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
+
+            start_tile_x = start[0] - NODE_WORLD_COORD_OFFSET
+            start_tile_y = start[1] - NODE_WORLD_COORD_OFFSET
+
+            min_dist_sq = float("inf")
+            closest_node = None
+            for node_pos in adjacency.keys():
+                nx, ny = node_pos
+                dist_sq = (nx - start_tile_x) ** 2 + (ny - start_tile_y) ** 2
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    closest_node = node_pos
+
+            if closest_node is not None:
+                start_node = closest_node
+
         # If we can't find nodes for start or goal, path is unreachable
         if start_node is None or goal_node is None:
+            # Log diagnostic info to help debug false "unreachable" errors
+            logger.warning(
+                f"Path unreachable - node finding failed in cache miss path. "
+                f"start={start}, goal={goal}, "
+                f"temp_start_node={temp_start_node}, start_node={start_node}, "
+                f"goal_node={goal_node}, adjacency_size={len(adjacency) if adjacency else 0}"
+            )
             return float("inf")
 
         # PERFORMANCE OPTIMIZATION: Extract pre-computed physics cache from graph_data
@@ -469,6 +708,13 @@ class CachedPathDistanceCalculator:
         Returns:
             Geometric path distance in pixels, or float('inf') if unreachable
         """
+        # CRITICAL: Early exit for invalid goal positions
+        # Goals at (0, 0) indicate entity loading failure - return inf to avoid cache pollution
+        if goal[0] == 0 and goal[1] == 0:
+            # This is a defensive check - callers should validate goals before calling
+            # Return inf (unreachable) rather than computing nonsense distances
+            return float("inf")
+
         # Extract spatial hash and subcell lookup from graph_data if available
         spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
             graph_data
@@ -477,6 +723,16 @@ class CachedPathDistanceCalculator:
         # Store spatial_hash for later use if available
         if spatial_hash is not None:
             self._spatial_hash = spatial_hash
+
+        # EARLY EXIT: If start and goal are within combined collision radii,
+        # the ninja is already touching/overlapping the goal - distance is 0.
+        # This handles the edge case where player spawns in the same cell as a goal.
+        combined_radius = ninja_radius + entity_radius
+        dx = start[0] - goal[0]
+        dy = start[1] - goal[1]
+        dist_sq = dx * dx + dy * dy
+        if dist_sq <= combined_radius * combined_radius:
+            return 0.0
 
         # Try level cache first if level_data is provided
         if level_data is not None and self.level_cache is not None:
@@ -534,6 +790,15 @@ class CachedPathDistanceCalculator:
                                     start_node, goal_pos, goal_id
                                 )
                                 if cached_dist != float("inf"):
+                                    # OPTIMIZATION: Store node info for PBRS caching reuse
+                                    # This avoids redundant find_ninja_node calls in pbrs_potentials.py
+                                    self._last_start_node = start_node
+                                    self._last_goal_id = goal_id
+                                    self._last_geometric_distance = cached_dist
+                                    self._last_next_hop = self.level_cache.get_next_hop(
+                                        start_node, goal_id
+                                    )
+
                                     # Adjust for collision radii
                                     return max(
                                         0.0,
@@ -571,6 +836,9 @@ class CachedPathDistanceCalculator:
         # Clear mine proximity cache
         if self.mine_proximity_cache is not None:
             self.mine_proximity_cache.clear_cache()
+
+        # Clear mine SDF
+        self.mine_sdf.clear()
 
         # Clear level tracking, spatial hash, and adjacency bounds
         self._current_level_id = None

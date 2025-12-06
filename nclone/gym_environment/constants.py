@@ -32,10 +32,21 @@ LOCKED_DOOR_FEATURES_DIM = 8  # [switch_x, switch_y, switch_collected, switch_pa
 LOCKED_DOOR_ARRAY_SIZE = MAX_LOCKED_DOORS_ATTENTION * LOCKED_DOOR_FEATURES_DIM  # 128
 
 # Reachability features dimension
-# 7 features: [reachable_area_ratio, dist_to_switch, dist_to_exit, exit_reachable,
-#              total_mines_norm, deadly_mine_ratio, switch_activated]
-# The 7th feature (switch_activated) is critical for Markov property - explicit phase indicator
-REACHABILITY_FEATURES_DIM = 7
+# 13 features:
+#   Base (4): [reachable_area_ratio, dist_to_switch_inv, dist_to_exit_inv, exit_reachable]
+#   Path distances (2): [path_dist_to_switch_norm, path_dist_to_exit_norm]
+#   Direction vectors (4): [dir_to_switch_x, dir_to_switch_y, dir_to_exit_x, dir_to_exit_y]
+#   Mine context (2): [total_mines_norm, deadly_mine_ratio]
+#   Phase indicator (1): [switch_activated] - critical for Markov property
+REACHABILITY_FEATURES_DIM = 13
+
+# Spatial context features dimension (graph-free alternative)
+# 112 features (graph-free local geometry with velocity-hazard alignment):
+#   Local tile grid (64): 8×8 grid of simplified tile categories (0-4) normalized
+#   Mine overlay (48): 8 nearest mines with 6 features each:
+#     - relative_pos(2) + state(1) + radius(1)
+#     - velocity_dot_direction(1) + distance_rate(1) [Markovian: current state only]
+SPATIAL_CONTEXT_DIM = 112
 
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0

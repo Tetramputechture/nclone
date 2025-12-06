@@ -236,6 +236,16 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_door_switches: Optional[list] = None
         self._cached_toggle_mines: Optional[list] = None
 
+        # Momentum waypoints cache (per level)
+        # Loaded from demonstration analysis, used for momentum-aware PBRS
+        self._cached_momentum_waypoints: Optional[List[Any]] = None
+        self._cached_waypoints_level_id: Optional[str] = None
+
+        # Kinodynamic database cache (per level)
+        # Exhaustive precomputed (position, velocity) reachability for perfect accuracy
+        self._cached_kinodynamic_db: Optional[Any] = None
+        self._cached_kinodynamic_level_id: Optional[str] = None
+
         # Load the initial map
         self.map_loader.load_map()
 
@@ -411,9 +421,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._pre_reward_hook(final_obs, player_won)
 
             # Calculate reward using initial→final transition with frame count scaling
+            t_reward = self._profile_start("reward_calc")
             reward = self.reward_calculator.calculate_reward(
                 final_obs, initial_obs, action, frames_executed=frames_executed
             )
+            self._profile_end("reward_calc", t_reward)
 
             # Update dynamic truncation limit if PBRS surface area is now available
             self._update_dynamic_truncation_if_needed()
@@ -877,6 +889,16 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     f"frames={self.nplay_headless.sim.frame}"
                 )
 
+            # CRITICAL: Capture level data for route visualization BEFORE auto-reset
+            # With VecEnv, the environment auto-resets after done=True, so by the time
+            # the callback runs, a NEW level may already be loaded (curriculum).
+            # We must capture the CURRENT level's data here in the info dict.
+            info["episode_tiles"] = self.get_route_visualization_tile_data()
+            info["episode_mines"] = self.get_route_visualization_mine_data()
+            info["episode_locked_doors"] = (
+                self.get_route_visualization_locked_door_data()
+            )
+
             # Add checkpoint route if this episode started from a Go-Explore checkpoint
             # This path was recorded during checkpoint replay at episode start
             if self._checkpoint_route and len(self._checkpoint_route) > 0:
@@ -1017,6 +1039,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_door_switches = None
         self._cached_toggle_mines = None
 
+        # Invalidate momentum waypoints cache (new level = new waypoints)
+        self._cached_momentum_waypoints = None
+        self._cached_waypoints_level_id = None
+
+        # Invalidate kinodynamic database cache (new level = new database)
+        self._cached_kinodynamic_db = None
+        self._cached_kinodynamic_level_id = None
+
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
         checkpoint = None
@@ -1035,6 +1065,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # If checkpoint provided, replay action sequence to restore state
         if checkpoint is not None:
             return self._reset_to_checkpoint(checkpoint)
+
+        # Load momentum waypoints for current level (if available)
+        # This enables momentum-aware PBRS for levels requiring backtracking
+        self._update_momentum_waypoints_for_current_level()
 
         # Track initial position for route visualization
         try:
@@ -1426,10 +1460,27 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # These values never change during an episode, only on reset
 
         # Cache static positions on first access
+        # CRITICAL: Validate positions are not (0, 0) which indicates entities not loaded
         if self._cached_switch_pos is None:
-            self._cached_switch_pos = self.nplay_headless.exit_switch_position()
+            switch_pos = self.nplay_headless.exit_switch_position()
+            # Only cache if valid (not the default (0, 0) returned when entities missing)
+            if switch_pos != (0, 0):
+                self._cached_switch_pos = switch_pos
+            else:
+                # Don't cache (0, 0) - force re-fetch next time
+                # Log warning to help diagnose curriculum loading issues
+                logger.warning(
+                    f"exit_switch_position() returned (0, 0) - entities may not be loaded yet. "
+                    f"entity_dic keys: {list(self.nplay_headless.sim.entity_dic.keys())}"
+                )
         if self._cached_exit_pos is None:
-            self._cached_exit_pos = self.nplay_headless.exit_door_position()
+            exit_pos = self.nplay_headless.exit_door_position()
+            if exit_pos != (0, 0):
+                self._cached_exit_pos = exit_pos
+            else:
+                logger.warning(
+                    "exit_door_position() returned (0, 0) - entities may not be loaded yet."
+                )
         if self._cached_locked_doors is None:
             self._cached_locked_doors = self.nplay_headless.locked_doors()
         if self._cached_locked_door_switches is None:
@@ -1441,9 +1492,30 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 EntityType.TOGGLE_MINE, []
             )
 
-        # Use cached static values
+        # Use cached static values (with fallback to fresh fetch if cache failed)
         switch_pos = self._cached_switch_pos
+        if switch_pos is None:
+            # Cache miss (likely due to entities not loaded) - try fresh fetch
+            switch_pos = self.nplay_headless.exit_switch_position()
+            # CRITICAL: If still (0, 0), entities are definitely not loaded
+            # Log detailed diagnostics to help identify root cause
+            if switch_pos == (0, 0):
+                entity_keys = list(self.nplay_headless.sim.entity_dic.keys())
+                entity_counts = {
+                    k: len(v) for k, v in self.nplay_headless.sim.entity_dic.items()
+                }
+                logger.error(
+                    f"CRITICAL: exit_switch_position() returned (0, 0) after fresh fetch! "
+                    f"Entities not loaded. entity_dic keys: {entity_keys}, counts: {entity_counts}, "
+                    f"frame: {self.nplay_headless.sim.frame}"
+                )
         exit_pos = self._cached_exit_pos
+        if exit_pos is None:
+            exit_pos = self.nplay_headless.exit_door_position()
+            if exit_pos == (0, 0):
+                logger.error(
+                    "CRITICAL: exit_door_position() returned (0, 0) after fresh fetch!"
+                )
         locked_doors = self._cached_locked_doors
         locked_door_switches = self._cached_locked_door_switches
 
@@ -1663,6 +1735,123 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     def current_map_name(self) -> str:
         """Get the current map name."""
         return self.map_loader.current_map_name
+
+    def _load_momentum_waypoints_if_available(self) -> Optional[List[Any]]:
+        """Load momentum waypoints for current level from cache if available.
+
+        Momentum waypoints are extracted from expert demonstrations and cached
+        per level. They inform PBRS potential calculation for momentum-aware
+        reward shaping.
+
+        Returns:
+            List of MomentumWaypoint objects if cache exists, None otherwise
+        """
+        level_id = self.map_loader.current_map_name
+
+        # Check if already cached for this level
+        if (
+            self._cached_waypoints_level_id == level_id
+            and self._cached_momentum_waypoints is not None
+        ):
+            return self._cached_momentum_waypoints
+
+        # Try to load from cache
+        try:
+            from ..analysis.momentum_waypoint_extractor import MomentumWaypointExtractor
+
+            waypoints = MomentumWaypointExtractor.load_waypoints_from_cache(level_id)
+
+            # Cache the result (even if None)
+            self._cached_momentum_waypoints = waypoints
+            self._cached_waypoints_level_id = level_id
+
+            if waypoints:
+                logger.debug(
+                    f"Loaded {len(waypoints)} momentum waypoints for level {level_id}"
+                )
+            else:
+                logger.debug(f"No momentum waypoints cache found for level {level_id}")
+
+            return waypoints
+
+        except Exception as e:
+            logger.debug(f"Failed to load momentum waypoints: {e}")
+            return None
+
+    def _load_kinodynamic_database_if_available(self) -> Optional[Any]:
+        """Load kinodynamic database for current level if available.
+
+        Kinodynamic databases are precomputed using build_kinodynamic_database.py
+        and provide perfect velocity-aware reachability with O(1) queries.
+
+        Returns:
+            KinodynamicDatabase instance if available, None otherwise
+        """
+        level_id = self.map_loader.current_map_name
+
+        # Check if already cached
+        if (
+            self._cached_kinodynamic_level_id == level_id
+            and self._cached_kinodynamic_db is not None
+        ):
+            return self._cached_kinodynamic_db
+
+        # Try to load from cache
+        try:
+            from ..graph.reachability.kinodynamic_database import KinodynamicDatabase
+
+            db = KinodynamicDatabase.load(f"kinodynamic_db/{level_id}.npz")
+
+            # Cache the result (even if None)
+            self._cached_kinodynamic_db = db
+            self._cached_kinodynamic_level_id = level_id
+
+            if db:
+                stats = db.get_statistics()
+                logger.info(
+                    f"Loaded kinodynamic database for {level_id}: "
+                    f"{stats['num_nodes']} nodes, {stats['reachable_pairs']:,} reachable pairs"
+                )
+            else:
+                logger.debug(f"No kinodynamic database found for {level_id}")
+
+            return db
+
+        except Exception as e:
+            logger.debug(f"Failed to load kinodynamic database: {e}")
+            return None
+
+    def _update_momentum_waypoints_for_current_level(self) -> None:
+        """Update PBRS calculator with momentum waypoints and kinodynamic database.
+
+        Called during reset after map is loaded. Loads:
+        1. Kinodynamic database (if available) - most accurate
+        2. Momentum waypoints (if available) - fallback for complex cases
+        """
+        # Load kinodynamic database (highest priority)
+        kinodynamic_db = self._load_kinodynamic_database_if_available()
+
+        # Load momentum waypoints (fallback)
+        waypoints = self._load_momentum_waypoints_if_available()
+
+        # Update PBRS calculator
+        if hasattr(self.reward_calculator, "pbrs_calculator"):
+            pbrs_calc = self.reward_calculator.pbrs_calculator
+
+            # Set kinodynamic database (if available)
+            if hasattr(pbrs_calc, "set_kinodynamic_database"):
+                pbrs_calc.set_kinodynamic_database(kinodynamic_db)
+
+            # Set momentum waypoints (if available)
+            if hasattr(pbrs_calc, "set_momentum_waypoints"):
+                pbrs_calc.set_momentum_waypoints(waypoints)
+                if waypoints and not kinodynamic_db:
+                    logger.info(
+                        f"Enabled momentum-aware PBRS with {len(waypoints)} waypoints "
+                        f"for level {self.map_loader.current_map_name}"
+                    )
+            else:
+                logger.debug("PBRS calculator does not support momentum waypoints")
 
     def get_route_visualization_tile_data(self) -> Dict[Tuple[int, int], int]:
         """Get tile data for route visualization.

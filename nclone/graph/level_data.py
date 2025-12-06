@@ -141,8 +141,11 @@ class LevelData:
             ]
 
         # Generate level_id if not provided
+        # Use tiles hash for better uniqueness - prevents cache collisions between
+        # different curriculum levels with similar characteristics
         if self.level_id is None:
-            self.level_id = f"level_{len(self.tiles)}_{len(self.entities)}_{self.start_position[0]}_{self.start_position[1]}"
+            tiles_hash = hash(self.tiles.tobytes())
+            self.level_id = f"level_{tiles_hash}_{len(self.entities)}_{self.start_position[0]}_{self.start_position[1]}"
 
     @property
     def height(self) -> int:

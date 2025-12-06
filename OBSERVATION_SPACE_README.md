@@ -24,15 +24,40 @@ observation_space = SpacesDict({
     
     # Game state (OPTIMIZED)
     'game_state': Box(-1, 1, (41,), np.float32),  # 40 ninja physics + 1 time_remaining
-    'reachability_features': Box(0, 1, (7,), np.float32),  # 4 base + 2 mine context + 1 phase
+    'reachability_features': Box(-1, 1, (13,), np.float32),  # 4 base + 2 path_dist + 4 direction + 2 mine + 1 phase
+    'spatial_context': Box(-1, 1, (96,), np.float32),  # 64 local_tile_grid + 32 mine_overlay
     
-    # Graph (GCN-optimized: spatial + entity features)
+    # Graph (GCN-optimized: spatial + entity features) - OPTIONAL with spatial_context
     'graph_node_feats': Box(-inf, inf, (max_nodes, 6), np.float32),  # Spatial(2) + Mine(2) + Entity(2)
     'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), np.uint16),
     'graph_node_mask': Box(0, 1, (max_nodes,), np.uint8),
     'graph_edge_mask': Box(0, 1, (max_edges,), np.uint8),
 })
 ```
+
+## Configuration Flags
+
+### `enable_graph_observations` (EnvironmentConfig)
+
+Controls whether graph observation arrays are included in the observation space:
+
+- **True (default)**: Full graph arrays included (`graph_node_feats`, `graph_edge_index`, `graph_node_mask`, `graph_edge_mask`)
+- **False**: Graph arrays excluded from observation space (memory optimization)
+
+**Important**: When `False`, the graph is still built internally for PBRS reward calculation. This flag only controls whether graph arrays appear in the observation space returned to the agent.
+
+**Use case**: Set to `False` for architectures that don't use graph modality (e.g., `graph_free`) to save ~21KB per observation (~1.3GB for 64 envs × 1024 steps).
+
+```python
+from nclone.gym_environment.config import EnvironmentConfig
+
+# Graph-free training (saves ~21KB per observation)
+config = EnvironmentConfig.for_training(
+    enable_graph_observations=False,  # Exclude graph arrays
+)
+```
+
+The `EnvironmentFactory` in npp-rl automatically sets this flag based on `architecture_config.modalities.use_graph`.
 
 ## Design Principles (Phases 1-6 Optimization)
 
@@ -94,9 +119,9 @@ Visual modalities are available but not used for training. The agent learns pure
 - `[40]` Time remaining [0, 1] (curriculum-aware dynamic truncation)
 
 ### `reachability_features`
-`(7,)` float32, range [0, 1]
+`(13,)` float32, range [-1, 1]
 
-Graph-based reachability features with mine context and explicit phase indicator.
+Graph-based reachability features with path distances, direction vectors, and phase indicator.
 
 **Base Features (4)**
 - `[0]` Reachable area ratio [0, 1] (reachable / total graph nodes)
@@ -104,15 +129,40 @@ Graph-based reachability features with mine context and explicit phase indicator
 - `[2]` Distance to exit [0, 1] (normalized, inverted)
 - `[3]` Exit reachable flag {0, 1}
 
+**Path Distances (2)** - raw normalized distances for learning
+- `[4]` Path distance to switch [0, 1] (normalized)
+- `[5]` Path distance to exit [0, 1] (normalized)
+
+**Direction Vectors (4)** - unit vectors toward goals
+- `[6]` Direction to switch X [-1, 1]
+- `[7]` Direction to switch Y [-1, 1]
+- `[8]` Direction to exit X [-1, 1]
+- `[9]` Direction to exit Y [-1, 1]
+
 **Mine Context (2)**
-- `[4]` Total mines normalized [0, 1] (count / 256 max)
-- `[5]` Deadly mine ratio [0, 1] (deadly / total mines)
+- `[10]` Total mines normalized [0, 1] (count / 10 max)
+- `[11]` Deadly mine ratio [0, 1] (deadly / total mines)
 
 **Phase Indicator (1)**
-- `[6]` Switch activated flag {0, 1} - **CRITICAL for Markov property**
+- `[12]` Switch activated flag {0, 1} - **CRITICAL for Markov property**
   - Explicit indicator of which objective to pursue (switch vs exit)
   - Enables proper credit assignment for +2.0 milestone reward
   - Ensures agent observes two-phase task structure clearly
+
+### `spatial_context`
+`(96,)` float32, range [-1, 1]
+
+Graph-free local spatial context for platforming decisions. **Alternative to full graph observation** with 99% memory reduction.
+
+**Local Tile Grid (64)** - 8×8 tiles centered on ninja
+- Simplified tile categories: Empty(0), Solid(1), Half(2), Slope(3), Curved(4)
+- Normalized to [0, 0.25, 0.5, 0.75, 1.0]
+- Captures local geometry for movement decisions
+
+**Mine Overlay (32)** - 8 nearest mines
+- Per mine (4 features): relative_x, relative_y, state, radius
+- State: -1.0 (deadly), 0.0 (transitioning), 1.0 (safe)
+- Radius: normalized collision radius [0, 1]
 
 ### `time_remaining`
 `()` float32 scalar, range [0, 1]
@@ -176,9 +226,17 @@ Binary masks {0, 1} indicating valid nodes/edges (vs padding).
 - **Node features**: 6 dims (spatial + mine + entity) - optimized for navigation
 - **Edge features**: None (GCN uses graph structure only)
 - **Game state**: 41 dims (40 ninja physics + 1 time_remaining)
-- **Total observation**: Balanced between information and memory
-- **Memory savings**: 65% total graph memory reduction (~305 KB per obs)
-  - Node features: 65% reduction (17 → 6 dims)
-  - Data types: uint16/uint8 for indices and masks
+- **Reachability features**: 13 dims (extended with path distances and direction vectors)
+- **Spatial context**: 96 dims (graph-free alternative - 64 tile grid + 32 mine overlay)
+
+### Memory Comparison
+
+| Mode | Per-Observation | 64 envs × 1024 steps |
+|------|-----------------|----------------------|
+| Full Graph | ~162 KB | ~10.4 GB |
+| Graph-Free (spatial_context) | ~0.5 KB | ~33 MB |
+| **Savings** | **99.7%** | **99.7%** |
+
+The `spatial_context` observation provides equivalent local geometry information while using 99.7% less memory than full graph observations. This enables larger rollout buffers and more parallel environments.
 
 All computations are vectorized using numpy for performance. Observation space optimized for sparse batching in GCN encoder.

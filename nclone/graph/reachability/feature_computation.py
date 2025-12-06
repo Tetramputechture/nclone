@@ -37,19 +37,34 @@ def compute_reachability_features_from_graph(
     path_calculator: Any,
 ) -> np.ndarray:
     """
-    Compute 7-dimensional reachability features using adjacency graph and lookup tables.
+    Compute 13-dimensional reachability features using adjacency graph and lookup tables.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     No linear searches or Euclidean distance calculations.
 
-    Features (7 dims):
-    1. Reachable area ratio (0-1)
-    2. Distance to nearest switch (normalized, inverted)
-    3. Distance to exit (normalized, inverted)
-    4. Exit reachable flag (0-1)
-    5. Total mines normalized (0-1)
-    6. Deadly mine ratio (0-1)
-    7. Switch activated flag (0-1) - EXPLICIT phase indicator for Markov property
+    Features (13 dims):
+    Base features (4):
+        0. Reachable area ratio (0-1)
+        1. Distance to nearest switch (normalized, inverted)
+        2. Distance to exit (normalized, inverted)
+        3. Exit reachable flag (0-1)
+
+    Path distances (2) - normalized raw distances for learning:
+        4. Path distance to switch (normalized 0-1)
+        5. Path distance to exit (normalized 0-1)
+
+    Direction vectors (4) - unit vectors toward goals:
+        6. Direction to switch X component (-1 to 1)
+        7. Direction to switch Y component (-1 to 1)
+        8. Direction to exit X component (-1 to 1)
+        9. Direction to exit Y component (-1 to 1)
+
+    Mine context (2):
+        10. Total mines normalized (0-1)
+        11. Deadly mine ratio (0-1)
+
+    Phase indicator (1):
+        12. Switch activated flag (0-1) - EXPLICIT phase indicator for Markov property
 
     Args:
         adjacency: Graph adjacency structure from GraphBuilder
@@ -59,7 +74,7 @@ def compute_reachability_features_from_graph(
         path_calculator: CachedPathDistanceCalculator instance
 
     Returns:
-        7-dimensional numpy array with normalized features [0-1]
+        13-dimensional numpy array with normalized features
 
     Raises:
         RuntimeError: If required data is missing (adjacency, graph_data, etc.)
@@ -75,7 +90,13 @@ def compute_reachability_features_from_graph(
     # Total possible nodes (approximate: all traversable tiles)
     total_possible_nodes = MAP_TILE_WIDTH * MAP_TILE_HEIGHT
 
-    features = np.zeros(7, dtype=np.float32)
+    features = np.zeros(13, dtype=np.float32)
+
+    # Track raw distances and positions for direction vectors
+    switch_distance_raw = float("inf")
+    exit_distance_raw = float("inf")
+    switch_pos_for_direction = None
+    exit_pos_for_direction = None
 
     # Feature 1: Reachable area ratio
     features[0] = np.clip(len(adjacency) / max(total_possible_nodes, 1), 0.0, 1.0)
@@ -170,6 +191,10 @@ def compute_reachability_features_from_graph(
             )
             if distance != float("inf"):
                 next_obj_distances.append(distance)
+                # Track for direction vector computation
+                if distance < switch_distance_raw:
+                    switch_distance_raw = distance
+                    switch_pos_for_direction = switch_pos
 
     # Second priority: Locked door switches (if exit switch collected but doors still closed)
     if not next_obj_distances:
@@ -230,6 +255,10 @@ def compute_reachability_features_from_graph(
         )
         if distance != float("inf"):
             exit_distances.append(distance)
+            # Track for direction vector computation
+            if distance < exit_distance_raw:
+                exit_distance_raw = distance
+                exit_pos_for_direction = exit_pos
     if exit_distances:
         min_exit_dist = min(exit_distances)
         features[2] = np.clip(1.0 - (min_exit_dist / area_scale), 0.0, 1.0)
@@ -251,7 +280,43 @@ def compute_reachability_features_from_graph(
             break
     features[3] = 1.0 if exit_reachable else 0.0
 
-    # Features 5-6: Mine context (simplified from detailed mine features)
+    # Feature 5-6: Raw path distances (normalized 0-1)
+    # These are non-inverted distances for learning signal
+    if switch_distance_raw != float("inf"):
+        features[4] = np.clip(switch_distance_raw / area_scale, 0.0, 1.0)
+    else:
+        features[4] = 1.0  # Max distance if unreachable
+
+    if exit_distance_raw != float("inf"):
+        features[5] = np.clip(exit_distance_raw / area_scale, 0.0, 1.0)
+    else:
+        features[5] = 1.0  # Max distance if unreachable
+
+    # Features 7-10: Direction vectors toward goals (unit vectors)
+    # Use Euclidean direction as approximation (path direction would require next-hop lookup)
+    ninja_x, ninja_y = ninja_pos
+
+    # Direction to switch (features 6-7)
+    if switch_pos_for_direction is not None:
+        dx = switch_pos_for_direction[0] - ninja_x
+        dy = switch_pos_for_direction[1] - ninja_y
+        dist = np.sqrt(dx * dx + dy * dy)
+        if dist > 0.001:
+            features[6] = dx / dist  # X component (-1 to 1)
+            features[7] = dy / dist  # Y component (-1 to 1)
+        # else: 0.0 (already at goal)
+
+    # Direction to exit (features 8-9)
+    if exit_pos_for_direction is not None:
+        dx = exit_pos_for_direction[0] - ninja_x
+        dy = exit_pos_for_direction[1] - ninja_y
+        dist = np.sqrt(dx * dx + dy * dy)
+        if dist > 0.001:
+            features[8] = dx / dist  # X component (-1 to 1)
+            features[9] = dy / dist  # Y component (-1 to 1)
+        # else: 0.0 (already at goal)
+
+    # Features 10-11: Mine context (simplified from detailed mine features)
     # Mine information is primarily handled by graph nodes, these provide high-level context
     hazard_types = [
         EntityType.TOGGLE_MINE,
@@ -259,11 +324,11 @@ def compute_reachability_features_from_graph(
     ]
     hazards = [e for e in entities if get_entity_type(e) in hazard_types]
 
-    # Feature 5: Total mines normalized (0-1)
+    # Feature 10: Total mines normalized (0-1)
     total_mines = len(hazards)
-    features[4] = np.clip(total_mines / 10.0, 0.0, 1.0)  # Max 10 mines
+    features[10] = np.clip(total_mines / 10.0, 0.0, 1.0)  # Max 10 mines
 
-    # Feature 6: Deadly mine ratio (0-1)
+    # Feature 11: Deadly mine ratio (0-1)
     if total_mines > 0:
         deadly_mines = 0
         for hazard in hazards:
@@ -273,11 +338,11 @@ def compute_reachability_features_from_graph(
                 hazard_state = 0
             if hazard_state == 0:  # Deadly mine
                 deadly_mines += 1
-        features[5] = deadly_mines / total_mines
+        features[11] = deadly_mines / total_mines
     else:
-        features[5] = 0.0
+        features[11] = 0.0
 
-    # Feature 7: Switch activated flag (EXPLICIT phase indicator)
+    # Feature 12: Switch activated flag (EXPLICIT phase indicator)
     # Critical for Markov property: agent needs to know which objective to pursue
     # For exit switches: active=True means not collected, active=False means activated
     switch_activated = False
@@ -286,6 +351,6 @@ def compute_reachability_features_from_graph(
         if not switch_active:  # Switch has been activated
             switch_activated = True
             break
-    features[6] = 1.0 if switch_activated else 0.0
+    features[12] = 1.0 if switch_activated else 0.0
 
     return features
