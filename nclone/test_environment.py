@@ -15,6 +15,7 @@ M - Toggle mine predictor debug overlay
 D - Toggle mine death probability debug overlay
 W - Toggle action mask debug overlay
 U - Toggle reachable walls debug overlay
+Q - Toggle demo checkpoint heatmap (requires --demo-replays)
 R - Reset environment
 
 Examples:
@@ -36,10 +37,7 @@ import gc
 import psutil
 import os
 
-# Clear all caches for new level
-from nclone.cache_management import (
-    clear_all_caches_for_new_level,
-)
+# Cache management is now handled internally by env.reset()
 
 from nclone.replay.gameplay_recorder import GameplayRecorder
 from nclone.gym_environment.npp_environment import NppEnvironment
@@ -334,6 +332,14 @@ parser.add_argument(
     help="Output directory for recorded replays",
 )
 
+# Demo checkpoint visualization arguments
+parser.add_argument(
+    "--demo-replays",
+    type=str,
+    default=None,
+    help="Directory containing demo replay files for checkpoint visualization",
+)
+
 # Test suite loading arguments
 parser.add_argument(
     "--test-suite",
@@ -519,6 +525,25 @@ if (
 
     print("=" * 60 + "\n")
 
+# Display help information for demo checkpoint visualization
+if args.demo_replays:
+    print("\n" + "=" * 60)
+    print("DEMO CHECKPOINT VISUALIZATION")
+    print("=" * 60)
+    print(f"Demo replay directory: {args.demo_replays}")
+    print("Visualizes expert demonstration trajectories as heatmap overlay")
+    print("\nRuntime Controls:")
+    print("  Q - Toggle demo checkpoint heatmap")
+    print("      • Blue = Low reward (start of trajectory)")
+    print("      • Green/Yellow = Mid reward (progress)")
+    print("      • Red = High reward (near goal)")
+    print("      • Red circle marker = Highest reward position")
+    print("\nNote:")
+    print("  • Checkpoints are loaded when 'Q' is first pressed")
+    print("  • Level name matching is case-insensitive")
+    print("  • Uses same 12px grid as Go-Explore checkpoints")
+    print("=" * 60 + "\n")
+
 if args.interactive_graph and args.headless:
     print("Error: Interactive graph visualization cannot be used in headless mode.")
     sys.exit(1)
@@ -580,6 +605,34 @@ else:
         frame_skip=1,
     )
     env = create_visual_testing_env(config=config)
+
+
+# Define manual_reset helper function before initialization blocks that use it
+def manual_reset(env: NppEnvironment, map_name: str = None):
+    """
+    Reset environment after externally loading a new map.
+
+    This is used in test_environment.py for generator testing and level switching.
+    Instead of reimplementing reset logic, we call the environment's built-in reset()
+    with skip_map_load=True to ensure all caches are properly cleared and rebuilt.
+
+    Args:
+        env: The environment to reset
+        map_name: Optional name of the map that was just loaded (for cache keying)
+    """
+    print("Manual reset called - delegating to env.reset() with skip_map_load=True")
+
+    # Use the environment's standard reset flow with skip_map_load
+    # This ensures all caches are properly cleared and rebuilt
+    reset_options = {"skip_map_load": True}
+    if map_name is not None:
+        reset_options["map_name"] = map_name
+        print(f"  Map name: {map_name}")
+
+    env.reset(options=reset_options)
+
+    print("Manual reset complete")
+
 
 # Initialize generator testing if enabled
 generator_tester = None
@@ -805,12 +858,13 @@ if args.test_official_maps:
 
         official_map_tester = OfficialMapTester()
 
-        # Load initial map
+        # Load initial map and reset environment
         initial_map_path = official_map_tester.get_current_map_path()
         env.nplay_headless.load_map(initial_map_path)
-        env._reset_graph_state()
-        env._update_graph_from_env_state()
-        env._build_door_feature_cache()
+
+        # Use manual_reset with map name for proper cache building
+        map_name = official_map_tester.get_current_map_name()
+        manual_reset(env, map_name=map_name)
 
         print("Official Maps Testing Initialized")
         print(f"  {official_map_tester.get_info_string()}")
@@ -954,6 +1008,38 @@ if (
 
         traceback.print_exc()
 
+# Initialize demo checkpoint visualization system if demo directory provided
+demo_checkpoint_system = None
+demo_checkpoints_debug_enabled = False
+
+if args.demo_replays:
+    print("Initializing demo checkpoint visualization system...")
+
+    try:
+        # Import DemoCheckpointSeeder from nclone.replay
+        from nclone.replay.demo_checkpoint_seeder import DemoCheckpointSeeder
+
+        demo_checkpoint_system = {
+            "seeder": DemoCheckpointSeeder(
+                replay_dir=args.demo_replays,
+                max_demos_per_level=10,
+                min_cumulative_reward=0.0,
+            ),
+            "checkpoint_cache": {},  # Maps level_name -> list of checkpoint dicts
+            "cached_level_name": None,  # Track current level for cache invalidation
+        }
+
+        print("✅ Demo checkpoint visualization system initialized successfully")
+        print(f"   - Demo replay directory: {args.demo_replays}")
+        print("   - Toggle with 'Q' key during runtime")
+
+    except Exception as e:
+        print(f"Warning: Could not initialize demo checkpoint system: {e}")
+        import traceback
+
+        traceback.print_exc()
+        demo_checkpoint_system = None
+
 # Handle frame export if requested
 if args.export_frame:
     print(f"Exporting initial frame to {args.export_frame}...")
@@ -1038,50 +1124,6 @@ keys_just_pressed = (
 )  # Track which keys were pressed this frame (for discrete mode)
 keys_held = set()  # Track which keys are currently held (to prevent repeat on hold)
 
-
-def manual_reset(env: NppEnvironment):
-    """
-    Manually reset environment to match the behavior of env.reset().
-    This is used in test_environment.py for generator testing and level switching.
-    """
-    print("Manual reset called")
-
-    # Reset all processors (matches reset() method)
-    print("Resetting observation processor")
-    env.observation_processor.reset()
-    print("Resetting reward calculator")
-    env.reward_calculator.reset()
-    print("Resetting truncation checker")
-    env.truncation_checker.reset()
-
-    # Reset episode tracking
-    print("Resetting episode reward")
-    env.current_ep_reward = 0
-
-    # Clear all caches (matches reset() method)
-    clear_all_caches_for_new_level(env)
-
-    # Reset graph and reachability state (matches reset() method)
-    print("Resetting graph state")
-    env._reset_graph_state()
-    print("Resetting reachability state")
-    env._reset_reachability_state()
-
-    # Rebuild graph from current map (matches reset() method)
-    print("Updating graph from env state")
-    env._update_graph_from_env_state()
-
-    print("Building door feature cache")
-    env._build_door_feature_cache()
-
-    # Initialize locked door caches (matches reset() method)
-    if hasattr(env, "_initialize_locked_door_caches"):
-        print("Initializing locked door caches")
-        env._initialize_locked_door_caches()
-
-    print("Manual reset complete")
-
-
 manual_reset(env)
 # Main game loop
 # Wrap the game loop with profiler.enable() and profiler.disable()
@@ -1148,7 +1190,9 @@ while running:
                             )
                             env.nplay_headless.load_map(current_map_path)
 
-                            manual_reset(env)
+                            # Pass map name for proper cache keying
+                            map_name = official_map_tester.get_current_map_name()
+                            manual_reset(env, map_name=map_name)
 
                             # Get initial observation
                             initial_obs = env._get_observation()
@@ -1334,7 +1378,9 @@ while running:
 
                         env.nplay_headless.load_map(map_path)
 
-                        manual_reset(env)
+                        # Pass map name for proper cache keying
+                        map_name = official_map_tester.get_current_map_name()
+                        manual_reset(env, map_name=map_name)
 
                         # Get initial observation
                         initial_obs = env._get_observation()
@@ -1453,7 +1499,9 @@ while running:
                                 map_path = official_map_tester.get_current_map_path()
                                 env.nplay_headless.load_map(map_path)
 
-                                manual_reset(env)
+                                # Pass map name for proper cache keying
+                                map_name = official_map_tester.get_current_map_name()
+                                manual_reset(env, map_name=map_name)
 
                                 initial_obs = env._get_observation()
                                 observation = env._process_observation(initial_obs)
@@ -1524,6 +1572,105 @@ while running:
                                 print("❌ Failed to export path analysis screenshot")
                         except Exception as e:
                             print(f"Could not export path analysis screenshot: {e}")
+
+                # Demo checkpoint visualization controls
+                if demo_checkpoint_system is not None:
+                    if event.key == pygame.K_q:
+                        # Toggle demo checkpoint visualization
+                        demo_checkpoints_debug_enabled = (
+                            not demo_checkpoints_debug_enabled
+                        )
+
+                        if demo_checkpoints_debug_enabled:
+                            # Load checkpoints for current level when toggled ON
+                            try:
+                                # Get current level name from environment
+                                level_name = getattr(
+                                    env.map_loader, "current_map_name", None
+                                )
+
+                                # Fallback to custom map filename if available
+                                if level_name is None and args.map:
+                                    from pathlib import Path
+
+                                    level_name = Path(args.map).stem
+
+                                if level_name is None:
+                                    print(
+                                        "Cannot determine level name for demo checkpoint loading"
+                                    )
+                                    demo_checkpoints_debug_enabled = False
+                                else:
+                                    # Check if already cached for this level
+                                    if (
+                                        demo_checkpoint_system["cached_level_name"]
+                                        != level_name
+                                    ):
+                                        # Find matching demo files
+                                        seeder = demo_checkpoint_system["seeder"]
+                                        demo_files = seeder.find_matching_demos(
+                                            level_name
+                                        )
+
+                                        if not demo_files:
+                                            print(
+                                                f"No demo replays found matching level: {level_name}"
+                                            )
+                                            demo_checkpoints_debug_enabled = False
+                                        else:
+                                            print(
+                                                f"Processing {len(demo_files)} demo file(s) for level: {level_name}..."
+                                            )
+
+                                            # Process all demos to extract checkpoints
+                                            all_checkpoints = []
+                                            for demo_file in demo_files:
+                                                checkpoints = seeder._extract_positions_from_demo_simple(
+                                                    demo_file
+                                                )
+                                                all_checkpoints.extend(checkpoints)
+
+                                            # Cache the checkpoints for this level
+                                            demo_checkpoint_system["checkpoint_cache"][
+                                                level_name
+                                            ] = all_checkpoints
+                                            demo_checkpoint_system[
+                                                "cached_level_name"
+                                            ] = level_name
+
+                                            # Debug: Print sample checkpoint data
+                                            if all_checkpoints:
+                                                sample = all_checkpoints[0]
+                                                print(
+                                                    f"✅ Demo checkpoint visualization: ON ({len(all_checkpoints)} checkpoints loaded)"
+                                                )
+                                                print(
+                                                    f"   Sample checkpoint: position={sample.get('position')}, "
+                                                    f"cell={sample.get('cell')}, reward={sample.get('cumulative_reward', 0):.3f}"
+                                                )
+                                            else:
+                                                print(
+                                                    f"✅ Demo checkpoint visualization: ON (0 checkpoints loaded)"
+                                                )
+                                    else:
+                                        # Use cached checkpoints
+                                        cached_count = len(
+                                            demo_checkpoint_system[
+                                                "checkpoint_cache"
+                                            ].get(level_name, [])
+                                        )
+                                        print(
+                                            f"✅ Demo checkpoint visualization: ON ({cached_count} checkpoints from cache)"
+                                        )
+
+                            except Exception as e:
+                                print(f"Error loading demo checkpoints: {e}")
+                                import traceback
+
+                                traceback.print_exc()
+                                demo_checkpoints_debug_enabled = False
+                        else:
+                            print("Demo checkpoint visualization: OFF")
 
     else:  # Minimal event handling for headless
         for event in pygame.event.get(pygame.QUIT):  # only process QUIT events
@@ -1705,6 +1852,25 @@ while running:
         env.set_blocked_entities_debug_enabled(False)
         env.set_show_paths_to_goals(False)
 
+    # Update demo checkpoint visualization if enabled
+    if demo_checkpoint_system is not None:
+        env.set_demo_checkpoints_debug_enabled(demo_checkpoints_debug_enabled)
+
+        if demo_checkpoints_debug_enabled:
+            # Get current level name
+            level_name = getattr(env.map_loader, "current_map_name", None)
+            if level_name is None and args.map:
+                from pathlib import Path
+
+                level_name = Path(args.map).stem
+
+            # Get cached checkpoints for current level
+            if level_name:
+                checkpoints = demo_checkpoint_system["checkpoint_cache"].get(
+                    level_name, []
+                )
+                env.set_demo_checkpoints_data(checkpoints)
+
     # Step the environment
     observation, reward, terminated, truncated, info = env.step(action)
 
@@ -1771,7 +1937,9 @@ while running:
                 current_map_path = official_map_tester.get_current_map_path()
                 env.nplay_headless.load_map(current_map_path)
 
-                manual_reset(env)
+                # Pass map name for proper cache keying
+                map_name = official_map_tester.get_current_map_name()
+                manual_reset(env, map_name=map_name)
 
                 initial_obs = env._get_observation()
                 observation = env._process_observation(initial_obs)

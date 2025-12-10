@@ -20,7 +20,7 @@ Total: 112 dimensions (~0.5 KB vs ~162 KB for full graph)
 """
 
 import numpy as np
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any
 from ..constants.physics_constants import TILE_PIXEL_SIZE
 from ..constants.entity_types import EntityType
 from ..constants import MAX_HOR_SPEED  # 3.333 px/frame

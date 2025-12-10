@@ -321,6 +321,19 @@ class ReplayExecutor:
         # Load map
         self.nplay_headless.load_map_from_map_data(list(map_data))
 
+        # DIAGNOSTIC: Check if entities were loaded
+        entity_counts = {
+            k: len(v) for k, v in self.nplay_headless.sim.entity_dic.items()
+        }
+        print(f"Entity counts after load: {entity_counts}")
+
+        # Check specifically for type 3 (exit switches and doors)
+        exit_entities = self.nplay_headless.sim.entity_dic.get(3, [])
+        print(f"Type 3 entities (exits): {len(exit_entities)}")
+        if exit_entities:
+            for e in exit_entities:
+                print(f"  Exit entity: {type(e).__name__}, pos=({e.xpos}, {e.ypos})")
+
         # Initialize entity extractor now that map is loaded
         if self.entity_extractor is None:
             self.entity_extractor = EntityExtractor(self.nplay_headless)
@@ -449,7 +462,7 @@ class ReplayExecutor:
         - exit_door_x, exit_door_y: exit door position
         - switch_activated: whether switch has been activated
         - game_state: ninja state (NINJA_STATE_DIM=41 features, enhanced physics + time_remaining)
-        - reachability_features: 6-dimensional reachability vector
+        - reachability_features: 22-dimensional reachability vector (expanded in Phases 1-3)
         - player_won: whether the player has won
         - player_dead: whether the player has died
         """
@@ -518,7 +531,7 @@ class ReplayExecutor:
         # Create 41D game_state (40D physics + 1D time_remaining) to match environment
         game_state = np.append(ninja_state[:40], time_remaining).astype(np.float32)
 
-        # Compute reachability features (6-dim)
+        # Compute reachability features (22-dim, expanded in Phases 1-3)
         reachability_features = self._compute_reachability_features(
             ninja_x, ninja_y, switch_x, switch_y, exit_door_x, exit_door_y
         )
@@ -594,18 +607,160 @@ class ReplayExecutor:
                 level_height=LEVEL_HEIGHT_PX,
             )
 
+            # Add mine_sdf_features (3 dims) for actor safety awareness
+            # CRITICAL: Must be included for demonstrations to match training observations
+            obs["mine_sdf_features"] = self._compute_mine_sdf_features(
+                ninja_pos=(ninja_x, ninja_y),
+                entities=self._cached_level_data.entities,
+            )
+
         return obs
 
+    def _compute_mine_sdf_features(
+        self, ninja_pos: tuple, entities: List[Any]
+    ) -> np.ndarray:
+        """Compute mine SDF (Signed Distance Field) features for actor safety awareness.
+
+        Returns 3-dimensional features:
+        - SDF value: distance to nearest deadly mine (negative if inside danger zone)
+        - Escape gradient X: direction to move away from mines
+        - Escape gradient Y: direction to move away from mines
+
+        Args:
+            ninja_pos: Ninja position (x, y)
+            entities: List of entities from level_data
+
+        Returns:
+            np.ndarray: 3-dim SDF features [sdf_value, gradient_x, gradient_y]
+        """
+        from ..constants.entity_types import EntityType
+        from ..constants.physics_constants import NINJA_RADIUS
+
+        sdf_features = np.zeros(3, dtype=np.float32)
+
+        # Find all deadly toggle mines (state 0)
+        deadly_mines = []
+        for entity in entities:
+            if hasattr(entity, "entity_type"):
+                entity_type_str = str(entity.entity_type).upper()
+                if "TOGGLE_MINE" in entity_type_str:
+                    # Check if mine is deadly (state 0)
+                    mine_state = getattr(entity, "state", 0)
+                    if mine_state == 0:  # Deadly
+                        mine_x = getattr(entity, "xpos", 0.0)
+                        mine_y = getattr(entity, "ypos", 0.0)
+                        mine_radius = getattr(entity, "radius", 12.0)
+                        deadly_mines.append((mine_x, mine_y, mine_radius))
+
+        if not deadly_mines:
+            # No deadly mines - safe everywhere
+            sdf_features[0] = 1.0  # Maximum safe distance (normalized)
+            return sdf_features
+
+        # Find nearest deadly mine
+        ninja_x, ninja_y = ninja_pos
+        min_distance = float("inf")
+        nearest_mine = None
+
+        for mine_x, mine_y, mine_radius in deadly_mines:
+            dx = mine_x - ninja_x
+            dy = mine_y - ninja_y
+            distance = np.sqrt(dx**2 + dy**2)
+
+            if distance < min_distance:
+                min_distance = distance
+                nearest_mine = (mine_x, mine_y, mine_radius, dx, dy)
+
+        if nearest_mine is None:
+            sdf_features[0] = 1.0
+            return sdf_features
+
+        mine_x, mine_y, mine_radius, dx, dy = nearest_mine
+
+        # SDF value: distance from ninja surface to mine surface
+        # Negative = inside danger zone
+        danger_radius = mine_radius + NINJA_RADIUS + 10.0  # Safety buffer
+        sdf_value = min_distance - danger_radius
+
+        # Normalize to [-1, 1] range (safe at ~100px, danger at 0px)
+        sdf_features[0] = np.clip(sdf_value / 100.0, -1.0, 1.0)
+
+        # Escape gradient: unit vector pointing away from nearest mine
+        if min_distance > 1e-6:
+            # Direction FROM mine TO ninja (escape direction)
+            escape_x = -dx / min_distance
+            escape_y = -dy / min_distance
+            sdf_features[1] = np.clip(escape_x, -1.0, 1.0)
+            sdf_features[2] = np.clip(escape_y, -1.0, 1.0)
+
+        return sdf_features
+
     def _get_switch_position(self) -> tuple:
-        """Get exit switch position with fallback."""
+        """Get exit switch position from level_data entities.
+
+        FIX: entity_dic in ReplayExecutor doesn't get populated properly,
+        so we extract from level_data.entities instead.
+        """
+        if self._cached_level_data is None:
+            return (0, 0)
+
+        from ..constants.entity_types import EntityType
+
+        # Extract from level_data entities
+        for entity in self._cached_level_data.entities:
+            entity_type = entity.get("entity_type") or entity.get("type")
+            if entity_type == EntityType.EXIT_SWITCH:
+                x = entity.get("x", 0)
+                y = entity.get("y", 0)
+                # Check if switch is active (not collected)
+                is_active = entity.get("active", True)
+                if is_active:
+                    return (float(x), float(y))
+
+        # Fallback to nplay_headless method
         return self.nplay_headless.exit_switch_position()
 
     def _get_exit_door_position(self) -> tuple:
-        """Get exit door position with fallback."""
+        """Get exit door position from level_data entities.
+
+        FIX: entity_dic in ReplayExecutor doesn't get populated properly,
+        so we extract from level_data.entities instead.
+        """
+        if self._cached_level_data is None:
+            return (0, 0)
+
+        from ..constants.entity_types import EntityType
+
+        # Extract from level_data entities
+        for entity in self._cached_level_data.entities:
+            entity_type = entity.get("entity_type") or entity.get("type")
+            if entity_type == EntityType.EXIT_DOOR:
+                x = entity.get("x", 0)
+                y = entity.get("y", 0)
+                return (float(x), float(y))
+
+        # Fallback to nplay_headless method
         return self.nplay_headless.exit_door_position()
 
     def _is_switch_activated(self) -> bool:
-        """Check if exit switch is activated."""
+        """Check if exit switch is activated.
+
+        FIX: Check level_data entities first since entity_dic may not be populated.
+        """
+        if self._cached_level_data is None:
+            return False
+
+        from ..constants.entity_types import EntityType
+
+        # Check if any exit switch is inactive (collected)
+        for entity in self._cached_level_data.entities:
+            entity_type = entity.get("entity_type") or entity.get("type")
+            if entity_type == EntityType.EXIT_SWITCH:
+                is_active = entity.get("active", True)
+                if not is_active:  # Switch collected = activated
+                    return True
+
+        # Fallback to nplay_headless method
         return self.nplay_headless.exit_switch_activated()
 
     def _get_switch_states_from_env(self) -> Dict[str, bool]:
@@ -753,15 +908,41 @@ class ReplayExecutor:
         exit_door_y: float,
     ) -> np.ndarray:
         """
-        Compute 6-dimensional reachability features using adjacency graph.
+        Compute 22-dimensional reachability features using adjacency graph (expanded in Phases 1-3).
 
-        Features (4 base + 2 mine context):
-        1. Reachable area ratio (0-1)
-        2. Distance to nearest switch (normalized, inverted)
-        3. Distance to exit (normalized, inverted)
-        4. Exit reachable flag (0-1)
-        5. Total mines normalized (0-1)
-        6. Deadly mine ratio (0-1)
+        Features (22 total):
+        Base features (4 dims):
+        0. Reachable area ratio (0-1)
+        1. Distance to nearest switch (normalized, inverted)
+        2. Distance to exit (normalized, inverted)
+        3. Exit reachable flag (0-1)
+
+        Path distances (2 dims):
+        4. Path distance to switch (normalized 0-1)
+        5. Path distance to exit (normalized 0-1)
+
+        Direction vectors (4 dims):
+        6. Direction to switch X (-1 to 1)
+        7. Direction to switch Y (-1 to 1)
+        8. Direction to exit X (-1 to 1)
+        9. Direction to exit Y (-1 to 1)
+
+        Mine context (2 dims):
+        10. Total mines normalized (0-1)
+        11. Deadly mine ratio (0-1)
+
+        Phase indicator (1 dim):
+        12. Switch activated flag (0-1)
+
+        Path direction features (8 dims) - NEW Phase 1.1:
+        13-14. Next hop direction X/Y
+        15-16. Waypoint direction X/Y
+        17. Waypoint distance
+        18. Path requires detour flag
+        19-20. Mine clearance direction X/Y
+
+        Path difficulty (1 dim) - NEW Phase 3.3:
+        21. Path difficulty ratio (physics_cost/geometric_distance)
         """
         # Use cached graph and level data (built once per replay)
         if self._cached_graph_data is None or self._cached_level_data is None:

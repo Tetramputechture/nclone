@@ -54,6 +54,10 @@ class DebugMixin:
         # Mine SDF (Signed Distance Field) debug visualization state
         self._mine_sdf_debug_enabled: bool = False
 
+        # Demo checkpoint visualization state
+        self._demo_checkpoints_debug_enabled: bool = False
+        self._demo_checkpoints_data = None
+
     def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
         info: Dict[str, Any] = {}
@@ -93,6 +97,14 @@ class DebugMixin:
             mine_sdf_data = self._get_mine_sdf_data()
             if mine_sdf_data:
                 info["mine_sdf"] = mine_sdf_data
+
+        # Add demo checkpoint visualization payload if enabled
+        if self._demo_checkpoints_debug_enabled and self._demo_checkpoints_data:
+            info["demo_checkpoints"] = {
+                "checkpoints": self._demo_checkpoints_data.get("checkpoints", []),
+                "ninja_position": self.nplay_headless.ninja_position(),
+                "grid_size": 12,  # Match Go-Explore checkpoint discretization
+            }
 
         # Add other debug info only if general debug overlay is enabled
         if self._enable_debug_overlay:
@@ -229,6 +241,25 @@ class DebugMixin:
         Also shows escape direction arrows at each tile.
         """
         self._mine_sdf_debug_enabled = bool(enabled)
+
+    def set_demo_checkpoints_debug_enabled(self, enabled: bool):
+        """Enable/disable demo checkpoint heatmap visualization.
+
+        Shows expert demonstration trajectories as a heatmap overlay,
+        with colors indicating cumulative reward progression.
+        """
+        self._demo_checkpoints_debug_enabled = bool(enabled)
+
+    def set_demo_checkpoints_data(self, checkpoints: list):
+        """Set demo checkpoint data for visualization.
+
+        Args:
+            checkpoints: List of checkpoint dicts with keys:
+                - cell: (x, y) discretized position
+                - cumulative_reward: Reward value at this checkpoint
+                - position: (x, y) actual position in pixels
+        """
+        self._demo_checkpoints_data = {"checkpoints": checkpoints}
 
     def _get_mine_sdf_data(self) -> Optional[Dict[str, Any]]:
         """Get mine SDF data for visualization.

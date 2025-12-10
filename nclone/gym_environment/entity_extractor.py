@@ -98,13 +98,26 @@ class EntityExtractor:
             for i, switch in enumerate(exit_switches):
                 switch_id = f"exit_pair_{i}"
 
+                # CRITICAL VALIDATION: Switch position must be valid (not 0,0)
+                switch_x = getattr(switch, "xpos", 0.0)
+                switch_y = getattr(switch, "ypos", 0.0)
+                
+                if switch_x == 0.0 and switch_y == 0.0:
+                    raise ValueError(
+                        f"EXIT SWITCH at (0, 0) - entity not properly loaded! "
+                        f"Switch index: {i}, "
+                        f"Entity object: {switch}, "
+                        f"This indicates the level file is corrupted or entities weren't initialized. "
+                        f"Check map loading and entity initialization."
+                    )
+
                 # Add exit switch entity
                 entities.append(
                     {
                         "type": EntityType.EXIT_SWITCH,
                         "radius": EntityExitSwitch.RADIUS,
-                        "x": switch.xpos,
-                        "y": switch.ypos,
+                        "x": switch_x,
+                        "y": switch_y,
                         "active": getattr(switch, "active", True),
                         "state": 1.0 if getattr(switch, "active", True) else 0.0,
                         "entity_id": switch_id,
@@ -115,12 +128,26 @@ class EntityExtractor:
                 # Find corresponding door
                 if i < len(exit_doors):
                     door = exit_doors[i]
+                    
+                    # CRITICAL VALIDATION: Exit door position must be valid (not 0,0)
+                    door_x = getattr(door, "xpos", 0.0)
+                    door_y = getattr(door, "ypos", 0.0)
+                    
+                    if door_x == 0.0 and door_y == 0.0:
+                        raise ValueError(
+                            f"EXIT DOOR at (0, 0) - entity not properly loaded! "
+                            f"Door index: {i}, "
+                            f"Entity object: {door}, "
+                            f"This indicates the level file is corrupted or entities weren't initialized. "
+                            f"Check map loading and entity initialization."
+                        )
+                    
                     entities.append(
                         {
                             "type": EntityType.EXIT_DOOR,
                             "radius": EntityExit.RADIUS,
-                            "x": door.xpos,
-                            "y": door.ypos,
+                            "x": door_x,
+                            "y": door_y,
                             "active": getattr(door, "active", True),
                             "state": 1.0 if getattr(door, "active", True) else 0.0,
                             "entity_id": f"exit_door_{i}",

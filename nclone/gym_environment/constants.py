@@ -32,13 +32,22 @@ LOCKED_DOOR_FEATURES_DIM = 8  # [switch_x, switch_y, switch_collected, switch_pa
 LOCKED_DOOR_ARRAY_SIZE = MAX_LOCKED_DOORS_ATTENTION * LOCKED_DOOR_FEATURES_DIM  # 128
 
 # Reachability features dimension
-# 13 features:
+# 22 features (expanded for path direction guidance - Phases 1-3):
 #   Base (4): [reachable_area_ratio, dist_to_switch_inv, dist_to_exit_inv, exit_reachable]
 #   Path distances (2): [path_dist_to_switch_norm, path_dist_to_exit_norm]
 #   Direction vectors (4): [dir_to_switch_x, dir_to_switch_y, dir_to_exit_x, dir_to_exit_y]
 #   Mine context (2): [total_mines_norm, deadly_mine_ratio]
 #   Phase indicator (1): [switch_activated] - critical for Markov property
-REACHABILITY_FEATURES_DIM = 13
+#   Path direction (8): [next_hop_dir_x/y, waypoint_dir_x/y, waypoint_dist, path_detour_flag, mine_clearance_dir_x/y]
+#   Path difficulty (1): [path_difficulty_ratio] - physics_cost/geometric_distance
+REACHABILITY_FEATURES_DIM = 22
+
+# Mine SDF features dimension (for actor safety awareness)
+# 3 features from global Mine Signed Distance Field:
+#   SDF value (1): distance to nearest mine (negative=inside danger zone)
+#   SDF gradient (2): escape direction from mines (unit vector)
+# These are computed from ALL mines, not just 8 nearest in spatial_context
+MINE_SDF_FEATURES_DIM = 3
 
 # Spatial context features dimension (graph-free alternative)
 # 112 features (graph-free local geometry with velocity-hazard alignment):

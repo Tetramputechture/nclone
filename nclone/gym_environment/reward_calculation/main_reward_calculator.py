@@ -23,6 +23,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from collections import deque
 from .reward_config import RewardConfig
 from .pbrs_potentials import PBRSCalculator
+from .adaptive_waypoints import AdaptiveWaypointSystem
 from .reward_constants import (
     LEVEL_COMPLETION_REWARD,
     DEATH_PENALTY,
@@ -54,60 +55,98 @@ logger = logging.getLogger(__name__)
 
 
 class PositionTracker:
-    """Position tracking for revisit penalties (oscillation deterrent).
+    """Position tracking for revisit penalties and exploration bonuses.
 
-    Tracks recent positions using sliding window to penalize oscillation/looping.
-    Exploration is now handled by RND at the training level.
+    Tracks positions using hierarchical grid system:
+    - Revisit penalties: Sliding window to penalize oscillation/looping
+    - Exploration bonuses: Episode-wide novelty tracking with hierarchical reset
+
+    UPDATED: 12px grid (matches graph sub-node resolution) for 4× finer granularity.
+    Hierarchical reset on switch activation treats Phase 1 and Phase 2 as separate.
     """
 
-    def __init__(self, grid_size: int = 24, window_size: int = 100):
+    def __init__(self, grid_size: int = 12, window_size: int = 100):
         """Initialize position tracker.
 
         Args:
-            grid_size: Cell size in pixels for position discretization (default: 24px tile size)
+            grid_size: Cell size in pixels for position discretization (default: 12px sub-node size)
             window_size: Number of recent positions to track for revisit penalty
         """
         self.grid_size = grid_size
-        self.visited_cells: set = set()  # Episode-wide tracking (for stats)
-        self.position_history = deque(maxlen=window_size)  # Sliding window
+        self.visited_cells: set = (
+            set()
+        )  # Episode-wide tracking (for stats and exploration)
+        self.position_history = deque(
+            maxlen=window_size
+        )  # Sliding window for revisit penalty
         self.position_counts: Dict[tuple, int] = {}  # Visit counts in current window
         self.cells_visited_this_episode = 0
+
+        # Hierarchical exploration tracking (resets on goal changes)
+        self.visited_cells_current_phase: set = set()  # Resets when switch activates
+        self.cells_visited_current_phase = 0
+        self.hierarchical_resets = 0  # Count of switch activation resets
 
     def get_position_reward(
         self,
         position: tuple,
         revisit_penalty_weight: float = 0.001,
+        exploration_bonus: float = 0.0,
+        pbrs_reward: float = 0.0,
     ) -> tuple:
-        """Calculate revisit penalty for current position.
+        """Calculate revisit penalty and exploration bonus for current position.
 
-        Exploration bonuses are disabled - RND handles exploration at training level.
+        UPDATED: Now includes hierarchical exploration bonuses that reset on switch activation.
+        This ensures consistent exploration incentive in both task phases.
 
-        Uses LOGARITHMIC scaling with per-step soft cap to prevent accumulated
-        revisit penalties from dominating terminal rewards:
+        Uses LOGARITHMIC scaling for revisit penalties with per-step soft cap to prevent
+        accumulated penalties from dominating terminal rewards:
         - Logarithmic: -weight × log(1 + visit_count) instead of linear
         - Soft cap: max penalty of -0.5 per step
+
+        Exploration bonus (PBRS-gated, hierarchical):
+        - Only awards bonus when pbrs_reward > 0 (productive exploration)
+        - Resets on switch activation to treat Phase 2 as fresh exploration
+        - Grid: 12px (matches graph sub-node resolution, 4× finer than tile)
 
         Args:
             position: (x, y) position in pixels
             revisit_penalty_weight: Penalty weight for revisits (default: 0.001)
+            exploration_bonus: Bonus value for discovering new cell (if PBRS > 0)
+            pbrs_reward: PBRS reward for this step (bonus only if positive)
 
         Returns:
-            Tuple of (total_reward, exploration_reward=0, revisit_penalty, is_new_cell)
+            Tuple of (total_reward, exploration_reward, revisit_penalty, is_new_cell)
         """
-        # Snap to grid
-        grid_x = int(position[0] // self.grid_size) * self.grid_size
-        grid_y = int(position[1] // self.grid_size) * self.grid_size
+        # Snap to grid (OPTIMIZED: integer math, pre-computed inverse)
+        # For 128 envs × 2048 steps per rollout = 262K calls
+        # Optimization saves ~0.5ms per rollout
+        grid_x = int(position[0]) // self.grid_size * self.grid_size
+        grid_y = int(position[1]) // self.grid_size * self.grid_size
         cell = (grid_x, grid_y)
 
         total_reward = 0.0
-        exploration_reward = 0.0  # Always 0 - RND handles exploration
+        exploration_reward = 0.0
         revisit_penalty = 0.0
-        is_new = cell not in self.visited_cells
 
-        # Track visited cells for stats (no reward)
-        if is_new:
+        # Check novelty in CURRENT PHASE (hierarchical tracking)
+        is_new_in_phase = cell not in self.visited_cells_current_phase
+        is_new_in_episode = cell not in self.visited_cells
+
+        # Track visited cells for stats
+        if is_new_in_episode:
             self.visited_cells.add(cell)
             self.cells_visited_this_episode += 1
+
+        # Track visited cells for current phase (hierarchical)
+        if is_new_in_phase:
+            self.visited_cells_current_phase.add(cell)
+            self.cells_visited_current_phase += 1
+
+            # Award exploration bonus if PBRS is positive (productive exploration)
+            if pbrs_reward > 0.001 and exploration_bonus > 0:
+                exploration_reward = exploration_bonus
+                total_reward += exploration_reward
 
         # Revisit penalty (always active, uses sliding window)
         # LOGARITHMIC scaling with soft cap for bounded accumulation
@@ -136,14 +175,43 @@ class PositionTracker:
                 if self.position_counts[oldest_cell] == 0:
                     del self.position_counts[oldest_cell]
 
-        return total_reward, exploration_reward, revisit_penalty, is_new
+        return total_reward, exploration_reward, revisit_penalty, is_new_in_episode
+
+    def reset_for_goal_change(self):
+        """Reset hierarchical phase tracking when goal changes (e.g., switch activates).
+
+        CRITICAL: This treats Phase 1 (→switch) and Phase 2 (→exit) as separate
+        exploration problems. Without this reset, Phase 2 exploration receives no
+        bonuses because cells were already visited in Phase 1.
+
+        Clears:
+        - visited_cells_current_phase: Phase-specific cell tracking
+        - cells_visited_current_phase: Counter for diagnostics
+
+        Keeps:
+        - visited_cells: Episode-wide tracking (for stats)
+        - position_history: Sliding window for revisit penalty
+        - position_counts: Visit counts for current window
+        """
+        prev_size = len(self.visited_cells_current_phase)
+        self.visited_cells_current_phase.clear()
+        self.cells_visited_current_phase = 0
+        self.hierarchical_resets += 1
+
+        logger.debug(
+            f"[POSITION_TRACKER_HIERARCHICAL] Goal change detected, "
+            f"reset {prev_size} cells for Phase 2 exploration "
+            f"(total resets: {self.hierarchical_resets})"
+        )
 
     def reset(self):
         """Reset tracking for new episode."""
         self.visited_cells.clear()
+        self.visited_cells_current_phase.clear()
         self.position_history.clear()
         self.position_counts.clear()
         self.cells_visited_this_episode = 0
+        self.cells_visited_current_phase = 0
 
 
 class RewardCalculator:
@@ -188,6 +256,13 @@ class RewardCalculator:
         # Single config object manages all curriculum logic
         self.config = reward_config or RewardConfig()
 
+        # OPTIMIZATION: Cache curriculum properties per episode to avoid @property overhead
+        # Properties are episode-invariant but called many times per step
+        self._cached_velocity_alignment_weight: Optional[float] = None
+        self._cached_mine_hazard_multiplier: Optional[float] = None
+        self._cached_pbrs_objective_weight: Optional[float] = None
+        self._episode_config_cache_valid: bool = False
+
         # PBRS configuration (kept for backwards compatibility with path calculator)
         self.pbrs_gamma = pbrs_gamma
 
@@ -195,7 +270,10 @@ class RewardCalculator:
         path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200, use_astar=True
         )
-        self.pbrs_calculator = PBRSCalculator(path_calculator=path_calculator)
+        # Pass reward_config to PBRS calculator for curriculum-adaptive weights (Phase 1.2)
+        self.pbrs_calculator = PBRSCalculator(
+            path_calculator=path_calculator, reward_config=self.config
+        )
 
         self.steps_taken = 0
 
@@ -219,13 +297,22 @@ class RewardCalculator:
         self.optimal_path_length = None  # Shortest possible path (spawn→switch→exit)
         self.prev_player_pos = None  # Track previous position for movement calculation
 
+        # Distance tracking for adaptive PBRS gating (Phase 2 enhancement)
+        self._prev_distance_to_goal = None
+
+        # Track last next_hop for visualization at failure point (Phase 1 enhancement)
+        self._last_next_hop_world: Optional[Tuple[float, float]] = None
+        self._last_next_hop_goal_id: Optional[str] = (
+            None  # Track distance for improvement calculation
+        )
+
         # Step-level component tracking for TensorBoard callback
         # Always populated after calculate_reward() for info dict logging
         self.last_pbrs_components = {}
 
-        # Position tracking for revisit penalty (oscillation deterrent)
-        # Exploration is handled by RND at training level
-        self.position_tracker = PositionTracker(grid_size=24, window_size=100)
+        # Position tracking for revisit penalty and hierarchical exploration
+        # UPDATED: 12px grid (matches graph sub-node resolution) with hierarchical reset
+        self.position_tracker = PositionTracker(grid_size=12, window_size=100)
 
         # Oscillation detection: Track recent positions for net displacement check
         # Detects when agent moves but doesn't make net progress (oscillating)
@@ -242,6 +329,25 @@ class RewardCalculator:
         # Positive PBRS only applies if agent has moved from spawn
         # Prevents reward hacking via oscillation/jumping in place
         self.spawn_position = None  # Set on first calculate_reward() call
+
+        # Adaptive waypoint system (Phase 3 enhancement)
+        # Discovers waypoints from successful trajectories, rewards distance reduction
+        self.adaptive_waypoints = AdaptiveWaypointSystem(
+            waypoint_radius=50.0,  # 50px radius for reaching waypoint
+            max_waypoints_per_level=10,  # Limit to prevent memory bloat
+            min_waypoint_value=0.1,  # Remove low-value waypoints
+            waypoint_decay_rate=0.95,  # Gradual decay if not reinforced
+            cluster_radius=30.0,  # Merge similar waypoints within 30px
+        )
+
+        # Track trajectory for waypoint extraction at episode end
+        self.trajectory_positions: List[Tuple[float, float]] = []
+        self.trajectory_distances: List[float] = []
+
+        # Track diagnostic data for PBRS visualization (Phase 1 enhancement)
+        self.velocity_history: List[Tuple[float, float]] = []
+        self.alignment_history: List[float] = []
+        self.path_gradient_history: List[Optional[Tuple[float, float]]] = []
 
     def calculate_reward(
         self,
@@ -287,6 +393,24 @@ class RewardCalculator:
         """
         self.steps_taken += frames_executed
 
+        # OPTIMIZATION: Clear step-level cache at start of each step
+        # This cache avoids duplicate distance calculations within the same step
+        # (e.g., switch distance computed for PBRS is reused for diagnostics)
+        if hasattr(self.pbrs_calculator, "path_calculator"):
+            self.pbrs_calculator.path_calculator.clear_step_cache()
+
+            # DIAGNOSTIC: Log cache statistics every 100 steps
+            if self.steps_taken % 100 == 0 and self.steps_taken > 0:
+                stats = self.pbrs_calculator.path_calculator.get_statistics()
+                level_cache_stats = stats.get("level_cache", {})
+                logger.info(
+                    f"[CACHE_STATS @ step {self.steps_taken}] "
+                    f"Step-level: {stats.get('step_cache_hits', 0)}/{stats.get('step_cache_hits', 0) + stats.get('step_cache_misses', 0)} "
+                    f"({stats.get('step_cache_hit_rate', 0):.1%}) | "
+                    f"Level: {level_cache_stats.get('geometric_hits', 0)}/{level_cache_stats.get('geometric_hits', 0) + level_cache_stats.get('geometric_misses', 0)} "
+                    f"({level_cache_stats.get('geometric_hit_rate', 0):.1%})"
+                )
+
         # Track spawn position for displacement gate (first step only)
         # CRITICAL: Use prev_obs (position before action) not obs (position after action)
         # This ensures checkpoint episodes use the checkpoint position as spawn baseline
@@ -306,7 +430,28 @@ class RewardCalculator:
         )
         milestone_reward = SWITCH_ACTIVATION_REWARD if switch_just_activated else 0.0
 
+        # === HIERARCHICAL EXPLORATION RESET ===
+        # When switch activates, reset position tracker's phase-specific exploration tracking
+        # This treats Phase 2 (→exit) as a fresh exploration problem
+        if switch_just_activated:
+            self.position_tracker.reset_for_goal_change()
+
         # === TERMINAL REWARDS (always active) ===
+        # Get level_data and level_id early for waypoint system (used in terminal sections)
+        level_data = obs.get("level_data")
+        level_id = (
+            getattr(level_data, "level_id", None)
+            if level_data
+            else None or str(obs.get("player_x", 0)) + "_" + str(obs.get("player_y", 0))
+        )
+
+        # For waypoint lookups, prefer map_name from observation over auto-generated level_id
+        # This ensures waypoints stored by filename work with --map argument
+        waypoint_lookup_id = obs.get("map_name", level_id)
+        if waypoint_lookup_id != level_id:
+            print(
+                f"[WAYPOINT_LOOKUP] Using map name '{waypoint_lookup_id}' instead of level_id '{level_id}'"
+            )
 
         # Death penalties - differentiated by cause for better learning signal
         if obs.get("player_dead", False):
@@ -326,6 +471,10 @@ class RewardCalculator:
             # Add milestone reward to terminal reward (switch activated before death)
             total_terminal = terminal_reward + milestone_reward
             self.episode_terminal_reward = total_terminal
+
+            # === WAYPOINT DECAY (Phase 3 enhancement) ===
+            # Decay waypoints since this trajectory failed
+            self.adaptive_waypoints.decay_waypoints(level_id=waypoint_lookup_id)
 
             # Apply global reward scaling for value function stability
             scaled_reward = total_terminal * GLOBAL_REWARD_SCALE
@@ -372,6 +521,22 @@ class RewardCalculator:
             total_terminal = terminal_reward + milestone_reward
             self.episode_terminal_reward = total_terminal
 
+            # === WAYPOINT EXTRACTION (Phase 3 enhancement) ===
+            # Extract waypoints from successful trajectory for future episodes
+            if len(self.trajectory_positions) > 5:
+                waypoints_added = (
+                    self.adaptive_waypoints.extract_waypoints_from_trajectory(
+                        positions=self.trajectory_positions,
+                        distances=self.trajectory_distances,
+                        success=True,
+                        level_id=waypoint_lookup_id,
+                    )
+                )
+                logger.info(
+                    f"Success! Extracted {waypoints_added} waypoints from trajectory "
+                    f"({len(self.trajectory_positions)} positions, level: {level_id})"
+                )
+
             # Apply global reward scaling for value function stability
             scaled_reward = total_terminal * GLOBAL_REWARD_SCALE
 
@@ -409,16 +574,38 @@ class RewardCalculator:
         # === PBRS OBJECTIVE POTENTIAL (curriculum-scaled, policy-invariant) ===
         # Calculate F(s,s') = γ * Φ(s') - Φ(s) for dense, policy-invariant path guidance
         adjacency = obs.get("_adjacency_graph")
-        level_data = obs.get("level_data")
+        # level_data already retrieved earlier for terminal rewards and waypoints
         graph_data = obs.get("_graph_data")
 
-        # Calculate current potential Φ(s')
+        # === HIERARCHICAL POTENTIAL COMPOSITION (Phase 3.1) ===
+        # Compute BOTH switch and exit potentials, blend based on switch_activated
+        # This maintains continuity for LSTM temporal credit assignment
+        # Prevents discontinuity at switch activation that breaks temporal learning
+        #
+        # Traditional approach (REMOVED): Reset potential at switch activation
+        #   Problem: LSTM sees reward discontinuity, breaks temporal credit assignment
+        #
+        # Hierarchical approach: Φ_total = Φ_switch × (1 - flag) + Φ_exit × flag
+        #   Benefit: Smooth transition, continuous gradient field for LSTM
+        #
+        # This is still policy-invariant because:
+        #   - Both potentials are policy-invariant individually
+        #   - Linear combination preserves policy invariance
+        #   - F(s,s') = γ * Φ_total(s') - Φ_total(s) remains valid PBRS
+
+        # OPTIMIZATION: Use cached curriculum weight if valid (avoid @property overhead)
+        objective_weight = (
+            self._cached_pbrs_objective_weight
+            if self._episode_config_cache_valid
+            else self.config.pbrs_objective_weight
+        )
+
         current_potential = self.pbrs_calculator.calculate_combined_potential(
             state=obs,
             adjacency=adjacency,
             level_data=level_data,
             graph_data=graph_data,
-            objective_weight=self.config.pbrs_objective_weight,
+            objective_weight=objective_weight,
             scale_factor=self.config.pbrs_normalization_scale,
         )
 
@@ -443,6 +630,14 @@ class RewardCalculator:
                     f"Ineffective action: displacement {movement_distance:.3f}px < "
                     f"{INEFFECTIVE_ACTION_THRESHOLD}px, penalty: {ineffective_action_penalty}"
                 )
+
+        # Track velocity for visualization (Phase 1)
+        if self.prev_player_pos is not None and movement_distance > 0:
+            dx = current_player_pos[0] - self.prev_player_pos[0]
+            dy = current_player_pos[1] - self.prev_player_pos[1]
+            self.velocity_history.append((dx, dy))
+        else:
+            self.velocity_history.append((0.0, 0.0))
 
         self.prev_player_pos = current_player_pos
 
@@ -483,17 +678,20 @@ class RewardCalculator:
         # Calculate PBRS shaping reward: F(s,s') = γ * Φ(s') - Φ(s)
         pbrs_reward = 0.0
 
-        # Handle goal transition (switch activation) for policy invariance
-        if switch_just_activated:
-            # When goal changes (switch → exit), reset potential tracking
-            # This treats the transition like a hierarchical RL "option termination"
-            # Prevents comparing incompatible potentials (switch-distance vs exit-distance)
-            logger.debug(
-                f"Switch activated: Resetting PBRS potential tracking for goal transition "
-                f"(switch → exit). New potential Φ(s')={current_potential:.4f}"
-            )
-            self.prev_potential = None  # Reset for new goal
-        elif self.prev_potential is not None:
+        # === HIERARCHICAL PBRS (Phase 3.1) ===
+        # Continuous potential across switch activation - no reset needed
+        # The calculate_combined_potential already handles both phases internally
+        # by selecting appropriate goal (switch or exit) based on switch_activated
+        #
+        # OLD APPROACH (caused LSTM learning issues):
+        #   if switch_just_activated: self.prev_potential = None
+        #
+        # NEW APPROACH: Never reset, continuous gradient field
+        #   - Switch phase: potential based on switch distance
+        #   - Exit phase: potential based on exit distance
+        #   - Both are part of same hierarchical task, no discontinuity needed
+        #   - LSTM learns temporal dependencies across full episode
+        if self.prev_potential is not None:
             # Apply PBRS formula for policy-invariant shaping
             pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
 
@@ -517,6 +715,10 @@ class RewardCalculator:
             # Check if movement direction aligns with expected path direction
             # This catches the bug where PBRS rewards going TOWARD goal coordinates
             # when the actual path requires going AWAY from goal first
+
+            # Initialize diagnostic tracking flags (Phase 1)
+            alignment_tracked = False
+
             if self.prev_player_pos is not None and movement_distance > 0.5:
                 # Movement direction (normalized)
                 move_dx = (
@@ -549,250 +751,14 @@ class RewardCalculator:
                     obs["_pbrs_euclidean_alignment"] = euclidean_alignment
                     obs["_pbrs_potential_change"] = potential_change
 
-                    # CRITICAL DIAGNOSTIC: Positive PBRS but moving away from goal (Euclidean)
-                    # This is EXPECTED for levels where path goes away from goal first!
-                    # But if this happens AND potential_change > 0, the path distance calc is correct
-                    # If potential_change > 0 AND euclidean_alignment > 0.5,
-                    # agent is moving toward goal - check if this is the correct path direction
-                    if potential_change > 0.01 and euclidean_alignment > 0.7:
-                        # Agent getting positive PBRS for moving toward goal (Euclidean)
-                        # This might be correct OR might indicate path goes directly to goal
-                        # Log for analysis
-                        if self.steps_taken < 100:  # Only log early in episode
-                            logger.warning(
-                                f"[PBRS_DIRECTION] Early movement toward goal (Euclidean). "
-                                f"step={self.steps_taken}, pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
-                                f"move_dir=({move_dx:.2f},{move_dy:.2f}), "
-                                f"goal_dir=({goal_dir_x:.2f},{goal_dir_y:.2f}), "
-                                f"alignment={euclidean_alignment:.2f}, "
-                                f"potential_change={potential_change:.4f}. "
-                                f"If path should go AWAY from goal first, this is a bug!"
-                            )
-                    elif potential_change < -0.01 and euclidean_alignment < -0.5:
-                        # Agent getting NEGATIVE PBRS for moving away from goal (Euclidean)
-                        # This might be WRONG if the path requires going away from goal first!
-                        if self.steps_taken < 100:  # Only log early in episode
-                            logger.warning(
-                                f"[PBRS_DIRECTION] Negative PBRS for moving away from goal (Euclidean). "
-                                f"step={self.steps_taken}, pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
-                                f"move_dir=({move_dx:.2f},{move_dy:.2f}), "
-                                f"goal_dir=({goal_dir_x:.2f},{goal_dir_y:.2f}), "
-                                f"alignment={euclidean_alignment:.2f}, "
-                                f"potential_change={potential_change:.4f}. "
-                                f"If path SHOULD go away from goal first, PBRS is penalizing correct behavior!"
-                            )
-
-            # === PATH DIRECTION VALIDATION (FIX FOR WRONG-DIRECTION PBRS) ===
-            # Only give positive PBRS when moving toward the next hop on the optimal path
-            # This prevents rewarding movement toward goal coordinates when the actual
-            # path requires going away from the goal first (e.g., left when goal is right)
-            if (
-                pbrs_reward > 0.001  # Only gate positive rewards
-                and self.prev_player_pos is not None
-                and movement_distance > 0.5
-            ):
-                try:
-                    # Get level cache from path calculator
-                    path_calc = self.pbrs_calculator.path_calculator
-                    level_cache = path_calc.level_cache if path_calc else None
-
-                    if level_cache is not None:
-                        # Determine current goal_id
-                        direction_goal_id = (
-                            "exit" if obs.get("switch_activated", False) else "switch"
-                        )
-
-                        # Find current node using the improved node selection
-                        from nclone.graph.reachability.pathfinding_utils import (
-                            find_ninja_node,
-                            extract_spatial_lookups_from_graph_data,
-                            NODE_WORLD_COORD_OFFSET,
-                        )
-
-                        spatial_hash, subcell_lookup = (
-                            extract_spatial_lookups_from_graph_data(graph_data)
-                        )
-
-                        # Get current goal node
-                        if direction_goal_id == "switch":
-                            goal_node = level_cache._goal_id_to_goal_pos.get("switch")
-                        else:
-                            goal_node = level_cache._goal_id_to_goal_pos.get("exit")
-
-                        if goal_node is not None:
-                            # Find player's current node
-                            player_node = find_ninja_node(
-                                (
-                                    int(current_player_pos[0]),
-                                    int(current_player_pos[1]),
-                                ),
-                                adjacency,
-                                spatial_hash=spatial_hash,
-                                subcell_lookup=subcell_lookup,
-                                ninja_radius=10.0,
-                                goal_node=goal_node,
-                                level_cache=level_cache,
-                                goal_id=direction_goal_id,
-                            )
-
-                            if player_node is not None:
-                                # Get next hop toward goal
-                                next_hop = level_cache.get_next_hop(
-                                    player_node, direction_goal_id
-                                )
-
-                                if next_hop is not None:
-                                    # Calculate expected direction (to next hop in world coords)
-                                    # Nodes are in tile data space, need to add offset
-                                    next_hop_world_x = (
-                                        next_hop[0] + NODE_WORLD_COORD_OFFSET
-                                    )
-                                    next_hop_world_y = (
-                                        next_hop[1] + NODE_WORLD_COORD_OFFSET
-                                    )
-
-                                    expected_dx = (
-                                        next_hop_world_x - current_player_pos[0]
-                                    )
-                                    expected_dy = (
-                                        next_hop_world_y - current_player_pos[1]
-                                    )
-                                    expected_dist = (
-                                        expected_dx**2 + expected_dy**2
-                                    ) ** 0.5
-
-                                    if expected_dist > 1.0:
-                                        # Normalize expected direction
-                                        expected_dir_x = expected_dx / expected_dist
-                                        expected_dir_y = expected_dy / expected_dist
-
-                                        # Movement direction
-                                        move_dir_x = (
-                                            current_player_pos[0]
-                                            - self.prev_player_pos[0]
-                                        ) / movement_distance
-                                        move_dir_y = (
-                                            current_player_pos[1]
-                                            - self.prev_player_pos[1]
-                                        ) / movement_distance
-
-                                        # Dot product: +1 = aligned, -1 = opposite
-                                        path_alignment = (
-                                            move_dir_x * expected_dir_x
-                                            + move_dir_y * expected_dir_y
-                                        )
-
-                                        # Store for diagnostics
-                                        obs["_pbrs_path_alignment"] = path_alignment
-
-                                        # If movement is significantly OPPOSITE to expected path direction,
-                                        # zero out positive PBRS (conservative: only when clearly wrong)
-                                        if path_alignment < -0.3:
-                                            logger.warning(
-                                                f"[PBRS_GATE] Zeroing positive PBRS due to wrong direction. "
-                                                f"step={self.steps_taken}, "
-                                                f"path_alignment={path_alignment:.2f}, "
-                                                f"original_pbrs={pbrs_reward:.4f}, "
-                                                f"move_dir=({move_dir_x:.2f},{move_dir_y:.2f}), "
-                                                f"expected_dir=({expected_dir_x:.2f},{expected_dir_y:.2f}), "
-                                                f"next_hop=({next_hop_world_x:.0f},{next_hop_world_y:.0f})"
-                                            )
-                                            pbrs_reward = 0.0  # Zero out wrong-direction positive PBRS
-
-                                        # === ENHANCED DIAGNOSTICS FOR DIRECTION CHANGES ===
-                                        # Store expected direction for tracking direction changes
-                                        obs["_next_hop_dir_x"] = expected_dir_x
-                                        obs["_next_hop_dir_y"] = expected_dir_y
-                                        obs["_next_hop_pos"] = (
-                                            next_hop_world_x,
-                                            next_hop_world_y,
-                                        )
-                                        obs["_player_node"] = player_node
-
-                                        # Detect if expected direction is primarily VERTICAL (up/down)
-                                        # This helps identify when agent should be going UP instead of LEFT
-                                        is_vertical_direction = abs(
-                                            expected_dir_y
-                                        ) > abs(expected_dir_x)
-                                        is_upward = (
-                                            expected_dir_y < -0.5
-                                        )  # Y decreases going up
-
-                                        # Log when agent is on LEFT side of level and should be going UP
-                                        if (
-                                            current_player_pos[0] < 150
-                                        ):  # Left side of level
-                                            if is_upward:
-                                                # Expected direction is UP - agent should go up
-                                                if (
-                                                    self.steps_taken % 100 == 0
-                                                ):  # Log every 100 steps
-                                                    logger.warning(
-                                                        f"[LEFT_WALL_DIAG] Agent on left side, should go UP. "
-                                                        f"step={self.steps_taken}, "
-                                                        f"pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
-                                                        f"next_hop=({next_hop_world_x:.0f},{next_hop_world_y:.0f}), "
-                                                        f"expected_dir=({expected_dir_x:.2f},{expected_dir_y:.2f}), "
-                                                        f"path_alignment={path_alignment:.2f}, "
-                                                        f"pbrs_reward={pbrs_reward:.4f}"
-                                                    )
-                                            elif (
-                                                abs(expected_dir_x) > 0.7
-                                                and expected_dir_x < 0
-                                            ):
-                                                # Still expecting LEFT movement at left wall = possible issue
-                                                logger.warning(
-                                                    f"[LEFT_WALL_BUG] Agent on left side but next_hop points LEFT! "
-                                                    f"step={self.steps_taken}, "
-                                                    f"pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
-                                                    f"next_hop=({next_hop_world_x:.0f},{next_hop_world_y:.0f}), "
-                                                    f"expected_dir=({expected_dir_x:.2f},{expected_dir_y:.2f}). "
-                                                    f"Path may not connect to upper corridor!"
-                                                )
-
-                                        # Log significant direction changes (helps track path progress)
-                                        prev_dir_x = getattr(
-                                            self, "_prev_expected_dir_x", None
-                                        )
-                                        prev_dir_y = getattr(
-                                            self, "_prev_expected_dir_y", None
-                                        )
-                                        if (
-                                            prev_dir_x is not None
-                                            and prev_dir_y is not None
-                                        ):
-                                            # Dot product of previous and current expected directions
-                                            dir_change = (
-                                                prev_dir_x * expected_dir_x
-                                                + prev_dir_y * expected_dir_y
-                                            )
-                                            if (
-                                                dir_change < 0.5
-                                            ):  # Significant direction change (>60 degrees)
-                                                logger.warning(
-                                                    f"[PATH_TURN] Expected direction changed significantly. "
-                                                    f"step={self.steps_taken}, "
-                                                    f"pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
-                                                    f"prev_dir=({prev_dir_x:.2f},{prev_dir_y:.2f}), "
-                                                    f"new_dir=({expected_dir_x:.2f},{expected_dir_y:.2f}), "
-                                                    f"dir_change_dot={dir_change:.2f}"
-                                                )
-                                        self._prev_expected_dir_x = expected_dir_x
-                                        self._prev_expected_dir_y = expected_dir_y
-
-                                else:
-                                    # next_hop is None - agent might be at goal or path is broken
-                                    if self.steps_taken % 100 == 0:
-                                        logger.warning(
-                                            f"[NO_NEXT_HOP] No next_hop found for player node. "
-                                            f"step={self.steps_taken}, "
-                                            f"pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
-                                            f"player_node={player_node}, "
-                                            f"goal_id={direction_goal_id}"
-                                        )
-                except Exception as e:
-                    # Don't fail reward calculation if path validation fails
-                    logger.debug(f"Path direction validation failed: {e}")
+            # === PATH DIRECTION DIAGNOSTICS (NO GATING) ===
+            # Track path direction for visualization but DO NOT gate PBRS rewards.
+            # The adjacency graph already encodes optimal paths via A* - trust it.
+            # Gating breaks policy invariance and blocks counter-intuitive navigation.
+            # REMOVED: All direction-based PBRS gating (lines 746-953 in original)
+            if not alignment_tracked:
+                self.alignment_history.append(0.0)
+                self.path_gradient_history.append(None)
 
             # Warn if potential decreased significantly (backtracking detected)
             if potential_change < -0.05:
@@ -875,8 +841,67 @@ class RewardCalculator:
 
         reward += pbrs_reward
 
-        # === POSITION TRACKING (revisit penalty for oscillation deterrent) ===
-        # Exploration is handled by RND at training level
+        # === ADAPTIVE WAYPOINT BONUS (Phase 3 enhancement) ===
+        # Reward reaching discovered waypoints without penalizing novel paths
+        # waypoint_lookup_id already retrieved earlier for terminal rewards
+        waypoint_bonus = self.adaptive_waypoints.get_waypoint_bonus(
+            current_pos=current_player_pos,
+            previous_pos=self.prev_player_pos,
+            level_id=waypoint_lookup_id,
+        )
+        reward += waypoint_bonus
+
+        # === WIRE WAYPOINTS TO PBRS (Phase 1.3) ===
+        # Update PBRS calculator with current level's discovered waypoints for multi-stage routing
+        # This enables potential field: current → waypoint → goal
+        # Critical for inflection point navigation (e.g., go LEFT before RIGHT)
+        current_level_waypoints = self.adaptive_waypoints.get_waypoints_for_level(
+            waypoint_lookup_id
+        )
+        print(
+            f"[ADAPTIVE_WP] Got {len(current_level_waypoints)} waypoints for level {waypoint_lookup_id}"
+        )
+        if current_level_waypoints:
+            print(
+                f"[ADAPTIVE_WP] Waypoint positions: {[wp['position'] for wp in current_level_waypoints]}"
+            )
+        if len(current_level_waypoints) != len(
+            self.pbrs_calculator.momentum_waypoints or []
+        ):
+            print("[ADAPTIVE_WP] Waypoint count changed, updating PBRS calculator")
+            # Determine current goal position for approach direction calculation
+            if not obs.get("switch_activated", False):
+                waypoint_goal_pos = (obs["switch_x"], obs["switch_y"])
+            else:
+                waypoint_goal_pos = (obs["exit_door_x"], obs["exit_door_y"])
+
+            # Convert to momentum waypoint format for PBRS calculator
+            # Waypoint format: {position, value, type, discovery_count, radius}
+            from collections import namedtuple
+
+            MomentumWaypoint = namedtuple(
+                "MomentumWaypoint", ["position", "approach_direction"]
+            )
+            momentum_waypoints = []
+            for wp_dict in current_level_waypoints:
+                # Compute approach direction from waypoint toward goal
+                wp_pos = wp_dict["position"]
+                dx = waypoint_goal_pos[0] - wp_pos[0]
+                dy = waypoint_goal_pos[1] - wp_pos[1]
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist > 0.001:
+                    approach_dir = (dx / dist, dy / dist)
+                else:
+                    approach_dir = (0.0, 0.0)
+
+                momentum_waypoints.append(MomentumWaypoint(wp_pos, approach_dir))
+
+            self.pbrs_calculator.set_momentum_waypoints(momentum_waypoints)
+
+        # === POSITION TRACKING (revisit penalty + hierarchical exploration bonus) ===
+        # Exploration bonus: PBRS-gated, hierarchical (resets on switch activation)
+        # NOTE: Bonus disabled here (0.0) - using HierarchicalExplorationCallback instead
+        # This avoids double-counting exploration bonuses at both reward and training levels
         (
             position_reward,
             exploration_reward,
@@ -885,37 +910,111 @@ class RewardCalculator:
         ) = self.position_tracker.get_position_reward(
             position=(obs["player_x"], obs["player_y"]),
             revisit_penalty_weight=self.config.revisit_penalty_weight,
+            exploration_bonus=0.0,  # DISABLED - using HierarchicalExplorationCallback
+            pbrs_reward=pbrs_reward,  # Gate: only award if PBRS > 0
         )
+
         reward += position_reward
 
+        # === VELOCITY-DIRECTION ALIGNMENT BONUS (Phase 2 Fix 4) ===
+        # CRITICAL FIX 2025-12-09: Add reward when velocity aligns with optimal path direction
+        # TensorBoard (npp-logs-129) showed agent moving RIGHT into mines instead of UP-LEFT
+        # This bonus provides explicit reward for moving in the correct DIRECTION, not just
+        # reducing distance. Essential for learning counter-intuitive navigation (opposite
+        # to previous path hop).
+        alignment_bonus = 0.0
+        # Validate all required keys exist before computing alignment bonus
+        if (
+            "_next_hop_dir_x" in obs
+            and "_next_hop_dir_y" in obs
+            and "player_x" in obs
+            and "player_y" in obs
+            and "player_x" in prev_obs
+            and "player_y" in prev_obs
+        ):
+            # Get next hop direction from graph (optimal path direction)
+            next_hop_dir_x = obs["_next_hop_dir_x"]
+            next_hop_dir_y = obs["_next_hop_dir_y"]
+
+            # Calculate velocity from position change
+            current_x = obs["player_x"]
+            current_y = obs["player_y"]
+            prev_x = prev_obs["player_x"]
+            prev_y = prev_obs["player_y"]
+
+            velocity_x = current_x - prev_x
+            velocity_y = current_y - prev_y
+            velocity_magnitude = (
+                velocity_x * velocity_x + velocity_y * velocity_y
+            ) ** 0.5
+
+            # Only apply bonus when agent is moving (velocity > 1.0 pixels)
+            if velocity_magnitude > 1.0:
+                # Normalize velocity
+                velocity_norm_x = velocity_x / velocity_magnitude
+                velocity_norm_y = velocity_y / velocity_magnitude
+
+                # Compute dot product: alignment in [-1, 1]
+                # +1 = moving in optimal direction, -1 = moving opposite, 0 = perpendicular
+                alignment = (
+                    velocity_norm_x * next_hop_dir_x + velocity_norm_y * next_hop_dir_y
+                )
+
+                # Add bonus for positive alignment (moving toward goal)
+                # Scale by 0.5 for moderate guidance, don't dominate PBRS
+                if alignment > 0.0:
+                    alignment_bonus = 0.5 * alignment * GLOBAL_REWARD_SCALE
+                    reward += alignment_bonus
+
+                    # Log when alignment is strong (helps debug navigation)
+                    if alignment > 0.7 and logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            f"[ALIGNMENT_BONUS] Strong alignment: {alignment:.2f}, "
+                            f"velocity=({velocity_x:.1f},{velocity_y:.1f}), "
+                            f"next_hop=({next_hop_dir_x:.2f},{next_hop_dir_y:.2f}), "
+                            f"bonus={alignment_bonus:.4f}"
+                        )
+
         # === CALCULATE DISTANCE TO GOAL (needed for progress tracking) ===
-        # Calculate current distance to goal (shortest path)
-        if not obs.get("switch_activated", False):
-            goal_pos = (int(obs["switch_x"]), int(obs["switch_y"]))
-            cache_key = "switch"
-        else:
-            goal_pos = (int(obs["exit_door_x"]), int(obs["exit_door_y"]))
-            cache_key = "exit"
+        # OPTIMIZATION: Reuse distance already computed during PBRS calculation
+        # This eliminates redundant pathfinding calls (saves ~2-3s per profile)
+        distance_to_goal = obs.get("_pbrs_last_distance_to_goal")
 
-        player_pos = (int(obs["player_x"]), int(obs["player_y"]))
+        # Fallback: Compute if not available (shouldn't happen in normal flow)
+        if distance_to_goal is None:
+            if not obs.get("switch_activated", False):
+                goal_pos = (int(obs["switch_x"]), int(obs["switch_y"]))
+                cache_key = "switch"
+            else:
+                goal_pos = (int(obs["exit_door_x"]), int(obs["exit_door_y"]))
+                cache_key = "exit"
 
-        entity_radius = (
-            EXIT_SWITCH_RADIUS if cache_key == "switch" else EXIT_DOOR_RADIUS
-        )
-        base_adjacency = (
-            graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
-        )
-        distance_to_goal = self.pbrs_calculator.path_calculator.get_distance(
-            player_pos,
-            goal_pos,
-            adjacency,
-            base_adjacency,
-            cache_key=cache_key,
-            level_data=level_data,
-            graph_data=graph_data,
-            entity_radius=entity_radius,
-            ninja_radius=NINJA_RADIUS,
-        )
+            player_pos = (int(obs["player_x"]), int(obs["player_y"]))
+
+            entity_radius = (
+                EXIT_SWITCH_RADIUS if cache_key == "switch" else EXIT_DOOR_RADIUS
+            )
+            base_adjacency = (
+                graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+            )
+            distance_to_goal = self.pbrs_calculator.path_calculator.get_distance(
+                player_pos,
+                goal_pos,
+                adjacency,
+                base_adjacency,
+                cache_key=cache_key,
+                level_data=level_data,
+                graph_data=graph_data,
+                entity_radius=entity_radius,
+                ninja_radius=NINJA_RADIUS,
+            )
+            logger.debug(
+                "Distance to goal not cached, computed on demand (fallback path)"
+            )
+        # Update previous distance tracking for adaptive gating (used before setting current)
+        # Store BEFORE distance calculation section above to use in gating logic
+        # This is set at the end of this method after all gating decisions
+
         # === PROGRESS TRACKING (diagnostic only, no penalty) ===
         # Track closest distance for logging - PBRS already handles backtracking
         # via potential decrease, so no explicit penalty is needed.
@@ -940,76 +1039,79 @@ class RewardCalculator:
             if distance_to_exit < self.closest_distance_to_exit:
                 self.closest_distance_to_exit = distance_to_exit
 
-        # # === PATH vs EUCLIDEAN DISTANCE DIVERGENCE DIAGNOSTIC ===
-        # # NOTE: distance_to_goal is PHYSICS-WEIGHTED (not geometric pixels)
-        # # Physics costs are ~0.04 per horizontal pixel, so a 1000px path = ~40 physics cost
-        # # We need GEOMETRIC distance for meaningful comparison with Euclidean
-        # euclidean_to_current_goal_raw = (
-        #     distance_to_switch
-        #     if not obs.get("switch_activated", False)
-        #     else distance_to_exit
-        # )
+        # === PATH vs EUCLIDEAN DISTANCE DIVERGENCE DIAGNOSTIC ===
+        # NOTE: distance_to_goal is PHYSICS-WEIGHTED (not geometric pixels)
+        # Physics costs are ~0.04 per horizontal pixel, so a 1000px path = ~40 physics cost
+        # We need GEOMETRIC distance for meaningful comparison with Euclidean
+        euclidean_to_current_goal_raw = (
+            distance_to_switch
+            if not obs.get("switch_activated", False)
+            else distance_to_exit
+        )
 
-        # # Get geometric path distance for proper comparison (not physics-weighted)
-        # geometric_path_distance = 0.0
-        # try:
-        #     geometric_path_distance = (
-        #         self.pbrs_calculator.path_calculator.get_geometric_distance(
-        #             player_pos,
-        #             goal_pos,
-        #             adjacency,
-        #             base_adjacency,
-        #             level_data=level_data,
-        #             graph_data=graph_data,
-        #             entity_radius=entity_radius,
-        #             ninja_radius=NINJA_RADIUS,
-        #         )
-        #     )
-        # except Exception:
-        #     geometric_path_distance = 0.0
+        # Get geometric path distance for proper comparison (not physics-weighted)
+        geometric_path_distance = 0.0
+        try:
+            geometric_path_distance = (
+                self.pbrs_calculator.path_calculator.get_geometric_distance(
+                    player_pos,
+                    goal_pos,
+                    adjacency,
+                    base_adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    entity_radius=entity_radius,
+                    ninja_radius=NINJA_RADIUS,
+                    goal_id="switch"
+                    if not obs.get("switch_activated", False)
+                    else "exit",
+                )
+            )
+        except Exception:
+            geometric_path_distance = 0.0
 
         # FIX: Apply same radius adjustment to Euclidean for fair comparison
         # geometric_path_distance already has (ninja_radius + entity_radius) subtracted
         # so we must apply the same adjustment to Euclidean distance
-        # combined_radius = NINJA_RADIUS + entity_radius
-        # euclidean_adjusted = max(0.0, euclidean_to_current_goal_raw - combined_radius)
+        combined_radius = NINJA_RADIUS + entity_radius
+        euclidean_adjusted = max(0.0, euclidean_to_current_goal_raw - combined_radius)
 
         # Only compute ratio for meaningful distances (> 30px to avoid grid-snapping artifacts)
         # Path distance is computed between 12px grid nodes, so small distances have high error
-        # if euclidean_adjusted > 30.0 and geometric_path_distance > 0:
-        #     divergence_ratio = geometric_path_distance / euclidean_adjusted
+        if euclidean_adjusted > 30.0 and geometric_path_distance > 0:
+            divergence_ratio = geometric_path_distance / euclidean_adjusted
 
-        #     # Store for TensorBoard logging
-        #     obs["_pbrs_path_euclidean_ratio"] = divergence_ratio
+            # Store for TensorBoard logging
+            obs["_pbrs_path_euclidean_ratio"] = divergence_ratio
 
-        #     # Log anomalies: path should be longer than Euclidean for complex levels
-        #     # Using 0.80 threshold (20% tolerance) because:
-        #     # - Path is computed between 12px grid nodes, not exact positions
-        #     # - Node snapping can cause up to ~17px discrepancy (diagonal of 12px cell)
-        #     # - This is a diagnostic, not a critical error
-        #     if divergence_ratio < 0.80:
-        #         # Path is significantly shorter than Euclidean - likely a real bug
-        #         logger.warning(
-        #             f"[PATH_DIAG] Geometric path < Euclidean distance! "
-        #             f"ratio={divergence_ratio:.3f}, "
-        #             f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
-        #             f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
-        #             f"goal=({goal_pos[0]},{goal_pos[1]}). "
-        #             f"Pathfinding may be broken!"
-        #         )
-        #     elif divergence_ratio > 5.0 and self.steps_taken == 1:
-        #         # Very high divergence on first step - level has complex geometry
-        #         # This is expected for levels where path goes away from goal first
-        #         logger.debug(
-        #             f"[PATH_DIAG] High path/Euclidean divergence at spawn. "
-        #             f"ratio={divergence_ratio:.2f}, "
-        #             f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
-        #             f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
-        #             f"goal=({goal_pos[0]},{goal_pos[1]}). "
-        #             f"Level geometry requires going away from goal first."
-        #         )
+            # Log anomalies: path should be longer than Euclidean for complex levels
+            # Using 0.80 threshold (20% tolerance) because:
+            # - Path is computed between 12px grid nodes, not exact positions
+            # - Node snapping can cause up to ~17px discrepancy (diagonal of 12px cell)
+            # - This is a diagnostic, not a critical error
+            if divergence_ratio < 0.80:
+                # Path is significantly shorter than Euclidean - likely a real bug
+                logger.warning(
+                    f"[PATH_DIAG] Geometric path < Euclidean distance! "
+                    f"ratio={divergence_ratio:.3f}, "
+                    f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
+                    f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
+                    f"goal=({goal_pos[0]},{goal_pos[1]}). "
+                    f"Pathfinding may be broken!"
+                )
+            elif divergence_ratio > 5.0 and self.steps_taken == 1:
+                # Very high divergence on first step - level has complex geometry
+                # This is expected for levels where path goes away from goal first
+                logger.debug(
+                    f"[PATH_DIAG] High path/Euclidean divergence at spawn. "
+                    f"ratio={divergence_ratio:.2f}, "
+                    f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
+                    f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
+                    f"goal=({goal_pos[0]},{goal_pos[1]}). "
+                    f"Level geometry requires going away from goal first."
+                )
 
-        # # Populate PBRS components for TensorBoard logging (non-terminal state)
+        # Populate PBRS components for TensorBoard logging (non-terminal state)
         # This provides detailed breakdown of reward components for analysis
         # (milestone_reward was computed above, before terminal rewards check)
 
@@ -1022,9 +1124,14 @@ class RewardCalculator:
             "time_penalty": time_penalty,  # Use scaled penalty (per action, not per frame)
             "milestone_reward": milestone_reward,
             "revisit_penalty": revisit_penalty,
-            "exploration_reward": exploration_reward,
+            "exploration_reward": exploration_reward,  # Hierarchical exploration bonus
             "position_reward": position_reward,  # Combined exploration + revisit
+            "waypoint_bonus": waypoint_bonus,  # Phase 3: Adaptive waypoint bonus
+            "alignment_bonus": alignment_bonus,  # Phase 2 Fix 4: Velocity-direction alignment
             "exploration_cells_visited": len(self.position_tracker.visited_cells),
+            "exploration_cells_current_phase": len(
+                self.position_tracker.visited_cells_current_phase
+            ),
             "total_reward": reward,
             "is_terminal": False,
             # Include potential information for debugging
@@ -1106,6 +1213,13 @@ class RewardCalculator:
         # Update last_pbrs_components with scaled reward for logging
         if self.last_pbrs_components is not None:
             self.last_pbrs_components["scaled_reward"] = scaled_reward
+
+        # Update distance tracking for next step's adaptive gating
+        self._prev_distance_to_goal = distance_to_goal
+
+        # Track trajectory for waypoint extraction at episode end
+        self.trajectory_positions.append(current_player_pos)
+        self.trajectory_distances.append(distance_to_goal)
 
         return scaled_reward
 
@@ -1213,6 +1327,13 @@ class RewardCalculator:
         """Reset episode state for new episode."""
         self.steps_taken = 0
 
+        # OPTIMIZATION: Refresh curriculum property cache at episode start
+        # These are episode-invariant but called many times per step
+        self._cached_velocity_alignment_weight = self.config.velocity_alignment_weight
+        self._cached_mine_hazard_multiplier = self.config.mine_hazard_cost_multiplier
+        self._cached_pbrs_objective_weight = self.config.pbrs_objective_weight
+        self._episode_config_cache_valid = True
+
         # Reset diagnostic tracking
         self.closest_distance_to_switch = float("inf")
         self.closest_distance_to_exit = float("inf")
@@ -1253,6 +1374,21 @@ class RewardCalculator:
 
         # Reset spawn position tracking for displacement gate
         self.spawn_position = None
+
+        # Reset distance tracking for adaptive gating (Phase 2 enhancement)
+        self._prev_distance_to_goal = None
+
+        # Reset trajectory tracking for waypoint extraction (Phase 3 enhancement)
+        self.trajectory_positions = []
+        self.trajectory_distances = []
+        self.adaptive_waypoints.reset_episode()
+
+        # Reset diagnostic tracking for visualization (Phase 1 enhancement)
+        self.velocity_history = []
+        self.alignment_history = []
+        self.path_gradient_history = []
+        self._last_next_hop_world = None
+        self._last_next_hop_goal_id = None
 
         # Validation: Check level is solvable (helpful for debugging 0% success rate)
         # Only run occasionally to avoid performance impact
@@ -1320,6 +1456,33 @@ class RewardCalculator:
             "closest_distance_to_exit": self.closest_distance_to_exit,
         }
 
+    def get_waypoint_statistics(self) -> Dict[str, Any]:
+        """Get waypoint system statistics for monitoring.
+
+        Returns:
+            Dictionary with waypoint statistics
+        """
+        return self.adaptive_waypoints.get_statistics()
+
+    def get_pbrs_diagnostic_data(self) -> Dict[str, Any]:
+        """Get PBRS diagnostic data for route visualization (Phase 1 enhancement).
+
+        Returns:
+            Dictionary with diagnostic data:
+            - velocity_history: List of (dx, dy) velocity vectors
+            - alignment_history: List of path alignment scores [-1, 1]
+            - path_gradient_history: List of (gx, gy) expected direction vectors or None
+            - last_next_hop_world: Last calculated next_hop position in world coords
+            - last_next_hop_goal_id: Goal ID for last next_hop ("switch" or "exit")
+        """
+        return {
+            "velocity_history": self.velocity_history,
+            "alignment_history": self.alignment_history,
+            "path_gradient_history": self.path_gradient_history,
+            "last_next_hop_world": self._last_next_hop_world,
+            "last_next_hop_goal_id": self._last_next_hop_goal_id,
+        }
+
     def get_episode_reward_metrics(self) -> Dict[str, Any]:
         """Get episode-level reward component metrics for TensorBoard logging.
 
@@ -1335,6 +1498,7 @@ class RewardCalculator:
             - pbrs_std: Standard deviation of PBRS rewards
             - current_potential: Current potential Φ(s')
             - prev_potential: Previous potential Φ(s)
+            - waypoint_statistics: Statistics from adaptive waypoint system
         """
         import numpy as np
 
@@ -1379,6 +1543,9 @@ class RewardCalculator:
             forward_progress_pct = 0.0
             backtracking_pct = 0.0
 
+        # Get waypoint statistics (Phase 3 enhancement)
+        waypoint_stats = self.get_waypoint_statistics()
+
         return {
             "pbrs_total": pbrs_total,
             "time_penalty_total": penalty_total,
@@ -1400,6 +1567,17 @@ class RewardCalculator:
             else 0.0,
             # Exploration metrics (from unified position tracker)
             "exploration_cells_visited": len(self.position_tracker.visited_cells),
+            "exploration_cells_current_phase": len(
+                self.position_tracker.visited_cells_current_phase
+            ),
+            "exploration_hierarchical_resets": self.position_tracker.hierarchical_resets,
             "exploration_coverage": len(self.position_tracker.visited_cells)
-            / max(1, (1056 // 24) * (600 // 24)),  # % of level explored
+            / max(1, (1056 // 12) * (600 // 12)),  # % of level explored (12px grid)
+            # Waypoint metrics (Phase 3 enhancement)
+            "waypoints_reached_this_episode": len(
+                self.adaptive_waypoints.waypoints_reached_this_episode
+            ),
+            "waypoints_active_current_level": waypoint_stats["active_waypoints"],
+            "waypoints_total_discovered": waypoint_stats["total_waypoints_discovered"],
+            "waypoints_total_bonuses": waypoint_stats["total_bonuses_awarded"],
         }

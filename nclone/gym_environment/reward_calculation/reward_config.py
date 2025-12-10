@@ -29,31 +29,54 @@ class RewardConfig:
     recent_success_rate: float = 0.0
 
     # Curriculum phase thresholds
-    EARLY_PHASE_END: int = 1_000_000  # 0-1M: Bootstrap navigation
-    MID_PHASE_END: int = 3_000_000  # 1M-3M: Refine paths
-    # Late phase: 3M+: Optimize speed
+    # UPDATED 2025-12-07: Success-rate based progression with minimum timestep gates
+    # This accounts for complex levels that take longer to learn
+    MIN_TIMESTEPS_FOR_MID: int = 500_000  # Minimum steps before mid phase
+    MIN_TIMESTEPS_FOR_LATE: int = 1_500_000  # Minimum steps before late phase
 
-    # Performance threshold for enabling time pressure
-    SUCCESS_THRESHOLD: float = 0.5  # 50% completion rate
+    # Success rate thresholds for phase transitions
+    SUCCESS_THRESHOLD_MID: float = 0.15  # 15% success to enter mid phase
+    SUCCESS_THRESHOLD_LATE: float = 0.40  # 40% success to enter late phase
 
     @property
     def training_phase(self) -> str:
-        """Current training phase based on timesteps.
+        """Current training phase based on success rate (with minimum timestep gates).
+
+        UPDATED 2025-12-07: Primary driver is success_rate, not timesteps.
+        This allows complex levels to stay in early/mid phases longer until
+        agent demonstrates actual learning.
+
+        Timesteps act as minimum gates to prevent premature transitions
+        (e.g., can't reach "late" phase before 1.5M steps even with lucky early success).
 
         Returns:
-            'early': 0-1M steps (bootstrap learning)
-            'mid': 1M-3M steps (path refinement)
-            'late': 3M+ steps (speed optimization)
+            'early': <15% success OR <500K steps (bootstrap navigation)
+            'mid': 15-40% success AND >500K steps (path refinement)
+            'late': >40% success AND >1.5M steps (speed optimization)
         """
-        if self.current_timesteps < self.EARLY_PHASE_END:
+        # Early phase: Low success OR haven't trained minimum steps
+        if (
+            self.recent_success_rate < self.SUCCESS_THRESHOLD_MID
+            or self.current_timesteps < self.MIN_TIMESTEPS_FOR_MID
+        ):
             return "early"
-        elif self.current_timesteps < self.MID_PHASE_END:
+
+        # Mid phase: Moderate success AND passed minimum gate
+        if (
+            self.recent_success_rate < self.SUCCESS_THRESHOLD_LATE
+            or self.current_timesteps < self.MIN_TIMESTEPS_FOR_LATE
+        ):
             return "mid"
+
+        # Late phase: High success AND sufficient training
         return "late"
 
     @property
     def pbrs_objective_weight(self) -> float:
-        """Curriculum-based PBRS weight - scaled to keep returns manageable.
+        """Success-rate-based PBRS weight - scaled to keep returns manageable.
+
+        UPDATED 2025-12-07: Fully success-rate driven (no timestep fallbacks).
+        Complex levels progress based on actual learning, not arbitrary time thresholds.
 
         IMPORTANT: Weights reduced to prevent accumulated PBRS from dominating
         terminal rewards. Previous weights (30.0 in discovery) created -0.3 penalty
@@ -63,64 +86,67 @@ class RewardConfig:
 
         With these reduced weights:
         - Discovery (<5%): 15 + 55 = 70 max return (stable for value function)
-        - Early learning: 12 + 55 = 67 max return
-        - Late training: 4 + 55 = 59 max return
+        - Early learning (5-20%): 12 + 55 = 67 max return
+        - Mid learning (20-40%): 10 + 55 = 65 max return
+        - Advanced (40-60%): 6 + 55 = 61 max return
+        - Mastery (60%+): 4 + 55 = 59 max return
 
         Death penalties (-10 to -18) remain significant relative to PBRS rewards.
 
         Returns:
-            15.0 (0-5% success): Strong guidance, less punishing for oscillation
-            12.0 (5-20% success): Proportional reduction for early learning
-            10.0 (20-40% success): Moderate guidance for mid learning
-            8.0 (early phase): Reduced for stability
-            6.0 (mid phase): Reduced for stability
-            4.0 (late phase): Light shaping maintained
+            20.0 (0-5% success): Very strong guidance for discovery (long-horizon)
+            15.0 (5-20% success): Strong guidance for early learning
+            12.0 (20-40% success): Moderate guidance for mid learning
+            8.0 (40-60% success): Reduced for advanced learning
+            5.0 (60%+ success): Light shaping for mastery
         """
         if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
-            return 15.0  # Strong guidance, less punishing for oscillation
+            return 20.0  # Very strong guidance for long-horizon discovery
         elif self.recent_success_rate < 0.20:  # Early learning (5-20% success)
-            return 12.0  # Proportional reduction
+            return 15.0  # Strong guidance
         elif self.recent_success_rate < 0.40:  # Mid learning (20-40% success)
-            return 10.0  # Moderate guidance
-        elif self.training_phase == "early":
-            return 8.0  # Reduced for stability
-        elif self.training_phase == "mid":
-            return 6.0  # Reduced for stability
-        return 4.0  # Light shaping maintained
+            return 12.0  # Moderate guidance
+        elif self.recent_success_rate < 0.60:  # Advanced learning (40-60%)
+            return 8.0  # Reduced guidance
+        return 5.0  # Light shaping for mastery (60%+)
 
     @property
     def time_penalty_per_step(self) -> float:
-        """Curriculum-based time penalty - scales with success rate.
+        """Success-rate-based time penalty - scales with agent competence.
+
+        UPDATED 2025-12-07: Fully success-rate driven (no timestep fallbacks).
+        Penalty increases as agent masters the level, creating efficiency pressure.
 
         UPDATED: Increased by 20-25× to aggressively combat oscillation/stuck behavior.
         Previous values were too weak to deter jumping in place near spawn.
 
         Strong time pressure makes staying still very costly, forcing exploration.
 
-        Analysis with 4-frame skip (600 frame typical episode):
-        - Discovery (<5%):   -0.005 × 600 = -3.0 total (15% of completion reward)
-        - Early (5-30%):     -0.01 × 600 = -6.0 total (30% of completion reward)
-        - Mid (30-50%):      -0.02 × 600 = -12.0 total (60% of completion reward)
-        - Refinement (>50%): -0.02 × 600 = -12.0 total (60% of completion reward)
+        Analysis with 4-frame skip (150 actions typical episode):
+        - Discovery (<5%):   -0.002 × 150 = -0.3 total (0.6% of completion reward)
+        - Early (5-30%):     -0.01 × 150 = -1.5 total (3% of completion reward)
+        - Mid (30-50%):      -0.02 × 150 = -3.0 total (6% of completion reward)
+        - Advanced (50-70%): -0.025 × 150 = -3.75 total (7.5% of completion reward)
+        - Mastery (70%+):    -0.03 × 150 = -4.5 total (9% of completion reward)
 
-        With 4-frame skip: -0.02 to -0.08 per action (strong pressure to move efficiently).
+        With 4-frame skip: -0.008 to -0.12 per action (strong pressure to move efficiently).
 
         Returns:
-            -0.005 (<5% success): Strong pressure even during discovery
-            -0.01 (5-30% success): Very strong pressure for early learning
-            -0.02 (30%+ success): Maximum pressure for efficiency
+            -0.002 (<5% success): Minimal pressure for discovery
+            -0.01 (5-30% success): Moderate pressure for early learning
+            -0.02 (30-50% success): Strong pressure for mid learning
+            -0.025 (50-70% success): Stronger pressure for advanced learning
+            -0.03 (70%+ success): Maximum pressure for mastery
         """
         if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
-            return -0.005  # 25× stronger: -0.02/action (4-frame skip)
+            return -0.002  # Minimal pressure - allow exploration time
         elif self.recent_success_rate < 0.30:  # Early learning (5-30% success)
-            return -0.01  # 20× stronger: -0.04/action
+            return -0.01  # Moderate pressure
         elif self.recent_success_rate < 0.50:  # Mid learning (30-50%)
-            return -0.02  # 20× stronger: -0.08/action
-        elif self.training_phase == "early":
-            return -0.01  # Strong pressure
-        elif self.training_phase == "mid":
-            return -0.015  # Stronger pressure
-        return -0.02  # Maximum efficiency pressure
+            return -0.02  # Strong pressure
+        elif self.recent_success_rate < 0.70:  # Advanced learning (50-70%)
+            return -0.025  # Stronger pressure
+        return -0.03  # Maximum efficiency pressure (70%+)
 
     @property
     def exploration_bonus(self) -> float:
@@ -180,6 +206,57 @@ class RewardConfig:
         """
         return 1.0  # No longer used - gradient control via weights only
 
+    @property
+    def velocity_alignment_weight(self) -> float:
+        """Curriculum-adaptive velocity alignment weight for path direction guidance.
+
+        Velocity alignment provides continuous direction signal between discrete graph nodes,
+        critical for learning inflection points where agent must go "wrong" direction first
+        (e.g., LEFT when goal is RIGHT).
+
+        UPDATED: Quadrupled weights to fix zero euclidean_alignment in TensorBoard.
+
+        Stronger early when agent is learning basic navigation, weaker late when
+        agent has mastered path direction and needs refinement only.
+
+        Analysis with PBRS weight and velocity alignment:
+        - Early (20.0 PBRS + 8.0 vel): Velocity is 40% of total signal (was 10%)
+        - Mid (10.0 PBRS + 3.0 vel): Velocity is 30% of signal (was 5%)
+        - Late (4.0 PBRS + 1.0 vel): Velocity is 25% of signal (was 2.5%)
+
+        This ensures strong direction learning to overcome inflection point failures.
+
+        Returns:
+            8.0 (0-15% success): Very strong direction learning (was 2.0, 4x increase)
+            3.0 (15-40% success): Strong guidance (was 0.5, 6x increase)
+            1.0 (40%+ success): Moderate guidance (was 0.1, 10x increase)
+        """
+        if self.recent_success_rate < 0.15:  # Early phase
+            return 8.0  # Was 2.0 → 4x stronger for inflection points
+        elif self.recent_success_rate < 0.40:  # Mid phase
+            return 3.0  # Was 0.5 → 6x stronger refinement
+        return 1.0  # Was 0.1 → 10x light guidance
+
+    @property
+    def mine_hazard_cost_multiplier(self) -> float:
+        """Curriculum-adaptive mine hazard cost multiplier for pathfinding.
+
+        Controls how expensive paths near deadly mines are during A* pathfinding.
+        This shapes the PBRS gradient field to guide agents along safer routes.
+
+        UPDATED: Tripled costs for stronger mine avoidance to prevent inflection point deaths.
+
+        Returns:
+            25.0 (0-15% success): Strong early avoidance (was 5.0, 5x increase)
+            40.0 (15-40% success): Very strong avoidance (was 15.0, ~3x increase)
+            60.0 (40%+ success): Extreme avoidance for mastery (was 25.0, ~2.5x increase)
+        """
+        if self.recent_success_rate < 0.15:  # Early phase - discovery
+            return 25.0  # Was 5.0 → 5x stronger for mine field detours
+        elif self.recent_success_rate < 0.40:  # Mid phase - learning
+            return 40.0  # Was 15.0 → ~3x stronger avoidance
+        return 60.0  # Was 25.0 → ~2.5x strict safety
+
     def update(self, timesteps: int, success_rate: float) -> None:
         """Update configuration with current training metrics.
 
@@ -208,6 +285,8 @@ class RewardConfig:
             "exploration_bonus": self.exploration_bonus,
             "revisit_penalty_weight": self.revisit_penalty_weight,
             "pbrs_normalization_scale": self.pbrs_normalization_scale,
+            "velocity_alignment_weight": self.velocity_alignment_weight,
+            "mine_hazard_cost_multiplier": self.mine_hazard_cost_multiplier,
         }
 
     def __str__(self) -> str:

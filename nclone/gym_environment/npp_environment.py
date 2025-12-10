@@ -7,7 +7,6 @@ mixins for better code organization and maintainability.
 """
 
 import logging
-import time
 import numpy as np
 from gymnasium.spaces import box, Dict as SpacesDict
 from typing import Dict, Any, Optional
@@ -19,6 +18,7 @@ from .constants import (
     GAME_STATE_CHANNELS,
     LEVEL_DIAGONAL,
     REACHABILITY_FEATURES_DIM,
+    MINE_SDF_FEATURES_DIM,
     MAX_LOCKED_DOORS,
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
@@ -258,6 +258,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             dtype=np.float32,
         )
 
+        # Mine SDF features for actor safety awareness (3 dims)
+        # Global danger signal from ALL mines (not just 8 nearest in spatial_context)
+        # [SDF value, escape gradient X, escape gradient Y]
+        obs_spaces["mine_sdf_features"] = box.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(MINE_SDF_FEATURES_DIM,),
+            dtype=np.float32,
+        )
+
         return SpacesDict(obs_spaces)
 
     def _post_action_hook(self):
@@ -437,22 +447,54 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Reset episode reward
         self.current_ep_reward = 0
 
-        # Clear all caches for new level
-        from nclone.cache_management import clear_all_caches_for_reset
-
-        clear_all_caches_for_reset(self)
-
-        # Check if map loading should be skipped
+        # Check if map loading should be skipped and if this is a new level
         skip_map_load = False
+        new_level = False  # True if a different level was loaded externally
+        map_name = None
         if options is not None and isinstance(options, dict):
             skip_map_load = options.get("skip_map_load", False)
+            # When skip_map_load=True, assume new level unless explicitly told otherwise
+            new_level = options.get("new_level", skip_map_load)
+            map_name = options.get("map_name", None)
+
+        # Clear caches appropriately based on whether this is a new level
+        from nclone.cache_management import (
+            clear_all_caches_for_reset,
+            clear_all_caches_for_new_level,
+        )
+
+        if new_level:
+            # New level loaded externally - clear ALL caches including level-persistent ones
+            clear_all_caches_for_new_level(self)
+        else:
+            # Same level being reset - clear only episode-specific caches
+            clear_all_caches_for_reset(self)
 
         if not skip_map_load:
             # Load map - this calls sim.load() which calls sim.reset()
             self.map_loader.load_map()
         else:
-            # If map loading is skipped, we still need to reset the sim
-            self.nplay_headless.reset()
+            # Update map_loader.current_map_name if provided
+            # This is critical for cache keying and momentum waypoint loading
+            if map_name is not None:
+                self.map_loader.current_map_name = map_name
+                if self.enable_logging:
+                    logger.debug(f"Updated map_loader.current_map_name to: {map_name}")
+
+            # Only reset the sim if a map wasn't just loaded externally
+            # (sim.load() already calls sim.reset(), so we shouldn't reset again)
+            map_just_loaded = getattr(self.nplay_headless, "_map_just_loaded", False)
+            if not map_just_loaded:
+                # If map loading is skipped but no new map loaded, reset to spawn
+                # This handles checkpoint replay and same-level resets
+                self.nplay_headless.reset()
+            else:
+                # Clear the flag after checking it
+                self.nplay_headless._map_just_loaded = False
+                if self.enable_logging:
+                    logger.debug(
+                        "Skipped nplay_headless.reset() - map was just loaded externally"
+                    )
 
         # CRITICAL: Reset and rebuild graph BEFORE getting observation
         self._reset_graph_state()
@@ -614,7 +656,351 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Include full graph_data for spatial indexing (contains spatial_hash)
         obs["_graph_data"] = self.current_graph_data
 
+        # Add mine SDF features for actor safety awareness (3 dims)
+        # These provide GLOBAL mine danger signal from ALL mines (not just 8 nearest)
+        obs["mine_sdf_features"] = self._compute_mine_sdf_features(obs)
+
+        # Add privileged features for asymmetric critic (if enabled)
+        # These provide oracle information to the critic (not actor) for better value estimation
+        obs["privileged_features"] = self._compute_privileged_features(obs)
+
         return obs
+
+    def _compute_mine_sdf_features(self, obs: Dict[str, Any]) -> np.ndarray:
+        """Compute mine SDF features for actor safety awareness.
+
+        These features provide GLOBAL mine danger information from ALL mines,
+        not just the 8 nearest mines in spatial_context. This helps the actor
+        make better decisions about avoiding dangerous areas.
+
+        MINE SDF FEATURES (3 dimensions):
+        0. SDF value at ninja [-1,1]: distance to nearest mine (negative=danger zone)
+        1. Escape gradient X [-1,1]: X component of escape direction
+        2. Escape gradient Y [-1,1]: Y component of escape direction
+
+        All features use O(1) lookups from pre-computed 88x50 SDF grid (12px resolution).
+
+        Returns:
+            np.ndarray: Mine SDF features [3]
+        """
+        mine_sdf_features = np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32)
+
+        try:
+            ninja_x = obs.get("player_x", 0.0)
+            ninja_y = obs.get("player_y", 0.0)
+
+            pbrs_calculator = self.reward_calculator.pbrs_calculator
+            if (
+                pbrs_calculator is not None
+                and pbrs_calculator.path_calculator is not None
+            ):
+                mine_sdf = pbrs_calculator.path_calculator.mine_sdf
+                if mine_sdf is not None and mine_sdf.sdf_grid is not None:
+                    # Feature 0: SDF value at ninja position
+                    # Negative = inside danger zone, positive = safe
+                    sdf_value = mine_sdf.get_sdf_at_position(ninja_x, ninja_y)
+                    mine_sdf_features[0] = sdf_value
+
+                    # Features 1-2: Escape gradient (unit vector away from nearest mine)
+                    # Tells actor optimal direction to move for safety
+                    grad_x, grad_y = mine_sdf.get_gradient_at_position(ninja_x, ninja_y)
+                    mine_sdf_features[1] = grad_x
+                    mine_sdf_features[2] = grad_y
+
+        except Exception as e:
+            logger.debug(f"Failed to compute mine SDF features: {e}")
+            # Return safe zeros on failure
+
+        return mine_sdf_features
+
+    def _compute_privileged_features(self, obs: Dict[str, Any]) -> np.ndarray:
+        """Compute privileged features for asymmetric critic.
+
+        DESIGN RATIONALE:
+        For graph_free architecture, actor sees:
+        - game_state (41 dims): ninja physics state
+        - reachability_features (22 dims): path distances, directions, mine context
+        - spatial_context (112 dims): LOCAL 8x8 tiles + 8 nearest mines
+        - mine_sdf_features (3 dims): GLOBAL SDF value + escape gradient
+
+        Critic needs ADDITIONAL information actor cannot access. Features must be:
+        1. O(1) lookups from pre-computed data (zero overhead)
+        2. Genuinely unavailable to actor (not just reformatted)
+        3. Predictive of future returns (helps value estimation)
+
+        PRIVILEGED FEATURES (18 dimensions):
+
+        Path Topology Features (6 dims) - future path structure:
+        0. Combined remaining distance - total journey length
+        1. Inflection point distance - next major direction change
+        2. Path segments remaining - count of turns ahead
+        3. Upcoming segment difficulty - look-ahead to next segment
+        4. Alternative paths exist - multiple viable routes?
+        5. Dead-end proximity - distance to nearest branch termination
+
+        A* Pathfinding Internals (4 dims) - values actor cannot access:
+        6. Current node g-cost - cost from start
+        7. Current node f-cost - g + heuristic estimate
+        8. Path optimality ratio - current/optimal cost
+        9. Backtrack penalty - deviation from optimal
+
+        Expert Demonstration Oracle (3 dims) - from replay data:
+        10. Expert action - from nearest demo state
+        11. Expert Q-estimate - interpolated from demos
+        12. Demo distance - proximity to demonstrated states
+
+        Global Level Context (3 dims) - level-wide metrics:
+        13. Level difficulty score - precomputed complexity
+        14. Progress fraction - traveled/total distance
+        15. Estimated remaining steps - from path calculator
+
+        Refined Physics Context (2 dims):
+        16. Mine proximity cost - A* cost multipliers
+        17. Graph connectivity - movement options
+
+        All features use O(1) lookups from structures already computed for PBRS.
+
+        Returns:
+            np.ndarray: Privileged features [18]
+        """
+        # 18 dimensions: rich privileged information for critic
+        privileged_features = np.zeros(18, dtype=np.float32)
+
+        try:
+            # Get ninja position and common data for lookups
+            ninja_x = obs.get("player_x", 0.0)
+            ninja_y = obs.get("player_y", 0.0)
+            ninja_pos = (int(ninja_x), int(ninja_y))
+            switch_activated = obs.get("switch_activated", 0.0)
+
+            pbrs_calculator = self.reward_calculator.pbrs_calculator
+            path_calculator = None
+            if pbrs_calculator is not None:
+                path_calculator = pbrs_calculator.path_calculator
+
+            # === PATH TOPOLOGY FEATURES (0-5) ===
+            if path_calculator is not None:
+                level_data = obs.get("level_data")
+
+                # Feature 0: Combined remaining distance
+                # Total journey: distance to switch + distance to exit
+                try:
+                    if switch_activated < 0.5:
+                        # Phase 1: Need to reach switch then exit
+                        switch_dist = path_calculator.get_distance_to_switch(ninja_pos)
+                        exit_dist_from_switch = (
+                            path_calculator.get_distance_switch_to_exit()
+                        )
+                        combined_dist = switch_dist + exit_dist_from_switch
+                    else:
+                        # Phase 2: Just need to reach exit
+                        combined_dist = path_calculator.get_distance_to_exit(ninja_pos)
+
+                    # Normalize by level diagonal (~1200px)
+                    from .constants import LEVEL_DIAGONAL
+
+                    privileged_features[0] = min(
+                        1.0, combined_dist / (LEVEL_DIAGONAL * 2.0)
+                    )
+                except Exception:
+                    pass
+
+                # Feature 1: Inflection point distance
+                # Distance to next major direction change (>45°)
+                try:
+                    current_goal = "exit" if switch_activated > 0.5 else "switch"
+                    path = path_calculator.get_full_path(ninja_pos, current_goal)
+                    if path and len(path) > 2:
+                        # Find first inflection point
+                        for i in range(len(path) - 2):
+                            dx1 = path[i + 1][0] - path[i][0]
+                            dy1 = path[i + 1][1] - path[i][1]
+                            dx2 = path[i + 2][0] - path[i + 1][0]
+                            dy2 = path[i + 2][1] - path[i + 1][1]
+
+                            # Compute angle change
+                            mag1 = max(1.0, np.sqrt(dx1**2 + dy1**2))
+                            mag2 = max(1.0, np.sqrt(dx2**2 + dy2**2))
+                            dot = (dx1 * dx2 + dy1 * dy2) / (mag1 * mag2)
+                            dot = np.clip(dot, -1.0, 1.0)
+
+                            if np.arccos(dot) > np.pi / 4:  # >45° change
+                                # Compute distance to this inflection
+                                dist_to_inflection = sum(
+                                    np.sqrt(
+                                        (path[j + 1][0] - path[j][0]) ** 2
+                                        + (path[j + 1][1] - path[j][1]) ** 2
+                                    )
+                                    for j in range(i + 1)
+                                )
+                                privileged_features[1] = min(
+                                    1.0, dist_to_inflection / 500.0
+                                )
+                                break
+                except Exception:
+                    pass
+
+                # Feature 2: Path segments remaining
+                # Count of major direction changes ahead
+                try:
+                    current_goal = "exit" if switch_activated > 0.5 else "switch"
+                    path = path_calculator.get_full_path(ninja_pos, current_goal)
+                    if path and len(path) > 2:
+                        segment_count = 0
+                        for i in range(len(path) - 2):
+                            dx1 = path[i + 1][0] - path[i][0]
+                            dy1 = path[i + 1][1] - path[i][1]
+                            dx2 = path[i + 2][0] - path[i + 1][0]
+                            dy2 = path[i + 2][1] - path[i + 1][1]
+
+                            mag1 = max(1.0, np.sqrt(dx1**2 + dy1**2))
+                            mag2 = max(1.0, np.sqrt(dx2**2 + dy2**2))
+                            dot = (dx1 * dx2 + dy1 * dy2) / (mag1 * mag2)
+                            dot = np.clip(dot, -1.0, 1.0)
+
+                            if np.arccos(dot) > np.pi / 4:
+                                segment_count += 1
+
+                        # Normalize by max expected (10 segments)
+                        privileged_features[2] = min(1.0, segment_count / 10.0)
+                except Exception:
+                    pass
+
+            # Features 3-5: Advanced path features (placeholder for future implementation)
+            # These require more complex path analysis
+            # Feature 3: Upcoming segment difficulty - would need segment-wise cost analysis
+            # Feature 4: Alternative paths - would need multi-path A*
+            # Feature 5: Dead-end proximity - would need branch detection
+
+            # === A* PATHFINDING INTERNALS (6-9) ===
+            # Features 6-9: Pathfinding cost metrics (placeholder for future implementation)
+            # These would require storing g-cost, f-cost during pathfinding
+            # Currently path_calculator provides distances but not A* internals
+
+            # === EXPERT DEMONSTRATION ORACLE (10-12) ===
+            # Features 10-12: Demo-based guidance (placeholder for future implementation)
+            # Would require nearest-neighbor search in demonstration dataset
+            # Integration with Go-Explore archive could provide this
+
+            # === GLOBAL LEVEL CONTEXT (13-15) ===
+            if path_calculator is not None:
+                # Feature 13: Level difficulty score
+                # Based on path length and mine count
+                try:
+                    level_data = obs.get("level_data")
+                    if level_data and hasattr(level_data, "entities"):
+                        mine_count = sum(
+                            1
+                            for e in level_data.entities
+                            if hasattr(e, "entity_type")
+                            and "TOGGLE_MINE" in str(e.entity_type).upper()
+                        )
+
+                        # Get total path length
+                        spawn_pos = getattr(level_data, "start_position", (0, 0))
+                        switch_dist = path_calculator.get_distance_to_switch(spawn_pos)
+                        exit_dist = path_calculator.get_distance_switch_to_exit()
+                        total_path = switch_dist + exit_dist
+
+                        # Difficulty = (path_length/1000 + mine_count/10) / 2
+                        path_difficulty = min(1.0, total_path / 2000.0)
+                        mine_difficulty = min(1.0, mine_count / 20.0)
+                        privileged_features[13] = (
+                            path_difficulty + mine_difficulty
+                        ) / 2.0
+                except Exception:
+                    pass
+
+                # Feature 14: Progress fraction
+                # How far along the optimal path?
+                try:
+                    level_data = obs.get("level_data")
+                    if level_data and hasattr(level_data, "start_position"):
+                        spawn_pos = getattr(level_data, "start_position", ninja_pos)
+
+                        # Total optimal path length
+                        switch_dist_from_spawn = path_calculator.get_distance_to_switch(
+                            spawn_pos
+                        )
+                        exit_dist = path_calculator.get_distance_switch_to_exit()
+                        total_optimal = switch_dist_from_spawn + exit_dist
+
+                        # Remaining distance
+                        if switch_activated < 0.5:
+                            remaining = (
+                                path_calculator.get_distance_to_switch(ninja_pos)
+                                + exit_dist
+                            )
+                        else:
+                            remaining = path_calculator.get_distance_to_exit(ninja_pos)
+
+                        # Progress = (total - remaining) / total
+                        if total_optimal > 0:
+                            progress = max(
+                                0.0, (total_optimal - remaining) / total_optimal
+                            )
+                            privileged_features[14] = min(1.0, progress)
+                except Exception:
+                    pass
+
+                # Feature 15: Estimated remaining steps
+                # Convert distance to frame estimates
+                try:
+                    from ...constants.physics_constants import MAX_HOR_SPEED
+
+                    if switch_activated < 0.5:
+                        remaining_dist = path_calculator.get_distance_to_switch(
+                            ninja_pos
+                        )
+                        remaining_dist += path_calculator.get_distance_switch_to_exit()
+                    else:
+                        remaining_dist = path_calculator.get_distance_to_exit(ninja_pos)
+
+                    # Estimate: distance / (average_speed * frame_skip)
+                    # Average speed ~3-4 px/frame, frame_skip=4
+                    avg_speed_per_action = 12.0  # 3px/frame * 4 frames
+                    estimated_actions = remaining_dist / avg_speed_per_action
+
+                    # Normalize by max expected (1000 actions)
+                    privileged_features[15] = min(1.0, estimated_actions / 1000.0)
+                except Exception:
+                    pass
+
+            # === REFINED PHYSICS CONTEXT (16-17) ===
+            # Feature 16: Mine proximity cost
+            if pbrs_calculator is not None and path_calculator is not None:
+                mine_cache = path_calculator.mine_proximity_cache
+                if mine_cache is not None:
+                    try:
+                        cost_multiplier = mine_cache.get_cost_multiplier(ninja_pos)
+                        from .reward_calculation.reward_constants import (
+                            MINE_HAZARD_COST_MULTIPLIER,
+                        )
+
+                        if MINE_HAZARD_COST_MULTIPLIER > 1.0:
+                            normalized_cost = (cost_multiplier - 1.0) / (
+                                MINE_HAZARD_COST_MULTIPLIER - 1.0
+                            )
+                            privileged_features[16] = min(1.0, normalized_cost)
+                    except Exception:
+                        pass
+
+            # Feature 17: Graph connectivity
+            adjacency = obs.get("_adjacency_graph")
+            if adjacency:
+                try:
+                    num_nodes = len(adjacency)
+                    num_edges = sum(len(neighbors) for neighbors in adjacency.values())
+                    avg_edges = num_edges / max(num_nodes, 1)
+                    privileged_features[17] = min(1.0, avg_edges / 6.0)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.debug(f"Failed to compute privileged features: {e}")
+            # Return safe zeros on failure - critic will learn with partial info
+
+        return privileged_features
 
     def _get_adjacency_for_rewards(self) -> Optional[Dict]:
         """Get adjacency graph for reward calculation.
@@ -745,6 +1131,17 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # This forces rebuild with updated goals (exit switch removed, exit door becomes primary)
         if hasattr(self, "_path_calculator") and self._path_calculator is not None:
             self._path_calculator.clear_cache()
+
+        # CRITICAL FIX: Also clear reward calculator's path calculator cache!
+        # The reward calculator has its own separate path_calculator that needs clearing too
+        if hasattr(self, "reward_calculator"):
+            if hasattr(self.reward_calculator, "pbrs_calculator"):
+                if hasattr(self.reward_calculator.pbrs_calculator, "path_calculator"):
+                    reward_path_calc = (
+                        self.reward_calculator.pbrs_calculator.path_calculator
+                    )
+                    if reward_path_calc is not None:
+                        reward_path_calc.clear_cache()
 
         # Clear reachability cache so it gets recomputed with fresh entities
         # CRITICAL: Reachability features depend on goal positions which change when switches activate
@@ -1034,6 +1431,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Add spatial_context (graph-free local geometry features)
         if "spatial_context" not in processed_obs:
             processed_obs["spatial_context"] = self._compute_spatial_context()
+
+        # Add mine_sdf_features (global mine danger signal for actor safety)
+        if "mine_sdf_features" not in processed_obs:
+            processed_obs["mine_sdf_features"] = obs.get(
+                "mine_sdf_features",
+                np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32),
+            )
 
         # MEMORY OPTIMIZATION: Remove internal-only observations that are not needed for training
         # These are only used during environment step for PBRS reward computation

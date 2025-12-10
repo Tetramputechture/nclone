@@ -50,6 +50,13 @@ References:
 # - Convergence rate: PPO is scale-invariant due to advantage normalization
 GLOBAL_REWARD_SCALE = 0.1  # Divide all rewards by 10
 
+# CRITICAL: This scale must be applied to ALL reward components including:
+# - Terminal rewards (completion, death, switch) - applied in main_reward_calculator.py
+# - PBRS shaping rewards - applied in main_reward_calculator.py
+# - Time penalties - applied in main_reward_calculator.py
+# - RND intrinsic rewards - applied in rnd_callback.py
+# Inconsistent scaling causes reward imbalance and policy collapse.
+
 
 # =============================================================================
 # TERMINAL REWARD CONSTANTS (Always Active)
@@ -93,14 +100,16 @@ IMPACT_DEATH_PENALTY = -10.0
 
 # Hazard death (mines, drones, thwumps, other deadly entities)
 # Rationale: Highly preventable through observation and planning.
-# REDUCED from -15 to -12 (24% of completion reward) to ensure progress is always
-# valued. Even 40% progress + hazard death = +6 - 12 = -6 (still better than timeout)
-HAZARD_DEATH_PENALTY = -12.0
+# INCREASED to -40.0 (80% of completion reward) to strongly discourage mine deaths.
+# With stronger PBRS guidance (20.0 weight = 20.0 max reward), death penalty must dominate
+# to prevent "progress + death" from being optimal strategy.
+# This ensures: hazard_death_penalty > max_pbrs_reward, so dying to mines is never worth it.
+HAZARD_DEATH_PENALTY = -40.0
 
 # Generic death penalty (fallback for unspecified death causes)
-# Rationale: Conservative middle ground.
-# 22% of completion reward.
-DEATH_PENALTY = -11.0
+# Rationale: Conservative middle ground. Increased to match hazard penalty.
+# 80% of completion reward.
+DEATH_PENALTY = -40.0
 
 # Timeout/truncation penalty (episode time limit exceeded)
 # Rationale: Indicates inefficient navigation or getting stuck.
@@ -127,9 +136,9 @@ MINE_DEATH_PENALTY = HAZARD_DEATH_PENALTY
 # - Compare to oscillating near switch: 0 (no activation) + penalties = negative
 #
 # With PBRS: An agent 50% through switch phase + activation + death:
-#   +3.75 (PBRS to switch) + 15 (activation) - 12 (death) = +6.75 (positive!)
-# Without activation: +7.5 (PBRS) - 12 (death) = -4.5 (negative!)
-SWITCH_ACTIVATION_REWARD = 15.0
+#   +3.75 (PBRS to switch) + 30 (activation) + (-25.0 death) = +8.75 (positive!)
+# Without activation: +7.5 (PBRS) - (-25.0 death) = -4.5 (negative!)
+SWITCH_ACTIVATION_REWARD = 30.0
 
 
 # =============================================================================
@@ -147,13 +156,15 @@ SWITCH_ACTIVATION_REWARD = 15.0
 PBRS_GAMMA = 1.0
 
 # NOTE: PBRS objective weight is now managed by RewardConfig with curriculum scaling:
-# - Early training (0-1M steps): weight = 5.0 (strong guidance for small movements)
-# - Mid training (1M-3M steps): weight = 3.0 (moderate guidance)
-# - Late training (3M+ steps): weight = 1.5 (light shaping)
-# Weights increased to compensate for realistic movement physics (6-8px typical per action)
-# with frame skip, ensuring strong learning signal (20-25× vs time penalty).
+# - Early training (0-1M steps): weight = 15.0 (strong guidance for small movements)
+# - Mid training (1M-3M steps): weight = 10.0 (moderate guidance)
+# - Late training (3M+ steps): weight = 5.0 (light shaping)
+# Weights SIGNIFICANTLY increased (5×) to provide stronger gradients for long-horizon tasks.
+# With frame skip (6-8px typical movement), this ensures meaningful PBRS signal.
 # Kept here for backwards compatibility; RewardConfig overrides during training.
-PBRS_OBJECTIVE_WEIGHT = 0.3  # Static default (not used during curriculum training)
+PBRS_OBJECTIVE_WEIGHT = (
+    2.5  # Static default (increased from 0.3, not used during curriculum training)
+)
 
 # PBRS scaling for switch and exit phases
 # Scale of 1.0 provides effective gradients while keeping shaping < terminal rewards
@@ -173,10 +184,11 @@ PBRS_EXIT_DISTANCE_SCALE = 1.0
 # - Factor = 1.0: area_scale = 1000px → 6px movement = 0.006 potential change → 0.072 PBRS (w=12)
 # - Factor = 2.5: area_scale = 2500px → 6px movement = 0.0024 potential change → 0.029 PBRS (w=12)
 #
-# FIXED: Decreased from 2.5 to 0.6 for 4× stronger gradients per unit movement.
-# Previous increase to 2.5 was BACKWARDS - made gradients weaker, not stronger!
+# FIXED: Decreased from 2.5 to 0.3 for 8× stronger gradients per unit movement.
+# Lower values = smaller area_scale = stronger gradients for long-horizon tasks.
+# With typical 6px movement and weight=15, this gives ~0.3 PBRS per action.
 PBRS_PATH_NORMALIZATION_FACTOR = (
-    0.6  # Was 2.5 (wrong direction!) - target 0.1-0.15 PBRS per 6px move
+    0.3  # Was 0.6 - further reduced for long-horizon task gradients
 )
 
 # Displacement gate threshold for PBRS
@@ -288,12 +300,15 @@ VELOCITY_ALIGNMENT_WEIGHT_RATIO = 0.0  # DEPRECATED
 MINE_HAZARD_RADIUS = 50.0  # pixels
 
 # Mine hazard cost multiplier
+# NOTE: This is now curriculum-adaptive via RewardConfig.mine_hazard_cost_multiplier
+# Static value kept as fallback for backward compatibility
 # Rationale: How much more expensive are paths near mines?
 # - 1.0 = no penalty (disabled)
 # - 2.0 = twice as expensive (moderate avoidance)
 # - 5.0 = five times more expensive (strong avoidance)
 # - 10.0+ = extreme avoidance
-MINE_HAZARD_COST_MULTIPLIER = 15.0
+# Curriculum: 5.0 (early) → 15.0 (mid) → 25.0 (late) via RewardConfig
+MINE_HAZARD_COST_MULTIPLIER = 15.0  # Static fallback (curriculum overrides)
 
 # Only penalize deadly mines (state 0), not safe mines (state 1)
 MINE_PENALIZE_DEADLY_ONLY = True

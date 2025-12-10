@@ -73,6 +73,33 @@ class CachedPathDistanceCalculator:
         # Spatial hash for fast node lookup (updated per level)
         self._spatial_hash: Optional[any] = None
 
+        # OPTIMIZATION: Cache entity positions per level for goal_id inference
+        # This avoids repeated entity lookups in hot path
+        self._cached_switch_positions: List[Tuple[int, int]] = []
+        self._cached_exit_positions: List[Tuple[int, int]] = []
+
+        # OPTIMIZATION: Cache waypoint positions per level for waypoint_id inference
+        # Similar to goal caching, avoids repeated waypoint lookups in hot path
+        self._cached_waypoint_positions: List[Tuple[int, int]] = []
+
+        # Cache graph data for waypoint-triggered cache rebuilds
+        # Allows set_waypoints() to rebuild cache when waypoints change mid-episode
+        self._last_adjacency: Optional[Dict] = None
+        self._last_base_adjacency: Optional[Dict] = None
+        self._last_graph_data: Optional[Dict] = None
+
+        # OPTIMIZATION: Step-level cache for within-step duplicate calls
+        # Key: (start, goal, entity_radius) -> distance
+        # Cleared at each new step to avoid stale data
+        self._step_cache: Dict[
+            Tuple[Tuple[int, int], Tuple[int, int], float], float
+        ] = {}
+        self._step_cache_geo: Dict[
+            Tuple[Tuple[int, int], Tuple[int, int], float], float
+        ] = {}
+        self._step_cache_hits = 0
+        self._step_cache_misses = 0
+
         # Cached adjacency bounds (min_x, max_x, min_y, max_y) for fast bounds checking
         self._adjacency_bounds: Optional[Tuple[int, int, int, int]] = None
 
@@ -86,6 +113,19 @@ class CachedPathDistanceCalculator:
         self._last_goal_id: Optional[str] = None
         self._last_next_hop: Optional[Tuple[int, int]] = None
         self._last_geometric_distance: Optional[float] = None
+
+        # OPTIMIZATION: Aggressive geometric distance cache with LRU eviction
+        # Key: (start_node, goal_node) -> geometric distance
+        # These don't change during an episode, so we can cache aggressively
+        # Use OrderedDict for O(1) LRU operations
+        from collections import OrderedDict
+
+        self._geometric_distance_cache: OrderedDict[
+            Tuple[Tuple[int, int], Tuple[int, int]], float
+        ] = OrderedDict()
+        # Aggressive cache size: 5000 node pairs per level (~200KB)
+        # With generous memory budget, we can cache extensively
+        self._geometric_cache_max_size = 5000
 
     def build_level_cache(
         self,
@@ -125,9 +165,21 @@ class CachedPathDistanceCalculator:
         # This is precomputed at tile resolution (44x25) for zero runtime cost
         sdf_rebuilt = self.mine_sdf.build_sdf(level_data)
 
-        # Then build level cache (uses mine proximity cache during BFS)
+        # Cache graph data for potential waypoint-triggered rebuilds
+        # This allows set_waypoints() to rebuild cache if waypoints change mid-episode
+        self._last_adjacency = adjacency
+        self._last_base_adjacency = base_adjacency
+        self._last_graph_data = graph_data
+
+        # Then build level cache (uses mine proximity cache and SDF during BFS)
         rebuilt = self.level_cache.build_cache(
-            level_data, adjacency, base_adjacency, graph_data, self.mine_proximity_cache
+            level_data,
+            adjacency,
+            base_adjacency,
+            graph_data,
+            self.mine_proximity_cache,
+            self.mine_sdf,
+            waypoints=self._cached_waypoint_positions,
         )
 
         if rebuilt or mine_cache_rebuilt or sdf_rebuilt:
@@ -146,7 +198,88 @@ class CachedPathDistanceCalculator:
             else:
                 self._adjacency_bounds = None
 
+            # OPTIMIZATION: Cache entity positions for fast goal_id inference
+            from ...constants.entity_types import EntityType
+
+            self._cached_switch_positions = [
+                (entity.get("x", 0), entity.get("y", 0))
+                for entity in level_data.get_entities_by_type(EntityType.EXIT_SWITCH)
+            ]
+            self._cached_exit_positions = [
+                (entity.get("x", 0), entity.get("y", 0))
+                for entity in level_data.get_entities_by_type(EntityType.EXIT_DOOR)
+            ]
+
+            # DIAGNOSTIC: Log cache build details
+            if rebuilt and self.level_cache is not None:
+                cache_stats = self.level_cache.get_statistics()
+                print(
+                    f"[CACHE_BUILD] Level cache built for level_id={self._current_level_id}: "
+                    f"physics_entries={cache_stats.get('physics_cache_size', 0)}, "
+                    f"geometric_entries={cache_stats.get('geometric_cache_size', 0)}, "
+                    f"switch_positions={self._cached_switch_positions}, "
+                    f"exit_positions={self._cached_exit_positions}"
+                )
+
         return rebuilt or mine_cache_rebuilt or sdf_rebuilt
+
+    def set_waypoints(self, waypoints: Optional[List[Any]]) -> None:
+        """Set waypoints for precomputed caching.
+
+        Should be called before build_level_cache() to include waypoints
+        in the BFS flood-fill precomputation.
+
+        If called after cache is built, automatically triggers cache rebuild
+        to include the new waypoints.
+
+        Args:
+            waypoints: List of waypoint objects with .position attribute
+        """
+        # Convert waypoints to positions
+        new_waypoint_positions = []
+        if waypoints:
+            new_waypoint_positions = [
+                (int(wp.position[0]), int(wp.position[1])) for wp in waypoints
+            ]
+
+        # Check if waypoints changed
+        waypoints_changed = new_waypoint_positions != self._cached_waypoint_positions
+
+        self._cached_waypoint_positions = new_waypoint_positions
+
+        print(
+            f"[WAYPOINT_CACHE] Set {len(self._cached_waypoint_positions)} waypoints for caching: "
+            f"{self._cached_waypoint_positions}"
+        )
+
+        # CRITICAL: If waypoints changed and cache already exists, rebuild it
+        # This handles mid-episode waypoint discovery by adaptive waypoint system
+        if (
+            waypoints_changed
+            and self.level_cache is not None
+            and self.level_data is not None
+        ):
+            logger.info(
+                "[WAYPOINT_CACHE] Waypoints changed, rebuilding level cache to include new waypoints"
+            )
+            # Rebuild cache with new waypoints
+            # Need to get adjacency from somewhere - check if we have cached graph data
+            if (
+                hasattr(self, "_last_adjacency")
+                and hasattr(self, "_last_base_adjacency")
+                and hasattr(self, "_last_graph_data")
+            ):
+                self.build_level_cache(
+                    self.level_data,
+                    self._last_adjacency,
+                    self._last_base_adjacency,
+                    self._last_graph_data,
+                )
+            else:
+                logger.warning(
+                    "[WAYPOINT_CACHE] Cannot rebuild cache - no cached graph data. "
+                    "Waypoints will use BFS fallback until next cache build."
+                )
 
     def get_distance(
         self,
@@ -159,6 +292,8 @@ class CachedPathDistanceCalculator:
         graph_data: Optional[Dict] = None,
         entity_radius: float = 0.0,
         ninja_radius: float = 10.0,
+        hazard_cost_multiplier: Optional[float] = None,
+        goal_id: Optional[str] = None,
     ) -> float:
         """
         Get path distance with caching and spatial indexing.
@@ -176,10 +311,17 @@ class CachedPathDistanceCalculator:
             graph_data: Optional graph data dict with spatial_hash for fast lookup
             entity_radius: Collision radius of the goal entity (default 0.0)
             ninja_radius: Collision radius of the ninja (default 10.0)
-
+            goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
         Returns:
             Shortest path distance in pixels
         """
+        # OPTIMIZATION: Step-level cache check (eliminates duplicate calls within same step)
+        step_key = (start, goal, entity_radius)
+        if step_key in self._step_cache:
+            self._step_cache_hits += 1
+            return self._step_cache[step_key]
+        self._step_cache_misses += 1
+
         # CRITICAL: Early exit for invalid goal positions
         # Goals at (0, 0) indicate entity loading failure - return inf to avoid cache pollution
         if goal[0] == 0 and goal[1] == 0:
@@ -265,9 +407,28 @@ class CachedPathDistanceCalculator:
 
             # Only proceed if we found a valid goal node within threshold
             if goal_node is not None:
-                # Look up goal_id from goal_node using the cache's mapping
-                # This ensures we use the same goal_node that was used during cache building
-                goal_id = self.level_cache.get_goal_id_from_node(goal_node)
+                if goal_id is None:
+                    # ROBUST GOAL_ID INFERENCE: Use cached entity positions (O(1) per level)
+                    # Avoids repeated entity queries in hot path (2000+ calls per profile)
+
+                    # Check if goal matches a cached switch position (within 24px tolerance)
+                    for switch_pos in self._cached_switch_positions:
+                        if (
+                            abs(switch_pos[0] - goal[0]) < 24
+                            and abs(switch_pos[1] - goal[1]) < 24
+                        ):
+                            goal_id = "switch"  # Use generic alias
+                            break
+
+                    # Check if goal matches a cached exit position (within 24px tolerance)
+                    if goal_id is None:
+                        for exit_pos in self._cached_exit_positions:
+                            if (
+                                abs(exit_pos[0] - goal[0]) < 24
+                                and abs(exit_pos[1] - goal[1]) < 24
+                            ):
+                                goal_id = "exit"  # Use generic alias
+                                break
 
                 if goal_id is not None:
                     # Get goal_pos for validation
@@ -374,42 +535,20 @@ class CachedPathDistanceCalculator:
                                                 - projection
                                                 - (ninja_radius + entity_radius),
                                             )
+                                            # Store in step cache
+                                            self._step_cache[step_key] = total_dist
                                             return total_dist
 
                                     # Fallback: no next_hop (at goal) or path too short
-                                    return max(
+                                    result = max(
                                         0.0,
                                         cached_dist - (ninja_radius + entity_radius),
                                     )
+                                    # Store in step cache
+                                    self._step_cache[step_key] = result
+                                    return result
             else:
-                # Goal node not found even with extended threshold - log for debugging
-                from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
-
-                goal_tile_x = goal[0] - NODE_WORLD_COORD_OFFSET
-                goal_tile_y = goal[1] - NODE_WORLD_COORD_OFFSET
-                logger.debug(
-                    f"Goal node not found in level cache path. "
-                    f"goal={goal} (tile_data: {goal_tile_x}, {goal_tile_y}), "
-                    f"adjacency_size={len(adjacency)}, "
-                    f"bounds={self._adjacency_bounds}"
-                )
-
-                # Check if goal is even within reachable area using cached bounds
-                if self._adjacency_bounds is not None:
-                    min_x, max_x, min_y, max_y = self._adjacency_bounds
-
-                    # If goal is way outside bounds, this is likely a stale position from previous level
-                    # Return a safe max distance instead of inf to avoid warnings
-                    if (
-                        goal_tile_x < min_x - 100
-                        or goal_tile_x > max_x + 100
-                        or goal_tile_y < min_y - 100
-                        or goal_tile_y > max_y + 100
-                    ):
-                        # Return a large but finite distance instead of inf
-                        # Use a safe max value (level diagonal * 2) to avoid inf warnings
-                        # This matches the behavior in _safe_path_distance
-                        return 2000.0  # Safe max distance for unreachable goals
+                raise RuntimeError("Goal node not found in level cache path")
 
         # Cache miss - compute
         # First snap positions to nodes before calculating distance using smart selection
@@ -575,6 +714,8 @@ class CachedPathDistanceCalculator:
             subcell_lookup=subcell_lookup,
             ninja_radius=ninja_radius,
             goal_node=goal_node,
+            level_cache=self.level_cache,
+            goal_id=goal_id,
         )
 
         # Fallback: If default radius fails for final start_node, try with progressively larger radii
@@ -655,6 +796,8 @@ class CachedPathDistanceCalculator:
                 physics_cache,
                 level_data,
                 self.mine_proximity_cache,
+                self.mine_sdf,
+                hazard_cost_multiplier,
             )
 
         # Cache raw node-to-node distance (before adjustment)
@@ -685,9 +828,13 @@ class CachedPathDistanceCalculator:
         graph_data: Optional[Dict] = None,
         entity_radius: float = 0.0,
         ninja_radius: float = 10.0,
+        goal_id: Optional[str] = None,
     ) -> float:
         """
-        Get GEOMETRIC path distance (actual pixels) with caching.
+        Get GEOMETRIC path distance (actual pixels) with aggressive caching.
+
+        OPTIMIZATION: Uses pre-computed node-to-node distances from level cache,
+        then applies sub-node position offset. This eliminates expensive BFS calls.
 
         Unlike get_distance() which returns physics-weighted costs, this returns
         the actual path length in pixels. Use this for PBRS normalization where
@@ -704,15 +851,25 @@ class CachedPathDistanceCalculator:
             graph_data: Optional graph data dict with spatial_hash for fast lookup
             entity_radius: Collision radius of the goal entity (default 0.0)
             ninja_radius: Collision radius of the ninja (default 10.0)
-
+            goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
         Returns:
             Geometric path distance in pixels, or float('inf') if unreachable
         """
+        # Import needed for ninja node finding
+        from .pathfinding_utils import find_ninja_node
+        import logging
+
+        logger = logging.getLogger(__name__)
+        # OPTIMIZATION: Step-level cache check (eliminates duplicate calls within same step)
+        step_key = (start, goal, entity_radius)
+        if step_key in self._step_cache_geo:
+            self._step_cache_hits += 1
+            return self._step_cache_geo[step_key]
+        self._step_cache_misses += 1
+
         # CRITICAL: Early exit for invalid goal positions
         # Goals at (0, 0) indicate entity loading failure - return inf to avoid cache pollution
         if goal[0] == 0 and goal[1] == 0:
-            # This is a defensive check - callers should validate goals before calling
-            # Return inf (unreachable) rather than computing nonsense distances
             return float("inf")
 
         # Extract spatial hash and subcell lookup from graph_data if available
@@ -726,7 +883,6 @@ class CachedPathDistanceCalculator:
 
         # EARLY EXIT: If start and goal are within combined collision radii,
         # the ninja is already touching/overlapping the goal - distance is 0.
-        # This handles the edge case where player spawns in the same cell as a goal.
         combined_radius = ninja_radius + entity_radius
         dx = start[0] - goal[0]
         dy = start[1] - goal[1]
@@ -734,7 +890,7 @@ class CachedPathDistanceCalculator:
         if dist_sq <= combined_radius * combined_radius:
             return 0.0
 
-        # Try level cache first if level_data is provided
+        # FAST PATH: Use level cache with position offset (eliminates BFS calls)
         if level_data is not None and self.level_cache is not None:
             # Only rebuild cache if level actually changed
             level_id = level_data.level_id
@@ -758,8 +914,50 @@ class CachedPathDistanceCalculator:
 
             # Only proceed if we found a valid goal node within threshold
             if goal_node is not None:
-                # Look up goal_id from goal_node using the cache's mapping
-                goal_id = self.level_cache.get_goal_id_from_node(goal_node)
+                if goal_id is None:
+                    # ROBUST GOAL_ID INFERENCE: Use cached entity positions (O(1) per level)
+                    # Avoids repeated entity queries in hot path (2000+ calls per profile)
+
+                    # Check if goal matches a cached switch position (within 24px tolerance)
+                    for switch_pos in self._cached_switch_positions:
+                        if (
+                            abs(switch_pos[0] - goal[0]) < 24
+                            and abs(switch_pos[1] - goal[1]) < 24
+                        ):
+                            goal_id = "switch"  # Use generic alias
+                            break
+
+                    # Check if goal matches a cached exit position (within 24px tolerance)
+                    if goal_id is None:
+                        for exit_pos in self._cached_exit_positions:
+                            if (
+                                abs(exit_pos[0] - goal[0]) < 24
+                                and abs(exit_pos[1] - goal[1]) < 24
+                            ):
+                                goal_id = "exit"  # Use generic alias
+                                break
+
+                    # Check if goal matches a cached waypoint position (within 24px tolerance)
+                    if goal_id is None:
+                        for i, waypoint_pos in enumerate(
+                            self._cached_waypoint_positions
+                        ):
+                            if (
+                                abs(waypoint_pos[0] - goal[0]) < 24
+                                and abs(waypoint_pos[1] - goal[1]) < 24
+                            ):
+                                goal_id = f"waypoint_{i}"
+                                break
+
+                if goal_id is None:
+                    logger.warning(f"Goal ID not found for goal: {goal}")
+                    print(f"cached_exit_positions: {self._cached_exit_positions}")
+                    print(f"cached_switch_positions: {self._cached_switch_positions}")
+                    print(
+                        f"cached_waypoint_positions: {self._cached_waypoint_positions}"
+                    )
+                    print(f"goal: {goal}")
+                    print(goal)
 
                 if goal_id is not None:
                     # Get goal_pos for validation
@@ -767,11 +965,24 @@ class CachedPathDistanceCalculator:
 
                     if goal_pos is not None:
                         # Validate that cached goal_pos matches input goal (within tolerance)
-                        dx = abs(goal_pos[0] - goal[0])
-                        dy = abs(goal_pos[1] - goal[1])
-                        if dx <= 12 and dy <= 12:
-                            # Find ninja node
-                            # FIX: Pass level_cache to use PATH distance instead of Euclidean
+                        dx_check = abs(goal_pos[0] - goal[0])
+                        dy_check = abs(goal_pos[1] - goal[1])
+
+                        # DIAGNOSTIC: Log validation failures
+                        if dx_check > 12 or dy_check > 12:
+                            if not hasattr(self, "_validation_fail_count"):
+                                self._validation_fail_count = 0
+                            self._validation_fail_count += 1
+                            if self._validation_fail_count <= 5:
+                                logger.warning(
+                                    f"[VALIDATION_FAIL #{self._validation_fail_count}] goal_id={goal_id}, "
+                                    f"goal={goal}, goal_pos={goal_pos}, "
+                                    f"dx={dx_check:.1f}, dy={dy_check:.1f}, "
+                                    f"threshold=12"
+                                )
+
+                        if dx_check <= 12 and dy_check <= 12:
+                            # Find ninja node using canonical selection
                             start_node = find_ninja_node(
                                 start,
                                 adjacency,
@@ -783,34 +994,188 @@ class CachedPathDistanceCalculator:
                                 goal_id=goal_id,
                             )
 
-                            # Try level cache with snapped start position
+                            # FAST PATH: Use cached node-to-node distance + position offset
                             if start_node is not None and start_node in adjacency:
-                                # Get GEOMETRIC distance from cache
-                                cached_dist = self.level_cache.get_geometric_distance(
-                                    start_node, goal_pos, goal_id
-                                )
+                                # OPTIMIZATION: Check per-query cache first (node pair cache)
+                                cache_key = (start_node, goal_node)
+                                if cache_key in self._geometric_distance_cache:
+                                    cached_dist = self._geometric_distance_cache[
+                                        cache_key
+                                    ]
+                                    # LRU: Move to end to mark as recently used
+                                    self._geometric_distance_cache.move_to_end(
+                                        cache_key
+                                    )
+                                    # Apply sub-node position offset using next_hop projection
+                                    # (already implemented below, reuse that logic)
+                                else:
+                                    # Get GEOMETRIC distance from level cache (node-to-node)
+                                    cached_dist = (
+                                        self.level_cache.get_geometric_distance(
+                                            start_node, goal_pos, goal_id
+                                        )
+                                    )
+                                    if cached_dist != float("inf"):
+                                        # Store in per-query cache with LRU eviction
+                                        self._geometric_distance_cache[cache_key] = (
+                                            cached_dist
+                                        )
+                                        self._geometric_distance_cache.move_to_end(
+                                            cache_key
+                                        )
+
+                                        # LRU eviction: Remove oldest if exceeds max size
+                                        if (
+                                            len(self._geometric_distance_cache)
+                                            > self._geometric_cache_max_size
+                                        ):
+                                            self._geometric_distance_cache.popitem(
+                                                last=False
+                                            )
+
                                 if cached_dist != float("inf"):
-                                    # OPTIMIZATION: Store node info for PBRS caching reuse
-                                    # This avoids redundant find_ninja_node calls in pbrs_potentials.py
-                                    self._last_start_node = start_node
-                                    self._last_goal_id = goal_id
-                                    self._last_geometric_distance = cached_dist
-                                    self._last_next_hop = self.level_cache.get_next_hop(
+                                    # SUB-NODE POSITION OFFSET: Apply projection for dense rewards
+                                    # Get next hop toward goal for optimal path direction
+                                    next_hop = self.level_cache.get_next_hop(
                                         start_node, goal_id
                                     )
 
-                                    # Adjust for collision radii
-                                    return max(
+                                    if next_hop is not None:
+                                        # Convert positions to world coordinates
+                                        from .pathfinding_utils import (
+                                            NODE_WORLD_COORD_OFFSET,
+                                        )
+
+                                        start_node_world_x = (
+                                            start_node[0] + NODE_WORLD_COORD_OFFSET
+                                        )
+                                        start_node_world_y = (
+                                            start_node[1] + NODE_WORLD_COORD_OFFSET
+                                        )
+                                        next_hop_world_x = (
+                                            next_hop[0] + NODE_WORLD_COORD_OFFSET
+                                        )
+                                        next_hop_world_y = (
+                                            next_hop[1] + NODE_WORLD_COORD_OFFSET
+                                        )
+
+                                        # Vector from start_node to next_hop (optimal direction)
+                                        path_dx = next_hop_world_x - start_node_world_x
+                                        path_dy = next_hop_world_y - start_node_world_y
+                                        path_len = (
+                                            path_dx * path_dx + path_dy * path_dy
+                                        ) ** 0.5
+
+                                        if path_len > 0.001:
+                                            # Normalize path direction
+                                            path_dir_x = path_dx / path_len
+                                            path_dir_y = path_dy / path_len
+
+                                            # Vector from start_node to player
+                                            player_dx = start[0] - start_node_world_x
+                                            player_dy = start[1] - start_node_world_y
+
+                                            # Project player offset onto path direction
+                                            # Positive = player ahead (toward next_hop) = closer
+                                            # Negative = player behind = further
+                                            projection = (
+                                                player_dx * path_dir_x
+                                                + player_dy * path_dir_y
+                                            )
+
+                                            # Subtract projection from cached distance
+                                            # (positive projection = closer to goal)
+                                            total_dist = max(
+                                                0.0,
+                                                cached_dist
+                                                - projection
+                                                - (ninja_radius + entity_radius),
+                                            )
+
+                                            # OPTIMIZATION: Store for PBRS reuse
+                                            self._last_start_node = start_node
+                                            self._last_goal_id = goal_id
+                                            self._last_geometric_distance = cached_dist
+                                            self._last_next_hop = next_hop
+
+                                            # Store in step cache
+                                            self._step_cache_geo[step_key] = total_dist
+
+                                            return total_dist
+
+                                    # Fallback: no next_hop (at goal) or path too short
+                                    result = max(
                                         0.0,
                                         cached_dist - (ninja_radius + entity_radius),
                                     )
+                                    # Store in step cache
+                                    self._step_cache_geo[step_key] = result
+                                    return result
 
-        # Cache miss - compute directly using BFS with geometric costs
+        # SLOW PATH: Cache miss - compute directly using BFS with geometric costs
+        # This should be rare after level cache warm-up
+        # LOG cache miss for diagnostic purposes (helps identify cache issues)
+        if self.level_cache is not None and level_data is not None:
+            # Detailed diagnostic: why did cache miss?
+            start_node = None
+            goal_node = None
+            goal_id = None
+
+            # Try to find nodes for diagnostic
+            subcell_lookup = graph_data.get("subcell_lookup") if graph_data else None
+            if adjacency:
+                start_node = find_ninja_node(
+                    start,
+                    adjacency,
+                    spatial_hash=self._spatial_hash,
+                    subcell_lookup=subcell_lookup,
+                    ninja_radius=ninja_radius,
+                )
+
+            # Check goal inference
+            if start[0] == 0 and start[1] == 0:
+                goal_id = "invalid_zero_goal"
+            else:
+                # Check switch positions
+                for switch_pos in self._cached_switch_positions:
+                    if (
+                        abs(switch_pos[0] - goal[0]) < 24
+                        and abs(switch_pos[1] - goal[1]) < 24
+                    ):
+                        goal_id = "switch"
+                        break
+                # Check exit positions
+                if goal_id is None:
+                    for exit_pos in self._cached_exit_positions:
+                        if (
+                            abs(exit_pos[0] - goal[0]) < 24
+                            and abs(exit_pos[1] - goal[1]) < 24
+                        ):
+                            goal_id = "exit"
+                            break
+
+            cache_key_would_be = (
+                (start_node, goal_id) if start_node and goal_id else None
+            )
+            in_cache = (
+                cache_key_would_be in self.level_cache.geometric_cache
+                if cache_key_would_be
+                else False
+            )
+
+            logger.warning(
+                f"[CACHE_MISS] get_geometric_distance fallback to BFS: "
+                f"start={start}, goal={goal}, level={self._current_level_id}, "
+                f"start_node={start_node}, goal_id={goal_id}, "
+                f"would_be_in_cache={in_cache}, "
+                f"cache_size={len(self.level_cache.geometric_cache) if self.level_cache else 0}"
+            )
+
         from .pathfinding_utils import calculate_geometric_path_distance
 
         physics_cache = graph_data.get("node_physics") if graph_data else None
 
-        return calculate_geometric_path_distance(
+        result = calculate_geometric_path_distance(
             start,
             goal,
             adjacency,
@@ -821,6 +1186,15 @@ class CachedPathDistanceCalculator:
             entity_radius=entity_radius,
             ninja_radius=ninja_radius,
         )
+
+        # Store in step cache even for BFS fallback (avoid duplicate BFS within same step)
+        self._step_cache_geo[step_key] = result
+        return result
+
+    def clear_step_cache(self):
+        """Clear step-level cache (call between environment steps)."""
+        self._step_cache.clear()
+        self._step_cache_geo.clear()
 
     def clear_cache(self):
         """Clear cache (call on level change)."""
@@ -845,10 +1219,33 @@ class CachedPathDistanceCalculator:
         self._spatial_hash = None
         self._adjacency_bounds = None
 
+        # Clear cached entity positions
+        self._cached_switch_positions.clear()
+        self._cached_exit_positions.clear()
+
+        # Clear cached waypoint positions
+        self._cached_waypoint_positions.clear()
+
+        # Clear cached graph data
+        self._last_adjacency = None
+        self._last_base_adjacency = None
+        self._last_graph_data = None
+
+        # Clear aggressive geometric distance cache (OrderedDict)
+        self._geometric_distance_cache.clear()
+
+        # Clear step-level cache
+        self.clear_step_cache()
+        self._step_cache_hits = 0
+        self._step_cache_misses = 0
+
     def get_statistics(self) -> Dict[str, float]:
         """Get cache performance statistics and timing data."""
         total_queries = self.hits + self.misses
         hit_rate = self.hits / total_queries if total_queries > 0 else 0
+
+        step_total = self._step_cache_hits + self._step_cache_misses
+        step_hit_rate = self._step_cache_hits / step_total if step_total > 0 else 0
 
         stats = {
             "hits": self.hits,
@@ -856,6 +1253,10 @@ class CachedPathDistanceCalculator:
             "total_queries": total_queries,
             "hit_rate": hit_rate,
             "cache_size": len(self.cache),
+            "step_cache_hits": self._step_cache_hits,
+            "step_cache_misses": self._step_cache_misses,
+            "step_cache_hit_rate": step_hit_rate,
+            "step_cache_size": len(self._step_cache) + len(self._step_cache_geo),
         }
 
         # Add level cache statistics if available

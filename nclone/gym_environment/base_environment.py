@@ -136,6 +136,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             enable_rendering=enable_visual_observations,
         )
 
+        # Set environment reference in simulator for cache invalidation
+        # This allows entity collision methods to invalidate caches when switch states change
+        self.nplay_headless.sim.gym_env = self
+
         # Initialize action space (6 actions: NOOP, Left, Right, Jump, Jump+Left, Jump+Right)
         self.action_space = discrete.Discrete(6)
 
@@ -240,11 +244,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Loaded from demonstration analysis, used for momentum-aware PBRS
         self._cached_momentum_waypoints: Optional[List[Any]] = None
         self._cached_waypoints_level_id: Optional[str] = None
-
-        # Kinodynamic database cache (per level)
-        # Exhaustive precomputed (position, velocity) reachability for perfect accuracy
-        self._cached_kinodynamic_db: Optional[Any] = None
-        self._cached_kinodynamic_level_id: Optional[str] = None
 
         # Load the initial map
         self.map_loader.load_map()
@@ -733,11 +732,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             phase = reward_config.training_phase
 
             if phase == "early":
-                # No time penalty in rewards -> more generous truncation for exploration
-                multiplier = 2.0
+                # No time penalty in rewards -> use standard truncation for faster learning
+                multiplier = (
+                    1.0  # Changed from 2.0 to fix episode-length vs rollout mismatch
+                )
             elif phase == "mid":
-                # Conditional time penalty -> moderate truncation
-                multiplier = 1.5
+                # Conditional time penalty -> standard truncation
+                multiplier = 1.0  # Changed from 1.5
             elif phase == "late":
                 # Full time penalty -> standard truncation for efficiency
                 multiplier = 1.0
@@ -768,11 +769,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             phase = reward_config.training_phase
 
             if phase == "early":
-                # No time penalty in rewards -> more generous truncation for exploration
-                multiplier = 4.0
+                # No time penalty in rewards -> use standard truncation for faster learning
+                multiplier = (
+                    1.0  # Changed from 4.0 to fix episode-length vs rollout mismatch
+                )
             elif phase == "mid":
-                # Conditional time penalty -> moderate truncation
-                multiplier = 2.0
+                # Conditional time penalty -> standard truncation
+                multiplier = 1.0  # Changed from 2.0
             elif phase == "late":
                 # Full time penalty -> standard truncation for efficiency
                 multiplier = 1.0
@@ -916,6 +919,33 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     self._checkpoint_base_reward + self.current_ep_reward
                 )
 
+                # Validate reward accounting
+                expected_total = self._checkpoint_base_reward + self.current_ep_reward
+                if abs(info["total_cumulative_reward"] - expected_total) > 0.01:
+                    logger.warning(
+                        f"[REWARD_ACCOUNTING] Mismatch: "
+                        f"base={self._checkpoint_base_reward:.3f}, "
+                        f"episode={self.current_ep_reward:.3f}, "
+                        f"expected_total={expected_total:.3f}, "
+                        f"actual_total={info['total_cumulative_reward']:.3f}"
+                    )
+                    info["reward_accounting_valid"] = False
+                else:
+                    info["reward_accounting_valid"] = True
+
+            # Add adaptive waypoint data for visualization (Phase 3 enhancement)
+            if hasattr(self.reward_calculator, "adaptive_waypoints"):
+                level_id = self.map_loader.current_map_name or "default"
+                waypoints = (
+                    self.reward_calculator.adaptive_waypoints.get_waypoints_for_level(
+                        level_id
+                    )
+                )
+                info["_waypoints_active"] = waypoints  # List of waypoint dicts
+                info["_waypoints_reached"] = list(
+                    self.reward_calculator.adaptive_waypoints.waypoints_reached_this_episode
+                )
+
         # DIAGNOSTIC: Validate episode stats are reasonable
         if (terminated or truncated) and self.enable_logging:
             if self.current_ep_reward == 0.0:
@@ -956,6 +986,21 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if hasattr(self.reward_calculator, "get_config_state"):
                 info["reward_config_state"] = self.reward_calculator.get_config_state()
 
+            # Add PBRS diagnostic data for route visualization (Phase 1 enhancement)
+            if hasattr(self.reward_calculator, "get_pbrs_diagnostic_data"):
+                diagnostic_data = self.reward_calculator.get_pbrs_diagnostic_data()
+                info["_velocity_history"] = diagnostic_data["velocity_history"]
+                info["_alignment_history"] = diagnostic_data["alignment_history"]
+                info["_path_gradient_history"] = diagnostic_data[
+                    "path_gradient_history"
+                ]
+                info["_last_next_hop_world"] = diagnostic_data.get(
+                    "last_next_hop_world"
+                )
+                info["_last_next_hop_goal_id"] = diagnostic_data.get(
+                    "last_next_hop_goal_id"
+                )
+
         return info
 
     def reset(self, seed=None, options=None):
@@ -966,7 +1011,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             options: Dictionary of reset options. Supported keys:
                 - skip_map_load (bool): If True, skip loading a new map.
                   Use this when map has already been loaded externally
-                  (e.g., by curriculum wrapper).
+                  (e.g., by curriculum wrapper, test_environment.py).
+                - new_level (bool): If True, treat this as a new level requiring
+                  full cache clearing. Defaults to True when skip_map_load=True.
+                - map_name (str): Name of the externally loaded map (for cache keying).
+                  When skip_map_load=True, this updates map_loader.current_map_name.
                 - checkpoint: StateCheckpoint or CheckpointEntry to restore via action replay.
                   If provided, the environment will reset and replay the checkpoint's
                   action sequence to restore the exact game state.
@@ -1043,24 +1092,40 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_momentum_waypoints = None
         self._cached_waypoints_level_id = None
 
-        # Invalidate kinodynamic database cache (new level = new database)
-        self._cached_kinodynamic_db = None
-        self._cached_kinodynamic_level_id = None
-
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
         checkpoint = None
+        map_name = None
         if options is not None and isinstance(options, dict):
             skip_map_load = options.get("skip_map_load", False)
             checkpoint = options.get("checkpoint", None)
+            map_name = options.get("map_name", None)
 
         if not skip_map_load:
             # Load map - this calls sim.load() which calls sim.reset()
             self.map_loader.load_map()
         else:
-            # If map loading is skipped, we still need to reset the sim
-            # This happens when curriculum wrapper loads the map externally
-            self.nplay_headless.reset()
+            # Update map_loader.current_map_name if provided
+            # This is critical for cache keying and momentum waypoint loading
+            if map_name is not None and hasattr(self, "map_loader"):
+                self.map_loader.current_map_name = map_name
+                if self.enable_logging:
+                    logger.debug(f"Updated map_loader.current_map_name to: {map_name}")
+
+            # Only reset the sim if a map wasn't just loaded externally
+            # (sim.load() already calls sim.reset(), so we shouldn't reset again)
+            map_just_loaded = getattr(self.nplay_headless, "_map_just_loaded", False)
+            if not map_just_loaded:
+                # If map loading is skipped but no new map loaded, reset to spawn
+                # This handles checkpoint replay and same-level resets
+                self.nplay_headless.reset()
+            else:
+                # Clear the flag after checking it
+                self.nplay_headless._map_just_loaded = False
+                if self.enable_logging:
+                    logger.debug(
+                        "Skipped nplay_headless.reset() - map was just loaded externally"
+                    )
 
         # If checkpoint provided, replay action sequence to restore state
         if checkpoint is not None:
@@ -1540,6 +1605,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Get current ninja position (this is dynamic, not cached)
         ninja_pos = self.nplay_headless.ninja_position()
 
+        # Get map name for waypoint lookups (use actual filename instead of auto-generated level_id)
+        map_name = getattr(self.map_loader, "current_map_name", None)
+
         obs = {
             "game_state": game_state,
             "player_dead": self.nplay_headless.ninja_has_died(),
@@ -1562,6 +1630,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "locked_doors": locked_doors,
             "locked_door_switches": locked_door_switches,
             "action_mask": self._get_action_mask_with_path_update(),
+            "map_name": map_name,  # For waypoint lookups by filename
         }
 
         action_mask = obs["action_mask"]
@@ -1670,6 +1739,19 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         return switch_states
 
+    def invalidate_switch_cache(self):
+        """Invalidate switch-dependent caches when switch states change.
+
+        This is a no-op stub in BaseNppEnvironment. Subclasses that use
+        switch-dependent caching (like NppEnvironment with mixins) should
+        override this method to clear their caches.
+
+        Called by entity collision methods (EntityExitSwitch, EntityDoorLocked)
+        when switches are activated, ensuring path distances and other cached
+        values are recomputed with updated goal positions.
+        """
+        pass
+
     def _extract_level_data(self) -> LevelData:
         """
         Extract level structure data for graph construction.
@@ -1695,10 +1777,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self.nplay_headless.sim.map_data
         )
 
+        # CRITICAL FIX: Populate switch_states for cache key generation
+        # This ensures PBRS path distance caches are built with correct switch states
+        # Without this, caches may not invalidate properly when switches activate
+        switch_states = {}
+        if hasattr(self, "_get_switch_states_from_env"):
+            switch_states = self._get_switch_states_from_env()
+
         return LevelData(
             start_position=start_position,
             tiles=tiles,
             entities=entities,
+            switch_states=switch_states,
         )
 
     @property
@@ -1714,6 +1804,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         """
         if self._cached_level_data is None:
             self._cached_level_data = self._extract_level_data()
+
         return self._cached_level_data
 
     @property
@@ -1778,74 +1869,29 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             logger.debug(f"Failed to load momentum waypoints: {e}")
             return None
 
-    def _load_kinodynamic_database_if_available(self) -> Optional[Any]:
-        """Load kinodynamic database for current level if available.
-
-        Kinodynamic databases are precomputed using build_kinodynamic_database.py
-        and provide perfect velocity-aware reachability with O(1) queries.
-
-        Returns:
-            KinodynamicDatabase instance if available, None otherwise
-        """
-        level_id = self.map_loader.current_map_name
-
-        # Check if already cached
-        if (
-            self._cached_kinodynamic_level_id == level_id
-            and self._cached_kinodynamic_db is not None
-        ):
-            return self._cached_kinodynamic_db
-
-        # Try to load from cache
-        try:
-            from ..graph.reachability.kinodynamic_database import KinodynamicDatabase
-
-            db = KinodynamicDatabase.load(f"kinodynamic_db/{level_id}.npz")
-
-            # Cache the result (even if None)
-            self._cached_kinodynamic_db = db
-            self._cached_kinodynamic_level_id = level_id
-
-            if db:
-                stats = db.get_statistics()
-                logger.info(
-                    f"Loaded kinodynamic database for {level_id}: "
-                    f"{stats['num_nodes']} nodes, {stats['reachable_pairs']:,} reachable pairs"
-                )
-            else:
-                logger.debug(f"No kinodynamic database found for {level_id}")
-
-            return db
-
-        except Exception as e:
-            logger.debug(f"Failed to load kinodynamic database: {e}")
-            return None
-
     def _update_momentum_waypoints_for_current_level(self) -> None:
-        """Update PBRS calculator with momentum waypoints and kinodynamic database.
+        """Update PBRS calculator with momentum waypoints.
 
-        Called during reset after map is loaded. Loads:
-        1. Kinodynamic database (if available) - most accurate
-        2. Momentum waypoints (if available) - fallback for complex cases
+        Called during reset after map is loaded. Loads momentum waypoints
+        (if available) for demonstration-based guidance on momentum-dependent paths.
         """
-        # Load kinodynamic database (highest priority)
-        kinodynamic_db = self._load_kinodynamic_database_if_available()
-
-        # Load momentum waypoints (fallback)
+        # Load momentum waypoints
         waypoints = self._load_momentum_waypoints_if_available()
+        print(
+            f"[RESET_WP] Loaded {len(waypoints) if waypoints else 0} waypoints during reset"
+        )
 
         # Update PBRS calculator
         if hasattr(self.reward_calculator, "pbrs_calculator"):
             pbrs_calc = self.reward_calculator.pbrs_calculator
 
-            # Set kinodynamic database (if available)
-            if hasattr(pbrs_calc, "set_kinodynamic_database"):
-                pbrs_calc.set_kinodynamic_database(kinodynamic_db)
-
             # Set momentum waypoints (if available)
             if hasattr(pbrs_calc, "set_momentum_waypoints"):
+                print(
+                    f"[RESET_WP] Calling set_momentum_waypoints with {len(waypoints) if waypoints else 0} waypoints"
+                )
                 pbrs_calc.set_momentum_waypoints(waypoints)
-                if waypoints and not kinodynamic_db:
+                if waypoints:
                     logger.info(
                         f"Enabled momentum-aware PBRS with {len(waypoints)} waypoints "
                         f"for level {self.map_loader.current_map_name}"
@@ -1945,6 +1991,153 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             Boolean indicating if the ninja died from terminal impact
         """
         return self.nplay_headless.get_ninja_terminal_impact()
+
+    def get_path_distances_for_visualization(
+        self,
+        agent_pos: Tuple[float, float],
+        switch_pos: Tuple[float, float],
+        exit_pos: Tuple[float, float],
+        switch_activated: bool,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Calculate shortest path distances from agent position to goals.
+
+        This method is callable via env_method from SubprocVecEnv to provide
+        path distance debugging information for route visualization.
+
+        Uses the PBRS path calculator to get geometric distances along
+        physics-optimal paths, matching the reward calculation logic.
+
+        Args:
+            agent_pos: Agent's position (x, y)
+            switch_pos: Exit switch position (x, y)
+            exit_pos: Exit door position (x, y)
+            switch_activated: Whether switch has been activated
+
+        Returns:
+            Tuple of (switch_distance, exit_distance) in pixels
+            Returns (None, None) if calculation not possible
+        """
+        try:
+            # Get path calculator from reward calculator's PBRS calculator
+            if not hasattr(self.reward_calculator, "pbrs_calculator"):
+                return (None, None)
+
+            pbrs_calc = self.reward_calculator.pbrs_calculator
+            if not hasattr(pbrs_calc, "path_calculator"):
+                return (None, None)
+
+            path_calculator = pbrs_calc.path_calculator
+
+            # Get current level data and graph
+            level_data = self.level_data
+
+            # Get graph data - need to check if GraphMixin is available
+            adjacency = None
+            graph_data = None
+            if hasattr(self, "current_graph_data") and self.current_graph_data:
+                adjacency = self.current_graph_data.get("adjacency")
+                graph_data = self.current_graph_data
+
+            if adjacency is None:
+                return (None, None)
+
+            base_adjacency = (
+                graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+            )
+
+            from ..constants.physics_constants import (
+                EXIT_SWITCH_RADIUS,
+                EXIT_DOOR_RADIUS,
+                NINJA_RADIUS,
+            )
+
+            # Calculate distance to switch (if not activated)
+            switch_distance = None
+            if not switch_activated:
+                try:
+                    switch_distance = path_calculator.get_geometric_distance(
+                        (int(agent_pos[0]), int(agent_pos[1])),
+                        (int(switch_pos[0]), int(switch_pos[1])),
+                        adjacency,
+                        base_adjacency,
+                        level_data=level_data,
+                        graph_data=graph_data,
+                        entity_radius=EXIT_SWITCH_RADIUS,
+                        ninja_radius=NINJA_RADIUS,
+                        goal_id="switch",
+                    )
+                    if switch_distance == float("inf"):
+                        switch_distance = None
+                except Exception as e:
+                    logger.debug(f"Failed to calculate switch distance: {e}")
+                    switch_distance = None
+
+            # Calculate distance to exit
+            exit_distance = None
+            try:
+                exit_distance = path_calculator.get_geometric_distance(
+                    (int(agent_pos[0]), int(agent_pos[1])),
+                    (int(exit_pos[0]), int(exit_pos[1])),
+                    adjacency,
+                    base_adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    entity_radius=EXIT_DOOR_RADIUS,
+                    ninja_radius=NINJA_RADIUS,
+                    goal_id="exit",
+                )
+                if exit_distance == float("inf"):
+                    exit_distance = None
+            except Exception as e:
+                logger.debug(f"Failed to calculate exit distance: {e}")
+                exit_distance = None
+
+            return (switch_distance, exit_distance)
+
+        except Exception as e:
+            logger.debug(f"get_path_distances_for_visualization failed: {e}")
+            return (None, None)
+
+    def get_graph_data_for_visualization(self) -> Optional[Dict[str, Any]]:
+        """Get graph data for route visualization.
+
+        This method is callable via env_method from SubprocVecEnv to provide
+        graph data for PBRS path visualization in route callbacks.
+
+        Returns:
+            Dictionary with graph data suitable for pathfinding visualization,
+            or None if graph data is not available
+        """
+        try:
+            if hasattr(self, "current_graph_data") and self.current_graph_data:
+                return {
+                    "adjacency": self.current_graph_data.get("adjacency"),
+                    "base_adjacency": self.current_graph_data.get("base_adjacency"),
+                    "node_physics": self.current_graph_data.get("node_physics"),
+                    "spatial_hash": self.current_graph_data.get("spatial_hash"),
+                    "subcell_lookup": self.current_graph_data.get("subcell_lookup"),
+                }
+            return None
+        except Exception as e:
+            logger.debug(f"get_graph_data_for_visualization failed: {e}")
+            return None
+
+    def get_level_data_for_visualization(self) -> Optional[Any]:
+        """Get level data for route visualization.
+
+        This method is callable via env_method from SubprocVecEnv to provide
+        level data for PBRS path visualization with mine proximity calculations.
+
+        Returns:
+            LevelData object or None if not available
+        """
+        try:
+            if hasattr(self, "level_data"):
+                return self.level_data
+            return None
+        except Exception as e:
+            logger.debug(f"get_level_data_for_visualization failed: {e}")
+            return None
 
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects and support vectorization."""

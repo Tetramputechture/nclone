@@ -384,6 +384,18 @@ def clear_all_caches_for_new_level(env: Any, verbose: bool = False) -> None:
     # Environment-level caches
     clear_level_data_caches(env, verbose=verbose)
     clear_door_feature_caches(env, verbose=verbose)
+    
+    # Clear static position caches (goal positions from previous level)
+    # CRITICAL: These must be cleared when loading a new level to prevent
+    # using old goal positions with new level's graph (causes "goal not found" errors)
+    if hasattr(env, "_cached_switch_pos"):
+        env._cached_switch_pos = None
+        if verbose:
+            print("  - Cleared _cached_switch_pos")
+    if hasattr(env, "_cached_exit_pos"):
+        env._cached_exit_pos = None
+        if verbose:
+            print("  - Cleared _cached_exit_pos")
 
     # Clear pathfinding utility caches (module-level caches)
     clear_pathfinding_utility_caches(verbose=verbose)
