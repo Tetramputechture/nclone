@@ -385,6 +385,7 @@ class ObservationProcessor:
                 # Spatial context (graph-free local geometry features)
                 "spatial_context",
                 # Position data (needed for waypoint extraction in replay processing)
+                "mine_sdf_features",
                 "player_x",
                 "player_y",
                 "switch_x",
@@ -432,6 +433,7 @@ class ObservationProcessor:
             "graph_edge_index",
             "graph_node_mask",
             "graph_edge_mask",
+            "mine_sdf_features",
             # Spatial context (graph-free local geometry features)
             "spatial_context",
         ]

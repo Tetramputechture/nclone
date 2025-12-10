@@ -301,7 +301,6 @@ class DebugOverlayRenderer:
         Returns:
             pygame.Surface with SDF heatmap overlay
         """
-        import numpy as np
 
         surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
 
@@ -1320,6 +1319,258 @@ class DebugOverlayRenderer:
 
         return surface
 
+    def _draw_demo_checkpoints_heatmap(
+        self, demo_checkpoint_info: dict
+    ) -> Optional[pygame.Surface]:
+        """Draw demo checkpoint heatmap visualization showing expert trajectories.
+
+        Renders checkpoints as a heatmap with colors indicating cumulative reward:
+        Blue (low reward) → Cyan → Green → Yellow → Red (high reward)
+
+        Args:
+            demo_checkpoint_info: Dictionary containing:
+                - checkpoints: List of checkpoint dicts with:
+                    - cell: (x, y) discretized position
+                    - cumulative_reward: Reward value (frame progression proxy)
+                    - position: (x, y) actual position in pixels
+                - ninja_position: Current ninja position (x, y)
+                - grid_size: Cell size in pixels (12px)
+
+        Returns:
+            pygame.Surface with demo checkpoint heatmap overlay
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        checkpoints = demo_checkpoint_info.get("checkpoints", [])
+        ninja_pos = demo_checkpoint_info.get("ninja_position", (0, 0))
+        grid_size = demo_checkpoint_info.get("grid_size", 12)
+
+        if not checkpoints:
+            return surface
+
+        # Debug: Log checkpoint data structure
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.info(
+            f"[DEMO_HEATMAP] Rendering {len(checkpoints)} checkpoints, "
+            f"grid_size={grid_size}, ninja_pos={ninja_pos}, "
+            f"tile_offset=({self.tile_x_offset}, {self.tile_y_offset}), "
+            f"adjust={self.adjust}"
+        )
+        if checkpoints:
+            sample = checkpoints[0]
+            _logger.info(
+                f"[DEMO_HEATMAP] Sample checkpoint keys: {list(sample.keys())}"
+            )
+
+        # Calculate screen cell size
+        cell_size = grid_size * self.adjust
+
+        # Normalize cumulative rewards to [0, 1] range for color mapping
+        rewards = [cp.get("cumulative_reward", 0.0) for cp in checkpoints]
+        min_reward = min(rewards) if rewards else 0.0
+        max_reward = max(rewards) if rewards else 1.0
+        reward_range = max_reward - min_reward if max_reward > min_reward else 1.0
+
+        # Track highest reward checkpoint for marker
+        highest_checkpoint = None
+        highest_reward = float("-inf")
+
+        # Draw checkpoint cells as heatmap
+        for i, checkpoint in enumerate(checkpoints):
+            cell = checkpoint.get("cell")
+            cumulative_reward = checkpoint.get("cumulative_reward", 0.0)
+            position = checkpoint.get("position")
+
+            # Debug first few checkpoints
+            if i < 3:
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.info(
+                    f"[DEMO_CHECKPOINT_DEBUG] checkpoint {i}: position={position} (type={type(position)}), "
+                    f"cell={cell}, reward={cumulative_reward:.3f}"
+                )
+
+            # Skip if no position data
+            if position is None:
+                continue
+
+            # Handle position being a tuple or list
+            try:
+                if isinstance(position, (tuple, list)) and len(position) >= 2:
+                    pos_x, pos_y = position[0], position[1]
+                else:
+                    # Skip malformed position
+                    if i < 3:
+                        _logger.warning(f"Malformed position: {position}")
+                    continue
+            except Exception as e:
+                if i < 3:
+                    _logger.warning(f"Error unpacking position {position}: {e}")
+                continue
+
+            # Debug calculated coordinates
+            if i < 3:
+                grid_cell_x = int(pos_x) // grid_size
+                grid_cell_y = int(pos_y) // grid_size
+                screen_x = grid_cell_x * cell_size + self.tile_x_offset
+                screen_y = grid_cell_y * cell_size + self.tile_y_offset
+                _logger.info(
+                    f"  -> grid_cell=({grid_cell_x}, {grid_cell_y}), "
+                    f"cell_size={cell_size:.2f}, screen=({screen_x:.1f}, {screen_y:.1f})"
+                )
+
+            # Normalize reward to [0, 1]
+            normalized_reward = (cumulative_reward - min_reward) / reward_range
+
+            # Track highest reward checkpoint
+            if cumulative_reward > highest_reward:
+                highest_reward = cumulative_reward
+                highest_checkpoint = position
+
+            # Map normalized reward to color (blue → cyan → green → yellow → red)
+            # This creates a "hot" colormap similar to thermal imaging
+            if normalized_reward < 0.25:
+                # Blue to Cyan (0.0 - 0.25)
+                t = normalized_reward / 0.25
+                r = 0
+                g = int(100 + 155 * t)  # 100 → 255
+                b = 255
+                alpha = 120
+            elif normalized_reward < 0.5:
+                # Cyan to Green (0.25 - 0.5)
+                t = (normalized_reward - 0.25) / 0.25
+                r = 0
+                g = 255
+                b = int(255 * (1 - t))  # 255 → 0
+                alpha = 130
+            elif normalized_reward < 0.75:
+                # Green to Yellow (0.5 - 0.75)
+                t = (normalized_reward - 0.5) / 0.25
+                r = int(255 * t)  # 0 → 255
+                g = 255
+                b = 0
+                alpha = 140
+            else:
+                # Yellow to Red (0.75 - 1.0)
+                t = (normalized_reward - 0.75) / 0.25
+                r = 255
+                g = int(255 * (1 - t))  # 255 → 0
+                b = 0
+                alpha = 150
+
+            # Convert world coordinates (pixels) to screen coordinates
+            # Standard pattern: screen = int(world * adjust) + tile_offset
+            # For grid-based rendering, snap to grid first
+            
+            # Snap position to grid boundaries (12px cells in world space)
+            grid_world_x = (int(pos_x) // grid_size) * grid_size
+            grid_world_y = (int(pos_y) // grid_size) * grid_size
+            
+            # Convert snapped world coordinates to screen coordinates
+            screen_x = int(grid_world_x * self.adjust) + self.tile_x_offset
+            screen_y = int(grid_world_y * self.adjust) + self.tile_y_offset
+
+            # Debug calculated coordinates for first few
+            if i < 3:
+                _logger.info(
+                    f"  -> world=({pos_x}, {pos_y}), grid_world=({grid_world_x}, {grid_world_y}), "
+                    f"screen=({screen_x}, {screen_y}), cell_size={cell_size:.2f}"
+                )
+
+            # Draw filled rectangle for this checkpoint cell
+            rect = pygame.Rect(screen_x, screen_y, cell_size, cell_size)
+            pygame.draw.rect(surface, (r, g, b, alpha), rect)
+
+        # Draw marker for highest reward checkpoint (goal position indicator)
+        if highest_checkpoint is not None:
+            hc_x, hc_y = highest_checkpoint
+            screen_x = int(hc_x * self.adjust) + self.tile_x_offset
+            screen_y = int(hc_y * self.adjust) + self.tile_y_offset
+
+            # Draw bright red circle with yellow border
+            pygame.draw.circle(surface, (255, 50, 50, 255), (screen_x, screen_y), 8)
+            pygame.draw.circle(surface, (255, 255, 100, 255), (screen_x, screen_y), 8, 2)
+
+        # Draw legend
+        try:
+            legend_font = pygame.font.Font(None, 18)
+            title_font = pygame.font.Font(None, 20)
+        except pygame.error:
+            legend_font = pygame.font.SysFont("arial", 14)
+            title_font = pygame.font.SysFont("arial", 16)
+
+        # Legend dimensions
+        legend_width = 180
+        legend_height = 140
+        legend_x = self.screen.get_width() - legend_width - 20
+        legend_y = 20
+
+        # Draw legend background
+        pygame.draw.rect(
+            surface,
+            (0, 0, 0, 200),
+            (legend_x, legend_y, legend_width, legend_height),
+            border_radius=5,
+        )
+        pygame.draw.rect(
+            surface,
+            (100, 200, 255, 255),
+            (legend_x, legend_y, legend_width, legend_height),
+            2,
+            border_radius=5,
+        )
+
+        # Title
+        title_text = "Demo Checkpoints"
+        title_surf = title_font.render(title_text, True, (255, 255, 255))
+        surface.blit(title_surf, (legend_x + 10, legend_y + 8))
+
+        # Checkpoint count
+        count_text = f"Count: {len(checkpoints)}"
+        count_surf = legend_font.render(count_text, True, (255, 255, 255))
+        surface.blit(count_surf, (legend_x + 10, legend_y + 32))
+
+        # Reward range
+        range_text = f"Reward: {min_reward:.2f}-{max_reward:.2f}"
+        range_surf = legend_font.render(range_text, True, (255, 255, 255))
+        surface.blit(range_surf, (legend_x + 10, legend_y + 52))
+
+        # Color scale
+        scale_y = legend_y + 75
+        scale_height = 12
+        scale_colors = [
+            (0, 100, 255),  # Blue (low)
+            (0, 255, 255),  # Cyan
+            (0, 255, 0),  # Green
+            (255, 255, 0),  # Yellow
+            (255, 0, 0),  # Red (high)
+        ]
+
+        # Draw color gradient bar
+        bar_width = legend_width - 20
+        segment_width = bar_width / len(scale_colors)
+        for i, color in enumerate(scale_colors):
+            segment_x = legend_x + 10 + i * segment_width
+            pygame.draw.rect(
+                surface,
+                color + (200,),
+                (segment_x, scale_y, segment_width, scale_height),
+            )
+
+        # Scale labels
+        low_label = legend_font.render("Low", True, (200, 200, 255))
+        high_label = legend_font.render("High", True, (255, 200, 200))
+        surface.blit(low_label, (legend_x + 10, scale_y + scale_height + 5))
+        high_x = legend_x + legend_width - high_label.get_width() - 10
+        surface.blit(high_label, (high_x, scale_y + scale_height + 5))
+
+        # Highest checkpoint indicator
+        marker_text = legend_font.render("● = Goal", True, (255, 50, 50))
+        surface.blit(marker_text, (legend_x + 10, legend_y + 110))
+
+        return surface
+
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -1360,6 +1611,14 @@ class DebugOverlayRenderer:
             mine_sdf_surface = self._draw_mine_sdf(debug_info["mine_sdf"])
             if mine_sdf_surface:
                 surface.blit(mine_sdf_surface, (0, 0))
+
+        # Draw demo checkpoint heatmap if provided
+        if debug_info and "demo_checkpoints" in debug_info:
+            demo_checkpoint_surface = self._draw_demo_checkpoints_heatmap(
+                debug_info["demo_checkpoints"]
+            )
+            if demo_checkpoint_surface:
+                surface.blit(demo_checkpoint_surface, (0, 0))
 
         return surface
 

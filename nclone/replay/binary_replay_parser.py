@@ -128,7 +128,7 @@ class BinaryReplayParser:
 
             # Analyze input distribution for validation
             input_counts = Counter(inputs)
-            logger.info(f"  Input distribution: {dict(input_counts)}")
+            logger.warning(f"  Input distribution: {dict(input_counts)}")
 
             # Validate inputs are in expected range (0-7)
             invalid_inputs = [inp for inp in inputs if not (0 <= inp <= 7)]
@@ -140,20 +140,11 @@ class BinaryReplayParser:
         else:
             raise ValueError("No valid input sequences found in attract file")
 
-        # Create complete nclone-compatible map data
-        try:
-            nclone_map_bytes = self.npp_attract_decoder.create_nclone_map(
-                str(replay_file)
-            )
-            map_data = list(nclone_map_bytes)
-            logger.info(
-                f"Perfect decoder extracted {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}"
-            )
-        except Exception as e:
-            print(
-                f"Perfect decoder map creation failed, falling back to basic map data: {e}"
-            )
-            map_data = [0] * 1335  # Standard empty map size
+        nclone_map_bytes = self.npp_attract_decoder.create_nclone_map(str(replay_file))
+        map_data = list(nclone_map_bytes)
+        logger.info(
+            f"Perfect decoder extracted {len(decoded_data['tiles'])} tiles, {len(decoded_data['entities'])} entities, spawn {decoded_data['ninja_spawn']}"
+        )
 
         logger.info(
             f"Extracted {len(inputs)} input frames and {len(map_data)} map bytes"

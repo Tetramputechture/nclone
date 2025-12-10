@@ -39,13 +39,14 @@ def extract_goal_positions(level_data: LevelData) -> List[Tuple[Tuple[int, int],
         if is_active:
             x = switch.get("x", 0)
             y = switch.get("y", 0)
-            # CRITICAL: Skip goals at (0, 0) - indicates entity not properly loaded
+            # CRITICAL: Validate goal position - should never be (0, 0)
             if x == 0 and y == 0:
-                _logger.warning(
-                    f"Skipping exit_switch_{i} at (0, 0) - entity likely not properly loaded. "
-                    f"Entity data: {switch}"
+                raise ValueError(
+                    f"EXIT SWITCH at (0, 0) - entity not properly loaded! "
+                    f"Switch index: {i}, Entity data: {switch}. "
+                    f"This should have been caught in entity_extractor.py. "
+                    f"Level file may be corrupted or entity initialization failed."
                 )
-                continue
             goal_id = f"exit_switch_{i}"
             goals.append(((int(x), int(y)), goal_id))
 
@@ -54,13 +55,14 @@ def extract_goal_positions(level_data: LevelData) -> List[Tuple[Tuple[int, int],
     for i, door in enumerate(exit_doors):
         x = door.get("x", 0)
         y = door.get("y", 0)
-        # CRITICAL: Skip goals at (0, 0)
+        # CRITICAL: Validate goal position - should never be (0, 0)
         if x == 0 and y == 0:
-            _logger.warning(
-                f"Skipping exit_door_{i} at (0, 0) - entity likely not properly loaded. "
-                f"Entity data: {door}"
+            raise ValueError(
+                f"EXIT DOOR at (0, 0) - entity not properly loaded! "
+                f"Door index: {i}, Entity data: {door}. "
+                f"This should have been caught in entity_extractor.py. "
+                f"Level file may be corrupted or entity initialization failed."
             )
-            continue
         goal_id = f"exit_door_{i}"
         goals.append(((int(x), int(y)), goal_id))
 
@@ -71,13 +73,14 @@ def extract_goal_positions(level_data: LevelData) -> List[Tuple[Tuple[int, int],
     for i, switch in enumerate(locked_door_switches):
         x = switch.get("x", 0)
         y = switch.get("y", 0)
-        # CRITICAL: Skip goals at (0, 0)
+        # CRITICAL: Validate goal position - should never be (0, 0)
         if x == 0 and y == 0:
-            _logger.warning(
-                f"Skipping locked_door_switch_{i} at (0, 0) - entity likely not properly loaded. "
-                f"Entity data: {switch}"
+            raise ValueError(
+                f"LOCKED DOOR SWITCH at (0, 0) - entity not properly loaded! "
+                f"Switch index: {i}, Entity data: {switch}. "
+                f"This should have been caught in entity_extractor.py. "
+                f"Level file may be corrupted or entity initialization failed."
             )
-            continue
         goal_id = f"locked_door_switch_{i}"
         goals.append(((int(x), int(y)), goal_id))
 

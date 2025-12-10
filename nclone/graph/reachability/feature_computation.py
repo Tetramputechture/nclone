@@ -27,6 +27,7 @@ from ...constants.physics_constants import (
 )
 from ...gym_environment.constants import LEVEL_DIAGONAL
 from .subcell_node_lookup import SUB_NODE_SIZE
+from .path_distance_calculator import CachedPathDistanceCalculator
 
 
 def compute_reachability_features_from_graph(
@@ -34,15 +35,15 @@ def compute_reachability_features_from_graph(
     graph_data: Dict[str, Any],
     level_data: Any,
     ninja_pos: Tuple[int, int],
-    path_calculator: Any,
+    path_calculator: CachedPathDistanceCalculator,
 ) -> np.ndarray:
     """
-    Compute 13-dimensional reachability features using adjacency graph and lookup tables.
+    Compute 22-dimensional reachability features using adjacency graph and lookup tables.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     No linear searches or Euclidean distance calculations.
 
-    Features (13 dims):
+    Features (22 dims):
     Base features (4):
         0. Reachable area ratio (0-1)
         1. Distance to nearest switch (normalized, inverted)
@@ -53,7 +54,7 @@ def compute_reachability_features_from_graph(
         4. Path distance to switch (normalized 0-1)
         5. Path distance to exit (normalized 0-1)
 
-    Direction vectors (4) - unit vectors toward goals:
+    Direction vectors (4) - unit vectors toward goals (Euclidean):
         6. Direction to switch X component (-1 to 1)
         7. Direction to switch Y component (-1 to 1)
         8. Direction to exit X component (-1 to 1)
@@ -66,6 +67,20 @@ def compute_reachability_features_from_graph(
     Phase indicator (1):
         12. Switch activated flag (0-1) - EXPLICIT phase indicator for Markov property
 
+    Path direction features (8) - NEW for inflection point navigation:
+        13. Next hop direction X (-1 to 1) - optimal path direction
+        14. Next hop direction Y (-1 to 1)
+        15. Waypoint direction X (-1 to 1) - toward active waypoint if present
+        16. Waypoint direction Y (-1 to 1)
+        17. Waypoint distance (0-1) - normalized distance to waypoint
+        18. Path requires detour (0-1) - binary flag if next_hop points away from goal
+        19. Mine clearance direction X (-1 to 1) - safe direction from SDF
+        20. Mine clearance direction Y (-1 to 1)
+
+    Path difficulty (1) - NEW for physics awareness:
+        21. Path difficulty ratio (0-1) - physics_cost / geometric_distance
+                                          Tells LSTM if path is hard (high ratio) or easy (low ratio)
+
     Args:
         adjacency: Graph adjacency structure from GraphBuilder
         graph_data: Full graph data dict with spatial_hash
@@ -74,7 +89,7 @@ def compute_reachability_features_from_graph(
         path_calculator: CachedPathDistanceCalculator instance
 
     Returns:
-        13-dimensional numpy array with normalized features
+        22-dimensional numpy array with normalized features
 
     Raises:
         RuntimeError: If required data is missing (adjacency, graph_data, etc.)
@@ -90,7 +105,7 @@ def compute_reachability_features_from_graph(
     # Total possible nodes (approximate: all traversable tiles)
     total_possible_nodes = MAP_TILE_WIDTH * MAP_TILE_HEIGHT
 
-    features = np.zeros(13, dtype=np.float32)
+    features = np.zeros(22, dtype=np.float32)
 
     # Track raw distances and positions for direction vectors
     switch_distance_raw = float("inf")
@@ -352,5 +367,240 @@ def compute_reachability_features_from_graph(
             switch_activated = True
             break
     features[12] = 1.0 if switch_activated else 0.0
+
+    # ========================================================================
+    # Features 13-20: Path Direction Features (NEW - Phase 1.1)
+    # Provides explicit path guidance for graph-free LSTM to solve inflection point navigation
+    # ========================================================================
+
+    # Determine current goal for path direction features
+    if not switch_activated:
+        current_goal_id = "switch"
+        current_goal_pos = switch_pos_for_direction
+    else:
+        current_goal_id = "exit"
+        current_goal_pos = exit_pos_for_direction
+
+    # Features 13-14: Next hop direction (optimal path direction)
+    # Uses level_cache.get_next_hop() to get direction along optimal path
+    # This solves "wrong direction" problem: tells agent to go LEFT even when goal is RIGHT
+    if (
+        hasattr(path_calculator, "level_cache")
+        and path_calculator.level_cache is not None
+        and current_goal_pos is not None
+    ):
+        from .pathfinding_utils import find_ninja_node
+
+        # Find current node
+        ninja_node = find_ninja_node(
+            ninja_pos,
+            adjacency,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+            ninja_radius=NINJA_RADIUS,
+            level_cache=path_calculator.level_cache,
+            goal_id=current_goal_id,
+        )
+
+        if ninja_node is not None:
+            # Get next hop toward goal
+            next_hop = path_calculator.level_cache.get_next_hop(
+                ninja_node, current_goal_id
+            )
+
+            if next_hop is not None:
+                # Convert to world coordinates
+                next_hop_world_x = next_hop[0] + NODE_WORLD_COORD_OFFSET
+                next_hop_world_y = next_hop[1] + NODE_WORLD_COORD_OFFSET
+
+                # Compute direction from ninja to next_hop
+                dx = next_hop_world_x - ninja_x
+                dy = next_hop_world_y - ninja_y
+                dist = np.sqrt(dx * dx + dy * dy)
+
+                if dist > 0.001:
+                    features[13] = dx / dist  # X component
+                    features[14] = dy / dist  # Y component
+
+    # Features 15-17: Waypoint direction and distance (Phase 1.3)
+    # Uses adaptive waypoint system to guide through inflection points
+    # Waypoints are discovered from successful trajectories
+    # This provides dense guidance toward intermediate goals on complex paths
+    #
+    # OPTIMIZATION: Waypoints are stored in level_cache._waypoints but typically
+    # there are only 0-10 waypoints per level (max_waypoints_per_level=10), so
+    # linear search is acceptable. For now, leave as placeholder - waypoints will
+    # be populated when reward_calculator wires them to PBRS (Phase 1.3).
+    #
+    # Note: This feature will be zero until waypoints are discovered from successful
+    # trajectories. Early in training (0% success), these features provide no signal.
+    # Once agent starts succeeding, waypoints guide through discovered inflection points.
+    # Get waypoints from path_calculator's associated reward_calculator if available
+    # Note: This requires the path_calculator to have access to the reward system
+    # For now, initialize as placeholder - will be populated by reward_calculator
+    # once waypoint system is fully wired (waypoints stored in level_cache)
+    if (
+        hasattr(path_calculator, "level_cache")
+        and path_calculator.level_cache is not None
+    ):
+        # Check if level_cache has waypoints stored
+        waypoints = getattr(path_calculator.level_cache, "_waypoints", None)
+        if waypoints and current_goal_id and len(waypoints) > 0:
+            # OPTIMIZATION: Early exit if no waypoints (common case early in training)
+            # Find nearest active waypoint (O(N) where N typically ≤ 10)
+            nearest_waypoint = None
+            nearest_dist_sq = float("inf")  # Use squared distance to avoid sqrt
+
+            # Precompute goal distance squared for comparison
+            goal_dist_sq = float("inf")
+            if current_goal_pos is not None:
+                goal_dx = current_goal_pos[0] - ninja_x
+                goal_dy = current_goal_pos[1] - ninja_y
+                goal_dist_sq = goal_dx * goal_dx + goal_dy * goal_dy
+
+            for wp_pos, wp_value, wp_type, wp_count in waypoints:
+                dx = wp_pos[0] - ninja_x
+                dy = wp_pos[1] - ninja_y
+                dist_sq = dx * dx + dy * dy  # Squared distance (avoid sqrt)
+
+                # Check if waypoint is between ninja and goal (simple heuristic)
+                if current_goal_pos is not None:
+                    wp_to_goal_dx = current_goal_pos[0] - wp_pos[0]
+                    wp_to_goal_dy = current_goal_pos[1] - wp_pos[1]
+                    wp_to_goal_dist_sq = (
+                        wp_to_goal_dx * wp_to_goal_dx + wp_to_goal_dy * wp_to_goal_dy
+                    )
+
+                    # Waypoint should be closer to goal than ninja is
+                    if wp_to_goal_dist_sq < goal_dist_sq and dist_sq < nearest_dist_sq:
+                        nearest_waypoint = (wp_pos, dist_sq)
+                        nearest_dist_sq = dist_sq
+
+            if nearest_waypoint is not None:
+                wp_pos, wp_dist_sq = nearest_waypoint
+                wp_dist = np.sqrt(wp_dist_sq)  # Only sqrt once for nearest
+                dx = wp_pos[0] - ninja_x
+                dy = wp_pos[1] - ninja_y
+                if wp_dist > 0.001:
+                    features[15] = dx / wp_dist  # X direction
+                    features[16] = dy / wp_dist  # Y direction
+                    features[17] = np.clip(wp_dist / area_scale, 0.0, 1.0)  # Distance
+
+    # Features 18-19: Mine clearance direction (safe direction from SDF gradient)
+    # Uses mine SDF to compute direction pointing away from nearest deadly mine
+    # This provides continuous safety guidance complementing discrete mine avoidance
+    if (
+        hasattr(path_calculator, "level_cache")
+        and path_calculator.level_cache is not None
+    ):
+        # Get mine SDF from level cache if available
+        mine_sdf = getattr(path_calculator.level_cache, "mine_sdf", None)
+
+        if mine_sdf is not None:
+            # Get gradient at current position (points away from nearest mine)
+            grad_x, grad_y = mine_sdf.get_gradient_at_position(ninja_x, ninja_y)
+
+            # Check if near a mine (gradient magnitude > 0.01)
+            grad_mag = np.sqrt(grad_x * grad_x + grad_y * grad_y)
+            if grad_mag > 0.01:
+                # Normalize gradient (direction away from mine)
+                features[18] = grad_x / grad_mag
+                features[19] = grad_y / grad_mag
+                # Note: Direction AWAY from mine, so moving in this direction is safer
+
+    # Feature 20: Path requires detour flag (NEW - critical for inflection points)
+    # Indicates when optimal path points away from goal (e.g., must go LEFT when goal is RIGHT)
+    # This is computed by comparing next_hop direction with Euclidean goal direction
+    if features[13] != 0.0 or features[14] != 0.0:  # Next hop direction computed
+        if current_goal_pos is not None:
+            # Euclidean direction to goal
+            goal_dx = current_goal_pos[0] - ninja_x
+            goal_dy = current_goal_pos[1] - ninja_y
+            goal_dist = np.sqrt(goal_dx * goal_dx + goal_dy * goal_dy)
+
+            if goal_dist > 0.001:
+                goal_dir_x = goal_dx / goal_dist
+                goal_dir_y = goal_dy / goal_dist
+
+                # Dot product: positive = aligned, negative = opposing
+                next_hop_dir_x = features[13]
+                next_hop_dir_y = features[14]
+                alignment = next_hop_dir_x * goal_dir_x + next_hop_dir_y * goal_dir_y
+
+                # Flag if next_hop points significantly away from goal (< -0.3 = >107°)
+                # This tells LSTM "you need to go the opposite direction first"
+                if alignment < -0.3:
+                    features[20] = 1.0  # Detour required
+
+    # Feature 21: Path difficulty ratio (Phase 3.3)
+    # Ratio of physics cost to geometric distance - tells LSTM if path direction is hard or easy
+    # High ratio (e.g., 5.0+) = difficult path requiring jumps, aerial movement, mine detours
+    # Low ratio (e.g., 0.2) = easy path with mostly grounded horizontal movement
+    #
+    # This complements the physics-weighted PBRS by making difficulty explicit in observations
+    # LSTM can learn: "high difficulty ahead → build momentum" or "low difficulty → direct route"
+    if (
+        hasattr(path_calculator, "level_cache")
+        and path_calculator.level_cache is not None
+        and current_goal_pos is not None
+    ):
+        # Extract base_adjacency for physics checks (defensive - already extracted above at line 186)
+        # Re-extract here for self-contained Feature 21 calculation
+        base_adjacency_for_difficulty = (
+            graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+        )
+
+        # Geometric distance (pixels)
+        geometric_dist = path_calculator.get_geometric_distance(
+            ninja_pos,
+            current_goal_pos,
+            adjacency,
+            base_adjacency_for_difficulty,
+            level_data=level_data,
+            graph_data=graph_data,
+            entity_radius=EXIT_SWITCH_RADIUS
+            if not switch_activated
+            else EXIT_DOOR_RADIUS,
+            ninja_radius=NINJA_RADIUS,
+            goal_id=current_goal_id,
+        )
+
+        # Physics cost (difficulty-weighted)
+        physics_cost = path_calculator.get_distance(
+            ninja_pos,
+            current_goal_pos,
+            adjacency,
+            base_adjacency_for_difficulty,
+            level_data=level_data,
+            graph_data=graph_data,
+            entity_radius=EXIT_SWITCH_RADIUS
+            if not switch_activated
+            else EXIT_DOOR_RADIUS,
+            ninja_radius=NINJA_RADIUS,
+            goal_id=current_goal_id,
+        )
+
+        if (
+            geometric_dist != float("inf")
+            and physics_cost != float("inf")
+            and geometric_dist > 0.001
+        ):
+            # Compute ratio: physics_cost / geometric_distance
+            # Typical values:
+            #   Pure grounded horizontal: 0.15
+            #   Mix of grounded + jumps: 0.5-2.0
+            #   Complex aerial navigation: 3.0-10.0
+            #   Mine detours with jumps: 5.0-20.0
+            difficulty_ratio = physics_cost / geometric_dist
+
+            # Normalize to [0, 1] range
+            # Use log scale since ratios can vary widely (0.15 to 40.0)
+            # log(0.15) ≈ -1.9, log(40.0) ≈ 3.7, range ≈ 5.6
+            # Map to [0, 1]: (log(ratio) + 2.0) / 6.0
+            import math
+
+            log_difficulty = math.log(max(0.1, difficulty_ratio))
+            normalized_difficulty = np.clip((log_difficulty + 2.0) / 6.0, 0.0, 1.0)
+            features[21] = normalized_difficulty
 
     return features

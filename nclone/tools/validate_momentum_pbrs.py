@@ -15,7 +15,6 @@ sys.path.insert(0, str(nclone_root))
 from nclone.graph.reachability.pathfinding_algorithms import (
     _infer_momentum_direction,
     _calculate_momentum_multiplier,
-    _calculate_physics_aware_cost,
 )
 
 
@@ -70,7 +69,7 @@ def test_momentum_cost_multipliers():
     edge_dx = -12  # Moving left (continuing)
 
     multiplier = _calculate_momentum_multiplier(momentum, edge_dx)
-    print(f"\nContinuing leftward momentum:")
+    print("\nContinuing leftward momentum:")
     print(f"  Momentum: {momentum}, Edge dx: {edge_dx}")
     print(f"  Cost multiplier: {multiplier} (expected: 0.7 for discount)")
     assert multiplier == 0.7, "Continuing momentum should be cheaper"
@@ -81,7 +80,7 @@ def test_momentum_cost_multipliers():
     edge_dx = 12  # Moving right (reversing)
 
     multiplier = _calculate_momentum_multiplier(momentum, edge_dx)
-    print(f"\nReversing leftward momentum:")
+    print("\nReversing leftward momentum:")
     print(f"  Momentum: {momentum}, Edge dx: {edge_dx}")
     print(f"  Cost multiplier: {multiplier} (expected: 2.5 for penalty)")
     assert multiplier == 2.5, "Reversing momentum should be expensive"
@@ -118,7 +117,7 @@ def test_path_cost_comparison():
 
     print(f"  Total cost: {cost_b:.2f}")
 
-    print(f"\nComparison:")
+    print("\nComparison:")
     print(f"  Path A (direct): {cost_a:.2f}")
     print(f"  Path B (momentum): {cost_b:.2f}")
 

@@ -2,11 +2,10 @@
 
 ## Overview
 
-You now have **three complementary systems** for handling momentum-dependent navigation in N++ RL:
+You now have **two complementary systems** for handling momentum-dependent navigation in N++ RL:
 
 1. **Momentum-Aware Pathfinding** (Always active, no setup)
 2. **Demonstration Waypoints** (Optional, for complex multi-stage scenarios)
-3. **Kinodynamic Database** (Optional, for perfect single-level accuracy)
 
 ## System 1: Momentum-Aware Pathfinding ✅ IMPLEMENTED
 
@@ -61,101 +60,39 @@ python train.py --map your_level.npp
 
 ---
 
-## System 3: Kinodynamic Database ✅ IMPLEMENTED
-
-**Status**: Fully implemented, requires precomputation
-
-**What it does**:
-- Exhaustive precomputation of ALL (position, velocity) reachability
-- Uses actual physics simulation (100% accurate)
-- O(1) runtime queries during training
-
-**Files**:
-- `nclone/graph/reachability/kinodynamic_database.py` (created)
-- `nclone/graph/reachability/kinodynamic_simulator.py` (created)
-- `nclone/graph/reachability/kinodynamic_pathfinding.py` (created)
-- `nclone/tools/build_kinodynamic_database.py` (created)
-
-**Usage**:
-```bash
-# Build database (1-2 minutes, one-time)
-python nclone/tools/build_kinodynamic_database.py \
-    --map your_momentum_level.npp \
-    --output kinodynamic_db/ \
-    --parallel 8
-
-# Train (database loads automatically)
-python train.py --map your_momentum_level.npp
-```
-
-**Accuracy**: 100% (actual simulation)
-**Runtime**: 0.0001ms (array indexing)
-**Memory**: ~2-10 MB per level
-**Precompute**: ~1-2 minutes per level
-
----
-
 ## Comparison Matrix
 
 | System | Accuracy | Runtime | Memory | Setup | Best For |
 |--------|----------|---------|--------|-------|----------|
 | **Momentum Costs** | 85% | 2ms | 16KB | None | All levels (default) |
 | **Demo Waypoints** | Variable | 2-6ms | 1KB | Extract demos | Multi-stage momentum |
-| **Kinodynamic DB** | **100%** | **0.0001ms** | **2-10MB** | **1-min precompute** | **Single level (YOU!)** |
 
 ---
 
-## Recommendation for Your Use Case
+## Recommendation: Use Both Systems
 
-**You said**: "Training on a single fixed level with momentum-dependent jump"
+**Default approach**: Momentum-aware pathfinding provides solid baseline guidance
 
-**Best solution**: **Kinodynamic Database**
+**For complex levels**: Add demonstration waypoints to guide multi-stage momentum strategies
 
-**Why**:
-1. **100% accuracy** - No approximations, captures all physics
-2. **Fastest runtime** - 20,000× faster than geometric pathfinding
-3. **Perfect for single level** - Precompute once, use forever
-4. **High VRAM** - You have the resources to load full database
-
-**Implementation steps**:
-```bash
-# 1. Build database (1-2 minutes, once)
-python nclone/tools/build_kinodynamic_database.py \
-    --map your_momentum_level.npp \
-    --output kinodynamic_db/ \
-    --parallel 8
-
-# 2. Train (automatic loading)
-python train.py --map your_momentum_level.npp
-
-# 3. Monitor TensorBoard
-# Look for: _pbrs_using_kinodynamic=True
-#           _pbrs_kinodynamic_distance (velocity-aware distance)
-```
-
-**Expected results**:
-- PBRS rewards momentum-building (positive potential change)
-- Agent learns to build momentum before jumping
-- 50-80% faster convergence on momentum-dependent sections
+**Why this approach**:
+1. **Sample efficiency** - Agent learns general velocity skills (better transfer)
+2. **Generalization** - Skills work across different levels and layouts
+3. **Clean architecture** - Graph provides geometry, agent learns physics
+4. **Zero precomputation** - Graph builds in <0.2ms, no offline database generation
 
 ---
 
-## Fallback Hierarchy
+## Learning Philosophy
 
-The system uses intelligent fallback:
+The agent learns momentum management from:
+- **State observations**: Direct velocity (xspeed, yspeed) in game_state
+- **Spatial context**: Velocity-aware hazard features (velocity_dot_direction, distance_rate)
+- **Graph guidance**: Geometric reachability and path directions
+- **PBRS shaping**: Positive gradient toward geometrically shorter paths
+- **Trial and error**: Discovers when momentum is needed through experience
 
-```
-Priority 1: Kinodynamic Database (if available)
-  ↓ (if not found)
-Priority 2: Momentum Waypoints (if available)
-  ↓ (if not found)
-Priority 3: Momentum-Aware Costs (always available)
-```
-
-**This means**:
-- Build kinodynamic DB for your main level (best accuracy)
-- Extract waypoints for other levels (good accuracy)
-- Momentum costs work everywhere (baseline)
+This separation enables better generalization - the agent learns transferable velocity skills rather than memorizing level-specific patterns.
 
 ---
 
@@ -165,44 +102,37 @@ Priority 3: Momentum-Aware Costs (always available)
 1. `nclone/graph/reachability/pathfinding_algorithms.py` - Momentum tracking
 2. `nclone/graph/reachability/pathfinding_utils.py` - Momentum in BFS
 3. `nclone/analysis/momentum_waypoint_extractor.py` - Waypoint extraction
-4. `nclone/graph/reachability/kinodynamic_database.py` - Database structure
-5. `nclone/graph/reachability/kinodynamic_simulator.py` - Physics simulation
-6. `nclone/graph/reachability/kinodynamic_pathfinding.py` - Kinodynamic A*
-7. `nclone/gym_environment/reward_calculation/pbrs_potentials.py` - PBRS integration
-8. `nclone/gym_environment/base_environment.py` - Environment integration
+4. `nclone/gym_environment/reward_calculation/pbrs_potentials.py` - PBRS integration
+5. `nclone/gym_environment/base_environment.py` - Environment integration
 
 ### Tools
-9. `nclone/tools/extract_momentum_waypoints.py` - Waypoint extraction CLI
-10. `nclone/tools/build_kinodynamic_database.py` - Database builder CLI
-11. `nclone/tools/validate_momentum_pbrs.py` - Validation script
+6. `nclone/tools/extract_momentum_waypoints.py` - Waypoint extraction CLI
+7. `nclone/tools/validate_momentum_pbrs.py` - Validation script
 
 ### Tests
-12. `nclone/gym_environment/tests/test_momentum_aware_pbrs.py` - Unit tests (15 tests)
+8. `nclone/gym_environment/tests/test_momentum_aware_pbrs.py` - Unit tests (15 tests)
 
 ### Documentation
-13. `nclone/analysis/README_MOMENTUM_AWARE_PBRS.md` - Technical docs
-14. `MOMENTUM_PBRS_QUICKSTART.md` - Quick start guide
-15. `KINODYNAMIC_DATABASE_GUIDE.md` - Database guide
-16. `IMPLEMENTATION_SUMMARY.md` - Implementation summary
-17. `COMPLETE_MOMENTUM_SOLUTION_SUMMARY.md` - This file
+9. `nclone/analysis/README_MOMENTUM_AWARE_PBRS.md` - Technical docs
+10. `MOMENTUM_PBRS_QUICKSTART.md` - Quick start guide
+11. `COMPLETE_MOMENTUM_SOLUTION_SUMMARY.md` - This file
 
 ---
 
-## Quick Start (Your Single Level)
+## Quick Start
 
 ```bash
-# Step 1: Build kinodynamic database (1-2 minutes, once)
-python nclone/tools/build_kinodynamic_database.py \
-    --map your_momentum_level.npp \
-    --output kinodynamic_db/ \
-    --parallel 8
+# Option 1: Use momentum-aware pathfinding only (default)
+python train.py --map your_level.npp
+# Works immediately - no setup needed!
 
-# Step 2: Train (database loads automatically)
-python train.py --map your_momentum_level.npp
+# Option 2: Add demonstration waypoints (for complex multi-stage momentum)
+python nclone/tools/extract_momentum_waypoints.py \
+    --replay-dir /path/to/expert/replays \
+    --output-dir momentum_waypoints_cache
 
-# Step 3: Verify in TensorBoard
-# Check: _pbrs_using_kinodynamic should be True
-#        _pbrs_potential_change should be positive during momentum-building
+python train.py --map your_level.npp
+# Waypoints load automatically
 ```
 
 **That's it!** The system handles everything else automatically.
@@ -220,11 +150,6 @@ python train.py --map your_momentum_level.npp
 - Overhead: +2-4ms when active
 - Requires demo extraction
 - Good for complex cases
-
-### Kinodynamic Database
-- Overhead: ~0.0001ms (negligible)
-- Requires 1-minute precompute
-- **Perfect accuracy for your single level**
 
 ---
 
@@ -251,32 +176,11 @@ python nclone/tools/validate_momentum_pbrs.py
 - Agent couldn't learn momentum strategies
 - 0% success on momentum-dependent sections
 
-**After** (with kinodynamic database):
+**After**:
 - PBRS rewards optimal momentum-building
-- 100% accurate velocity-aware pathfinding
-- Agent learns momentum strategies naturally
-- 50-80% faster convergence (estimated)
-
----
-
-## Next Steps
-
-1. **Immediate**: Build kinodynamic database for your level
-   ```bash
-   python nclone/tools/build_kinodynamic_database.py \
-       --map your_momentum_level.npp \
-       --output kinodynamic_db/ \
-       --parallel 8
-   ```
-
-2. **Train**: Run your normal training script
-   - Database loads automatically
-   - PBRS now velocity-aware
-   - Monitor TensorBoard metrics
-
-3. **Iterate**: If results good, build databases for other levels
-
-4. **Optional**: Extract waypoints as backup for levels without databases
+- Graph provides geometric guidance
+- Agent learns velocity skills through experience
+- Better generalization across levels
 
 ---
 
@@ -284,7 +188,6 @@ python nclone/tools/validate_momentum_pbrs.py
 
 **Documentation**:
 - Quick start: `MOMENTUM_PBRS_QUICKSTART.md`
-- Kinodynamic guide: `KINODYNAMIC_DATABASE_GUIDE.md`
 - Technical details: `nclone/analysis/README_MOMENTUM_AWARE_PBRS.md`
 
 **Validation**:
@@ -292,25 +195,22 @@ python nclone/tools/validate_momentum_pbrs.py
 - Run validator: `python nclone/tools/validate_momentum_pbrs.py`
 
 **Troubleshooting**:
-- Check TensorBoard for `_pbrs_using_kinodynamic`
-- Verify database file exists: `kinodynamic_db/{level_id}.npz`
-- Rebuild if needed with `build_kinodynamic_database.py`
+- Check TensorBoard for `_pbrs_normalized_distance`
+- Verify graph is building correctly
+- Check momentum waypoints cache if using waypoints
 
 ---
 
 ## Conclusion
 
-You now have the **most advanced momentum-aware navigation system possible**:
+You now have an **elegant momentum-aware navigation system**:
 
-✅ Three complementary approaches (momentum costs, waypoints, kinodynamic DB)
+✅ Two complementary approaches (momentum costs + waypoints)
 ✅ Intelligent fallback hierarchy
-✅ 100% accuracy option (kinodynamic DB)
-✅ O(1) runtime queries
+✅ Zero precomputation required (graph-based)
+✅ Agent learns transferable velocity skills
 ✅ Fully tested (15 unit tests passing)
 ✅ Complete documentation
 ✅ Production-ready
 
-**For your single momentum-dependent level**: Use the kinodynamic database. It's the perfect solution - 100% accurate, O(1) runtime, and only requires a 1-minute precompute.
-
-**Ready to solve momentum-dependent navigation!** 🚀
-
+**Ready to solve momentum-dependent navigation with sample-efficient learning!** 🚀

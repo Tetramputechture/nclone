@@ -7,7 +7,7 @@ BASE_TIME_PER_NODE = 15.0  # frames per sqrt(node) (was 10.0)
 TIME_PER_MINE = 50.0  # frames per reachable mine
 TRUNCATION_MULTIPLIER = 15  # generous multiplier for learning (was 10)
 MIN_TRUNCATION_FRAMES = 600  # minimum for tiny levels
-MAX_TRUNCATION_FRAMES = 6000  # cap for extremely large/complex levels (was 4000)
+MAX_TRUNCATION_FRAMES = 2000  # cap for faster learning iteration (was 6000)
 
 
 def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -> int:

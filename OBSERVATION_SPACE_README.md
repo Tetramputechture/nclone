@@ -24,7 +24,7 @@ observation_space = SpacesDict({
     
     # Game state (OPTIMIZED)
     'game_state': Box(-1, 1, (41,), np.float32),  # 40 ninja physics + 1 time_remaining
-    'reachability_features': Box(-1, 1, (13,), np.float32),  # 4 base + 2 path_dist + 4 direction + 2 mine + 1 phase
+    'reachability_features': Box(-1, 1, (22,), np.float32),  # 13 base + 8 path_direction + 1 difficulty (Phase 1-3)
     'spatial_context': Box(-1, 1, (96,), np.float32),  # 64 local_tile_grid + 32 mine_overlay
     
     # Graph (GCN-optimized: spatial + entity features) - OPTIONAL with spatial_context

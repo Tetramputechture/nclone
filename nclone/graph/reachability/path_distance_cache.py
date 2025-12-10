@@ -5,8 +5,11 @@ Uses flood fill (BFS) from goal positions to precompute all node-to-goal distanc
 Cache invalidates when level or mine states change.
 """
 
+import logging
 from typing import Dict, Tuple, List, Optional, Any
 from ..level_data import LevelData
+
+logger = logging.getLogger(__name__)
 from .pathfinding_utils import (
     find_closest_node_to_position,
     bfs_distance_from_start,
@@ -49,6 +52,7 @@ class LevelBasedPathDistanceCache:
         self._goal_id_to_goal_pos: Dict[str, Tuple[int, int]] = {}
         self._cached_level_data: Optional[LevelData] = None
         self._cached_mine_signature: Optional[Tuple] = None
+        self._cached_switch_signature: Optional[Tuple] = None
         self.level_cache_hits = 0
         self.level_cache_misses = 0
         self.geometric_cache_hits = 0
@@ -99,6 +103,27 @@ class LevelBasedPathDistanceCache:
             return self.geometric_cache[key]
 
         self.geometric_cache_misses += 1
+
+        # DIAGNOSTIC: Log cache miss details (only first few to avoid spam)
+        if self.geometric_cache_misses <= 10:
+            available_goals = set(
+                k[1] for k in self.geometric_cache.keys() if k[0] == node_pos
+            )
+            # Check if node exists in cache at all
+            node_exists = any(k[0] == node_pos for k in self.geometric_cache.keys())
+            # Sample a few cached nodes near this position
+            nearby_nodes = [
+                k
+                for k in self.geometric_cache.keys()
+                if abs(k[0][0] - node_pos[0]) < 50 and abs(k[0][1] - node_pos[1]) < 50
+            ]
+            logger.warning(
+                f"[LEVEL_CACHE_MISS #{self.geometric_cache_misses}] node={node_pos}, goal_id={goal_id}, "
+                f"node_in_cache={node_exists}, available_goals_for_node={available_goals}, "
+                f"all_cached_goals={set(self._goal_id_to_goal_pos.keys())}, "
+                f"nearby_cached_entries={len(nearby_nodes)}, sample={nearby_nodes[:3]}"
+            )
+
         return float("inf")
 
     def get_next_hop(
@@ -129,6 +154,7 @@ class LevelBasedPathDistanceCache:
         graph_data: Optional[Dict[str, Any]] = None,
         level_data: Optional[Any] = None,
         mine_proximity_cache: Optional[Any] = None,
+        mine_sdf: Optional[Any] = None,
     ):
         """
         Precompute distances from all reachable nodes to each goal using flood fill.
@@ -152,6 +178,7 @@ class LevelBasedPathDistanceCache:
             graph_data: Optional graph data dict with spatial_hash for fast lookup
             level_data: Optional LevelData for mine proximity checks (fallback)
             mine_proximity_cache: Optional MineProximityCostCache for mine cost lookup
+            mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
         """
         # Clear existing cache and mappings
         self.cache.clear()
@@ -196,7 +223,27 @@ class LevelBasedPathDistanceCache:
             # Store mapping of goal_node -> goal_id for quick lookup
             self._goal_node_to_goal_id[goal_node] = goal_id
             # Store mapping of goal_id -> goal_pos for validation
+            # CRITICAL: Store the ENTITY position (goal_pos), not the NODE position (goal_node)
+            # The fast path validation compares this against the input goal entity position
             self._goal_id_to_goal_pos[goal_id] = goal_pos
+
+            # CRITICAL FIX: Add generic aliases for backward compatibility
+            # Code uses generic "switch" and "exit" but goals are stored as "exit_switch_0", etc.
+            # Determine if we need to create alias cache entries BEFORE updating mappings
+            needs_switch_alias = (
+                goal_id.startswith("exit_switch_")
+                and "switch" not in self._goal_id_to_goal_pos
+            )
+            needs_exit_alias = (
+                goal_id.startswith("exit_door_")
+                and "exit" not in self._goal_id_to_goal_pos
+            )
+
+            # Update goal position mappings for aliases (use entity position, not node)
+            if needs_switch_alias:
+                self._goal_id_to_goal_pos["switch"] = goal_pos
+            elif needs_exit_alias:
+                self._goal_id_to_goal_pos["exit"] = goal_pos
 
             # Run SINGLE BFS with physics costs, tracking geometric distances along the path
             # This computes both physics costs (for pathfinding) and pixel distances
@@ -216,6 +263,7 @@ class LevelBasedPathDistanceCache:
                     return_parents=True,
                     use_geometric_costs=False,  # Physics-weighted costs for priority
                     track_geometric_distances=True,  # Also track pixel distances along physics path
+                    mine_sdf=mine_sdf,  # Pass SDF for velocity-aware mine costs
                 )
             )
 
@@ -235,6 +283,30 @@ class LevelBasedPathDistanceCache:
                 for node_pos, distance in geometric_distances.items():
                     self.geometric_cache[(node_pos, goal_id)] = distance
 
+            # CRITICAL FIX: Also populate cache entries for generic aliases ("switch", "exit")
+            # This ensures lookups using generic goal_ids hit the cache
+            # Use the flags we determined earlier to avoid race condition with mapping updates
+            if needs_switch_alias:
+                # Populate cache entries for "switch" alias
+                for node_pos, distance in physics_distances.items():
+                    self.cache[(node_pos, "switch")] = distance
+                    self.next_hop_cache[(node_pos, "switch")] = (
+                        parents.get(node_pos) if parents else None
+                    )
+                if geometric_distances is not None:
+                    for node_pos, distance in geometric_distances.items():
+                        self.geometric_cache[(node_pos, "switch")] = distance
+            elif needs_exit_alias:
+                # Populate cache entries for "exit" alias
+                for node_pos, distance in physics_distances.items():
+                    self.cache[(node_pos, "exit")] = distance
+                    self.next_hop_cache[(node_pos, "exit")] = (
+                        parents.get(node_pos) if parents else None
+                    )
+                if geometric_distances is not None:
+                    for node_pos, distance in geometric_distances.items():
+                        self.geometric_cache[(node_pos, "exit")] = distance
+
     def build_cache(
         self,
         level_data: LevelData,
@@ -242,6 +314,8 @@ class LevelBasedPathDistanceCache:
         base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         graph_data: Optional[Dict[str, Any]] = None,
         mine_proximity_cache: Optional[Any] = None,
+        mine_sdf: Optional[Any] = None,
+        waypoints: Optional[List[Tuple[int, int]]] = None,
     ) -> bool:
         """
         Build or rebuild cache if needed.
@@ -255,6 +329,7 @@ class LevelBasedPathDistanceCache:
             base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
             graph_data: Optional graph data dict with spatial_hash for fast lookup
             mine_proximity_cache: Optional MineProximityCostCache for mine cost lookup
+            mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
 
         Returns:
             True if cache was rebuilt, False if cache was valid
@@ -262,11 +337,17 @@ class LevelBasedPathDistanceCache:
         # Extract mine state signature
         mine_signature = get_mine_state_signature(level_data)
 
+        # CRITICAL FIX: Extract switch state signature for cache invalidation
+        # Switch activation changes goal positions (switch removed from goals)
+        # Without this check, cache won't rebuild when switches activate
+        switch_signature = tuple(sorted(level_data.switch_states.items()))
+
         # Check if cache needs invalidation
         needs_rebuild = (
             self._cached_level_data is None
             or self._cached_level_data != level_data
             or self._cached_mine_signature != mine_signature
+            or self._cached_switch_signature != switch_signature
         )
 
         if needs_rebuild:
@@ -274,6 +355,17 @@ class LevelBasedPathDistanceCache:
             # Note: BFS traversal will only reach nodes in adjacency, so if adjacency
             # is filtered to reachable nodes, all cached distances will be for reachable areas
             goals = extract_goal_positions(level_data)
+
+            # Add waypoints to goals list for precomputation
+            if waypoints:
+                for i, waypoint_pos in enumerate(waypoints):
+                    waypoint_id = f"waypoint_{i}"
+                    goals.append((waypoint_pos, waypoint_id))
+                logger.info(
+                    f"[WAYPOINT_CACHE] Added {len(waypoints)} waypoints for precomputation: "
+                    f"{[(wp_pos, f'waypoint_{i}') for i, wp_pos in enumerate(waypoints)]}"
+                )
+
             self._precompute_distances_from_goals(
                 goals,
                 adjacency,
@@ -281,11 +373,27 @@ class LevelBasedPathDistanceCache:
                 graph_data,
                 level_data,
                 mine_proximity_cache,
+                mine_sdf,
             )
 
             # Update cached state
             self._cached_level_data = level_data
             self._cached_mine_signature = mine_signature
+            self._cached_switch_signature = switch_signature
+
+            # DIAGNOSTIC: Log what was cached
+            # Sample some cached node positions
+            sample_nodes = list(set(k[0] for k in self.geometric_cache.keys()))[:10]
+            sample_goals = list(set(k[1] for k in self.geometric_cache.keys()))
+            logger.info(
+                f"[CACHE_POPULATED] Level cache built: "
+                f"goals={list(self._goal_id_to_goal_pos.keys())}, "
+                f"physics_cache={len(self.cache)} entries, "
+                f"geometric_cache={len(self.geometric_cache)} entries, "
+                f"next_hop_cache={len(self.next_hop_cache)} entries, "
+                f"sample_nodes={sample_nodes}, "
+                f"cached_goal_ids={sample_goals}"
+            )
 
             return True
 
@@ -300,6 +408,7 @@ class LevelBasedPathDistanceCache:
         self._goal_id_to_goal_pos.clear()
         self._cached_level_data = None
         self._cached_mine_signature = None
+        self._cached_switch_signature = None
         self.level_cache_hits = 0
         self.level_cache_misses = 0
         self.geometric_cache_hits = 0

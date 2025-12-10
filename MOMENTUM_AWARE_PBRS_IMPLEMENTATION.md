@@ -180,12 +180,14 @@ Need 3 positions to infer momentum:
 
 This is lightweight (1 dict) and sufficient for momentum detection.
 
-### Why Not Full Kinodynamic Planning?
+### Design Decision: Graph-Based Learning
 
-Full velocity-discretized state space `(x, y, vx, vy)`:
-- **Pros**: Handles all momentum scenarios perfectly
-- **Cons**: 16x memory, 4-8x slower pathfinding
-- **Decision**: Overkill for most levels, momentum costs + waypoints sufficient
+We use graph-based geometric pathfinding instead of velocity-discretized kinodynamic planning:
+- **Agent learns velocity dynamics** from state observations (xspeed, yspeed) + experience
+- **Graph provides geometric guidance** via PBRS distance gradients
+- **Spatial context includes velocity-aware features** (velocity_dot_direction, distance_rate)
+- **Better generalization** - agent learns transferable momentum skills across levels
+- **Simpler architecture** - one pathfinding system (graph) instead of two (graph + kinodynamic)
 
 ## Next Steps
 
@@ -211,9 +213,9 @@ Full velocity-discretized state space `(x, y, vx, vy)`:
 
 Only implement if momentum costs + waypoints insufficient:
 
-1. **Velocity-discretized pathfinding** (full kinodynamic planning)
-2. **Learned momentum models** (GNN predicts momentum requirements)
-3. **Hierarchical planning** (high-level waypoints, low-level momentum control)
+1. **Learned momentum models** (GNN predicts momentum requirements)
+2. **Hierarchical planning** (high-level waypoints, low-level momentum control)
+3. **Analytical velocity checks** (lightweight physics heuristics in graph queries)
 
 ## Summary
 
