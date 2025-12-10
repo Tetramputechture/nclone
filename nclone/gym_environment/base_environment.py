@@ -933,18 +933,69 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 else:
                     info["reward_accounting_valid"] = True
 
-            # Add adaptive waypoint data for visualization (Phase 3 enhancement)
-            if hasattr(self.reward_calculator, "adaptive_waypoints"):
-                level_id = self.map_loader.current_map_name or "default"
-                waypoints = (
-                    self.reward_calculator.adaptive_waypoints.get_waypoints_for_level(
-                        level_id
+            # Add waypoint data for visualization (path-based or adaptive)
+            waypoints_active = []
+            waypoints_reached = []
+
+            if (
+                hasattr(self.reward_calculator, "enable_path_waypoints")
+                and self.reward_calculator.enable_path_waypoints
+            ):
+                # Path-based waypoints: Convert to visualization format
+                switch_activated = self.nplay_headless.exit_switch_activated()
+                current_phase = "post_switch" if switch_activated else "pre_switch"
+
+                phase_waypoints = (
+                    self.reward_calculator.current_path_waypoints_by_phase.get(
+                        current_phase, []
                     )
                 )
-                info["_waypoints_active"] = waypoints  # List of waypoint dicts
-                info["_waypoints_reached"] = list(
+
+                for wp in phase_waypoints:
+                    waypoints_active.append(
+                        {
+                            "position": wp.position,
+                            "value": wp.value,
+                            "type": wp.waypoint_type,
+                            "source": "path",
+                            "phase": wp.phase,
+                            "curvature": wp.curvature,
+                        }
+                    )
+
+                # Get collected waypoints for this episode
+                if hasattr(self.reward_calculator, "_collected_path_waypoints"):
+                    waypoints_reached = list(
+                        self.reward_calculator._collected_path_waypoints
+                    )
+
+            elif (
+                hasattr(self.reward_calculator, "adaptive_waypoints")
+                and self.reward_calculator.adaptive_waypoints
+            ):
+                # Adaptive waypoints (legacy system)
+                level_id = self.map_loader.current_map_name or "default"
+                switch_activated = self.nplay_headless.exit_switch_activated()
+
+                # Get waypoints filtered by current switch phase
+                waypoints = (
+                    self.reward_calculator.adaptive_waypoints.get_waypoints_for_level(
+                        level_id,
+                        switch_activated=switch_activated,
+                    )
+                )
+
+                # Add source field for visualization
+                for wp in waypoints:
+                    wp["source"] = wp.get("source", "adaptive")
+
+                waypoints_active = waypoints
+                waypoints_reached = list(
                     self.reward_calculator.adaptive_waypoints.waypoints_reached_this_episode
                 )
+
+            info["_waypoints_active"] = waypoints_active
+            info["_waypoints_reached"] = waypoints_reached
 
         # DIAGNOSTIC: Validate episode stats are reasonable
         if (terminated or truncated) and self.enable_logging:
@@ -1131,9 +1182,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         if checkpoint is not None:
             return self._reset_to_checkpoint(checkpoint)
 
-        # Load momentum waypoints for current level (if available)
-        # This enables momentum-aware PBRS for levels requiring backtracking
-        self._update_momentum_waypoints_for_current_level()
+        # Extract path-based waypoints from optimal A* paths (if enabled)
+        # This provides immediate dense guidance from first episode
+        self._update_path_waypoints_for_current_level()
 
         # Track initial position for route visualization
         try:
@@ -1869,35 +1920,46 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             logger.debug(f"Failed to load momentum waypoints: {e}")
             return None
 
-    def _update_momentum_waypoints_for_current_level(self) -> None:
-        """Update PBRS calculator with momentum waypoints.
+    def _update_path_waypoints_for_current_level(self) -> None:
+        """Extract path-based waypoints from optimal A* paths.
 
-        Called during reset after map is loaded. Loads momentum waypoints
-        (if available) for demonstration-based guidance on momentum-dependent paths.
+        Called during reset after graph is built. Provides immediate dense
+        guidance for complex navigation from first episode.
         """
-        # Load momentum waypoints
-        waypoints = self._load_momentum_waypoints_if_available()
-        print(
-            f"[RESET_WP] Loaded {len(waypoints) if waypoints else 0} waypoints during reset"
-        )
+        # Check if path waypoints enabled
+        if not hasattr(self.reward_calculator, "enable_path_waypoints"):
+            return
 
-        # Update PBRS calculator
-        if hasattr(self.reward_calculator, "pbrs_calculator"):
-            pbrs_calc = self.reward_calculator.pbrs_calculator
+        if not self.reward_calculator.enable_path_waypoints:
+            logger.debug("Path waypoints disabled")
+            return
 
-            # Set momentum waypoints (if available)
-            if hasattr(pbrs_calc, "set_momentum_waypoints"):
-                print(
-                    f"[RESET_WP] Calling set_momentum_waypoints with {len(waypoints) if waypoints else 0} waypoints"
+        # Requires graph data from GraphMixin
+        if not hasattr(self, "current_graph_data") or not self.current_graph_data:
+            logger.debug(
+                "Path waypoint extraction requires graph data (GraphMixin). "
+                "Skipping for this environment configuration."
+            )
+            return
+
+        # Extract waypoints from optimal paths
+        try:
+            num_waypoints = self.reward_calculator.extract_path_waypoints_for_level(
+                level_data=self.level_data,
+                graph_data=self.current_graph_data,
+                map_name=self.map_loader.current_map_name,
+            )
+
+            if num_waypoints > 0:
+                logger.info(
+                    f"Extracted {num_waypoints} path waypoints for level "
+                    f"{self.map_loader.current_map_name} (immediate dense guidance)"
                 )
-                pbrs_calc.set_momentum_waypoints(waypoints)
-                if waypoints:
-                    logger.info(
-                        f"Enabled momentum-aware PBRS with {len(waypoints)} waypoints "
-                        f"for level {self.map_loader.current_map_name}"
-                    )
-            else:
-                logger.debug("PBRS calculator does not support momentum waypoints")
+        except Exception as e:
+            logger.warning(f"Failed to extract path waypoints: {e}")
+            import traceback
+
+            logger.debug(traceback.format_exc())
 
     def get_route_visualization_tile_data(self) -> Dict[Tuple[int, int], int]:
         """Get tile data for route visualization.

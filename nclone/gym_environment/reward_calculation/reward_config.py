@@ -27,6 +27,13 @@ class RewardConfig:
     total_timesteps: int = 10_000_000
     current_timesteps: int = 0
     recent_success_rate: float = 0.0
+    
+    # Waypoint system configuration
+    enable_path_waypoints: bool = True  # Dense waypoints from optimal paths (default: ON)
+    enable_adaptive_waypoints: bool = False  # Trajectory-learning waypoints (default: OFF)
+    path_waypoint_progress_spacing: float = 100.0  # Spacing for progress checkpoints (pixels)
+    path_waypoint_min_angle: float = 45.0  # Minimum angle for turn detection (degrees)
+    path_waypoint_cluster_radius: float = 40.0  # Clustering radius (pixels)
 
     # Curriculum phase thresholds
     # UPDATED 2025-12-07: Success-rate based progression with minimum timestep gates
@@ -287,6 +294,8 @@ class RewardConfig:
             "pbrs_normalization_scale": self.pbrs_normalization_scale,
             "velocity_alignment_weight": self.velocity_alignment_weight,
             "mine_hazard_cost_multiplier": self.mine_hazard_cost_multiplier,
+            "enable_path_waypoints": self.enable_path_waypoints,
+            "enable_adaptive_waypoints": self.enable_adaptive_waypoints,
         }
 
     def __str__(self) -> str:

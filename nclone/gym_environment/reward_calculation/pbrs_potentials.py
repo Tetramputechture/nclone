@@ -1538,26 +1538,34 @@ class PBRSCalculator:
 
         return max(0.0, potential)
 
-    def set_momentum_waypoints(self, waypoints: Optional[List[Any]]) -> None:
+    def set_momentum_waypoints(
+        self, waypoints: Optional[List[Any]], waypoint_source: str = "unknown"
+    ) -> None:
         """Set momentum waypoints for current level.
 
         Called when level changes or waypoints are loaded from cache.
 
         Args:
-            waypoints: List of MomentumWaypoint objects, or None to disable waypoint routing
+            waypoints: List of MomentumWaypoint or PathWaypoint objects, or None to disable
+            waypoint_source: Source of waypoints ("path", "demo", "adaptive") for logging
         """
         self.momentum_waypoints = waypoints or []
+        self.waypoint_source = waypoint_source
 
         # Pass waypoints to path calculator for precomputed caching
         if self.path_calculator is not None:
-            print(
-                f"[PBRS] Calling set_waypoints with {len(self.momentum_waypoints)} waypoints"
+            logger.debug(
+                f"[PBRS] Set {len(self.momentum_waypoints)} {waypoint_source} waypoints "
+                f"for multi-stage routing"
             )
             self.path_calculator.set_waypoints(waypoints)
         else:
-            print("[PBRS] WARNING: path_calculator is None, cannot set waypoints")
+            logger.warning("[PBRS] path_calculator is None, cannot set waypoints")
 
-        logger.debug(f"Set {len(self.momentum_waypoints)} momentum waypoints for PBRS")
+        logger.debug(
+            f"Set {len(self.momentum_waypoints)} momentum waypoints for PBRS "
+            f"(source: {waypoint_source})"
+        )
 
     def reset(self) -> None:
         """Reset calculator state for new episode.

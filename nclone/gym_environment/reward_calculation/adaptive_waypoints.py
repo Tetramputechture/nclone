@@ -62,20 +62,26 @@ class AdaptiveWaypointSystem:
         self.waypoint_decay_rate = waypoint_decay_rate
         self.cluster_radius = cluster_radius
 
-        # Waypoints per level: level_id -> List[(pos, value, type, discovery_count)]
+        # Waypoints per level: level_id -> List[(pos, value, type, discovery_count, phase)]
         # pos: (x, y) position in pixels
         # value: importance score (decays if not reinforced)
-        # type: "inflection" or "progress" (for diagnostics)
+        # type: "inflection", "progress", "momentum", or "demo" (for diagnostics)
         # discovery_count: number of times this waypoint was reached in successful runs
-        self.waypoints: Dict[str, List[Tuple[Tuple[float, float], float, str, int]]] = (
-            defaultdict(list)
-        )
+        # phase: "pre_switch" or "post_switch" - when waypoint should be active
+        self.waypoints: Dict[
+            str, List[Tuple[Tuple[float, float], float, str, int, str]]
+        ] = defaultdict(list)
 
         # Track current level for level-specific waypoints
         self.current_level_id: Optional[str] = None
 
         # Track waypoints reached this episode (for logging)
         self.waypoints_reached_this_episode: List[Tuple[float, float]] = []
+
+        # Per-episode collection tracking to prevent exploitation
+        # Tracks which waypoint positions have been collected this episode
+        # Prevents agents from farming bonuses by repeatedly entering/exiting waypoint radius
+        self.collected_waypoints_this_episode: set = set()
 
         # Statistics
         self.total_waypoints_discovered = 0
@@ -97,17 +103,24 @@ class AdaptiveWaypointSystem:
         distances: List[float],
         success: bool,
         level_id: str = "default",
+        switch_activation_frame: Optional[int] = None,
     ) -> int:
         """Extract potential waypoints from a trajectory.
 
         Identifies inflection points and rapid progress positions,
         then clusters and adds them to the waypoint archive.
 
+        Switch-aware extraction: Waypoints are tagged with phase (pre_switch or post_switch)
+        based on when they occur relative to switch activation. This prevents confusion
+        when the agent must backtrack through previously visited locations after activating
+        the switch.
+
         Args:
             positions: List of (x, y) positions along trajectory
             distances: List of distances to goal at each position
             success: Whether trajectory completed successfully
             level_id: Level identifier for level-specific waypoints
+            switch_activation_frame: Frame index when switch was activated (None if never activated)
 
         Returns:
             Number of new waypoints added
@@ -154,12 +167,17 @@ class AdaptiveWaypointSystem:
                     base_value = 1.0
                     weighted_value = base_value * (1.0 + distance_factor)
 
-                    new_waypoints.append((positions[i], weighted_value, "inflection"))
+                    # Determine phase based on switch activation frame
+                    phase = self._determine_waypoint_phase(i, switch_activation_frame)
+
+                    new_waypoints.append(
+                        (positions[i], weighted_value, "inflection", phase)
+                    )
                     inflection_indices.append(i)
                     logger.debug(
                         f"Inflection point detected at ({positions[i][0]:.0f}, {positions[i][1]:.0f}), "
                         f"angle_cos={cos_angle:.2f}, distance_factor={distance_factor:.2f}, "
-                        f"weighted_value={weighted_value:.2f}"
+                        f"weighted_value={weighted_value:.2f}, phase={phase}"
                     )
 
         # === MOMENTUM PEAK DETECTION ===
@@ -194,7 +212,7 @@ class AdaptiveWaypointSystem:
             if max_velocity_idx is not None and max_velocity_mag > 10.0:
                 # Check if too close to existing waypoints (avoid duplicates)
                 is_duplicate = False
-                for existing_wp_pos, _, _ in new_waypoints:
+                for existing_wp_pos, _, _, _ in new_waypoints:
                     dx = positions[max_velocity_idx][0] - existing_wp_pos[0]
                     dy = positions[max_velocity_idx][1] - existing_wp_pos[1]
                     dist = (dx * dx + dy * dy) ** 0.5
@@ -213,13 +231,18 @@ class AdaptiveWaypointSystem:
                     base_value = 1.2
                     weighted_value = base_value * (1.0 + distance_factor)
 
+                    # Determine phase based on switch activation frame
+                    phase = self._determine_waypoint_phase(
+                        max_velocity_idx, switch_activation_frame
+                    )
+
                     new_waypoints.append(
-                        (positions[max_velocity_idx], weighted_value, "momentum")
+                        (positions[max_velocity_idx], weighted_value, "momentum", phase)
                     )
                     logger.debug(
                         f"Momentum peak detected at ({positions[max_velocity_idx][0]:.0f}, {positions[max_velocity_idx][1]:.0f}), "
                         f"velocity_mag={max_velocity_mag:.1f}px, {inflection_idx - max_velocity_idx} steps before inflection, "
-                        f"distance_factor={distance_factor:.2f}, weighted_value={weighted_value:.2f}"
+                        f"distance_factor={distance_factor:.2f}, weighted_value={weighted_value:.2f}, phase={phase}"
                     )
 
         # === RAPID PROGRESS DETECTION ===
@@ -237,18 +260,23 @@ class AdaptiveWaypointSystem:
                 base_value = 0.5
                 weighted_value = base_value * (1.0 + distance_factor)
 
-                new_waypoints.append((positions[i], weighted_value, "progress"))
+                # Determine phase based on switch activation frame
+                phase = self._determine_waypoint_phase(i, switch_activation_frame)
+
+                new_waypoints.append((positions[i], weighted_value, "progress", phase))
                 logger.debug(
                     f"Rapid progress point detected at ({positions[i][0]:.0f}, {positions[i][1]:.0f}), "
                     f"improvement={window_improvement:.1f}px, distance_factor={distance_factor:.2f}, "
-                    f"weighted_value={weighted_value:.2f}"
+                    f"weighted_value={weighted_value:.2f}, phase={phase}"
                 )
 
         # === WAYPOINT CLUSTERING AND ADDITION ===
         # Cluster new waypoints and add to archive
         waypoints_added = 0
-        for wp_pos, wp_value, wp_type in new_waypoints:
-            if self._add_or_reinforce_waypoint(level_id, wp_pos, wp_value, wp_type):
+        for wp_pos, wp_value, wp_type, wp_phase in new_waypoints:
+            if self._add_or_reinforce_waypoint(
+                level_id, wp_pos, wp_value, wp_type, wp_phase
+            ):
                 waypoints_added += 1
 
         if waypoints_added > 0:
@@ -259,12 +287,33 @@ class AdaptiveWaypointSystem:
 
         return waypoints_added
 
+    def _determine_waypoint_phase(
+        self, frame_idx: int, switch_activation_frame: Optional[int]
+    ) -> str:
+        """Determine which phase a waypoint belongs to based on when it occurred.
+
+        Args:
+            frame_idx: Frame index when waypoint occurred in trajectory
+            switch_activation_frame: Frame index when switch was activated (None if never)
+
+        Returns:
+            "pre_switch" if waypoint occurred before switch, "post_switch" if after
+        """
+        if switch_activation_frame is None:
+            # Switch never activated in this trajectory, assume pre-switch phase
+            return "pre_switch"
+        elif frame_idx < switch_activation_frame:
+            return "pre_switch"
+        else:
+            return "post_switch"
+
     def _add_or_reinforce_waypoint(
         self,
         level_id: str,
         position: Tuple[float, float],
         value: float,
         waypoint_type: str,
+        phase: str = "pre_switch",
     ) -> bool:
         """Add new waypoint or reinforce existing nearby waypoint.
 
@@ -276,7 +325,8 @@ class AdaptiveWaypointSystem:
             level_id: Level identifier
             position: Waypoint position (x, y)
             value: Initial waypoint value
-            waypoint_type: "inflection" or "progress"
+            waypoint_type: "inflection", "progress", "momentum", or "demo"
+            phase: "pre_switch" or "post_switch" - when waypoint should be active
 
         Returns:
             True if new waypoint added, False if existing waypoint reinforced
@@ -284,20 +334,27 @@ class AdaptiveWaypointSystem:
         level_waypoints = self.waypoints[level_id]
 
         # Check for nearby existing waypoint (clustering)
-        for i, (wp_pos, wp_value, wp_type, wp_count) in enumerate(level_waypoints):
+        # Only cluster with waypoints in the same phase to avoid confusion
+        for i, (wp_pos, wp_value, wp_type, wp_count, wp_phase) in enumerate(
+            level_waypoints
+        ):
+            # Only cluster with waypoints in the same phase
+            if wp_phase != phase:
+                continue
+
             dx = position[0] - wp_pos[0]
             dy = position[1] - wp_pos[1]
             distance = (dx * dx + dy * dy) ** 0.5
 
             if distance < self.cluster_radius:
-                # Found nearby waypoint - reinforce it
+                # Found nearby waypoint in same phase - reinforce it
                 # Increase value (capped at 2.0) and increment discovery count
                 new_value = min(2.0, wp_value + value * 0.5)
                 new_count = wp_count + 1
-                level_waypoints[i] = (wp_pos, new_value, wp_type, new_count)
+                level_waypoints[i] = (wp_pos, new_value, wp_type, new_count, wp_phase)
                 logger.debug(
                     f"Reinforced waypoint at ({wp_pos[0]:.0f}, {wp_pos[1]:.0f}): "
-                    f"value {wp_value:.2f} → {new_value:.2f}, count={new_count}"
+                    f"value {wp_value:.2f} → {new_value:.2f}, count={new_count}, phase={wp_phase}"
                 )
                 return False  # Existing waypoint reinforced, not new
 
@@ -312,12 +369,12 @@ class AdaptiveWaypointSystem:
             )
             self.waypoints_decayed += 1
 
-        # Add new waypoint
-        level_waypoints.append((position, value, waypoint_type, 1))
+        # Add new waypoint with phase
+        level_waypoints.append((position, value, waypoint_type, 1, phase))
         self.total_waypoints_discovered += 1
         logger.info(
             f"Added new {waypoint_type} waypoint at ({position[0]:.0f}, {position[1]:.0f}), "
-            f"value={value:.2f} (level: {level_id})"
+            f"value={value:.2f}, phase={phase} (level: {level_id})"
         )
         return True
 
@@ -326,6 +383,7 @@ class AdaptiveWaypointSystem:
         current_pos: Tuple[float, float],
         previous_pos: Optional[Tuple[float, float]] = None,
         level_id: str = "default",
+        switch_activated: bool = False,
     ) -> float:
         """Calculate bonus for reaching discovered waypoints.
 
@@ -333,10 +391,16 @@ class AdaptiveWaypointSystem:
         radius to inside radius). This rewards approaching waypoints but doesn't
         penalize missing them, allowing novel paths.
 
+        Switch-aware filtering: Only considers waypoints from the current phase.
+        Pre-switch waypoints are only active before switch activation, post-switch
+        waypoints only after. This prevents confusion when agent must backtrack
+        through previously visited locations.
+
         Args:
             current_pos: Current agent position (x, y)
             previous_pos: Previous agent position (x, y)
             level_id: Level identifier
+            switch_activated: Whether the exit switch has been activated
 
         Returns:
             Waypoint bonus reward (0.0 if no waypoints reached)
@@ -348,11 +412,17 @@ class AdaptiveWaypointSystem:
         if not level_waypoints:
             return 0.0
 
+        # Determine current phase for filtering
+        current_phase = "post_switch" if switch_activated else "pre_switch"
+
         total_bonus = 0.0
         waypoints_reached = []
         gradient_bonus_applied = 0.0
 
-        for wp_pos, wp_value, wp_type, wp_count in level_waypoints:
+        for wp_pos, wp_value, wp_type, wp_count, wp_phase in level_waypoints:
+            # Only consider waypoints from the current phase
+            if wp_phase != current_phase:
+                continue
             # Calculate distance to waypoint from previous and current positions
             prev_dx = previous_pos[0] - wp_pos[0]
             prev_dy = previous_pos[1] - wp_pos[1]
@@ -363,7 +433,16 @@ class AdaptiveWaypointSystem:
             curr_dist = (curr_dx * curr_dx + curr_dy * curr_dy) ** 0.5
 
             # Check if just entered waypoint radius (threshold crossing)
+            # AND hasn't been collected this episode (prevents exploitation)
             if prev_dist > self.waypoint_radius and curr_dist <= self.waypoint_radius:
+                # Check if waypoint already collected this episode
+                if wp_pos in self.collected_waypoints_this_episode:
+                    logger.debug(
+                        f"Waypoint already collected this episode: ({wp_pos[0]:.0f}, {wp_pos[1]:.0f}), "
+                        f"skipping bonus (prevents exploitation)"
+                    )
+                    continue  # Skip to next waypoint, don't award bonus again
+
                 # Bonus scales with waypoint value and counts reinforcement
                 # Base bonus: 20.0, scaled by value (0.1 to 2.0)
                 # So bonuses range from 2.0 to 40.0
@@ -372,6 +451,9 @@ class AdaptiveWaypointSystem:
                 bonus = 20.0 * wp_value
                 total_bonus += bonus
                 waypoints_reached.append((wp_pos, wp_type, bonus))
+
+                # Mark as collected for this episode
+                self.collected_waypoints_this_episode.add(wp_pos)
 
                 logger.debug(
                     f"Waypoint reached: ({wp_pos[0]:.0f}, {wp_pos[1]:.0f}), "
@@ -382,7 +464,11 @@ class AdaptiveWaypointSystem:
             # Gradient bonus: small reward for getting closer to waypoint
             # Provides denser signal to guide agent toward waypoints
             # Only applies within 100px radius to avoid affecting entire level
-            elif curr_dist <= 100.0:
+            # AND only for uncollected waypoints (prevents oscillation exploitation)
+            elif (
+                curr_dist <= 100.0
+                and wp_pos not in self.collected_waypoints_this_episode
+            ):
                 distance_improvement = prev_dist - curr_dist
                 if distance_improvement > 0:
                     # Gradient bonus scaled by:
@@ -443,18 +529,20 @@ class AdaptiveWaypointSystem:
             f"(success_rate={self.recent_success_rate:.1%})"
         )
 
-        for wp_pos, wp_value, wp_type, wp_count in level_waypoints:
+        for wp_pos, wp_value, wp_type, wp_count, wp_phase in level_waypoints:
             # Apply adaptive decay rate
             new_value = wp_value * adaptive_decay_rate
 
             # Only keep if above minimum threshold
             if new_value >= self.min_waypoint_value:
-                decayed_waypoints.append((wp_pos, new_value, wp_type, wp_count))
+                decayed_waypoints.append(
+                    (wp_pos, new_value, wp_type, wp_count, wp_phase)
+                )
             else:
                 self.waypoints_decayed += 1
                 logger.debug(
                     f"Decayed waypoint removed: ({wp_pos[0]:.0f}, {wp_pos[1]:.0f}), "
-                    f"value {wp_value:.2f} → {new_value:.2f} < threshold"
+                    f"value {wp_value:.2f} → {new_value:.2f} < threshold, phase={wp_phase}"
                 )
 
         # Update waypoints list
@@ -463,6 +551,7 @@ class AdaptiveWaypointSystem:
     def reset_episode(self) -> None:
         """Reset episode-level tracking."""
         self.waypoints_reached_this_episode = []
+        self.collected_waypoints_this_episode.clear()
 
     def set_level(self, level_id: str) -> None:
         """Set current level for level-specific waypoint tracking.
@@ -486,35 +575,48 @@ class AdaptiveWaypointSystem:
         )
 
     def get_waypoints_for_level(
-        self, level_id: str = "default"
+        self, level_id: str = "default", switch_activated: bool = False
     ) -> List[Dict[str, Any]]:
-        """Get all waypoints for a level (for visualization/debugging).
+        """Get waypoints for a level filtered by current phase (for visualization/debugging).
 
         Args:
             level_id: Level identifier
+            switch_activated: Whether switch is currently activated (filters to matching phase)
 
         Returns:
             List of waypoint dictionaries with keys:
             - position: (x, y)
             - value: importance score
-            - type: "inflection" or "progress"
+            - type: "inflection", "progress", "momentum", or "demo"
             - discovery_count: number of successful traversals
+            - phase: "pre_switch" or "post_switch"
+            - radius: waypoint trigger radius
         """
         if level_id not in self.waypoints:
             # DIAGNOSTIC: Show what keys exist vs what we're looking for
             existing_keys = list(self.waypoints.keys())
             print(f"[WAYPOINT_LOOKUP_FAIL] Level '{level_id}' not found in waypoints")
-            print(f"[WAYPOINT_LOOKUP_FAIL] Available keys ({len(existing_keys)}): {existing_keys[:10]}")  # Show first 10
+            print(
+                f"[WAYPOINT_LOOKUP_FAIL] Available keys ({len(existing_keys)}): {existing_keys[:10]}"
+            )  # Show first 10
             return []
 
+        # Determine current phase for filtering
+        current_phase = "post_switch" if switch_activated else "pre_switch"
+
         waypoints = []
-        for wp_pos, wp_value, wp_type, wp_count in self.waypoints[level_id]:
+        for wp_pos, wp_value, wp_type, wp_count, wp_phase in self.waypoints[level_id]:
+            # Only include waypoints from the current phase
+            if wp_phase != current_phase:
+                continue
+
             waypoints.append(
                 {
                     "position": wp_pos,
                     "value": wp_value,
                     "type": wp_type,
                     "discovery_count": wp_count,
+                    "phase": wp_phase,
                     "radius": self.waypoint_radius,
                 }
             )

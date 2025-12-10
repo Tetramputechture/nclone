@@ -330,19 +330,58 @@ class RewardCalculator:
         # Prevents reward hacking via oscillation/jumping in place
         self.spawn_position = None  # Set on first calculate_reward() call
 
-        # Adaptive waypoint system (Phase 3 enhancement)
-        # Discovers waypoints from successful trajectories, rewards distance reduction
-        self.adaptive_waypoints = AdaptiveWaypointSystem(
-            waypoint_radius=50.0,  # 50px radius for reaching waypoint
-            max_waypoints_per_level=10,  # Limit to prevent memory bloat
-            min_waypoint_value=0.1,  # Remove low-value waypoints
-            waypoint_decay_rate=0.95,  # Gradual decay if not reinforced
-            cluster_radius=30.0,  # Merge similar waypoints within 30px
-        )
+        # Waypoint system configuration (from RewardConfig)
+        self.enable_path_waypoints = self.config.enable_path_waypoints
+        self.enable_adaptive_waypoints = self.config.enable_adaptive_waypoints
+
+        # Path-based waypoint system (NEW: default ON, deterministic from optimal paths)
+        # Provides immediate dense guidance from first episode
+        if self.enable_path_waypoints:
+            from .path_waypoint_extractor import PathWaypointExtractor
+
+            self.path_waypoint_extractor = PathWaypointExtractor(
+                progress_spacing=self.config.path_waypoint_progress_spacing,
+                min_turn_angle=self.config.path_waypoint_min_angle,
+                cluster_radius=self.config.path_waypoint_cluster_radius,
+                segment_min_length=150.0,  # Minimum length for segment midpoints
+            )
+            logger.info(
+                "Path-based waypoint system enabled (dense guidance from optimal paths)"
+            )
+        else:
+            self.path_waypoint_extractor = None
+            logger.info("Path-based waypoint system disabled")
+
+        # Storage for current level's path waypoints
+        self.current_path_waypoints: List[Any] = []  # List[PathWaypoint]
+        self.current_path_waypoints_by_phase: Dict[str, List[Any]] = {
+            "pre_switch": [],
+            "post_switch": [],
+        }
+
+        # Adaptive waypoint system (LEGACY: default OFF, trajectory-learning)
+        # Only used for demo waypoint seeding when --enable-demos specified
+        if self.enable_adaptive_waypoints:
+            self.adaptive_waypoints = AdaptiveWaypointSystem(
+                waypoint_radius=50.0,  # 50px radius for reaching waypoint
+                max_waypoints_per_level=10,  # Limit to prevent memory bloat
+                min_waypoint_value=0.1,  # Remove low-value waypoints
+                waypoint_decay_rate=0.95,  # Gradual decay if not reinforced
+                cluster_radius=30.0,  # Merge similar waypoints within 30px
+            )
+            logger.info(
+                "Adaptive waypoint system enabled (trajectory-learning, legacy)"
+            )
+        else:
+            self.adaptive_waypoints = None
 
         # Track trajectory for waypoint extraction at episode end
         self.trajectory_positions: List[Tuple[float, float]] = []
         self.trajectory_distances: List[float] = []
+
+        # Track switch activation frame for phase-aware waypoint extraction
+        self.switch_activation_frame: Optional[int] = None
+        self.current_frame_count: int = 0
 
         # Track diagnostic data for PBRS visualization (Phase 1 enhancement)
         self.velocity_history: List[Tuple[float, float]] = []
@@ -422,6 +461,9 @@ class RewardCalculator:
             self.validate_level_solvability(obs)
             self._needs_validation = False
 
+        # Track frame count for phase-aware waypoint extraction
+        self.current_frame_count += frames_executed
+
         # === MILESTONE REWARD (checked BEFORE terminal to credit even on death) ===
         # CRITICAL: Switch activation must be credited even if agent dies on same step.
         # This ensures routes that achieve the switch are valued over those that don't.
@@ -435,6 +477,8 @@ class RewardCalculator:
         # This treats Phase 2 (→exit) as a fresh exploration problem
         if switch_just_activated:
             self.position_tracker.reset_for_goal_change()
+            # Track switch activation frame for phase-aware waypoint extraction
+            self.switch_activation_frame = self.current_frame_count
 
         # === TERMINAL REWARDS (always active) ===
         # Get level_data and level_id early for waypoint system (used in terminal sections)
@@ -448,10 +492,6 @@ class RewardCalculator:
         # For waypoint lookups, prefer map_name from observation over auto-generated level_id
         # This ensures waypoints stored by filename work with --map argument
         waypoint_lookup_id = obs.get("map_name", level_id)
-        if waypoint_lookup_id != level_id:
-            print(
-                f"[WAYPOINT_LOOKUP] Using map name '{waypoint_lookup_id}' instead of level_id '{level_id}'"
-            )
 
         # Death penalties - differentiated by cause for better learning signal
         if obs.get("player_dead", False):
@@ -473,8 +513,9 @@ class RewardCalculator:
             self.episode_terminal_reward = total_terminal
 
             # === WAYPOINT DECAY (Phase 3 enhancement) ===
-            # Decay waypoints since this trajectory failed
-            self.adaptive_waypoints.decay_waypoints(level_id=waypoint_lookup_id)
+            # Decay adaptive waypoints since this trajectory failed
+            if self.adaptive_waypoints is not None:
+                self.adaptive_waypoints.decay_waypoints(level_id=waypoint_lookup_id)
 
             # Apply global reward scaling for value function stability
             scaled_reward = total_terminal * GLOBAL_REWARD_SCALE
@@ -522,19 +563,25 @@ class RewardCalculator:
             self.episode_terminal_reward = total_terminal
 
             # === WAYPOINT EXTRACTION (Phase 3 enhancement) ===
-            # Extract waypoints from successful trajectory for future episodes
-            if len(self.trajectory_positions) > 5:
+            # Extract adaptive waypoints from successful trajectory for future episodes
+            # Only if adaptive waypoints enabled (legacy system)
+            if (
+                self.adaptive_waypoints is not None
+                and len(self.trajectory_positions) > 5
+            ):
                 waypoints_added = (
                     self.adaptive_waypoints.extract_waypoints_from_trajectory(
                         positions=self.trajectory_positions,
                         distances=self.trajectory_distances,
                         success=True,
                         level_id=waypoint_lookup_id,
+                        switch_activation_frame=self.switch_activation_frame,
                     )
                 )
                 logger.info(
-                    f"Success! Extracted {waypoints_added} waypoints from trajectory "
-                    f"({len(self.trajectory_positions)} positions, level: {level_id})"
+                    f"Success! Extracted {waypoints_added} adaptive waypoints from trajectory "
+                    f"({len(self.trajectory_positions)} positions, "
+                    f"switch_activated_at_frame={self.switch_activation_frame}, level: {level_id})"
                 )
 
             # Apply global reward scaling for value function stability
@@ -841,62 +888,106 @@ class RewardCalculator:
 
         reward += pbrs_reward
 
-        # === ADAPTIVE WAYPOINT BONUS (Phase 3 enhancement) ===
-        # Reward reaching discovered waypoints without penalizing novel paths
-        # waypoint_lookup_id already retrieved earlier for terminal rewards
-        waypoint_bonus = self.adaptive_waypoints.get_waypoint_bonus(
-            current_pos=current_player_pos,
-            previous_pos=self.prev_player_pos,
-            level_id=waypoint_lookup_id,
-        )
+        # === WAYPOINT BONUS (path-based or adaptive) ===
+        # Reward reaching waypoints without penalizing novel paths
+        waypoint_bonus = 0.0
+
+        if self.enable_path_waypoints and self.current_path_waypoints:
+            # Use path-based waypoints (dense, deterministic from optimal paths)
+            waypoint_bonus = self._get_path_waypoint_bonus(
+                current_pos=current_player_pos,
+                previous_pos=self.prev_player_pos,
+                switch_activated=obs.get("switch_activated", False),
+            )
+        elif self.enable_adaptive_waypoints and self.adaptive_waypoints:
+            # Fall back to adaptive waypoints (trajectory-learning, legacy)
+            waypoint_bonus = self.adaptive_waypoints.get_waypoint_bonus(
+                current_pos=current_player_pos,
+                previous_pos=self.prev_player_pos,
+                level_id=waypoint_lookup_id,
+                switch_activated=obs.get("switch_activated", False),
+            )
+
         reward += waypoint_bonus
 
-        # === WIRE WAYPOINTS TO PBRS (Phase 1.3) ===
-        # Update PBRS calculator with current level's discovered waypoints for multi-stage routing
+        # === WIRE WAYPOINTS TO PBRS FOR MULTI-STAGE ROUTING ===
+        # Update PBRS calculator with waypoints for potential field routing
         # This enables potential field: current → waypoint → goal
         # Critical for inflection point navigation (e.g., go LEFT before RIGHT)
-        current_level_waypoints = self.adaptive_waypoints.get_waypoints_for_level(
-            waypoint_lookup_id
-        )
-        print(
-            f"[ADAPTIVE_WP] Got {len(current_level_waypoints)} waypoints for level {waypoint_lookup_id}"
-        )
-        if current_level_waypoints:
-            print(
-                f"[ADAPTIVE_WP] Waypoint positions: {[wp['position'] for wp in current_level_waypoints]}"
-            )
-        if len(current_level_waypoints) != len(
-            self.pbrs_calculator.momentum_waypoints or []
-        ):
-            print("[ADAPTIVE_WP] Waypoint count changed, updating PBRS calculator")
-            # Determine current goal position for approach direction calculation
-            if not obs.get("switch_activated", False):
-                waypoint_goal_pos = (obs["switch_x"], obs["switch_y"])
-            else:
-                waypoint_goal_pos = (obs["exit_door_x"], obs["exit_door_y"])
 
-            # Convert to momentum waypoint format for PBRS calculator
-            # Waypoint format: {position, value, type, discovery_count, radius}
-            from collections import namedtuple
-
-            MomentumWaypoint = namedtuple(
-                "MomentumWaypoint", ["position", "approach_direction"]
+        if self.enable_path_waypoints and self.current_path_waypoints:
+            # Use path-based waypoints (immediate, deterministic)
+            current_phase = (
+                "post_switch" if obs.get("switch_activated", False) else "pre_switch"
             )
-            momentum_waypoints = []
-            for wp_dict in current_level_waypoints:
-                # Compute approach direction from waypoint toward goal
-                wp_pos = wp_dict["position"]
-                dx = waypoint_goal_pos[0] - wp_pos[0]
-                dy = waypoint_goal_pos[1] - wp_pos[1]
-                dist = (dx * dx + dy * dy) ** 0.5
-                if dist > 0.001:
-                    approach_dir = (dx / dist, dy / dist)
+            phase_waypoints = self.current_path_waypoints_by_phase.get(
+                current_phase, []
+            )
+
+            if phase_waypoints:
+                # Determine current goal position
+                if not obs.get("switch_activated", False):
+                    waypoint_goal_pos = (obs["switch_x"], obs["switch_y"])
                 else:
-                    approach_dir = (0.0, 0.0)
+                    waypoint_goal_pos = (obs["exit_door_x"], obs["exit_door_y"])
 
-                momentum_waypoints.append(MomentumWaypoint(wp_pos, approach_dir))
+                # Convert to momentum waypoint format
+                momentum_waypoints = self._convert_path_waypoints_to_momentum(
+                    phase_waypoints,
+                    obs.get("switch_activated", False),
+                    waypoint_goal_pos,
+                )
 
-            self.pbrs_calculator.set_momentum_waypoints(momentum_waypoints)
+                # Update PBRS calculator if waypoint count changed
+                current_momentum_count = len(
+                    self.pbrs_calculator.momentum_waypoints or []
+                )
+                if len(momentum_waypoints) != current_momentum_count:
+                    self.pbrs_calculator.set_momentum_waypoints(
+                        momentum_waypoints, waypoint_source="path"
+                    )
+                    logger.debug(
+                        f"Updated PBRS with {len(momentum_waypoints)} path waypoints "
+                        f"(phase: {current_phase})"
+                    )
+        elif self.enable_adaptive_waypoints and self.adaptive_waypoints:
+            # Fall back to adaptive waypoints (trajectory-learning, legacy)
+            current_level_waypoints = self.adaptive_waypoints.get_waypoints_for_level(
+                waypoint_lookup_id, switch_activated=obs.get("switch_activated", False)
+            )
+
+            if current_level_waypoints and len(current_level_waypoints) != len(
+                self.pbrs_calculator.momentum_waypoints or []
+            ):
+                # Determine current goal position
+                if not obs.get("switch_activated", False):
+                    waypoint_goal_pos = (obs["switch_x"], obs["switch_y"])
+                else:
+                    waypoint_goal_pos = (obs["exit_door_x"], obs["exit_door_y"])
+
+                # Convert to momentum waypoint format for PBRS calculator
+                from collections import namedtuple
+
+                MomentumWaypoint = namedtuple(
+                    "MomentumWaypoint", ["position", "approach_direction"]
+                )
+                momentum_waypoints = []
+                for wp_dict in current_level_waypoints:
+                    # Compute approach direction from waypoint toward goal
+                    wp_pos = wp_dict["position"]
+                    dx = waypoint_goal_pos[0] - wp_pos[0]
+                    dy = waypoint_goal_pos[1] - wp_pos[1]
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist > 0.001:
+                        approach_dir = (dx / dist, dy / dist)
+                    else:
+                        approach_dir = (0.0, 0.0)
+
+                    momentum_waypoints.append(MomentumWaypoint(wp_pos, approach_dir))
+
+                self.pbrs_calculator.set_momentum_waypoints(
+                    momentum_waypoints, waypoint_source="adaptive"
+                )
 
         # === POSITION TRACKING (revisit penalty + hierarchical exploration bonus) ===
         # Exploration bonus: PBRS-gated, hierarchical (resets on switch activation)
@@ -1381,7 +1472,18 @@ class RewardCalculator:
         # Reset trajectory tracking for waypoint extraction (Phase 3 enhancement)
         self.trajectory_positions = []
         self.trajectory_distances = []
-        self.adaptive_waypoints.reset_episode()
+        if self.adaptive_waypoints is not None:
+            self.adaptive_waypoints.reset_episode()
+
+        # Reset path waypoint collection tracking
+        if hasattr(self, "_collected_path_waypoints"):
+            self._collected_path_waypoints.clear()
+        else:
+            self._collected_path_waypoints = set()
+
+        # Reset switch activation tracking for phase-aware waypoint extraction
+        self.switch_activation_frame = None
+        self.current_frame_count = 0
 
         # Reset diagnostic tracking for visualization (Phase 1 enhancement)
         self.velocity_history = []
@@ -1460,9 +1562,383 @@ class RewardCalculator:
         """Get waypoint system statistics for monitoring.
 
         Returns:
-            Dictionary with waypoint statistics
+            Dictionary with waypoint statistics from both systems
         """
-        return self.adaptive_waypoints.get_statistics()
+        stats = {}
+
+        # Path waypoint statistics
+        if self.enable_path_waypoints and self.path_waypoint_extractor:
+            path_stats = self.path_waypoint_extractor.get_statistics()
+            stats["path_waypoints"] = path_stats
+            stats["path_waypoints_active"] = len(self.current_path_waypoints)
+            stats["path_waypoints_collected"] = len(
+                getattr(self, "_collected_path_waypoints", set())
+            )
+
+        # Adaptive waypoint statistics (if enabled)
+        if self.enable_adaptive_waypoints and self.adaptive_waypoints:
+            stats["adaptive_waypoints"] = self.adaptive_waypoints.get_statistics()
+
+        return stats
+
+    def extract_path_waypoints_for_level(
+        self,
+        level_data: Any,
+        graph_data: Dict[str, Any],
+        map_name: str,
+    ) -> int:
+        """Extract path-based waypoints from optimal A* paths for current level.
+
+        Called during episode reset after graph is built. Extracts dense waypoints
+        from spawn→switch and switch→exit paths for immediate guidance.
+
+        Args:
+            level_data: LevelData object with tiles and entities
+            graph_data: Graph data dict with adjacency, physics_cache
+            map_name: Level name for caching
+
+        Returns:
+            Number of waypoints extracted
+        """
+        if not self.enable_path_waypoints or self.path_waypoint_extractor is None:
+            return 0
+
+        try:
+            from ...constants.entity_types import EntityType
+            from ...constants.physics_constants import (
+                EXIT_SWITCH_RADIUS,
+                EXIT_DOOR_RADIUS,
+                NINJA_RADIUS,
+            )
+            from ...graph.reachability.pathfinding_utils import (
+                find_ninja_node,
+                find_goal_node_closest_to_start,
+                find_shortest_path,
+            )
+            from ...graph.reachability.mine_proximity_cache import (
+                MineProximityCostCache,
+            )
+
+            # Extract graph components
+            adjacency = graph_data.get("adjacency")
+            base_adjacency = graph_data.get("base_adjacency", adjacency)
+            physics_cache = graph_data.get("node_physics")
+            spatial_hash = graph_data.get("spatial_hash")
+            subcell_lookup = graph_data.get("subcell_lookup")
+
+            if not adjacency or not physics_cache:
+                logger.warning("Cannot extract path waypoints: missing graph data")
+                return 0
+
+            # Build mine proximity cache for physics-aware pathfinding
+            mine_proximity_cache = MineProximityCostCache()
+            mine_proximity_cache.build_cache(level_data, adjacency)
+
+            # Get spawn position
+            spawn_pos = level_data.start_position
+            spawn_node = find_ninja_node(
+                spawn_pos,
+                adjacency,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=NINJA_RADIUS,
+            )
+
+            if spawn_node is None:
+                logger.warning(f"Cannot find spawn node at {spawn_pos}")
+                return 0
+
+            # Get switch position
+            exit_switches = level_data.get_entities_by_type(EntityType.EXIT_SWITCH)
+            if not exit_switches:
+                logger.warning("No exit switch found in level data")
+                return 0
+            switch = exit_switches[0]
+            switch_pos = (int(switch.get("x", 0)), int(switch.get("y", 0)))
+            switch_node = find_goal_node_closest_to_start(
+                switch_pos,
+                spawn_node,
+                adjacency,
+                entity_radius=EXIT_SWITCH_RADIUS,
+                ninja_radius=NINJA_RADIUS,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+            )
+
+            if switch_node is None:
+                logger.warning(f"Cannot find switch node at {switch_pos}")
+                return 0
+
+            # Get exit door position
+            exit_doors = level_data.get_entities_by_type(EntityType.EXIT_DOOR)
+            if not exit_doors:
+                logger.warning("No exit door found in level data")
+                return 0
+            exit_door = exit_doors[0]
+            exit_pos = (int(exit_door.get("x", 0)), int(exit_door.get("y", 0)))
+            exit_node = find_goal_node_closest_to_start(
+                exit_pos,
+                switch_node,
+                adjacency,
+                entity_radius=EXIT_DOOR_RADIUS,
+                ninja_radius=NINJA_RADIUS,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+            )
+
+            if exit_node is None:
+                logger.warning(f"Cannot find exit node at {exit_pos}")
+                return 0
+
+            # Calculate spawn→switch path
+            spawn_to_switch_path, spawn_to_switch_dist = find_shortest_path(
+                spawn_node,
+                switch_node,
+                adjacency,
+                base_adjacency,
+                physics_cache,
+                level_data=level_data,
+                mine_proximity_cache=mine_proximity_cache,
+            )
+
+            if spawn_to_switch_path is None:
+                logger.warning("No path from spawn to switch")
+                return 0
+
+            # Calculate switch→exit path
+            switch_to_exit_path, switch_to_exit_dist = find_shortest_path(
+                switch_node,
+                exit_node,
+                adjacency,
+                base_adjacency,
+                physics_cache,
+                level_data=level_data,
+                mine_proximity_cache=mine_proximity_cache,
+            )
+
+            if switch_to_exit_path is None:
+                logger.warning("No path from switch to exit")
+                return 0
+
+            # Extract waypoints from both path segments
+            waypoints = self.path_waypoint_extractor.extract_waypoints_from_paths(
+                spawn_to_switch_path=spawn_to_switch_path,
+                switch_to_exit_path=switch_to_exit_path,
+                physics_cache=physics_cache,
+                level_id=map_name,
+                use_cache=True,
+            )
+
+            # Store waypoints
+            self.current_path_waypoints = waypoints
+
+            # Separate by phase for efficient filtering
+            self.current_path_waypoints_by_phase = {
+                "pre_switch": [wp for wp in waypoints if wp.phase == "pre_switch"],
+                "post_switch": [wp for wp in waypoints if wp.phase == "post_switch"],
+            }
+
+            logger.info(
+                f"Extracted {len(waypoints)} path waypoints for level '{map_name}': "
+                f"{len(self.current_path_waypoints_by_phase['pre_switch'])} pre-switch, "
+                f"{len(self.current_path_waypoints_by_phase['post_switch'])} post-switch"
+            )
+
+            return len(waypoints)
+
+        except Exception as e:
+            logger.warning(f"Failed to extract path waypoints: {e}")
+            import traceback
+
+            logger.debug(traceback.format_exc())
+            return 0
+
+    def _get_path_waypoint_bonus(
+        self,
+        current_pos: Tuple[float, float],
+        previous_pos: Optional[Tuple[float, float]],
+        switch_activated: bool,
+    ) -> float:
+        """Calculate bonus for reaching path waypoints.
+
+        Similar to adaptive waypoint bonus but uses path-extracted waypoints.
+        Only triggers once per waypoint per episode.
+
+        Args:
+            current_pos: Current agent position
+            previous_pos: Previous agent position
+            switch_activated: Whether switch is activated
+
+        Returns:
+            Waypoint bonus reward
+        """
+        if previous_pos is None or not self.current_path_waypoints:
+            return 0.0
+
+        # Get waypoints for current phase
+        current_phase = "post_switch" if switch_activated else "pre_switch"
+        phase_waypoints = self.current_path_waypoints_by_phase.get(current_phase, [])
+
+        if not phase_waypoints:
+            return 0.0
+
+        total_bonus = 0.0
+
+        # Check each waypoint to see if we just crossed into its radius
+        waypoint_radius = 50.0  # Match adaptive system
+
+        for wp in phase_waypoints:
+            wp_pos = wp.position
+
+            # Check if already collected this episode
+            if wp_pos in getattr(self, "_collected_path_waypoints", set()):
+                continue
+
+            # Calculate distances
+            prev_dist = math.sqrt(
+                (previous_pos[0] - wp_pos[0]) ** 2 + (previous_pos[1] - wp_pos[1]) ** 2
+            )
+            curr_dist = math.sqrt(
+                (current_pos[0] - wp_pos[0]) ** 2 + (current_pos[1] - wp_pos[1]) ** 2
+            )
+
+            # Check if we just crossed into the waypoint radius
+            if prev_dist > waypoint_radius and curr_dist <= waypoint_radius:
+                # Award bonus based on waypoint value
+                bonus = wp.value * 0.3  # Scale to reasonable bonus range (0.12-0.54)
+                total_bonus += bonus
+
+                # Mark as collected
+                if not hasattr(self, "_collected_path_waypoints"):
+                    self._collected_path_waypoints = set()
+                self._collected_path_waypoints.add(wp_pos)
+
+                logger.debug(
+                    f"Path waypoint reached: type={wp.waypoint_type}, "
+                    f"value={wp.value:.2f}, bonus={bonus:.3f}, "
+                    f"phase={wp.phase}, pos={wp_pos}"
+                )
+
+        return total_bonus
+
+    def _convert_path_waypoints_to_momentum(
+        self,
+        path_waypoints: List[Any],  # List[PathWaypoint]
+        switch_activated: bool,
+        goal_pos: Tuple[float, float],
+    ) -> List[Any]:
+        """Convert path waypoints to momentum waypoint format for PBRS routing.
+
+        Args:
+            path_waypoints: List of PathWaypoint objects
+            switch_activated: Whether switch is activated
+            goal_pos: Current goal position (switch or exit)
+
+        Returns:
+            List of MomentumWaypoint objects
+        """
+        from collections import namedtuple
+
+        MomentumWaypoint = namedtuple(
+            "MomentumWaypoint", ["position", "approach_direction"]
+        )
+
+        # Filter by phase
+        current_phase = "post_switch" if switch_activated else "pre_switch"
+        filtered = [wp for wp in path_waypoints if wp.phase == current_phase]
+
+        momentum_waypoints = []
+
+        for wp in filtered:
+            # Compute approach direction from waypoint toward goal
+            wp_pos = wp.position
+            dx = goal_pos[0] - wp_pos[0]
+            dy = goal_pos[1] - wp_pos[1]
+            dist = math.sqrt(dx * dx + dy * dy)
+
+            if dist > 0.001:
+                approach_dir = (dx / dist, dy / dist)
+            else:
+                approach_dir = (0.0, 0.0)
+
+            momentum_waypoints.append(MomentumWaypoint(wp_pos, approach_dir))
+
+        return momentum_waypoints
+
+    def seed_waypoints_from_demo_checkpoints(
+        self,
+        demo_waypoints: List[Tuple[Tuple[float, float], float, str, int, str]],
+        level_id: str,
+    ) -> int:
+        """Seed adaptive waypoint system with waypoints extracted from demo checkpoints.
+
+        This bootstraps learning by providing initial waypoints from expert demonstrations.
+        Demo waypoints will decay over time if not reinforced by agent's own successful
+        trajectories, allowing the system to adapt to the agent's actual capabilities.
+
+        Args:
+            demo_waypoints: List of 5-tuples (position, value, type, discovery_count, phase)
+                from DemoCheckpointSeeder.extract_waypoints_from_checkpoints()
+                - position: (x, y) world coordinates
+                - value: importance score (0.5-1.5 typically)
+                - type: "demo" for demo-extracted waypoints
+                - discovery_count: initial count (typically 1)
+                - phase: "pre_switch" or "post_switch" - when waypoint should be active
+            level_id: Level identifier for level-specific waypoint tracking
+
+        Returns:
+            Number of waypoints successfully seeded
+        """
+        if not demo_waypoints:
+            logger.info("No demo waypoints to seed")
+            return 0
+
+        # Add waypoints directly to the adaptive system
+        # They will be treated as discovered waypoints with initial discovery_count
+        # Format: 5-tuple (pos, value, type, count, phase) - phase is REQUIRED
+        seeded_count = 0
+        for wp_data in demo_waypoints:
+            if len(wp_data) != 5:
+                logger.warning(
+                    f"Invalid waypoint format: expected 5-tuple (pos, value, type, count, phase), "
+                    f"got {len(wp_data)}-tuple. Skipping waypoint."
+                )
+                continue
+
+            wp_pos, wp_value, wp_type, wp_count, wp_phase = wp_data
+
+            # Validate phase
+            if wp_phase not in ("pre_switch", "post_switch"):
+                logger.warning(
+                    f"Invalid waypoint phase '{wp_phase}', defaulting to 'pre_switch'"
+                )
+                wp_phase = "pre_switch"
+
+            # Add to waypoints dict for this level (5-tuple format)
+            self.adaptive_waypoints.waypoints[level_id].append(
+                (wp_pos, wp_value, wp_type, wp_count, wp_phase)
+            )
+            seeded_count += 1
+            logger.debug(
+                f"Seeded waypoint at ({wp_pos[0]:.0f}, {wp_pos[1]:.0f}), "
+                f"value={wp_value:.2f}, type={wp_type}, phase={wp_phase}"
+            )
+
+        # Update statistics
+        self.adaptive_waypoints.total_waypoints_discovered += seeded_count
+
+        # Count waypoints per phase for logging (only count valid 5-tuples)
+        valid_waypoints = [w for w in demo_waypoints if len(w) == 5]
+        pre_switch_count = sum(1 for w in valid_waypoints if w[4] == "pre_switch")
+        post_switch_count = sum(1 for w in valid_waypoints if w[4] == "post_switch")
+
+        logger.info(
+            f"Seeded {seeded_count} demo waypoints for level '{level_id}' "
+            f"(pre_switch: {pre_switch_count}, post_switch: {post_switch_count}, "
+            f"values: {[w[1] for w in valid_waypoints][:5]}...)"
+        )
+
+        return seeded_count
 
     def get_pbrs_diagnostic_data(self) -> Dict[str, Any]:
         """Get PBRS diagnostic data for route visualization (Phase 1 enhancement).
@@ -1573,11 +2049,22 @@ class RewardCalculator:
             "exploration_hierarchical_resets": self.position_tracker.hierarchical_resets,
             "exploration_coverage": len(self.position_tracker.visited_cells)
             / max(1, (1056 // 12) * (600 // 12)),  # % of level explored (12px grid)
-            # Waypoint metrics (Phase 3 enhancement)
+            # Waypoint metrics (combined path and adaptive systems)
             "waypoints_reached_this_episode": len(
-                self.adaptive_waypoints.waypoints_reached_this_episode
+                getattr(self, "_collected_path_waypoints", set())
+            )
+            if self.enable_path_waypoints
+            else (
+                len(self.adaptive_waypoints.waypoints_reached_this_episode)
+                if self.adaptive_waypoints
+                else 0
             ),
-            "waypoints_active_current_level": waypoint_stats["active_waypoints"],
-            "waypoints_total_discovered": waypoint_stats["total_waypoints_discovered"],
-            "waypoints_total_bonuses": waypoint_stats["total_bonuses_awarded"],
+            "waypoints_active_current_level": len(self.current_path_waypoints)
+            if self.enable_path_waypoints
+            else (
+                waypoint_stats.get("adaptive_waypoints", {}).get("active_waypoints", 0)
+            ),
+            "waypoints_system": "path"
+            if self.enable_path_waypoints
+            else ("adaptive" if self.enable_adaptive_waypoints else "none"),
         }

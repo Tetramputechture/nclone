@@ -331,6 +331,141 @@ class DemoCheckpointSeeder:
 
         return result
 
+    def extract_waypoints_from_checkpoints(
+        self,
+        checkpoints: List[Dict[str, Any]],
+        max_waypoints: int = 10,
+        cluster_radius: float = 30.0,
+    ) -> List[Tuple[Tuple[float, float], float, str, int, str]]:
+        """Extract waypoints from demo checkpoints for adaptive waypoint system.
+
+        Converts demo checkpoint positions to waypoint format suitable for
+        AdaptiveWaypointSystem. Filters duplicates within cluster_radius and
+        assigns values based on cumulative reward.
+
+        Switch-aware extraction: Assigns phase (pre_switch or post_switch) based on
+        checkpoint's switch_activated state. This ensures demo waypoints are only
+        active in the appropriate phase.
+
+        Args:
+            checkpoints: List of checkpoint dicts with 'position', 'cumulative_reward',
+                        and 'switch_activated'
+            max_waypoints: Maximum waypoints to extract
+            cluster_radius: Distance threshold for merging similar waypoints (pixels)
+
+        Returns:
+            List of (position, value, type, discovery_count, phase) tuples compatible with
+            AdaptiveWaypointSystem format:
+            - position: (x, y) in pixels
+            - value: importance score (0.5-2.0)
+            - type: "demo" for tracking origin
+            - discovery_count: 1 (expert-validated)
+            - phase: "pre_switch" or "post_switch"
+        """
+        if not checkpoints:
+            return []
+
+        # Split checkpoints by phase to ensure we get waypoints from BOTH phases
+        # Without this, high-reward post_switch checkpoints dominate and we get
+        # zero pre_switch waypoints, making early-game guidance impossible
+        pre_switch_checkpoints = [
+            cp for cp in checkpoints if not cp.get("switch_activated", False)
+        ]
+        post_switch_checkpoints = [
+            cp for cp in checkpoints if cp.get("switch_activated", False)
+        ]
+
+        logger.info(
+            f"Checkpoint phase breakdown: {len(pre_switch_checkpoints)} pre_switch, "
+            f"{len(post_switch_checkpoints)} post_switch"
+        )
+
+        # Allocate waypoint quota per phase (minimum 2 per phase if available)
+        # This ensures both phases get representation
+        min_per_phase = 2
+        if len(pre_switch_checkpoints) > 0 and len(post_switch_checkpoints) > 0:
+            # Both phases have checkpoints - split quota
+            pre_switch_quota = max(min_per_phase, max_waypoints // 2)
+            post_switch_quota = max(min_per_phase, max_waypoints - pre_switch_quota)
+        elif len(pre_switch_checkpoints) > 0:
+            # Only pre_switch checkpoints
+            pre_switch_quota = max_waypoints
+            post_switch_quota = 0
+        else:
+            # Only post_switch checkpoints
+            pre_switch_quota = 0
+            post_switch_quota = max_waypoints
+
+        def extract_phase_waypoints(
+            phase_checkpoints: List[Dict], quota: int, phase: str
+        ) -> List[Tuple]:
+            """Extract waypoints from checkpoints of a single phase."""
+            if quota == 0 or not phase_checkpoints:
+                return []
+
+            # Sort by cumulative reward (descending) to prioritize high-value positions
+            sorted_cps = sorted(
+                phase_checkpoints,
+                key=lambda cp: cp.get("cumulative_reward", 0.0),
+                reverse=True,
+            )
+
+            phase_waypoints = []
+            for cp in sorted_cps:
+                position = cp.get("position")
+                if position is None:
+                    continue
+
+                # Convert to float tuple for consistency
+                wp_pos = (float(position[0]), float(position[1]))
+
+                # Check if too close to existing waypoint (clustering)
+                is_duplicate = False
+                for existing_pos, *_ in phase_waypoints:
+                    dx = wp_pos[0] - existing_pos[0]
+                    dy = wp_pos[1] - existing_pos[1]
+                    distance = (dx * dx + dy * dy) ** 0.5
+                    if distance < cluster_radius:
+                        is_duplicate = True
+                        break
+
+                if is_duplicate:
+                    continue
+
+                # Assign value based on cumulative reward
+                cumulative_reward = cp.get("cumulative_reward", 0.0)
+                if cumulative_reward > 0:
+                    normalized = min(10.0, cumulative_reward) / 10.0
+                    value = 0.75 + normalized * 0.75
+                else:
+                    value = 0.5
+
+                phase_waypoints.append((wp_pos, value, "demo", 1, phase))
+
+                if len(phase_waypoints) >= quota:
+                    break
+
+            return phase_waypoints
+
+        # Extract waypoints from each phase
+        pre_switch_waypoints = extract_phase_waypoints(
+            pre_switch_checkpoints, pre_switch_quota, "pre_switch"
+        )
+        post_switch_waypoints = extract_phase_waypoints(
+            post_switch_checkpoints, post_switch_quota, "post_switch"
+        )
+
+        # Combine waypoints from both phases
+        waypoints = pre_switch_waypoints + post_switch_waypoints
+
+        logger.info(
+            f"Extracted {len(waypoints)} waypoints from {len(checkpoints)} checkpoints "
+            f"(pre_switch: {len(pre_switch_waypoints)}, post_switch: {len(post_switch_waypoints)}, "
+            f"cluster_radius={cluster_radius}px)"
+        )
+
+        return waypoints
+
     def seed_go_explore_archive(
         self,
         go_explore_callback: Any,
