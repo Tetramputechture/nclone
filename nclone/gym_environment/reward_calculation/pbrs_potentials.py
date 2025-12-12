@@ -154,7 +154,7 @@ class PBRSPotentials:
             state: Game state dictionary (must contain _pbrs_combined_path_distance)
             adjacency: Graph adjacency structure (always present)
             level_data: Level data object (always present)
-            path_calculator: CachedPathDistanceCalculator instance (uses cached geometric distances)
+            path_calculator: PathDistanceCalculator instance (uses cached geometric distances)
             graph_data: Graph data dict with spatial_hash for O(1) node lookup
             scale_factor: DEPRECATED - no longer used, kept for backward compatibility
 
@@ -418,7 +418,7 @@ class PBRSPotentials:
             state: Game state dictionary
             adjacency: Graph adjacency structure
             level_data: Level data object
-            path_calculator: CachedPathDistanceCalculator instance
+            path_calculator: PathDistanceCalculator instance
             momentum_waypoints: Optional list of MomentumWaypoint objects
             graph_data: Graph data dict with spatial_hash
             scale_factor: Normalization adjustment (deprecated, kept for compatibility)
@@ -711,7 +711,7 @@ class PBRSCalculator:
         """Initialize PBRS calculator with optional momentum waypoint support.
 
         Args:
-            path_calculator: CachedPathDistanceCalculator instance for shortest path distances
+            path_calculator: PathDistanceCalculator instance for shortest path distances
             momentum_waypoints: Optional list of MomentumWaypoint objects for momentum-aware routing
             reward_config: Optional RewardConfig instance for curriculum-adaptive weights
         """

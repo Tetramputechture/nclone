@@ -14,8 +14,10 @@ Expected density: 15-30 waypoints per path depending on complexity.
 
 import logging
 import math
-from typing import List, Tuple, Optional, Dict, Any, NamedTuple
+from typing import List, Tuple, Dict, Any, NamedTuple
 from collections import OrderedDict
+
+from ...graph.reachability.pathfinding_utils import NODE_WORLD_COORD_OFFSET
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class PathWaypoint(NamedTuple):
         node_index: Index in original path for ordering
         physics_state: "grounded", "aerial", or "walled"
         curvature: Turn angle in degrees (0-180)
+        exit_direction: Direction vector (dx, dy) to next waypoint on path (normalized)
     """
     position: Tuple[float, float]
     waypoint_type: str
@@ -39,6 +42,7 @@ class PathWaypoint(NamedTuple):
     node_index: int
     physics_state: str
     curvature: float
+    exit_direction: Optional[Tuple[float, float]] = None
 
 
 class PathWaypointExtractor:
@@ -203,6 +207,9 @@ class PathWaypointExtractor:
         # Cluster and deduplicate
         waypoints = self._cluster_waypoints(waypoints)
         
+        # Compute exit directions for sequential guidance
+        waypoints = self._compute_exit_directions(waypoints, path_nodes)
+        
         logger.debug(
             f"Extracted {len(waypoints)} waypoints for {phase} path "
             f"(length: {len(path_nodes)} nodes)"
@@ -245,7 +252,7 @@ class PathWaypointExtractor:
             if curr_grounded != next_grounded:
                 transition_type = "takeoff" if curr_grounded else "landing"
                 waypoints.append(PathWaypoint(
-                    position=(float(curr_node[0]), float(curr_node[1])),
+                    position=(float(curr_node[0]) + NODE_WORLD_COORD_OFFSET, float(curr_node[1]) + NODE_WORLD_COORD_OFFSET),
                     waypoint_type=f"physics_transition_{transition_type}",
                     value=1.5,  # High value, will be scaled by progress gradient
                     phase=phase,
@@ -290,7 +297,7 @@ class PathWaypointExtractor:
             
             if angle >= min_angle:
                 waypoints.append(PathWaypoint(
-                    position=(float(curr_node[0]), float(curr_node[1])),
+                    position=(float(curr_node[0]) + NODE_WORLD_COORD_OFFSET, float(curr_node[1]) + NODE_WORLD_COORD_OFFSET),
                     waypoint_type="sharp_turn",
                     value=1.8 * (angle / 180.0),  # Scale by sharpness
                     phase=phase,
@@ -334,7 +341,7 @@ class PathWaypointExtractor:
             
             if min_angle <= angle < max_angle:
                 waypoints.append(PathWaypoint(
-                    position=(float(curr_node[0]), float(curr_node[1])),
+                    position=(float(curr_node[0]) + NODE_WORLD_COORD_OFFSET, float(curr_node[1]) + NODE_WORLD_COORD_OFFSET),
                     waypoint_type="medium_turn",
                     value=1.2 * (angle / 90.0),  # Scale by turn sharpness
                     phase=phase,
@@ -392,7 +399,7 @@ class PathWaypointExtractor:
                 # Both windows are dominated by horizontal movement
                 if prev_dx * next_dx < 0:  # Opposite signs = reversal
                     waypoints.append(PathWaypoint(
-                        position=(float(path_nodes[i][0]), float(path_nodes[i][1])),
+                        position=(float(path_nodes[i][0]) + NODE_WORLD_COORD_OFFSET, float(path_nodes[i][1]) + NODE_WORLD_COORD_OFFSET),
                         waypoint_type="direction_reversal_horizontal",
                         value=1.8,  # High value for reversals
                         phase=phase,
@@ -410,7 +417,7 @@ class PathWaypointExtractor:
                 # Both windows are dominated by vertical movement
                 if prev_dy * next_dy < 0:  # Opposite signs = reversal
                     waypoints.append(PathWaypoint(
-                        position=(float(path_nodes[i][0]), float(path_nodes[i][1])),
+                        position=(float(path_nodes[i][0]) + NODE_WORLD_COORD_OFFSET, float(path_nodes[i][1]) + NODE_WORLD_COORD_OFFSET),
                         waypoint_type="direction_reversal_vertical",
                         value=1.8,  # High value for reversals
                         phase=phase,
@@ -474,7 +481,7 @@ class PathWaypointExtractor:
                         physics_state = self._get_physics_state_string(physics)
                         
                         waypoints.append(PathWaypoint(
-                            position=(float(midpoint_node[0]), float(midpoint_node[1])),
+                            position=(float(midpoint_node[0]) + NODE_WORLD_COORD_OFFSET, float(midpoint_node[1]) + NODE_WORLD_COORD_OFFSET),
                             waypoint_type="segment_midpoint",
                             value=1.0,  # Medium value
                             phase=phase,
@@ -532,7 +539,7 @@ class PathWaypointExtractor:
             
             # Check if we need a checkpoint
             if cumulative_distance - last_checkpoint_distance >= self.progress_spacing:
-                curr_pos = (float(curr_node[0]), float(curr_node[1]))
+                curr_pos = (float(curr_node[0]) + NODE_WORLD_COORD_OFFSET, float(curr_node[1]) + NODE_WORLD_COORD_OFFSET)
                 
                 # Only add if no existing waypoint nearby
                 if not self._has_waypoint_within_radius(
@@ -777,6 +784,83 @@ class PathWaypointExtractor:
             return "aerial"
         else:
             return "unknown"
+    
+    def _compute_exit_directions(
+        self,
+        waypoints: List[PathWaypoint],
+        path_nodes: List[Tuple[int, int]],
+    ) -> List[PathWaypoint]:
+        """Compute exit direction for each waypoint pointing toward next waypoint.
+        
+        For sequential guidance, each waypoint needs to know which direction the
+        agent should continue traveling after collecting it. This is computed by
+        finding the direction to the next waypoint in the sequence.
+        
+        Args:
+            waypoints: List of waypoints (sorted by node_index)
+            path_nodes: Original path nodes for fallback direction
+            
+        Returns:
+            List of waypoints with exit_direction populated
+        """
+        if not waypoints:
+            return waypoints
+        
+        updated_waypoints = []
+        
+        for i, wp in enumerate(waypoints):
+            exit_dir = None
+            
+            # Find direction to next waypoint in sequence
+            if i < len(waypoints) - 1:
+                next_wp = waypoints[i + 1]
+                dx = next_wp.position[0] - wp.position[0]
+                dy = next_wp.position[1] - wp.position[1]
+                dist = math.sqrt(dx * dx + dy * dy)
+                
+                if dist > 1.0:
+                    # Normalize direction vector
+                    exit_dir = (dx / dist, dy / dist)
+            else:
+                # Last waypoint - use direction along path toward goal
+                # Find nodes near this waypoint in the path
+                wp_node_idx = wp.node_index
+                if wp_node_idx < len(path_nodes) - 1:
+                    # Direction from this node to next node in path
+                    curr_node = path_nodes[wp_node_idx]
+                    next_node = path_nodes[wp_node_idx + 1]
+                    
+                    # Convert to world coordinates
+                    curr_x = curr_node[0] + NODE_WORLD_COORD_OFFSET
+                    curr_y = curr_node[1] + NODE_WORLD_COORD_OFFSET
+                    next_x = next_node[0] + NODE_WORLD_COORD_OFFSET
+                    next_y = next_node[1] + NODE_WORLD_COORD_OFFSET
+                    
+                    dx = next_x - curr_x
+                    dy = next_y - curr_y
+                    dist = math.sqrt(dx * dx + dy * dy)
+                    
+                    if dist > 1.0:
+                        exit_dir = (dx / dist, dy / dist)
+            
+            # Create new waypoint with exit_direction
+            updated_waypoints.append(PathWaypoint(
+                position=wp.position,
+                waypoint_type=wp.waypoint_type,
+                value=wp.value,
+                phase=wp.phase,
+                node_index=wp.node_index,
+                physics_state=wp.physics_state,
+                curvature=wp.curvature,
+                exit_direction=exit_dir,
+            ))
+        
+        logger.debug(
+            f"Computed exit directions for {len(updated_waypoints)} waypoints "
+            f"({sum(1 for wp in updated_waypoints if wp.exit_direction is not None)} have valid directions)"
+        )
+        
+        return updated_waypoints
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get extraction and caching statistics.

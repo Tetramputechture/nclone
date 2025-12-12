@@ -41,7 +41,7 @@ class AdaptiveWaypointSystem:
 
     def __init__(
         self,
-        waypoint_radius: float = 50.0,
+        waypoint_radius: float = 18.0,
         max_waypoints_per_level: int = 10,
         min_waypoint_value: float = 0.1,
         waypoint_decay_rate: float = 0.95,

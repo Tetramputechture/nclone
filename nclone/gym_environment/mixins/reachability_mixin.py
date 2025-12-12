@@ -39,18 +39,15 @@ class ReachabilityMixin:
         self._reachability_cache_ttl = 0.1  # 100ms cache TTL
         self._last_reachability_time = 0
 
-        # Grid-based cache for reachability performance (Phase 6 optimization)
-        # PERFORMANCE: Use grid-based caching to avoid recomputing when ninja in same cell
-        self._last_ninja_pos = None
-        self._cached_reachability = None
-        self._cache_valid = False
-        self._reachability_grid_size = (
-            24  # Pixels - invalidate when ninja moves to new grid cell
-        )
-
         self._reachability_system = ReachabilitySystem()
+
+        # Get shared_level_cache from parent environment if available
+        shared_cache = getattr(self, "shared_level_cache", None)
+
         self._path_calculator = CachedPathDistanceCalculator(
-            max_cache_size=200, use_astar=True
+            max_cache_size=200,
+            use_astar=True,
+            shared_level_cache=shared_cache,
         )
 
         # Initialize logging if debug is enabled
@@ -60,7 +57,6 @@ class ReachabilityMixin:
 
     def _reset_reachability_state(self):
         """Reset reachability state during environment reset."""
-        self._clear_reachability_cache()
         if hasattr(self, "_path_calculator"):
             self._path_calculator.clear_cache()
 
@@ -122,28 +118,7 @@ class ReachabilityMixin:
         Path difficulty (1 dim) - NEW Phase 3.3:
         21. Path difficulty ratio (0-1) - physics_cost/geometric_distance
 
-        PERFORMANCE: Uses grid-based caching to avoid recomputing when ninja
-        hasn't moved significantly (>24px grid cell).
         """
-        # Check cache validity using grid-based position matching
-        if (
-            self._cache_valid
-            and self._last_ninja_pos is not None
-            and self._cached_reachability is not None
-        ):
-            last_x, last_y = self._last_ninja_pos
-            ninja_x, ninja_y = ninja_pos
-
-            # Check if ninja moved to a new grid cell
-            ninja_grid_x = int(ninja_x // self._reachability_grid_size)
-            ninja_grid_y = int(ninja_y // self._reachability_grid_size)
-            last_grid_x = int(last_x // self._reachability_grid_size)
-            last_grid_y = int(last_y // self._reachability_grid_size)
-
-            if ninja_grid_x == last_grid_x and ninja_grid_y == last_grid_y:
-                # Cache hit: ninja in same grid cell, return cached features
-                return self._cached_reachability
-
         # Get graph data from GraphMixin (required)
         if not hasattr(self, "current_graph_data") or self.current_graph_data is None:
             raise RuntimeError(
@@ -158,14 +133,18 @@ class ReachabilityMixin:
         if adjacency is None:
             raise RuntimeError("adjacency not found in current_graph_data")
 
-        # Ensure level cache is built
+        # Ensure level cache is built (defensive, but now cheap with fast rejection)
+        # Normally built by _update_graph_from_env_state, but this handles edge cases
+        # like checkpoint resets where the normal flow may be bypassed.
+        # With the fast rejection optimization in build_level_cache, redundant calls
+        # are essentially free (single string comparison).
         base_adjacency = self.current_graph_data.get("base_adjacency", adjacency)
         self._path_calculator.build_level_cache(
             level_data, adjacency, base_adjacency, self.current_graph_data
         )
 
-        # Compute all reachability features (7 dims)
-        # Includes: 4 base + 2 mine context + 1 phase indicator (switch_activated)
+        # Compute all reachability features (22 dims)
+        # Includes: 4 base + 2 path distances + 4 direction vectors + 2 mine context + 1 phase indicator + 8 path direction + 1 difficulty
         features = compute_reachability_features_from_graph(
             adjacency,
             self.current_graph_data,
@@ -174,18 +153,7 @@ class ReachabilityMixin:
             self._path_calculator,
         )
 
-        # Update cache
-        self._last_ninja_pos = ninja_pos
-        self._cached_reachability = features
-        self._cache_valid = True
-
         return features
-
-    def _clear_reachability_cache(self):
-        """Clear reachability cache."""
-        self._last_ninja_pos = None
-        self._cached_reachability = None
-        self._cache_valid = False
 
     def _reinit_reachability_system_after_unpickling(self):
         """Reinitialize reachability system components after unpickling."""

@@ -1,4 +1,30 @@
-<!-- 49888944-51ce-479d-92b8-8337d7ed36d2 408b1b6e-8714-4420-aa0a-d362476fa0a3 -->
+---
+name: Buffer-Aware Kinodynamic Planning System
+overview: ""
+todos:
+  - id: 0f6d4d8d-9619-407e-bf52-74eee241a1f9
+    content: Implement frame-by-frame trajectory calculator with exact N++ physics
+    status: pending
+  - id: 71c68cac-646c-43d8-a0fe-7e489bc66c44
+    content: Implement jump type detection (floor/wall/slope/aerial)
+    status: pending
+  - id: 5cffaf63-f79c-460e-bfb9-fcaf01dd0da5
+    content: Implement binary search for minimum required velocity
+    status: pending
+  - id: 772789cb-b171-49b3-82cc-29c516bb43d2
+    content: Implement conservative collision checking for trajectories
+    status: pending
+  - id: eb4d8452-eeac-4b1f-96fd-6fb817f8f15a
+    content: Add velocity requirements to graph edges during build
+    status: pending
+  - id: fccfbe1a-d07a-4eca-9774-b7fb9de3a1a9
+    content: Integrate velocity requirements into A* cost calculation
+    status: pending
+  - id: 9bb1234f-defe-4884-b911-66ab23fed184
+    content: Validate analytical model accuracy vs simulation
+    status: pending
+---
+
 # Buffer-Aware Kinodynamic Planning System
 
 ## Critical Discovery: Input Buffers
@@ -595,13 +621,3 @@ def generate_strategic_action_sequences(src_node, velocity, buffer_state):
 - Still better than ignoring buffers entirely
 
 Would you like to proceed with **Option A** (Binary Buffer Database)? This gives excellent accuracy with manageable complexity.
-
-### To-dos
-
-- [ ] Implement frame-by-frame trajectory calculator with exact N++ physics
-- [ ] Implement jump type detection (floor/wall/slope/aerial)
-- [ ] Implement binary search for minimum required velocity
-- [ ] Implement conservative collision checking for trajectories
-- [ ] Add velocity requirements to graph edges during build
-- [ ] Integrate velocity requirements into A* cost calculation
-- [ ] Validate analytical model accuracy vs simulation

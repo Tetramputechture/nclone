@@ -1,40 +1,53 @@
 """
 Path distance calculator with caching support.
 
-Provides CachedPathDistanceCalculator which combines pathfinding algorithms
-with both per-query caching and level-based precomputed caching.
+Provides CachedPathDistanceCalculator which consolidates:
+- BFS and A* pathfinding algorithms for shortest path calculation
+- Per-query caching for frequently accessed paths
+- Level-based precomputed caching for goal distances
+- Step-level caching for within-step duplicate calls
+- Integration with shared memory caching for multi-worker training
 """
 
 import logging
 from typing import Dict, Tuple, Optional, Any, List
+from collections import deque
+import heapq
 
-logger = logging.getLogger(__name__)
 from ..level_data import LevelData
-from .pathfinding_algorithms import PathDistanceCalculator
 from .pathfinding_utils import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
     find_ninja_node,
+    _violates_horizontal_rule,
+    _calculate_physics_aware_cost,
 )
 from .path_distance_cache import LevelBasedPathDistanceCache
 from .mine_proximity_cache import MineProximityCostCache, MineSignedDistanceField
 from .performance_timer import PerformanceTimer
 
+logger = logging.getLogger(__name__)
+
 # Hardcoded cell size as per N++ constants
 CELL_SIZE = 24
 
-# Re-export PathDistanceCalculator for backward compatibility
-__all__ = ["PathDistanceCalculator", "CachedPathDistanceCalculator"]
-
 
 class CachedPathDistanceCalculator:
-    """Path distance calculator with caching for static goals."""
+    """
+    Path distance calculator with caching for static goals.
+
+    Combines BFS/A* pathfinding algorithms with multiple caching layers:
+    - Per-query cache for frequently accessed paths
+    - Level-based precomputed cache for goal distances
+    - Step-level cache for within-step duplicate calls
+    """
 
     def __init__(
         self,
         max_cache_size: int = 50,
         use_astar: bool = True,
         enable_timing: bool = False,
+        shared_level_cache: Optional[Any] = None,
     ):
         """
         Initialize cached path distance calculator.
@@ -45,27 +58,35 @@ class CachedPathDistanceCalculator:
                           same level means same paths, so smaller cache is sufficient)
             use_astar: Use A* (True) or BFS (False) for pathfinding
             enable_timing: Enable performance timing instrumentation
+            shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
         """
-        self.calculator = PathDistanceCalculator(use_astar=use_astar)
+        self.use_astar = use_astar
         self.cache: Dict[Tuple, float] = {}
         self.max_cache_size = max_cache_size
         self.hits = 0
         self.misses = 0
 
+        # Store shared cache reference (used instead of local caches if provided)
+        self._shared_level_cache = shared_level_cache
+
         # Level-based cache for precomputed distances
+        # If shared cache provided, this will be set to a view wrapper
         self.level_cache: Optional[LevelBasedPathDistanceCache] = (
-            LevelBasedPathDistanceCache()
+            None if shared_level_cache is not None else LevelBasedPathDistanceCache()
         )
         self.level_data: Optional[LevelData] = None
 
         # Mine proximity cost cache for hazard avoidance
+        # If shared cache provided, this will be set to a view wrapper
         self.mine_proximity_cache: Optional[MineProximityCostCache] = (
-            MineProximityCostCache()
+            None if shared_level_cache is not None else MineProximityCostCache()
         )
 
         # Signed Distance Field to mines for O(1) observation space features
-        # Precomputed at tile resolution (44x25) - zero runtime cost
-        self.mine_sdf: MineSignedDistanceField = MineSignedDistanceField()
+        # If shared cache provided, this will be set to a view wrapper
+        self.mine_sdf: MineSignedDistanceField = (
+            None if shared_level_cache is not None else MineSignedDistanceField()
+        )
 
         # Track current level to avoid redundant cache rebuilds
         self._current_level_id: Optional[str] = None
@@ -151,6 +172,38 @@ class CachedPathDistanceCalculator:
         Returns:
             True if cache was rebuilt, False if cache was valid
         """
+        # Fast rejection: skip if same level (avoid expensive LevelData comparison)
+        # This makes redundant calls essentially free (single string comparison)
+        if (
+            self._current_level_id is not None
+            and level_data.level_id == self._current_level_id
+        ):
+            return False  # Cache already valid for this level
+
+        # OPTIMIZATION: If shared cache is provided, use view wrappers instead of building locally
+        if self._shared_level_cache is not None:
+            if self.level_cache is None:
+                # Initialize view wrappers on first call
+                self.level_cache = self._shared_level_cache.get_path_cache_view()
+                self.mine_proximity_cache = (
+                    self._shared_level_cache.get_mine_proximity_view()
+                )
+                self.mine_sdf = self._shared_level_cache.get_sdf_view()
+
+                # Store level data for consistency checks
+                self.level_data = level_data
+                self._current_level_id = level_data.level_id
+
+                logger.debug(
+                    f"Using shared level cache: {self._shared_level_cache.memory_usage_kb:.1f}KB, "
+                    f"{self._shared_level_cache.num_nodes} nodes, {self._shared_level_cache.num_goals} goals"
+                )
+
+                return True  # "Rebuilt" by using shared cache
+
+            return False  # Already using shared cache, no rebuild needed
+
+        # Standard path: build caches locally
         if self.level_cache is None:
             self.level_cache = LevelBasedPathDistanceCache()
 
@@ -163,13 +216,21 @@ class CachedPathDistanceCalculator:
 
         # Build mine SDF for O(1) observation space features
         # This is precomputed at tile resolution (44x25) for zero runtime cost
-        sdf_rebuilt = self.mine_sdf.build_sdf(level_data)
+        sdf_rebuilt = (
+            self.mine_sdf.build_sdf(level_data) if self.mine_sdf is not None else False
+        )
 
         # Cache graph data for potential waypoint-triggered rebuilds
         # This allows set_waypoints() to rebuild cache if waypoints change mid-episode
         self._last_adjacency = adjacency
         self._last_base_adjacency = base_adjacency
         self._last_graph_data = graph_data
+
+        # DIAGNOSTIC: Log waypoint state before passing to level cache
+        logger.info(
+            f"[BUILD_LEVEL_CACHE] About to build with {len(self._cached_waypoint_positions)} waypoints: "
+            f"{self._cached_waypoint_positions[:3] if len(self._cached_waypoint_positions) > 3 else self._cached_waypoint_positions}"
+        )
 
         # Then build level cache (uses mine proximity cache and SDF during BFS)
         rebuilt = self.level_cache.build_cache(
@@ -210,16 +271,19 @@ class CachedPathDistanceCalculator:
                 for entity in level_data.get_entities_by_type(EntityType.EXIT_DOOR)
             ]
 
-            # DIAGNOSTIC: Log cache build details
-            if rebuilt and self.level_cache is not None:
-                cache_stats = self.level_cache.get_statistics()
-                print(
-                    f"[CACHE_BUILD] Level cache built for level_id={self._current_level_id}: "
-                    f"physics_entries={cache_stats.get('physics_cache_size', 0)}, "
-                    f"geometric_entries={cache_stats.get('geometric_cache_size', 0)}, "
-                    f"switch_positions={self._cached_switch_positions}, "
-                    f"exit_positions={self._cached_exit_positions}"
-                )
+            # NOTE: _cached_waypoint_positions is NOT repopulated here
+            # It's only set via set_waypoints() and should persist across cache rebuilds
+            # If it gets cleared, that's a bug
+
+            # # DIAGNOSTIC: Log cache build details
+            # if rebuilt and self.level_cache is not None:
+            #     cache_stats = self.level_cache.get_statistics()
+            #     print(
+            #         f"[CACHE_BUILD] Level cache built for level_id={self._current_level_id}: "
+            #         f"geometric_entries={cache_stats.get('geometric_cache_size', 0)}, "
+            #         f"switch_positions={self._cached_switch_positions}, "
+            #         f"exit_positions={self._cached_exit_positions}"
+            #     )
 
         return rebuilt or mine_cache_rebuilt or sdf_rebuilt
 
@@ -245,11 +309,23 @@ class CachedPathDistanceCalculator:
         # Check if waypoints changed
         waypoints_changed = new_waypoint_positions != self._cached_waypoint_positions
 
+        # DIAGNOSTIC: Log BEFORE setting to see if we're clearing accidentally
+        logger.info(
+            f"[WAYPOINT_CACHE] BEFORE set: {len(self._cached_waypoint_positions)} waypoints, "
+            f"NEW: {len(new_waypoint_positions)} waypoints, "
+            f"changed={waypoints_changed}"
+        )
+
         self._cached_waypoint_positions = new_waypoint_positions
 
-        print(
-            f"[WAYPOINT_CACHE] Set {len(self._cached_waypoint_positions)} waypoints for caching: "
+        logger.info(
+            f"[WAYPOINT_CACHE] AFTER set: {len(self._cached_waypoint_positions)} waypoints for caching: "
             f"{self._cached_waypoint_positions}"
+        )
+
+        # DIAGNOSTIC: Log waypoint list id to track if list object changes
+        logger.info(
+            f"[WAYPOINT_CACHE] Waypoint list id: {id(self._cached_waypoint_positions)}"
         )
 
         # CRITICAL: If waypoints changed and cache already exists, rebuild it
@@ -260,7 +336,8 @@ class CachedPathDistanceCalculator:
             and self.level_data is not None
         ):
             logger.info(
-                "[WAYPOINT_CACHE] Waypoints changed, rebuilding level cache to include new waypoints"
+                f"[WAYPOINT_CACHE] Waypoints changed, rebuilding level cache to include "
+                f"{len(self._cached_waypoint_positions)} new waypoints"
             )
             # Rebuild cache with new waypoints
             # Need to get adjacency from somewhere - check if we have cached graph data
@@ -269,17 +346,274 @@ class CachedPathDistanceCalculator:
                 and hasattr(self, "_last_base_adjacency")
                 and hasattr(self, "_last_graph_data")
             ):
+                # Clear level ID to bypass fast rejection check and force rebuild
+                old_level_id = self._current_level_id
+                self._current_level_id = None
+                logger.info(
+                    f"[WAYPOINT_CACHE] Cleared level_id (was {old_level_id}) to force cache rebuild"
+                )
                 self.build_level_cache(
                     self.level_data,
                     self._last_adjacency,
                     self._last_base_adjacency,
                     self._last_graph_data,
                 )
+                logger.info(
+                    f"[WAYPOINT_CACHE] Cache rebuild complete, level_id now={self._current_level_id}"
+                )
             else:
                 logger.warning(
                     "[WAYPOINT_CACHE] Cannot rebuild cache - no cached graph data. "
                     "Waypoints will use BFS fallback until next cache build."
                 )
+
+    def _calculate_distance(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        level_data: Optional[Any] = None,
+        mine_proximity_cache: Optional[Any] = None,
+        mine_sdf: Optional[Any] = None,
+        hazard_cost_multiplier: Optional[float] = None,
+    ) -> float:
+        """
+        Calculate shortest navigable path distance using BFS or A*.
+
+        Args:
+            start: Starting position (x, y) in pixels
+            goal: Goal position (x, y) in pixels
+            adjacency: Masked graph adjacency structure (for pathfinding)
+            base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
+            physics_cache: Optional pre-computed physics properties for O(1) lookups
+            level_data: Optional LevelData for mine proximity checks (fallback)
+            mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
+            mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
+            hazard_cost_multiplier: Optional curriculum-adaptive mine hazard cost multiplier
+
+        Returns:
+            Shortest path distance in pixels, or float('inf') if unreachable
+        """
+        # Quick checks
+        if start not in adjacency or goal not in adjacency:
+            return float("inf")
+        if start == goal:
+            return 0.0
+
+        if physics_cache is None:
+            raise ValueError(
+                "Physics cache is required for physics-aware cost calculation"
+            )
+        if level_data is None:
+            raise ValueError(
+                "Level data is required for mine proximity cost calculation"
+            )
+        if mine_proximity_cache is None:
+            raise ValueError(
+                "Mine proximity cache is required for mine proximity cost calculation"
+            )
+
+        # Choose algorithm
+        if self.use_astar:
+            return self._astar_distance(
+                start,
+                goal,
+                adjacency,
+                base_adjacency,
+                physics_cache,
+                level_data,
+                mine_proximity_cache,
+                mine_sdf,
+                hazard_cost_multiplier,
+            )
+        else:
+            return self._bfs_distance(
+                start,
+                goal,
+                adjacency,
+                base_adjacency,
+                physics_cache,
+                level_data,
+                mine_proximity_cache,
+                mine_sdf,
+                hazard_cost_multiplier,
+            )
+
+    def _bfs_distance(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        adjacency: Dict,
+        base_adjacency: Dict,
+        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        level_data: Optional[Any] = None,
+        mine_proximity_cache: Optional[Any] = None,
+        mine_sdf: Optional[Any] = None,
+        hazard_cost_multiplier: Optional[float] = None,
+    ) -> float:
+        """BFS pathfinding - guaranteed shortest path with physics and momentum validation."""
+        queue = deque([(start, 0.0)])
+        visited = {start}
+        parents = {start: None}  # Track parents for momentum inference
+        grandparents = {start: None}  # Track grandparents for momentum inference
+        aerial_chains = {start: 0}  # Track consecutive aerial upward moves
+
+        while queue:
+            current, dist = queue.popleft()
+
+            if current == goal:
+                return dist
+
+            # Get current node's physics properties for chain tracking
+            current_physics = physics_cache[current]
+            current_grounded = current_physics["grounded"]
+            current_walled = current_physics["walled"]
+            current_chain = aerial_chains.get(current, 0)
+
+            # OPTIMIZATION: Cache parent/grandparent lookups to avoid repeated dict.get()
+            current_parent = parents.get(current)
+            current_grandparent = grandparents.get(current)
+
+            # Explore neighbors from adjacency graph (masked for pathfinding)
+            for neighbor, _ in adjacency.get(current, []):
+                if neighbor not in visited:
+                    # Check horizontal rule before accepting edge (uses base_adjacency + physics_cache)
+                    # OPTIMIZATION: Pass physics_cache for O(1) grounding checks
+                    if _violates_horizontal_rule(
+                        current, neighbor, parents, base_adjacency, physics_cache
+                    ):
+                        continue
+
+                    # Determine if this edge is aerial upward (for chain tracking)
+                    dy = neighbor[1] - current[1]
+                    is_aerial_upward = (
+                        not current_grounded and not current_walled and dy < 0
+                    )
+
+                    # Calculate new chain count: increment for aerial upward, reset otherwise
+                    new_chain = current_chain + 1 if is_aerial_upward else 0
+
+                    # Calculate physics-aware edge cost with momentum tracking
+                    # OPTIMIZATION: Pass cached parent/grandparent
+                    edge_cost = _calculate_physics_aware_cost(
+                        current,
+                        neighbor,
+                        base_adjacency,
+                        current_parent,
+                        physics_cache,
+                        level_data,
+                        mine_proximity_cache,
+                        current_chain,  # Pass current chain count for cost calculation
+                        current_grandparent,  # Pass cached grandparent
+                        mine_sdf,  # Pass SDF for velocity-aware mine costs
+                        hazard_cost_multiplier,  # Curriculum-adaptive mine costs
+                    )
+
+                    visited.add(neighbor)
+                    parents[neighbor] = current  # Track parent
+                    grandparents[neighbor] = current_parent  # Track cached grandparent
+                    aerial_chains[neighbor] = new_chain  # Track chain count
+                    queue.append((neighbor, dist + edge_cost))
+
+        return float("inf")
+
+    def _astar_distance(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        adjacency: Dict,
+        base_adjacency: Dict,
+        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        level_data: Optional[Any] = None,
+        mine_proximity_cache: Optional[Any] = None,
+        mine_sdf: Optional[Any] = None,
+        hazard_cost_multiplier: Optional[float] = None,
+    ) -> float:
+        """A* pathfinding - faster than BFS with heuristic, physics, and momentum validation."""
+
+        def manhattan_heuristic(pos: Tuple[int, int]) -> float:
+            """Manhattan distance heuristic (admissible)."""
+            return abs(pos[0] - goal[0]) + abs(pos[1] - goal[1])
+
+        # Priority queue: (f_score, g_score, position)
+        open_set = [(manhattan_heuristic(start), 0.0, start)]
+        g_score = {start: 0.0}
+        visited = set()
+        parents = {start: None}  # Track parents for momentum inference
+        grandparents = {start: None}  # Track grandparents for momentum inference
+        aerial_chains = {start: 0}  # Track consecutive aerial upward moves
+
+        while open_set:
+            _, current_g, current = heapq.heappop(open_set)
+
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if current == goal:
+                return current_g
+
+            # Get current node's physics properties for chain tracking
+            current_physics = physics_cache[current]
+            current_grounded = current_physics["grounded"]
+            current_walled = current_physics["walled"]
+            current_chain = aerial_chains.get(current, 0)
+
+            # OPTIMIZATION: Cache parent/grandparent lookups to avoid repeated dict.get()
+            current_parent = parents.get(current)
+            current_grandparent = grandparents.get(current)
+
+            # Explore neighbors from adjacency graph (masked for pathfinding)
+            for neighbor, _ in adjacency.get(current, []):
+                if neighbor in visited:
+                    continue
+
+                # Check horizontal rule before accepting edge (uses base_adjacency + physics_cache)
+                # OPTIMIZATION: Pass physics_cache for O(1) grounding checks
+                if _violates_horizontal_rule(
+                    current, neighbor, parents, base_adjacency, physics_cache
+                ):
+                    continue
+
+                # Determine if this edge is aerial upward (for chain tracking)
+                dy = neighbor[1] - current[1]
+                is_aerial_upward = (
+                    not current_grounded and not current_walled and dy < 0
+                )
+
+                # Calculate new chain count: increment for aerial upward, reset otherwise
+                new_chain = current_chain + 1 if is_aerial_upward else 0
+
+                # Calculate physics-aware edge cost with momentum tracking
+                # OPTIMIZATION: Pass cached parent/grandparent
+                edge_cost = _calculate_physics_aware_cost(
+                    current,
+                    neighbor,
+                    base_adjacency,
+                    current_parent,
+                    physics_cache,
+                    level_data,
+                    mine_proximity_cache,
+                    current_chain,  # Pass current chain count for cost calculation
+                    current_grandparent,  # Pass cached grandparent
+                    mine_sdf,  # Pass SDF for velocity-aware mine costs
+                    hazard_cost_multiplier,  # Curriculum-adaptive mine costs
+                )
+
+                tentative_g = current_g + edge_cost
+
+                # OPTIMIZATION: Direct comparison instead of .get() with default
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    g_score[neighbor] = tentative_g
+                    parents[neighbor] = current  # Track parent
+                    grandparents[neighbor] = current_parent  # Track cached grandparent
+                    aerial_chains[neighbor] = new_chain  # Track chain count
+                    f_score = tentative_g + manhattan_heuristic(neighbor)
+                    heapq.heappush(open_set, (f_score, tentative_g, neighbor))
+
+        return float("inf")
 
     def get_distance(
         self,
@@ -788,7 +1122,7 @@ class CachedPathDistanceCalculator:
 
         self.misses += 1
         with self.timer.measure("pathfinding_compute"):
-            distance = self.calculator.calculate_distance(
+            distance = self._calculate_distance(
                 start_node,
                 goal_node,
                 adjacency,
@@ -918,6 +1252,12 @@ class CachedPathDistanceCalculator:
                     # ROBUST GOAL_ID INFERENCE: Use cached entity positions (O(1) per level)
                     # Avoids repeated entity queries in hot path (2000+ calls per profile)
 
+                    # DIAGNOSTIC: Log waypoint cache state
+                    logger.debug(
+                        f"[GOAL_ID_INFERENCE] Checking goal {goal} against "
+                        f"{len(self._cached_waypoint_positions)} cached waypoints"
+                    )
+
                     # Check if goal matches a cached switch position (within 24px tolerance)
                     for switch_pos in self._cached_switch_positions:
                         if (
@@ -950,14 +1290,22 @@ class CachedPathDistanceCalculator:
                                 break
 
                 if goal_id is None:
-                    logger.warning(f"Goal ID not found for goal: {goal}")
-                    print(f"cached_exit_positions: {self._cached_exit_positions}")
-                    print(f"cached_switch_positions: {self._cached_switch_positions}")
-                    print(
-                        f"cached_waypoint_positions: {self._cached_waypoint_positions}"
-                    )
-                    print(f"goal: {goal}")
-                    print(goal)
+                    # logger.warning(
+                    #     f"[GOAL_ID_INFERENCE] Goal ID not found for goal: {goal}. "
+                    #     f"Cached waypoints: {len(self._cached_waypoint_positions)} "
+                    #     f"(list id: {id(self._cached_waypoint_positions)})"
+                    # )
+                    # Reduced verbosity - remove duplicate prints
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            f"cached_exit_positions: {self._cached_exit_positions}"
+                        )
+                        logger.debug(
+                            f"cached_switch_positions: {self._cached_switch_positions}"
+                        )
+                        logger.debug(
+                            f"cached_waypoint_positions: {self._cached_waypoint_positions}"
+                        )
 
                 if goal_id is not None:
                     # Get goal_pos for validation
@@ -1154,22 +1502,22 @@ class CachedPathDistanceCalculator:
                             goal_id = "exit"
                             break
 
-            cache_key_would_be = (
-                (start_node, goal_id) if start_node and goal_id else None
-            )
-            in_cache = (
-                cache_key_would_be in self.level_cache.geometric_cache
-                if cache_key_would_be
-                else False
-            )
+            # cache_key_would_be = (
+            #     (start_node, goal_id) if start_node and goal_id else None
+            # )
+            # in_cache = (
+            #     cache_key_would_be in self.level_cache.geometric_cache
+            #     if cache_key_would_be
+            #     else False
+            # )
 
-            logger.warning(
-                f"[CACHE_MISS] get_geometric_distance fallback to BFS: "
-                f"start={start}, goal={goal}, level={self._current_level_id}, "
-                f"start_node={start_node}, goal_id={goal_id}, "
-                f"would_be_in_cache={in_cache}, "
-                f"cache_size={len(self.level_cache.geometric_cache) if self.level_cache else 0}"
-            )
+            # logger.warning(
+            #     f"[CACHE_MISS] get_geometric_distance fallback to BFS: "
+            #     f"start={start}, goal={goal}, level={self._current_level_id}, "
+            #     f"start_node={start_node}, goal_id={goal_id}, "
+            #     f"would_be_in_cache={in_cache}, "
+            #     f"cache_size={len(self.level_cache.geometric_cache) if self.level_cache else 0}"
+            # )
 
         from .pathfinding_utils import calculate_geometric_path_distance
 
@@ -1202,17 +1550,20 @@ class CachedPathDistanceCalculator:
         self.hits = 0
         self.misses = 0
 
-        # Clear level cache
-        if self.level_cache is not None:
+        # Clear level cache (but not if it's a shared cache view)
+        if self.level_cache is not None and hasattr(self.level_cache, "clear_cache"):
             self.level_cache.clear_cache()
         self.level_data = None
 
-        # Clear mine proximity cache
-        if self.mine_proximity_cache is not None:
+        # Clear mine proximity cache (but not if it's a shared cache view)
+        if self.mine_proximity_cache is not None and hasattr(
+            self.mine_proximity_cache, "clear_cache"
+        ):
             self.mine_proximity_cache.clear_cache()
 
-        # Clear mine SDF
-        self.mine_sdf.clear()
+        # Clear mine SDF (but not if it's a shared SDF view)
+        if self.mine_sdf is not None and hasattr(self.mine_sdf, "clear"):
+            self.mine_sdf.clear()
 
         # Clear level tracking, spatial hash, and adjacency bounds
         self._current_level_id = None

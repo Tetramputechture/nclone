@@ -53,6 +53,7 @@ class LevelBasedPathDistanceCache:
         self._cached_level_data: Optional[LevelData] = None
         self._cached_mine_signature: Optional[Tuple] = None
         self._cached_switch_signature: Optional[Tuple] = None
+        self._cached_waypoint_signature: Optional[Tuple] = None
         self.level_cache_hits = 0
         self.level_cache_misses = 0
         self.geometric_cache_hits = 0
@@ -104,25 +105,25 @@ class LevelBasedPathDistanceCache:
 
         self.geometric_cache_misses += 1
 
-        # DIAGNOSTIC: Log cache miss details (only first few to avoid spam)
-        if self.geometric_cache_misses <= 10:
-            available_goals = set(
-                k[1] for k in self.geometric_cache.keys() if k[0] == node_pos
-            )
-            # Check if node exists in cache at all
-            node_exists = any(k[0] == node_pos for k in self.geometric_cache.keys())
-            # Sample a few cached nodes near this position
-            nearby_nodes = [
-                k
-                for k in self.geometric_cache.keys()
-                if abs(k[0][0] - node_pos[0]) < 50 and abs(k[0][1] - node_pos[1]) < 50
-            ]
-            logger.warning(
-                f"[LEVEL_CACHE_MISS #{self.geometric_cache_misses}] node={node_pos}, goal_id={goal_id}, "
-                f"node_in_cache={node_exists}, available_goals_for_node={available_goals}, "
-                f"all_cached_goals={set(self._goal_id_to_goal_pos.keys())}, "
-                f"nearby_cached_entries={len(nearby_nodes)}, sample={nearby_nodes[:3]}"
-            )
+        # # DIAGNOSTIC: Log cache miss details (only first few to avoid spam)
+        # if self.geometric_cache_misses <= 10:
+        #     available_goals = set(
+        #         k[1] for k in self.geometric_cache.keys() if k[0] == node_pos
+        #     )
+        #     # Check if node exists in cache at all
+        #     node_exists = any(k[0] == node_pos for k in self.geometric_cache.keys())
+        #     # Sample a few cached nodes near this position
+        #     nearby_nodes = [
+        #         k
+        #         for k in self.geometric_cache.keys()
+        #         if abs(k[0][0] - node_pos[0]) < 50 and abs(k[0][1] - node_pos[1]) < 50
+        #     ]
+        #     logger.warning(
+        #         f"[LEVEL_CACHE_MISS #{self.geometric_cache_misses}] node={node_pos}, goal_id={goal_id}, "
+        #         f"node_in_cache={node_exists}, available_goals_for_node={available_goals}, "
+        #         f"all_cached_goals={set(self._goal_id_to_goal_pos.keys())}, "
+        #         f"nearby_cached_entries={len(nearby_nodes)}, sample={nearby_nodes[:3]}"
+        #     )
 
         return float("inf")
 
@@ -342,12 +343,18 @@ class LevelBasedPathDistanceCache:
         # Without this check, cache won't rebuild when switches activate
         switch_signature = tuple(sorted(level_data.switch_states.items()))
 
+        # CRITICAL FIX: Extract waypoint signature for cache invalidation
+        # Waypoints can change mid-episode (adaptive discovery)
+        # Without this check, cache won't rebuild when waypoints change
+        waypoint_signature = tuple(waypoints) if waypoints else None
+
         # Check if cache needs invalidation
         needs_rebuild = (
             self._cached_level_data is None
             or self._cached_level_data != level_data
             or self._cached_mine_signature != mine_signature
             or self._cached_switch_signature != switch_signature
+            or self._cached_waypoint_signature != waypoint_signature
         )
 
         if needs_rebuild:
@@ -362,8 +369,12 @@ class LevelBasedPathDistanceCache:
                     waypoint_id = f"waypoint_{i}"
                     goals.append((waypoint_pos, waypoint_id))
                 logger.info(
-                    f"[WAYPOINT_CACHE] Added {len(waypoints)} waypoints for precomputation: "
+                    f"[LEVEL_CACHE_BUILD] Added {len(waypoints)} waypoints for BFS precomputation: "
                     f"{[(wp_pos, f'waypoint_{i}') for i, wp_pos in enumerate(waypoints)]}"
+                )
+            else:
+                logger.info(
+                    f"[LEVEL_CACHE_BUILD] No waypoints provided (waypoints={waypoints})"
                 )
 
             self._precompute_distances_from_goals(
@@ -380,20 +391,7 @@ class LevelBasedPathDistanceCache:
             self._cached_level_data = level_data
             self._cached_mine_signature = mine_signature
             self._cached_switch_signature = switch_signature
-
-            # DIAGNOSTIC: Log what was cached
-            # Sample some cached node positions
-            sample_nodes = list(set(k[0] for k in self.geometric_cache.keys()))[:10]
-            sample_goals = list(set(k[1] for k in self.geometric_cache.keys()))
-            logger.info(
-                f"[CACHE_POPULATED] Level cache built: "
-                f"goals={list(self._goal_id_to_goal_pos.keys())}, "
-                f"physics_cache={len(self.cache)} entries, "
-                f"geometric_cache={len(self.geometric_cache)} entries, "
-                f"next_hop_cache={len(self.next_hop_cache)} entries, "
-                f"sample_nodes={sample_nodes}, "
-                f"cached_goal_ids={sample_goals}"
-            )
+            self._cached_waypoint_signature = waypoint_signature
 
             return True
 
@@ -409,6 +407,7 @@ class LevelBasedPathDistanceCache:
         self._cached_level_data = None
         self._cached_mine_signature = None
         self._cached_switch_signature = None
+        self._cached_waypoint_signature = None
         self.level_cache_hits = 0
         self.level_cache_misses = 0
         self.geometric_cache_hits = 0

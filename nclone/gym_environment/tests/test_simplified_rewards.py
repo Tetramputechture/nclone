@@ -3,7 +3,7 @@
 import unittest
 
 from ..reward_calculation.main_reward_calculator import RewardCalculator
-from ..reward_calculation.pbrs_potentials import PBRSCalculator, PBRSPotentials
+from ..reward_calculation.pbrs_potentials import PBRSCalculator
 
 # NavigationRewardCalculator removed - milestone rewards redundant with PBRS
 # ExplorationRewardCalculator removed - RND handles exploration at training level
@@ -11,11 +11,11 @@ from ..reward_calculation.pbrs_potentials import PBRSCalculator, PBRSPotentials
 
 class TestSimplifiedRewardSystem(unittest.TestCase):
     """Test the completion-focused reward system.
-    
+
     NOTE: These tests are outdated and reference old API.
     Skipping until tests are updated to match current implementation.
     """
-    
+
     def setUp(self):
         """Set up test fixtures."""
         pass  # Skipped - outdated tests
@@ -53,7 +53,7 @@ class TestSimplifiedRewardSystem(unittest.TestCase):
 
 class TestPBRSPotentials(unittest.TestCase):
     """Test the simplified PBRS potential functions.
-    
+
     NOTE: These tests are outdated and reference old API.
     Skipping until tests are updated to match current implementation.
     """
@@ -101,7 +101,7 @@ class TestPBRSSwitchActivationTransition(unittest.TestCase):
 
     def test_switch_activation_goal_transition(self):
         """Test that PBRS correctly transitions from switch→exit goal when switch activates.
-        
+
         Verifies:
         1. Before switch activation: potential based on distance to switch
         2. After switch activation: potential based on distance to exit
@@ -109,23 +109,19 @@ class TestPBRSSwitchActivationTransition(unittest.TestCase):
         4. Cache invalidation ensures new goal is used
         """
         from ..reward_calculation.reward_config import RewardConfig
-        from ..reward_calculation.pbrs_potentials import PBRSCalculator
-        from ..graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
-        
+        from ...graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
+
         # Create reward calculator with PBRS
         reward_config = RewardConfig()
         reward_calculator = RewardCalculator(
-            reward_config=reward_config,
-            pbrs_gamma=1.0
+            reward_config=reward_config, pbrs_gamma=1.0
         )
-        
+
         # Create path calculator for PBRS
-        path_calculator = CachedPathDistanceCalculator(
-            max_cache_size=200, use_astar=True
-        )
+        path_calculator = CachedPathDistanceCalculator(max_cache_size=200, use_astar=True)
         pbrs_calculator = PBRSCalculator(path_calculator=path_calculator)
         reward_calculator.pbrs_calculator = pbrs_calculator
-        
+
         # Create mock adjacency and level data
         # Simple grid: player at (100, 100), switch at (200, 100), exit at (300, 100)
         adjacency = {
@@ -148,24 +144,24 @@ class TestPBRSSwitchActivationTransition(unittest.TestCase):
             (292, 100): [((280, 100), 12.0), ((304, 100), 12.0)],
             (304, 100): [((292, 100), 12.0)],
         }
-        
+
         # Create minimal level_data mock
         class MockLevelData:
             def __init__(self):
                 self.level_id = "test_level"
                 self.switch_states = {}
-                
+
             def get_cache_key_for_reachability(self, include_switch_states=True):
                 return "test_level"
-        
+
         level_data = MockLevelData()
-        
+
         graph_data = {
             "base_adjacency": adjacency,
             "spatial_hash": None,
             "subcell_lookup": None,
         }
-        
+
         # === PHASE 1: Before switch activation (targeting switch) ===
         obs_before_switch = {
             "player_x": 100.0,
@@ -183,99 +179,120 @@ class TestPBRSSwitchActivationTransition(unittest.TestCase):
             "level_data": level_data,
             "_graph_data": graph_data,
         }
-        
+
         prev_obs = obs_before_switch.copy()
-        
+
         # Calculate reward before switch (should target switch)
         reward_before = reward_calculator.calculate_reward(
             obs_before_switch, prev_obs, action=2, frames_executed=1
         )
-        
+
         # Verify potential is set and prev_potential is initialized
         self.assertIsNotNone(reward_calculator.prev_potential)
         self.assertIsNotNone(reward_calculator.current_potential)
         potential_before_switch = reward_calculator.current_potential
-        
+
         # Move closer to switch
         obs_closer_to_switch = obs_before_switch.copy()
         obs_closer_to_switch["player_x"] = 150.0  # Moved 50px closer to switch
-        
+
         reward_closer = reward_calculator.calculate_reward(
             obs_closer_to_switch, obs_before_switch, action=2, frames_executed=1
         )
-        
+
         # Should get positive PBRS reward for moving toward switch
         pbrs_reward = reward_calculator.last_pbrs_components.get("pbrs_reward", 0.0)
-        self.assertGreater(pbrs_reward, 0.0, 
-            "Should receive positive PBRS for moving toward switch")
-        
+        self.assertGreater(
+            pbrs_reward, 0.0, "Should receive positive PBRS for moving toward switch"
+        )
+
         # === PHASE 2: Switch activation transition ===
         obs_after_switch = obs_closer_to_switch.copy()
         obs_after_switch["switch_activated"] = True  # Switch just activated!
-        
+
         prev_obs_for_transition = obs_closer_to_switch.copy()
         prev_obs_for_transition["switch_activated"] = False
-        
+
         reward_transition = reward_calculator.calculate_reward(
             obs_after_switch, prev_obs_for_transition, action=2, frames_executed=1
         )
-        
+
         # CRITICAL: After switch activation, prev_potential should be reset
         # This is verified by checking that we don't get PBRS on the transition step
-        pbrs_on_transition = reward_calculator.last_pbrs_components.get("pbrs_reward", 0.0)
-        self.assertEqual(pbrs_on_transition, 0.0,
-            "PBRS should be 0 during goal transition (prev_potential reset)")
-        
+        pbrs_on_transition = reward_calculator.last_pbrs_components.get(
+            "pbrs_reward", 0.0
+        )
+        self.assertEqual(
+            pbrs_on_transition,
+            0.0,
+            "PBRS should be 0 during goal transition (prev_potential reset)",
+        )
+
         # But milestone reward should be present
         milestone = reward_calculator.last_pbrs_components.get("milestone_reward", 0.0)
-        self.assertGreater(milestone, 0.0, "Should receive milestone reward for switch activation")
-        
+        self.assertGreater(
+            milestone, 0.0, "Should receive milestone reward for switch activation"
+        )
+
         # === PHASE 3: After switch activation (targeting exit) ===
         obs_move_toward_exit = obs_after_switch.copy()
         obs_move_toward_exit["player_x"] = 200.0  # Moved 50px closer to exit
-        
+
         reward_toward_exit = reward_calculator.calculate_reward(
             obs_move_toward_exit, obs_after_switch, action=2, frames_executed=1
         )
-        
+
         # Should now get positive PBRS for moving toward exit (not switch)
-        pbrs_toward_exit = reward_calculator.last_pbrs_components.get("pbrs_reward", 0.0)
-        self.assertGreater(pbrs_toward_exit, 0.0,
-            "Should receive positive PBRS for moving toward exit after switch activation")
-        
+        pbrs_toward_exit = reward_calculator.last_pbrs_components.get(
+            "pbrs_reward", 0.0
+        )
+        self.assertGreater(
+            pbrs_toward_exit,
+            0.0,
+            "Should receive positive PBRS for moving toward exit after switch activation",
+        )
+
         # Verify current potential is based on exit distance, not switch distance
         potential_after_switch = reward_calculator.current_potential
         self.assertIsNotNone(potential_after_switch)
-        
+
         # The potential should have changed because the goal changed
         # (This would fail if cache wasn't invalidated properly)
-        self.assertNotEqual(potential_before_switch, potential_after_switch,
-            "Potential should change after goal transitions from switch to exit")
-    
+        self.assertNotEqual(
+            potential_before_switch,
+            potential_after_switch,
+            "Potential should change after goal transitions from switch to exit",
+        )
+
     def test_cache_invalidation_on_switch_activation(self):
         """Test that cache invalidation works when switch is activated.
-        
+
         Verifies that when EntityExitSwitch.logical_collision() is called,
         the gym_env.invalidate_switch_cache() method is invoked (if present).
         """
         from ..base_environment import BaseNppEnvironment
-        
+
         # Verify BaseNppEnvironment has the stub method
-        self.assertTrue(hasattr(BaseNppEnvironment, 'invalidate_switch_cache'),
-            "BaseNppEnvironment should have invalidate_switch_cache stub method")
-        
+        self.assertTrue(
+            hasattr(BaseNppEnvironment, "invalidate_switch_cache"),
+            "BaseNppEnvironment should have invalidate_switch_cache stub method",
+        )
+
         # Create a minimal instance to test the method exists and is callable
         # (We can't fully initialize BaseNppEnvironment without pygame, so just check signature)
         import inspect
-        method = getattr(BaseNppEnvironment, 'invalidate_switch_cache')
-        self.assertTrue(callable(method), 
-            "invalidate_switch_cache should be callable")
-        
+
+        method = getattr(BaseNppEnvironment, "invalidate_switch_cache")
+        self.assertTrue(callable(method), "invalidate_switch_cache should be callable")
+
         # Verify it's a method (not a property or other descriptor)
         sig = inspect.signature(method)
         params = list(sig.parameters.keys())
-        self.assertEqual(params, ['self'],
-            "invalidate_switch_cache should only take 'self' parameter")
+        self.assertEqual(
+            params,
+            ["self"],
+            "invalidate_switch_cache should only take 'self' parameter",
+        )
 
 
 if __name__ == "__main__":

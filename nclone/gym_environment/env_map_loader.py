@@ -58,7 +58,7 @@ class EnvMapLoader:
         """
         _init_start = time.perf_counter()
         logger = logging.getLogger(__name__)
-        
+
         self.nplay_headless = nplay_headless
         self.rng = rng
         self.eval_mode = eval_mode
@@ -68,18 +68,21 @@ class EnvMapLoader:
         # regardless of current working directory (important for distributed training)
         # Paths are typically already resolved by ArchitectureTrainer, but we resolve here
         # as a safety measure in case paths are passed directly
-        default_path = "datasets/test"
-        path_to_resolve = test_dataset_path or default_path
-        path_obj = Path(path_to_resolve)
-        # If path is already absolute, resolve() will return it unchanged
-        # If relative, resolve() will make it absolute relative to current working directory
-        self.test_dataset_path = str(path_obj.resolve())
+        # When test_dataset_path is None (single-level mode), store None to skip test loading
+        if test_dataset_path is not None:
+            path_obj = Path(test_dataset_path)
+            # If path is already absolute, resolve() will return it unchanged
+            # If relative, resolve() will make it absolute relative to current working directory
+            self.test_dataset_path = str(path_obj.resolve())
+        else:
+            self.test_dataset_path = None
 
         # Current map state
         self.current_map_name = None
         self.random_map_type = None
 
         # Test suite for evaluation (sequential loading)
+        # Skip test suite loading if using custom map (not needed)
         self._test_suite_levels = self._load_test_suite_levels()
         self._test_suite_index = 0
 
@@ -90,7 +93,7 @@ class EnvMapLoader:
 
         # Curriculum weights (category name -> relative weight)
         self._curriculum_weights = get_default_weights()
-        
+
         _init_time = time.perf_counter() - _init_start
         logger.info(f"[TIMING] EnvMapLoader.__init__: {_init_time:.3f}s")
 
@@ -116,9 +119,12 @@ class EnvMapLoader:
         """Load the map specified by custom_map_path or follow default logic."""
         if self.custom_map_path:
             # Extract map name from path for display purposes
-            map_name = os.path.basename(self.custom_map_path)
-            if not map_name:  # Handle trailing slash case
-                map_name = os.path.basename(os.path.dirname(self.custom_map_path))
+            # Use Path.stem to get filename without extension for consistent matching with demo seeding
+            from pathlib import Path
+
+            map_name = Path(self.custom_map_path).stem
+            if not map_name:  # Handle edge case
+                map_name = os.path.basename(self.custom_map_path)
             self.current_map_name = map_name
             self.random_map_type = None
 
@@ -247,16 +253,30 @@ class EnvMapLoader:
         Load the test suite level IDs from metadata JSON in sequential order.
 
         Returns:
-            Ordered list of level IDs starting with simple levels
+            Ordered list of level IDs starting with simple levels, or empty list if not available
         """
+        # If using custom map or test_dataset_path is None, skip test suite loading
+        if self.custom_map_path or self.test_dataset_path is None:
+            logger = logging.getLogger(__name__)
+            if self.custom_map_path:
+                logger.debug("Using custom map - skipping test suite metadata loading")
+            else:
+                logger.debug(
+                    "No test_dataset_path provided - skipping test suite metadata loading"
+                )
+            return []
+
         # self.test_dataset_path is already resolved to absolute path in __init__
         metadata_path = Path(self.test_dataset_path) / "test_metadata.json"
 
         if not metadata_path.exists():
-            raise RuntimeError(
+            logger = logging.getLogger(__name__)
+            logger.warning(
                 f"Test suite metadata not found at {metadata_path} "
-                f"(resolved from: {self.test_dataset_path})"
+                f"(resolved from: {self.test_dataset_path}). "
+                f"Evaluation mode will fall back to random maps."
             )
+            return []
 
         with open(metadata_path, "r", encoding="utf-8") as f:
             metadata = json.load(f)

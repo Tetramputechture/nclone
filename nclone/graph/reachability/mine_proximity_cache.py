@@ -275,22 +275,29 @@ class MineSignedDistanceField:
             dtype=np.float32,
         )
 
+        # Import configuration flag for consistency with proximity costs
+        from ...gym_environment.reward_calculation.reward_constants import (
+            MINE_PENALIZE_DEADLY_ONLY,
+        )
+
         # Get all toggle mines from level_data
         mines = level_data.get_entities_by_type(
             EntityType.TOGGLE_MINE
         ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
 
-        # Extract deadly mine positions (state 0 = deadly)
-        deadly_mines = []
+        # Extract mine positions (respecting MINE_PENALIZE_DEADLY_ONLY for consistency)
+        sdf_mine_positions = []
         for mine in mines:
             mine_state = mine.get("state", 0)
-            if mine_state == 0:  # Only deadly mines
-                mine_x = mine.get("x", 0)
-                mine_y = mine.get("y", 0)
-                deadly_mines.append((mine_x, mine_y))
+            # Use same filter logic as proximity costs for consistency
+            if MINE_PENALIZE_DEADLY_ONLY and mine_state != 0:
+                continue  # Skip safe mines if MINE_PENALIZE_DEADLY_ONLY is True
+            mine_x = mine.get("x", 0)
+            mine_y = mine.get("y", 0)
+            sdf_mine_positions.append((mine_x, mine_y))
 
-        if not deadly_mines:
-            # No deadly mines - all tiles are safe (max distance)
+        if not sdf_mine_positions:
+            # No mines to penalize - all tiles are safe (max distance)
             self._cached_level_data = level_data
             self._cached_mine_signature = mine_signature
             return True
@@ -306,7 +313,7 @@ class MineSignedDistanceField:
                 min_dist = float("inf")
                 nearest_dx, nearest_dy = 0.0, 0.0
 
-                for mine_x, mine_y in deadly_mines:
+                for mine_x, mine_y in sdf_mine_positions:
                     dx = cell_center_x - mine_x
                     dy = cell_center_y - mine_y
                     dist = np.sqrt(dx * dx + dy * dy)

@@ -22,7 +22,13 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 
+# Import PBRS_GAMMA to ensure consistency with training reward calculation
+from nclone.gym_environment.reward_calculation.reward_constants import PBRS_GAMMA
+
 logger = logging.getLogger(__name__)
+
+# Minimum distance from exit door to create checkpoints (prevents trivial episodes)
+MIN_EXIT_DISTANCE = 72.0  # pixels
 
 
 class DemoCheckpointSeeder:
@@ -40,6 +46,7 @@ class DemoCheckpointSeeder:
         replay_dir: str,
         max_demos_per_level: int = 10,
         min_cumulative_reward: float = 0.0,
+        frame_skip: int = 1,
     ):
         """Initialize demo checkpoint seeder.
 
@@ -47,19 +54,26 @@ class DemoCheckpointSeeder:
             replay_dir: Directory containing .replay files
             max_demos_per_level: Maximum demos to process per level name
             min_cumulative_reward: Minimum cumulative reward to include checkpoint
+            frame_skip: Frame skip used during training (for action subsampling).
+                Demos are recorded at 60fps (1 action/frame), but training may use
+                frame_skip=4 (1 action/4 frames). We subsample demo actions to match.
         """
         self.replay_dir = Path(replay_dir)
         self.max_demos_per_level = max_demos_per_level
         self.min_cumulative_reward = min_cumulative_reward
+        self.frame_skip = max(1, frame_skip)
 
         # Cache for processed demos (avoid recomputation)
         self._processed_demos: Dict[str, List[Dict[str, Any]]] = {}
 
     def find_matching_demos(self, level_name: str) -> List[Path]:
-        """Find demo replay files matching a level name.
+        """Find demo replay files matching a level name (EXACT match).
+
+        Parses filename format: YYYYMMDD_HHMMSS_level_name.replay
+        and does exact matching on the level_name portion.
 
         Args:
-            level_name: Level name to match (partial match supported)
+            level_name: Level name to match (exact match after normalization)
 
         Returns:
             List of matching replay file paths, sorted by modification time (newest first)
@@ -68,20 +82,75 @@ class DemoCheckpointSeeder:
             logger.warning(f"Replay directory not found: {self.replay_dir}")
             return []
 
-        # Normalize level name for matching
-        level_name_lower = level_name.lower().replace("_", " ")
+        # Normalize level name for matching (unify _ and - separators)
+        level_name_lower = level_name.lower().replace("_", "-")
 
         matching = []
         for replay_file in self.replay_dir.glob("*.replay"):
-            file_name_lower = replay_file.stem.lower()
-            # Check if level name appears in file name (after timestamp prefix)
-            # Format: YYYYMMDD_HHMMSS_level_name.replay
-            if level_name_lower in file_name_lower:
+            # Parse filename: YYYYMMDD_HHMMSS_level_name.replay
+            file_stem = replay_file.stem
+            parts = file_stem.split("_", 2)  # Split on first 2 underscores
+
+            if len(parts) >= 3:
+                # Extract level name (third part after timestamp)
+                file_level_name = parts[2].lower().replace("_", "-")
+            else:
+                # Fallback: entire filename if not in expected format
+                file_level_name = file_stem.lower().replace("_", "-")
+
+            # Exact match (after normalization)
+            if file_level_name == level_name_lower:
                 matching.append(replay_file)
+                logger.debug(
+                    f"Matched demo: {replay_file.name} for level: {level_name}"
+                )
 
         # Sort by modification time (newest first) and limit
         matching.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return matching[: self.max_demos_per_level]
+        limited = matching[: self.max_demos_per_level]
+
+        logger.info(
+            f"Found {len(limited)} demo(s) for level '{level_name}' "
+            f"(from {len(matching)} total matches)"
+        )
+        return limited
+
+    def _should_filter_checkpoint(
+        self,
+        ninja_pos: Tuple[float, float],
+        exit_door_pos: Tuple[float, float],
+        switch_activated: bool,
+    ) -> bool:
+        """Check if checkpoint should be filtered due to proximity to exit.
+
+        Filters checkpoints that are too close to the exit door after switch
+        activation to prevent trivially short episodes.
+
+        Args:
+            ninja_pos: (x, y) ninja position
+            exit_door_pos: (x, y) exit door position
+            switch_activated: Whether switch is activated
+
+        Returns:
+            True if checkpoint should be filtered (too close to exit), False otherwise
+        """
+        # Before switch activation, keep all checkpoints
+        if not switch_activated:
+            return False
+
+        # After switch activation, filter checkpoints too close to exit
+        dx = ninja_pos[0] - exit_door_pos[0]
+        dy = ninja_pos[1] - exit_door_pos[1]
+        distance = (dx * dx + dy * dy) ** 0.5
+
+        if distance < MIN_EXIT_DISTANCE:
+            logger.debug(
+                f"Filtered checkpoint at {ninja_pos} "
+                f"(distance to exit: {distance:.1f}px < {MIN_EXIT_DISTANCE}px)"
+            )
+            return True
+
+        return False
 
     def process_demo_file(
         self,
@@ -128,7 +197,7 @@ class DemoCheckpointSeeder:
                 map_input_to_action,
             )
 
-            executor = ReplayExecutor(enable_rendering=False)
+            executor = ReplayExecutor(enable_rendering=False, frame_skip=1)
 
             # Load map
             executor.nplay_headless.load_map_from_map_data(list(map_data))
@@ -138,24 +207,46 @@ class DemoCheckpointSeeder:
             cumulative_reward = 0.0
             prev_obs = None
 
-            # Store action sequence from spawn to each position (for checkpoint replay)
+            # Store FULL action sequence from spawn to each position
+            # Demos are per-frame control, so we keep all actions for accurate replay
             action_sequence = []
 
-            # Process each frame
+            # Get spawn position for debug logging
+            spawn_pos = executor.nplay_headless.ninja_position()
+
+            # DEBUG: Check if verbose logging is enabled via environment variable
+            import os
+            _verbose_debug = os.environ.get("DEMO_CHECKPOINT_DEBUG", "").lower() in ("1", "true", "yes")
+
+            if _verbose_debug:
+                logger.error(
+                    f"[EXTRACT_DEBUG] Starting demo extraction: "
+                    f"file={replay_path.name}, total_frames={len(inputs)}, "
+                    f"spawn_pos=({spawn_pos[0]:.2f}, {spawn_pos[1]:.2f})"
+                )
+
+            # Track first 10 positions for debug comparison
+            _debug_positions = []
+
+            # Process each frame (demos use per-frame control, always frame_skip=1)
             for frame_idx, input_byte in enumerate(inputs):
                 # Decode input
                 horizontal, jump = decode_input_to_controls(input_byte)
                 action = map_input_to_action(input_byte)
 
-                # Track action sequence
+                # Track FULL action sequence (all frames, preserve demo control)
                 action_sequence.append(action)
 
                 # Execute simulation step
                 executor.nplay_headless.tick(horizontal, jump)
 
-                # Get ninja position
+                # Get ninja position (keep as floats for accurate replay validation)
                 ninja_x, ninja_y = executor.nplay_headless.ninja_position()
-                ninja_pos = (int(ninja_x), int(ninja_y))
+                ninja_pos = (float(ninja_x), float(ninja_y))
+
+                # Track first 10 positions for debug comparison with replay
+                if len(action_sequence) <= 10:
+                    _debug_positions.append((len(action_sequence), action, ninja_pos))
 
                 # Check switch state
                 switch_activated = executor.nplay_headless.exit_switch_activated()
@@ -189,21 +280,30 @@ class DemoCheckpointSeeder:
                         # Use distance-based proxy if reward calc fails
                         cumulative_reward += 0.001  # Small increment per frame
 
-                # Discretize position to cell
-                cell = (ninja_pos[0] // self.GRID_SIZE, ninja_pos[1] // self.GRID_SIZE)
-
-                # Store checkpoint with FULL action sequence from spawn to this position
-                checkpoints.append(
-                    {
-                        "cell": cell,
-                        "cumulative_reward": cumulative_reward,
-                        "action": action,
-                        "frame_idx": frame_idx,
-                        "switch_activated": switch_activated,
-                        "position": ninja_pos,
-                        "action_sequence": action_sequence.copy(),  # Full sequence to reach this point
-                    }
+                # Discretize position to cell (ensure integer cell coordinates)
+                cell = (
+                    int(ninja_pos[0] // self.GRID_SIZE),
+                    int(ninja_pos[1] // self.GRID_SIZE),
                 )
+
+                # Check if checkpoint should be filtered (too close to exit)
+                exit_door_pos = (obs["exit_door_x"], obs["exit_door_y"])
+                if not self._should_filter_checkpoint(
+                    ninja_pos, exit_door_pos, switch_activated
+                ):
+                    # Store checkpoint with FULL action sequence from spawn to this position
+                    # action_sequence is now subsampled at frame_skip intervals
+                    checkpoints.append(
+                        {
+                            "cell": cell,
+                            "cumulative_reward": cumulative_reward,
+                            "action": action,
+                            "frame_idx": frame_idx,
+                            "switch_activated": switch_activated,
+                            "position": ninja_pos,
+                            "action_sequence": action_sequence.copy(),  # Subsampled sequence
+                        }
+                    )
 
                 prev_obs = obs
 
@@ -212,6 +312,24 @@ class DemoCheckpointSeeder:
                     break
 
             executor.close()
+
+            # DEBUG: Log extraction results for comparison with replay
+            if _verbose_debug and _debug_positions:
+                pos_log = ", ".join(
+                    [f"a{i}:{a}->({p[0]:.1f},{p[1]:.1f})" for i, a, p in _debug_positions]
+                )
+                logger.error(f"[EXTRACT_DEBUG] First 10 positions: {pos_log}")
+
+                if checkpoints:
+                    # Log the last checkpoint (most likely to be selected)
+                    last_cp = checkpoints[-1]
+                    logger.error(
+                        f"[EXTRACT_DEBUG] Final checkpoint: "
+                        f"cell={last_cp['cell']}, pos={last_cp['position']}, "
+                        f"actions={len(last_cp['action_sequence'])}, "
+                        f"first_10_actions={list(last_cp['action_sequence'][:10])}"
+                    )
+
             return checkpoints
 
         except Exception as e:
@@ -233,6 +351,10 @@ class DemoCheckpointSeeder:
 
         Uses PBRS component as the primary reward signal since that's what
         determines checkpoint value for navigation.
+
+        CRITICAL: Uses PBRS_GAMMA (1.0) to match training reward calculation.
+        This ensures demo checkpoint cumulative_reward values are directly
+        comparable to training checkpoint values for UCB selection.
 
         Args:
             prev_obs: Previous observation
@@ -271,8 +393,8 @@ class DemoCheckpointSeeder:
             )
 
             # PBRS reward: γ * Φ(s') - Φ(s)
-            gamma = 0.997
-            pbrs_reward = gamma * current_potential - prev_potential
+            # Use PBRS_GAMMA (1.0) to match training reward calculation
+            pbrs_reward = PBRS_GAMMA * current_potential - prev_potential
 
             return pbrs_reward
 
@@ -284,7 +406,7 @@ class DemoCheckpointSeeder:
         self,
         checkpoints: List[Dict[str, Any]],
         max_checkpoints: int = 100,
-    ) -> List[Tuple[Tuple[int, int], List[int], float, bool]]:
+    ) -> List[Tuple[Tuple[int, int], List[int], float, bool, Tuple[float, float]]]:
         """Extract best checkpoints from processed trajectory.
 
         Selects checkpoints with highest cumulative rewards while ensuring
@@ -295,8 +417,9 @@ class DemoCheckpointSeeder:
             max_checkpoints: Maximum checkpoints to return
 
         Returns:
-            List of (cell, action_sequence, cumulative_reward, switch_activated) tuples
+            List of (cell, action_sequence, cumulative_reward, switch_activated, position) tuples
             where action_sequence is the FULL sequence from spawn to reach this cell
+            and position is the actual ninja position at this checkpoint
         """
         if not checkpoints:
             return []
@@ -318,13 +441,14 @@ class DemoCheckpointSeeder:
             reverse=True,
         )[:max_checkpoints]
 
-        # Convert to tuple format with full action sequences
+        # Convert to tuple format with full action sequences and position
         result = [
             (
                 cp["cell"],
                 cp.get("action_sequence", [cp["action"]]),  # Full sequence or fallback
                 cp["cumulative_reward"],
                 cp["switch_activated"],
+                cp.get("position", (0.0, 0.0)),  # Position from same checkpoint
             )
             for cp in sorted_checkpoints
         ]
@@ -522,9 +646,10 @@ class DemoCheckpointSeeder:
 
         # Convert to format expected by go_explore_callback.seed_from_demonstrations
         # Now includes full action_sequence (not just single action)
+        # Note: This path uses 3-tuple format (no position), which is fine for backward compatibility
         demo_cells = [
             (cell, action_sequence, cumulative_reward)
-            for cell, action_sequence, cumulative_reward, switch_activated in best_checkpoints
+            for cell, action_sequence, cumulative_reward, switch_activated, position in best_checkpoints
         ]
 
         # Seed the archive
@@ -577,7 +702,7 @@ class DemoCheckpointSeeder:
             if not map_data or not inputs:
                 return []
 
-            executor = ReplayExecutor(enable_rendering=False)
+            executor = ReplayExecutor(enable_rendering=False, frame_skip=1)
             executor.nplay_headless.load_map_from_map_data(list(map_data))
 
             # CRITICAL: Initialize entity extractor after map is loaded
@@ -601,79 +726,74 @@ class DemoCheckpointSeeder:
                 )
                 return []
 
-            # Debug: Get direct access to sim and ninja
-            sim = executor.nplay_headless.sim
-            ninja = sim.ninja
-
             spawn_x, spawn_y = executor.nplay_headless.ninja_position()
 
-            # Debug: Check map_data spawn coordinates
-            map_data_list = list(map_data)
-            map_data_spawn_x = (
-                map_data_list[1231] * 6 if len(map_data_list) > 1232 else 0
-            )
-            map_data_spawn_y = (
-                map_data_list[1232] * 6 if len(map_data_list) > 1232 else 0
-            )
-
-            logger.info(
-                f"Demo extraction: replay={replay_path.name}, "
-                f"spawn=({spawn_x}, {spawn_y}), "
-                f"map_data[1231]={map_data_list[1231] if len(map_data_list) > 1231 else 'N/A'}, "
-                f"map_data[1232]={map_data_list[1232] if len(map_data_list) > 1232 else 'N/A'}, "
-                f"map_data_spawn=({map_data_spawn_x}, {map_data_spawn_y}), "
-                f"total_frames={total_frames}, "
-                f"ninja.xpos={ninja.xpos}, ninja.ypos={ninja.ypos}"
-            )
+            # print(
+            #     f"[DEMO EXTRACTION SIMPLE] Starting {replay_path.name}: "
+            #     f"total_frames={total_frames}, spawn=({spawn_x}, {spawn_y})"
+            # )
 
             # Track previous position to detect if ninja is moving
             prev_pos = (spawn_x, spawn_y)
 
+            # Track FULL action sequence (demos use per-frame control)
+            action_sequence = []
+
+            # Process all frames (demos use per-frame control, no subsampling)
             for frame_idx, input_byte in enumerate(inputs):
                 horizontal, jump = decode_input_to_controls(input_byte)
                 action = map_input_to_action(input_byte)
 
-                # Track full action sequence
+                # Track FULL action sequence (all frames, preserve demo control)
                 action_sequence.append(action)
 
                 # Execute the tick FIRST, then get position
                 executor.nplay_headless.tick(horizontal, jump)
 
-                # Get position AFTER tick
+                # Get position AFTER tick (keep as floats for accurate replay validation)
                 ninja_x, ninja_y = executor.nplay_headless.ninja_position()
-                ninja_pos = (int(ninja_x), int(ninja_y))
+                ninja_pos = (float(ninja_x), float(ninja_y))
 
-                # Debug first few positions to see if ninja is moving
-                if frame_idx < 10:
-                    moved_dist = (
-                        (ninja_x - prev_pos[0]) ** 2 + (ninja_y - prev_pos[1]) ** 2
-                    ) ** 0.5
-                    logger.info(
-                        f"  Frame {frame_idx}: input={input_byte} ({horizontal}, {jump}), "
-                        f"action={action}, pos=({ninja_x:.1f}, {ninja_y:.1f}), "
-                        f"moved={moved_dist:.2f}px from prev"
-                    )
+                # Debug first few positions
+                # if len(action_sequence) <= 10:
+                #     moved_dist = (
+                #         (ninja_x - prev_pos[0]) ** 2 + (ninja_y - prev_pos[1]) ** 2
+                #     ) ** 0.5
+                #     print(
+                #         f"  [DEMO EXTRACTION] Frame {frame_idx}: "
+                #         f"action={action}, pos=({ninja_x:.1f}, {ninja_y:.1f}), "
+                #         f"moved={moved_dist:.2f}px"
+                #     )
 
-                prev_pos = (ninja_x, ninja_y)
+                # prev_pos = (ninja_x, ninja_y)
                 switch_activated = executor.nplay_headless.exit_switch_activated()
 
-                cell = (ninja_pos[0] // self.GRID_SIZE, ninja_pos[1] // self.GRID_SIZE)
+                # Discretize position to cell (ensure integer cell coordinates)
+                cell = (
+                    int(ninja_pos[0] // self.GRID_SIZE),
+                    int(ninja_pos[1] // self.GRID_SIZE),
+                )
 
                 # Use progress through trajectory as proxy for cumulative reward
                 # Higher frame index = closer to goal = higher "reward"
                 progress_reward = frame_idx / max(1, total_frames)
 
-                checkpoints.append(
-                    {
-                        "cell": cell,
-                        "cumulative_reward": progress_reward,
-                        "action": action,
-                        "frame_idx": frame_idx,
-                        "switch_activated": switch_activated,
-                        "position": ninja_pos,
-                        "action_sequence": action_sequence.copy(),  # Full sequence to this point
-                    }
-                )
+                # Check if checkpoint should be filtered (too close to exit)
+                exit_door_pos = executor.nplay_headless.exit_door_position()
+                if not self._should_filter_checkpoint(
+                    ninja_pos, exit_door_pos, switch_activated
+                ):
+                    checkpoints.append(
+                        {
+                            "cell": cell,
+                            "cumulative_reward": progress_reward,
+                            "action": action,
+                            "frame_idx": frame_idx,
+                            "switch_activated": switch_activated,
+                            "position": ninja_pos,
+                            "action_sequence": action_sequence.copy(),  # FULL sequence (demos use frame_skip=1)
+                        }
+                    )
 
                 if (
                     executor.nplay_headless.ninja_has_won()

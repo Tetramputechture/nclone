@@ -334,10 +334,17 @@ class GraphMixin:
 
     def _update_graph_from_env_state(self):
         """
-        Update graph using GraphBuilder (simple approach).
+        Update graph and build level cache.
 
-        This uses GraphBuilder to create updated connectivity based on current game state.
-        GraphBuilder returns a dict with adjacency information for pathfinding.
+        This is THE authoritative place for cache building during normal operation.
+        Other code should NOT call build_level_cache directly - they should rely
+        on this method being called first (during reset or when graph needs updating).
+
+        Implementation notes:
+        - Uses GraphBuilder to create updated connectivity based on current game state
+        - Builds level cache for path distances (via _path_calculator)
+        - Also builds reward calculator's separate path calculator cache
+        - GraphBuilder returns a dict with adjacency information for pathfinding
         """
         # Get level data from environment
         level_data = self._get_level_data_from_env()
@@ -377,24 +384,9 @@ class GraphMixin:
                 base_adjacency = self.current_graph_data.get(
                     "base_adjacency", adjacency
                 )
-                cache_built = self._path_calculator.build_level_cache(
+                self._path_calculator.build_level_cache(
                     level_data, adjacency, base_adjacency, self.current_graph_data
                 )
-
-                if not cache_built and self._path_calculator.level_cache is None:
-                    # Ensure level_cache is initialized even if build_cache returns False
-                    from nclone.graph.reachability.path_distance_cache import (
-                        LevelBasedPathDistanceCache,
-                    )
-
-                    self._path_calculator.level_cache = LevelBasedPathDistanceCache()
-                    # Try building again
-                    base_adjacency = self.current_graph_data.get(
-                        "base_adjacency", adjacency
-                    )
-                    self._path_calculator.build_level_cache(
-                        level_data, adjacency, base_adjacency, self.current_graph_data
-                    )
 
                 # CRITICAL FIX: Also build reward calculator's path calculator cache!
                 # The reward calculator has its own separate path_calculator instance
