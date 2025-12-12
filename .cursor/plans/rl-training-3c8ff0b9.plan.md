@@ -1,4 +1,30 @@
-<!-- 3c8ff0b9-1e28-4753-8832-19ac5e3f5f55 f37a654f-6ac2-4b36-bc41-ce0584c39fbf -->
+---
+name: RL Training Efficiency for Long-Distance Physics-Based Exploration
+overview: ""
+todos:
+  - id: 2d477410-ca65-4ca1-96fa-da18e2a98bdd
+    content: Implement RND module for intrinsic motivation (Priority 1A)
+    status: pending
+  - id: 883ebf5a-3ace-4674-9989-6b811e26c896
+    content: Adjust curriculum thresholds to unblock progression (Priority 1C)
+    status: pending
+  - id: d255f4a9-5244-4405-a96d-54558af36300
+    content: Implement Hindsight Experience Replay (Priority 1B)
+    status: pending
+  - id: e6896157-cb6d-45fe-a1aa-bc8aaa69b333
+    content: Add asymmetric actor-critic with privileged information (Priority 2A)
+    status: pending
+  - id: fa4194d9-4c6c-404a-acab-ba74de208409
+    content: Implement Go-Explore checkpointing system (Priority 2B)
+    status: pending
+  - id: babf8b15-1d51-41fc-b955-765ac30b0762
+    content: Add demonstration replay mixing to training (Priority 2C)
+    status: pending
+  - id: 2744efb0-6616-4e19-a0a3-6db54df383b4
+    content: Run Phase 1 training and validate 20-30% success rate
+    status: pending
+---
+
 # RL Training Efficiency for Long-Distance Physics-Based Exploration
 
 ## Problem Context: Why <10% Success After 2M Steps
@@ -380,13 +406,3 @@ Long-distance exploration (200-1000px) fundamentally changes priority order:
 4. **Lower success expectations** - 15-25% Phase 1 (not 30%) is realistic
 
 The combination of RND (exploration motivation) + Go-Explore (incremental progress) + Demonstrations (physics skills) + HER (learning from failures) is ESSENTIAL for long-distance navigation. Any single technique alone will fail.
-
-### To-dos
-
-- [ ] Implement RND module for intrinsic motivation (Priority 1A)
-- [ ] Adjust curriculum thresholds to unblock progression (Priority 1C)
-- [ ] Implement Hindsight Experience Replay (Priority 1B)
-- [ ] Add asymmetric actor-critic with privileged information (Priority 2A)
-- [ ] Implement Go-Explore checkpointing system (Priority 2B)
-- [ ] Add demonstration replay mixing to training (Priority 2C)
-- [ ] Run Phase 1 training and validate 20-30% success rate

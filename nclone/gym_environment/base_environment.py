@@ -81,6 +81,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             RewardConfig
         ] = None,  # RewardConfig for curriculum-aware reward system
         frame_skip: int = 4,  # Frame skip (action repeat) for temporal abstraction
+        shared_level_cache: Optional[
+            Any
+        ] = None,  # Shared level cache for multi-worker training
     ):
         """
         Initialize the base N++ environment.
@@ -103,7 +106,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         """
         _init_start = time.perf_counter()
         _logger = logging.getLogger(__name__)
-        print("[PROFILE] BaseNppEnvironment.__init__ starting...")
 
         super().__init__()
 
@@ -179,6 +181,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._checkpoint_base_reward: float = (
             0.0  # Cumulative reward to reach checkpoint
         )
+        self._checkpoint_source_frame_skip: int = (
+            frame_skip  # Frame skip used to create checkpoint (1=demo, 4=agent)
+        )
 
         # Initialize entity extractor
         self.entity_extractor = EntityExtractor(self.nplay_headless)
@@ -192,6 +197,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             test_dataset_path=test_dataset_path,
         )
 
+        # Store shared level cache reference for mixins (ReachabilityMixin needs it)
+        self.shared_level_cache = shared_level_cache
+
         # Initialize observation processor with performance optimizations
         # training_mode=True disables validation for ~12% performance boost
         self.observation_processor = ObservationProcessor(
@@ -202,7 +210,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         )
 
         self.reward_calculator = RewardCalculator(
-            reward_config=reward_config, pbrs_gamma=pbrs_gamma
+            reward_config=reward_config,
+            pbrs_gamma=pbrs_gamma,
+            shared_level_cache=shared_level_cache,
         )
 
         # Initialize truncation checker
@@ -914,6 +924,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             info["from_checkpoint"] = self._from_checkpoint
             if self._from_checkpoint:
                 info["checkpoint_base_reward"] = self._checkpoint_base_reward
+                info["checkpoint_source_frame_skip"] = (
+                    self._checkpoint_source_frame_skip
+                )
                 # Total cumulative reward = base (to reach checkpoint) + episode (from checkpoint)
                 info["total_cumulative_reward"] = (
                     self._checkpoint_base_reward + self.current_ep_reward
@@ -937,37 +950,33 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             waypoints_active = []
             waypoints_reached = []
 
-            if (
-                hasattr(self.reward_calculator, "enable_path_waypoints")
-                and self.reward_calculator.enable_path_waypoints
-            ):
-                # Path-based waypoints: Convert to visualization format
-                switch_activated = self.nplay_headless.exit_switch_activated()
-                current_phase = "post_switch" if switch_activated else "pre_switch"
+            # Path-based waypoints: Convert to visualization format
+            switch_activated = self.nplay_headless.exit_switch_activated()
+            current_phase = "post_switch" if switch_activated else "pre_switch"
 
-                phase_waypoints = (
-                    self.reward_calculator.current_path_waypoints_by_phase.get(
-                        current_phase, []
-                    )
+            phase_waypoints = (
+                self.reward_calculator.current_path_waypoints_by_phase.get(
+                    current_phase, []
+                )
+            )
+
+            for wp in phase_waypoints:
+                waypoints_active.append(
+                    {
+                        "position": wp.position,
+                        "value": wp.value,
+                        "type": wp.waypoint_type,
+                        "source": "path",
+                        "phase": wp.phase,
+                        "curvature": wp.curvature,
+                    }
                 )
 
-                for wp in phase_waypoints:
-                    waypoints_active.append(
-                        {
-                            "position": wp.position,
-                            "value": wp.value,
-                            "type": wp.waypoint_type,
-                            "source": "path",
-                            "phase": wp.phase,
-                            "curvature": wp.curvature,
-                        }
-                    )
-
-                # Get collected waypoints for this episode
-                if hasattr(self.reward_calculator, "_collected_path_waypoints"):
-                    waypoints_reached = list(
-                        self.reward_calculator._collected_path_waypoints
-                    )
+            # Get collected waypoints for this episode
+            if hasattr(self.reward_calculator, "_collected_path_waypoints"):
+                waypoints_reached = list(
+                    self.reward_calculator._collected_path_waypoints
+                )
 
             elif (
                 hasattr(self.reward_calculator, "adaptive_waypoints")
@@ -1119,6 +1128,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset checkpoint episode tracking (will be set if checkpoint used)
         self._from_checkpoint = False
         self._checkpoint_base_reward = 0.0
+        self._checkpoint_source_frame_skip = self.frame_skip
 
         # Reset position tracking for route visualization
         self.current_route = []
@@ -1243,6 +1253,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Mark this episode as starting from checkpoint for logging/analysis
         self._from_checkpoint = True
         self._checkpoint_base_reward = getattr(checkpoint, "cumulative_reward", 0.0)
+        self._checkpoint_source_frame_skip = getattr(
+            checkpoint, "source_frame_skip", self.frame_skip
+        )
 
         # Track replay statistics for debugging
         actions_replayed = 0
@@ -1258,13 +1271,51 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         if spawn_pos is not None:
             checkpoint_route.append((float(spawn_pos[0]), float(spawn_pos[1])))
 
-        # Replay action sequence with frame skip matching original step() behavior
-        # Each action in the sequence was executed for frame_skip frames originally
+        # DEBUG: Log checkpoint replay details
+        # checkpoint_cell = getattr(checkpoint, "cell", None)
+        checkpoint_expected_pos = getattr(checkpoint, "ninja_position", None)
+        # checkpoint_frame_count = getattr(checkpoint, "frame_count", 0)
+
+        # CRITICAL: Use checkpoint's source_frame_skip for accurate replay
+        # Training checkpoints use training frame_skip (e.g., 4)
+        # Demo checkpoints use frame_skip=1 (recorded at 60fps)
+        checkpoint_frame_skip = getattr(
+            checkpoint, "source_frame_skip", self.frame_skip
+        )
+
+        # DEBUG: Log checkpoint type and attributes to diagnose pickling issues
+        checkpoint_source = getattr(checkpoint, "source", "unknown")
+        if checkpoint_source == "demo" and checkpoint_frame_skip != 1:
+            logger.warning(
+                f"[CHECKPOINT_FRAME_SKIP_BUG] Demo checkpoint has wrong frame_skip! "
+                f"source={checkpoint_source}, source_frame_skip={checkpoint_frame_skip} (expected 1), "
+                f"checkpoint_type={type(checkpoint).__name__}, "
+                f"actions={len(action_sequence)}, "
+                f"has_source_frame_skip={'source_frame_skip' in dir(checkpoint)}"
+            )
+            # Force correct frame_skip for demo checkpoints
+            checkpoint_frame_skip = 1
+            logger.info(
+                "[CHECKPOINT_FRAME_SKIP_BUG] Forcing frame_skip=1 for demo checkpoint"
+            )
+
+        # print(
+        #     f"[CHECKPOINT REPLAY] Starting replay: "
+        #     f"cell={checkpoint_cell}, actions={len(action_sequence)}, "
+        #     f"expected_pos={checkpoint_expected_pos}, "
+        #     f"frame_count={checkpoint_frame_count}, "
+        #     f"spawn={spawn_pos}, training_frame_skip={self.frame_skip}, "
+        #     f"checkpoint_frame_skip={checkpoint_frame_skip}"
+        # )
+
+        # Replay action sequence with frame skip matching original checkpoint creation
+        # Training checkpoints: use training frame_skip (e.g., 4 frames/action)
+        # Demo checkpoints: use frame_skip=1 (60fps, 1 frame/action)
         hor_input, jump_input = 0, 0
         for action in action_sequence:
             hor_input, jump_input = self._actions_to_execute(action)
-            # Replay for frame_skip ticks to match original step() execution
-            for _ in range(self.frame_skip):
+            # Replay for checkpoint_frame_skip ticks (not self.frame_skip!)
+            for _ in range(checkpoint_frame_skip):
                 self.nplay_headless.tick(hor_input, jump_input)
                 frames_replayed += 1
 
@@ -1273,14 +1324,35 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 if pos is not None:
                     checkpoint_route.append((float(pos[0]), float(pos[1])))
 
-                # Check if ninja died during replay - stop if so
+                # Check if ninja died during replay - THIS SHOULD NEVER HAPPEN
                 if self.nplay_headless.ninja_has_died():
                     ninja_died_during_replay = True
-                    logger.warning(
-                        f"Ninja died during checkpoint replay at frame {frames_replayed} "
-                        f"(action {actions_replayed + 1}/{len(action_sequence)})"
+                    checkpoint_cell = getattr(checkpoint, "cell", None)
+                    checkpoint_source = getattr(checkpoint, "source", "unknown")
+                    checkpoint_level_id = getattr(checkpoint, "level_id", None)
+
+                    error_msg = (
+                        f"[CRITICAL BUG] Ninja died during checkpoint replay! "
+                        f"This should NEVER happen with deterministic physics. "
+                        f"frame={frames_replayed}, action={actions_replayed + 1}/{len(action_sequence)}, "
+                        f"checkpoint_cell={checkpoint_cell}, source={checkpoint_source}, "
+                        f"level_id={checkpoint_level_id}, spawn={spawn_pos}, "
+                        f"checkpoint_frame_skip={checkpoint_frame_skip}, training_frame_skip={self.frame_skip}, "
+                        f"first_10_actions={action_sequence[:10]}, last_10_actions={action_sequence[-10:]}"
                     )
-                    break
+
+                    logger.error(error_msg)
+                    print(f"\n{'=' * 80}")
+                    print(error_msg)
+                    print(f"{'=' * 80}\n")
+
+                    # FAIL FAST: Raise exception to halt training and force bug fix
+                    raise RuntimeError(
+                        f"Checkpoint replay caused ninja death (checkpoint corruption bug). "
+                        f"Cell={checkpoint_cell}, actions={len(action_sequence)}, "
+                        f"died_at_action={actions_replayed + 1}. "
+                        f"This indicates corrupted action buffer. See logs for details."
+                    )
 
             # Track action in current sequence (checkpoint actions become our history)
             self._action_sequence.append(action)
@@ -1290,6 +1362,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 break
 
         self._checkpoint_replay_in_progress = False
+
+        # Pre-mark waypoints crossed during replay to prevent double-rewarding
+        self._mark_checkpoint_waypoints_as_collected(checkpoint_route)
 
         # Store checkpoint route for inclusion in episode end info
         # This persists through the episode so route visualization can access it
@@ -1307,26 +1382,60 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         except Exception as e:
             logger.warning(f"Could not get position after checkpoint replay: {e}")
 
+        # # DEBUG: Log replay completion
+        # checkpoint_expected_pos = getattr(checkpoint, "ninja_position", None)
+        # checkpoint_frame_count = getattr(checkpoint, "frame_count", 0)
+        # print(
+        #     f"[CHECKPOINT REPLAY] Complete: "
+        #     f"actions={actions_replayed}/{len(action_sequence)}, "
+        #     f"frames={frames_replayed}, died={ninja_died_during_replay}, "
+        #     f"expected_pos={checkpoint_expected_pos}, actual_pos={actual_position}, "
+        #     f"expected_frames={checkpoint_frame_count}"
+        # )
+
         # Validate position if checkpoint has expected position
-        expected_position = getattr(checkpoint, "ninja_position", None)
+        expected_position = checkpoint_expected_pos
         position_valid = True
         if expected_position is not None and actual_position is not None:
             dx = actual_position[0] - expected_position[0]
             dy = actual_position[1] - expected_position[1]
             error = (dx * dx + dy * dy) ** 0.5
-            position_valid = error < 0.1  # Allow small floating point error
+
+            # TOLERANCE: 5px accounts for spawn position drift between creation and replay
+            # Spawn positions can vary by ~0.5px, and with many actions this compounds
+            # Real corruption (wrong action sequences) causes 100+ px errors and death
+            position_valid = error < 5.0
             if not position_valid:
+                # Log spawn position comparison to diagnose drift
+                spawn_dx = spawn_pos[0] - 312.0 if spawn_pos else 0
+                spawn_dy = spawn_pos[1] - 444.0 if spawn_pos else 0
+                spawn_drift = (spawn_dx * spawn_dx + spawn_dy * spawn_dy) ** 0.5
+
                 logger.warning(
                     f"Checkpoint replay position mismatch: "
                     f"expected={expected_position}, actual={actual_position}, "
-                    f"error={error:.6f}px | "
-                    f"spawn={spawn_pos}, actions={actions_replayed}/{len(action_sequence)}, "
+                    f"error={error:.6f}px, spawn={spawn_pos}, spawn_drift={spawn_drift:.2f}px | "
+                    f"actions={actions_replayed}/{len(action_sequence)}, "
                     f"frames={frames_replayed}, died={ninja_died_during_replay}"
                 )
 
         # Get observation after replay
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
+
+        # Get current position and velocity for info dict (CRITICAL FIX)
+        # This ensures the info dict has the correct position after checkpoint replay,
+        # preventing stale terminal positions from previous episode from persisting
+        current_pos = self.nplay_headless.ninja_position()
+        current_vel = self.nplay_headless.ninja_velocity()
+
+        # Determine if replay failed and why
+        replay_failed = ninja_died_during_replay or not position_valid
+        replay_failure_reason = None
+        if ninja_died_during_replay:
+            replay_failure_reason = "ninja_died"
+        elif not position_valid:
+            replay_failure_reason = "position_mismatch"
 
         info = {
             "checkpoint_replay": True,
@@ -1335,6 +1444,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "checkpoint_cell": getattr(checkpoint, "cell", None),
             "checkpoint_distance": getattr(checkpoint, "distance_to_goal", None),
             "checkpoint_route": checkpoint_route,  # Path taken during checkpoint replay
+            "checkpoint_source": getattr(
+                checkpoint, "source", "unknown"
+            ),  # Demo vs agent checkpoint
+            "replay_failed": replay_failed,
+            "replay_failure_reason": replay_failure_reason,
+            # CRITICAL FIX: Include position so info dict has correct position after replay
+            # Without this, stale terminal position from previous episode persists, causing
+            # corrupted checkpoints to be created with wrong position but checkpoint's action buffer
+            "player_x": current_pos[0] if current_pos else 0.0,
+            "player_y": current_pos[1] if current_pos else 0.0,
+            "player_xspeed": current_vel[0] if current_vel else 0.0,
+            "player_yspeed": current_vel[1] if current_vel else 0.0,
         }
 
         if self.enable_logging:
@@ -1345,6 +1466,63 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             )
 
         return (processed_obs, info)
+
+    def _mark_checkpoint_waypoints_as_collected(
+        self, checkpoint_route: List[Tuple[float, float]]
+    ) -> None:
+        """Mark waypoints crossed during checkpoint replay as collected.
+
+        Prevents double-rewarding waypoints that were part of the checkpoint path.
+
+        Args:
+            checkpoint_route: List of positions traversed during checkpoint replay
+        """
+        if not checkpoint_route or not hasattr(
+            self.reward_calculator, "_collected_path_waypoints"
+        ):
+            return
+
+        # Get current phase waypoints
+        switch_activated = self.nplay_headless.exit_switch_activated()
+        current_phase = "post_switch" if switch_activated else "pre_switch"
+
+        if not hasattr(self.reward_calculator, "current_path_waypoints_by_phase"):
+            return
+
+        phase_waypoints = self.reward_calculator.current_path_waypoints_by_phase.get(
+            current_phase, []
+        )
+
+        if not phase_waypoints:
+            return
+
+        # Waypoint crossing radius (matches bonus calculation)
+        WAYPOINT_RADIUS = 18.0
+        crossed_waypoints = []
+
+        # Check each position in checkpoint route against waypoints
+        for pos in checkpoint_route:
+            for wp in phase_waypoints:
+                wp_pos = wp.position
+
+                # Skip if already marked
+                if wp_pos in self.reward_calculator._collected_path_waypoints:
+                    continue
+
+                # Calculate distance to waypoint
+                dx = pos[0] - wp_pos[0]
+                dy = pos[1] - wp_pos[1]
+                dist = (dx * dx + dy * dy) ** 0.5
+
+                # Mark as collected if within radius
+                if dist <= WAYPOINT_RADIUS:
+                    self.reward_calculator._collected_path_waypoints.add(wp_pos)
+                    crossed_waypoints.append(wp_pos)
+
+        if crossed_waypoints and self.enable_logging:
+            logger.info(
+                f"Pre-marked {len(crossed_waypoints)} waypoints as collected from checkpoint replay"
+            )
 
     def get_current_action_sequence(self) -> List[int]:
         """Get the action sequence since last reset.
@@ -1420,6 +1598,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Mark this episode as starting from checkpoint for logging/analysis
         self._from_checkpoint = True
         self._checkpoint_base_reward = getattr(checkpoint, "cumulative_reward", 0.0)
+        self._checkpoint_source_frame_skip = getattr(
+            checkpoint, "source_frame_skip", self.frame_skip
+        )
+
+        # CRITICAL FIX: Explicitly reset to level spawn before replaying actions
+        # The assumption that "VecEnv auto-reset already happened" is WRONG when
+        # checkpoints are retrieved at episode START (after 1 action was taken).
+        # We must reset to spawn to ensure deterministic replay.
+        self.nplay_headless.reset()
 
         # Track replay statistics for debugging
         actions_replayed = 0
@@ -1431,16 +1618,70 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         checkpoint_route = []
 
         # Get spawn position for debugging and add to checkpoint route
+        # Now this will be the actual level spawn (312, 444) after the reset
         spawn_pos = self.nplay_headless.ninja_position()
         if spawn_pos is not None:
             checkpoint_route.append((float(spawn_pos[0]), float(spawn_pos[1])))
 
-        # Replay action sequence with frame skip matching original step() behavior
-        # Each action in the sequence was executed for frame_skip frames originally
+        # DEBUG: Log checkpoint replay start (wrapper method)
+        # checkpoint_cell = getattr(checkpoint, "cell", None)
+        # checkpoint_expected_pos = getattr(checkpoint, "ninja_position", None)
+        # checkpoint_frame_count = getattr(checkpoint, "frame_count", 0)
+
+        # CRITICAL: Use checkpoint's source_frame_skip for accurate replay
+        # Training checkpoints use training frame_skip (e.g., 4)
+        # Demo checkpoints use frame_skip=1 (recorded at 60fps)
+        checkpoint_frame_skip = getattr(
+            checkpoint, "source_frame_skip", self.frame_skip
+        )
+
+        # DEBUG: Log checkpoint type and attributes to diagnose pickling issues
+        checkpoint_source = getattr(checkpoint, "source", "unknown")
+        if checkpoint_source == "demo" and checkpoint_frame_skip != 1:
+            logger.warning(
+                f"[CHECKPOINT_FRAME_SKIP_BUG] Demo checkpoint has wrong frame_skip! "
+                f"source={checkpoint_source}, source_frame_skip={checkpoint_frame_skip} (expected 1), "
+                f"checkpoint_type={type(checkpoint).__name__}, "
+                f"actions={len(action_sequence)}, "
+                f"has_source_frame_skip={'source_frame_skip' in dir(checkpoint)}"
+            )
+            # Force correct frame_skip for demo checkpoints
+            checkpoint_frame_skip = 1
+            logger.info(
+                "[CHECKPOINT_FRAME_SKIP_BUG] Forcing frame_skip=1 for demo checkpoint"
+            )
+
+        # DEBUG: Log detailed replay info to diagnose position mismatch
+        checkpoint_cell = getattr(checkpoint, "cell", None)
+        checkpoint_expected_pos = getattr(checkpoint, "ninja_position", None)
+        checkpoint_level_id = getattr(checkpoint, "level_id", None)
+
+        # Enable debug logging via environment variable or enable_logging flag
+        import os
+
+        _verbose_debug = self.enable_logging or os.environ.get(
+            "CHECKPOINT_REPLAY_DEBUG", ""
+        ).lower() in ("1", "true", "yes")
+        if _verbose_debug:
+            logger.error(
+                f"[REPLAY_DEBUG] Starting checkpoint replay: "
+                f"cell={checkpoint_cell}, source={checkpoint_source}, "
+                f"spawn_pos={spawn_pos}, expected_pos={checkpoint_expected_pos}, "
+                f"actions={len(action_sequence)}, frame_skip={checkpoint_frame_skip}, "
+                f"level_id={checkpoint_level_id}, "
+                f"first_10_actions={list(action_sequence[:10])}"
+            )
+
+        # Track positions during replay for debugging (first 10 only)
+        _debug_positions = []
+
+        # Replay action sequence with frame skip matching original checkpoint creation
+        # Training checkpoints: use training frame_skip (e.g., 4 frames/action)
+        # Demo checkpoints: use frame_skip=1 (60fps, 1 frame/action)
         for action in action_sequence:
             hor_input, jump_input = self._actions_to_execute(action)
-            # Replay for frame_skip ticks to match original step() execution
-            for _ in range(self.frame_skip):
+            # Replay for checkpoint_frame_skip ticks (not self.frame_skip!)
+            for _ in range(checkpoint_frame_skip):
                 self.nplay_headless.tick(hor_input, jump_input)
                 frames_replayed += 1
 
@@ -1449,22 +1690,70 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 if pos is not None:
                     checkpoint_route.append((float(pos[0]), float(pos[1])))
 
-                # Check if ninja died during replay - stop if so
+                # Check if ninja died during replay - THIS SHOULD NEVER HAPPEN
                 if self.nplay_headless.ninja_has_died():
                     ninja_died_during_replay = True
-                    logger.warning(
-                        f"Ninja died during checkpoint replay at frame {frames_replayed} "
-                        f"(action {actions_replayed + 1}/{len(action_sequence)})"
+                    checkpoint_cell = getattr(checkpoint, "cell", None)
+                    checkpoint_source = getattr(checkpoint, "source", "unknown")
+                    checkpoint_level_id = getattr(checkpoint, "level_id", None)
+
+                    error_msg = (
+                        f"[CRITICAL BUG] Ninja died during checkpoint replay! "
+                        f"This should NEVER happen with deterministic physics. "
+                        f"frame={frames_replayed}, action={actions_replayed + 1}/{len(action_sequence)}, "
+                        f"checkpoint_cell={checkpoint_cell}, source={checkpoint_source}, "
+                        f"level_id={checkpoint_level_id}, spawn={spawn_pos}, "
+                        f"checkpoint_frame_skip={checkpoint_frame_skip}, training_frame_skip={self.frame_skip}, "
+                        f"first_10_actions={action_sequence[:10]}, last_10_actions={action_sequence[-10:]}"
                     )
-                    break
+
+                    logger.error(error_msg)
+                    print(f"\n{'=' * 80}")
+                    print(error_msg)
+                    print(f"{'=' * 80}\n")
+
+                    # FAIL FAST: Raise exception to halt training and force bug fix
+                    raise RuntimeError(
+                        f"Checkpoint replay caused ninja death (checkpoint corruption bug). "
+                        f"Cell={checkpoint_cell}, actions={len(action_sequence)}, "
+                        f"died_at_action={actions_replayed + 1}. "
+                        f"This indicates corrupted action buffer. See logs for details."
+                    )
 
             self._action_sequence.append(action)
             actions_replayed += 1
+
+            # Track first 10 positions for debugging position mismatch
+            if actions_replayed <= 10:
+                pos = self.nplay_headless.ninja_position()
+                if pos is not None:
+                    _debug_positions.append(
+                        (actions_replayed, action, (pos[0], pos[1]))
+                    )
 
             if ninja_died_during_replay:
                 break
 
         self._checkpoint_replay_in_progress = False
+
+        # DEBUG: Log position trajectory for first 10 actions
+        if _verbose_debug and _debug_positions:
+            pos_log = ", ".join(
+                [f"a{i}:{a}->({p[0]:.1f},{p[1]:.1f})" for i, a, p in _debug_positions]
+            )
+            logger.error(f"[REPLAY_DEBUG] First 10 positions: {pos_log}")
+
+        # Pre-mark waypoints crossed during replay to prevent double-rewarding
+        self._mark_checkpoint_waypoints_as_collected(checkpoint_route)
+
+        # DEBUG: Log replay completion
+        actual_position = self.nplay_headless.ninja_position()
+        # print(
+        #     f"[CHECKPOINT REPLAY FROM WRAPPER] Complete: "
+        #     f"actions={actions_replayed}/{len(action_sequence)}, "
+        #     f"frames={frames_replayed}, died={ninja_died_during_replay}, "
+        #     f"actual_pos={actual_position}, expected_frames={checkpoint_frame_count}"
+        # )
 
         # Store checkpoint route for inclusion in episode end info
         # This persists through the episode so route visualization can access it
@@ -1489,8 +1778,25 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             dx = actual_position[0] - expected_position[0]
             dy = actual_position[1] - expected_position[1]
             error = (dx * dx + dy * dy) ** 0.5
-            position_valid = error < 0.1
+
+            # TOLERANCE: 5px accounts for spawn position drift between creation and replay
+            # Spawn positions can vary by ~0.5px, and with many actions this compounds
+            # Real corruption (wrong action sequences) causes 100+ px errors and death
+            position_valid = error < 5.0
+
+            # DEBUG: Always log position comparison when logging enabled
+            if _verbose_debug:
+                logger.error(
+                    f"[REPLAY_DEBUG] Position validation: "
+                    f"expected={expected_position}, actual={actual_position}, "
+                    f"error={error:.2f}px, valid={position_valid}"
+                )
+
             if not position_valid:
+                # Log spawn position comparison to diagnose drift
+                spawn_dx = spawn_pos[0] - 312.0 if spawn_pos else 0
+                spawn_dy = spawn_pos[1] - 444.0 if spawn_pos else 0
+                spawn_drift = (spawn_dx * spawn_dx + spawn_dy * spawn_dy) ** 0.5
                 # Sample actions for debugging
                 first_10 = (
                     action_sequence[:10]
@@ -1502,19 +1808,33 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 action_dist = {}
                 for a in action_sequence:
                     action_dist[a] = action_dist.get(a, 0) + 1
-                logger.warning(
-                    f"Checkpoint replay position mismatch: "
+                logger.error(
+                    f"[REPLAY_DEBUG] Position mismatch FAILURE: "
                     f"expected={expected_position}, actual={actual_position}, "
-                    f"error={error:.6f}px | "
-                    f"spawn={spawn_pos}, actions={actions_replayed}/{len(action_sequence)}, "
+                    f"error={error:.6f}px, spawn={spawn_pos}, spawn_drift={spawn_drift:.2f}px | "
+                    f"actions={actions_replayed}/{len(action_sequence)}, "
                     f"frames={frames_replayed}, died={ninja_died_during_replay} | "
-                    f"first_actions={first_10}, last_actions={last_10}, "
+                    f"first_actions={list(first_10)}, last_actions={list(last_10)}, "
                     f"action_dist={action_dist}"
                 )
 
         # Get observation after replay
         obs = self._get_observation()
         processed_obs = self._process_observation(obs)
+
+        # Get current position and velocity for info dict (CRITICAL FIX)
+        # This ensures infos[env_idx] has the correct position after checkpoint replay,
+        # preventing stale terminal positions from previous episode from persisting
+        current_pos = self.nplay_headless.ninja_position()
+        current_vel = self.nplay_headless.ninja_velocity()
+
+        # Determine if replay failed and why
+        replay_failed = ninja_died_during_replay or not position_valid
+        replay_failure_reason = None
+        if ninja_died_during_replay:
+            replay_failure_reason = "ninja_died"
+        elif not position_valid:
+            replay_failure_reason = "position_mismatch"
 
         info = {
             "checkpoint_replay": True,
@@ -1523,6 +1843,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "checkpoint_cell": getattr(checkpoint, "cell", None),
             "checkpoint_distance": getattr(checkpoint, "distance_to_goal", None),
             "checkpoint_route": checkpoint_route,  # Path taken during checkpoint replay
+            "checkpoint_source": getattr(
+                checkpoint, "source", "unknown"
+            ),  # Demo vs agent checkpoint
+            "replay_failed": replay_failed,
+            "replay_failure_reason": replay_failure_reason,
+            # CRITICAL FIX: Include position so infos[env_idx] has correct position after replay
+            # Without this, stale terminal position from previous episode persists, causing
+            # corrupted checkpoints to be created with wrong position but checkpoint's action buffer
+            "player_x": current_pos[0] if current_pos else 0.0,
+            "player_y": current_pos[1] if current_pos else 0.0,
+            "player_xspeed": current_vel[0] if current_vel else 0.0,
+            "player_yspeed": current_vel[1] if current_vel else 0.0,
         }
 
         if self.enable_logging:
@@ -1926,14 +2258,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         Called during reset after graph is built. Provides immediate dense
         guidance for complex navigation from first episode.
         """
-        # Check if path waypoints enabled
-        if not hasattr(self.reward_calculator, "enable_path_waypoints"):
-            return
-
-        if not self.reward_calculator.enable_path_waypoints:
-            logger.debug("Path waypoints disabled")
-            return
-
         # Requires graph data from GraphMixin
         if not hasattr(self, "current_graph_data") or not self.current_graph_data:
             logger.debug(
@@ -2200,6 +2524,17 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         except Exception as e:
             logger.debug(f"get_level_data_for_visualization failed: {e}")
             return None
+
+    def get_reward_config(self) -> "RewardConfig":
+        """Get reward configuration for curriculum updates.
+
+        This method is callable via env_method from SubprocVecEnv to access
+        the reward configuration for updating curriculum-aware reward components.
+
+        Returns:
+            RewardConfig instance
+        """
+        return self.reward_calculator.config
 
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects and support vectorization."""

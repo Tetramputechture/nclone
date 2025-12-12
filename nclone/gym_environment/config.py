@@ -164,6 +164,9 @@ class EnvironmentConfig:
     # Reward system configuration (curriculum-aware)
     reward_config: Optional[RewardConfig] = None
 
+    # Shared level cache (for zero-copy multi-worker training on same level)
+    shared_level_cache: Optional[Any] = None
+
     # Frame skip
     frame_skip: int = 4
 

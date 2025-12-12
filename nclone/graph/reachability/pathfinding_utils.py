@@ -445,7 +445,7 @@ def _is_horizontal_edge_util(
     return from_pos[1] == to_pos[1] and from_pos[0] != to_pos[0]
 
 
-def _violates_horizontal_rule_util(
+def _violates_horizontal_rule(
     current: Tuple[int, int],
     neighbor: Tuple[int, int],
     parents: Dict[Tuple[int, int], Optional[Tuple[int, int]]],
@@ -1465,7 +1465,7 @@ def bfs_distance_from_start(
                 continue
 
             # Check horizontal rule before accepting edge (uses physics cache)
-            if _violates_horizontal_rule_util(
+            if _violates_horizontal_rule(
                 current, neighbor_pos, parents, base_adjacency, physics_cache
             ):
                 continue
@@ -1702,7 +1702,7 @@ def find_shortest_path(
                 continue
 
             # Check horizontal rule before accepting edge (uses physics cache)
-            if _violates_horizontal_rule_util(
+            if _violates_horizontal_rule(
                 current, neighbor_pos, parents, base_adjacency, physics_cache
             ):
                 continue
@@ -2003,189 +2003,3 @@ def clear_surface_area_cache(level_id: Optional[str] = None) -> None:
         _surface_area_cache.clear()
     else:
         _surface_area_cache.pop(level_id, None)
-
-
-def find_path_subgoals(
-    path_nodes: List[Tuple[int, int]],
-    threshold_angle_degrees: float = 45.0,
-    min_segment_length: float = 24.0,
-) -> List[Tuple[int, int]]:
-    """
-    Find subgoals from path inflection points.
-
-    Subgoals are positions where the path direction changes significantly
-    (> threshold angle). These represent key decision points where the
-    agent needs to make important navigation choices.
-
-    Uses for RL:
-    - Intermediate milestone rewards without breaking PBRS guarantees
-    - Hierarchical reward structure without hierarchical policies
-    - Debug visualization of optimal path structure
-
-    Args:
-        path_nodes: List of (x, y) positions forming the path (in any coord space)
-        threshold_angle_degrees: Minimum angle change to consider as inflection point
-                                (default 45 degrees = significant turn)
-        min_segment_length: Minimum distance between path segments to consider
-                           (default 24px = 1 tile, filters out micro-adjustments)
-
-    Returns:
-        List of (x, y) positions representing subgoals (inflection points)
-        Does NOT include start or end of path.
-    """
-    import math
-
-    if len(path_nodes) < 3:
-        return []  # Need at least 3 nodes to have an inflection
-
-    subgoals = []
-    threshold_radians = math.radians(threshold_angle_degrees)
-
-    for i in range(1, len(path_nodes) - 1):
-        prev_node = path_nodes[i - 1]
-        curr_node = path_nodes[i]
-        next_node = path_nodes[i + 1]
-
-        # Direction vector from prev to current
-        dir_in_x = curr_node[0] - prev_node[0]
-        dir_in_y = curr_node[1] - prev_node[1]
-        len_in = math.sqrt(dir_in_x**2 + dir_in_y**2)
-
-        # Direction vector from current to next
-        dir_out_x = next_node[0] - curr_node[0]
-        dir_out_y = next_node[1] - curr_node[1]
-        len_out = math.sqrt(dir_out_x**2 + dir_out_y**2)
-
-        # Skip if segments are too short (noise filtering)
-        if len_in < min_segment_length or len_out < min_segment_length:
-            continue
-
-        # Normalize directions
-        dir_in_x /= len_in
-        dir_in_y /= len_in
-        dir_out_x /= len_out
-        dir_out_y /= len_out
-
-        # Compute angle between directions using dot product
-        # dot = cos(angle), so angle = arccos(dot)
-        dot_product = dir_in_x * dir_out_x + dir_in_y * dir_out_y
-        # Clamp to [-1, 1] to avoid numerical issues with arccos
-        dot_product = max(-1.0, min(1.0, dot_product))
-        angle = math.acos(dot_product)
-
-        # If angle exceeds threshold, this is a subgoal
-        if angle > threshold_radians:
-            subgoals.append(curr_node)
-
-    return subgoals
-
-
-def find_path_subgoals_from_cache(
-    level_cache: Any,
-    start_pos: Tuple[int, int],
-    goal_id: str,
-    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
-    spatial_hash: Optional[Any] = None,
-    subcell_lookup: Optional[Any] = None,
-    threshold_angle_degrees: float = 45.0,
-) -> List[Tuple[int, int]]:
-    """
-    Find subgoals by tracing the optimal path using cached next_hop data.
-
-    This reconstructs the optimal path from current position to goal using
-    the level cache's precomputed shortest path data, then finds inflection
-    points where the path direction changes significantly.
-
-    Args:
-        level_cache: LevelBasedPathDistanceCache with precomputed paths
-        start_pos: Starting position in world space (x, y) pixels
-        goal_id: Goal identifier ("switch" or "exit")
-        adjacency: Graph adjacency structure
-        spatial_hash: Optional SpatialHash for O(1) node lookup
-        subcell_lookup: Optional subcell lookup for node snapping
-        threshold_angle_degrees: Minimum angle for inflection detection
-
-    Returns:
-        List of subgoal positions (world space coordinates)
-    """
-    if level_cache is None:
-        return []
-
-    # Find starting node
-    start_node = find_ninja_node(
-        (int(start_pos[0]), int(start_pos[1])),
-        adjacency,
-        spatial_hash=spatial_hash,
-        subcell_lookup=subcell_lookup,
-        ninja_radius=10.0,
-    )
-
-    if start_node is None:
-        return []
-
-    # Reconstruct path by following next_hop chain
-    path_nodes = [start_node]
-    current_node = start_node
-    max_hops = 500  # Safety limit to prevent infinite loops
-
-    for _ in range(max_hops):
-        next_hop = level_cache.get_next_hop(current_node, goal_id)
-        if next_hop is None:
-            break  # Reached goal or no path
-
-        path_nodes.append(next_hop)
-        current_node = next_hop
-
-        # Check if we've reached a goal node (would have no next_hop)
-        if level_cache.get_next_hop(next_hop, goal_id) is None:
-            break
-
-    # Find inflection points
-    subgoals_tile_space = find_path_subgoals(
-        path_nodes, threshold_angle_degrees=threshold_angle_degrees
-    )
-
-    # Convert to world space
-    subgoals_world = [
-        (node[0] + NODE_WORLD_COORD_OFFSET, node[1] + NODE_WORLD_COORD_OFFSET)
-        for node in subgoals_tile_space
-    ]
-
-    return subgoals_world
-
-
-def compute_distance_to_nearest_subgoal(
-    player_pos: Tuple[float, float],
-    subgoals: List[Tuple[int, int]],
-) -> Tuple[float, Optional[Tuple[int, int]]]:
-    """
-    Compute Euclidean distance to nearest subgoal.
-
-    Used for intermediate milestone rewards - agent gets bonus when
-    reaching a subgoal for the first time.
-
-    Args:
-        player_pos: Player position (x, y) in world space
-        subgoals: List of subgoal positions in world space
-
-    Returns:
-        Tuple of (distance_to_nearest, nearest_subgoal)
-        Returns (inf, None) if no subgoals
-    """
-    import math
-
-    if not subgoals:
-        return float("inf"), None
-
-    min_dist = float("inf")
-    nearest = None
-
-    for subgoal in subgoals:
-        dx = player_pos[0] - subgoal[0]
-        dy = player_pos[1] - subgoal[1]
-        dist = math.sqrt(dx * dx + dy * dy)
-        if dist < min_dist:
-            min_dist = dist
-            nearest = subgoal
-
-    return min_dist, nearest

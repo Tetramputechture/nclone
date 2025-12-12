@@ -193,7 +193,7 @@ PBRS_EXPLORATION_WEIGHT = 0.6
 **Implementation details**:
 ```python
 # CORRECT: Use path_calculator for all distances
-from nclone.graph.reachability.path_distance_calculator import CachedPathDistanceCalculator
+from nclone.graph.reachability.path_distance_calculator import PathDistanceCalculator
 
 path_distance = self.path_calculator.get_distance(
     start_pos,      # (x, y) tuple
@@ -207,7 +207,7 @@ euclidean_distance = np.linalg.norm(np.array(goal_pos) - np.array(start_pos))  #
 ```
 
 **Performance optimization**:
-- **Caching**: `CachedPathDistanceCalculator` maintains per-query cache and level-based cache
+- **Caching**: `PathDistanceCalculator` maintains per-query cache and level-based cache
 - **Amortization**: Update direction checks every N frames (e.g., every 5 frames) to reduce computation
 - **Spatial hash**: O(1) node lookups using pre-built spatial hash from graph data
 - **A* pathfinding**: Efficient heuristic-guided search (faster than BFS)

@@ -84,6 +84,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             },
             enable_visual_observations=self.config.enable_visual_observations,
             frame_skip=self.config.frame_skip,
+            shared_level_cache=self.config.shared_level_cache,
         )
 
         # Initialize mixin systems using config
@@ -286,6 +287,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # These fields are removed during observation processing but needed for reward calculation
         info["player_x"] = self.nplay_headless.ninja_position()[0]
         info["player_y"] = self.nplay_headless.ninja_position()[1]
+        
+        # Add level spawn position for corruption detection in Go-Explore
+        # This helps detect checkpoints with spawn position but long action sequences
+        if hasattr(self, "level_data") and self.level_data is not None:
+            spawn_pos = self.level_data.start_position
+            info["spawn_x"] = float(spawn_pos[0])
+            info["spawn_y"] = float(spawn_pos[1])
 
         # CRITICAL: Use cached positions instead of direct simulator calls
         # Direct calls may return (0, 0) if entities not loaded during curriculum resets
@@ -502,6 +510,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Build graph from the newly loaded map
         self._update_graph_from_env_state()
+
+        # Extract path-based waypoints from optimal A* paths (if enabled)
+        # This provides immediate dense guidance from first episode
+        self._update_path_waypoints_for_current_level()
 
         # # Validate spawn position can reach graph nodes (detect degenerate maps early)
         # if hasattr(self, "current_graph_data") and self.current_graph_data:
@@ -946,7 +958,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 # Feature 15: Estimated remaining steps
                 # Convert distance to frame estimates
                 try:
-                    from ...constants.physics_constants import MAX_HOR_SPEED
 
                     if switch_activated < 0.5:
                         remaining_dist = path_calculator.get_distance_to_switch(
@@ -1142,11 +1153,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     )
                     if reward_path_calc is not None:
                         reward_path_calc.clear_cache()
-
-        # Clear reachability cache so it gets recomputed with fresh entities
-        # CRITICAL: Reachability features depend on goal positions which change when switches activate
-        if hasattr(self, "_clear_reachability_cache"):
-            self._clear_reachability_cache()
 
     def _extract_mine_features(
         self, obs: Dict[str, Any], buffer: np.ndarray

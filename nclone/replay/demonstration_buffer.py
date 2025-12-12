@@ -74,6 +74,7 @@ def _load_replay_batch_worker(
     observation_keys: List[str],
     max_transitions_per_demo: int,
     simulate_replays: bool,
+    frame_skip: int = 1,
 ) -> List[Dict[str, Any]]:
     """Worker function for parallel replay loading (batch mode).
 
@@ -106,6 +107,7 @@ def _load_replay_batch_worker(
                 observation_config={},
                 render_mode="grayscale_array",
                 enable_rendering=False,
+                frame_skip=frame_skip,
             )
         except Exception:
             executor = None
@@ -261,6 +263,8 @@ class DemonstrationBuffer:
         simulate_replays: bool = True,
         num_workers: Optional[int] = None,
         frame_stack_config: Optional[Dict[str, Any]] = None,
+        level_filter: Optional[str] = None,
+        frame_skip: int = 1,
     ):
         """Initialize demonstration buffer.
 
@@ -282,12 +286,18 @@ class DemonstrationBuffer:
                 - state_stack_size: int (default 4)
                 When enabled, sample_batch returns properly stacked observations
                 using consecutive frames from episodes.
+            level_filter: Optional level name to filter demonstrations by.
+                If provided, only loads demos matching this level name (exact match).
+            frame_skip: Number of physics ticks per observation (must match training).
+                When > 1, ReplayExecutor samples observations at this frequency.
         """
         self.max_demos = max_demos
         self.max_transitions_per_demo = max_transitions_per_demo
         self.architecture_config = architecture_config
         self.simulate_replays = simulate_replays
         self.frame_stack_config = frame_stack_config or {}
+        self.level_filter = level_filter
+        self.frame_skip = frame_skip
 
         # Determine number of workers for parallel loading
         # Cap at MAX_DEFAULT_WORKERS to prevent memory exhaustion
@@ -320,8 +330,12 @@ class DemonstrationBuffer:
                     observation_config={},
                     render_mode="grayscale_array",
                     enable_rendering=False,
+                    frame_skip=self.frame_skip,
                 )
-                logger.info("ReplayExecutor initialized for demonstration loading")
+                logger.info(
+                    f"ReplayExecutor initialized for demonstration loading "
+                    f"(frame_skip={self.frame_skip})"
+                )
             except Exception as e:
                 logger.warning(f"Failed to initialize ReplayExecutor: {e}")
                 self._replay_executor = None
@@ -399,6 +413,43 @@ class DemonstrationBuffer:
         # Fall back to defaults
         return DEFAULT_OBSERVATION_KEYS.copy()
 
+    def _matches_level_filter(self, replay_file: Path) -> bool:
+        """Check if replay file matches the level filter.
+
+        Parses filename and does exact matching:
+        - YYYYMMDD_HHMMSS_level_name.replay → extracts "level_name"
+        - level_name.npp → extracts "level_name"
+
+        Args:
+            replay_file: Path to replay file
+
+        Returns:
+            True if matches filter or no filter set, False otherwise
+        """
+        if self.level_filter is None:
+            return True
+
+        # Normalize filter (unify _ and - separators)
+        filter_normalized = self.level_filter.lower().replace("_", "-")
+
+        # Parse filename: YYYYMMDD_HHMMSS_level_name.replay or level_name.npp
+        file_stem = replay_file.stem
+        parts = file_stem.split("_", 2)  # Split on first 2 underscores
+
+        if len(parts) >= 3:
+            # Timestamp format: extract level name after timestamp
+            file_level_name = parts[2].lower().replace("_", "-")
+        else:
+            # No timestamp: entire filename is level name
+            file_level_name = file_stem.lower().replace("_", "-")
+
+        matches = file_level_name == filter_normalized
+
+        if matches:
+            logger.debug(f"Demo {replay_file.name} matches filter '{self.level_filter}'")
+
+        return matches
+
     def _load_replays(self, paths: Union[str, Path, List[Union[str, Path]]]) -> int:
         """Load replay files from paths.
 
@@ -413,30 +464,44 @@ class DemonstrationBuffer:
         if isinstance(paths, (str, Path)):
             paths = [paths]
 
-        # First, collect all replay file paths
+        # First, collect all replay file paths (with level filtering)
         replay_files: List[Path] = []
 
         for path in paths:
             path = Path(path)
 
             if path.is_file():
-                replay_files.append(path)
+                if self._matches_level_filter(path):
+                    replay_files.append(path)
             elif path.is_dir():
                 # Collect all replay files in directory
                 for ext in ["*.npp", "*.bin", "*.replay"]:
-                    replay_files.extend(path.glob(ext))
+                    for file in path.glob(ext):
+                        if self._matches_level_filter(file):
+                            replay_files.append(file)
 
         # Limit to max_demos
         replay_files = replay_files[: self.max_demos]
 
         if not replay_files:
-            logger.warning("No replay files found to load")
+            if self.level_filter:
+                logger.warning(
+                    f"No replay files found matching level filter '{self.level_filter}'"
+                )
+            else:
+                logger.warning("No replay files found to load")
             return 0
 
-        logger.info(
-            f"Found {len(replay_files)} replay files, "
-            f"loading with {self.num_workers} worker(s)"
-        )
+        if self.level_filter:
+            logger.info(
+                f"Found {len(replay_files)} replay files matching level '{self.level_filter}', "
+                f"loading with {self.num_workers} worker(s)"
+            )
+        else:
+            logger.info(
+                f"Found {len(replay_files)} replay files (no filter), "
+                f"loading with {self.num_workers} worker(s)"
+            )
 
         # Use parallel loading if num_workers > 1
         if self.num_workers > 1:
@@ -507,6 +572,7 @@ class DemonstrationBuffer:
                         self.observation_keys,
                         self.max_transitions_per_demo,
                         self.simulate_replays,
+                        self.frame_skip,
                     ): idx
                     for idx, batch in enumerate(batches)
                 }

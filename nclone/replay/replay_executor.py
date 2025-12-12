@@ -92,16 +92,22 @@ class ReplayExecutor:
         observation_config: Optional[Dict[str, Any]] = None,
         render_mode: str = "grayscale_array",
         enable_rendering: bool = False,
+        frame_skip: int = 1,
     ):
         """Initialize replay executor.
 
         Args:
             observation_config: Configuration for observation processor
             render_mode: Rendering mode for environment
+            enable_rendering: Whether to enable rendering
+            frame_skip: Number of physics ticks per observation (default 1).
+                When > 1, samples observations at same frequency as training.
+                E.g., frame_skip=4 means sample 1 observation per 4 physics ticks.
         """
         self.observation_config = observation_config or {}
         self.render_mode = render_mode
         self.enable_rendering = enable_rendering
+        self.frame_skip = max(1, frame_skip)
 
         # Create headless environment
         self.nplay_headless = NPlayHeadless(
@@ -322,17 +328,17 @@ class ReplayExecutor:
         self.nplay_headless.load_map_from_map_data(list(map_data))
 
         # DIAGNOSTIC: Check if entities were loaded
-        entity_counts = {
-            k: len(v) for k, v in self.nplay_headless.sim.entity_dic.items()
-        }
-        print(f"Entity counts after load: {entity_counts}")
+        # entity_counts = {
+        #     k: len(v) for k, v in self.nplay_headless.sim.entity_dic.items()
+        # }
+        # print(f"Entity counts after load: {entity_counts}")
 
         # Check specifically for type 3 (exit switches and doors)
-        exit_entities = self.nplay_headless.sim.entity_dic.get(3, [])
-        print(f"Type 3 entities (exits): {len(exit_entities)}")
-        if exit_entities:
-            for e in exit_entities:
-                print(f"  Exit entity: {type(e).__name__}, pos=({e.xpos}, {e.ypos})")
+        # exit_entities = self.nplay_headless.sim.entity_dic.get(3, [])
+        # print(f"Type 3 entities (exits): {len(exit_entities)}")
+        # if exit_entities:
+        #     for e in exit_entities:
+        #         print(f"  Exit entity: {type(e).__name__}, pos=({e.xpos}, {e.ypos})")
 
         # Initialize entity extractor now that map is loaded
         if self.entity_extractor is None:
@@ -422,6 +428,8 @@ class ReplayExecutor:
         observations = []
 
         # Execute each input frame
+        # With frame_skip > 1, only extract observations at frame_skip intervals
+        # to match the observation frequency during training
         for frame_idx, input_byte in enumerate(input_sequence):
             # Decode input to controls
             horizontal, jump = decode_input_to_controls(input_byte)
@@ -429,23 +437,27 @@ class ReplayExecutor:
             # Execute one simulation step
             self.nplay_headless.tick(horizontal, jump)
 
-            # Get raw observation
-            raw_obs = self._get_raw_observation()
+            # Only extract observation at frame_skip intervals
+            # This matches the observation frequency during training
+            # E.g., frame_skip=4 means sample every 4th frame (15Hz from 60Hz)
+            if (frame_idx + 1) % self.frame_skip == 0:
+                # Get raw observation
+                raw_obs = self._get_raw_observation()
 
-            # Process observation
-            processed_obs = self.obs_processor.process_observation(raw_obs)
+                # Process observation
+                processed_obs = self.obs_processor.process_observation(raw_obs)
 
-            # Get discrete action for this frame
-            action = map_input_to_action(input_byte)
+                # Get discrete action for this frame
+                action = map_input_to_action(input_byte)
 
-            # Store observation with action
-            observations.append(
-                {
-                    "observation": processed_obs,
-                    "action": action,
-                    "frame": frame_idx,
-                }
-            )
+                # Store observation with action
+                observations.append(
+                    {
+                        "observation": processed_obs,
+                        "action": action,
+                        "frame": frame_idx,
+                    }
+                )
 
         return observations
 
@@ -633,7 +645,6 @@ class ReplayExecutor:
         Returns:
             np.ndarray: 3-dim SDF features [sdf_value, gradient_x, gradient_y]
         """
-        from ..constants.entity_types import EntityType
         from ..constants.physics_constants import NINJA_RADIUS
 
         sdf_features = np.zeros(3, dtype=np.float32)

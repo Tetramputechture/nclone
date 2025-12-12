@@ -1650,7 +1650,7 @@ while running:
                                                 )
                                             else:
                                                 print(
-                                                    f"✅ Demo checkpoint visualization: ON (0 checkpoints loaded)"
+                                                    "✅ Demo checkpoint visualization: ON (0 checkpoints loaded)"
                                                 )
                                     else:
                                         # Use cached checkpoints
