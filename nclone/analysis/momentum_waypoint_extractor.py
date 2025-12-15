@@ -31,7 +31,7 @@ MIN_SPEED_FOR_MOMENTUM = 1.5  # pixels/frame - must be moving significantly
 SPEED_INCREASE_THRESHOLD = 0.8  # Speed must increase by this amount
 EUCLIDEAN_DISTANCE_INCREASE_THRESHOLD = 5.0  # Must move 5px away from goal
 LOOKAHEAD_WINDOW = 20  # Check next 20 frames for jump action
-MIN_WAYPOINT_SEPARATION = 50.0  # Waypoints must be 50px apart (avoid duplicates)
+MIN_WAYPOINT_SEPARATION = 30.0  # Waypoints must be 50px apart (avoid duplicates)
 
 
 @dataclass
@@ -402,4 +402,3 @@ class MomentumWaypointExtractor:
         except Exception as e:
             logger.warning(f"Failed to load waypoints cache for {level_id}: {e}")
             return None
-

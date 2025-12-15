@@ -29,11 +29,9 @@ class RewardConfig:
     recent_success_rate: float = 0.0
 
     # Waypoint system configuration (always enabled in unified system)
-    path_waypoint_progress_spacing: float = (
-        100.0  # Spacing for progress checkpoints (pixels)
-    )
+    path_waypoint_progress_spacing: float = 50.0  # Spacing for progress checkpoints (pixels) - REDUCED from 100px for denser coverage
     path_waypoint_min_angle: float = 45.0  # Minimum angle for turn detection (degrees)
-    path_waypoint_cluster_radius: float = 40.0  # Clustering radius (pixels)
+    path_waypoint_cluster_radius: float = 25.0  # Clustering radius (pixels) - REDUCED from 40px to preserve turn waypoints
 
     # Curriculum phase thresholds
     # UPDATED 2025-12-07: Success-rate based progression with minimum timestep gates
@@ -85,30 +83,32 @@ class RewardConfig:
         UPDATED 2025-12-07: Fully success-rate driven (no timestep fallbacks).
         Complex levels progress based on actual learning, not arbitrary time thresholds.
 
-        IMPORTANT: Weights reduced to prevent accumulated PBRS from dominating
-        terminal rewards. Previous weights (30.0 in discovery) created -0.3 penalty
-        per backward step, accumulating to -60+ over oscillating paths.
+        IMPORTANT: Weights scaled to ensure forward progress always outweighs death
+        penalty. With progress-gated death penalty (25-100% scaling), discovery phase
+        needs strong PBRS to make forward progress + death preferable to oscillation.
 
-        Max episode return = PBRS_weight + completion(50) + switch(5) ≈ weight + 55
+        Max episode return = PBRS_weight + completion(50) + switch(30) ≈ weight + 80
 
-        With these reduced weights:
-        - Discovery (<5%): 15 + 55 = 70 max return (stable for value function)
-        - Early learning (5-20%): 12 + 55 = 67 max return
-        - Mid learning (20-40%): 10 + 55 = 65 max return
-        - Advanced (40-60%): 6 + 55 = 61 max return
-        - Mastery (60%+): 4 + 55 = 59 max return
+        With these weights:
+        - Discovery (<5%): 80 + 80 = 160 max return (strong signal vs -10 early death)
+        - Early learning (5-20%): 15 + 80 = 95 max return
+        - Mid learning (20-40%): 12 + 80 = 92 max return
+        - Advanced (40-60%): 8 + 80 = 88 max return
+        - Mastery (60%+): 5 + 80 = 85 max return
 
-        Death penalties (-10 to -18) remain significant relative to PBRS rewards.
+        Progress-gated death penalties (-10 early, -20 mid, -40 late) scale with competence.
 
         Returns:
-            20.0 (0-5% success): Very strong guidance for discovery (long-horizon)
+            80.0 (0-5% success): Very strong guidance for discovery (long-horizon)
             15.0 (5-20% success): Strong guidance for early learning
             12.0 (20-40% success): Moderate guidance for mid learning
             8.0 (40-60% success): Reduced for advanced learning
             5.0 (60%+ success): Light shaping for mastery
         """
         if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
-            return 20.0  # Very strong guidance for long-horizon discovery
+            return (
+                80.0  # Very strong guidance for long-horizon discovery (2x from 40.0)
+            )
         elif self.recent_success_rate < 0.20:  # Early learning (5-20% success)
             return 15.0  # Strong guidance
         elif self.recent_success_rate < 0.40:  # Mid learning (20-40% success)
@@ -226,23 +226,37 @@ class RewardConfig:
         Stronger early when agent is learning basic navigation, weaker late when
         agent has mastered path direction and needs refinement only.
 
-        Analysis with PBRS weight and velocity alignment:
-        - Early (20.0 PBRS + 8.0 vel): Velocity is 40% of total signal (was 10%)
-        - Mid (10.0 PBRS + 3.0 vel): Velocity is 30% of signal (was 5%)
-        - Late (4.0 PBRS + 1.0 vel): Velocity is 25% of signal (was 2.5%)
+        UPDATED 2025-12-15: Drastically reduced after moving velocity from PBRS potential
+        to separate instantaneous reward. Velocity accumulates linearly over episode length,
+        so weights must be VERY small to avoid dominating terminal rewards.
 
-        This ensures strong direction learning to overcome inflection point failures.
+        Target: Velocity contribution should be ≤ 20% of completion reward over full episode.
+        - Typical episode: 500 actions (2000 frames with skip=4)
+        - Completion reward: 5.0 scaled
+        - Max velocity budget: 1.0 scaled (20% of completion)
+        - Per-step weight: 1.0 / 500 = 0.002 unscaled (0.0002 scaled)
+
+        Analysis with PBRS weight and velocity alignment (per-step instantaneous):
+        - Discovery (80.0 PBRS + 0.002 vel): Velocity is 0.0025% of PBRS per step
+        - Early (15.0 PBRS + 0.002 vel): Velocity is 0.013% of PBRS per step
+        - Mid (12.0 PBRS + 0.001 vel): Velocity is 0.008% of PBRS per step
+
+        But over full episode (500 steps):
+        - Velocity total: 0.002 × 500 = 1.0 (20% of completion) ✓
+        - PBRS total: varies with progress (0-80 range)
+
+        This ensures velocity provides per-step guidance without dominating returns.
 
         Returns:
-            8.0 (0-15% success): Very strong direction learning (was 2.0, 4x increase)
-            3.0 (15-40% success): Strong guidance (was 0.5, 6x increase)
-            1.0 (40%+ success): Moderate guidance (was 0.1, 10x increase)
+            0.002 (0-30% success): Moderate per-step guidance, 20% of completion total
+            0.001 (30-60% success): Light guidance, 10% of completion total
+            0.0005 (60%+ success): Minimal refinement, 5% of completion total
         """
-        if self.recent_success_rate < 0.15:  # Early phase
-            return 8.0  # Was 2.0 → 4x stronger for inflection points
-        elif self.recent_success_rate < 0.40:  # Mid phase
-            return 3.0  # Was 0.5 → 6x stronger refinement
-        return 1.0  # Was 0.1 → 10x light guidance
+        if self.recent_success_rate < 0.30:  # Early/discovery phase
+            return 0.002  # Reduced from 2.0 (1000× reduction for instantaneous application)
+        elif self.recent_success_rate < 0.60:  # Mid phase
+            return 0.001  # Reduced from 0.8
+        return 0.0005  # Minimal for mastery
 
     @property
     def mine_hazard_cost_multiplier(self) -> float:
@@ -251,18 +265,18 @@ class RewardConfig:
         Controls how expensive paths near deadly mines are during A* pathfinding.
         This shapes the PBRS gradient field to guide agents along safer routes.
 
-        UPDATED: Tripled costs for stronger mine avoidance to prevent inflection point deaths.
+        UPDATED: Further increased costs to address 67% mine death rate observed in training.
 
         Returns:
-            25.0 (0-15% success): Strong early avoidance (was 5.0, 5x increase)
-            40.0 (15-40% success): Very strong avoidance (was 15.0, ~3x increase)
-            60.0 (40%+ success): Extreme avoidance for mastery (was 25.0, ~2.5x increase)
+            50.0 (0-15% success): Very strong early avoidance (was 25.0, 2x increase)
+            70.0 (15-40% success): Extreme avoidance (was 40.0, 1.75x increase)
+            90.0 (40%+ success): Maximum avoidance for mastery (was 60.0, 1.5x increase)
         """
         if self.recent_success_rate < 0.15:  # Early phase - discovery
-            return 25.0  # Was 5.0 → 5x stronger for mine field detours
+            return 50.0  # Was 25.0 → 2x stronger to address 67% mine death rate
         elif self.recent_success_rate < 0.40:  # Mid phase - learning
-            return 40.0  # Was 15.0 → ~3x stronger avoidance
-        return 60.0  # Was 25.0 → ~2.5x strict safety
+            return 70.0  # Was 40.0 → 1.75x stronger avoidance
+        return 90.0  # Was 60.0 → 1.5x maximum safety
 
     def update(self, timesteps: int, success_rate: float) -> None:
         """Update configuration with current training metrics.

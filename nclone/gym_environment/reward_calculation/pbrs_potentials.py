@@ -241,11 +241,67 @@ class PBRSPotentials:
         # Also get geometric distance for diagnostics
         combined_path_distance = state.get("_pbrs_combined_path_distance", 800.0)
 
-        # Handle unreachable goals
+        # Handle unreachable goals or physics cost failures
         if distance == float("inf") or combined_physics_cost == float("inf"):
-            # Unreachable: return zero potential (no gradient)
+            # CRITICAL FIX: If physics cost is inf (cache build failure), fall back to geometric
+            if combined_physics_cost == float(
+                "inf"
+            ) and combined_path_distance != float("inf"):
+                _logger = logging.getLogger(__name__)
+                _logger.warning(
+                    f"PBRS: Physics cost is infinite but geometric distance is valid. "
+                    f"Falling back to geometric normalization. "
+                    f"player_pos={player_pos}, goal_pos={goal_pos}, "
+                    f"combined_path_distance={combined_path_distance:.1f}px"
+                )
+                # Fall back to geometric distance normalization
+                try:
+                    geometric_distance = path_calculator.get_geometric_distance(
+                        player_pos,
+                        goal_pos,
+                        adjacency,
+                        base_adjacency,
+                        level_data,
+                        graph_data,
+                        entity_radius,
+                        NINJA_RADIUS,
+                        goal_id="switch"
+                        if not state.get("switch_activated", False)
+                        else "exit",
+                    )
+
+                    if geometric_distance != float("inf"):
+                        # Use geometric normalization as fallback
+                        MIN_NORMALIZATION = 800.0
+                        effective_norm = max(MIN_NORMALIZATION, combined_path_distance)
+                        normalized_distance = geometric_distance / effective_norm
+                        potential = max(0.0, min(1.0, 1.0 - normalized_distance))
+
+                        # Store diagnostic info
+                        state["_pbrs_normalized_distance"] = normalized_distance
+                        state["_pbrs_normalized_physics_cost"] = float("inf")
+                        state["_pbrs_fallback_mode"] = "geometric"
+
+                        _logger.info(
+                            f"PBRS: Using geometric fallback. "
+                            f"geometric_distance={geometric_distance:.1f}px, "
+                            f"potential={potential:.4f}"
+                        )
+                        return potential
+                except Exception as e:
+                    _logger.error(f"PBRS: Geometric fallback failed: {e}")
+
+            # Truly unreachable or fallback failed: return zero potential (no gradient)
+            _logger = logging.getLogger(__name__)
+            _logger.error(
+                f"PBRS: Returning ZERO potential (no gradient)! "
+                f"distance={distance}, combined_physics_cost={combined_physics_cost}, "
+                f"combined_path_distance={combined_path_distance}, "
+                f"player_pos={player_pos}, goal_pos={goal_pos}"
+            )
             state["_pbrs_normalized_distance"] = float("inf")
             state["_pbrs_normalized_physics_cost"] = float("inf")
+            state["_pbrs_fallback_mode"] = "none"
             return 0.0
 
         # === PHYSICS-WEIGHTED NORMALIZATION (Phase 2.1) ===
@@ -1077,10 +1133,6 @@ class PBRSCalculator:
         Returns:
             Objective distance potential [0, 1]
         """
-        import time
-
-        t_start = time.perf_counter()
-
         # Check if we can use cached value with interpolation
         use_cache = (
             self._last_player_pos is not None
@@ -1146,15 +1198,7 @@ class PBRSCalculator:
                         normalized_distance = interpolated_distance / effective_norm
                         potential = max(0.0, min(1.0, 1.0 - normalized_distance))
 
-                        # Store for diagnostics
-                        state_with_metrics["_pbrs_normalized_distance"] = (
-                            normalized_distance
-                        )
-                        state_with_metrics["_pbrs_cache_hit"] = True
                         self._cache_hits += 1
-                        state_with_metrics["_pbrs_time_ms"] = (
-                            time.perf_counter() - t_start
-                        ) * 1000
 
                         return potential
 
@@ -1162,16 +1206,12 @@ class PBRSCalculator:
                 # Small movements at goal don't need recalculation
                 state_with_metrics["_pbrs_cache_hit"] = True
                 self._cache_hits += 1
-                state_with_metrics["_pbrs_time_ms"] = (
-                    time.perf_counter() - t_start
-                ) * 1000
                 return (
                     self._cached_distance
                 )  # This is actually cached potential in this case
 
         # Cache miss or large movement: compute full path distance
         self._cache_misses += 1
-        t_potential = time.perf_counter()
         objective_pot = PBRSPotentials.objective_distance_potential(
             state_with_metrics,
             adjacency=adjacency,
@@ -1180,10 +1220,6 @@ class PBRSCalculator:
             graph_data=graph_data,
             scale_factor=scale_factor,
         )
-        t_after_potential = time.perf_counter()
-        state_with_metrics["_pbrs_potential_calc_ms"] = (
-            t_after_potential - t_potential
-        ) * 1000
 
         # Update cache for next step
         self._last_player_pos = current_pos
@@ -1192,7 +1228,6 @@ class PBRSCalculator:
         # Cache the geometric distance and node info for interpolation
         # OPTIMIZATION: Reuse node info from path_calculator if available
         # This avoids redundant find_ninja_node calls (saves ~1.3ms per step)
-        t_cache_update = time.perf_counter()
         if self.path_calculator is not None:
             # Check if path_calculator has cached the node from get_geometric_distance
             # Note: goal_id here is "switch" or "exit" but path_calculator uses
@@ -1206,7 +1241,6 @@ class PBRSCalculator:
                 self._cached_start_node = self.path_calculator._last_start_node
                 self._cached_distance = self.path_calculator._last_geometric_distance
                 self._cached_next_hop = self.path_calculator._last_next_hop
-                state_with_metrics["_pbrs_node_find_ms"] = 0.0  # No extra lookup needed
             elif self.path_calculator.level_cache is not None:
                 # Fallback: find node manually (shouldn't normally happen)
                 from ...graph.reachability.pathfinding_utils import (
@@ -1219,7 +1253,6 @@ class PBRSCalculator:
                 )
 
                 # Find current node
-                t_node_find = time.perf_counter()
                 start_node = find_ninja_node(
                     (int(current_pos[0]), int(current_pos[1])),
                     adjacency,
@@ -1227,9 +1260,6 @@ class PBRSCalculator:
                     subcell_lookup=subcell_lookup,
                     ninja_radius=PLAYER_RADIUS,
                 )
-                state_with_metrics["_pbrs_node_find_ms"] = (
-                    time.perf_counter() - t_node_find
-                ) * 1000
 
                 if start_node is not None:
                     self._cached_start_node = start_node
@@ -1256,12 +1286,7 @@ class PBRSCalculator:
                         )
                     )
 
-        state_with_metrics["_pbrs_cache_update_ms"] = (
-            time.perf_counter() - t_cache_update
-        ) * 1000
-
         state_with_metrics["_pbrs_cache_hit"] = False
-        state_with_metrics["_pbrs_time_ms"] = (time.perf_counter() - t_start) * 1000
         return objective_pot
 
     def _get_cached_or_compute_potential_with_waypoints(
@@ -1291,15 +1316,10 @@ class PBRSCalculator:
         Returns:
             Objective distance potential [0, 1] with waypoint routing
         """
-        import time
-
-        t_start = time.perf_counter()
-
         # For waypoint routing, we skip position caching since waypoint selection
         # depends on velocity and may change even with small position changes
         # This is acceptable since waypoints are only used on specific levels
 
-        t_potential = time.perf_counter()
         objective_pot = PBRSPotentials.objective_distance_potential_with_waypoints(
             state_with_metrics,
             adjacency=adjacency,
@@ -1309,17 +1329,12 @@ class PBRSCalculator:
             graph_data=graph_data,
             scale_factor=scale_factor,
         )
-        t_after_potential = time.perf_counter()
-        state_with_metrics["_pbrs_potential_calc_ms"] = (
-            t_after_potential - t_potential
-        ) * 1000
 
         # Update cache for next step (simplified for waypoint case)
         self._last_player_pos = current_pos
         self._last_goal_id = goal_id
 
         state_with_metrics["_pbrs_cache_hit"] = False
-        state_with_metrics["_pbrs_time_ms"] = (time.perf_counter() - t_start) * 1000
         return objective_pot
 
     def calculate_combined_potential(
@@ -1410,8 +1425,6 @@ class PBRSCalculator:
             self._cached_combined_physics_cost
         )
 
-        # OPTIMIZATION: Skip full path recalculation if player hasn't moved much
-        # This uses cached node + sub-node interpolation for dense rewards
         current_pos = (float(state["player_x"]), float(state["player_y"]))
         current_goal_id = (
             "switch" if not state.get("switch_activated", False) else "exit"
@@ -1452,15 +1465,6 @@ class PBRSCalculator:
 
         # Copy timing data for profiling
         state["_pbrs_cache_hit"] = state_with_metrics.get("_pbrs_cache_hit", False)
-        state["_pbrs_time_ms"] = state_with_metrics.get("_pbrs_time_ms", 0.0)
-        if "_pbrs_potential_calc_ms" in state_with_metrics:
-            state["_pbrs_potential_calc_ms"] = state_with_metrics[
-                "_pbrs_potential_calc_ms"
-            ]
-        if "_pbrs_node_find_ms" in state_with_metrics:
-            state["_pbrs_node_find_ms"] = state_with_metrics["_pbrs_node_find_ms"]
-        if "_pbrs_cache_update_ms" in state_with_metrics:
-            state["_pbrs_cache_update_ms"] = state_with_metrics["_pbrs_cache_update_ms"]
 
         # === EMERGENCY PBRS DIAGNOSTIC LOGGING ===
         # Log potential calculation for debugging zero-gradient bug
@@ -1493,11 +1497,7 @@ class PBRSCalculator:
             velocity_weight = STATIC_VELOCITY_WEIGHT
 
         # Only compute if we have a level cache with next_hop data and weight > 0
-        if (
-            self.path_calculator is not None
-            and self.path_calculator.level_cache is not None
-            and velocity_weight > 0
-        ):
+        if velocity_weight > 0:
             # Determine goal_id based on switch state
             goal_id = "switch" if not state.get("switch_activated", False) else "exit"
 
@@ -1532,11 +1532,19 @@ class PBRSCalculator:
         else:
             potential = PBRS_EXIT_DISTANCE_SCALE * objective_pot * objective_weight
 
-        # Add velocity alignment bonus (scaled by curriculum-adaptive weight)
-        # This is additive, not multiplicative, to preserve PBRS structure
-        potential += velocity_weight * velocity_alignment
+        # CRITICAL FIX: DO NOT add velocity alignment to potential!
+        # Velocity alignment should be a separate instantaneous reward, not part of PBRS potential.
+        # Including it in the potential creates large rewards for direction changes (velocity swings)
+        # independent of actual progress, incentivizing oscillation near spawn.
+        #
+        # REMOVED: potential += velocity_weight * velocity_alignment
+        #
+        # Velocity alignment will be applied as separate reward in main_reward_calculator.py
+        # This keeps PBRS purely position-based (as intended by Ng et al. 1999)
 
-        return max(0.0, potential)
+        # Allow negative potentials for stronger wrong-direction penalties
+        # Clamping to 0 was eliminating gradient signal when moving away from goal
+        return potential
 
     def set_momentum_waypoints(
         self, waypoints: Optional[List[Any]], waypoint_source: str = "unknown"

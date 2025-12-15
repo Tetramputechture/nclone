@@ -112,13 +112,30 @@ HAZARD_DEATH_PENALTY = -40.0
 DEATH_PENALTY = -40.0
 
 # Timeout/truncation penalty (episode time limit exceeded)
-# Rationale: Indicates inefficient navigation or getting stuck.
-# 20% of completion reward - equal to lightest death penalty.
-# Timeout should NOT be punished more harshly than actual deaths, otherwise
-# agents learn to die intentionally when stuck rather than keep trying.
-# However, with revisit penalties, oscillating agents get MUCH worse total reward.
-# Correct hierarchy: Success >> Keep trying >> Any death >= Timeout (base only)
-TIMEOUT_PENALTY = -10.0
+# UPDATED 2025-12-14: Changed from -10.0 to 0.0 to fix RND policy collapse
+# UPDATED 2025-12-15: Added progress-gated penalty for stagnation
+#
+# Rationale for progress-gated approach:
+# - Gymnasium API: truncated=True means "cut short by time", NOT failure
+# - PPO correctly bootstraps from V(s') for truncated episodes when productive
+# - HOWEVER: Zero penalty creates local optimum of "explore near spawn until timeout"
+#
+# Solution: Apply penalty ONLY when progress < 10% (stagnation near spawn):
+# - Productive exploration (>10% progress): 0.0 penalty (bootstrap V, RND still rewarded)
+# - Stagnation near spawn (<10% progress): -20.0 penalty (strongly deters local optimum)
+#
+# UPDATED 2025-12-15: Increased from -5.0 to -20.0 to dominate RND bonuses.
+# Analysis showed RND (+4.5) > old stagnation penalty (-0.5), creating local optimum.
+# New penalty (-2.0 scaled) >> RND (+0.45 scaled) ensures stagnation is punished.
+#
+# This preserves RND exploration benefits while eliminating spawn-area local optimum:
+# - RND agents that explore TOWARD goal: no penalty
+# - RND agents that explore in circles near spawn: heavy penalty
+#
+# Correct hierarchy: Success >> Keep trying >> Stagnation (strong penalty) >> Exploration (no penalty)
+TIMEOUT_PENALTY = 0.0  # Base penalty for productive exploration
+STAGNATION_TIMEOUT_PENALTY = -20.0  # Penalty when progress < 10% (increased from -5.0)
+STAGNATION_PROGRESS_THRESHOLD = 0.10  # 10% progress threshold
 
 # Legacy constant for backward compatibility (maps to hazard death)
 # Note: Also reduced from -15 to -12 to encourage progress over oscillation
@@ -296,8 +313,8 @@ VELOCITY_ALIGNMENT_WEIGHT_RATIO = 0.0  # DEPRECATED
 # Rationale: Paths within this distance of deadly mines incur cost penalty
 # - Deadly toggle mines have radius ~4px (state 0)
 # - Ninja has radius 10px
-# - Safe buffer: 50-60px prevents risky close approaches
-MINE_HAZARD_RADIUS = 50.0  # pixels
+# - Safe buffer: 75px prevents risky close approaches (increased from 50px to address 67% mine death rate)
+MINE_HAZARD_RADIUS = 75.0  # pixels (increased from 50.0)
 
 # Mine hazard cost multiplier
 # NOTE: This is now curriculum-adaptive via RewardConfig.mine_hazard_cost_multiplier

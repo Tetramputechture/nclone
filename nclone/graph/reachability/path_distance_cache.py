@@ -368,10 +368,10 @@ class LevelBasedPathDistanceCache:
                 for i, waypoint_pos in enumerate(waypoints):
                     waypoint_id = f"waypoint_{i}"
                     goals.append((waypoint_pos, waypoint_id))
-                logger.info(
-                    f"[LEVEL_CACHE_BUILD] Added {len(waypoints)} waypoints for BFS precomputation: "
-                    f"{[(wp_pos, f'waypoint_{i}') for i, wp_pos in enumerate(waypoints)]}"
-                )
+                # logger.info(
+                #     f"[LEVEL_CACHE_BUILD] Added {len(waypoints)} waypoints for BFS precomputation: "
+                #     f"{[(wp_pos, f'waypoint_{i}') for i, wp_pos in enumerate(waypoints)]}"
+                # )
             else:
                 logger.info(
                     f"[LEVEL_CACHE_BUILD] No waypoints provided (waypoints={waypoints})"

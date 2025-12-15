@@ -4,10 +4,14 @@ import numpy as np
 
 # Heuristic parameters (tunable)
 BASE_TIME_PER_NODE = 15.0  # frames per sqrt(node) (was 10.0)
-TIME_PER_MINE = 50.0  # frames per reachable mine
-TRUNCATION_MULTIPLIER = 15  # generous multiplier for learning (was 10)
+TIME_PER_MINE = (
+    75.0  # frames per reachable mine (increased for toggle mine state complexity)
+)
+TRUNCATION_MULTIPLIER = (
+    20  # generous multiplier for learning (was 15, increased for complex levels)
+)
 MIN_TRUNCATION_FRAMES = 600  # minimum for tiny levels
-MAX_TRUNCATION_FRAMES = 2000  # cap for faster learning iteration (was 6000)
+MAX_TRUNCATION_FRAMES = 2000
 
 
 def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -> int:
@@ -28,11 +32,11 @@ def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -
 
     Examples:
         Small level (100 nodes, 0 mines):
-            (sqrt(100)*3.0 + 0*50) * 3.5 = 105 frames
+            (sqrt(100)*15.0 + 0*75) * 20 = 3000 frames
         Medium level (400 nodes, 5 mines):
-            (sqrt(400)*3.0 + 5*50) * 3.5 = 1085 frames
+            (sqrt(400)*15.0 + 5*75) * 20 = 13500 frames
         Large level (900 nodes, 15 mines):
-            (sqrt(900)*3.0 + 15*50) * 3.5 = 2940 frames
+            (sqrt(900)*15.0 + 15*75) * 20 = 31500 frames → clamped to 18000
     """
     # Base time from traversal complexity (surface area)
     base_time = np.sqrt(surface_area) * BASE_TIME_PER_NODE

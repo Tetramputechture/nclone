@@ -1089,51 +1089,6 @@ class DebugOverlayRenderer:
                             head_size=8,
                         )
 
-                # Draw legend for movement vectors
-                try:
-                    vector_font = pygame.font.Font(None, 16)
-                except pygame.error:
-                    vector_font = pygame.font.SysFont("arial", 12)
-
-                legend_x = ninja_screen_x + 50
-                legend_y = ninja_screen_y - 30
-
-                # Keep legend on screen
-                if legend_x + 100 > self.screen.get_width():
-                    legend_x = ninja_screen_x - 150
-                if legend_y < 20:
-                    legend_y = ninja_screen_y + 50
-
-                # Draw mini legend
-                pygame.draw.rect(
-                    surface,
-                    (0, 0, 0, 180),
-                    (legend_x, legend_y, 95, 36),
-                    border_radius=3,
-                )
-
-                # Optimal direction indicator
-                pygame.draw.line(
-                    surface,
-                    (50, 255, 50, 255),
-                    (legend_x + 5, legend_y + 10),
-                    (legend_x + 20, legend_y + 10),
-                    2,
-                )
-                opt_text = vector_font.render("Optimal", True, (200, 255, 200))
-                surface.blit(opt_text, (legend_x + 25, legend_y + 4))
-
-                # Velocity indicator
-                pygame.draw.line(
-                    surface,
-                    (100, 220, 255, 255),
-                    (legend_x + 5, legend_y + 24),
-                    (legend_x + 20, legend_y + 24),
-                    2,
-                )
-                vel_text = vector_font.render("Velocity", True, (180, 230, 255))
-                surface.blit(vel_text, (legend_x + 25, legend_y + 18))
-
         # Calculate and display switch/exit distances
         if show_distances and ninja_pos and adjacency:
             # Extract ninja position for screen coordinates
@@ -1350,6 +1305,7 @@ class DebugOverlayRenderer:
 
         # Debug: Log checkpoint data structure
         import logging
+
         _logger = logging.getLogger(__name__)
         _logger.info(
             f"[DEMO_HEATMAP] Rendering {len(checkpoints)} checkpoints, "
@@ -1385,6 +1341,7 @@ class DebugOverlayRenderer:
             # Debug first few checkpoints
             if i < 3:
                 import logging
+
                 _logger = logging.getLogger(__name__)
                 _logger.info(
                     f"[DEMO_CHECKPOINT_DEBUG] checkpoint {i}: position={position} (type={type(position)}), "
@@ -1462,11 +1419,11 @@ class DebugOverlayRenderer:
             # Convert world coordinates (pixels) to screen coordinates
             # Standard pattern: screen = int(world * adjust) + tile_offset
             # For grid-based rendering, snap to grid first
-            
+
             # Snap position to grid boundaries (12px cells in world space)
             grid_world_x = (int(pos_x) // grid_size) * grid_size
             grid_world_y = (int(pos_y) // grid_size) * grid_size
-            
+
             # Convert snapped world coordinates to screen coordinates
             screen_x = int(grid_world_x * self.adjust) + self.tile_x_offset
             screen_y = int(grid_world_y * self.adjust) + self.tile_y_offset
@@ -1490,7 +1447,9 @@ class DebugOverlayRenderer:
 
             # Draw bright red circle with yellow border
             pygame.draw.circle(surface, (255, 50, 50, 255), (screen_x, screen_y), 8)
-            pygame.draw.circle(surface, (255, 255, 100, 255), (screen_x, screen_y), 8, 2)
+            pygame.draw.circle(
+                surface, (255, 255, 100, 255), (screen_x, screen_y), 8, 2
+            )
 
         # Draw legend
         try:

@@ -475,16 +475,53 @@ class RewardCalculator:
         if obs.get("player_dead", False):
             death_cause = obs.get("death_cause", None)
 
-            # Determine appropriate penalty based on death cause
+            # Determine base penalty based on death cause
             if death_cause == "impact":
                 # High-velocity collision with ceiling/floor
-                terminal_reward = IMPACT_DEATH_PENALTY
+                base_penalty = IMPACT_DEATH_PENALTY
             elif death_cause in ("mine", "drone", "thwump", "hazard"):
                 # Contact with deadly entities (highly preventable)
-                terminal_reward = HAZARD_DEATH_PENALTY
+                base_penalty = HAZARD_DEATH_PENALTY
             else:
                 # Generic/unknown death cause
-                terminal_reward = DEATH_PENALTY
+                base_penalty = DEATH_PENALTY
+
+            # === PROGRESS-GATED DEATH PENALTY ===
+            # Scale death penalty by progress made to allow safe exploration in early game
+            # This prevents the death penalty from overwhelming PBRS gradients before
+            # the agent has a chance to learn from forward progress.
+            #
+            # Justification:
+            # - Early deaths (progress < 20%): 25% penalty = -10 instead of -40
+            # - Mid deaths (20% < progress < 50%): 50% penalty = -20 instead of -40
+            # - Late deaths (progress > 50%): Full penalty = -40
+            #
+            # This allows exploration without severe punishment while maintaining
+            # full penalty when agent has demonstrated it can reach dangerous areas.
+            combined_path_distance = obs.get("_pbrs_combined_path_distance", 1000.0)
+            current_distance = self.closest_distance_this_episode
+
+            # Calculate progress: 0.0 at spawn, 1.0 at goal
+            if combined_path_distance > 0 and current_distance != float("inf"):
+                # Progress = 1 - (closest_distance / combined_path)
+                # Use closest distance this episode to reward any forward progress made
+                progress = 1.0 - (current_distance / combined_path_distance)
+                progress = max(0.0, min(1.0, progress))  # Clamp to [0, 1]
+            else:
+                progress = 0.0  # No progress data available
+
+            # Apply progress-based scaling
+            if progress < 0.2:
+                # Early exploration: 25% of base penalty
+                penalty_scale = 0.25
+            elif progress < 0.5:
+                # Mid exploration: 50% of base penalty
+                penalty_scale = 0.50
+            else:
+                # Late game: Full penalty
+                penalty_scale = 1.0
+
+            terminal_reward = base_penalty * penalty_scale
 
             # Add milestone reward to terminal reward (switch activated before death)
             total_terminal = terminal_reward + milestone_reward
@@ -507,6 +544,10 @@ class RewardCalculator:
                 "terminal_type": "death",
                 "death_cause": death_cause or "unknown",
                 "switch_activated_on_death": switch_just_activated,
+                # Progress-gated death penalty diagnostics
+                "death_progress": progress,
+                "death_penalty_scale": penalty_scale,
+                "death_base_penalty": base_penalty,
             }
             return scaled_reward
 
@@ -689,24 +730,29 @@ class RewardCalculator:
         #   - Exit phase: potential based on exit distance
         #   - Both are part of same hierarchical task, no discontinuity needed
         #   - LSTM learns temporal dependencies across full episode
+        # Track potential change for diagnostics (must be computed before updating prev_potential)
+        actual_potential_change = 0.0
+
         if self.prev_potential is not None:
             # Apply PBRS formula for policy-invariant shaping
             pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
 
+            # CRITICAL: Save potential change BEFORE updating prev_potential for correct logging
+            actual_potential_change = current_potential - self.prev_potential
+
             # Log PBRS components for debugging and verification
-            potential_change = current_potential - self.prev_potential
             logger.debug(
                 f"PBRS: Φ(s)={self.prev_potential:.4f}, "
                 f"Φ(s')={current_potential:.4f}, "
-                f"ΔΦ={potential_change:.4f}, "
+                f"ΔΦ={actual_potential_change:.4f}, "
                 f"F(s,s')={pbrs_reward:.4f} "
                 f"(γ={self.pbrs_gamma})"
             )
 
             # Track forward/backtracking steps for logging
-            if potential_change > 0.001:  # Forward progress
+            if actual_potential_change > 0.001:  # Forward progress
                 self.episode_forward_steps += 1
-            elif potential_change < -0.001:  # Backtracking
+            elif actual_potential_change < -0.001:  # Backtracking
                 self.episode_backtrack_steps += 1
 
             # === PBRS DIRECTION VALIDATION DIAGNOSTIC ===
@@ -747,7 +793,36 @@ class RewardCalculator:
 
                     # Store alignment for TensorBoard logging
                     obs["_pbrs_euclidean_alignment"] = euclidean_alignment
-                    obs["_pbrs_potential_change"] = potential_change
+                    obs["_pbrs_potential_change"] = actual_potential_change
+
+                    # === ENHANCED PBRS GRADIENT VERIFICATION ===
+                    # Verify PBRS gradient aligns with expected direction
+                    # This helps diagnose if PBRS is providing correct guidance
+
+                    # Check for PBRS/movement mismatch (potential bug indicator)
+                    moving_toward_goal = euclidean_alignment > 0.3  # Moving toward goal
+                    moving_away_goal = (
+                        euclidean_alignment < -0.3
+                    )  # Moving away from goal
+                    potential_increased = actual_potential_change > 0.01
+                    potential_decreased = actual_potential_change < -0.01
+
+                    # Expected: moving toward goal → potential increases
+                    # Expected: moving away from goal → potential decreases
+                    if moving_toward_goal and potential_decreased:
+                        logger.warning(
+                            f"[PBRS_MISMATCH] Moving toward goal but potential DECREASED! "
+                            f"alignment={euclidean_alignment:.3f}, ΔΦ={actual_potential_change:.4f}, "
+                            f"pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
+                            f"goal=({diag_goal_x:.0f},{diag_goal_y:.0f}). "
+                            f"This suggests PBRS path may be incorrect or obstacles blocking."
+                        )
+                    elif moving_away_goal and potential_increased:
+                        logger.info(
+                            f"[PBRS_PATH] Moving away from goal but potential increased "
+                            f"(alignment={euclidean_alignment:.3f}, ΔΦ={actual_potential_change:.4f}). "
+                            f"This is EXPECTED if optimal path requires detour. Verify path is correct."
+                        )
 
             # === PATH DIRECTION DIAGNOSTICS (NO GATING) ===
             # Track path direction for visualization but DO NOT gate PBRS rewards.
@@ -759,15 +834,15 @@ class RewardCalculator:
                 self.path_gradient_history.append(None)
 
             # Warn if potential decreased significantly (backtracking detected)
-            if potential_change < -0.05:
+            if actual_potential_change < -0.05:
                 logger.debug(
-                    f"Backtracking detected: potential decreased by {-potential_change:.4f} "
+                    f"Backtracking detected: potential decreased by {-actual_potential_change:.4f} "
                     f"(PBRS penalty: {pbrs_reward:.4f})"
                 )
             # Log significant progress
-            elif potential_change > 0.05:
+            elif actual_potential_change > 0.05:
                 logger.debug(
-                    f"Progress detected: potential increased by {potential_change:.4f} "
+                    f"Progress detected: potential increased by {actual_potential_change:.4f} "
                     f"(PBRS reward: {pbrs_reward:.4f})"
                 )
 
@@ -838,6 +913,37 @@ class RewardCalculator:
         self.episode_pbrs_rewards.append(pbrs_reward)
 
         reward += pbrs_reward
+
+        # === VELOCITY ALIGNMENT REWARD (separate from PBRS potential) ===
+        # CRITICAL FIX 2025-12-15: Moved from PBRS potential to separate reward component
+        #
+        # Problem: When velocity was part of PBRS potential, direction changes created
+        # large rewards independent of progress:
+        #   - Change from alignment=+1 to alignment=-1: potential swing of 2×weight (16.0!)
+        #   - This incentivized oscillating directions near spawn
+        #
+        # Solution: Apply velocity alignment as INSTANTANEOUS reward (not differenced):
+        #   - reward = velocity_weight × alignment (range: [-weight, +weight])
+        #   - No differencing artifact from direction changes
+        #   - Pure directional guidance signal
+        #
+        # This is semantically correct because:
+        #   - PBRS potential Φ(s) = progress toward goal (position-based)
+        #   - Velocity reward = instantaneous direction correctness
+        #   - Both guide agent, but only PBRS uses differencing
+        velocity_alignment_reward = 0.0
+        velocity_alignment_value = obs.get("_pbrs_velocity_alignment", 0.0)
+        velocity_weight = obs.get("_pbrs_velocity_weight", 0.0)
+
+        if velocity_weight > 0 and abs(velocity_alignment_value) > 0.01:
+            # Apply as instantaneous reward (not differenced like PBRS)
+            velocity_alignment_reward = velocity_weight * velocity_alignment_value
+            reward += velocity_alignment_reward
+
+            logger.debug(
+                f"Velocity alignment reward: alignment={velocity_alignment_value:.3f}, "
+                f"weight={velocity_weight:.2f}, reward={velocity_alignment_reward:.4f}"
+            )
 
         # === WAYPOINT BONUS (path-based, always enabled) ===
         # Reward reaching waypoints without penalizing novel paths
@@ -1084,77 +1190,77 @@ class RewardCalculator:
             if distance_to_exit < self.closest_distance_to_exit:
                 self.closest_distance_to_exit = distance_to_exit
 
-        # === PATH vs EUCLIDEAN DISTANCE DIVERGENCE DIAGNOSTIC ===
-        # NOTE: distance_to_goal is PHYSICS-WEIGHTED (not geometric pixels)
-        # Physics costs are ~0.04 per horizontal pixel, so a 1000px path = ~40 physics cost
-        # We need GEOMETRIC distance for meaningful comparison with Euclidean
-        euclidean_to_current_goal_raw = (
-            distance_to_switch
-            if not obs.get("switch_activated", False)
-            else distance_to_exit
-        )
+        # # === PATH vs EUCLIDEAN DISTANCE DIVERGENCE DIAGNOSTIC ===
+        # # NOTE: distance_to_goal is PHYSICS-WEIGHTED (not geometric pixels)
+        # # Physics costs are ~0.04 per horizontal pixel, so a 1000px path = ~40 physics cost
+        # # We need GEOMETRIC distance for meaningful comparison with Euclidean
+        # euclidean_to_current_goal_raw = (
+        #     distance_to_switch
+        #     if not obs.get("switch_activated", False)
+        #     else distance_to_exit
+        # )
 
-        # Get geometric path distance for proper comparison (not physics-weighted)
-        geometric_path_distance = 0.0
-        try:
-            geometric_path_distance = (
-                self.pbrs_calculator.path_calculator.get_geometric_distance(
-                    player_pos,
-                    goal_pos,
-                    adjacency,
-                    base_adjacency,
-                    level_data=level_data,
-                    graph_data=graph_data,
-                    entity_radius=entity_radius,
-                    ninja_radius=NINJA_RADIUS,
-                    goal_id="switch"
-                    if not obs.get("switch_activated", False)
-                    else "exit",
-                )
-            )
-        except Exception:
-            geometric_path_distance = 0.0
+        # # Get geometric path distance for proper comparison (not physics-weighted)
+        # geometric_path_distance = 0.0
+        # try:
+        #     geometric_path_distance = (
+        #         self.pbrs_calculator.path_calculator.get_geometric_distance(
+        #             player_pos,
+        #             goal_pos,
+        #             adjacency,
+        #             base_adjacency,
+        #             level_data=level_data,
+        #             graph_data=graph_data,
+        #             entity_radius=entity_radius,
+        #             ninja_radius=NINJA_RADIUS,
+        #             goal_id="switch"
+        #             if not obs.get("switch_activated", False)
+        #             else "exit",
+        #         )
+        #     )
+        # except Exception:
+        #     geometric_path_distance = 0.0
 
         # FIX: Apply same radius adjustment to Euclidean for fair comparison
         # geometric_path_distance already has (ninja_radius + entity_radius) subtracted
         # so we must apply the same adjustment to Euclidean distance
-        combined_radius = NINJA_RADIUS + entity_radius
-        euclidean_adjusted = max(0.0, euclidean_to_current_goal_raw - combined_radius)
+        # combined_radius = NINJA_RADIUS + entity_radius
+        # euclidean_adjusted = max(0.0, euclidean_to_current_goal_raw - combined_radius)
 
-        # Only compute ratio for meaningful distances (> 30px to avoid grid-snapping artifacts)
-        # Path distance is computed between 12px grid nodes, so small distances have high error
-        if euclidean_adjusted > 30.0 and geometric_path_distance > 0:
-            divergence_ratio = geometric_path_distance / euclidean_adjusted
+        # # Only compute ratio for meaningful distances (> 30px to avoid grid-snapping artifacts)
+        # # Path distance is computed between 12px grid nodes, so small distances have high error
+        # if euclidean_adjusted > 30.0 and geometric_path_distance > 0:
+        #     divergence_ratio = geometric_path_distance / euclidean_adjusted
 
-            # Store for TensorBoard logging
-            obs["_pbrs_path_euclidean_ratio"] = divergence_ratio
+        #     # Store for TensorBoard logging
+        #     obs["_pbrs_path_euclidean_ratio"] = divergence_ratio
 
-            # Log anomalies: path should be longer than Euclidean for complex levels
-            # Using 0.70 threshold (30% tolerance) because:
-            # - Path is computed between 12px grid nodes, not exact positions
-            # - Node snapping can cause up to ~17px discrepancy (diagonal of 12px cell)
-            # - This is a diagnostic, not a critical error
-            if divergence_ratio < 0.70:
-                # Path is significantly shorter than Euclidean - likely a real bug
-                logger.warning(
-                    f"[PATH_DIAG] Geometric path < Euclidean distance! "
-                    f"ratio={divergence_ratio:.3f}, "
-                    f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
-                    f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
-                    f"goal=({goal_pos[0]},{goal_pos[1]}). "
-                    f"Pathfinding may be broken!"
-                )
-            elif divergence_ratio > 5.0 and self.steps_taken == 1:
-                # Very high divergence on first step - level has complex geometry
-                # This is expected for levels where path goes away from goal first
-                logger.debug(
-                    f"[PATH_DIAG] High path/Euclidean divergence at spawn. "
-                    f"ratio={divergence_ratio:.2f}, "
-                    f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
-                    f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
-                    f"goal=({goal_pos[0]},{goal_pos[1]}). "
-                    f"Level geometry requires going away from goal first."
-                )
+        #     # Log anomalies: path should be longer than Euclidean for complex levels
+        #     # Using 0.70 threshold (30% tolerance) because:
+        #     # - Path is computed between 12px grid nodes, not exact positions
+        #     # - Node snapping can cause up to ~17px discrepancy (diagonal of 12px cell)
+        #     # - This is a diagnostic, not a critical error
+        #     if divergence_ratio < 0.70:
+        #         # Path is significantly shorter than Euclidean - likely a real bug
+        #         logger.warning(
+        #             f"[PATH_DIAG] Geometric path < Euclidean distance! "
+        #             f"ratio={divergence_ratio:.3f}, "
+        #             f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
+        #             f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
+        #             f"goal=({goal_pos[0]},{goal_pos[1]}). "
+        #             f"Pathfinding may be broken!"
+        #         )
+        #     elif divergence_ratio > 5.0 and self.steps_taken == 1:
+        #         # Very high divergence on first step - level has complex geometry
+        #         # This is expected for levels where path goes away from goal first
+        #         logger.debug(
+        #             f"[PATH_DIAG] High path/Euclidean divergence at spawn. "
+        #             f"ratio={divergence_ratio:.2f}, "
+        #             f"path={geometric_path_distance:.1f}px, euclidean_adj={euclidean_adjusted:.1f}px, "
+        #             f"pos=({obs['player_x']:.0f},{obs['player_y']:.0f}), "
+        #             f"goal=({goal_pos[0]},{goal_pos[1]}). "
+        #             f"Level geometry requires going away from goal first."
+        #         )
 
         # Populate PBRS components for TensorBoard logging (non-terminal state)
         # This provides detailed breakdown of reward components for analysis
@@ -1173,6 +1279,7 @@ class RewardCalculator:
             "position_reward": position_reward,  # Combined exploration + revisit
             "waypoint_bonus": waypoint_bonus,  # Phase 3: Adaptive waypoint bonus
             "alignment_bonus": alignment_bonus,  # Phase 2 Fix 4: Velocity-direction alignment
+            "velocity_alignment_reward": velocity_alignment_reward,  # Phase 4 Fix: Separate from PBRS potential
             "exploration_cells_visited": len(self.position_tracker.visited_cells),
             "exploration_cells_current_phase": len(
                 self.position_tracker.visited_cells_current_phase
@@ -1199,17 +1306,11 @@ class RewardCalculator:
             "prev_potential": self.prev_potential
             if self.prev_potential is not None
             else 0.0,
-            "potential_change": (current_potential - self.prev_potential)
-            if self.prev_potential is not None
-            else 0.0,
+            "potential_change": actual_potential_change,  # FIX: Use saved value from before prev_potential update
             # Enhanced diagnostic fields for PBRS verification
-            "potential_gradient": abs(current_potential - self.prev_potential)
-            if self.prev_potential is not None
-            else 0.0,
+            "potential_gradient": abs(actual_potential_change),  # FIX: Use saved value
             "pbrs_gamma": self.pbrs_gamma,
-            "theoretical_pbrs": (current_potential - self.prev_potential)
-            if self.prev_potential is not None
-            else 0.0,  # For γ=1.0, this should equal pbrs_reward
+            "theoretical_pbrs": actual_potential_change,  # FIX: For γ=1.0, this should equal pbrs_reward
             # New diagnostic fields for monitoring and analysis
             "distance_to_goal": distance_to_goal,
             "combined_path_distance": combined_path_distance,
@@ -1235,10 +1336,6 @@ class RewardCalculator:
             # === PBRS PROFILING DATA ===
             # Timing data for performance analysis
             "_pbrs_cache_hit": obs.get("_pbrs_cache_hit", False),
-            "_pbrs_time_ms": obs.get("_pbrs_time_ms", 0.0),
-            "_pbrs_potential_calc_ms": obs.get("_pbrs_potential_calc_ms", 0.0),
-            "_pbrs_node_find_ms": obs.get("_pbrs_node_find_ms", 0.0),
-            "_pbrs_cache_update_ms": obs.get("_pbrs_cache_update_ms", 0.0),
             # === PBRS DIRECTION AND STUCK DIAGNOSTICS ===
             # For debugging policy collapse and wrong-direction PBRS
             "euclidean_alignment": obs.get("_pbrs_euclidean_alignment", 0.0),
@@ -1820,18 +1917,24 @@ class RewardCalculator:
         self._frames_since_last_collection = 0
 
     def _find_nearest_uncollected_waypoint(
-        self, phase_waypoints: List[Any]
+        self,
+        phase_waypoints: List[Any],
+        current_pos: Optional[Tuple[float, float]] = None,
     ) -> Optional[Any]:
-        """Find nearest uncollected waypoint by node_index proximity.
+        """Find nearest uncollected waypoint by spatial distance.
 
-        Prefers waypoints near expected sequence position but considers all uncollected.
-        This enables continuous guidance toward next waypoint without blocking exploration.
+        BUG FIX: Previously sorted by node_index proximity (sequence position on path),
+        which could return waypoints 500px+ away when there was a waypoint 14px away.
+        This caused the approach gradient to always be 0 (outside 100px radius).
+
+        Now sorts by spatial distance to agent position for continuous dense guidance.
 
         Args:
             phase_waypoints: List of waypoints for current phase
+            current_pos: Current agent position for spatial sorting (required for approach gradient)
 
         Returns:
-            Nearest uncollected waypoint, or None if all collected
+            Spatially nearest uncollected waypoint, or None if all collected
         """
         uncollected = [
             wp
@@ -1842,10 +1945,18 @@ class RewardCalculator:
         if not uncollected:
             return None
 
-        # Sort by distance from expected index (prefer sequential but allow any)
-        uncollected.sort(
-            key=lambda wp: abs(wp.node_index - self._next_expected_waypoint_index)
-        )
+        # BUG FIX: Sort by SPATIAL distance, not node_index proximity
+        # This ensures approach gradient targets actually nearby waypoints
+        if current_pos is not None:
+            uncollected.sort(
+                key=lambda wp: (wp.position[0] - current_pos[0]) ** 2
+                + (wp.position[1] - current_pos[1]) ** 2
+            )
+        else:
+            # Fallback: sort by node_index if no position provided (backward compatibility)
+            uncollected.sort(
+                key=lambda wp: abs(wp.node_index - self._next_expected_waypoint_index)
+            )
         return uncollected[0]
 
     def _get_waypoint_approach_gradient(
@@ -1870,8 +1981,10 @@ class RewardCalculator:
         if previous_pos is None or not phase_waypoints:
             return 0.0
 
-        # Find nearest uncollected waypoint
-        target_wp = self._find_nearest_uncollected_waypoint(phase_waypoints)
+        # Find nearest uncollected waypoint (by spatial distance)
+        target_wp = self._find_nearest_uncollected_waypoint(
+            phase_waypoints, current_pos=current_pos
+        )
         if target_wp is None:
             return 0.0  # All waypoints collected
 
@@ -1887,11 +2000,16 @@ class RewardCalculator:
 
         distance_improvement = prev_dist - curr_dist
 
-        # Only apply gradient within 100px and when moving closer
-        if distance_improvement > 0 and curr_dist < 100.0:
-            # Small gradient: 0.005 per pixel of progress
+        # Only apply gradient within 200px and when moving closer (INCREASED from 100px)
+        # Scale gradient by distance: stronger when closer for focused guidance
+        if distance_improvement > 0 and curr_dist < 200.0:
+            # Distance-scaled gradient: stronger when closer to waypoint
+            # At 200px: 0.25x strength, at 100px: 0.5x, at 50px: 0.75x, at 0px: 1.0x
+            distance_scale = 1.0 - (curr_dist / 200.0) * 0.75
+
+            # Small gradient: 0.005 per pixel of progress, scaled by distance
             # This provides continuous guidance without dominating PBRS or terminal rewards
-            gradient = 0.005 * distance_improvement
+            gradient = 0.005 * distance_improvement * distance_scale
             return gradient
 
         return 0.0
@@ -1916,8 +2034,9 @@ class RewardCalculator:
         if self._last_collected_waypoint is None:
             return 0.0
 
-        # Only apply for limited time after collection (10 frames ~= 2-3 actions with frame_skip=4)
-        if self._frames_since_last_collection > 10:
+        # Only apply for limited time after collection (30 frames ~= 7-8 actions with frame_skip=4)
+        # INCREASED from 10 to 30 frames to provide stronger guidance through trajectory changes
+        if self._frames_since_last_collection > 30:
             return 0.0
 
         # Check if waypoint has exit direction
@@ -2327,6 +2446,15 @@ class RewardCalculator:
         else:
             forward_progress_pct = 0.0
             backtracking_pct = 0.0
+
+        # === PBRS EPISODE SUMMARY LOGGING ===
+        # Log episode-level PBRS performance for debugging
+        logger.info(
+            f"[PBRS_EPISODE] Forward: {forward_progress_pct:.1f}% ({self.episode_forward_steps} steps), "
+            f"Backtrack: {backtracking_pct:.1f}% ({self.episode_backtrack_steps} steps), "
+            f"PBRS total: {pbrs_total:.2f}, Mean: {pbrs_mean:.4f}, "
+            f"Path efficiency: {path_optimality:.3f} (optimal={self.optimal_path_length:.1f}, actual={self.episode_path_length:.1f})"
+        )
 
         return {
             "pbrs_total": pbrs_total,
