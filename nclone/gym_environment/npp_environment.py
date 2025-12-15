@@ -287,7 +287,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # These fields are removed during observation processing but needed for reward calculation
         info["player_x"] = self.nplay_headless.ninja_position()[0]
         info["player_y"] = self.nplay_headless.ninja_position()[1]
-        
+
         # Add level spawn position for corruption detection in Go-Explore
         # This helps detect checkpoints with spawn position but long action sequences
         if hasattr(self, "level_data") and self.level_data is not None:
@@ -958,7 +958,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 # Feature 15: Estimated remaining steps
                 # Convert distance to frame estimates
                 try:
-
                     if switch_activated < 0.5:
                         remaining_dist = path_calculator.get_distance_to_switch(
                             ninja_pos

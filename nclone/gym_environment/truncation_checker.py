@@ -14,7 +14,7 @@ from .truncation_calculator import calculate_truncation_limit
 
 
 class TruncationChecker:
-    def __init__(self, env):
+    def __init__(self, env, verbose: int = 0):
         """Initialize the truncation checker.
 
         Args:
@@ -22,6 +22,7 @@ class TruncationChecker:
         """
         self.env = env
         self.current_truncation_limit = MAX_TIME_IN_FRAMES  # fallback
+        self.verbose = verbose
 
     def set_level_truncation_limit(
         self, surface_area: float, reachable_mine_count: int
@@ -47,9 +48,32 @@ class TruncationChecker:
 
         Uses the simulator's frame counter directly to ensure accurate truncation
         regardless of frame_skip settings.
+
+        For checkpoint episodes, only counts frames executed after checkpoint replay,
+        not the frames used to replay the checkpoint itself.
         """
-        current_frame = self.env.nplay_headless.sim.frame
-        return current_frame >= int(self.current_truncation_limit * multiplier)
+        total_frames = self.env.nplay_headless.sim.frame
+        replay_frames = getattr(self.env, "_checkpoint_replay_frame_count", 0)
+        current_frame = total_frames - replay_frames
+        effective_limit = int(self.current_truncation_limit * multiplier)
+        should_truncate = current_frame >= effective_limit
+
+        if self.verbose > 0:
+            # DEBUG: Always log truncation checks when frame count is high
+            # Log every 100 frames after 90% of limit to diagnose why truncation isn't triggering
+            if current_frame >= effective_limit * 0.90 and current_frame % 100 < 4:
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.error(
+                    f"[TRUNCATION CHECK] frame={current_frame}, limit={effective_limit}, "
+                    f"total_frames={total_frames}, replay_frames={replay_frames}, "
+                    f"base_limit={self.current_truncation_limit}, multiplier={multiplier}, "
+                    f"should_truncate={should_truncate}, "
+                    f"comparison={current_frame}>={effective_limit}={current_frame >= effective_limit}"
+                )
+
+        return should_truncate
 
     def reset(self):
         """Reset state for new episode. Frame count is reset by simulator."""

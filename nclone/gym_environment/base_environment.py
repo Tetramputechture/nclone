@@ -184,6 +184,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._checkpoint_source_frame_skip: int = (
             frame_skip  # Frame skip used to create checkpoint (1=demo, 4=agent)
         )
+        self._checkpoint_replay_frame_count: int = 0  # Frames executed during checkpoint replay (to subtract from episode length)
 
         # Initialize entity extractor
         self.entity_extractor = EntityExtractor(self.nplay_headless)
@@ -439,15 +440,44 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Update dynamic truncation limit if PBRS surface area is now available
             self._update_dynamic_truncation_if_needed()
 
-            # Apply timeout penalty for truncation (distinct from death)
-            # Timeout indicates inefficient navigation or getting stuck - should be strongly discouraged
-            if truncated and not terminated:
-                from .reward_calculation.reward_constants import TIMEOUT_PENALTY
-
-                reward += TIMEOUT_PENALTY
-
             # Hook: Modify reward if needed
             reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
+
+            # === PROGRESS-GATED TRUNCATION PENALTY (Phase 4 fix) ===
+            # Apply small penalty ONLY when truncated AND agent made minimal progress
+            # This prevents "explore near spawn until timeout" local optimum
+            # while preserving RND exploration benefits for productive episodes
+            if truncated and not terminated:
+                from .reward_calculation.reward_constants import (
+                    STAGNATION_TIMEOUT_PENALTY,
+                    STAGNATION_PROGRESS_THRESHOLD,
+                    GLOBAL_REWARD_SCALE,
+                )
+
+                # Calculate progress based on closest distance this episode
+                combined_path_distance = final_obs.get(
+                    "_pbrs_combined_path_distance", 1000.0
+                )
+                closest_distance = self.reward_calculator.closest_distance_this_episode
+
+                if combined_path_distance > 0 and closest_distance != float("inf"):
+                    progress = 1.0 - (closest_distance / combined_path_distance)
+                    progress = max(0.0, min(1.0, progress))
+                else:
+                    progress = 0.0  # No valid progress data
+
+                # Apply penalty only if progress < threshold (stagnation near spawn)
+                if progress < STAGNATION_PROGRESS_THRESHOLD:
+                    timeout_penalty = STAGNATION_TIMEOUT_PENALTY * GLOBAL_REWARD_SCALE
+                    reward += timeout_penalty
+
+                    logger.info(
+                        f"[STAGNATION_TIMEOUT] Applied penalty for minimal progress. "
+                        f"progress={progress:.1%} < {STAGNATION_PROGRESS_THRESHOLD:.1%}, "
+                        f"penalty={timeout_penalty:.3f}, "
+                        f"closest_distance={closest_distance:.1f}px, "
+                        f"combined_path={combined_path_distance:.1f}px"
+                    )
 
             self.current_ep_reward += reward
 
@@ -576,13 +606,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Update dynamic truncation limit if PBRS surface area is now available
         self._update_dynamic_truncation_if_needed()
 
-        # Apply timeout penalty for truncation (treat truncation as failure)
+        # Truncation handling: NO penalty applied (TIMEOUT_PENALTY = 0.0)
+        # See lines 442-455 for full explanation of why truncation is not penalized
         terminated = final_obs.get("player_dead", False)
-        truncated = self._check_curriculum_aware_truncation()
-        if truncated and not terminated:
-            from .reward_calculation.reward_constants import TIMEOUT_PENALTY
-
-            reward += TIMEOUT_PENALTY
 
         # Hook: Modify reward if needed
         reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
@@ -872,12 +898,35 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         Returns:
             Dictionary containing episode information
         """
+        # Calculate episode frame count (excluding checkpoint replay frames)
+        # For checkpoint episodes, only count frames executed after replay
+        total_frames = self.nplay_headless.sim.frame
+        replay_frames = self._checkpoint_replay_frame_count
+
+        # DEFENSIVE: Sanity check for stale _checkpoint_replay_frame_count
+        # If replay_frames > total_frames, it means the value wasn't reset between episodes
+        # This causes negative episode_frames and corrupts route visualization
+        if replay_frames > total_frames:
+            # logger.error(
+            #     f"[STALE_REPLAY_FRAMES] _checkpoint_replay_frame_count ({replay_frames}) > "
+            #     f"total_frames ({total_frames}). This indicates stale value from previous episode. "
+            #     f"from_checkpoint={self._from_checkpoint}, "
+            #     f"checkpoint_base_reward={self._checkpoint_base_reward:.3f}. "
+            #     f"Resetting to 0."
+            # )
+            replay_frames = 0
+            self._checkpoint_replay_frame_count = 0
+
+        episode_frames = total_frames - replay_frames
+
         info = {
             "is_success": player_won,
             "terminated": terminated,
             "truncated": truncated,
             "r": self.current_ep_reward,  # Cumulative reward for entire episode
-            "l": self.nplay_headless.sim.frame,  # Total frames executed (not actions)
+            "l": episode_frames,  # Episode frames only (excluding checkpoint replay)
+            "l_total": total_frames,  # Total frames including replay (for debugging)
+            "l_checkpoint_replay": self._checkpoint_replay_frame_count,  # Replay frames
             "level_id": self.map_loader.current_map_name,
             "config_flags": self.config_flags.copy(),
             "terminal_impact": self.nplay_headless.get_ninja_terminal_impact(),
@@ -927,6 +976,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 info["checkpoint_source_frame_skip"] = (
                     self._checkpoint_source_frame_skip
                 )
+                info["checkpoint_replay_frames"] = self._checkpoint_replay_frame_count
                 # Total cumulative reward = base (to reach checkpoint) + episode (from checkpoint)
                 info["total_cumulative_reward"] = (
                     self._checkpoint_base_reward + self.current_ep_reward
@@ -945,6 +995,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     info["reward_accounting_valid"] = False
                 else:
                     info["reward_accounting_valid"] = True
+
+                # DIAGNOSTIC: Log if checkpoint base reward seems suspiciously high
+                # checkpoint_base_reward NOW contains SCALED cumulative_reward (after fix)
+                # Expected max with RND: ~5-6 base + 10-15 RND = 15-20 total (SCALED)
+                # Threshold of 25.0 catches 2x accumulation bugs (>40) while allowing RND exploration
+                if self._checkpoint_base_reward > 25.0:
+                    logger.warning(
+                        f"[CHECKPOINT REWARD HIGH] Checkpoint base reward suspiciously high: "
+                        f"base={self._checkpoint_base_reward:.3f} (SCALED), episode={self.current_ep_reward:.3f}, "
+                        f"total={expected_total:.3f}. Expected max ~15-20 with RND (SCALED). "
+                        f"Values >25 indicate reward accumulation bug (checkpoint created during checkpoint episode)."
+                    )
 
             # Add waypoint data for visualization (path-based or adaptive)
             waypoints_active = []
@@ -1129,6 +1191,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._from_checkpoint = False
         self._checkpoint_base_reward = 0.0
         self._checkpoint_source_frame_skip = self.frame_skip
+        self._checkpoint_replay_frame_count = 0
 
         # Reset position tracking for route visualization
         self.current_route = []
@@ -1362,6 +1425,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 break
 
         self._checkpoint_replay_in_progress = False
+
+        # Track frames executed during checkpoint replay
+        # This allows us to report only episode frames (excluding replay) in info dict
+        self._checkpoint_replay_frame_count = frames_replayed
 
         # Pre-mark waypoints crossed during replay to prevent double-rewarding
         self._mark_checkpoint_waypoints_as_collected(checkpoint_route)
@@ -1608,6 +1675,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # We must reset to spawn to ensure deterministic replay.
         self.nplay_headless.reset()
 
+        # CRITICAL: Clear current_route to remove spawn position added by auto-reset
+        # Checkpoint episodes should track positions starting from checkpoint, not spawn
+        self.current_route = []
+
         # Track replay statistics for debugging
         actions_replayed = 0
         frames_replayed = 0
@@ -1736,6 +1807,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         self._checkpoint_replay_in_progress = False
 
+        # Track frames executed during checkpoint replay
+        # This allows us to report only episode frames (excluding replay) in info dict
+        self._checkpoint_replay_frame_count = frames_replayed
+
         # DEBUG: Log position trajectory for first 10 actions
         if _verbose_debug and _debug_positions:
             pos_log = ", ".join(
@@ -1754,6 +1829,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         #     f"frames={frames_replayed}, died={ninja_died_during_replay}, "
         #     f"actual_pos={actual_position}, expected_frames={checkpoint_frame_count}"
         # )
+
+        # Track frames executed during checkpoint replay
+        # This allows us to report only episode frames (excluding replay) in info dict
+        self._checkpoint_replay_frame_count = frames_replayed
 
         # Store checkpoint route for inclusion in episode end info
         # This persists through the episode so route visualization can access it
@@ -1862,6 +1941,24 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 f"Checkpoint replay from wrapper complete: {len(action_sequence)} actions, "
                 f"checkpoint_route has {len(checkpoint_route)} positions"
             )
+
+        # CRITICAL FIX: Check if checkpoint replay exceeded truncation limit
+        # Large checkpoints (3000+ actions) can replay 12,000+ frames, exceeding
+        # the 6000 frame truncation limit. Without this check, episodes continue
+        # indefinitely and overflow the Go-Explore action buffer.
+        current_frame = self.nplay_headless.sim.frame
+        truncated_after_replay = self._check_curriculum_aware_truncation()
+
+        if truncated_after_replay:
+            logger.warning(
+                f"[CHECKPOINT_TRUNCATION] Checkpoint replay exceeded truncation limit! "
+                f"Replayed {len(action_sequence)} actions ({frames_replayed} frames), "
+                f"current_frame={current_frame}, limit={self.truncation_checker.current_truncation_limit}. "
+                f"Marking episode as truncated."
+            )
+            # Mark as truncated in info so Go-Explore knows to reset the buffer
+            info["truncated_after_checkpoint_replay"] = True
+            info["checkpoint_replay_frames"] = frames_replayed
 
         return (processed_obs, info)
 
