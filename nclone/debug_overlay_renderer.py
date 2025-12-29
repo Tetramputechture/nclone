@@ -744,11 +744,6 @@ class DebugOverlayRenderer:
 
         # Draw nodes
         if show_adjacency or show_blocked:
-            try:
-                font = pygame.font.Font(None, 16)
-            except pygame.error:
-                font = pygame.font.SysFont("arial", 14)
-
             # Find ninja node once using canonical function
             ninja_node = (
                 find_ninja_node(
@@ -836,22 +831,93 @@ class DebugOverlayRenderer:
                 )
 
             # Build mine proximity cache for hazard avoidance in pathfinding
-            if level_data and hasattr(self, "_mine_proximity_cache"):
-                self._mine_proximity_cache.build_cache(level_data, adjacency)
+            # CRITICAL: This MUST be done before checking path cache to ensure
+            # cached paths were computed with correct mine avoidance costs
 
-            # Try to get cached paths
-            cached_data = None
-            if level_data and hasattr(self, "_path_visualization_cache"):
-                cached_data = self._path_visualization_cache.get_cached_paths(
-                    ninja_pos,
-                    adjacency,
-                    level_data,
-                    switch_positions,
-                    exit_positions,
-                    exit_switch_activated,
+            # STRICT VALIDATION: Require mine proximity cache for physics-aware pathfinding
+            if not hasattr(self, "_mine_proximity_cache"):
+                raise RuntimeError(
+                    "DebugOverlayRenderer is missing _mine_proximity_cache. "
+                    "This is required for mine avoidance in physics-based pathfinding. "
+                    "Ensure initialization creates MineProximityCostCache."
                 )
 
+            if level_data is None:
+                raise RuntimeError(
+                    "level_data is None when building mine cache for path visualization. "
+                    "Level data is required for mine proximity calculations."
+                )
+
+            mine_cache_rebuilt = self._mine_proximity_cache.build_cache(
+                level_data, adjacency
+            )
+
+            # DIAGNOSTIC: Log mine cache state for path cost validation
+            import logging
+
+            logger = logging.getLogger(__name__)
+            if mine_cache_rebuilt:
+                cache_size = len(self._mine_proximity_cache.cache)
+                # logger.warning(
+                #     f"[PATH_VIZ] Mine proximity cache rebuilt: {cache_size} nodes with mine costs"
+                # )
+            elif len(self._mine_proximity_cache.cache) > 0:
+                # logger.warning(
+                #     f"[PATH_VIZ] Mine proximity cache valid: {len(self._mine_proximity_cache.cache)} nodes cached"
+                # )
+                pass
+            else:
+                logger.warning(
+                    "[PATH_VIZ] Mine proximity cache empty (no deadly mines or avoidance disabled)"
+                )
+
+            # Try to get cached paths
+            # IMPORTANT: If mine cache was rebuilt, invalidate path cache to ensure
+            # paths are recomputed with new mine avoidance costs
+            cached_data = None
+            mine_cache_size = len(self._mine_proximity_cache.cache)
+
+            if level_data and hasattr(self, "_path_visualization_cache"):
+                if mine_cache_rebuilt:
+                    # Mine costs changed - invalidate path cache to force recomputation
+                    self._path_visualization_cache.clear_cache()
+                    # logger.warning(
+                    #     "[PATH_VIZ] Path cache invalidated due to mine cache rebuild"
+                    # )
+                else:
+                    cached_data = self._path_visualization_cache.get_cached_paths(
+                        ninja_pos,
+                        adjacency,
+                        level_data,
+                        switch_positions,
+                        exit_positions,
+                        exit_switch_activated,
+                        mine_cache_size=mine_cache_size,
+                    )
+
             if cached_data is None:
+                # STRICT VALIDATION: Require physics_cache for physics-aware pathfinding
+                if physics_cache is None:
+                    raise RuntimeError(
+                        "physics_cache is None when computing paths for visualization. "
+                        "Physics cache is REQUIRED for physics-aware pathfinding with mine avoidance. "
+                        "Ensure graph building includes physics cache precomputation."
+                    )
+
+                # STRICT VALIDATION: Require base_adjacency for physics edge classification
+                if base_adjacency is None:
+                    raise RuntimeError(
+                        "base_adjacency is None when computing paths for visualization. "
+                        "Base adjacency is REQUIRED for physics edge classification. "
+                        "Ensure graph building includes base_adjacency in graph_data."
+                    )
+
+                # logger.warning(
+                #     f"[PATH_VIZ] Computing fresh paths (cache miss). "
+                #     f"mine_cache_size={mine_cache_size}, "
+                #     f"physics_cache_size={len(physics_cache) if physics_cache else 0}"
+                # )
+
                 # Need to recompute paths
                 closest_node = find_ninja_node(
                     ninja_pos,
@@ -886,7 +952,15 @@ class DebugOverlayRenderer:
                             )
 
                             if switch_node:
-                                path, _ = find_shortest_path(
+                                # DIAGNOSTIC: Validate mine proximity cache is populated
+                                mine_cache_size = len(self._mine_proximity_cache.cache)
+                                # logger.warning(
+                                #     f"[PATH_COMPUTE] Finding path to switch: closest={closest_node}, "
+                                #     f"switch_node={switch_node}, mine_cache_size={mine_cache_size}"
+                                # )
+
+                                # Compute path with mine avoidance costs
+                                path, path_cost = find_shortest_path(
                                     closest_node,
                                     switch_node,
                                     adjacency,
@@ -896,8 +970,16 @@ class DebugOverlayRenderer:
                                     self._mine_proximity_cache,
                                 )
                                 if path:
+                                    # logger.warning(
+                                    #     f"[PATH_COMPUTE] Switch path found: {len(path)} nodes, "
+                                    #     f"cost={path_cost:.2f}, mine_cache_used={mine_cache_size > 0}"
+                                    # )
                                     switch_path = path
                                     break  # Only draw path to nearest switch
+                                else:
+                                    logger.warning(
+                                        f"[PATH_COMPUTE] No path to switch node {switch_node} from {closest_node}"
+                                    )
 
                     # Draw path to nearest exit ONLY if switch has been activated
                     if exit_switch_activated and exit_positions:
@@ -918,7 +1000,15 @@ class DebugOverlayRenderer:
                             )
 
                             if exit_node:
-                                path, _ = find_shortest_path(
+                                # DIAGNOSTIC: Validate mine proximity cache is populated
+                                mine_cache_size = len(self._mine_proximity_cache.cache)
+                                # logger.warning(
+                                #     f"[PATH_COMPUTE] Finding path to exit: closest={closest_node}, "
+                                #     f"exit_node={exit_node}, mine_cache_size={mine_cache_size}"
+                                # )
+
+                                # Compute path with mine avoidance costs
+                                path, path_cost = find_shortest_path(
                                     closest_node,
                                     exit_node,
                                     adjacency,
@@ -928,11 +1018,24 @@ class DebugOverlayRenderer:
                                     self._mine_proximity_cache,
                                 )
                                 if path:
+                                    # logger.warning(
+                                    #     f"[PATH_COMPUTE] Exit path found: {len(path)} nodes, "
+                                    #     f"cost={path_cost:.2f}, mine_cache_used={mine_cache_size > 0}"
+                                    # )
                                     exit_path = path
                                     break  # Only draw path to nearest exit
+                                else:
+                                    logger.warning(
+                                        f"[PATH_COMPUTE] No path to exit node {exit_node} from {closest_node}"
+                                    )
 
                 # Cache the computed paths
                 if level_data and hasattr(self, "_path_visualization_cache"):
+                    mine_cache_size = (
+                        len(self._mine_proximity_cache.cache)
+                        if hasattr(self, "_mine_proximity_cache")
+                        else 0
+                    )
                     self._path_visualization_cache.cache_paths(
                         ninja_pos,
                         adjacency,
@@ -945,6 +1048,7 @@ class DebugOverlayRenderer:
                         exit_path,
                         switch_node,
                         exit_node,
+                        mine_cache_size=mine_cache_size,
                     )
 
                 cached_data = {
@@ -959,6 +1063,15 @@ class DebugOverlayRenderer:
             closest_node = cached_data.get("closest_node")
             switch_path = cached_data.get("switch_path")
             exit_path = cached_data.get("exit_path")
+
+            # DIAGNOSTIC: Log when using cached paths
+            if cached_data and (switch_path or exit_path):
+                mine_cache_size = len(self._mine_proximity_cache.cache)
+                # logger.warning(
+                #     f"[PATH_VIZ] Using cached paths: switch={len(switch_path) if switch_path else 0} nodes, "
+                #     f"exit={len(exit_path) if exit_path else 0} nodes, "
+                #     f"current_mine_cache_size={mine_cache_size}"
+                # )
 
             # Draw paths (from cache or newly computed)
             if closest_node and cached_data:

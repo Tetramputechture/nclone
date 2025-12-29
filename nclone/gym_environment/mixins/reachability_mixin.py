@@ -61,7 +61,7 @@ class ReachabilityMixin:
             self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
-        """Get 22-dimensional reachability features (expanded in Phases 1-3).
+        """Get 25-dimensional reachability features (expanded in Phases 1-3).
 
         Features include:
         - Base (4): reachable_area_ratio, dist_to_switch_inv, dist_to_exit_inv, exit_reachable
@@ -71,6 +71,7 @@ class ReachabilityMixin:
         - Phase indicator (1): switch_activated
         - Path direction (8): next_hop_dir_x/y, waypoint_dir_x/y, waypoint_dist, path_detour_flag, mine_clearance_dir_x/y
         - Path difficulty (1): path_difficulty_ratio (physics_cost/geometric_distance)
+        - Path curvature (3): multi_hop_dir_x/y, path_curvature (8-hop lookahead and turn indicator)
         """
         reachability_features = self._compute_reachability(
             self.nplay_headless.ninja_position()
@@ -80,7 +81,7 @@ class ReachabilityMixin:
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
-        Compute 22-dimensional reachability features using adjacency graph (expanded in Phases 1-3).
+        Compute 25-dimensional reachability features using adjacency graph (expanded in Phases 1-3).
 
         Base features (4 dims):
         0. Reachable area ratio (0-1)
@@ -117,6 +118,11 @@ class ReachabilityMixin:
 
         Path difficulty (1 dim) - NEW Phase 3.3:
         21. Path difficulty ratio (0-1) - physics_cost/geometric_distance
+
+        Path curvature features (3 dims) - NEW for anticipatory turning:
+        22. Multi-hop direction X (-1 to 1) - 8-hop weighted lookahead
+        23. Multi-hop direction Y (-1 to 1) - anticipates upcoming path curvature
+        24. Path curvature (0-1) - dot product alignment (1=straight, 0=90° turn, -1=180° turn)
 
         """
         # Get graph data from GraphMixin (required)

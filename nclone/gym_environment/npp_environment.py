@@ -85,6 +85,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             enable_visual_observations=self.config.enable_visual_observations,
             frame_skip=self.config.frame_skip,
             shared_level_cache=self.config.shared_level_cache,
+            goal_curriculum_config=self.config.goal_curriculum_config,
         )
 
         # Initialize mixin systems using config
@@ -504,11 +505,54 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                         "Skipped nplay_headless.reset() - map was just loaded externally"
                     )
 
+        # === GOAL CURRICULUM: Move entities before graph building ===
+        # Apply curriculum entity repositioning if enabled
+        # TIMING: Must happen AFTER map load, BEFORE graph building
+        # This ensures all observations reflect curriculum positions
+        if self.goal_curriculum_manager is not None:
+            # 1. Store original entity positions (from loaded map)
+            switch_pos = self.nplay_headless.exit_switch_position()
+            exit_pos = self.nplay_headless.exit_door_position()
+            self.goal_curriculum_manager.store_original_positions(switch_pos, exit_pos)
+
+            # 2. Build optimal paths using ORIGINAL positions
+            # Need level_data for mine proximity calculations
+            # Note: level_data is built from map tiles, doesn't depend on entity positions
+            level_data_for_paths = self._extract_level_data()
+            spawn_pos = level_data_for_paths.start_position
+
+            # Build temporary graph for pathfinding (without curriculum positions)
+            # We need this to extract the TRUE optimal path before moving entities
+            temp_graph_data = self.graph_builder.build_graph(
+                level_data_for_paths, ninja_pos=(int(spawn_pos[0]), int(spawn_pos[1]))
+            )
+
+            self.goal_curriculum_manager.build_paths_for_level(
+                temp_graph_data, level_data_for_paths, spawn_pos
+            )
+
+            # 3. Move entities to curriculum positions
+            self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
+
+            # 4. Invalidate ALL entity-dependent caches (will rebuild with curriculum positions)
+            # CRITICAL: Must clear ALL caches that contain entity positions/references
+            self._cached_switch_pos = None
+            self._cached_exit_pos = None
+            self._cached_level_data = None  # Contains entity references
+            self._cached_entities = None  # Contains entity list
+            # Force switch cache invalidation to clear path distance caches
+            self.invalidate_switch_cache()
+
+            if self.enable_logging:
+                logger.debug(
+                    "Invalidated all entity-dependent caches after curriculum entity movement"
+                )
+
         # CRITICAL: Reset and rebuild graph BEFORE getting observation
         self._reset_graph_state()
         self._reset_reachability_state()
 
-        # Build graph from the newly loaded map
+        # Build graph from the newly loaded map (with curriculum entity positions)
         self._update_graph_from_env_state()
 
         # Extract path-based waypoints from optimal A* paths (if enabled)

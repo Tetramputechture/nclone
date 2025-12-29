@@ -55,14 +55,17 @@ class MineProximityCostCache:
 
         Returns:
             Cost multiplier in range [1.0, MINE_HAZARD_COST_MULTIPLIER]
-            1.0 if not in cache (no penalty)
+            1.0 if not in cache (no penalty - either no mines nearby or cache not built)
         """
         if node_pos in self.cache:
             self.cache_hits += 1
             return self.cache[node_pos]
 
         self.cache_misses += 1
-        return 1.0  # No penalty if not cached
+        # Return 1.0 (no penalty) if node not in cache
+        # This is correct for: (a) nodes far from mines, (b) no deadly mines, (c) cache not built
+        # Caller should ensure cache is built before pathfinding to get mine avoidance
+        return 1.0
 
     def _precompute_mine_proximity_costs(
         self,
@@ -108,18 +111,57 @@ class MineProximityCostCache:
         deadly_mine_positions = []
         for mine in mines:
             mine_state = mine.get("state", 0)
+            mine_type = mine.get("type")
             # Only include deadly mines (state 0 = toggled/deadly)
             if MINE_PENALIZE_DEADLY_ONLY and mine_state != 0:
                 continue  # Skip safe mines (state 1) and toggling mines (state 2)
 
             mine_x = mine.get("x", 0)
             mine_y = mine.get("y", 0)
+            # Validate mine position is not (0, 0) which might indicate extraction failure
+            if mine_x == 0.0 and mine_y == 0.0:
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"[MINE_CACHE] Warning: Mine at (0, 0) - type={mine_type}, state={mine_state}. "
+                    f"This might indicate extraction failure."
+                )
             deadly_mine_positions.append((mine_x, mine_y))
 
         if not deadly_mine_positions:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"[MINE_CACHE] No deadly mines found (total mines={len(mines)}, "
+                f"PENALIZE_DEADLY_ONLY={MINE_PENALIZE_DEADLY_ONLY}). "
+                f"All paths will have 1.0x mine cost (no avoidance)."
+            )
             return  # No deadly mines, all nodes get 1.0 multiplier
 
+        # Log deadly mine count for diagnostics
+        import logging
+
+        logger = logging.getLogger(__name__)
+        # logger.warning(
+        #     f"[MINE_CACHE] Found {len(deadly_mine_positions)} deadly mines, "
+        #     f"computing proximity costs for {len(adjacency)} nodes "
+        #     f"(radius={MINE_HAZARD_RADIUS}px, multiplier={MINE_HAZARD_COST_MULTIPLIER}x)"
+        # )
+
         # Precompute cost multiplier for each node in adjacency graph
+        nodes_with_costs = 0
+        if not adjacency or len(adjacency) == 0:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"[MINE_CACHE] Adjacency graph is empty - cannot build mine proximity cache. "
+                f"Found {len(deadly_mine_positions)} deadly mines but no nodes to cache."
+            )
+            # Don't return early - just skip caching (cache will remain empty)
+
         for node_pos in adjacency.keys():
             # Find closest deadly mine to this node
             min_distance = float("inf")
@@ -143,7 +185,26 @@ class MineProximityCostCache:
                     MINE_HAZARD_COST_MULTIPLIER - 1.0
                 )
                 self.cache[node_pos] = multiplier
+                nodes_with_costs += 1
             # If min_distance >= MINE_HAZARD_RADIUS, no penalty (1.0), don't store
+
+        # Log diagnostic info if cache is empty despite having deadly mines
+        if len(deadly_mine_positions) > 0 and nodes_with_costs == 0:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"[MINE_CACHE] No nodes within {MINE_HAZARD_RADIUS}px of {len(deadly_mine_positions)} deadly mines. "
+                f"Cache is empty. Mines: {deadly_mine_positions[:3]}, "
+                f"Adjacency nodes: {len(adjacency)}"
+            )
+
+        # Log final cache statistics
+        # logger.warning(
+        #     f"[MINE_CACHE] Precomputed {nodes_with_costs} nodes with proximity costs "
+        #     f"(out of {len(adjacency)} total nodes). "
+        #     f"Nodes within {MINE_HAZARD_RADIUS}px of mines will have increased path costs."
+        # )
 
     def build_cache(
         self,
@@ -181,6 +242,17 @@ class MineProximityCostCache:
             # Update cached state
             self._cached_level_data = level_data
             self._cached_mine_signature = mine_signature
+
+            # DIAGNOSTIC: Log cache build results
+            # import logging
+
+            # logger = logging.getLogger(__name__)
+            # logger.warning(
+            #     f"[MINE_CACHE_BUILD] Built mine proximity cache: "
+            #     f"{len(self.cache)} nodes with proximity costs, "
+            #     f"mine_signature={mine_signature[:3] if mine_signature else 'none'}. "
+            #     f"Paths will now avoid mines with cost multiplier."
+            # )
 
             return True
 

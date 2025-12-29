@@ -8,8 +8,6 @@ Cache invalidates when level or mine states change.
 import logging
 from typing import Dict, Tuple, List, Optional, Any
 from ..level_data import LevelData
-
-logger = logging.getLogger(__name__)
 from .pathfinding_utils import (
     find_closest_node_to_position,
     bfs_distance_from_start,
@@ -17,21 +15,25 @@ from .pathfinding_utils import (
 )
 from .level_data_helpers import extract_goal_positions, get_mine_state_signature
 
+logger = logging.getLogger(__name__)
+
 
 class LevelBasedPathDistanceCache:
     """
-    Precomputed cache for shortest path distances from all nodes to goals.
+    Precomputed cache for GEOMETRIC distances from nodes to goals.
 
-    Uses flood fill (BFS) from each goal position to precompute distances
-    to all reachable nodes. The adjacency graph passed to build_cache() should
-    be filtered to only include nodes reachable from the initial player position,
-    ensuring all cached distances are for reachable areas only.
+    ARCHITECTURE: Caches only GEOMETRIC distances (pixels), not physics costs.
+    Physics costs are directional (momentum, gravity) and cannot be cached
+    via flood-fill. They must be computed on-demand via find_shortest_path
+    from the actual start position to goal.
+
+    Uses flood fill (BFS) from each goal position to precompute GEOMETRIC
+    distances to all reachable nodes. Also stores next_hop navigation.
 
     Cache invalidates when level or mine states change.
 
-    Stores TWO types of distances:
-    1. Physics-weighted costs (for pathfinding optimization)
-    2. Geometric distances (for PBRS normalization - actual pixels)
+    For physics-optimal paths: Use find_shortest_path with physics costs FROM
+    current position TO goal (not cached, computed fresh each time).
     """
 
     def __init__(self):
@@ -45,6 +47,12 @@ class LevelBasedPathDistanceCache:
         # Used for sub-node PBRS resolution: direction to next_hop = optimal path direction
         self.next_hop_cache: Dict[
             Tuple[Tuple[int, int], str], Optional[Tuple[int, int]]
+        ] = {}
+        # Cache mapping (node_position, goal_id) -> multi_hop_direction (weighted lookahead)
+        # Used for anticipatory path guidance: shows direction accounting for upcoming curvature
+        # Stores normalized direction vector (dx, dy) weighted across next 3-5 hops
+        self.multi_hop_direction_cache: Dict[
+            Tuple[Tuple[int, int], str], Optional[Tuple[float, float]]
         ] = {}
         # Mapping of goal_node -> goal_id for quick lookup
         self._goal_node_to_goal_id: Dict[Tuple[int, int], str] = {}
@@ -63,7 +71,11 @@ class LevelBasedPathDistanceCache:
         self, node_pos: Tuple[int, int], goal_pos: Tuple[int, int], goal_id: str
     ) -> float:
         """
-        Get cached physics-weighted distance from node to goal.
+        Get cached GEOMETRIC distance from node to goal.
+
+        IMPORTANT: This returns GEOMETRIC distance (pixels), NOT physics-weighted cost!
+        Physics costs are directional and cannot be cached via flood-fill.
+        For physics-optimal paths, use find_shortest_path from start to goal.
 
         Args:
             node_pos: Node position (x, y) in pixels
@@ -71,7 +83,7 @@ class LevelBasedPathDistanceCache:
             goal_id: Unique identifier for the goal
 
         Returns:
-            Cached physics-weighted distance, or float('inf') if not cached
+            Cached geometric distance in pixels, or float('inf') if not cached
         """
         key = (node_pos, goal_id)
         if key in self.cache:
@@ -147,6 +159,93 @@ class LevelBasedPathDistanceCache:
         """
         return self.next_hop_cache.get((node_pos, goal_id))
 
+    def get_multi_hop_direction(
+        self, node_pos: Tuple[int, int], goal_id: str
+    ) -> Optional[Tuple[float, float]]:
+        """
+        Get multi-hop lookahead direction toward goal from given node.
+
+        This provides a weighted direction vector that accounts for upcoming
+        path curvature, not just the immediate next step. The direction is
+        computed as a weighted sum of the next 8 hops along the optimal path,
+        with exponentially decaying weights (0.45, 0.25, 0.15, 0.08, ...).
+
+        UPDATED 2025-12-20: Increased from 5 to 8 hops for better anticipation
+        of inflection points. This solves the "sharp turn near hazard" problem
+        by giving the agent visibility into upcoming turns, allowing it to adjust
+        trajectory well before the critical inflection point.
+
+        Args:
+            node_pos: Current node position
+            goal_id: Goal identifier
+
+        Returns:
+            Normalized direction vector (dx, dy), or None if not cached or at goal
+        """
+        return self.multi_hop_direction_cache.get((node_pos, goal_id))
+
+    def _compute_multi_hop_direction(
+        self,
+        node_pos: Tuple[int, int],
+        parents: Dict[Tuple[int, int], Optional[Tuple[int, int]]],
+        max_hops: int = 8,
+    ) -> Optional[Tuple[float, float]]:
+        """
+        Compute weighted multi-hop lookahead direction from node toward goal.
+
+        Follows the parent chain (which points toward goal since BFS was from goal)
+        up to max_hops steps, computing a weighted average direction vector.
+        Weights decay exponentially: [0.45, 0.25, 0.15, 0.08, 0.04, 0.02, 0.01] for 8 hops.
+
+        UPDATED 2025-12-20: Increased from 5 to 8 hops for better inflection point anticipation.
+        This allows the agent to "see" sharp turns further ahead, especially critical for
+        turns near hazards where early trajectory adjustment is necessary.
+
+        Args:
+            node_pos: Starting node position
+            parents: Parent map from BFS (parent is closer to goal)
+            max_hops: Maximum number of hops to look ahead (default 8, increased from 5)
+
+        Returns:
+            Normalized direction vector (dx, dy), or None if at goal or no path
+        """
+        # Exponentially decaying weights for hops 1-8
+        # Sum to ~1.0: [0.45, 0.25, 0.15, 0.08, 0.04, 0.02, 0.01]
+        weights = [0.45, 0.25, 0.15, 0.08, 0.04, 0.02, 0.01, 0.005][:max_hops]
+
+        # Accumulate weighted direction vectors
+        total_dx = 0.0
+        total_dy = 0.0
+        current_node = node_pos
+
+        for i, weight in enumerate(weights):
+            # Get next hop (parent is closer to goal)
+            next_node = parents.get(current_node)
+
+            if next_node is None:
+                # Reached goal or dead end - stop accumulating
+                break
+
+            # Direction from current to next (toward goal)
+            dx = float(next_node[0] - current_node[0])
+            dy = float(next_node[1] - current_node[1])
+
+            # Accumulate weighted direction
+            total_dx += weight * dx
+            total_dy += weight * dy
+
+            # Move to next hop for next iteration
+            current_node = next_node
+
+        # Normalize the accumulated direction
+        magnitude = (total_dx * total_dx + total_dy * total_dy) ** 0.5
+
+        if magnitude < 0.001:
+            # No meaningful direction (at goal or path too short)
+            return None
+
+        return (total_dx / magnitude, total_dy / magnitude)
+
     def _precompute_distances_from_goals(
         self,
         goals: List[Tuple[Tuple[int, int], str]],
@@ -205,6 +304,88 @@ class LevelBasedPathDistanceCache:
                 "Ensure graph building includes physics cache precomputation."
             )
 
+        # DIAGNOSTIC: Log physics cache validation success
+        # logger.warning(
+        #     f"[LEVEL_CACHE_BUILD] Physics cache validated: {len(physics_cache)} nodes with physics properties"
+        # )
+        # Sample first node to verify structure
+        # if physics_cache:
+        #     sample_node = next(iter(physics_cache))
+        #     sample_props = physics_cache[sample_node]
+        #     # logger.warning(
+        #     #     f"[LEVEL_CACHE_BUILD] Sample node {sample_node} physics: {sample_props}"
+        #     # )
+
+        # STRICT VALIDATION: Mine proximity cache must be provided for mine avoidance
+        if mine_proximity_cache is None:
+            raise ValueError(
+                "mine_proximity_cache is None in _precompute_distances_from_goals. "
+                "Cannot build level cache without mine avoidance costs. "
+                "Paths will ignore mines, leading to dangerous/incorrect behavior."
+            )
+
+        # CRITICAL DIAGNOSTIC: Check mine cache population
+        # mine_cache_size = (
+        #     len(mine_proximity_cache.cache)
+        #     if hasattr(mine_proximity_cache, "cache")
+        #     else 0
+        # )
+        # from nclone.constants.entity_types import EntityType
+        # from nclone.gym_environment.reward_calculation.reward_constants import (
+        #     MINE_HAZARD_COST_MULTIPLIER,
+        #     MINE_PENALIZE_DEADLY_ONLY,
+        # )
+
+        # mines = level_data.get_entities_by_type(
+        #     EntityType.TOGGLE_MINE
+        # ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+
+        # # Count deadly mines (state 0) only if MINE_PENALIZE_DEADLY_ONLY is True
+        # # This matches the logic in mine_proximity_cache._precompute_mine_proximity_costs
+        # if MINE_PENALIZE_DEADLY_ONLY:
+        #     deadly_mines = [m for m in mines if m.get("state", 0) == 0]
+        # else:
+        #     pass
+
+        # logger.warning(
+        #     f"[LEVEL_CACHE_BUILD] Mine avoidance state: "
+        #     f"level_has_{len(mines)}_mines, deadly={len(deadly_mines)}, mine_cache_size={mine_cache_size}, "
+        #     f"avoidance={'ACTIVE' if mine_cache_size > 0 else 'INACTIVE'}"
+        # )
+
+        # # STRICT: If level has deadly mines but cache is empty, mine cache wasn't built properly
+        # # Only check deadly mines since cache only stores proximity costs for deadly mines
+        # # NOTE: Cache can be empty if adjacency graph is empty or has no nodes within
+        # # MINE_HAZARD_RADIUS (75px) of mines - check adjacency before raising error
+        # if len(deadly_mines) > 0 and mine_cache_size == 0:
+        #     if MINE_HAZARD_COST_MULTIPLIER > 1.0:
+        #         # Check if adjacency is empty - if so, this is expected and not an error
+        #         if not adjacency or len(adjacency) == 0:
+        #             # Adjacency is empty - mine cache will be empty, this is expected
+        #             # Don't raise error, just log warning
+        #             import logging
+
+        #             logger = logging.getLogger(__name__)
+        #             logger.warning(
+        #                 f"[LEVEL_CACHE_BUILD] Level has {len(deadly_mines)} deadly mines but adjacency graph is empty. "
+        #                 f"Mine cache is empty (no nodes to cache). This is expected if graph building failed."
+        #             )
+        #         else:
+        #             # Adjacency exists but cache is empty
+        #             # This is VALID if mines are >MINE_HAZARD_RADIUS from all reachable nodes
+        #             # (e.g., mines in unreachable areas). Just log a warning.
+        #             from nclone.gym_environment.reward_calculation.reward_constants import (
+        #                 MINE_HAZARD_RADIUS,
+        #             )
+        #             import logging
+
+        #             logger = logging.getLogger(__name__)
+        #             logger.warning(
+        #                 f"[LEVEL_CACHE_BUILD] Level has {len(deadly_mines)} deadly mines but mine cache is empty. "
+        #                 f"Adjacency has {len(adjacency)} nodes, but no nodes are within {MINE_HAZARD_RADIUS}px of mines. "
+        #                 f"This is expected if mines are in unreachable areas or far from the navigable graph."
+        #             )
+
         # For each goal, run BFS to compute distances to all reachable nodes
         # Use exact same logic as visualization in debug_overlay_renderer.py
         for goal_pos, goal_id in goals:
@@ -246,67 +427,116 @@ class LevelBasedPathDistanceCache:
             elif needs_exit_alias:
                 self._goal_id_to_goal_pos["exit"] = goal_pos
 
-            # Run SINGLE BFS with physics costs, tracking geometric distances along the path
-            # This computes both physics costs (for pathfinding) and pixel distances
-            # along the physics-optimal path (for PBRS normalization) in one pass.
-            # Request parents dict to compute next_hop for each node.
-            # Since we flood from goal, parent[node] = neighbor closer to goal = next_hop
-            physics_distances, _, parents, geometric_distances = (
-                bfs_distance_from_start(
-                    goal_node,
-                    None,
-                    adjacency,
-                    base_adjacency,
-                    None,
-                    physics_cache,
-                    level_data,
-                    mine_proximity_cache,
-                    return_parents=True,
-                    use_geometric_costs=False,  # Physics-weighted costs for priority
-                    track_geometric_distances=True,  # Also track pixel distances along physics path
-                    mine_sdf=mine_sdf,  # Pass SDF for velocity-aware mine costs
-                )
+            # DIAGNOSTIC: Log before BFS to confirm mine cache is available
+            # mine_cache_size = (
+            #     len(mine_proximity_cache.cache)
+            #     if mine_proximity_cache and hasattr(mine_proximity_cache, "cache")
+            #     else 0
+            # )
+            # logger.warning(
+            #     f"[LEVEL_CACHE_BFS] Computing distances from goal '{goal_id}' at {goal_pos}: "
+            #     f"goal_node={goal_node}, mine_cache_size={mine_cache_size}, "
+            #     f"adjacency_size={len(adjacency)}"
+            # )
+
+            # ARCHITECTURE: Cache only GEOMETRIC distances, compute physics on-demand
+            #
+            # Physics costs are DIRECTIONAL (momentum, gravity, grounded state):
+            # - Cannot be cached from flood-fill (costs depend on approach direction)
+            # - MUST be computed via find_shortest_path from actual start position
+            #
+            # Level cache stores:
+            # ✓ Geometric distances (pixels, direction-independent) - FROM GOAL for efficiency
+            # ✓ Next-hop navigation (topology, not physics costs)
+            #
+            # For physics-optimal paths (visualization, PBRS):
+            # ✓ Use find_shortest_path FROM current position TO goal (correct directionality)
+
+            # logger.warning(
+            #     f"[LEVEL_CACHE_BFS] Computing GEOMETRIC distances from goal '{goal_id}' at {goal_pos}: "
+            #     f"goal_node={goal_node}, adjacency_size={len(adjacency)}. "
+            #     f"(Physics costs computed on-demand for correct directionality)"
+            # )
+
+            # Run BFS with GEOMETRIC costs only (direction-independent, cache-safe)
+            geometric_distances, _, parents, _ = bfs_distance_from_start(
+                goal_node,  # From goal (OK for geometric, efficient for caching)
+                None,
+                adjacency,
+                base_adjacency,
+                None,
+                physics_cache,  # Still needed for horizontal rule validation
+                level_data,
+                None,  # NO mine_proximity_cache (not used with geometric costs)
+                return_parents=True,
+                use_geometric_costs=True,  # GEOMETRIC ONLY (direction-independent)
+                track_geometric_distances=False,  # Not needed
+                mine_sdf=None,  # Not used with geometric costs
             )
 
-            # Store physics-weighted distances and next_hop for all computed nodes
-            for node_pos, distance in physics_distances.items():
-                self.cache[(node_pos, goal_id)] = distance
+            # # DIAGNOSTIC: Log BFS results
+            # logger.warning(
+            #     f"[LEVEL_CACHE_BFS] Computed {len(geometric_distances)} geometric distances for goal '{goal_id}'"
+            # )
+
+            # Store geometric distances and next_hop for all computed nodes
+            # NOTE: We do NOT store physics costs - those are direction-dependent
+            # and must be computed via find_shortest_path from actual start position
+            for node_pos, distance in geometric_distances.items():
+                # Store geometric distance in BOTH caches for compatibility
+                self.cache[(node_pos, goal_id)] = (
+                    distance  # Legacy physics cache (now geometric)
+                )
+                self.geometric_cache[(node_pos, goal_id)] = distance
 
                 # Parent in BFS from goal = next hop toward goal
                 # (since we flooded outward from goal, parent is closer to goal)
                 next_hop = parents.get(node_pos) if parents else None
                 self.next_hop_cache[(node_pos, goal_id)] = next_hop
 
-            # Store geometric distances along physics-optimal path for PBRS normalization
-            # These are the pixel lengths of the physics-optimal paths, NOT separate
-            # geometrically-shortest paths
-            if geometric_distances is not None:
-                for node_pos, distance in geometric_distances.items():
-                    self.geometric_cache[(node_pos, goal_id)] = distance
+                # Compute multi-hop lookahead direction (weighted average of next 8 hops)
+                # This provides anticipatory guidance for sharp turns near hazards
+                # UPDATED: Increased from 5 to 8 hops for better inflection point visibility
+                multi_hop_direction = self._compute_multi_hop_direction(
+                    node_pos, parents, max_hops=8
+                )
+                self.multi_hop_direction_cache[(node_pos, goal_id)] = (
+                    multi_hop_direction
+                )
 
             # CRITICAL FIX: Also populate cache entries for generic aliases ("switch", "exit")
             # This ensures lookups using generic goal_ids hit the cache
             # Use the flags we determined earlier to avoid race condition with mapping updates
             if needs_switch_alias:
-                # Populate cache entries for "switch" alias
-                for node_pos, distance in physics_distances.items():
-                    self.cache[(node_pos, "switch")] = distance
-                    self.next_hop_cache[(node_pos, "switch")] = (
-                        parents.get(node_pos) if parents else None
+                # Populate cache entries for "switch" alias (same geometric distances)
+                for node_pos, distance in geometric_distances.items():
+                    self.cache[(node_pos, "switch")] = (
+                        distance  # Geometric (not physics)
                     )
-                if geometric_distances is not None:
-                    for node_pos, distance in geometric_distances.items():
-                        self.geometric_cache[(node_pos, "switch")] = distance
+                    self.geometric_cache[(node_pos, "switch")] = distance
+                    next_hop = parents.get(node_pos) if parents else None
+                    self.next_hop_cache[(node_pos, "switch")] = next_hop
+                    # Also compute multi-hop direction for alias (8 hops for inflection points)
+                    multi_hop_direction = self._compute_multi_hop_direction(
+                        node_pos, parents, max_hops=8
+                    )
+                    self.multi_hop_direction_cache[(node_pos, "switch")] = (
+                        multi_hop_direction
+                    )
             elif needs_exit_alias:
-                # Populate cache entries for "exit" alias
-                for node_pos, distance in physics_distances.items():
-                    self.cache[(node_pos, "exit")] = distance
-                    self.next_hop_cache[(node_pos, "exit")] = (
-                        parents.get(node_pos) if parents else None
+                # Populate cache entries for "exit" alias (same geometric distances)
+                for node_pos, distance in geometric_distances.items():
+                    self.cache[(node_pos, "exit")] = distance  # Geometric (not physics)
+                    self.geometric_cache[(node_pos, "exit")] = distance
+                    next_hop = parents.get(node_pos) if parents else None
+                    self.next_hop_cache[(node_pos, "exit")] = next_hop
+                    # Also compute multi-hop direction for alias (8 hops for inflection points)
+                    multi_hop_direction = self._compute_multi_hop_direction(
+                        node_pos, parents, max_hops=8
                     )
-                if geometric_distances is not None:
-                    for node_pos, distance in geometric_distances.items():
-                        self.geometric_cache[(node_pos, "exit")] = distance
+                    self.multi_hop_direction_cache[(node_pos, "exit")] = (
+                        multi_hop_direction
+                    )
 
     def build_cache(
         self,
@@ -402,6 +632,7 @@ class LevelBasedPathDistanceCache:
         self.cache.clear()
         self.geometric_cache.clear()
         self.next_hop_cache.clear()
+        self.multi_hop_direction_cache.clear()
         self._goal_node_to_goal_id.clear()
         self._goal_id_to_goal_pos.clear()
         self._cached_level_data = None

@@ -14,15 +14,27 @@ Key properties:
 - Composability: Multiple potentials can be combined with weights
 
 Discount Factor (γ) Choice:
-- We use γ=1.0 for heuristic potential functions (path distance)
-- This eliminates negative bias: accumulated PBRS = Φ(goal) - Φ(start) exactly
-- For heuristic potentials, γ should NOT match MDP's discount (that's only for learned V(s))
-- Policy invariance holds for any γ, but γ=1.0 is standard for episodic tasks
+- We use γ=0.99 to match PPO gamma for PBRS policy invariance (CRITICAL)
+- Policy invariance guarantee REQUIRES γ_PBRS = γ_PPO (Ng et al. 1999)
+- Benefits of γ=0.99 unified design:
+  * Forward progress: rewarded (0.99·Φ(s') - Φ(s) > 0 when closer to goal)
+  * Backtracking: penalized (loses progress + 1% discount per step)
+  * Oscillation A↔B: GUARANTEED LOSS of -0.01·(Φ(A)+Φ(B)) (cannot break even)
+  * Staying still: -0.01·Φ(current) per step (implicit time pressure)
+  * Single coherent signal: no conflicting time penalty
 
 Mathematical Justification:
-With γ < 1.0, accumulated PBRS = γ*Φ(goal) - Φ(start) + (γ-1)*Σ Φ(intermediate)
-The (γ-1)*Σ term is negative and grows with episode length, causing systematic negative bias.
-With γ=1.0, this bias term vanishes, giving clean telescoping: Φ(goal) - Φ(start).
+With γ=0.99, the implicit time pressure comes from the discount term:
+- Staying still at Φ=0.5: reward = 0.99·0.5 - 0.5 = -0.005/step
+- Staying still at Φ=0.1: reward = 0.99·0.1 - 0.1 = -0.001/step
+The -(1-γ)·Φ term creates natural urgency that scales with potential magnitude.
+
+Example (Φ ∈ [0,1], weight=40, γ=0.99):
+- Forward 12px (ΔΦ=+0.01): PBRS = 40 × (0.99·Φ' - Φ) ≈ +0.39 (positive!)
+- Oscillate A↔B: Net = 40 × (-0.01·Φ_A - 0.01·Φ_B) < 0 (always negative!)
+- Episode PBRS sum = 40 × (0.99^n·Φ_goal - Φ_start - sum of discount terms)
+
+This unified design provides both direction AND urgency in a single signal.
 
 Momentum-Aware Enhancements:
 - Momentum waypoints: Intermediate goals for momentum-building strategies
@@ -59,23 +71,28 @@ def get_path_gradient_from_next_hop(
     goal_id: str,
     spatial_hash: Optional[Any] = None,
     subcell_lookup: Optional[Any] = None,
+    use_multi_hop: bool = True,
 ) -> Optional[Tuple[float, float]]:
-    """Get path gradient using next_hop direction (respects winding paths).
+    """Get path gradient using multi-hop lookahead or next_hop direction.
 
-    Instead of computing direction toward goal (Euclidean), this computes
-    direction toward the next_hop node on the optimal path. This correctly
-    handles levels where the path goes away from the goal first.
+    NEW: Uses multi-hop lookahead by default (weighted direction across next 3-5 hops).
+    This provides anticipatory guidance for sharp turns near hazards, showing the
+    "bent" direction that accounts for upcoming path curvature.
+
+    FALLBACK: If multi-hop not available, uses single next_hop direction.
+    This correctly handles levels where the path goes away from the goal first.
 
     Args:
         player_pos: Current player position (x, y) in world coordinates
         adjacency: Graph adjacency structure
-        level_cache: LevelBasedPathDistanceCache with precomputed next_hop data
+        level_cache: LevelBasedPathDistanceCache with precomputed next_hop/multi_hop data
         goal_id: Goal identifier ("switch" or "exit")
         spatial_hash: Optional spatial hash for fast node lookup
         subcell_lookup: Optional subcell lookup for node snapping
+        use_multi_hop: If True, use multi-hop lookahead (default True)
 
     Returns:
-        Normalized direction vector (dx, dy) pointing toward next_hop,
+        Normalized direction vector (dx, dy) pointing toward optimal path direction,
         or None if at goal or no path available.
     """
     from ...graph.reachability.pathfinding_utils import find_ninja_node
@@ -95,7 +112,14 @@ def get_path_gradient_from_next_hop(
     if ninja_node is None:
         raise ValueError(f"Ninja node is None for position: {player_pos}")
 
-    # Get next hop toward goal from precomputed cache
+    # Try multi-hop lookahead first (provides anticipatory guidance for sharp turns)
+    if use_multi_hop and hasattr(level_cache, "get_multi_hop_direction"):
+        multi_hop_direction = level_cache.get_multi_hop_direction(ninja_node, goal_id)
+        if multi_hop_direction is not None:
+            # Multi-hop direction is already normalized
+            return multi_hop_direction
+
+    # Fallback to single next_hop (myopic but still path-aware)
     next_hop = level_cache.get_next_hop(ninja_node, goal_id)
     if next_hop is None:
         # At goal or no path - no gradient
@@ -137,217 +161,62 @@ class PBRSPotentials:
         graph_data: Optional[Dict[str, Any]] = None,
         scale_factor: float = 1.0,
     ) -> float:
-        """Potential based on GEOMETRIC path distance to objective (in pixels).
+        """Hyperbolic potential: Φ(d) = 1/(1 + d/k) for curriculum robustness.
 
-        Uses geometric path normalization: Φ(s) = 1 - (distance / combined_path_distance)
-        where both distance and combined_path_distance are actual pixel distances.
+        Uses hyperbolic potential function that is:
+        - Absolutely bounded [0, 1] for ANY distance (even d → ∞)
+        - Always produces positive gradient for forward progress
+        - No normalization issues - k is scale parameter, not hard limit
+        - Robust to stale cache and curriculum mismatches
+        - Stronger gradient near goal (derivative ∝ 1/(1+d/k)²)
 
-        IMPORTANT: Uses geometric distances (actual path length in pixels), NOT
-        physics-weighted costs. This ensures PBRS gradients are proportional to
-        actual movement and provides predictable, meaningful reward signals.
+        Two-phase design for switch activation continuity:
+        - Switch phase: Φ ∈ [0.0, 0.5], k = spawn_to_switch_distance
+        - Exit phase: Φ ∈ [0.5, 1.0], k = switch_to_exit_distance
 
-        Returns higher potential when closer to the current objective:
-        - Switch when inactive
-        - Exit when switch is active
+        Mathematical property: For any d' < d, PBRS = γΦ(d') - Φ(d) > 0
+        This GUARANTEES forward progress always yields positive reward.
 
         Args:
-            state: Game state dictionary (must contain _pbrs_combined_path_distance)
-            adjacency: Graph adjacency structure (always present)
-            level_data: Level data object (always present)
-            path_calculator: PathDistanceCalculator instance (uses cached geometric distances)
-            graph_data: Graph data dict with spatial_hash for O(1) node lookup
-            scale_factor: DEPRECATED - no longer used, kept for backward compatibility
+            state: Game state dictionary
+            adjacency: Graph adjacency structure
+            level_data: Level data object
+            path_calculator: PathDistanceCalculator instance
+            graph_data: Graph data dict with spatial_hash
+            scale_factor: DEPRECATED, kept for backward compatibility
 
         Returns:
-            float: Potential in range [0.0, 1.0], linearly proportional to progress.
-                   0.0 at spawn, 1.0 at goal.
+            float: Potential in range [0.0, 1.0], continuous across switch activation
         """
-        # Note: adjacency, level_data, and graph_data are assumed
-        # to always be present. Validation removed for performance.
-
-        # Determine goal position
         from ...constants.physics_constants import (
             EXIT_SWITCH_RADIUS,
             EXIT_DOOR_RADIUS,
             NINJA_RADIUS,
         )
 
+        # Determine goal
         if not state["switch_activated"]:
             goal_pos = (int(state["switch_x"]), int(state["switch_y"]))
             entity_radius = EXIT_SWITCH_RADIUS
+            goal_id = "switch"
         else:
             goal_pos = (int(state["exit_door_x"]), int(state["exit_door_y"]))
             entity_radius = EXIT_DOOR_RADIUS
+            goal_id = "exit"
 
         player_pos = (int(state["player_x"]), int(state["player_y"]))
 
-        # CRITICAL: Validate goal position is not (0, 0) which indicates entity loading issue
-        # Return 0 potential (neutral) if goal position is invalid to avoid cache pollution
+        # Validate goal position
         if goal_pos[0] == 0 and goal_pos[1] == 0:
-            import logging
-
-            _logger = logging.getLogger(__name__)
-            _logger.warning(
-                f"PBRS: Invalid goal position (0, 0) detected! "
-                f"switch_activated={state.get('switch_activated', False)}, "
-                f"Returning 0 potential to avoid cache pollution."
-            )
             return 0.0
 
-        # Extract base_adjacency for pathfinding
         base_adjacency = (
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
 
-        # === PHYSICS-WEIGHTED PBRS (Phase 2.1) ===
-        # Use physics cost instead of geometric distance for normalization
-        # This makes PBRS rewards proportional to physics difficulty reduction
-        #
-        # OLD: distance = get_geometric_distance() → Φ = 1 - (geo_dist / combined_geo)
-        #      Problem: 12px grounded (easy) = same PBRS as 12px aerial (hard)
-        #
-        # NEW: distance = get_distance() → Φ = 1 - (physics_cost / combined_physics_cost)
-        #      Benefit: Completing hard movement = more PBRS, completing easy = less PBRS
-        #      Example: Grounded 12px (cost 0.15) vs aerial 12px (cost 40.0)
-        #               Agent gets 267× more reward for completing the hard part!
+        # Get distance
         try:
-            distance = path_calculator.get_distance(
-                player_pos,
-                goal_pos,
-                adjacency,
-                base_adjacency,
-                level_data=level_data,
-                graph_data=graph_data,
-                entity_radius=entity_radius,
-                ninja_radius=NINJA_RADIUS,
-            )
-            # OPTIMIZATION: Store distance in state for reuse in main_reward_calculator
-            # This avoids redundant pathfinding calls for diagnostic tracking
-            state["_pbrs_last_distance_to_goal"] = distance
-        except Exception as e:
-            raise RuntimeError(
-                f"PBRS physics cost calculation failed: {e}\n"
-                "Check player/goal positions are within level bounds."
-            ) from e
-
-        # Get combined physics cost for normalization (Phase 2.1)
-        combined_physics_cost = state.get("_pbrs_combined_physics_cost")
-        if combined_physics_cost is None:
-            raise RuntimeError(
-                "Missing '_pbrs_combined_physics_cost' in state. "
-                "Should be set by PBRSCalculator.calculate_combined_potential()."
-            )
-
-        # Also get geometric distance for diagnostics
-        combined_path_distance = state.get("_pbrs_combined_path_distance", 800.0)
-
-        # Handle unreachable goals or physics cost failures
-        if distance == float("inf") or combined_physics_cost == float("inf"):
-            # CRITICAL FIX: If physics cost is inf (cache build failure), fall back to geometric
-            if combined_physics_cost == float(
-                "inf"
-            ) and combined_path_distance != float("inf"):
-                _logger = logging.getLogger(__name__)
-                _logger.warning(
-                    f"PBRS: Physics cost is infinite but geometric distance is valid. "
-                    f"Falling back to geometric normalization. "
-                    f"player_pos={player_pos}, goal_pos={goal_pos}, "
-                    f"combined_path_distance={combined_path_distance:.1f}px"
-                )
-                # Fall back to geometric distance normalization
-                try:
-                    geometric_distance = path_calculator.get_geometric_distance(
-                        player_pos,
-                        goal_pos,
-                        adjacency,
-                        base_adjacency,
-                        level_data,
-                        graph_data,
-                        entity_radius,
-                        NINJA_RADIUS,
-                        goal_id="switch"
-                        if not state.get("switch_activated", False)
-                        else "exit",
-                    )
-
-                    if geometric_distance != float("inf"):
-                        # Use geometric normalization as fallback
-                        MIN_NORMALIZATION = 800.0
-                        effective_norm = max(MIN_NORMALIZATION, combined_path_distance)
-                        normalized_distance = geometric_distance / effective_norm
-                        potential = max(0.0, min(1.0, 1.0 - normalized_distance))
-
-                        # Store diagnostic info
-                        state["_pbrs_normalized_distance"] = normalized_distance
-                        state["_pbrs_normalized_physics_cost"] = float("inf")
-                        state["_pbrs_fallback_mode"] = "geometric"
-
-                        _logger.info(
-                            f"PBRS: Using geometric fallback. "
-                            f"geometric_distance={geometric_distance:.1f}px, "
-                            f"potential={potential:.4f}"
-                        )
-                        return potential
-                except Exception as e:
-                    _logger.error(f"PBRS: Geometric fallback failed: {e}")
-
-            # Truly unreachable or fallback failed: return zero potential (no gradient)
-            _logger = logging.getLogger(__name__)
-            _logger.error(
-                f"PBRS: Returning ZERO potential (no gradient)! "
-                f"distance={distance}, combined_physics_cost={combined_physics_cost}, "
-                f"combined_path_distance={combined_path_distance}, "
-                f"player_pos={player_pos}, goal_pos={goal_pos}"
-            )
-            state["_pbrs_normalized_distance"] = float("inf")
-            state["_pbrs_normalized_physics_cost"] = float("inf")
-            state["_pbrs_fallback_mode"] = "none"
-            return 0.0
-
-        # === PHYSICS-WEIGHTED NORMALIZATION (Phase 2.1) ===
-        # Φ(s) = 1 - (remaining_physics_cost / total_physics_cost)
-        #
-        # This makes PBRS rewards proportional to physics difficulty reduction:
-        # - Completing grounded horizontal (low cost): small PBRS reward
-        # - Completing aerial horizontal (high cost): large PBRS reward
-        # - Completing upward jumps (high cost): large PBRS reward
-        #
-        # Adaptive minimum for strong gradients on short/easy levels:
-        # - Physics costs can be very low for pure grounded paths (~36 for 800px)
-        # - Use min threshold to ensure adequate gradient strength
-        # - For complex paths with jumps, physics cost >> geometric distance
-        #
-        # Estimate minimum cost: 800px pure grounded = 800 * 0.15 ≈ 120
-        MIN_NORMALIZATION_COST = 120.0
-        ADAPTIVE_FACTOR = 1.0
-        effective_normalization = max(
-            MIN_NORMALIZATION_COST, combined_physics_cost * ADAPTIVE_FACTOR
-        )
-
-        # PHYSICS-WEIGHTED POTENTIAL: Reflects movement difficulty
-        # Φ(s) = 1 - (remaining_cost / total_cost)
-        #
-        # Properties:
-        # - Gradient proportional to cost reduction: dΦ/dcost = -1/effective_normalization
-        # - At spawn: potential = 0.0 (normalized_cost = 1.0)
-        # - At goal: potential = 1.0 (cost = 0)
-        # - Hard movements (high cost reduction) = higher PBRS reward
-        # - Easy movements (low cost reduction) = lower PBRS reward
-        # - PBRS-compatible: F(s,s') = γ * Φ(s') - Φ(s) maintains policy invariance
-        #
-        # Example with weight=20.0:
-        #   - Complete 12px grounded (cost 1.8): PBRS = 20 × (1.8/1200) = 0.03
-        #   - Complete 12px aerial (cost 480): PBRS = 20 × (480/1200) = 8.0
-        #   - Agent learns: grounded movement is preferred (natural from reward structure)
-
-        normalized_cost = distance / effective_normalization
-        potential = 1.0 - normalized_cost
-
-        # Store for diagnostic logging
-        state["_pbrs_normalized_physics_cost"] = normalized_cost
-        # Keep geometric for comparison
-        state["_pbrs_normalized_distance"] = (
-            path_calculator.get_geometric_distance(
+            distance = path_calculator.get_geometric_distance(
                 player_pos,
                 goal_pos,
                 adjacency,
@@ -356,14 +225,39 @@ class PBRSPotentials:
                 graph_data,
                 entity_radius,
                 NINJA_RADIUS,
-                goal_id="switch"
-                if not state.get("switch_activated", False)
-                else "exit",
+                goal_id=goal_id,
             )
-            / max(800.0, combined_path_distance)
-            if combined_path_distance != float("inf")
-            else float("inf")
-        )
+            state["_pbrs_last_distance_to_goal"] = distance
+        except Exception as e:
+            raise RuntimeError(f"PBRS distance failed: {e}") from e
+
+        # Get scale parameters from cache
+        spawn_to_switch_distance = state.get("_pbrs_spawn_to_switch_distance", 400.0)
+        switch_to_exit_distance = state.get("_pbrs_switch_to_exit_distance", 400.0)
+
+        if distance == float("inf"):
+            return 0.0
+
+        # === HYPERBOLIC POTENTIAL ===
+        # Φ(d) = 1/(1 + d/k) where k is characteristic distance
+        # Bounded [0, 1] for ALL distances, always positive gradient
+        MIN_SCALE = 100.0
+
+        if not state["switch_activated"]:
+            # Switch phase: k from spawn-to-switch, scale to [0, 0.5]
+            k = max(MIN_SCALE, spawn_to_switch_distance)
+            potential_raw = 1.0 / (1.0 + distance / k)
+            potential = 0.5 * potential_raw
+        else:
+            # Exit phase: k from switch-to-exit, scale to [0.5, 1.0]
+            k = max(MIN_SCALE, switch_to_exit_distance)
+            potential_raw = 1.0 / (1.0 + distance / k)
+            potential = 0.5 + 0.5 * potential_raw
+
+        # Diagnostic storage
+        state["_pbrs_normalized_distance"] = distance / k
+        state["_pbrs_potential_raw"] = potential_raw
+        state["_pbrs_k_scale"] = k
 
         return max(0.0, min(1.0, potential))
 
@@ -793,11 +687,33 @@ class PBRSCalculator:
         self._cached_combined_physics_cost: Optional[float] = None
         self._physics_cost_cache_key: Optional[str] = None
 
-        # OPTIMIZATION: Position-based caching to avoid repeated pathfinding
-        # Only recalculate path distance if ninja moves beyond threshold
-        # 6px threshold: typical action moves 0.66-3px, so this allows 2-9 cached steps
-        # Increased from 3px for better performance on large levels
-        self._position_cache_threshold_sq = 6.0 * 6.0  # 6px squared (avoid sqrt)
+        # Cache for phase-specific geometric distances (for two-phase normalization)
+        self._cached_spawn_to_switch_distance: Optional[float] = None
+        self._cached_switch_to_exit_distance: Optional[float] = None
+
+        # === POSITION-BASED CACHING CONFIGURATION ===
+        #
+        # DISABLED (threshold = 0.0): Position caching would prevent dense rewards
+        #
+        # PROBLEM WITH CACHING: Agent moves 0.05-3.33px per step with frame_skip=4.
+        # If we cached potentials when movement < 6px:
+        # - Slow movements (0.05-0.5px): Cached for 144-14400 steps!
+        # - Medium movements (1-2px): Cached for 9-36 steps
+        # - Fast movements (3px): Cached for 4 steps
+        #
+        # Result: PBRS = 0 for most steps (potential unchanged from cache)
+        # This defeats the purpose of dense rewards and makes learning impossible.
+        #
+        # SOLUTION: Disable position caching (threshold = 0.0) and rely on:
+        # 1. Level cache (precomputed node→goal distances): O(1) lookup
+        # 2. Sub-node projection (next-hop interpolation): O(1) vector math
+        # 3. Step cache (dedupes within-step calls): Cleared each step
+        #
+        # Combined: Dense per-frame potential updates with minimal overhead (~0.1ms)
+        # Each 0.05px movement produces proportional PBRS gradient.
+        self._position_cache_threshold_sq = (
+            0.0  # DISABLED - recalculate every step for dense rewards
+        )
 
         # PROFILING: Track cache hit/miss rates for optimization tuning
         self._cache_hits = 0
@@ -868,29 +784,40 @@ class PBRSCalculator:
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         level_data: Any,
         graph_data: Optional[Dict[str, Any]] = None,
+        curriculum_manager: Optional[Any] = None,
     ) -> Tuple[float, float]:
-        """Compute combined path metrics from spawn→switch + switch→exit.
+        """Compute combined geometric path distance from spawn→switch + switch→exit.
 
-        Returns BOTH geometric distance and physics cost for Phase 2.1 physics-weighted PBRS.
+        Returns geometric distance along the physics-optimal path for PBRS normalization.
+        Physics costs are used during pathfinding to determine the optimal route, but
+        the returned value is the actual pixel length of that route.
+
+        CURRICULUM-AWARE: When curriculum_manager is provided and enabled, uses
+        curriculum-adjusted goal positions instead of original level_data positions.
+        This ensures PBRS normalization matches the actual goals the agent is working toward.
 
         GEOMETRIC distance: Actual path length in pixels (12px cardinal, ~17px diagonal)
+            - Measured along the physics-optimal path (not the geometrically-shortest path)
+            - Used for PBRS hyperbolic scale: Φ(d) = 1/(1 + d/k)
+            - Ensures consistent reward per pixel regardless of terrain difficulty
+
         PHYSICS cost: Physics-weighted cost reflecting movement difficulty
             - Grounded horizontal: 0.15× (cheapest)
             - Aerial horizontal: 40× (very expensive)
             - Upward: varies (jump costs, aerial chain costs)
             - Downward: 0.5× (gravity assists)
-
-        Physics-weighted PBRS uses physics cost for normalization to make rewards
-        proportional to difficulty reduction, not just distance reduction.
+            - Used ONLY for pathfinding (finding optimal route), NOT for PBRS normalization
 
         Args:
-            adjacency: Graph adjacency structure (always present)
+            adjacency: Graph adjacency structure (always present, requires physics_cache)
             level_data: Level data object with start_position and entities
-            graph_data: Graph data dict with spatial_hash for O(1) node lookup
+            graph_data: Graph data dict with spatial_hash and physics_cache (REQUIRED)
+            curriculum_manager: Optional IntermediateGoalManager for curriculum-adjusted positions
 
         Returns:
-            Tuple of (combined_geometric_distance, combined_physics_cost) in pixels and cost units
-            Returns (float('inf'), float('inf')) if either path is unreachable
+            Tuple of (combined_geometric_distance, combined_physics_cost, spawn_to_switch_geo, switch_to_exit_geo)
+            in pixels and cost units. Returns (float('inf'), float('inf'), float('inf'), float('inf'))
+            if either path is unreachable
         """
         from ...constants.entity_types import EntityType
         from ...constants.physics_constants import (
@@ -907,41 +834,52 @@ class PBRSCalculator:
         start_position = getattr(level_data, "start_position", None)
         spawn_pos = (int(start_position[0]), int(start_position[1]))
 
-        # Get switch position from first exit switch
-        exit_switches = level_data.get_entities_by_type(EntityType.EXIT_SWITCH)
-        if not exit_switches:
-            logger.warning(
-                "calculate_level_surface_area: No exit switches found in level_data! "
-                "Entity extraction may have failed."
+        # CURRICULUM-AWARE: Use curriculum positions if active
+        if curriculum_manager is not None and curriculum_manager.config.enabled:
+            switch_pos = curriculum_manager.get_curriculum_switch_position()
+            exit_pos = curriculum_manager.get_curriculum_exit_position()
+            logger.info(
+                f"[PBRS_CACHE] Using curriculum-adjusted positions: "
+                f"switch={switch_pos}, exit={exit_pos}, "
+                f"stage={curriculum_manager.state.unified_stage}/{curriculum_manager._num_stages}"
             )
-            return (float("inf"), float("inf"))
-        switch = exit_switches[0]
-        switch_x = switch.get("x", 0)
-        switch_y = switch.get("y", 0)
-        if switch_x == 0 and switch_y == 0:
-            logger.warning(
-                f"calculate_level_surface_area: Switch position is (0, 0), "
-                f"entity data may be incomplete. Switch entity: {switch}"
-            )
-        switch_pos = (int(switch_x), int(switch_y))
+        else:
+            # Original: extract from level_data
+            # Get switch position from first exit switch
+            exit_switches = level_data.get_entities_by_type(EntityType.EXIT_SWITCH)
+            if not exit_switches:
+                logger.warning(
+                    "calculate_level_surface_area: No exit switches found in level_data! "
+                    "Entity extraction may have failed."
+                )
+                return (float("inf"), float("inf"), float("inf"), float("inf"))
+            switch = exit_switches[0]
+            switch_x = switch.get("x", 0)
+            switch_y = switch.get("y", 0)
+            if switch_x == 0 and switch_y == 0:
+                logger.warning(
+                    f"calculate_level_surface_area: Switch position is (0, 0), "
+                    f"entity data may be incomplete. Switch entity: {switch}"
+                )
+            switch_pos = (int(switch_x), int(switch_y))
 
-        # Get exit door position from first exit door
-        exit_doors = level_data.get_entities_by_type(EntityType.EXIT_DOOR)
-        if not exit_doors:
-            logger.warning(
-                "calculate_level_surface_area: No exit doors found in level_data! "
-                "Entity extraction may have failed."
-            )
-            return (float("inf"), float("inf"))
-        exit_door = exit_doors[0]
-        exit_x = exit_door.get("x", 0)
-        exit_y = exit_door.get("y", 0)
-        if exit_x == 0 and exit_y == 0:
-            logger.warning(
-                f"calculate_level_surface_area: Exit door position is (0, 0), "
-                f"entity data may be incomplete. Exit door entity: {exit_door}"
-            )
-        exit_pos = (int(exit_x), int(exit_y))
+            # Get exit door position from first exit door
+            exit_doors = level_data.get_entities_by_type(EntityType.EXIT_DOOR)
+            if not exit_doors:
+                logger.warning(
+                    "calculate_level_surface_area: No exit doors found in level_data! "
+                    "Entity extraction may have failed."
+                )
+                return (float("inf"), float("inf"), float("inf"), float("inf"))
+            exit_door = exit_doors[0]
+            exit_x = exit_door.get("x", 0)
+            exit_y = exit_door.get("y", 0)
+            if exit_x == 0 and exit_y == 0:
+                logger.warning(
+                    f"calculate_level_surface_area: Exit door position is (0, 0), "
+                    f"entity data may be incomplete. Exit door entity: {exit_door}"
+                )
+            exit_pos = (int(exit_x), int(exit_y))
 
         # Extract base_adjacency and spatial lookups for pathfinding
         # IMPORTANT: Use base_adjacency for surface area calculation to disregard locked doors
@@ -954,10 +892,21 @@ class PBRSCalculator:
         )
         physics_cache = graph_data.get("node_physics") if graph_data else None
 
+        # STRICT VALIDATION: Physics cache MUST be available for PBRS pathfinding
+        if physics_cache is None:
+            raise ValueError(
+                "Physics cache (node_physics) not found in graph_data. "
+                "PBRS requires physics-aware pathfinding to determine optimal routes. "
+                "Ensure graph building includes physics cache precomputation."
+            )
+
         # Calculate spawn→switch metrics (both geometric and physics cost)
-        # Phase 2.1: Track physics cost for physics-weighted PBRS normalization
+        # Geometric distance used for PBRS normalization
+        # Physics cost tracked for diagnostics and backward compatibility
         try:
-            # Geometric distance (pixels)
+            # CRITICAL: Pass mine cache and level data for mine avoidance
+            # Without these, paths will ignore mines and take dangerous routes
+            # Geometric distance (pixels) along physics-optimal path
             spawn_to_switch_geo = calculate_geometric_path_distance(
                 spawn_pos,
                 switch_pos,
@@ -968,12 +917,15 @@ class PBRSCalculator:
                 subcell_lookup=subcell_lookup,
                 entity_radius=EXIT_SWITCH_RADIUS,
                 ninja_radius=NINJA_RADIUS,
+                level_data=level_data,  # CRITICAL: Pass for mine proximity
+                mine_proximity_cache=self.path_calculator.mine_proximity_cache,  # CRITICAL: Pass for mine avoidance
+                mine_sdf=self.path_calculator.mine_sdf,  # Optional: velocity-aware costs
             )
 
-            # Physics cost (difficulty-weighted)
-            # Use path_calculator.get_distance() which handles cache building and fallback
+            # Physics cost (difficulty-weighted) - tracked for diagnostics only
+            # PBRS now uses geometric distances for normalization, but we track physics
+            # costs for backward compatibility and diagnostic comparisons
             # Note: This call requires mine_proximity_cache and physics_cache to be built
-            # If caches aren't ready yet, this may return inf - that's okay for initialization
             try:
                 spawn_to_switch_physics = self.path_calculator.get_distance(
                     spawn_pos,
@@ -986,14 +938,12 @@ class PBRSCalculator:
                     ninja_radius=NINJA_RADIUS,
                 )
             except (ValueError, RuntimeError) as e:
-                # Caches not built yet (e.g., first call during initialization)
-                # Fall back to inf - will be computed properly on next episode
-                logger.error(
+                # STRICT MODE: Physics cache must be available for PBRS pathfinding
+                raise RuntimeError(
                     f"CRITICAL: Physics cost calculation failed for spawn→switch: {e}. "
-                    f"This will cause all PBRS potentials to be 0! "
-                    f"Caches may not be built properly."
-                )
-                spawn_to_switch_physics = float("inf")
+                    f"Physics cache must be built before PBRS can operate. "
+                    f"This indicates incomplete graph initialization."
+                ) from e
 
         except Exception as e:
             logger.warning(
@@ -1004,6 +954,8 @@ class PBRSCalculator:
 
         # Calculate switch→exit metrics (both geometric and physics cost)
         try:
+            # CRITICAL: Pass mine cache and level data for mine avoidance
+            # Without these, paths will ignore mines and take dangerous routes
             # Geometric distance (pixels)
             switch_to_exit_geo = calculate_geometric_path_distance(
                 switch_pos,
@@ -1015,10 +967,14 @@ class PBRSCalculator:
                 subcell_lookup=subcell_lookup,
                 entity_radius=EXIT_DOOR_RADIUS,
                 ninja_radius=NINJA_RADIUS,
+                level_data=level_data,  # CRITICAL: Pass for mine proximity
+                mine_proximity_cache=self.path_calculator.mine_proximity_cache,  # CRITICAL: Pass for mine avoidance
+                mine_sdf=self.path_calculator.mine_sdf,  # Optional: velocity-aware costs
             )
 
-            # Physics cost (difficulty-weighted)
-            # Use path_calculator.get_distance() which handles cache building and fallback
+            # Physics cost (difficulty-weighted) - tracked for diagnostics only
+            # PBRS now uses geometric distances for normalization, but we track physics
+            # costs for backward compatibility and diagnostic comparisons
             try:
                 switch_to_exit_physics = self.path_calculator.get_distance(
                     switch_pos,
@@ -1031,13 +987,12 @@ class PBRSCalculator:
                     ninja_radius=NINJA_RADIUS,
                 )
             except (ValueError, RuntimeError) as e:
-                # Caches not built yet (e.g., first call during initialization)
-                logger.error(
+                # STRICT MODE: Physics cache must be available for PBRS pathfinding
+                raise RuntimeError(
                     f"CRITICAL: Physics cost calculation failed for switch→exit: {e}. "
-                    f"This will cause all PBRS potentials to be 0! "
-                    f"Caches may not be built properly."
-                )
-                switch_to_exit_physics = float("inf")
+                    f"Physics cache must be built before PBRS can operate. "
+                    f"This indicates incomplete graph initialization."
+                ) from e
         except Exception as e:
             import traceback
 
@@ -1048,22 +1003,22 @@ class PBRSCalculator:
 
         # Combine distances and costs
         if spawn_to_switch_geo == float("inf") or switch_to_exit_geo == float("inf"):
-            logger.warning(
-                f"Combined path distance is infinite (unreachable goal). "
+            raise RuntimeError(
+                f"Combined geometric path distance is infinite (unreachable goal). "
                 f"spawn→switch: {spawn_to_switch_geo:.1f}, switch→exit: {switch_to_exit_geo:.1f}. "
-                f"Positions: spawn={spawn_pos}, switch={switch_pos}, exit={exit_pos}"
+                f"Positions: spawn={spawn_pos}, switch={switch_pos}, exit={exit_pos}. "
+                f"This indicates a level generation or pathfinding bug."
             )
-            return (float("inf"), float("inf"))
 
         if spawn_to_switch_physics == float("inf") or switch_to_exit_physics == float(
             "inf"
         ):
-            logger.warning(
+            raise RuntimeError(
                 f"Combined physics cost is infinite (unreachable goal). "
                 f"spawn→switch: {spawn_to_switch_physics:.1f}, switch→exit: {switch_to_exit_physics:.1f}. "
-                f"Positions: spawn={spawn_pos}, switch={switch_pos}, exit={exit_pos}"
+                f"Positions: spawn={spawn_pos}, switch={switch_pos}, exit={exit_pos}. "
+                f"This indicates physics cache was not built correctly."
             )
-            return (float("inf"), float("inf"))
 
         combined_distance = spawn_to_switch_geo + switch_to_exit_geo
         combined_physics_cost = spawn_to_switch_physics + switch_to_exit_physics
@@ -1100,7 +1055,12 @@ class PBRSCalculator:
                 f"This indicates a pathfinding bug."
             )
 
-        return (combined_distance, combined_physics_cost)
+        return (
+            combined_distance,
+            combined_physics_cost,
+            spawn_to_switch_geo,
+            switch_to_exit_geo,
+        )
 
     def _get_cached_or_compute_potential(
         self,
@@ -1225,66 +1185,58 @@ class PBRSCalculator:
         self._last_player_pos = current_pos
         self._last_goal_id = goal_id
 
-        # Cache the geometric distance and node info for interpolation
-        # OPTIMIZATION: Reuse node info from path_calculator if available
-        # This avoids redundant find_ninja_node calls (saves ~1.3ms per step)
-        if self.path_calculator is not None:
-            # Check if path_calculator has cached the node from get_geometric_distance
-            # Note: goal_id here is "switch" or "exit" but path_calculator uses
-            # "exit_switch_0" or "exit_door_0" - check if types match
-            cached_goal_id = self.path_calculator._last_goal_id or ""
-            goal_type_matches = (
-                goal_id == "switch" and "switch" in cached_goal_id
-            ) or (goal_id == "exit" and "door" in cached_goal_id)
-            if self.path_calculator._last_start_node is not None and goal_type_matches:
-                # Reuse cached node info from path_calculator
-                self._cached_start_node = self.path_calculator._last_start_node
-                self._cached_distance = self.path_calculator._last_geometric_distance
-                self._cached_next_hop = self.path_calculator._last_next_hop
-            elif self.path_calculator.level_cache is not None:
-                # Fallback: find node manually (shouldn't normally happen)
-                from ...graph.reachability.pathfinding_utils import (
-                    find_ninja_node,
-                    extract_spatial_lookups_from_graph_data,
+        # Check if path_calculator has cached the node from get_geometric_distance
+        # Note: goal_id here is "switch" or "exit" but path_calculator uses
+        # "exit_switch_0" or "exit_door_0" - check if types match
+        cached_goal_id = self.path_calculator._last_goal_id or ""
+        goal_type_matches = (goal_id == "switch" and "switch" in cached_goal_id) or (
+            goal_id == "exit" and "door" in cached_goal_id
+        )
+        if self.path_calculator._last_start_node is not None and goal_type_matches:
+            # Reuse cached node info from path_calculator
+            self._cached_start_node = self.path_calculator._last_start_node
+            self._cached_distance = self.path_calculator._last_geometric_distance
+            self._cached_next_hop = self.path_calculator._last_next_hop
+        elif self.path_calculator.level_cache is not None:
+            # Fallback: find node manually (shouldn't normally happen)
+            from ...graph.reachability.pathfinding_utils import (
+                find_ninja_node,
+                extract_spatial_lookups_from_graph_data,
+            )
+
+            spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+                graph_data
+            )
+
+            # Find current node
+            start_node = find_ninja_node(
+                (int(current_pos[0]), int(current_pos[1])),
+                adjacency,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=PLAYER_RADIUS,
+            )
+
+            if start_node is not None:
+                self._cached_start_node = start_node
+
+                # Get cached distance from level cache
+                goal_pos = self.path_calculator.level_cache._goal_id_to_goal_pos.get(
+                    goal_id
                 )
-
-                spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
-                    graph_data
-                )
-
-                # Find current node
-                start_node = find_ninja_node(
-                    (int(current_pos[0]), int(current_pos[1])),
-                    adjacency,
-                    spatial_hash=spatial_hash,
-                    subcell_lookup=subcell_lookup,
-                    ninja_radius=PLAYER_RADIUS,
-                )
-
-                if start_node is not None:
-                    self._cached_start_node = start_node
-
-                    # Get cached distance from level cache
-                    goal_pos = (
-                        self.path_calculator.level_cache._goal_id_to_goal_pos.get(
-                            goal_id
+                if goal_pos is not None:
+                    cached_dist = (
+                        self.path_calculator.level_cache.get_geometric_distance(
+                            start_node, goal_pos, goal_id
                         )
                     )
-                    if goal_pos is not None:
-                        cached_dist = (
-                            self.path_calculator.level_cache.get_geometric_distance(
-                                start_node, goal_pos, goal_id
-                            )
-                        )
-                        if cached_dist != float("inf"):
-                            self._cached_distance = cached_dist
+                    if cached_dist != float("inf"):
+                        self._cached_distance = cached_dist
 
-                    # Cache next_hop for interpolation
-                    self._cached_next_hop = (
-                        self.path_calculator.level_cache.get_next_hop(
-                            start_node, goal_id
-                        )
-                    )
+                # Cache next_hop for interpolation
+                self._cached_next_hop = self.path_calculator.level_cache.get_next_hop(
+                    start_node, goal_id
+                )
 
         state_with_metrics["_pbrs_cache_hit"] = False
         return objective_pot
@@ -1345,6 +1297,7 @@ class PBRSCalculator:
         graph_data: Optional[Dict[str, Any]] = None,
         objective_weight: float = 1.0,
         scale_factor: float = 1.0,
+        curriculum_manager: Optional[Any] = None,
     ) -> float:
         """Calculate objective distance potential (simplified, curriculum-aware).
 
@@ -1355,6 +1308,7 @@ class PBRSCalculator:
             graph_data: Graph data dict with spatial_hash for O(1) node lookup
             objective_weight: Curriculum-scaled weight from RewardConfig (default 1.0)
             scale_factor: Normalization adjustment from RewardConfig (default 1.0)
+            curriculum_manager: Optional IntermediateGoalManager for curriculum-adjusted goal positions
 
         Returns:
             float: Objective distance potential (curriculum-scaled)
@@ -1407,12 +1361,18 @@ class PBRSCalculator:
             (
                 self._cached_combined_path_distance,
                 self._cached_combined_physics_cost,
-            ) = self._compute_combined_path_distance(adjacency, level_data, graph_data)
+                self._cached_spawn_to_switch_distance,
+                self._cached_switch_to_exit_distance,
+            ) = self._compute_combined_path_distance(
+                adjacency, level_data, graph_data, curriculum_manager
+            )
             self._path_distance_cache_key = path_cache_key
             logger.debug(
                 f"Cached combined path metrics for level {level_id}: "
                 f"geometric={self._cached_combined_path_distance:.1f}px, "
-                f"physics_cost={self._cached_combined_physics_cost:.1f}"
+                f"physics_cost={self._cached_combined_physics_cost:.1f}, "
+                f"spawn→switch={self._cached_spawn_to_switch_distance:.1f}px, "
+                f"switch→exit={self._cached_switch_to_exit_distance:.1f}px"
             )
 
         # Add metrics to state for potential calculation
@@ -1423,6 +1383,12 @@ class PBRSCalculator:
         )
         state_with_metrics["_pbrs_combined_physics_cost"] = (
             self._cached_combined_physics_cost
+        )
+        state_with_metrics["_pbrs_spawn_to_switch_distance"] = (
+            self._cached_spawn_to_switch_distance
+        )
+        state_with_metrics["_pbrs_switch_to_exit_distance"] = (
+            self._cached_switch_to_exit_distance
         )
 
         current_pos = (float(state["player_x"]), float(state["player_y"]))
@@ -1461,6 +1427,9 @@ class PBRSCalculator:
         state["_pbrs_combined_path_distance"] = state_with_metrics.get(
             "_pbrs_combined_path_distance"
         )
+        state["_pbrs_combined_physics_cost"] = state_with_metrics.get(
+            "_pbrs_combined_physics_cost"
+        )
         state["_pbrs_surface_area"] = state_with_metrics.get("_pbrs_surface_area")
 
         # Copy timing data for profiling
@@ -1468,63 +1437,17 @@ class PBRSCalculator:
 
         # === EMERGENCY PBRS DIAGNOSTIC LOGGING ===
         # Log potential calculation for debugging zero-gradient bug
-        if level_id is not None:
-            logger.debug(
-                f"[PBRS_EMERGENCY] level={level_id}, "
-                f"objective_pot={objective_pot:.4f}, "
-                f"combined_physics={state_with_metrics.get('_pbrs_combined_physics_cost', 'MISSING')}, "
-                f"combined_path={state_with_metrics.get('_pbrs_combined_path_distance', 'MISSING')}, "
-                f"switch_activated={state.get('switch_activated', False)}"
-            )
+        # if level_id is not None:
+        #     logger.debug(
+        #         f"[PBRS_EMERGENCY] level={level_id}, "
+        #         f"objective_pot={objective_pot:.4f}, "
+        #         f"combined_physics={state_with_metrics.get('_pbrs_combined_physics_cost', 'MISSING')}, "
+        #         f"combined_path={state_with_metrics.get('_pbrs_combined_path_distance', 'MISSING')}, "
+        #         f"switch_activated={state.get('switch_activated', False)}"
+        #     )
 
-        # === VELOCITY ALIGNMENT WITH NEXT-HOP GRADIENT ===
-        # Uses next_hop direction (respects winding paths) instead of Euclidean direction.
-        # This provides continuous directional guidance even when optimal path goes away
-        # from the goal first.
-        velocity_alignment = 0.0
-        path_gradient = None
-
-        # Get curriculum-adaptive velocity alignment weight (Phase 1.2)
-        # Uses reward_config if available, otherwise falls back to static constant
-        if self.reward_config is not None:
-            velocity_weight = self.reward_config.velocity_alignment_weight
-        else:
-            # Fallback to static constant for backward compatibility
-            from .reward_constants import (
-                VELOCITY_ALIGNMENT_WEIGHT as STATIC_VELOCITY_WEIGHT,
-            )
-
-            velocity_weight = STATIC_VELOCITY_WEIGHT
-
-        # Only compute if we have a level cache with next_hop data and weight > 0
-        if velocity_weight > 0:
-            # Determine goal_id based on switch state
-            goal_id = "switch" if not state.get("switch_activated", False) else "exit"
-
-            # Extract spatial lookup from graph_data
-            spatial_hash = graph_data.get("spatial_hash") if graph_data else None
-            subcell_lookup = graph_data.get("subcell_lookup") if graph_data else None
-
-            # Get path gradient from next_hop (respects winding paths)
-            path_gradient = get_path_gradient_from_next_hop(
-                player_pos=(state["player_x"], state["player_y"]),
-                adjacency=adjacency,
-                level_cache=self.path_calculator.level_cache,
-                goal_id=goal_id,
-                spatial_hash=spatial_hash,
-                subcell_lookup=subcell_lookup,
-            )
-
-            if path_gradient is not None:
-                # Compute velocity alignment with path gradient
-                velocity_alignment = PBRSPotentials.velocity_alignment_potential(
-                    state, path_gradient=path_gradient
-                )
-
-        # Store for TensorBoard logging
-        state["_pbrs_velocity_alignment"] = velocity_alignment
-        state["_pbrs_velocity_weight"] = velocity_weight
-        state["_pbrs_path_gradient"] = path_gradient
+        # SIMPLIFIED: Removed velocity alignment - PBRS gradient (position-based potential
+        # differences) already provides directional signal
 
         # Apply phase-specific scaling (switch vs exit) and curriculum weight
         if not state.get("switch_activated", False):
@@ -1532,18 +1455,17 @@ class PBRSCalculator:
         else:
             potential = PBRS_EXIT_DISTANCE_SCALE * objective_pot * objective_weight
 
-        # CRITICAL FIX: DO NOT add velocity alignment to potential!
-        # Velocity alignment should be a separate instantaneous reward, not part of PBRS potential.
-        # Including it in the potential creates large rewards for direction changes (velocity swings)
-        # independent of actual progress, incentivizing oscillation near spawn.
-        #
-        # REMOVED: potential += velocity_weight * velocity_alignment
-        #
-        # Velocity alignment will be applied as separate reward in main_reward_calculator.py
-        # This keeps PBRS purely position-based (as intended by Ng et al. 1999)
+        # # CRITICAL DEBUG: Log potential calculation to diagnose zero PBRS
+        # if objective_pot == 0.0 or potential == 0.0:
+        #     logger.error(
+        #         f"[POTENTIAL_ZERO] objective_pot={objective_pot:.6f}, "
+        #         f"objective_weight={objective_weight:.2f}, "
+        #         f"potential={potential:.6f}, "
+        #         f"combined_physics={state_with_metrics.get('_pbrs_combined_physics_cost', 'MISSING')}, "
+        #         f"combined_path={state_with_metrics.get('_pbrs_combined_path_distance', 'MISSING')}"
+        #     )
 
-        # Allow negative potentials for stronger wrong-direction penalties
-        # Clamping to 0 was eliminating gradient signal when moving away from goal
+        # PBRS purely position-based (Ng et al. 1999) - no velocity components
         return potential
 
     def set_momentum_waypoints(

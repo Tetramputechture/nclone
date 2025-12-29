@@ -137,40 +137,39 @@ def _check_subnode_validity_simple(tile_type: int, pixel_x: int, pixel_y: int) -
 
     # Short mild slopes (18-21)
     if tile_type == 18:  # Mild slope up-left, short rise from left edge to middle
-        # Line from (0, 12) to (24, 0)
-        # Solid is below line
+        # Line from (0, 12) to (24, 0): y = 12 - 0.5x
+        # Solid is above line, traversable is below line
         return pixel_y >= (12 - pixel_x * 12 / 24)
     if tile_type == 19:  # Mild slope up-right, short rise from middle to right edge
-        # Line from (0, 0) to (24, 12)
-        # Solid is below line
+        # Line from (0, 0) to (24, 12): y = 0.5x
+        # Solid is above line, traversable is below line
         return pixel_y >= (pixel_x * 12 / 24)
     if tile_type == 20:  # Mild slope down-right, short drop from middle to right edge
-        # Line from (24, 12) to (0, 24)
-        # Solid is above line
-        return pixel_y <= (12 + pixel_x * 12 / 24)
-    if tile_type == 21:  # Mild slope down-left, short drop from left edge to middle
-        # Line from (24, 24) to (0, 12)
-        # Solid is above line
+        # Line from (24, 12) to (0, 24): y = 24 - 0.5x
+        # Solid is below line, traversable is above line
         return pixel_y <= (24 - pixel_x * 12 / 24)
+    if tile_type == 21:  # Mild slope down-left, short drop from left edge to middle
+        # Line from (24, 24) to (0, 12): y = 12 + 0.5x
+        # Solid is below line, traversable is above/on line
+        return pixel_y <= (12 + pixel_x * 12 / 24)
 
     # Raised mild slopes (22-25)
     if tile_type == 22:  # Raised mild slope, platform on left with gentle rise
-        # Line from (0, 24) to (24, 12)
-        # Solid is below line
+        # Line from (0, 24) to (24, 12): y = 24 - 0.5x
+        # Solid is above line, traversable is below/on line (raised platform)
         return pixel_y >= (24 - pixel_x * 12 / 24)
     if tile_type == 23:  # Raised mild slope, platform on right with gentle rise
-        # Line from (0, 12) to (24, 24)
-        # Solid is below line
+        # Line from (0, 12) to (24, 24): y = 12 + 0.5x
+        # Solid is above line, traversable is below/on line (raised platform)
         return pixel_y >= (12 + pixel_x * 12 / 24)
     if tile_type == 24:  # Raised mild slope, platform on right with gentle drop
-        # Line from (24, 0) to (0, 12)
-        # Solid is below/right of line (trapez region)
-        # Traversable is above/left (triangle at top)
+        # Line from (24, 0) to (0, 12): y = 12 - 0.5x
+        # Solid is below/on line, traversable is above (triangle at top)
         return pixel_y < (12 - pixel_x * 12 / 24)
     if tile_type == 25:  # Raised mild slope, platform on left with gentle drop
-        # Line from (24, 12) to (0, 0)
-        # Solid is above line
-        return pixel_y <= (12 - pixel_x * 12 / 24)
+        # Line from (24, 12) to (0, 0): y = 0.5x
+        # Solid is below/on line, traversable is above (triangle at top)
+        return pixel_y < (pixel_x * 12 / 24)
     # Short steep slopes (26-29)
     if tile_type == 26:  # Steep slope up-left, sharp rise from left edge to middle
         # Line from (0, 24) to (12, 0)

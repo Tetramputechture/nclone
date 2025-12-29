@@ -1,19 +1,28 @@
-"""Policy-invariant reward constants using true PBRS for N++ RL training.
+"""PBRS reward constants with oscillation penalty for N++ RL training.
 
 Centralized reward system with clear hierarchy:
 1. Terminal rewards - Define task success/failure
-2. PBRS shaping: F(s,s') = γ * Φ(s') - Φ(s) - Dense, policy-invariant path guidance
+2. PBRS shaping: F(s,s') = γ * Φ(s') - Φ(s) - Dense path guidance with oscillation penalty
 3. Time penalty - Efficiency pressure (curriculum-managed, frame-skip aware)
 
-True PBRS implementation:
-- Dense reward signal at every step based on path distance potential
-- Automatic backtracking penalties (no manual penalty needed)
-- Policy invariance guarantee per Ng et al. (1999)
+PBRS with γ=0.99 implementation:
+- Dense reward signal at every step based on geometric path distance potential
+- Automatic backtracking penalties (potential decrease + 1% discount)
+- Active oscillation penalties (0 potential change - 1% accumulated per wasted step)
+- Temporal preference for efficient paths (shorter episodes = higher cumulative PBRS)
+- Near policy-invariance (99% of gradient preserved, Ng et al. 1999)
 - Markov property (no episode history dependencies)
 
-Frame Skip Integration (NEW):
+Oscillation Penalty Mechanism (γ=0.99):
+- Forward 12px: +0.99*ΔΦ ≈ +0.15 reward (progress outweighs discount)
+- Stay still: -0.01*Φ_current ≈ -0.0075 penalty (wasted step)
+- Backward 12px: -0.99*ΔΦ ≈ -0.15 penalty (regress + discount)
+- Oscillate A↔B: -0.01*(Φ_A + Φ_B) per cycle (accumulated negative bias)
+- 100-step vs 10-step path: differs by ~0.5 cumulative PBRS (efficiency incentive)
+
+Frame Skip Integration:
 - Reward calculated ONCE per action (not per frame) for 75% computational savings
-- PBRS telescopes: Φ(final) - Φ(initial) regardless of intermediate frames
+- PBRS telescopes: γ^n*Φ(final) - Φ(initial) with accumulated -(1-γ)*Σ bias
 - Time penalty scales by frames_executed for correct per-action magnitude
 - With 4-frame skip: typical movement is 6-8px (not max speed), requiring stronger weights
 
@@ -64,98 +73,128 @@ GLOBAL_REWARD_SCALE = 0.1  # Divide all rewards by 10
 # Terminal rewards are the primary learning signals that define task completion
 #
 # REWARD HIERARCHY (critical for correct learning):
-#   Success (+67) >> Progress+Death (-5 to -10) >> Oscillate/Timeout (-30 or worse)
+#   Success (+105) >> Timeout+Progress (-1) >> Progress+Death (-8) >> Quick Death (-15)
 #
-# The agent should ALWAYS prefer making progress over staying still, even if
-# that progress might lead to death. This is ensured by:
-#   1. Strong PBRS rewards for progress (up to +15 for full path)
-#   2. Moderate death penalties (less than PBRS for 50%+ progress)
-#   3. Harsh accumulating penalties for oscillation (time + revisit)
+# UPDATED 2025-12-20: Rebalanced to prevent both "die quickly" and "wander forever" exploits
+#   1. PBRS weight reduced (60→15) to allow exploration mistakes
+#   2. Death penalty increased (-8→-15) to make quick death unattractive
+#   3. Very light time penalty (-0.0005) provides mild completion urgency without survival tax
+#   4. RND exploration bonuses (+0.3 to +1.5) make new state discovery rewarding
+#   5. Velocity alignment (+1.0) guides agent along curved optimal paths
 #
-# Example with 800px path and PBRS weight=15:
-#   - 50% progress + hazard death: +7.5 (PBRS) - 12 (death) = -4.5
-#   - 25% progress + death: +3.75 (PBRS) - 12 (death) = -8.25
-#   - 10% progress + death: +1.5 (PBRS) - 12 (death) = -10.5
-#   - Oscillate → timeout: 0 (PBRS) - 10 (timeout) - 3 (time) - 20+ (revisit) = -33+
+# Example with discovery phase (PBRS weight=15, death penalty=-15, time=-0.0005):
+#   - Complete: +15 (PBRS) + 50 (completion) + 40 (switch) = +105 (BEST)
+#   - 99% + timeout: +14.85 (PBRS) - 0.25 (time) + approach bonus = ~+15 (good!)
+#   - 50% progress + death: +7.5 (PBRS) - 15 (death) - 0.125 (time) = -7.6 (risky)
+#   - Quick death (200f): -15 (death) - 0.3 (PBRS) - 0.025 (time) = -15.3 (WORST)
 #
-# The math guarantees: ANY progress + death > pure oscillation
+# The math guarantees: Completion > Exploration > Death
+# Light time penalty prevents "wander forever" without creating "die quickly" incentive
 
 # Level completion reward - primary learning signal
 # Rationale: Increased from 20.0 to 50.0 (2.5×) to ensure terminal rewards
 # dominate over accumulated shaping penalties. With reduced PBRS weights (15.0 max)
 # and reduced revisit penalties, this ensures successful episodes have higher
 # rewards than failed episodes.
-LEVEL_COMPLETION_REWARD = 50.0
+LEVEL_COMPLETION_REWARD = 200.0
 
-# Death penalties - BALANCED to encourage risk-taking over oscillation
-# Key principle: Death penalties must be LESS than PBRS reward for meaningful progress.
-# With PBRS weight=15 for full path, death penalties should be < 15 so that
-# 50%+ progress before death is still better than staying still.
+# Death penalty - CURRICULUM-ADAPTIVE (scaled with agent competence)
+#
+# UPDATED 2025-12-17: Reintroduced with curriculum scaling to fix local minima.
+#
+# Problem identified at 5M steps:
+# - Agent stuck at <5% success making 50% progress then dying to same mine
+# - With PBRS weight=80 and death penalty=0, "progress+death" gives +4.0 reward
+# - This is better than safer alternatives, creating stable local optimum
+# - Agent never learns mine avoidance because risky strategy is optimal
+#
+# Solution: Curriculum-based penalties that break early-phase local minima:
+# - Discovery (<5%): -15 penalty makes risky death less attractive than completion
+# - Early (5-20%): -10 penalty continues to favor safe completion
+# - Mid (20-40%): -5 penalty reduces as agent shows mine avoidance competence
+# - Advanced (>40%): 0 penalty encourages risk-taking in advanced play
+#
+# This preserves original intent (encourage bold play at high skill) while
+# preventing the "rush to death" local minimum that traps early learning.
+#
+# NOTE: These are BASE values. Actual penalties calculated in RewardConfig
+# based on real-time success rate tracking.
 
-# Impact death (ceiling/floor collision at high velocity)
-# Rationale: Physics-based failure, somewhat preventable with careful movement.
-# 20% of completion reward, provides moderate deterrent.
-# With PBRS: 50% progress + impact death = +7.5 - 10 = -2.5 (better than timeout!)
-IMPACT_DEATH_PENALTY = -10.0
+# Death penalties are now managed by RewardConfig.death_penalty property
+# These constants serve as reference values for the curriculum
+DEATH_PENALTY_DISCOVERY = (
+    -8.0
+)  # <5% success: balanced deterrent (10% extra progress needed)
+DEATH_PENALTY_EARLY = -6.0  # 5-20% success: lighter deterrent (7.5% extra progress)
+DEATH_PENALTY_MID = -3.0  # 20-40% success: mild deterrent (3.75% extra progress)
+DEATH_PENALTY_ADVANCED = 0.0  # >40% success: encourage risk-taking
 
-# Hazard death (mines, drones, thwumps, other deadly entities)
-# Rationale: Highly preventable through observation and planning.
-# INCREASED to -40.0 (80% of completion reward) to strongly discourage mine deaths.
-# With stronger PBRS guidance (20.0 weight = 20.0 max reward), death penalty must dominate
-# to prevent "progress + death" from being optimal strategy.
-# This ensures: hazard_death_penalty > max_pbrs_reward, so dying to mines is never worth it.
-HAZARD_DEATH_PENALTY = -40.0
-
-# Generic death penalty (fallback for unspecified death causes)
-# Rationale: Conservative middle ground. Increased to match hazard penalty.
-# 80% of completion reward.
-DEATH_PENALTY = -40.0
+# Legacy constants for backward compatibility (use RewardConfig instead)
+DEATH_PENALTY = -8.0  # Default to discovery phase
+IMPACT_DEATH_PENALTY = -8.0
+HAZARD_DEATH_PENALTY = -8.0
 
 # Timeout/truncation penalty (episode time limit exceeded)
-# UPDATED 2025-12-14: Changed from -10.0 to 0.0 to fix RND policy collapse
-# UPDATED 2025-12-15: Added progress-gated penalty for stagnation
+# UPDATED 2025-12-25: Stagnation penalty REMOVED - redundant and confusing
 #
-# Rationale for progress-gated approach:
-# - Gymnasium API: truncated=True means "cut short by time", NOT failure
-# - PPO correctly bootstraps from V(s') for truncated episodes when productive
-# - HOWEVER: Zero penalty creates local optimum of "explore near spawn until timeout"
+# History:
+# - 2025-12-14: Changed from -10.0 to 0.0 to fix RND policy collapse
+# - 2025-12-15: Added progress-gated penalty (-20) for stagnation
+# - 2025-12-25: REMOVED stagnation penalty - focus on core components
 #
-# Solution: Apply penalty ONLY when progress < 10% (stagnation near spawn):
-# - Productive exploration (>10% progress): 0.0 penalty (bootstrap V, RND still rewarded)
-# - Stagnation near spawn (<10% progress): -20.0 penalty (strongly deters local optimum)
+# Rationale for removal:
+# 1. Redundant with time penalty: Time penalty already discourages long episodes
+#    (-0.0005 to -0.015 per step = -0.25 to -1.5 over typical 2000 frame timeout)
 #
-# UPDATED 2025-12-15: Increased from -5.0 to -20.0 to dominate RND bonuses.
-# Analysis showed RND (+4.5) > old stagnation penalty (-0.5), creating local optimum.
-# New penalty (-2.0 scaled) >> RND (+0.45 scaled) ensures stagnation is punished.
+# 2. Buggy implementation: Penalized legitimate high progress (97%) when path was
+#    inefficient, creating confusing/contradictory learning signals
 #
-# This preserves RND exploration benefits while eliminating spawn-area local optimum:
-# - RND agents that explore TOWARD goal: no penalty
-# - RND agents that explore in circles near spawn: heavy penalty
+# 3. Violates design goal: Adds complexity beyond core objectives (completion,
+#    path distance, speed). Arbitrary threshold checks (15%) don't align with
+#    continuous PBRS gradient field.
 #
-# Correct hierarchy: Success >> Keep trying >> Stagnation (strong penalty) >> Exploration (no penalty)
-TIMEOUT_PENALTY = 0.0  # Base penalty for productive exploration
-STAGNATION_TIMEOUT_PENALTY = -20.0  # Penalty when progress < 10% (increased from -5.0)
-STAGNATION_PROGRESS_THRESHOLD = 0.10  # 10% progress threshold
+# 4. Natural hierarchy already works:
+#    - Complete: +15 PBRS + 110 terminal - 0.25 time = +124.75 (best)
+#    - Timeout at 97%: +14.55 PBRS - 0.25 time = +14.30 (good)
+#    - Timeout at 15%: +2.25 PBRS - 0.25 time = +2.00 (poor but natural)
+#    - Death at 50%: +7.5 PBRS - 15 death - 0.125 time = -7.6 (worst)
+#
+# The reward structure naturally discourages stagnation without explicit penalties.
+# Let PBRS (distance reduction) + time penalty (speed) + terminal rewards (completion)
+# provide clear, interpretable learning signals.
+TIMEOUT_PENALTY = 0.0  # No penalty for truncation (let core components handle it)
+STAGNATION_TIMEOUT_PENALTY = (
+    -20.0
+)  # DEPRECATED (no longer applied, kept for compatibility)
+STAGNATION_PROGRESS_THRESHOLD = (
+    0.15  # DEPRECATED (no longer used, kept for compatibility)
+)
 
 # Legacy constant for backward compatibility (maps to hazard death)
 # Note: Also reduced from -15 to -12 to encourage progress over oscillation
 MINE_DEATH_PENALTY = HAZARD_DEATH_PENALTY
 
 # Switch activation reward
-# Rationale: CRITICAL MILESTONE reward (30% of completion) - ensures routes that
-# actually achieve the switch are significantly more valuable than routes that
-# just get close. This is the key differentiator between "almost" and "success".
+# Rationale: CRITICAL MILESTONE reward (80% of completion) - ensures routes that
+# reach the switch are significantly more valuable than routes that die halfway.
+# This is the key differentiator between "almost" and "success".
 #
-# Why 30% of completion (15.0):
-# - Switch is the halfway point of the two-phase task (switch → exit)
-# - Must be large enough that switch activation is ALWAYS worth pursuing
-# - Even with death immediately after: +15 (switch) - 12 (death) = +3 net
-# - Compare to oscillating near switch: 0 (no activation) + penalties = negative
+# UPDATED 2025-12-17: Increased from 30.0 to 40.0 to make switch a major milestone.
+# UPDATED 2025-12-18: Rebalanced for PBRS weight=40 (reduced from 80, increased from 20)
 #
-# With PBRS: An agent 50% through switch phase + activation + death:
-#   +3.75 (PBRS to switch) + 30 (activation) + (-25.0 death) = +8.75 (positive!)
-# Without activation: +7.5 (PBRS) - (-25.0 death) = -4.5 (negative!)
-SWITCH_ACTIVATION_REWARD = 30.0
+# With discovery PBRS weight=40:
+# - 50% progress + death (no switch): +20 PBRS - 8 death = +12 (good risk)
+# - Reach switch + death: +30 PBRS + 40 switch - 8 death = +62 (5.2x better!)
+#
+# This creates clear milestone hierarchy:
+# - Complete (50 + 40 switch + 40 PBRS) = 130 (best)
+# - Switch + death (40 switch + 30 PBRS - 8 death) = 62 (excellent milestone)
+# - Half progress + death (20 PBRS - 8 death) = 12 (acceptable bold exploration)
+# - Camp 16% = 6.4 PBRS - 1.5 time = 4.9 (poor, low value)
+# - Stagnate <15% = PBRS - 20 penalty - 1.5 time ≈ -15 (worst)
+#
+# Agent learns: "Reaching switch is a major achievement worth pursuing even with death risk"
+SWITCH_ACTIVATION_REWARD = 100.0
 
 
 # =============================================================================
@@ -165,12 +204,29 @@ SWITCH_ACTIVATION_REWARD = 30.0
 # F(s,s') = γ * Φ(s') - Φ(s) ensures policy invariance
 
 # PBRS discount factor
-# For heuristic potential functions (path distance), γ=1.0 is standard and eliminates negative bias
-# Policy invariance holds for ANY γ (Ng et al. 1999 Theorem 1), but γ=1.0 ensures:
-# - Accumulated PBRS = Φ(goal) - Φ(start) exactly (no (γ-1)*Σ Φ negative bias)
-# - In episodic tasks with heuristic potentials, no discount needed
-# Note: γ should match MDP discount ONLY when Φ is the true value function V(s)
-PBRS_GAMMA = 1.0
+# γ=0.99 provides unified signal: progress toward goal WITH implicit time pressure.
+#
+# CRITICAL: Must match PPO gamma for PBRS policy invariance (Ng et al. 1999).
+# Policy invariance guarantee only holds when γ_PBRS = γ_PPO.
+#
+# Mathematical justification for γ=0.99:
+# - Forward progress (A→B): F = 0.99·Φ(B) - Φ(A) (positive if B closer to goal)
+# - Backtrack (B→A): F = 0.99·Φ(A) - Φ(B) (negative, loses progress + 1% discount)
+# - Oscillation (A→B→A): Net = -0.01·(Φ(A)+Φ(B)) (GUARANTEED LOSS, prevents oscillation)
+# - Stay still: F = -0.01·Φ(current) (small negative, implicit time pressure)
+#
+# Why γ=0.99 is superior to γ=1.0 + time_penalty:
+# 1. UNIFIED SIGNAL: Single coherent objective (no conflicting pressures)
+# 2. NATURAL ANTI-BACKTRACKING: Oscillation always costs more than staying still
+# 3. POLICY INVARIANCE: Matches PPO gamma for theoretical guarantees
+# 4. SIMPLER DEBUGGING: One reward component instead of two competing signals
+# 5. SELF-TUNING URGENCY: Time pressure scales with potential magnitude
+#
+# The 1% discount per step creates implicit time pressure:
+# - At potential Φ=0.5 (mid-progress): staying still costs -0.005/step
+# - At potential Φ=0.1 (near goal): staying still costs -0.001/step
+# This scales naturally with game progress without separate time penalty.
+PBRS_GAMMA = 0.99
 
 # NOTE: PBRS objective weight is now managed by RewardConfig with curriculum scaling:
 # - Early training (0-1M steps): weight = 15.0 (strong guidance for small movements)
@@ -188,24 +244,20 @@ PBRS_OBJECTIVE_WEIGHT = (
 PBRS_SWITCH_DISTANCE_SCALE = 1.0
 PBRS_EXIT_DISTANCE_SCALE = 1.0
 
-# Path-based normalization factor
-# Controls how combined path distance (spawn→switch + switch→exit) is used for normalization
-# **CRITICAL**: Lower values = stronger gradients (smaller area_scale), higher values = weaker gradients
-# Replaces surface-area-based normalization for better handling of open levels with focused paths
+# DEPRECATED: Path normalization factor (no longer used)
+# The actual normalization uses direct path distance: Φ(s) = 1 - (distance / combined_path_distance)
+# This constant exists for historical reasons but is NOT applied in the calculation.
+# See PBRS_CALCULATION_VERIFICATION.md for details on the actual normalization formula.
 #
-# IMPORTANT: Used with HYBRID normalization: Φ(s) = 1 - d/area_scale (linear near goal)
-# where area_scale = combined_path_distance * PBRS_PATH_NORMALIZATION_FACTOR * scale_factor
+# Actual normalization (in pbrs_potentials.py):
+#   effective_normalization = max(800.0, combined_path_distance)
+#   potential = 1.0 - (distance / effective_normalization)
 #
-# Formula analysis for typical level (combined_path = 2000px, mid-phase scale_factor=0.5):
-# - Factor = 0.6: area_scale = 600px → 6px movement = 0.01 potential change → 0.12 PBRS (w=12)
-# - Factor = 1.0: area_scale = 1000px → 6px movement = 0.006 potential change → 0.072 PBRS (w=12)
-# - Factor = 2.5: area_scale = 2500px → 6px movement = 0.0024 potential change → 0.029 PBRS (w=12)
-#
-# FIXED: Decreased from 2.5 to 0.3 for 8× stronger gradients per unit movement.
-# Lower values = smaller area_scale = stronger gradients for long-horizon tasks.
-# With typical 6px movement and weight=15, this gives ~0.3 PBRS per action.
+# This gives clean, interpretable gradients:
+# - With combined_path=1000px, weight=20: 12px forward = +0.24 potential = +0.16 PBRS
+# - Gradient strength controlled entirely by objective_weight (20.0 in discovery)
 PBRS_PATH_NORMALIZATION_FACTOR = (
-    0.3  # Was 0.6 - further reduced for long-horizon task gradients
+    1.0  # DEPRECATED - not used in actual calculation, kept for backward compatibility
 )
 
 # Displacement gate threshold for PBRS
@@ -218,89 +270,65 @@ PBRS_DISPLACEMENT_THRESHOLD = 0.0  # pixels (disabled)
 
 
 # =============================================================================
-# INEFFECTIVE ACTION PENALTY (Anti-Oscillation)
+# DEPRECATED CONSTANTS (Simplified Reward System)
 # =============================================================================
-# Penalizes actions that produce minimal displacement, targeting JUMP+RIGHT oscillation.
-# Cannot be exploited: moving is always better than not moving.
+# SIMPLIFIED 2025-12-15: The following components have been removed as they are
+# redundant with PBRS. PBRS already provides:
+# - Zero reward for stationary behavior (potential unchanged)
+# - Zero net reward for oscillation (returning to same position)
+# - Negative reward for backtracking (returning to higher-distance states)
+# - Directional gradient (F(s,s') rewards distance reduction in any direction)
 #
-# CRITICAL: These penalties ensure oscillating/staying still accumulates enough
-# negative reward to make ANY progress + death preferable to stagnation.
+# These constants are kept for reference but no longer used in reward calculation.
 
-# Minimum displacement threshold (pixels per action)
-# Actions producing less than this displacement incur a penalty.
-#
-# Physics-grounded calculation (from ninja.py integrate() and think()):
-# - Ground accel: 0.0667 px/frame², air accel: 0.0444 px/frame²
-# - Drag: 0.9933 per frame (DRAG_REGULAR)
-# - Frame skip: 4 frames per action
-#
-# Minimum 4-frame displacement from rest:
-# - Ground movement: ~0.66px (sum of 0.066 + 0.132 + 0.197 + 0.262)
-# - Air movement: ~0.44px (sum of 0.044 + 0.088 + 0.131 + 0.175)
-#
-# Threshold set below minimum air movement to avoid false positives:
-# 0.35px catches oscillation while allowing minimum intentional movement
-INEFFECTIVE_ACTION_THRESHOLD = 0.35  # pixels (physics-grounded)
+# DEPRECATED: Ineffective action penalty (PBRS gives 0 for no movement)
+INEFFECTIVE_ACTION_THRESHOLD = 0.35  # DEPRECATED
+INEFFECTIVE_ACTION_PENALTY = -0.05  # DEPRECATED
 
-# Penalty for ineffective actions
-# INCREASED from -0.03 to -0.05 for stronger anti-oscillation signal.
-# Applied per action when displacement < INEFFECTIVE_ACTION_THRESHOLD
-# 150 ineffective actions = -7.5 penalty (significant vs death at -10 to -12)
-INEFFECTIVE_ACTION_PENALTY = -0.05
+# DEPRECATED: Oscillation detection (PBRS gives 0 net reward for oscillation)
+OSCILLATION_WINDOW = 10  # DEPRECATED
+NET_DISPLACEMENT_THRESHOLD = 8.0  # DEPRECATED
+OSCILLATION_PENALTY = -0.05  # DEPRECATED
 
-
-# =============================================================================
-# OSCILLATION DETECTION (Net Displacement Tracking)
-# =============================================================================
-# Detects when agent is moving but not making progress (oscillating in place).
-# The ineffective action penalty only catches stationary behavior (< 0.35px/action).
-# Oscillation detection catches movement that nets to zero over multiple actions.
-#
-# Example: LEFT 2px, RIGHT 2px, LEFT 2px, RIGHT 2px = 8px total movement, 0 net progress
-# Each individual action passes ineffective threshold but net displacement is 0.
-
-# Window size: Number of actions to track for net displacement calculation
-# 10 actions * 4 frames/action = 40 frames ≈ 0.67 seconds at 60fps
-OSCILLATION_WINDOW = 10  # actions
-
-# Minimum net displacement required over the window
-# With typical movement 0.66-3px/action, 10 actions should cover 6-30px
-# INCREASED from 5px to 8px to catch more subtle oscillation
-NET_DISPLACEMENT_THRESHOLD = 8.0  # pixels over OSCILLATION_WINDOW actions
-
-# Penalty for oscillation (applied once per window check, not per action)
-# INCREASED from -0.02 to -0.05 for stronger deterrent
-# An agent oscillating for 150 actions triggers ~15 window checks = -0.75 penalty
-OSCILLATION_PENALTY = -0.05
-
-
-# =============================================================================
-# VELOCITY ALIGNMENT BONUS - RE-ENABLED WITH NEXT-HOP GRADIENT
-# =============================================================================
-# RE-ENABLED: Now uses next_hop direction instead of Euclidean for winding paths.
-#
-# Why this is now useful:
-# 1. PBRS rewards moving toward goal, but for winding paths the discrete node
-#    jumps can create noisy reward signals
-# 2. Next-hop gradient provides a CONTINUOUS direction signal that respects
-#    level geometry (walls, corridors, going away from goal to reach it)
-# 3. Cheap: Uses precomputed next_hop cache (O(1) lookup)
-# 4. Complements PBRS by smoothing direction signal between nodes
-#
-# The velocity alignment bonus rewards movement in the optimal path direction,
-# even when that direction points away from the goal (for winding levels).
-
-# Minimum speed to consider velocity direction meaningful
-VELOCITY_ALIGNMENT_MIN_SPEED = 0.5  # pixels/frame
-
-# Weight for velocity alignment potential bonus
-# This is added to the PBRS potential, not multiplied
-# Range [-1, 1] scaled by this weight
-# 0.15 = small bonus, up to ±0.15 potential per step
-VELOCITY_ALIGNMENT_WEIGHT = 0.15
-
-# Legacy constant (deprecated, use VELOCITY_ALIGNMENT_WEIGHT instead)
+# DEPRECATED: Velocity alignment (PBRS gradient provides directional signal)
+VELOCITY_ALIGNMENT_MIN_SPEED = 0.5  # DEPRECATED
+VELOCITY_ALIGNMENT_WEIGHT = 0.15  # DEPRECATED
 VELOCITY_ALIGNMENT_WEIGHT_RATIO = 0.0  # DEPRECATED
+
+
+# =============================================================================
+# DISABLED AUXILIARY COMPONENTS (2025-12-25)
+# =============================================================================
+# The following auxiliary shaping components have been disabled to focus learning
+# on core objectives: level completion and speed optimization.
+#
+# DISABLED COMPONENTS:
+# - Path waypoint bonuses: Redundant with PBRS distance reduction
+#   * Waypoints provided discrete rewards for reaching turns/inflection points
+#   * PBRS already rewards moving along optimal path through potential changes
+#
+# - Velocity alignment bonuses: PBRS gradient provides directional signal
+#   * Attempted to reward moving in the "correct" direction
+#   * PBRS naturally guides direction through distance reduction rewards
+#
+# - Exit direction bonus: Not needed with pure PBRS
+#   * Post-waypoint guidance to continue in optimal direction
+#   * Redundant with PBRS continuous gradient field
+#
+# - Completion approach bonus: PBRS provides sufficient gradient near goal
+#   * Quadratic bonus in final 50px to encourage completion
+#   * PBRS gradient naturally intensifies as distance decreases
+#
+# Rationale: These components added complexity without improving learning.
+# PBRS (Potential-Based Reward Shaping) with shortest path distance already
+# provides dense, continuous gradients that guide the agent toward completion.
+# Removing auxiliary components simplifies the reward structure and allows the
+# agent to focus on the core objective: reducing path distance to goal.
+#
+# Active reward components:
+# 1. Terminal rewards: Completion (+50), Switch (+60), Death (curriculum -15 to 0)
+# 2. PBRS: F(s,s') = γ * Φ(s') - Φ(s) for path distance reduction
+# 3. Time penalty: Small curriculum-based penalty (-0.0005 to -0.015) for speed
 
 
 # =============================================================================
@@ -313,19 +341,26 @@ VELOCITY_ALIGNMENT_WEIGHT_RATIO = 0.0  # DEPRECATED
 # Rationale: Paths within this distance of deadly mines incur cost penalty
 # - Deadly toggle mines have radius ~4px (state 0)
 # - Ninja has radius 10px
-# - Safe buffer: 75px prevents risky close approaches (increased from 50px to address 67% mine death rate)
-MINE_HAZARD_RADIUS = 75.0  # pixels (increased from 50.0)
+MINE_HAZARD_RADIUS = 48.0  # pixels (increased from 50.0)
 
-# Mine hazard cost multiplier
-# NOTE: This is now curriculum-adaptive via RewardConfig.mine_hazard_cost_multiplier
-# Static value kept as fallback for backward compatibility
-# Rationale: How much more expensive are paths near mines?
-# - 1.0 = no penalty (disabled)
-# - 2.0 = twice as expensive (moderate avoidance)
-# - 5.0 = five times more expensive (strong avoidance)
-# - 10.0+ = extreme avoidance
-# Curriculum: 5.0 (early) → 15.0 (mid) → 25.0 (late) via RewardConfig
-MINE_HAZARD_COST_MULTIPLIER = 15.0  # Static fallback (curriculum overrides)
+# Mine hazard cost multiplier for A* pathfinding
+# SIMPLIFIED 2025-12-15: Constant value (was curriculum-adaptive 50-90)
+#
+# This multiplier increases edge costs for paths within MINE_HAZARD_RADIUS (75px)
+# of deadly mines during A* pathfinding. This shapes the PBRS gradient field to
+# naturally guide agents along safer routes.
+#
+# Rationale for 5.0:
+# - Low but meaningful: 5x path cost near mines provides avoidance signal
+# - Doesn't force excessive detours when mines are on/near optimal path
+# - Allows agent to take calculated risks when necessary
+# - Balanced with average 6px movement per 4 frames for proportional gradient
+#
+# This is a pathfinding parameter, not a reward parameter. It affects which paths
+# are considered "optimal", which then determines PBRS gradient direction.
+MINE_HAZARD_COST_MULTIPLIER = (
+    1.1  # Low but meaningful avoidance without excessive detours
+)
 
 # Only penalize deadly mines (state 0), not safe mines (state 1)
 MINE_PENALIZE_DEADLY_ONLY = True
@@ -334,7 +369,7 @@ MINE_PENALIZE_DEADLY_ONLY = True
 # =============================================================================
 # REMOVED COMPONENTS (No Longer Used)
 # =============================================================================
-# The following components have been removed in favor of true PBRS:
+# The following components have been removed in favor of focused PBRS:
 #
 # REMOVED: Discrete achievement bonuses (violated policy invariance, replaced with dense PBRS)
 # REMOVED: Episode length normalization (violated Markov property)
@@ -351,4 +386,13 @@ MINE_PENALIZE_DEADLY_ONLY = True
 # REMOVED: Impact risk PBRS (death penalty is clearer)
 # REMOVED: Completion bonus (time penalty provides efficiency incentive)
 #
-# Total: ~24 redundant/problematic constants removed for policy invariance
+# SIMPLIFIED 2025-12-15 (Focused PBRS):
+# REMOVED: RND intrinsic rewards (exploration unnecessary with complete gradient field)
+# REMOVED: Go-Explore checkpoints (gradient field has no local minima to escape)
+# REMOVED: Ineffective action penalties (PBRS gives 0 for no movement)
+# REMOVED: Oscillation penalties (PBRS gives 0 net reward for oscillation)
+# REMOVED: Revisit penalties (PBRS penalizes returning to higher-distance states)
+# REMOVED: Velocity alignment bonuses (PBRS gradient provides directional signal)
+# REMOVED: Waypoint bonuses (PBRS rewards reaching any path position that reduces distance)
+#
+# Total: ~31 redundant components removed for focused distance-reduction objective

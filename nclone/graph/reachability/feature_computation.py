@@ -38,12 +38,12 @@ def compute_reachability_features_from_graph(
     path_calculator: CachedPathDistanceCalculator,
 ) -> np.ndarray:
     """
-    Compute 22-dimensional reachability features using adjacency graph and lookup tables.
+    Compute 25-dimensional reachability features using adjacency graph and lookup tables.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     No linear searches or Euclidean distance calculations.
 
-    Features (22 dims):
+    Features (25 dims):
     Base features (4):
         0. Reachable area ratio (0-1)
         1. Distance to nearest switch (normalized, inverted)
@@ -81,6 +81,12 @@ def compute_reachability_features_from_graph(
         21. Path difficulty ratio (0-1) - physics_cost / geometric_distance
                                           Tells LSTM if path is hard (high ratio) or easy (low ratio)
 
+    Path curvature features (3) - NEW for anticipatory turning:
+        22. Multi-hop direction X (-1 to 1) - 8-hop weighted lookahead direction
+        23. Multi-hop direction Y (-1 to 1) - anticipates upcoming path curvature
+        24. Path curvature (0-1) - dot product of next_hop and multi_hop directions
+                                    (1.0=straight path, 0.0=90° turn, -1.0=180° turn)
+
     Args:
         adjacency: Graph adjacency structure from GraphBuilder
         graph_data: Full graph data dict with spatial_hash
@@ -89,7 +95,7 @@ def compute_reachability_features_from_graph(
         path_calculator: CachedPathDistanceCalculator instance
 
     Returns:
-        22-dimensional numpy array with normalized features
+        25-dimensional numpy array with normalized features
 
     Raises:
         RuntimeError: If required data is missing (adjacency, graph_data, etc.)
@@ -105,7 +111,7 @@ def compute_reachability_features_from_graph(
     # Total possible nodes (approximate: all traversable tiles)
     total_possible_nodes = MAP_TILE_WIDTH * MAP_TILE_HEIGHT
 
-    features = np.zeros(22, dtype=np.float32)
+    features = np.zeros(25, dtype=np.float32)
 
     # Track raw distances and positions for direction vectors
     switch_distance_raw = float("inf")
@@ -602,5 +608,62 @@ def compute_reachability_features_from_graph(
             log_difficulty = math.log(max(0.1, difficulty_ratio))
             normalized_difficulty = np.clip((log_difficulty + 2.0) / 6.0, 0.0, 1.0)
             features[21] = normalized_difficulty
+
+    # ========================================================================
+    # Features 22-24: Path Curvature Features (NEW)
+    # Provides 8-hop lookahead for anticipatory turning and curvature awareness
+    # ========================================================================
+
+    # Features 22-23: Multi-hop direction (8-hop weighted lookahead)
+    # This anticipates upcoming path curvature by looking ahead 8 hops with exponential decay
+    # Unlike next_hop (features 13-14) which shows immediate direction, this shows where
+    # the path is heading in the mid-term, enabling agents to anticipate sharp turns
+    if (
+        hasattr(path_calculator, "level_cache")
+        and path_calculator.level_cache is not None
+        and current_goal_pos is not None
+    ):
+        from .pathfinding_utils import find_ninja_node
+
+        # Find current node (same logic as next_hop computation)
+        ninja_node = find_ninja_node(
+            ninja_pos,
+            adjacency,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+            ninja_radius=NINJA_RADIUS,
+            level_cache=path_calculator.level_cache,
+            goal_id=current_goal_id,
+        )
+
+        if ninja_node is not None:
+            # Get multi-hop lookahead direction from level cache
+            multi_hop_direction = path_calculator.level_cache.get_multi_hop_direction(
+                ninja_node, current_goal_id
+            )
+
+            if multi_hop_direction is not None:
+                # Multi-hop direction is already normalized (unit vector)
+                features[22] = multi_hop_direction[0]  # X component
+                features[23] = multi_hop_direction[1]  # Y component
+
+                # Feature 24: Path curvature (dot product of next_hop and multi_hop)
+                # This explicitly tells the agent if the path curves ahead:
+                #   1.0 = straight path (next_hop aligned with multi_hop)
+                #   0.0 = 90° turn coming up
+                #  -1.0 = 180° turn (must go opposite direction first)
+                # This is critical for episodes with sharp turns near hazards
+                if features[13] != 0.0 or features[14] != 0.0:  # Next hop computed
+                    next_hop_dir_x = features[13]
+                    next_hop_dir_y = features[14]
+                    multi_hop_dir_x = features[22]
+                    multi_hop_dir_y = features[23]
+
+                    # Dot product: measures alignment (-1 to 1)
+                    curvature = next_hop_dir_x * multi_hop_dir_x + next_hop_dir_y * multi_hop_dir_y
+
+                    # Normalize to [0, 1] for easier learning: (curvature + 1) / 2
+                    # 1.0 = straight, 0.5 = 90° turn, 0.0 = 180° turn
+                    features[24] = (curvature + 1.0) / 2.0
 
     return features

@@ -84,6 +84,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         shared_level_cache: Optional[
             Any
         ] = None,  # Shared level cache for multi-worker training
+        goal_curriculum_config: Optional[
+            Any
+        ] = None,  # GoalCurriculumConfig for intermediate goal curriculum
     ):
         """
         Initialize the base N++ environment.
@@ -255,6 +258,36 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Loaded from demonstration analysis, used for momentum-aware PBRS
         self._cached_momentum_waypoints: Optional[List[Any]] = None
         self._cached_waypoints_level_id: Optional[str] = None
+
+        # Initialize goal curriculum manager if enabled
+        # This manages entity repositioning for intermediate goal curriculum
+        self.goal_curriculum_manager = None
+        if goal_curriculum_config is not None and goal_curriculum_config.enabled:
+            from .reward_calculation.intermediate_goal_manager import (
+                IntermediateGoalManager,
+            )
+
+            self.goal_curriculum_manager = IntermediateGoalManager(
+                goal_curriculum_config
+            )
+            logger.info(
+                "Goal curriculum enabled: entities will be repositioned along optimal path"
+            )
+
+            # VALIDATION: Warn if SharedLevelCache is used with goal curriculum
+            # SharedLevelCache stores pre-computed distances to ORIGINAL goal positions.
+            # When curriculum repositions entities, those distances become stale.
+            # PBRS will still work (uses dynamic goal positions from observations),
+            # but SharedLevelCache lookup will be incorrect.
+            if shared_level_cache is not None:
+                logger.warning(
+                    "SharedLevelCache detected with goal curriculum active! "
+                    "SharedLevelCache contains pre-computed distances to ORIGINAL goal positions, "
+                    "which will be stale when curriculum repositions entities. "
+                    "PBRS will use dynamic goal positions from observations (correct), "
+                    "but cache lookups may be suboptimal. "
+                    "For curriculum training, use per-worker caches instead of SharedLevelCache."
+                )
 
         # Load the initial map
         self.map_loader.load_map()
@@ -433,7 +466,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Calculate reward using initial→final transition with frame count scaling
             t_reward = self._profile_start("reward_calc")
             reward = self.reward_calculator.calculate_reward(
-                final_obs, initial_obs, action, frames_executed=frames_executed
+                final_obs,
+                initial_obs,
+                action,
+                frames_executed=frames_executed,
+                curriculum_manager=self.goal_curriculum_manager,
             )
             self._profile_end("reward_calc", t_reward)
 
@@ -443,41 +480,22 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Hook: Modify reward if needed
             reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
 
-            # === PROGRESS-GATED TRUNCATION PENALTY (Phase 4 fix) ===
-            # Apply small penalty ONLY when truncated AND agent made minimal progress
-            # This prevents "explore near spawn until timeout" local optimum
-            # while preserving RND exploration benefits for productive episodes
-            if truncated and not terminated:
-                from .reward_calculation.reward_constants import (
-                    STAGNATION_TIMEOUT_PENALTY,
-                    STAGNATION_PROGRESS_THRESHOLD,
-                    GLOBAL_REWARD_SCALE,
-                )
-
-                # Calculate progress based on closest distance this episode
-                combined_path_distance = final_obs.get(
-                    "_pbrs_combined_path_distance", 1000.0
-                )
-                closest_distance = self.reward_calculator.closest_distance_this_episode
-
-                if combined_path_distance > 0 and closest_distance != float("inf"):
-                    progress = 1.0 - (closest_distance / combined_path_distance)
-                    progress = max(0.0, min(1.0, progress))
-                else:
-                    progress = 0.0  # No valid progress data
-
-                # Apply penalty only if progress < threshold (stagnation near spawn)
-                if progress < STAGNATION_PROGRESS_THRESHOLD:
-                    timeout_penalty = STAGNATION_TIMEOUT_PENALTY * GLOBAL_REWARD_SCALE
-                    reward += timeout_penalty
-
-                    logger.info(
-                        f"[STAGNATION_TIMEOUT] Applied penalty for minimal progress. "
-                        f"progress={progress:.1%} < {STAGNATION_PROGRESS_THRESHOLD:.1%}, "
-                        f"penalty={timeout_penalty:.3f}, "
-                        f"closest_distance={closest_distance:.1f}px, "
-                        f"combined_path={combined_path_distance:.1f}px"
-                    )
+            # === TRUNCATION HANDLING (SIMPLIFIED 2025-12-25) ===
+            # No additional penalty for truncation - let core components handle it naturally:
+            # - PBRS rewards distance reduction (low progress = low/negative PBRS)
+            # - Time penalty discourages long episodes (accumulates over time)
+            # - Terminal rewards encourage completion (much larger than time penalty)
+            #
+            # This creates natural hierarchy without arbitrary threshold checks:
+            # - Complete: +15 PBRS + 110 terminal - 0.25 time = +124.75 (best)
+            # - Timeout at 97%: +14.55 PBRS - 0.25 time = +14.30 (good, keep trying)
+            # - Timeout at 15%: +2.25 PBRS - 0.25 time = +2.00 (poor but not penalized)
+            # - Death at 50%: +7.5 PBRS - 15 death - 0.125 time = -7.6 (worst)
+            #
+            # REMOVED: Stagnation penalty (was -20 for progress <15% or negative PBRS)
+            # Rationale: Created confusing signals (97% progress gets penalized for
+            # inefficient path), redundant with time penalty, and violated design goal
+            # of simple reward structure focused on distance reduction and completion.
 
             self.current_ep_reward += reward
 
@@ -486,6 +504,52 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
             # Build episode info
             info = self._build_episode_info(player_won, terminated, truncated)
+
+            # DIAGNOSTIC: Store reward breakdown in info for route visualization
+            # This allows seeing reward components without needing logging enabled
+            if truncated and not terminated:
+                from .reward_calculation.reward_constants import GLOBAL_REWARD_SCALE
+
+                pbrs_total_unscaled = (
+                    sum(self.reward_calculator.episode_pbrs_rewards)
+                    if hasattr(self.reward_calculator, "episode_pbrs_rewards")
+                    else 0.0
+                )
+                time_total_unscaled = (
+                    sum(self.reward_calculator.episode_time_penalties)
+                    if hasattr(self.reward_calculator, "episode_time_penalties")
+                    else 0.0
+                )
+                pbrs_total_scaled = pbrs_total_unscaled * GLOBAL_REWARD_SCALE
+                time_total_scaled = time_total_unscaled * GLOBAL_REWARD_SCALE
+
+                # Calculate progress metrics for visualization
+                combined_path_distance = final_obs.get(
+                    "_pbrs_combined_path_distance", 1000.0
+                )
+                final_distance = final_obs.get("_pbrs_last_distance_to_goal", None)
+                if final_distance is None or final_distance == float("inf"):
+                    final_distance = (
+                        self.reward_calculator.closest_distance_this_episode
+                    )
+
+                if combined_path_distance > 0 and final_distance != float("inf"):
+                    progress = 1.0 - (final_distance / combined_path_distance)
+                    progress = max(0.0, min(1.0, progress))
+                else:
+                    progress = 0.0
+
+                # Store in info for route visualization (visible without logs)
+                # SIMPLIFIED 2025-12-25: Removed stagnation penalty tracking
+                info["_timeout_reward_breakdown"] = {
+                    "pbrs_total": pbrs_total_scaled,
+                    "time_total": time_total_scaled,
+                    "final_progress": progress,
+                    "final_distance": final_distance,
+                    "combined_path": combined_path_distance,
+                    "forward_steps": self.reward_calculator.episode_forward_steps,
+                    "backtrack_steps": self.reward_calculator.episode_backtrack_steps,
+                }
 
             # Add frame skip stats to info
             info["frame_skip_stats"] = {
@@ -600,7 +664,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Calculate reward with frame count for time penalty scaling
         reward = self.reward_calculator.calculate_reward(
-            final_obs, initial_obs, action, frames_executed=frames_executed
+            final_obs,
+            initial_obs,
+            action,
+            frames_executed=frames_executed,
+            curriculum_manager=self.goal_curriculum_manager,
         )
 
         # Update dynamic truncation limit if PBRS surface area is now available
@@ -919,6 +987,24 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         episode_frames = total_frames - replay_frames
 
+        # Determine curriculum vs full level success
+        curriculum_success = False
+        full_level_success = False
+
+        if player_won:
+            # Agent reached exit door (which is at curriculum-adjusted position)
+            curriculum_success = True
+
+            # Full level success only if curriculum is at final stage
+            if self.goal_curriculum_manager is not None:
+                full_level_success = self.goal_curriculum_manager.is_at_final_stage()
+            else:
+                # No curriculum active - any completion is full level
+                full_level_success = True
+        else:
+            curriculum_success = False
+            full_level_success = False
+
         info = {
             "is_success": player_won,
             "terminated": terminated,
@@ -932,6 +1018,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "terminal_impact": self.nplay_headless.get_ninja_terminal_impact(),
             "exit_switch_pos": self._cached_switch_pos,
             "exit_door_pos": self._cached_exit_pos,
+            # CRITICAL: Include switch_activated for PBRS visualization and waypoint phase
+            # This must be in base info dict (not just _extend_info_hook) because it's
+            # accessed within _build_episode_info itself for waypoint phase selection
+            "switch_activated": self.nplay_headless.exit_switch_activated(),
+            # Curriculum success tracking: separate metrics for curriculum vs full level
+            "curriculum_success": curriculum_success,
+            "full_level_success": full_level_success,
         }
 
         # Add episode route for visualization if episode is ending
@@ -1008,62 +1101,40 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         f"Values >25 indicate reward accumulation bug (checkpoint created during checkpoint episode)."
                     )
 
-            # Add waypoint data for visualization (path-based or adaptive)
+            # Extract waypoints from reward calculator for visualization
+            # Get waypoints for current phase (pre-switch or post-switch)
             waypoints_active = []
             waypoints_reached = []
 
-            # Path-based waypoints: Convert to visualization format
-            switch_activated = self.nplay_headless.exit_switch_activated()
-            current_phase = "post_switch" if switch_activated else "pre_switch"
+            if hasattr(self.reward_calculator, "current_path_waypoints_by_phase"):
+                # Get current phase from observation
+                switch_activated = info.get("switch_activated", False)
+                current_phase = "post_switch" if switch_activated else "pre_switch"
 
-            phase_waypoints = (
-                self.reward_calculator.current_path_waypoints_by_phase.get(
-                    current_phase, []
-                )
-            )
-
-            for wp in phase_waypoints:
-                waypoints_active.append(
-                    {
-                        "position": wp.position,
-                        "value": wp.value,
-                        "type": wp.waypoint_type,
-                        "source": "path",
-                        "phase": wp.phase,
-                        "curvature": wp.curvature,
-                    }
-                )
-
-            # Get collected waypoints for this episode
-            if hasattr(self.reward_calculator, "_collected_path_waypoints"):
-                waypoints_reached = list(
-                    self.reward_calculator._collected_path_waypoints
-                )
-
-            elif (
-                hasattr(self.reward_calculator, "adaptive_waypoints")
-                and self.reward_calculator.adaptive_waypoints
-            ):
-                # Adaptive waypoints (legacy system)
-                level_id = self.map_loader.current_map_name or "default"
-                switch_activated = self.nplay_headless.exit_switch_activated()
-
-                # Get waypoints filtered by current switch phase
-                waypoints = (
-                    self.reward_calculator.adaptive_waypoints.get_waypoints_for_level(
-                        level_id,
-                        switch_activated=switch_activated,
+                # Get phase-appropriate waypoints
+                phase_waypoints = (
+                    self.reward_calculator.current_path_waypoints_by_phase.get(
+                        current_phase, []
                     )
                 )
 
-                # Add source field for visualization
-                for wp in waypoints:
-                    wp["source"] = wp.get("source", "adaptive")
+                # Convert PathWaypoint objects to dict format for visualization
+                for wp in phase_waypoints:
+                    waypoints_active.append(
+                        {
+                            "position": wp.position,
+                            "value": wp.value,
+                            "type": wp.waypoint_type,
+                            "source": "path",  # These are path waypoints
+                            "discovery_count": 1,  # Not tracked for path waypoints
+                        }
+                    )
 
-                waypoints_active = waypoints
-                waypoints_reached = list(
-                    self.reward_calculator.adaptive_waypoints.waypoints_reached_this_episode
+                # Get collected waypoints for this episode
+                collected = getattr(
+                    self.reward_calculator, "_collected_path_waypoints", set()
                 )
+                waypoints_reached = list(collected)
 
             info["_waypoints_active"] = waypoints_active
             info["_waypoints_reached"] = waypoints_reached
@@ -1082,6 +1153,35 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Store last episode reward for reset validation
         self._last_episode_reward = self.current_ep_reward
+
+        # Add goal curriculum info for callbacks (Go-Explore, route visualization)
+        if self.goal_curriculum_manager is not None:
+            info["goal_curriculum"] = self.goal_curriculum_manager.get_curriculum_info()
+
+            # Update manager with episode outcomes for stage advancement
+            if terminated or truncated:
+                # Get switch activation from observation (most reliable)
+                # Use final observation from step() or current state
+                switch_activated = self.nplay_headless.exit_switch_activated()
+                # Use curriculum success (not full level) for stage advancement
+                self.goal_curriculum_manager.update_from_episode(
+                    switch_activated=switch_activated, completed=curriculum_success
+                )
+
+                # Check if curriculum stage advanced - invalidate PBRS cache
+                if self.goal_curriculum_manager.needs_cache_rebuild():
+                    logger.info(
+                        "[CURRICULUM] Stage advanced, invalidating PBRS cache. "
+                        "Next PBRS calculation will rebuild with curriculum goal positions."
+                    )
+                    # Clear PBRS normalization cache (will rebuild on next step with curriculum positions)
+                    if hasattr(
+                        self.reward_calculator.pbrs_calculator,
+                        "_cached_combined_path_distance",
+                    ):
+                        self.reward_calculator.pbrs_calculator._cached_combined_path_distance = None
+                        self.reward_calculator.pbrs_calculator._cached_spawn_to_switch_distance = None
+                        self.reward_calculator.pbrs_calculator._cached_switch_to_exit_distance = None
 
         # Add curriculum info if using custom map (for route visualization)
         if self.custom_map_path:
@@ -1116,6 +1216,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 info["_path_gradient_history"] = diagnostic_data[
                     "path_gradient_history"
                 ]
+                info["_pbrs_potential_history"] = diagnostic_data.get(
+                    "potential_history", []
+                )
                 info["_last_next_hop_world"] = diagnostic_data.get(
                     "last_next_hop_world"
                 )
@@ -1255,9 +1358,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         if checkpoint is not None:
             return self._reset_to_checkpoint(checkpoint)
 
-        # Extract path-based waypoints from optimal A* paths (if enabled)
-        # This provides immediate dense guidance from first episode
-        self._update_path_waypoints_for_current_level()
+        # SIMPLIFIED: Removed path waypoint extraction - no longer using waypoint system
 
         # Track initial position for route visualization
         try:
@@ -1371,6 +1472,182 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         #     f"checkpoint_frame_skip={checkpoint_frame_skip}"
         # )
 
+        # CRITICAL: Restore entity positions AND switch state to what they were when checkpoint was created
+        # This is essential for curriculum learning where entity positions change between stages
+        # and for scenarios where switch activation state differs between episodes
+        checkpoint_switch_pos = getattr(checkpoint, "curriculum_switch_position", None)
+        checkpoint_exit_pos = getattr(checkpoint, "curriculum_exit_position", None)
+        checkpoint_switch_activated = getattr(checkpoint, "switch_activated", False)
+        checkpoint_locked_door_states = getattr(checkpoint, "locked_door_states", {})
+
+        # DIAGNOSTIC: Log checkpoint curriculum positions to help debug position mismatches
+        logger.info(
+            f"[CHECKPOINT REPLAY] Checkpoint positions - "
+            f"switch_pos={checkpoint_switch_pos}, exit_pos={checkpoint_exit_pos}, "
+            f"switch_activated={checkpoint_switch_activated}"
+        )
+        if checkpoint_switch_pos is None or checkpoint_exit_pos is None:
+            # Get current curriculum positions for comparison
+            current_curriculum_switch = None
+            current_curriculum_exit = None
+            if (
+                hasattr(self, "goal_curriculum_manager")
+                and self.goal_curriculum_manager is not None
+            ):
+                current_curriculum_switch = (
+                    self.goal_curriculum_manager.get_curriculum_switch_position()
+                )
+                current_curriculum_exit = (
+                    self.goal_curriculum_manager.get_curriculum_exit_position()
+                )
+
+            logger.error(
+                "[CHECKPOINT REPLAY] CRITICAL: Checkpoint missing curriculum positions! "
+                f"Checkpoint positions: switch={checkpoint_switch_pos}, exit={checkpoint_exit_pos}. "
+                f"Current curriculum positions: switch={current_curriculum_switch}, exit={current_curriculum_exit}. "
+                "Actions will replay with CURRENT entity positions, which may NOT match "
+                "positions when checkpoint was created. This WILL cause position mismatches!"
+            )
+
+        # Save current entity positions so we can restore them after replay
+        # NOTE: We do NOT save/restore activation states - those persist from replay
+        saved_switch_pos = None
+        saved_exit_pos = None
+        entity_state_modified = False
+
+        # Always restore entity state (positions and/or switch activation)
+        if True:
+            try:
+                from nclone.physics import clamp_cell
+                import math
+
+                sim = self.nplay_headless.sim
+                exit_switches = sim.entity_dic.get(3, [])
+
+                if exit_switches:
+                    switch_entity = exit_switches[-1]
+                    # Save current entity positions only
+                    saved_switch_pos = (switch_entity.xpos, switch_entity.ypos)
+
+                    # Restore switch activation state to checkpoint creation state
+                    # This is critical: if checkpoint was created pre-activation but we're
+                    # currently post-activation, the replay will fail
+                    # NOTE: This state will PERSIST after replay - we do NOT restore it!
+                    if hasattr(switch_entity, "activated"):
+                        switch_entity.activated = checkpoint_switch_activated
+                        entity_state_modified = True
+                        logger.debug(
+                            f"Set switch activation for replay (will persist): "
+                            f"activated → {checkpoint_switch_activated}"
+                        )
+
+                    # Restore locked door states to checkpoint creation state
+                    # These states will PERSIST after replay - we do NOT restore them!
+                    door_entities = sim.entity_dic.get(4, [])
+                    for door in door_entities:
+                        door_id = getattr(door, "id", None)
+                        if door_id and hasattr(door, "open"):
+                            door_key = f"locked_door_{door_id}"
+
+                            # Restore to checkpoint state if available
+                            if door_key in checkpoint_locked_door_states:
+                                checkpoint_door_state = checkpoint_locked_door_states[
+                                    door_key
+                                ]
+                                door.open = checkpoint_door_state
+                                entity_state_modified = True
+                                logger.debug(
+                                    f"Set door state for replay (will persist): "
+                                    f"{door_key} open={checkpoint_door_state}"
+                                )
+
+                    # Restore to checkpoint creation position if available
+                    if checkpoint_switch_pos is not None:
+                        old_cell = switch_entity.cell
+                        switch_entity.xpos = checkpoint_switch_pos[0]
+                        switch_entity.ypos = checkpoint_switch_pos[1]
+
+                        # Update grid placement
+                        new_cell = clamp_cell(
+                            math.floor(checkpoint_switch_pos[0] / 24),
+                            math.floor(checkpoint_switch_pos[1] / 24),
+                        )
+                        if new_cell != old_cell and old_cell in sim.grid_entity:
+                            if switch_entity in sim.grid_entity[old_cell]:
+                                sim.grid_entity[old_cell].remove(switch_entity)
+                            switch_entity.cell = new_cell
+                            if new_cell not in sim.grid_entity:
+                                sim.grid_entity[new_cell] = []
+                            sim.grid_entity[new_cell].append(switch_entity)
+
+                        entity_state_modified = True
+                        logger.info(
+                            f"[CHECKPOINT REPLAY] Set switch to checkpoint position for replay: "
+                            f"{saved_switch_pos} → {checkpoint_switch_pos}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[CHECKPOINT REPLAY] No checkpoint_switch_pos! Switch stays at: "
+                            f"{saved_switch_pos}. Checkpoint may not have curriculum positions."
+                        )
+
+                    # Restore exit door position if available
+                    if hasattr(switch_entity, "parent") and switch_entity.parent:
+                        door_entity = switch_entity.parent
+                        saved_exit_pos = (door_entity.xpos, door_entity.ypos)
+
+                        if checkpoint_exit_pos is not None:
+                            old_cell = door_entity.cell
+                            door_entity.xpos = checkpoint_exit_pos[0]
+                            door_entity.ypos = checkpoint_exit_pos[1]
+
+                            # Update grid placement
+                            new_cell = clamp_cell(
+                                math.floor(checkpoint_exit_pos[0] / 24),
+                                math.floor(checkpoint_exit_pos[1] / 24),
+                            )
+                            if new_cell != old_cell and old_cell in sim.grid_entity:
+                                if door_entity in sim.grid_entity[old_cell]:
+                                    sim.grid_entity[old_cell].remove(door_entity)
+                                door_entity.cell = new_cell
+                                if new_cell not in sim.grid_entity:
+                                    sim.grid_entity[new_cell] = []
+                                sim.grid_entity[new_cell].append(door_entity)
+
+                            entity_state_modified = (
+                                True  # Mark that we modified exit position
+                            )
+                            logger.info(
+                                f"[CHECKPOINT REPLAY] Set exit to checkpoint position for replay: "
+                                f"{saved_exit_pos} → {checkpoint_exit_pos}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[CHECKPOINT REPLAY] No checkpoint_exit_pos! Exit stays at: "
+                                f"{saved_exit_pos}. Checkpoint may not have curriculum positions."
+                            )
+            except Exception as e:
+                logger.warning(f"Failed to restore entity positions for replay: {e}")
+
+        # DIAGNOSTIC: Log actual entity positions BEFORE replay starts
+        # This verifies that entity positions were correctly set to checkpoint positions
+        try:
+            sim = self.nplay_headless.sim
+            exit_switches = sim.entity_dic.get(3, [])
+            if exit_switches:
+                switch_entity = exit_switches[-1]
+                actual_switch_pos = (switch_entity.xpos, switch_entity.ypos)
+                actual_exit_pos = None
+                if hasattr(switch_entity, "parent") and switch_entity.parent:
+                    door_entity = switch_entity.parent
+                    actual_exit_pos = (door_entity.xpos, door_entity.ypos)
+                logger.info(
+                    f"[CHECKPOINT REPLAY] BEFORE REPLAY - Actual entity positions: "
+                    f"switch={actual_switch_pos}, exit={actual_exit_pos}"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to log entity positions before replay: {e}")
+
         # Replay action sequence with frame skip matching original checkpoint creation
         # Training checkpoints: use training frame_skip (e.g., 4 frames/action)
         # Demo checkpoints: use frame_skip=1 (60fps, 1 frame/action)
@@ -1425,6 +1702,152 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 break
 
         self._checkpoint_replay_in_progress = False
+
+        # CRITICAL: Restore entity POSITIONS to current curriculum positions after replay
+        # After replay completes, entities must be at CURRENT curriculum positions for exploration.
+        # Use goal_curriculum_manager.apply_to_simulator() which handles all position updates properly.
+        #
+        # IMPORTANT: We do NOT restore switch activation states - those persist from replay!
+        # Any switches activated during replay should stay activated for the episode.
+        #
+        # ALWAYS apply curriculum positions if goal_curriculum_manager exists, regardless of
+        # whether entity_state_modified is True (checkpoint might have been missing position data)
+        if (
+            hasattr(self, "goal_curriculum_manager")
+            and self.goal_curriculum_manager is not None
+        ):
+            try:
+                # Use the official apply_to_simulator method which handles:
+                # 1. Moving switch entity to curriculum position
+                # 2. Moving exit door entity to curriculum position
+                # 3. Updating grid placements for both entities
+                # 4. Proper cell boundary handling
+                current_switch_pos = (
+                    self.goal_curriculum_manager.get_curriculum_switch_position()
+                )
+                current_exit_pos = (
+                    self.goal_curriculum_manager.get_curriculum_exit_position()
+                )
+
+                logger.info(
+                    f"[CHECKPOINT REPLAY] Applying curriculum positions after replay: "
+                    f"switch={current_switch_pos}, exit={current_exit_pos}, "
+                    f"(checkpoint had: switch={checkpoint_switch_pos}, exit={checkpoint_exit_pos})"
+                )
+
+                # Apply curriculum positions (this updates positions AND grid placements)
+                self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
+
+                # CRITICAL: Invalidate position caches since entity positions changed!
+                # Without this, the info dict would return stale cached positions from
+                # during replay (when entities were at checkpoint positions).
+                # This ensures subsequent info dicts reflect the CURRENT curriculum positions.
+                self._cached_switch_pos = None
+                self._cached_exit_pos = None
+
+                # DIAGNOSTIC: Verify actual entity positions match curriculum positions
+                try:
+                    sim = self.nplay_headless.sim
+                    exit_switches = sim.entity_dic.get(3, [])
+                    if exit_switches:
+                        switch_entity = exit_switches[-1]
+                        actual_switch = (switch_entity.xpos, switch_entity.ypos)
+                        actual_exit = None
+                        if hasattr(switch_entity, "parent") and switch_entity.parent:
+                            actual_exit = (
+                                switch_entity.parent.xpos,
+                                switch_entity.parent.ypos,
+                            )
+                        logger.info(
+                            f"[CHECKPOINT REPLAY] AFTER CURRICULUM RESTORE - "
+                            f"Expected: switch={current_switch_pos}, exit={current_exit_pos} | "
+                            f"Actual: switch={actual_switch}, exit={actual_exit}"
+                        )
+                        # Verify positions match (within tolerance for floating point)
+                        if actual_exit and current_exit_pos:
+                            dx = abs(actual_exit[0] - current_exit_pos[0])
+                            dy = abs(actual_exit[1] - current_exit_pos[1])
+                            if dx > 1.0 or dy > 1.0:
+                                logger.error(
+                                    f"[CHECKPOINT REPLAY] POSITION MISMATCH! "
+                                    f"Exit door position does not match curriculum! "
+                                    f"Expected={current_exit_pos}, Actual={actual_exit}"
+                                )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to verify positions after curriculum restore: {e}"
+                    )
+
+                logger.debug(
+                    "Restored entity positions to current curriculum after replay "
+                    "(activation states persisted from replay, position caches invalidated)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to apply curriculum positions after replay: {e}"
+                )
+        elif entity_state_modified:
+            # Fallback: restore to saved positions if no curriculum manager
+            try:
+                from nclone.physics import clamp_cell
+                import math
+
+                sim = self.nplay_headless.sim
+                exit_switches = sim.entity_dic.get(3, [])
+
+                if exit_switches and saved_switch_pos is not None:
+                    switch_entity = exit_switches[-1]
+                    old_cell = switch_entity.cell
+
+                    switch_entity.xpos = saved_switch_pos[0]
+                    switch_entity.ypos = saved_switch_pos[1]
+
+                    new_cell = clamp_cell(
+                        math.floor(saved_switch_pos[0] / 24),
+                        math.floor(saved_switch_pos[1] / 24),
+                    )
+                    if new_cell != old_cell and old_cell in sim.grid_entity:
+                        if switch_entity in sim.grid_entity[old_cell]:
+                            sim.grid_entity[old_cell].remove(switch_entity)
+                        switch_entity.cell = new_cell
+                        if new_cell not in sim.grid_entity:
+                            sim.grid_entity[new_cell] = []
+                        sim.grid_entity[new_cell].append(switch_entity)
+
+                    # Restore exit door
+                    if (
+                        saved_exit_pos is not None
+                        and hasattr(switch_entity, "parent")
+                        and switch_entity.parent
+                    ):
+                        door_entity = switch_entity.parent
+                        old_cell = door_entity.cell
+
+                        door_entity.xpos = saved_exit_pos[0]
+                        door_entity.ypos = saved_exit_pos[1]
+
+                        new_cell = clamp_cell(
+                            math.floor(saved_exit_pos[0] / 24),
+                            math.floor(saved_exit_pos[1] / 24),
+                        )
+                        if new_cell != old_cell and old_cell in sim.grid_entity:
+                            if door_entity in sim.grid_entity[old_cell]:
+                                sim.grid_entity[old_cell].remove(door_entity)
+                            door_entity.cell = new_cell
+                            if new_cell not in sim.grid_entity:
+                                sim.grid_entity[new_cell] = []
+                            sim.grid_entity[new_cell].append(door_entity)
+
+                    # CRITICAL: Invalidate position caches since entity positions changed!
+                    self._cached_switch_pos = None
+                    self._cached_exit_pos = None
+
+                    logger.warning(
+                        f"[CHECKPOINT REPLAY] No curriculum manager, restored to saved positions: "
+                        f"switch={saved_switch_pos}, exit={saved_exit_pos}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to restore entity state after replay: {e}")
 
         # Track frames executed during checkpoint replay
         # This allows us to report only episode frames (excluding replay) in info dict
@@ -1539,57 +1962,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     ) -> None:
         """Mark waypoints crossed during checkpoint replay as collected.
 
-        Prevents double-rewarding waypoints that were part of the checkpoint path.
+        SIMPLIFIED: No-op since waypoint system is no longer used.
 
         Args:
             checkpoint_route: List of positions traversed during checkpoint replay
         """
-        if not checkpoint_route or not hasattr(
-            self.reward_calculator, "_collected_path_waypoints"
-        ):
-            return
-
-        # Get current phase waypoints
-        switch_activated = self.nplay_headless.exit_switch_activated()
-        current_phase = "post_switch" if switch_activated else "pre_switch"
-
-        if not hasattr(self.reward_calculator, "current_path_waypoints_by_phase"):
-            return
-
-        phase_waypoints = self.reward_calculator.current_path_waypoints_by_phase.get(
-            current_phase, []
-        )
-
-        if not phase_waypoints:
-            return
-
-        # Waypoint crossing radius (matches bonus calculation)
-        WAYPOINT_RADIUS = 18.0
-        crossed_waypoints = []
-
-        # Check each position in checkpoint route against waypoints
-        for pos in checkpoint_route:
-            for wp in phase_waypoints:
-                wp_pos = wp.position
-
-                # Skip if already marked
-                if wp_pos in self.reward_calculator._collected_path_waypoints:
-                    continue
-
-                # Calculate distance to waypoint
-                dx = pos[0] - wp_pos[0]
-                dy = pos[1] - wp_pos[1]
-                dist = (dx * dx + dy * dy) ** 0.5
-
-                # Mark as collected if within radius
-                if dist <= WAYPOINT_RADIUS:
-                    self.reward_calculator._collected_path_waypoints.add(wp_pos)
-                    crossed_waypoints.append(wp_pos)
-
-        if crossed_waypoints and self.enable_logging:
-            logger.info(
-                f"Pre-marked {len(crossed_waypoints)} waypoints as collected from checkpoint replay"
-            )
+        # SIMPLIFIED: Waypoint system removed, this is now a no-op
+        pass
 
     def get_current_action_sequence(self) -> List[int]:
         """Get the action sequence since last reset.
@@ -2179,7 +2558,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
     def _calculate_reward(self, curr_obs, prev_obs, action=None):
         """Calculate the reward for the environment."""
-        return self.reward_calculator.calculate_reward(curr_obs, prev_obs, action)
+        return self.reward_calculator.calculate_reward(
+            curr_obs, prev_obs, action, curriculum_manager=self.goal_curriculum_manager
+        )
 
     def _process_observation(self, obs):
         """Process the observation from the environment."""
@@ -2352,35 +2733,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     def _update_path_waypoints_for_current_level(self) -> None:
         """Extract path-based waypoints from optimal A* paths.
 
-        Called during reset after graph is built. Provides immediate dense
-        guidance for complex navigation from first episode.
+        SIMPLIFIED: No-op since waypoint system is no longer used.
         """
-        # Requires graph data from GraphMixin
-        if not hasattr(self, "current_graph_data") or not self.current_graph_data:
-            logger.debug(
-                "Path waypoint extraction requires graph data (GraphMixin). "
-                "Skipping for this environment configuration."
-            )
-            return
-
-        # Extract waypoints from optimal paths
-        try:
-            num_waypoints = self.reward_calculator.extract_path_waypoints_for_level(
-                level_data=self.level_data,
-                graph_data=self.current_graph_data,
-                map_name=self.map_loader.current_map_name,
-            )
-
-            if num_waypoints > 0:
-                logger.info(
-                    f"Extracted {num_waypoints} path waypoints for level "
-                    f"{self.map_loader.current_map_name} (immediate dense guidance)"
-                )
-        except Exception as e:
-            logger.warning(f"Failed to extract path waypoints: {e}")
-            import traceback
-
-            logger.debug(traceback.format_exc())
+        # SIMPLIFIED: Waypoint system removed, this is now a no-op
+        pass
 
     def get_route_visualization_tile_data(self) -> Dict[Tuple[int, int], int]:
         """Get tile data for route visualization.
@@ -2620,6 +2976,274 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             return None
         except Exception as e:
             logger.debug(f"get_level_data_for_visualization failed: {e}")
+            return None
+
+    def get_pbrs_path_for_visualization(
+        self,
+        start_pos: Tuple[float, float],
+        goal_pos: Tuple[float, float],
+        switch_activated: bool,
+    ) -> Optional[List[Tuple[int, int]]]:
+        """Calculate PBRS path using next_hop chain from level cache.
+
+        IMPORTANT: Level cache stores only GEOMETRIC distances (direction-independent).
+        The next_hop chain gives topologically-correct path, but NOT physics-optimal!
+
+        For PHYSICS-OPTIMAL paths (correct costs with momentum, gravity, mines):
+        Use find_shortest_path FROM current position TO goal instead.
+
+        This method is callable via env_method from SubprocVecEnv. It extracts
+        the topological path by following the next_hop chain from the level cache.
+
+        STRICT VALIDATION: Requires physics_cache to be available in graph data.
+
+        Args:
+            start_pos: Agent's starting position (x, y)
+            goal_pos: Goal position (x, y) - switch or exit
+            switch_activated: Whether switch has been activated
+
+        Returns:
+            List of (x, y) node positions forming the topological path, or None if unreachable
+            NOTE: This path uses geometric next_hop, not physics-optimal costs!
+
+        Raises:
+            RuntimeError: If physics_cache not available (strict validation)
+        """
+        try:
+            # Import pathfinding utilities
+            from nclone.graph.reachability.pathfinding_utils import find_ninja_node
+            from nclone.constants.physics_constants import NINJA_RADIUS
+
+            # Get path calculator from reward calculator
+            if not hasattr(self.reward_calculator, "pbrs_calculator"):
+                raise RuntimeError("PBRS calculator not found in reward calculator")
+            pbrs_calc = self.reward_calculator.pbrs_calculator
+            if not hasattr(pbrs_calc, "path_calculator"):
+                raise RuntimeError("Path calculator not found in PBRS calculator")
+            path_calculator = pbrs_calc.path_calculator
+
+            # Get level cache
+            if not hasattr(path_calculator, "level_cache"):
+                raise RuntimeError("Path calculator has no level_cache attribute")
+            level_cache = path_calculator.level_cache
+            if level_cache is None:
+                raise RuntimeError("Level cache is not built yet")
+
+            # Get graph data
+            if not hasattr(self, "current_graph_data") or not self.current_graph_data:
+                raise RuntimeError("Current graph data not available")
+
+            adjacency = self.current_graph_data.get("adjacency")
+            if not adjacency:
+                raise RuntimeError("Adjacency graph is empty")
+
+            base_adjacency = self.current_graph_data.get("base_adjacency")
+            if not base_adjacency:
+                raise RuntimeError(
+                    "Base adjacency not found in graph_data. "
+                    "Base adjacency is required for physics edge classification."
+                )
+
+            # DIAGNOSTIC: Log adjacency sizes to detect masking issues
+            logger.warning(
+                f"[PBRS_PATH_EXTRACT] Adjacency state: "
+                f"masked={len(adjacency)} nodes, base={len(base_adjacency)} nodes "
+                f"({'SAME' if len(adjacency) == len(base_adjacency) else 'DIFFERENT - entity masking active'})"
+            )
+
+            # STRICT VALIDATION: Physics cache must be available for PBRS visualization
+            physics_cache = self.current_graph_data.get("node_physics")
+            if physics_cache is None:
+                raise RuntimeError(
+                    "Physics cache (node_physics) not found in graph_data. "
+                    "PBRS path visualization requires physics-optimal pathfinding. "
+                    "This indicates incomplete graph initialization."
+                )
+
+            # STRICT VALIDATION: Mine proximity cache must be available
+            if not hasattr(path_calculator, "mine_proximity_cache"):
+                raise RuntimeError(
+                    "Path calculator missing mine_proximity_cache attribute. "
+                    "Mine avoidance costs will not be applied to paths."
+                )
+            mine_cache = path_calculator.mine_proximity_cache
+            if mine_cache is None:
+                raise RuntimeError(
+                    "Mine proximity cache is None. "
+                    "Paths will be computed without mine avoidance costs."
+                )
+
+            # Log mine cache state for diagnostics
+            mine_cache_size = (
+                len(mine_cache.cache) if hasattr(mine_cache, "cache") else 0
+            )
+
+            # CRITICAL DIAGNOSTIC: Check if level cache was built WITH mine costs
+            # Compare cached level_data to see if mines were present when cache was built
+            level_cache_valid = False
+            if (
+                hasattr(level_cache, "_cached_level_data")
+                and level_cache._cached_level_data
+            ):
+                cached_level_id = getattr(
+                    level_cache._cached_level_data, "level_id", "unknown"
+                )
+                level_cache_size = len(level_cache.cache)
+                level_cache_valid = True
+                logger.warning(
+                    f"[PBRS_PATH_EXTRACT] Level cache state: "
+                    f"level_id={cached_level_id}, "
+                    f"cache_size={level_cache_size}, "
+                    f"current_mine_cache_size={mine_cache_size}"
+                )
+
+            logger.warning(
+                f"[PBRS_PATH_EXTRACT] Mine proximity cache: {mine_cache_size} nodes with costs "
+                f"(avoidance {'ACTIVE' if mine_cache_size > 0 else 'INACTIVE'}), "
+                f"level_cache_built={level_cache_valid}"
+            )
+
+            # STRICT: If mine cache is empty but level has mines, cache is stale
+            if mine_cache_size == 0 and self.level_data:
+                from nclone.constants.entity_types import EntityType
+
+                mines = self.level_data.get_entities_by_type(
+                    EntityType.TOGGLE_MINE
+                ) + self.level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+                if len(mines) > 0:
+                    raise RuntimeError(
+                        f"Level has {len(mines)} mines but mine proximity cache is EMPTY! "
+                        f"This means paths will NOT avoid mines. "
+                        f"This indicates the level cache was built before mine cache was populated."
+                    )
+
+            spatial_hash = self.current_graph_data.get("spatial_hash")
+            subcell_lookup = self.current_graph_data.get("subcell_lookup")
+
+            # Find start node from agent position
+            start_node = find_ninja_node(
+                start_pos,
+                adjacency,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=NINJA_RADIUS,
+            )
+
+            if start_node is None:
+                raise RuntimeError(f"Start node not found for position {start_pos}")
+
+            # Determine goal_id (same as reward calculator uses)
+            goal_id = "exit" if switch_activated else "switch"
+
+            # DEBUG: Check if level cache has data for this goal_id
+            # Test by trying to get next_hop from start_node
+            test_next_hop = level_cache.get_next_hop(start_node, goal_id)
+            if test_next_hop is None:
+                # This is the first node and next_hop is already None
+                # This means we're AT the goal, or the cache wasn't built for this goal_id
+                logger.debug(
+                    f"PBRS path: next_hop is None for start_node={start_node}, goal_id={goal_id}. "
+                    f"Either at goal already or cache not built for this goal_id."
+                )
+                # Check if we're actually at the goal
+                goal_node = find_ninja_node(
+                    goal_pos,
+                    adjacency,
+                    spatial_hash=spatial_hash,
+                    subcell_lookup=subcell_lookup,
+                    ninja_radius=NINJA_RADIUS,
+                )
+                if goal_node == start_node:
+                    logger.debug("Agent is at goal node - returning single-node path")
+                    return [start_node]
+                else:
+                    # Cache not built properly for this goal_id
+                    # Check if it's a SharedPathCacheView issue
+                    cache_type = type(level_cache).__name__
+                    has_shared_cache = hasattr(level_cache, "shared_cache")
+
+                    # Try to diagnose the issue
+                    if has_shared_cache:
+                        shared = level_cache.shared_cache
+                        goal_id_in_mapping = goal_id in shared.goal_id_to_idx
+                        start_node_in_mapping = start_node in shared.node_pos_to_idx
+
+                        logger.warning(
+                            f"PBRS path extraction failed: level_cache.get_next_hop({start_node}, '{goal_id}') "
+                            f"returned None, but agent not at goal. "
+                            f"Cache type: {cache_type}, "
+                            f"goal_id_in_shared_mapping: {goal_id_in_mapping}, "
+                            f"start_node_in_shared_mapping: {start_node_in_mapping}, "
+                            f"available_goal_ids: {list(shared.goal_id_to_idx.keys())[:10]}, "
+                            f"start_pos={start_pos}, goal_pos={goal_pos}, start_node={start_node}, goal_node={goal_node}"
+                        )
+                    else:
+                        logger.warning(
+                            f"PBRS path extraction failed: level_cache.get_next_hop({start_node}, '{goal_id}') "
+                            f"returned None, but agent not at goal. Cache may not be built for this goal_id. "
+                            f"Cache type: {cache_type}, "
+                            f"start_pos={start_pos}, goal_pos={goal_pos}, start_node={start_node}, goal_node={goal_node}"
+                        )
+                    return None
+
+            # Extract path by following next_hop chain
+            path = []
+            current = start_node
+            visited = set()  # Prevent infinite loops
+            max_hops = 1000  # Safety limit
+
+            while current is not None and len(path) < max_hops:
+                if current in visited:
+                    logger.warning(
+                        f"PBRS path extraction: infinite loop detected at node {current}. "
+                        f"Path so far: {len(path)} nodes"
+                    )
+                    break  # Infinite loop detected
+
+                path.append(current)
+                visited.add(current)
+
+                # Get next hop toward goal
+                next_hop = level_cache.get_next_hop(current, goal_id)
+
+                if next_hop is None or next_hop == current:
+                    # Reached goal or dead end
+                    break
+
+                current = next_hop
+
+            if len(path) < 2:
+                logger.debug(
+                    f"PBRS path too short: {len(path)} nodes. "
+                    f"start_node={start_node}, goal_id={goal_id}"
+                )
+                return None
+
+            # DIAGNOSTIC: Log path quality for validation
+            # Sample first few hops for diagnosis
+            sample_hops = path[: min(5, len(path))]
+            logger.warning(
+                f"[PBRS_PATH_EXTRACT] Extracted {len(path)} nodes from level cache. "
+                f"start_node={start_node}, goal_id={goal_id}, "
+                f"first_hops={sample_hops}"
+            )
+
+            # Verify path uses physics cache by checking if graph has node_physics
+            if physics_cache:
+                logger.warning(
+                    f"[PBRS_PATH_EXTRACT] Path extracted with physics cache available "
+                    f"({len(physics_cache)} nodes with physics properties)"
+                )
+            else:
+                logger.error(
+                    "[PBRS_PATH_EXTRACT] Path extracted WITHOUT physics cache! "
+                    "This should never happen - paths will not use physics costs."
+                )
+
+            return path
+
+        except Exception as e:
+            logger.debug(f"get_pbrs_path_for_visualization failed: {e}")
             return None
 
     def get_reward_config(self) -> "RewardConfig":

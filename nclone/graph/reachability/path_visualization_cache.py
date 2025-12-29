@@ -25,6 +25,7 @@ class PathVisualizationCache:
         self._cached_adjacency_signature: Optional[int] = None
         self._cached_level_data: Optional[LevelData] = None
         self._cached_mine_signature: Optional[Tuple] = None
+        self._cached_mine_cache_size: Optional[int] = None  # Track mine cache state
         self._ninja_move_threshold = 3.0  # pixels - update paths more frequently
 
     def get_cached_paths(
@@ -35,6 +36,7 @@ class PathVisualizationCache:
         switch_positions: List[Tuple[int, int]],
         exit_positions: List[Tuple[int, int]],
         exit_switch_activated: bool,
+        mine_cache_size: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Get cached path data if still valid, otherwise return None.
@@ -61,6 +63,19 @@ class PathVisualizationCache:
         # Check if mine states changed
         mine_signature = get_mine_state_signature(level_data)
         if self._cached_mine_signature != mine_signature:
+            return None
+
+        # CRITICAL: Check if mine proximity cache size changed
+        # This catches cases where paths were cached before mine cache was populated
+        # Even if mine_signature is same, cache size can differ if cache wasn't built yet
+        if mine_cache_size is not None and self._cached_mine_cache_size != mine_cache_size:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"[PATH_CACHE_INVALIDATE] Mine cache size changed: "
+                f"{self._cached_mine_cache_size} -> {mine_cache_size}. "
+                f"Invalidating path cache to recompute with correct mine costs."
+            )
             return None
 
         # Check if adjacency graph changed
@@ -101,6 +116,7 @@ class PathVisualizationCache:
         exit_path: Optional[List[Tuple[int, int]]],
         switch_node: Optional[Tuple[int, int]],
         exit_node: Optional[Tuple[int, int]],
+        mine_cache_size: Optional[int] = None,
     ):
         """
         Cache computed path data.
@@ -130,6 +146,7 @@ class PathVisualizationCache:
         self._cached_adjacency_signature = adjacency_signature
         self._cached_level_data = level_data
         self._cached_mine_signature = mine_signature
+        self._cached_mine_cache_size = mine_cache_size  # Track mine cache state
         self._cached_path_data = {
             "closest_node": closest_node,
             "entity_signature": entity_signature,
@@ -146,3 +163,4 @@ class PathVisualizationCache:
         self._cached_adjacency_signature = None
         self._cached_level_data = None
         self._cached_mine_signature = None
+        self._cached_mine_cache_size = None

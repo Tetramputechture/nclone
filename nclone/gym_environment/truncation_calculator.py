@@ -1,6 +1,7 @@
 """Dynamic truncation limit calculator based on level complexity."""
 
 import numpy as np
+from .constants import MAX_TIME_IN_FRAMES
 
 # Heuristic parameters (tunable)
 BASE_TIME_PER_NODE = 15.0  # frames per sqrt(node) (was 10.0)
@@ -11,7 +12,6 @@ TRUNCATION_MULTIPLIER = (
     20  # generous multiplier for learning (was 15, increased for complex levels)
 )
 MIN_TRUNCATION_FRAMES = 600  # minimum for tiny levels
-MAX_TRUNCATION_FRAMES = 2000
 
 
 def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -> int:
@@ -49,7 +49,7 @@ def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -
 
     # Clamp to reasonable range
     truncation_limit = int(
-        np.clip(truncation_limit, MIN_TRUNCATION_FRAMES, MAX_TRUNCATION_FRAMES)
+        np.clip(truncation_limit, MIN_TRUNCATION_FRAMES, MAX_TIME_IN_FRAMES)
     )
 
     return truncation_limit
