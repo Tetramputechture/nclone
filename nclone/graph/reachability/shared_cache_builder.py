@@ -7,7 +7,7 @@ cache via copy-on-write (Linux fork), avoiding redundant computation.
 """
 
 import logging
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 import numpy as np
 
 from .shared_level_cache import SharedLevelCache
@@ -42,8 +42,6 @@ def build_shared_level_cache(
     )
     from .level_data_helpers import extract_goal_positions
     from ...gym_environment.reward_calculation.reward_constants import (
-        MINE_HAZARD_RADIUS,
-        MINE_HAZARD_COST_MULTIPLIER,
         MINE_PENALIZE_DEADLY_ONLY,
     )
     from ..level_data import LevelData, extract_start_position_from_map_data
@@ -61,7 +59,14 @@ def build_shared_level_cache(
     )
     nplay.load_map(level_path)
 
-    # Step 1b: Extract level_data from nplay_headless
+    # CRITICAL: Reset simulator to ensure entities are properly initialized
+    # load_map() loads the map data, but entities may not be fully initialized
+    # until reset() is called
+    nplay.reset()
+
+    logger.info("    Level loaded and reset, entities initialized")
+
+    # Step 1b: Extract level_data from nplay_headless using proper EntityExtractor
     # Build tiles array from tile dictionary
     tile_dic = nplay.get_tile_data()
     tiles = np.zeros((MAP_TILE_HEIGHT, MAP_TILE_WIDTH), dtype=np.int32)
@@ -71,25 +76,40 @@ def build_shared_level_cache(
         if 0 <= inner_x < MAP_TILE_WIDTH and 0 <= inner_y < MAP_TILE_HEIGHT:
             tiles[inner_y, inner_x] = int(tile_id)
 
-    # Extract entities (simplified - no entity extractor needed for graph building)
-    entities = []
-    if hasattr(nplay.sim, "entity_dic"):
-        for entity_type, entity_list in nplay.sim.entity_dic.items():
-            for entity in entity_list:
-                if hasattr(entity, "x") and hasattr(entity, "y"):
-                    entity_dict = {
-                        "type": entity_type,
-                        "x": entity.x,
-                        "y": entity.y,
-                    }
-                    # Add entity-specific attributes
-                    if hasattr(entity, "state"):
-                        entity_dict["state"] = entity.state
-                    if hasattr(entity, "open"):
-                        entity_dict["open"] = entity.open
-                    if hasattr(entity, "activated"):
-                        entity_dict["activated"] = entity.activated
-                    entities.append(entity_dict)
+    # Extract entities using the proper EntityExtractor class
+    # This ensures entity positions are correctly extracted with xpos/ypos attributes
+    from ...gym_environment.entity_extractor import EntityExtractor
+
+    entity_extractor = EntityExtractor(nplay)
+    entities = entity_extractor.extract_graph_entities()
+
+    # DIAGNOSTIC: Verify entities were extracted
+    entity_types_found = {}
+    for entity in entities:
+        entity_type = entity.get("type", "unknown")
+        entity_types_found[entity_type] = entity_types_found.get(entity_type, 0) + 1
+
+    logger.info(f"    Extracted {len(entities)} entities: {entity_types_found}")
+
+    # STRICT VALIDATION: Check for critical entities
+    exit_switches = [e for e in entities if e.get("type") == EntityType.EXIT_SWITCH]
+    exit_doors = [e for e in entities if e.get("type") == EntityType.EXIT_DOOR]
+
+    if not exit_switches:
+        raise ValueError(
+            f"No EXIT_SWITCH entities found in level {level_path}! "
+            f"Entity types found: {entity_types_found}. "
+            f"Level file may be corrupted or entity extraction failed."
+        )
+
+    if not exit_doors:
+        raise ValueError(
+            f"No EXIT_DOOR entities found in level {level_path}! "
+            f"Entity types found: {entity_types_found}. "
+            f"Level file may be corrupted or entity extraction failed."
+        )
+
+    logger.info(f"    ✓ Found {len(exit_switches)} switches, {len(exit_doors)} exits")
 
     # Extract start position
     start_position = extract_start_position_from_map_data(nplay.sim.map_data)
@@ -122,6 +142,17 @@ def build_shared_level_cache(
     logger.info("  [3/5] Extracting goals and waypoints...")
     goals = extract_goal_positions(level_data)
 
+    # STRICT VALIDATION: Level must have goals
+    if not goals:
+        raise ValueError(
+            "No goals found in level! "
+            "extract_goal_positions returned empty list. "
+            "Level must have at least one exit switch and exit door. "
+            "Check entity extraction in level_data."
+        )
+
+    logger.info(f"    Extracted {len(goals)} base goals: {[g[1] for g in goals]}")
+
     # Add waypoints to goals list
     if waypoints:
         for i, waypoint_pos in enumerate(waypoints):
@@ -137,8 +168,10 @@ def build_shared_level_cache(
         # Add generic aliases for backward compatibility
         if goal_id.startswith("exit_switch_") and "switch" not in goal_positions_dict:
             goal_positions_dict["switch"] = goal_pos
+            logger.info(f"    Added 'switch' alias for {goal_id} at {goal_pos}")
         elif goal_id.startswith("exit_door_") and "exit" not in goal_positions_dict:
             goal_positions_dict["exit"] = goal_pos
+            logger.info(f"    Added 'exit' alias for {goal_id} at {goal_pos}")
 
     # Prepare node and goal lists
     node_positions = list(adjacency.keys())
@@ -147,25 +180,53 @@ def build_shared_level_cache(
     # Ensure aliases are in goal_ids
     if "switch" in goal_positions_dict and "switch" not in goal_ids:
         goal_ids.append("switch")
+        logger.info("    Appended 'switch' to goal_ids list")
     if "exit" in goal_positions_dict and "exit" not in goal_ids:
         goal_ids.append("exit")
+        logger.info("    Appended 'exit' to goal_ids list")
 
-    logger.info(f"    Goals: {len(goal_ids)}, Nodes: {len(node_positions)}")
+    logger.info(f"    Final: {len(goal_ids)} goal_ids, {len(node_positions)} nodes")
+    logger.info(f"    goal_ids: {goal_ids}")
+    logger.info(f"    goal_positions_dict keys: {list(goal_positions_dict.keys())}")
 
-    # Initialize SharedLevelCache
+    # Initialize SharedLevelCache with goal position mapping
     shared_cache = SharedLevelCache(
         num_nodes=len(node_positions),
         num_goals=len(goal_ids),
         node_positions=node_positions,
         goal_ids=goal_ids,
+        goal_pos_mapping=goal_positions_dict,
     )
 
-    # Store goal positions in path cache view for API compatibility
+    # Verify goal positions are stored correctly
     path_view = shared_cache.get_path_cache_view()
-    path_view._goal_id_to_goal_pos = goal_positions_dict
+    if not path_view._goal_id_to_goal_pos:
+        logger.warning(
+            f"SharedPathCacheView has empty goal_pos mapping! "
+            f"Expected {len(goal_positions_dict)} entries."
+        )
 
-    # Step 4: Run BFS flood fill for path distances
-    logger.info("  [4/5] Computing path distances via BFS flood fill...")
+    # Step 4: Build mine proximity cache BEFORE computing paths
+    # CRITICAL: This MUST be done before BFS to ensure paths use mine avoidance costs
+    logger.info("  [4/5] Building mine proximity cache...")
+    from .mine_proximity_cache import MineProximityCostCache, MineSignedDistanceField
+
+    mine_proximity_cache = MineProximityCostCache()
+    mine_cache_rebuilt = mine_proximity_cache.build_cache(level_data, adjacency)
+
+    mine_cache_size = len(mine_proximity_cache.cache)
+    logger.warning(
+        f"    Mine proximity cache built: {mine_cache_size} nodes with costs, "
+        f"rebuilt={mine_cache_rebuilt}"
+    )
+
+    # Build mine SDF for velocity-aware hazard costs
+    mine_sdf = MineSignedDistanceField()
+    sdf_rebuilt = mine_sdf.build_sdf(level_data)
+    logger.info(f"    Mine SDF built: rebuilt={sdf_rebuilt}")
+
+    # Step 5: Run BFS flood fill for path distances
+    logger.info("  [5/5] Computing path distances via BFS flood fill...")
 
     # Extract spatial lookups for performance
     spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
@@ -175,18 +236,27 @@ def build_shared_level_cache(
     if physics_cache is None:
         raise ValueError("Physics cache not found in graph_data")
 
+    # Track which aliases we've already processed to avoid duplicates
+    processed_aliases = set()
+
     # For each goal, run BFS to compute distances to all reachable nodes
     for goal_pos, goal_id in goals:
-        # Also compute for aliases
+        # Determine all goal_ids to populate for this BFS run
+        # CRITICAL: Populate both the specific goal_id AND generic aliases
         goal_ids_to_compute = [goal_id]
-        if goal_id.startswith("exit_switch_") and "switch" not in [
-            g[1] for g in goals[: goals.index((goal_pos, goal_id))]
-        ]:
+
+        # Add generic alias if this is the first switch/exit entity
+        if goal_id.startswith("exit_switch_") and "switch" not in processed_aliases:
             goal_ids_to_compute.append("switch")
-        elif goal_id.startswith("exit_door_") and "exit" not in [
-            g[1] for g in goals[: goals.index((goal_pos, goal_id))]
-        ]:
+            processed_aliases.add("switch")
+        elif goal_id.startswith("exit_door_") and "exit" not in processed_aliases:
             goal_ids_to_compute.append("exit")
+            processed_aliases.add("exit")
+
+        logger.debug(
+            f"    Computing BFS for goal {goal_id} at {goal_pos}, "
+            f"populating cache entries: {goal_ids_to_compute}"
+        )
 
         # Find closest node to goal position
         goal_node = find_closest_node_to_position(
@@ -201,134 +271,180 @@ def build_shared_level_cache(
             logger.warning(f"    Could not find node near goal {goal_id} at {goal_pos}")
             continue
 
-        # Run BFS from goal node
-        physics_distances, _, parents, geometric_distances = bfs_distance_from_start(
+        # Run BFS with GEOMETRIC costs only (direction-independent)
+        # ARCHITECTURE: Physics costs are directional and cannot be cached via flood-fill
+        # They must be computed on-demand via find_shortest_path from actual start position
+        geometric_distances, _, parents, _ = bfs_distance_from_start(
             goal_node,
             None,
             adjacency,
             base_adjacency,
             None,
-            physics_cache,
+            physics_cache,  # Still needed for horizontal rule validation
             level_data,
-            None,  # mine_proximity_cache - will be built separately
+            None,  # NO mine_proximity_cache (not used with geometric costs)
             return_parents=True,
-            use_geometric_costs=False,
-            track_geometric_distances=True,
-            mine_sdf=None,  # Will be built separately
+            use_geometric_costs=True,  # GEOMETRIC ONLY (direction-independent)
+            track_geometric_distances=False,  # Not needed
+            mine_sdf=None,  # Not used with geometric costs
         )
 
+        logger.warning(
+            f"    BFS for goal '{goal_id}': computed {len(geometric_distances)} GEOMETRIC distances. "
+            f"Physics costs will be computed on-demand for correct directionality."
+        )
+
+        # Helper function to compute multi-hop direction (8-hop weighted lookahead)
+        def compute_multi_hop_direction(
+            node_pos: Tuple[int, int],
+            parents: Dict[Tuple[int, int], Optional[Tuple[int, int]]],
+            max_hops: int = 8,
+        ) -> Optional[Tuple[float, float]]:
+            """Compute weighted multi-hop lookahead direction from node toward goal."""
+            weights = [0.45, 0.25, 0.15, 0.08, 0.04, 0.02, 0.01, 0.005][:max_hops]
+            total_dx = 0.0
+            total_dy = 0.0
+            current_node = node_pos
+
+            for weight in weights:
+                next_node = parents.get(current_node)
+                if next_node is None:
+                    break
+                dx = float(next_node[0] - current_node[0])
+                dy = float(next_node[1] - current_node[1])
+                total_dx += weight * dx
+                total_dy += weight * dy
+                current_node = next_node
+
+            magnitude = (total_dx * total_dx + total_dy * total_dy) ** 0.5
+            if magnitude < 0.001:
+                return None
+            return (total_dx / magnitude, total_dy / magnitude)
+
         # Store results in shared cache for all goal_id variants
+        # NOTE: We only cache GEOMETRIC distances (direction-independent)
+        # Physics costs are directional and must be computed on-demand
+        nodes_stored = 0
         for gid in goal_ids_to_compute:
-            for node_pos, distance in physics_distances.items():
+            for node_pos, geo_dist in geometric_distances.items():
                 next_hop = parents.get(node_pos) if parents else None
-                geo_dist = (
-                    geometric_distances.get(node_pos, float("inf"))
-                    if geometric_distances
-                    else float("inf")
+                # Compute multi-hop direction (8-hop weighted lookahead)
+                multi_hop_direction = compute_multi_hop_direction(
+                    node_pos, parents, max_hops=8
                 )
 
+                # Store geometric distance in BOTH slots for compatibility
+                # (legacy code expects physics distance, but we store geometric now)
                 shared_cache.set_path_distance(
-                    node_pos, gid, distance, geo_dist, next_hop
+                    node_pos, gid, geo_dist, geo_dist, next_hop, multi_hop_direction
                 )
+                nodes_stored += 1
+
+        logger.debug(
+            f"    Stored {nodes_stored} GEOMETRIC distance entries for goal_ids {goal_ids_to_compute} "
+            f"(goal_node={goal_node}, reachable_nodes={len(geometric_distances)})"
+        )
 
     logger.info(f"    Path distances computed for {len(goals)} goals")
 
-    # Step 5: Compute mine proximity costs
-    logger.info("  [5/5] Computing mine proximity and SDF...")
+    # Step 6: Store mine proximity costs in shared cache
+    # NOTE: Mine cache was already built in Step 4 and used during BFS
+    # Now we just need to copy it to shared memory for workers to access
+    logger.info("  [6/6] Storing mine proximity costs in shared cache...")
 
-    # A. Mine proximity costs per node
-    if MINE_HAZARD_COST_MULTIPLIER > 1.0:
+    # A. Transfer mine proximity costs from cache to shared memory
+    nodes_with_mine_costs = 0
+    for node_pos, multiplier in mine_proximity_cache.cache.items():
+        shared_cache.set_mine_proximity_cost(node_pos, multiplier)
+        nodes_with_mine_costs += 1
+
+    logger.warning(
+        f"    Transferred {nodes_with_mine_costs} mine proximity costs to shared cache "
+        f"(used during BFS pathfinding)"
+    )
+
+    # B. Mine SDF grid (transfer from already-built mine_sdf)
+    # NOTE: mine_sdf was already built in Step 4 and used during BFS
+    # Now we just transfer its data to shared memory for workers to access
+    from .mine_proximity_cache import SDF_WIDTH, SDF_HEIGHT, SDF_CELL_SIZE
+
+    # Use the SDF that was already built (don't recompute)
+    if (
+        mine_sdf
+        and hasattr(mine_sdf, "distance_grid")
+        and mine_sdf.distance_grid is not None
+    ):
+        sdf_grid = mine_sdf.distance_grid.copy()
+        gradient_grid = mine_sdf.gradient_grid.copy()
+        logger.info(
+            f"    Transferred SDF grid from built mine_sdf (shape={sdf_grid.shape})"
+        )
+    else:
+        # Fallback: Build SDF grid if mine_sdf wasn't available
+        logger.warning("    mine_sdf not available, building SDF grid manually...")
+        sdf_grid = np.full((SDF_HEIGHT, SDF_WIDTH), 1.0, dtype=np.float32)
+        gradient_grid = np.zeros((SDF_HEIGHT, SDF_WIDTH, 2), dtype=np.float32)
+
+        # Get mines for SDF (respecting MINE_PENALIZE_DEADLY_ONLY for consistency)
         mines = level_data.get_entities_by_type(
             EntityType.TOGGLE_MINE
         ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
 
-        deadly_mine_positions = []
+        sdf_mine_positions = []
         for mine in mines:
             mine_state = mine.get("state", 0)
+            # Use same filter logic as proximity costs for consistency
             if MINE_PENALIZE_DEADLY_ONLY and mine_state != 0:
-                continue
-            deadly_mine_positions.append((mine.get("x", 0), mine.get("y", 0)))
+                continue  # Skip safe mines if MINE_PENALIZE_DEADLY_ONLY is True
+            sdf_mine_positions.append((mine.get("x", 0), mine.get("y", 0)))
 
-        if deadly_mine_positions:
-            for node_pos in adjacency.keys():
-                # Find closest deadly mine
-                min_distance = float("inf")
-                for mine_x, mine_y in deadly_mine_positions:
-                    dx = node_pos[0] - mine_x
-                    dy = node_pos[1] - mine_y
-                    distance = (dx * dx + dy * dy) ** 0.5
-                    min_distance = min(min_distance, distance)
+    # Only compute SDF manually if mine_sdf wasn't available (fallback)
+    if not (
+        mine_sdf
+        and hasattr(mine_sdf, "distance_grid")
+        and mine_sdf.distance_grid is not None
+    ):
+        if sdf_mine_positions:
+            danger_radius = 20.0  # ninja_radius (10) + mine_radius (4.5) + margin (5.5)
 
-                # Calculate cost multiplier with quadratic falloff
-                if min_distance < MINE_HAZARD_RADIUS:
-                    proximity_factor = 1.0 - (min_distance / MINE_HAZARD_RADIUS)
-                    multiplier = 1.0 + (proximity_factor**2) * (
-                        MINE_HAZARD_COST_MULTIPLIER - 1.0
-                    )
-                    shared_cache.set_mine_proximity_cost(node_pos, multiplier)
+            for row in range(SDF_HEIGHT):
+                for col in range(SDF_WIDTH):
+                    # Cell center in pixel coordinates (12px resolution)
+                    cell_center_x = (col + 0.5) * SDF_CELL_SIZE
+                    cell_center_y = (row + 0.5) * SDF_CELL_SIZE
+
+                    # Find nearest mine
+                    min_dist = float("inf")
+                    nearest_dx, nearest_dy = 0.0, 0.0
+
+                    for mine_x, mine_y in sdf_mine_positions:
+                        dx = cell_center_x - mine_x
+                        dy = cell_center_y - mine_y
+                        dist = np.sqrt(dx * dx + dy * dy)
+
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest_dx = dx
+                            nearest_dy = dy
+
+                    # Normalize distance to [-1, 1] range
+                    if min_dist <= danger_radius:
+                        normalized_dist = (min_dist / danger_radius) - 1.0
+                    else:
+                        normalized_dist = min(
+                            1.0, (min_dist - danger_radius) / (2 * danger_radius)
+                        )
+
+                    sdf_grid[row, col] = normalized_dist
+
+                    # Compute normalized gradient
+                    if min_dist > 1e-6:
+                        gradient_grid[row, col, 0] = nearest_dx / min_dist
+                        gradient_grid[row, col, 1] = nearest_dy / min_dist
 
             logger.info(
-                f"    Mine proximity costs computed for {len(deadly_mine_positions)} mines"
+                f"    Mine SDF grid computed for {len(sdf_mine_positions)} mines"
             )
-
-    # B. Mine SDF grid
-    from .mine_proximity_cache import SDF_WIDTH, SDF_HEIGHT, SDF_CELL_SIZE
-
-    sdf_grid = np.full((SDF_HEIGHT, SDF_WIDTH), 1.0, dtype=np.float32)
-    gradient_grid = np.zeros((SDF_HEIGHT, SDF_WIDTH, 2), dtype=np.float32)
-
-    # Get mines for SDF (respecting MINE_PENALIZE_DEADLY_ONLY for consistency)
-    mines = level_data.get_entities_by_type(
-        EntityType.TOGGLE_MINE
-    ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
-
-    sdf_mine_positions = []
-    for mine in mines:
-        mine_state = mine.get("state", 0)
-        # Use same filter logic as proximity costs for consistency
-        if MINE_PENALIZE_DEADLY_ONLY and mine_state != 0:
-            continue  # Skip safe mines if MINE_PENALIZE_DEADLY_ONLY is True
-        sdf_mine_positions.append((mine.get("x", 0), mine.get("y", 0)))
-
-    if sdf_mine_positions:
-        danger_radius = 20.0  # ninja_radius (10) + mine_radius (4.5) + margin (5.5)
-
-        for row in range(SDF_HEIGHT):
-            for col in range(SDF_WIDTH):
-                # Cell center in pixel coordinates (12px resolution)
-                cell_center_x = (col + 0.5) * SDF_CELL_SIZE
-                cell_center_y = (row + 0.5) * SDF_CELL_SIZE
-
-                # Find nearest mine
-                min_dist = float("inf")
-                nearest_dx, nearest_dy = 0.0, 0.0
-
-                for mine_x, mine_y in sdf_mine_positions:
-                    dx = cell_center_x - mine_x
-                    dy = cell_center_y - mine_y
-                    dist = np.sqrt(dx * dx + dy * dy)
-
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest_dx = dx
-                        nearest_dy = dy
-
-                # Normalize distance to [-1, 1] range
-                if min_dist <= danger_radius:
-                    normalized_dist = (min_dist / danger_radius) - 1.0
-                else:
-                    normalized_dist = min(
-                        1.0, (min_dist - danger_radius) / (2 * danger_radius)
-                    )
-
-                sdf_grid[row, col] = normalized_dist
-
-                # Compute normalized gradient
-                if min_dist > 1e-6:
-                    gradient_grid[row, col, 0] = nearest_dx / min_dist
-                    gradient_grid[row, col, 1] = nearest_dy / min_dist
-
-        logger.info(f"    Mine SDF grid computed for {len(sdf_mine_positions)} mines")
 
     # Store SDF data in shared cache
     shared_cache.set_sdf_grid(sdf_grid, gradient_grid)

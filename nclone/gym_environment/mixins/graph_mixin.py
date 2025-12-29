@@ -360,6 +360,28 @@ class GraphMixin:
             level_data, ninja_pos=ninja_pos
         )
 
+        _logger = logging.getLogger(__name__)
+
+        # STRICT VALIDATION: Ensure physics-critical data is present for PBRS pathfinding
+        if self.current_graph_data:
+            has_base_adj = "base_adjacency" in self.current_graph_data
+            has_physics = "node_physics" in self.current_graph_data
+
+            if not has_base_adj or not has_physics:
+                raise RuntimeError(
+                    f"Graph data missing physics components required for PBRS! "
+                    f"base_adjacency={has_base_adj}, node_physics={has_physics}. "
+                    f"This will cause incorrect pathfinding without mine avoidance."
+                )
+
+            # # Log successful validation with warning level for visibility
+            # base_adj_size = len(self.current_graph_data.get("base_adjacency", {}))
+            # physics_size = len(self.current_graph_data.get("node_physics", {}))
+            # _logger.warning(
+            #     f"[GRAPH_BUILD] Graph built with physics data: "
+            #     f"{base_adj_size} base edges, {physics_size} node physics entries"
+            # )
+
         # GraphBuilder returns dict with 'adjacency', 'reachable', etc.
         # Convert to GraphData format for ML models if graph observations are enabled
         t_convert = self._profile_start("graph_convert")
@@ -407,12 +429,25 @@ class GraphMixin:
                                     self.current_graph_data,
                                 )
                                 if reward_cache_built:
-                                    import logging
-
-                                    _logger = logging.getLogger(__name__)
-                                    _logger.info(
-                                        f"Built reward calculator's path cache for level {getattr(level_data, 'level_id', 'unknown')}"
+                                    level_id = getattr(
+                                        level_data, "level_id", "unknown"
                                     )
+                                    _logger.info(
+                                        f"Built reward calculator's path cache for level {level_id}"
+                                    )
+
+                                    # # Extract path waypoints after cache is built
+                                    # # This ensures waypoints are available for visualization
+                                    # # and wired to PBRS for turn continuation guidance
+                                    # waypoints_extracted = self.reward_calculator.extract_path_waypoints_for_level(
+                                    #     level_data=level_data,
+                                    #     graph_data=self.current_graph_data,
+                                    #     map_name=level_id,
+                                    # )
+                                    # if waypoints_extracted > 0:
+                                    #     _logger.info(
+                                    #         f"Extracted {waypoints_extracted} path waypoints for visualization and PBRS guidance"
+                                    #     )
 
         # Update switch and mine state tracking
         self.last_switch_states = self._get_switch_states_from_env()

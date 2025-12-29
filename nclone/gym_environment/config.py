@@ -164,6 +164,9 @@ class EnvironmentConfig:
     # Reward system configuration (curriculum-aware)
     reward_config: Optional[RewardConfig] = None
 
+    # Goal curriculum configuration (for intermediate goal curriculum learning)
+    goal_curriculum_config: Optional[Any] = None
+
     # Shared level cache (for zero-copy multi-worker training on same level)
     shared_level_cache: Optional[Any] = None
 

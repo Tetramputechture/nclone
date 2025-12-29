@@ -149,12 +149,12 @@ class PathWaypointExtractor:
         MIN_SPAWN_DISTANCE = 50.0
         pre_switch_filtered = []
         filtered_count = 0
-        
+
         for wp in pre_switch_waypoints:
             dx = wp.position[0] - spawn_world[0]
             dy = wp.position[1] - spawn_world[1]
             dist = math.sqrt(dx * dx + dy * dy)
-            
+
             if dist >= MIN_SPAWN_DISTANCE:
                 pre_switch_filtered.append(wp)
             else:
@@ -163,7 +163,7 @@ class PathWaypointExtractor:
                     f"Filtered waypoint too close to spawn: {wp.position} "
                     f"(distance: {dist:.1f}px < {MIN_SPAWN_DISTANCE}px)"
                 )
-        
+
         if filtered_count > 0:
             logger.info(
                 f"Filtered {filtered_count} waypoints within {MIN_SPAWN_DISTANCE}px of spawn. "
@@ -224,7 +224,7 @@ class PathWaypointExtractor:
             path_nodes, phase, min_angle=self.min_turn_angle, max_angle=90.0
         )
         waypoints.extend(medium_turns)
-        
+
         # Add continuation waypoints after significant turns (>60°) to guide through trajectory changes
         waypoints.extend(
             self._add_turn_continuation_waypoints(
@@ -235,8 +235,10 @@ class PathWaypointExtractor:
             self._add_segment_midpoints(path_nodes, waypoints, physics_cache, phase)
         )
 
-        # Pass 3: Progress waypoints (regular spacing)
-        waypoints.extend(self._add_progress_checkpoints(path_nodes, waypoints, phase))
+        # Pass 3: Progress waypoints (physics-aware spacing: denser in aerial sections)
+        waypoints.extend(
+            self._add_progress_checkpoints(path_nodes, waypoints, phase, physics_cache)
+        )
 
         # Apply progress gradient to values (waypoints near goal worth more)
         waypoints = self._apply_progress_gradient(waypoints, len(path_nodes))
@@ -650,15 +652,19 @@ class PathWaypointExtractor:
         path_nodes: List[Tuple[int, int]],
         existing_waypoints: List[PathWaypoint],
         phase: str,
+        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
     ) -> List[PathWaypoint]:
         """Add regular progress checkpoints along path for dense coverage.
 
         Ensures no gaps longer than progress_spacing without a waypoint.
+        Uses physics-aware spacing: denser waypoints in aerial sections where
+        control is more difficult.
 
         Args:
             path_nodes: Path node positions
             existing_waypoints: Already detected waypoints
             phase: Waypoint phase
+            physics_cache: Optional physics properties per node (for aerial detection)
 
         Returns:
             List of progress checkpoint waypoints
@@ -667,6 +673,11 @@ class PathWaypointExtractor:
 
         # Build set of positions that already have waypoints (with tolerance)
         existing_positions = {wp.position for wp in existing_waypoints}
+
+        # Physics-aware spacing: denser waypoints in aerial sections
+        # Aerial sections require more guidance due to reduced control authority
+        GROUNDED_SPACING = self.progress_spacing  # 35px
+        AERIAL_SPACING = self.progress_spacing * 0.6  # 21px (60% of grounded)
 
         # Track cumulative distance along path
         cumulative_distance = 0.0
@@ -683,8 +694,21 @@ class PathWaypointExtractor:
 
             cumulative_distance += edge_length
 
+            # Determine effective spacing based on physics state (aerial vs grounded)
+            effective_spacing = GROUNDED_SPACING  # Default to grounded
+            physics_state = "unknown"
+
+            if physics_cache is not None:
+                physics_props = physics_cache.get(curr_node, {})
+                is_grounded = physics_props.get("is_grounded", True)
+                if not is_grounded:
+                    effective_spacing = AERIAL_SPACING
+                    physics_state = "aerial"
+                else:
+                    physics_state = "grounded"
+
             # Check if we need a checkpoint
-            if cumulative_distance - last_checkpoint_distance >= self.progress_spacing:
+            if cumulative_distance - last_checkpoint_distance >= effective_spacing:
                 curr_pos = (
                     float(curr_node[0]) + NODE_WORLD_COORD_OFFSET,
                     float(curr_node[1]) + NODE_WORLD_COORD_OFFSET,
@@ -701,7 +725,7 @@ class PathWaypointExtractor:
                             value=0.6,  # Base value for regular progress
                             phase=phase,
                             node_index=i,
-                            physics_state="unknown",
+                            physics_state=physics_state,
                             curvature=0.0,
                         )
                     )

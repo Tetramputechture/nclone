@@ -460,3 +460,39 @@ class FrameStackWrapper(ObservationWrapper):
 
         # Stack back into array
         return np.stack(augmented_frames, axis=0)
+
+    # Passthrough methods for route visualization (SubprocVecEnv env_method support)
+    def get_route_visualization_tile_data(self):
+        """Passthrough to underlying environment for route visualization."""
+        return self.env.get_route_visualization_tile_data()
+
+    def get_route_visualization_mine_data(self):
+        """Passthrough to underlying environment for route visualization."""
+        return self.env.get_route_visualization_mine_data()
+
+    def get_route_visualization_locked_door_data(self):
+        """Passthrough to underlying environment for route visualization."""
+        return self.env.get_route_visualization_locked_door_data()
+
+    def get_graph_data_for_visualization(self):
+        """Passthrough to underlying environment for PBRS path visualization."""
+        return self.env.get_graph_data_for_visualization()
+
+    def get_level_data_for_visualization(self):
+        """Passthrough to underlying environment for PBRS path visualization."""
+        return self.env.get_level_data_for_visualization()
+
+    def get_pbrs_path_for_visualization(self, start_pos, goal_pos, switch_activated):
+        """Passthrough to underlying environment for PBRS path visualization.
+        
+        Args:
+            start_pos: Agent's starting position (x, y)
+            goal_pos: Goal position (x, y) - switch or exit
+            switch_activated: Whether switch has been activated
+            
+        Returns:
+            List of (x, y) node positions forming the path, or None if unreachable
+        """
+        return self.env.get_pbrs_path_for_visualization(
+            start_pos, goal_pos, switch_activated
+        )

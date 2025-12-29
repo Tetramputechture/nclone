@@ -29,11 +29,13 @@ _SURFACE_AREA_CACHE_MAX_SIZE = 1000  # Limit to 1000 levels to prevent memory gr
 SUB_NODE_SIZE = 12  # Sub-node spacing in pixels
 
 # Aerial upward movement cost constants
-# N++ physics: A jump from ground can realistically cover ~2-3 sub-nodes (24-36px)
-# of upward travel before gravity and momentum make further upward movement
-# increasingly difficult. We use a tight threshold to prevent impossible paths.
-AERIAL_UPWARD_CHAIN_THRESHOLD = 2  # Max chain before applying blocking cost
-AERIAL_UPWARD_BLOCKING_COST = 100.0  # High cost for moves beyond threshold
+# N++ physics: A jump from ground with held jump button can realistically cover
+# ~5-6 sub-nodes (60-72px) of upward travel before gravity overcomes jump velocity.
+# This allows for realistic jump arcs while still preventing impossible paths.
+AERIAL_UPWARD_CHAIN_THRESHOLD = (
+    5  # Max chain before applying blocking cost (allows 6 moves: chain 0-5)
+)
+AERIAL_UPWARD_BLOCKING_COST = 500.0  # High cost for moves beyond threshold
 AERIAL_UPWARD_BASE_MULTIPLIER = 3.0  # Base multiplier for aerial upward (not 1.0)
 
 # Momentum-aware pathfinding cost constants
@@ -49,13 +51,13 @@ def _get_aerial_chain_multiplier(chain_count: int) -> float:
     """Multiplicative cost scaling for consecutive aerial upward moves.
 
     Models N++ jump physics where upward movement in air is valid while
-    continuing a jump trajectory, but becomes quickly expensive to prevent
-    impossible long-distance aerial paths.
+    continuing a jump trajectory (holding jump button), but becomes progressively
+    expensive to reflect diminishing upward velocity as gravity overcomes jump force.
 
-    Chain 0: First aerial upward - 3x (immediate penalty for leaving ground/wall)
-    Chain 1: Second aerial upward - 9x (3^2)
-    Chain 2: Third aerial upward - 27x (3^3)
-    Chain 3+: Beyond physics limits - apply blocking cost (100x base)
+    Chain 0-5: Progressive cost scaling (within realistic jump physics)
+        Chain 0: 3x, Chain 1: 9x, Chain 2: 27x, Chain 3: 81x, Chain 4: 243x, Chain 5: 729x
+    Chain 6+: Beyond physics limits - apply blocking cost (100x base with continued scaling)
+        Chain 6: 300x, Chain 7: 900x, etc.
 
     NOTE: This is the canonical implementation shared across all pathfinding code.
     Imported by pathfinding_algorithms.py to avoid duplication.
@@ -68,11 +70,11 @@ def _get_aerial_chain_multiplier(chain_count: int) -> float:
     """
     if chain_count <= AERIAL_UPWARD_CHAIN_THRESHOLD:
         # Within jump physics limits - exponential increase with base 3
-        # Chain 0: 3, Chain 1: 9, Chain 2: 27
+        # Reflects diminishing upward velocity as gravity overcomes jump force
         return AERIAL_UPWARD_BASE_MULTIPLIER ** (chain_count + 1)
     else:
         # Beyond physics limits - apply blocking cost with continued scaling
-        # Chain 3: 100 * 3 = 300, Chain 4: 100 * 9 = 900, etc.
+        # Heavily penalizes paths exceeding realistic jump height
         excess_chain = chain_count - AERIAL_UPWARD_CHAIN_THRESHOLD
         return AERIAL_UPWARD_BLOCKING_COST * (
             AERIAL_UPWARD_BASE_MULTIPLIER**excess_chain
@@ -152,13 +154,16 @@ def _calculate_physics_aware_cost(
     physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
     level_data: Optional[Any] = None,
     mine_proximity_cache: Optional[Any] = None,
-    aerial_upward_chain: int = 0,
+    aerial_chain: int = 0,
     grandparent_pos: Optional[Tuple[int, int]] = None,
     mine_sdf: Optional[Any] = None,
     hazard_cost_multiplier: Optional[float] = None,
 ) -> float:
     """
     Calculate edge cost based on N++ movement physics, momentum, and mine hazard proximity.
+
+    STRICT VALIDATION: physics_cache MUST be provided - this is a critical requirement
+    for accurate physics-aware pathfinding used by PBRS and optimal route calculation.
 
     Movement costs reflect actual N++ physics (from sim_mechanics_doc.md):
     - Grounded horizontal: FAST (ground accel 0.0667, max speed 3.333)
@@ -175,10 +180,13 @@ def _calculate_physics_aware_cost(
     - Makes momentum-building "detours" cheaper than naive direct paths
     - Critical for levels requiring backtracking to build speed (e.g., long jumps)
 
-    Mid-air jump prevention:
-    - Upward movement while airborne (not grounded, not walled) is blocked with very high cost
-    - Consecutive aerial upward moves accumulate multiplicative cost penalties
-    - This reflects N++ physics where mid-air jumps are impossible
+    Aerial movement physics:
+    - Reversing vertical momentum (falling→rising transition) is BLOCKED with infinite cost
+    - Shallow angle climbing (horizontal→upward transitions) is ALLOWED for zig-zag climbing patterns
+    - Continuing upward movement from existing jump is allowed with progressive costs
+    - Consecutive aerial upward moves accumulate multiplicative cost penalties (chain 0-5: progressive costs, chain 6+: heavily penalized)
+    - This reflects N++ physics where you can't reverse momentum in mid-air, but can hold jump to continue rising (~60-72px max)
+    - Allows realistic shallow-angle ascent patterns through alternating horizontal and upward moves
 
     Hazard avoidance:
     - Paths near deadly mines incur additional cost multiplier
@@ -201,7 +209,7 @@ def _calculate_physics_aware_cost(
         physics_cache: Optional pre-computed physics properties for O(1) lookups
         level_data: Optional LevelData for mine proximity checks (fallback)
         mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
-        aerial_upward_chain: Number of consecutive aerial upward moves in current path
+        aerial_chain: Number of consecutive moves while airborne (tile-based, not mine-masked)
         grandparent_pos: Optional grandparent position for momentum inference
         mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
         hazard_cost_multiplier: Optional curriculum-adaptive mine hazard cost multiplier
@@ -209,6 +217,14 @@ def _calculate_physics_aware_cost(
     Returns:
         Edge cost (float) where 1.0 = baseline movement cost
     """
+    # STRICT VALIDATION: Physics cache is required for accurate cost calculation
+    if physics_cache is None:
+        raise ValueError(
+            "physics_cache is REQUIRED for _calculate_physics_aware_cost(). "
+            "This function is called by all PBRS pathfinding - physics cache must be built. "
+            "Ensure graph building includes physics cache precomputation."
+        )
+
     # OPTIMIZATION: Extract coordinates once to avoid repeated tuple indexing (4M calls!)
     src_x, src_y = src_pos
     dst_x, dst_y = dst_pos
@@ -257,7 +273,7 @@ def _calculate_physics_aware_cost(
     # Special case: Diagonal falling from air (prefer over horizontal air movement)
     if dx != 0 and dy > 0 and not src_grounded and not src_walled:
         # Diagonal downward continuing same direction - efficient (gravity + momentum)
-        multiplier = 0.4
+        multiplier = 1.0
     # Special case: Diagonal upward wall-assisted move (valid N++ mechanic)
     elif dx != 0 and dy < 0 and not src_grounded and src_walled:
         # Wall-assisted diagonal upward (wall-jump) - valid but more expensive than ground
@@ -274,22 +290,25 @@ def _calculate_physics_aware_cost(
         # Grounded diagonal jump - efficient upward movement
         # Cost: 1.414 × 0.6 = 0.85
         multiplier = 0.6
-    # Special case: Diagonal upward from air without wall (aerial jump continuation)
+    # Special case: Diagonal upward from air without wall (aerial jump)
     elif dx != 0 and dy < 0 and not src_grounded and not src_walled:
         if y_direction_change_to_rising:
             # Transitioning from falling/stationary to rising in mid-air is IMPOSSIBLE
             # Can't reverse vertical momentum without ground or wall contact
             # This prevents zigzag paths that go down then up in the air
-            multiplier = 200.0
+            multiplier = float("inf")
         elif x_direction_change:
-            # Changing X direction while moving upward in mid-air is nearly impossible
+            # Changing X direction while moving upward in mid-air is IMPOSSIBLE
             # You can't reverse horizontal momentum without wall or ground contact
-            multiplier = 100.0
+            # This enforces direct diagonal upward paths (prefer straight trajectories)
+            multiplier = float("inf")
         else:
             # Aerial upward movement - valid as jump continuation, cost scales with chain
-            # Chain 0-2: Reasonable cost (continuing jump trajectory)
-            # Chain 3+: Very expensive (beyond physics limits, effectively blocked)
-            multiplier = _get_aerial_chain_multiplier(aerial_upward_chain)
+            # ALLOWS: horizontal → diagonal up (shallow angle climbing)
+            # ALLOWS: diagonal up → diagonal up (continuing upward)
+            # Chain 0-5: Progressive costs (continuing jump trajectory)
+            # Chain 6+: Very expensive (beyond physics limits, effectively blocked)
+            multiplier = _get_aerial_chain_multiplier(aerial_chain)
     elif dy < 0:  # Moving up (against gravity) - vertical only
         if src_grounded:
             # Vertical jump from ground - reasonable but not free
@@ -302,15 +321,17 @@ def _calculate_physics_aware_cost(
         elif y_direction_change_to_rising:
             # Transitioning from falling/stationary to rising in mid-air is IMPOSSIBLE
             # Can't reverse vertical momentum without ground or wall contact
-            multiplier = 200.0
+            multiplier = float("inf")
         else:
             # Vertical upward from air without wall (aerial jump continuation)
+            # ALLOWS: horizontal → vertical up (shallow angle climbing)
+            # ALLOWS: diagonal up → vertical up (continuing upward)
             # Same chain-based cost as diagonal aerial upward
-            multiplier = _get_aerial_chain_multiplier(aerial_upward_chain)
+            multiplier = _get_aerial_chain_multiplier(aerial_chain)
     elif dy > 0:  # Moving down (with gravity) - vertical or grounded diagonal
         # Gravity assists falling (0.0667 pixels/frame²)
         # Cheap regardless of grounding state
-        multiplier = 0.5
+        multiplier = 1.0
     else:  # Horizontal (dy == 0)
         if src_grounded and dst_grounded:
             # Grounded horizontal - FASTEST and CHEAPEST movement
@@ -319,13 +340,22 @@ def _calculate_physics_aware_cost(
             # Base cost: 1.0 × 0.15 = 0.15
             multiplier = 0.15
         elif x_direction_change and not src_grounded and not src_walled:
-            # Changing horizontal direction in mid-air is nearly impossible
-            # Very limited air control in N++
-            multiplier = 100.0
+            # Changing horizontal direction in mid-air is IMPOSSIBLE
+            # Very limited air control in N++ - can't reverse momentum without wall/ground
+            multiplier = 1.5
+        elif not src_grounded and not src_walled:
+            # Air horizontal - only allowed within aerial threshold
+            # After being airborne too long, horizontal control is lost
+            if aerial_chain > AERIAL_UPWARD_CHAIN_THRESHOLD:
+                # Beyond aerial threshold - block horizontal air movement
+                multiplier = float("inf")
+            else:
+                # Within threshold - expensive but allowed
+                # Air accel 0.0444 (~33% slower than ground)
+                # Higher cost to prefer diagonal falling over horizontal air movement
+                multiplier = 1.0
         else:
-            # Air horizontal - more expensive than diagonal falling
-            # Air accel 0.0444 (~33% slower than ground)
-            # Higher cost to prefer diagonal falling over horizontal air movement
+            # Other cases (e.g., grounded to air, air to grounded)
             multiplier = 40.0
 
     # Apply momentum-aware cost adjustment for grounded horizontal movement
@@ -1361,11 +1391,17 @@ def bfs_distance_from_start(
 
     Applies same physics-aware costs and validation as find_shortest_path:
     - Horizontal edges: Checks consecutive non-grounded rule
-    - Diagonal upward edges: Requires source to be grounded
+    - Diagonal upward edges: Requires source to be grounded or walled
+    - Mid-air jump initiation: Blocked with infinite cost (cannot reverse momentum from falling to rising)
+    - Aerial upward continuation: Tracked via aerial_upward_chain with progressive costs (chain 0-5 allowed, 6+ heavily penalized)
     - Edge costs: Physics-based (grounded horizontal fastest, upward expensive, etc.)
     - Velocity-aware mine costs: Uses SDF to penalize approaching hazards at high speed
+    - Mine-grounding check: Verifies grounding against masked adjacency to prevent jumps from mine-blocked positions
 
     Uses Dijkstra's algorithm (priority queue) to find lowest-cost distances according to physics costs.
+
+    STRICT VALIDATION: When use_geometric_costs=False (physics-aware pathfinding),
+    physics_cache MUST be provided. This ensures all PBRS pathfinding uses physics costs.
 
     Args:
         start_node: Starting node position
@@ -1373,7 +1409,7 @@ def bfs_distance_from_start(
         adjacency: Masked graph adjacency structure (for pathfinding)
         base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
         max_distance: Optional maximum distance to compute (for early termination)
-        physics_cache: Optional pre-computed physics properties for O(1) lookups
+        physics_cache: Pre-computed physics properties for O(1) lookups (REQUIRED unless use_geometric_costs=True)
         level_data: Optional LevelData for mine proximity checks (fallback)
         mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
         return_parents: If True, return the parents dict for path reconstruction
@@ -1394,11 +1430,45 @@ def bfs_distance_from_start(
         - geometric_distances_dict: Map of node -> geometric distance along physics-optimal path
           (only if track_geometric_distances=True AND use_geometric_costs=False, else None)
     """
+    # STRICT VALIDATION: Require physics_cache for physics-aware pathfinding
+    if not use_geometric_costs and physics_cache is None:
+        raise ValueError(
+            "physics_cache is REQUIRED for physics-aware pathfinding (use_geometric_costs=False). "
+            "For PBRS and optimal route calculation, physics cache must be built. "
+            "Ensure graph building includes physics cache precomputation."
+        )
+
+    # DIAGNOSTIC: Warn if mine avoidance is not available
+    # This is a one-time check at BFS start to catch mine cache issues
+    if not use_geometric_costs and mine_proximity_cache is not None:
+        mine_cache_size = (
+            len(mine_proximity_cache.cache)
+            if hasattr(mine_proximity_cache, "cache")
+            else 0
+        )
+        if mine_cache_size == 0:
+            _logger.warning(
+                f"[BFS_START] Mine proximity cache is EMPTY during BFS from {start_node}. "
+                f"Paths will NOT avoid mines! This likely means mine cache wasn't built before level cache."
+            )
+        else:
+            _logger.info(
+                f"[BFS_START] BFS from {start_node} with mine avoidance: {mine_cache_size} nodes with costs"
+            )
+    elif not use_geometric_costs and mine_proximity_cache is None:
+        raise ValueError(
+            "mine_proximity_cache is None during BFS! "
+            "Paths will completely ignore mines!"
+        )
+
     # Priority queue: (distance, node)
     pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
     parents = {start_node: None}  # Track parents for horizontal rule
     grandparents = {start_node: None}  # Track grandparents for momentum inference
+    aerial_chains = {
+        start_node: 0
+    }  # Track consecutive airborne moves (tile-based grounding)
     visited = set()
 
     # Track geometric distances along physics-optimal path if requested
@@ -1471,14 +1541,29 @@ def bfs_distance_from_start(
                 continue
 
             # Calculate edge cost
+            # Calculate displacement for both geometric and physics-aware paths
+            dx = neighbor_pos[0] - current[0]
+            dy = neighbor_pos[1] - current[1]
+
             if use_geometric_costs:
                 # Use actual geometric distance in pixels
                 # Sub-nodes are spaced 12 pixels apart
-                dx = neighbor_pos[0] - current[0]
-                dy = neighbor_pos[1] - current[1]
                 # Cardinal: 12px, Diagonal: ~17px (12 * sqrt(2))
                 cost = (dx * dx + dy * dy) ** 0.5
+                # Chain not needed for geometric costs, but track for consistency
+                neighbor_aerial_chain = 0
             else:
+                # Calculate aerial chain count - tracks consecutive airborne moves
+                # Uses TILE-BASED grounding (physics_cache), not mine-masked grounding
+                # This ensures consistent behavior for both upward movement costs and horizontal air restrictions
+                current_aerial_chain = aerial_chains.get(current, 0)
+                src_physics = physics_cache[current]
+                src_grounded_physics = src_physics["grounded"]
+
+                # Increment chain if airborne (not grounded by tiles, not walled), reset if grounded
+                is_airborne = not src_grounded_physics and not src_physics["walled"]
+                neighbor_aerial_chain = current_aerial_chain + 1 if is_airborne else 0
+
                 # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
                 # OPTIMIZATION: Pass cached parent/grandparent instead of dict.get() calls
                 cost = _calculate_physics_aware_cost(
@@ -1489,9 +1574,10 @@ def bfs_distance_from_start(
                     physics_cache,
                     level_data,
                     mine_proximity_cache,
-                    0,  # aerial_upward_chain not tracked here (optimization)
+                    neighbor_aerial_chain,  # Pass calculated aerial chain
                     current_grandparent,  # Pass cached grandparent
                     mine_sdf,  # Pass SDF for velocity-aware mine costs
+                    None,  # hazard_cost_multiplier
                 )
 
             new_dist = current_dist + cost
@@ -1502,6 +1588,9 @@ def bfs_distance_from_start(
                 parents[neighbor_pos] = current  # Track parent for horizontal rule
                 grandparents[neighbor_pos] = (
                     current_parent  # Track grandparent (cached)
+                )
+                aerial_chains[neighbor_pos] = (
+                    neighbor_aerial_chain  # Track aerial chain
                 )
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 
@@ -1547,12 +1636,14 @@ def calculate_geometric_path_distance(
     geometrically-shortest path (e.g., taking a longer but easier route that
     avoids difficult jumps).
 
+    STRICT VALIDATION: physics_cache MUST be provided for physics-aware pathfinding.
+
     Args:
         start_pos: Start position (x, y) in pixels
         goal_pos: Goal position (x, y) in pixels
         adjacency: Masked graph adjacency structure (for pathfinding)
         base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
-        physics_cache: Pre-computed physics properties for O(1) lookups
+        physics_cache: Pre-computed physics properties for O(1) lookups (REQUIRED)
         spatial_hash: Optional spatial hash for fast node lookup
         subcell_lookup: Optional subcell lookup for node snapping
         entity_radius: Collision radius of the goal entity (default 0.0)
@@ -1565,6 +1656,19 @@ def calculate_geometric_path_distance(
         Geometric path distance in pixels along the physics-optimal path,
         or float('inf') if unreachable
     """
+    # STRICT VALIDATION: Physics cache is required for physics-optimal pathfinding
+    if physics_cache is None:
+        raise ValueError(
+            "physics_cache is REQUIRED for calculate_geometric_path_distance(). "
+            "This function finds the physics-optimal path and measures its pixel length. "
+            "Physics cache must be built before calling this function."
+        )
+    if mine_proximity_cache is None:
+        raise ValueError(
+            "mine_proximity_cache is REQUIRED for calculate_geometric_path_distance(). "
+            "This function uses mine proximity costs for pathfinding. "
+            "Mine proximity cache must be built before calling this function."
+        )
     # Find closest nodes to start and goal positions
     start_node = find_ninja_node(
         start_pos,
@@ -1592,7 +1696,8 @@ def calculate_geometric_path_distance(
 
     # Use physics costs for pathfinding, but track geometric distances along the path
     # This gives us the pixel length of the physics-optimal path
-    _, _, _, geometric_distances = bfs_distance_from_start(
+    # REQUEST parents dict for sub-node resolution (extracting next_hop from path)
+    _, _, parents, geometric_distances = bfs_distance_from_start(
         start_node=start_node,
         target_node=goal_node,
         adjacency=adjacency,
@@ -1603,6 +1708,7 @@ def calculate_geometric_path_distance(
         mine_sdf=mine_sdf,
         use_geometric_costs=False,  # Use physics costs for pathfinding priority
         track_geometric_distances=True,  # Track pixel distances along physics path
+        return_parents=True,  # Request parents for sub-node resolution
     )
 
     if geometric_distances is None:
@@ -1613,7 +1719,85 @@ def calculate_geometric_path_distance(
     if target_geometric_distance is None or target_geometric_distance == float("inf"):
         return float("inf")
 
-    # Adjust for collision radii
+    # === SUB-NODE RESOLUTION FOR DENSE PBRS (0.05-3.33px movements) ===
+    # Agent can move 0.05-3.33px per step, but our graph is 12px spaced.
+    # To provide dense rewards for small movements, we project the agent's
+    # actual position onto the optimal path direction (start_node → next_hop).
+    #
+    # This ensures:
+    # - Moving 0.1px toward next_hop: distance decreases by ~0.1px (dense feedback)
+    # - Moving 0.1px away from next_hop: distance increases by ~0.1px (immediate penalty)
+    # - Path-aware: Uses next_hop direction, not Euclidean (handles winding paths)
+    #
+    # Example: Agent at (312.5, 444.2), start_node at (300, 444), next_hop at (312, 444)
+    # - Path direction: (312-300, 444-444) = (12, 0) normalized = (1, 0)
+    # - Agent offset from node: (312.5-300, 444.2-444) = (12.5, 0.2)
+    # - Projection: 12.5*1 + 0.2*0 = 12.5px (agent is 12.5px ahead of node)
+    # - Adjusted distance: node_distance - 12.5px (agent is closer by 12.5px)
+
+    # Extract next hop from path (second node after start_node)
+    next_hop = None
+    if parents is not None:
+        # Reconstruct path from start to goal by following parents backward
+        path = []
+        current = goal_node
+        while current is not None and len(path) < 1000:  # Safety limit
+            path.append(current)
+            current = parents.get(current)
+        path.reverse()
+
+        # Next hop is the second node in the path (first step from start_node)
+        if len(path) >= 2 and path[0] == start_node:
+            next_hop = path[1]
+
+    if next_hop is not None:
+        # Convert node positions to world coordinates for projection calculation
+        start_node_world_x = start_node[0] + NODE_WORLD_COORD_OFFSET
+        start_node_world_y = start_node[1] + NODE_WORLD_COORD_OFFSET
+        next_hop_world_x = next_hop[0] + NODE_WORLD_COORD_OFFSET
+        next_hop_world_y = next_hop[1] + NODE_WORLD_COORD_OFFSET
+
+        # Vector from start_node to next_hop (optimal path direction)
+        path_dx = next_hop_world_x - start_node_world_x
+        path_dy = next_hop_world_y - start_node_world_y
+        path_len = (path_dx * path_dx + path_dy * path_dy) ** 0.5
+
+        if path_len > 0.001:
+            # Normalize path direction
+            path_dir_x = path_dx / path_len
+            path_dir_y = path_dy / path_len
+
+            # Vector from start_node to player's actual position
+            player_dx = start_pos[0] - start_node_world_x
+            player_dy = start_pos[1] - start_node_world_y
+
+            # Project player offset onto path direction
+            # Positive projection = player ahead (toward next_hop) = closer to goal
+            # Negative projection = player behind (away from next_hop) = further from goal
+            projection = player_dx * path_dir_x + player_dy * path_dir_y
+
+            # Adjust distance by projection and collision radii
+            # Positive projection reduces distance (agent ahead of node toward goal)
+            adjusted_distance = max(
+                0.0,
+                target_geometric_distance - projection - (ninja_radius + entity_radius),
+            )
+
+            # DIAGNOSTIC: Log sub-node projection in BFS fallback path
+            # This helps verify slow path produces same results as fast path
+            _logger.debug(
+                f"[SUB_NODE_SLOW] projection={projection:.3f}px, "
+                f"node_dist={target_geometric_distance:.1f}px, "
+                f"adjusted_dist={adjusted_distance:.1f}px, "
+                f"player_offset=({player_dx:.2f}, {player_dy:.2f}), "
+                f"path_dir=({path_dir_x:.3f}, {path_dir_y:.3f}), "
+                f"path_length={len(path)} nodes"
+            )
+
+            return adjusted_distance
+
+    # Fallback: No next_hop available (single-node path or path reconstruction failed)
+    # Just use node-to-node distance with radius adjustment
     return max(0.0, target_geometric_distance - (ninja_radius + entity_radius))
 
 
@@ -1654,20 +1838,54 @@ def find_shortest_path(
     if start_node == end_node:
         return [start_node], 0.0
 
-    if physics_cache is None:
-        raise ValueError("Physics cache is required for physics-aware cost calculation")
-    if level_data is None:
-        raise ValueError("Level data is required for mine proximity cost calculation")
+    if physics_cache is None or len(physics_cache.keys()) == 0:
+        raise ValueError(
+            "Physics cache is required for physics-aware cost calculation. "
+            "Ensure graph building includes physics cache precomputation."
+        )
+
+    # Validate mine avoidance requirements
+    # level_data and mine_proximity_cache are required UNLESS:
+    # - Mine cache is empty (no mines in level), OR
+    # - Mine hazard avoidance is disabled (multiplier = 1.0)
+    mine_cache_has_data = (
+        mine_proximity_cache is not None
+        and hasattr(mine_proximity_cache, "cache")
+        and len(mine_proximity_cache.cache) > 0
+    )
+
+    if mine_cache_has_data and level_data is None:
+        # Have mine data but no level_data - this is an error
+        raise ValueError(
+            "Level data is required for mine proximity cost calculation when mines are present. "
+            "Ensure level_data is passed to pathfinding functions."
+        )
+
     if mine_proximity_cache is None:
         raise ValueError(
-            "Mine proximity cache is required for mine proximity cost calculation"
+            "Mine proximity cache is required for mine proximity cost calculation. "
+            "Ensure mine_proximity_cache is built before pathfinding. "
+            "Without this, paths will ignore mine hazards."
         )
+
+    # DIAGNOSTIC: Log pathfinding with mine costs
+    mine_cache_size = (
+        len(mine_proximity_cache.cache) if hasattr(mine_proximity_cache, "cache") else 0
+    )
+    _logger.info(
+        f"[PATHFINDING] find_shortest_path: start={start_node}, end={end_node}, "
+        f"mine_cache_size={mine_cache_size} "
+        f"(mine avoidance {'ACTIVE' if mine_cache_size > 0 else 'INACTIVE'})"
+    )
 
     # Priority queue: (distance, node)
     pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
     parents = {start_node: None}
     grandparents = {start_node: None}  # Track grandparents for momentum inference
+    aerial_chains = {
+        start_node: 0
+    }  # Track consecutive airborne moves (tile-based grounding)
     visited = set()
 
     while pq:
@@ -1707,6 +1925,17 @@ def find_shortest_path(
             ):
                 continue
 
+            # Calculate aerial chain count - tracks consecutive airborne moves
+            # Uses TILE-BASED grounding (physics_cache), not mine-masked grounding
+            # This ensures consistent behavior for both upward movement costs and horizontal air restrictions
+            current_aerial_chain = aerial_chains.get(current, 0)
+            src_physics = physics_cache[current]
+            src_grounded_physics = src_physics["grounded"]
+
+            # Increment chain if airborne (not grounded by tiles, not walled), reset if grounded
+            is_airborne = not src_grounded_physics and not src_physics["walled"]
+            neighbor_aerial_chain = current_aerial_chain + 1 if is_airborne else 0
+
             # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
             # OPTIMIZATION: Pass cached parent/grandparent
             cost = _calculate_physics_aware_cost(
@@ -1717,8 +1946,10 @@ def find_shortest_path(
                 physics_cache,
                 level_data,
                 mine_proximity_cache,
-                0,  # aerial_upward_chain not tracked here (optimization)
+                neighbor_aerial_chain,  # Pass calculated aerial chain
                 current_grandparent,  # Pass cached grandparent
+                None,  # mine_sdf
+                None,  # hazard_cost_multiplier
             )
 
             new_dist = current_dist + cost
@@ -1728,6 +1959,9 @@ def find_shortest_path(
                 distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current
                 grandparents[neighbor_pos] = current_parent  # Track cached grandparent
+                aerial_chains[neighbor_pos] = (
+                    neighbor_aerial_chain  # Track aerial chain
+                )
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 
     return None, float("inf")

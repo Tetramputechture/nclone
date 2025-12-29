@@ -101,7 +101,7 @@ class EntityExtractor:
                 # CRITICAL VALIDATION: Switch position must be valid (not 0,0)
                 switch_x = getattr(switch, "xpos", 0.0)
                 switch_y = getattr(switch, "ypos", 0.0)
-                
+
                 if switch_x == 0.0 and switch_y == 0.0:
                     raise ValueError(
                         f"EXIT SWITCH at (0, 0) - entity not properly loaded! "
@@ -128,11 +128,11 @@ class EntityExtractor:
                 # Find corresponding door
                 if i < len(exit_doors):
                     door = exit_doors[i]
-                    
+
                     # CRITICAL VALIDATION: Exit door position must be valid (not 0,0)
                     door_x = getattr(door, "xpos", 0.0)
                     door_y = getattr(door, "ypos", 0.0)
-                    
+
                     if door_x == 0.0 and door_y == 0.0:
                         raise ValueError(
                             f"EXIT DOOR at (0, 0) - entity not properly loaded! "
@@ -141,7 +141,7 @@ class EntityExtractor:
                             f"This indicates the level file is corrupted or entities weren't initialized. "
                             f"Check map loading and entity initialization."
                         )
-                    
+
                     entities.append(
                         {
                             "type": EntityType.EXIT_DOOR,
@@ -215,11 +215,16 @@ class EntityExtractor:
         return entities
 
     def _extract_mines(self) -> List[Dict[str, Any]]:
-        """Extract mines (toggle mines and regular mines)."""
+        """Extract mines (toggle mines and regular mines).
+
+        Extracts both:
+        - Type 1 (TOGGLE_MINE): Mines that start in safe/untoggled state
+        - Type 21 (TOGGLE_MINE_TOGGLED): Mines that start in deadly/toggled state
+        """
         entities = []
 
-        # Extract toggle mines (type 1)
         if hasattr(self.nplay_headless.sim, "entity_dic"):
+            # Extract toggle mines (type 1) - start untoggled/safe
             toggle_mines = self.nplay_headless.sim.entity_dic.get(1, [])
             for i, mine in enumerate(toggle_mines):
                 mine_state = getattr(mine, "state", 0)
@@ -227,12 +232,34 @@ class EntityExtractor:
                 entities.append(
                     {
                         "type": EntityType.TOGGLE_MINE,
-                        "radius": mine_radius,  # Standard mine radius
+                        "radius": mine_radius,
                         "x": getattr(mine, "xpos", 0.0),
                         "y": getattr(mine, "ypos", 0.0),
                         "active": getattr(mine, "active", True),
-                        "state": mine_state,  # FIX: Use actual state (0/1/2)
+                        "state": mine_state,  # Actual state (0=deadly, 1=safe, 2=toggling)
                         "entity_id": f"mine_{i}",
+                        "entity_ref": mine,
+                    }
+                )
+
+            # Extract toggled mines (type 21) - start toggled/deadly
+            # These are a separate entity type that starts in deadly state
+            # CRITICAL: TOGGLE_MINE_TOGGLED always has state=0 (deadly) regardless of entity.state
+            toggled_mines = self.nplay_headless.sim.entity_dic.get(21, [])
+            for i, mine in enumerate(toggled_mines):
+                # TOGGLE_MINE_TOGGLED entities always start in deadly state (0)
+                # This matches the pattern used in npp_environment.py, spatial_context.py, etc.
+                mine_state = 0  # Always deadly for TOGGLE_MINE_TOGGLED
+                mine_radius = EntityToggleMine.RADII[mine_state]
+                entities.append(
+                    {
+                        "type": EntityType.TOGGLE_MINE_TOGGLED,
+                        "radius": mine_radius,
+                        "x": getattr(mine, "xpos", 0.0),
+                        "y": getattr(mine, "ypos", 0.0),
+                        "active": getattr(mine, "active", True),
+                        "state": mine_state,  # Always 0 (deadly) for TOGGLE_MINE_TOGGLED
+                        "entity_id": f"mine_toggled_{i}",
                         "entity_ref": mine,
                     }
                 )
