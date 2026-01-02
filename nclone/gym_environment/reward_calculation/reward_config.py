@@ -98,75 +98,93 @@ class RewardConfig:
         UPDATED 2025-12-07: Fully success-rate driven (no timestep fallbacks).
         Complex levels progress based on actual learning, not arbitrary time thresholds.
 
-        UPDATED 2025-12-18: Reduced discovery phase weight from 80.0 to 40.0 for balanced
-        value learning and signal strength. Initial reduction to 20.0 was too conservative -
-        the gradient signal was drowning in entropy noise (entropy increased during training).
+        UPDATED 2025-12-29: Flattened weight curve to maintain stronger gradient signal
+        in advanced phase. Previous steep drop-off (50→5) caused slow convergence at high
+        success rates as dense shaping signal was drowned out by sparse terminal rewards.
 
-        40.0 provides strong directional guidance while maintaining value stability:
-        - Strong enough to overcome entropy noise (3x entropy coefficient)
-        - Weak enough for stable value learning (2x lower than original 80.0)
-        - Allows 12px movement to give meaningful reward (~0.05 scaled)
+        New schedule maintains meaningful PBRS throughout training:
+        - Discovery: 40.0 (reduced from 50.0 for stability)
+        - Early: 25.0 (increased from 15.0 for stronger learning)
+        - Mid: 18.0 (increased from 12.0 to maintain gradient)
+        - Advanced: 12.0 (increased from 8.0 for continued optimization)
+        - Mastery: 8.0 (increased from 5.0 to preserve gradient signal)
 
-        Max episode return = PBRS_weight + completion(50) + switch(40) ≈ weight + 90
+        Max episode return = PBRS_weight + completion(200) + switch(100) ≈ weight + 300
 
-        With these weights:
-        - Discovery (<5%): 40 + 90 = 130 max return (balanced strength and stability)
-        - Early learning (5-20%): 15 + 90 = 105 max return
-        - Mid learning (20-40%): 12 + 90 = 102 max return
-        - Advanced (40-60%): 8 + 90 = 98 max return
-        - Mastery (60%+): 5 + 90 = 95 max return
+        With new weights:
+        - Discovery (<5%): 40 + 300 = 340 max return
+        - Early learning (5-20%): 25 + 300 = 325 max return
+        - Mid learning (20-40%): 18 + 300 = 318 max return
+        - Advanced (40-60%): 12 + 300 = 312 max return
+        - Mastery (60%+): 8 + 300 = 308 max return
 
-        Death penalty of -8.0 in discovery phase still makes progress worthwhile.
+        Flatter curve ensures PBRS remains influential for policy gradient even at high success rates.
 
         Returns:
-            15.0 (0-5% success): Balanced guidance allowing exploration mistakes
-            15.0 (5-20% success): Strong guidance for early learning
-            12.0 (20-40% success): Moderate guidance for mid learning
-            8.0 (40-60% success): Reduced for advanced learning
-            5.0 (60%+ success): Light shaping for mastery
+            40.0 (0-5% success): Balanced guidance for discovery
+            25.0 (5-20% success): Stronger early learning signal
+            18.0 (20-40% success): Maintained gradient for mid learning
+            12.0 (40-60% success): Still meaningful for advanced optimization
+            8.0 (60%+ success): Preserved gradient for mastery
         """
         # Check for Optuna override first
         if self._pbrs_objective_weight_override is not None:
             return self._pbrs_objective_weight_override
 
         if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
-            return 50.0
+            return 40.0  # Slightly reduced for stability
         elif self.recent_success_rate < 0.20:  # Early learning (5-20% success)
-            return 15.0  # Strong guidance
+            return 25.0  # Stronger early learning
         elif self.recent_success_rate < 0.40:  # Mid learning (20-40% success)
-            return 12.0  # Moderate guidance
+            return 18.0  # Maintain gradient strength
         elif self.recent_success_rate < 0.60:  # Advanced learning (40-60%)
-            return 8.0  # Reduced guidance
-        return 5.0  # Light shaping for mastery (60%+)
+            return 12.0  # Still meaningful
+        return 8.0  # Keep gradient signal for optimization (60%+)
 
     @property
     def time_penalty_per_step(self) -> float:
-        """Time penalty DISABLED - γ<1 PBRS provides unified time pressure.
+        """Light time penalty for speed optimization in advanced phases.
 
-        UPDATED 2025-12-27: Removed separate time penalty in favor of unified design
-        where PBRS_GAMMA < 1.0 creates natural time pressure and anti-oscillation.
+        UPDATED 2025-12-29: Re-enabled light explicit time penalty for advanced phase
+        to accelerate convergence. While γ=0.99 PBRS provides implicit time pressure
+        (-0.01×Φ per step), this is too weak in practice at high success rates.
 
-        With γ=0.99 PBRS:
-        - Forward progress: Positive reward (progress toward goal)
-        - Staying still: -0.01×Φ(current) per step (implicit time penalty)
-        - Backtracking: Negative reward (loses progress + 1% discount)
-        - Oscillation: GUARANTEED LOSS (can never break even)
+        Curriculum-adaptive schedule:
+        - Early (<20% success): 0.0 (no time pressure during learning)
+        - Mid (20-40%): -0.001/step (very light - ~0.5 over 500 steps)
+        - Advanced (40-60%): -0.002/step (moderate - ~1.0 over 500 steps)
+        - Mastery (60%+): -0.003/step (speed optimization - ~1.5 over 500 steps)
 
-        Benefits of unified signal:
-        1. Maintains PBRS policy invariance (γ_PBRS = γ_PPO = 0.99)
-        2. Single coherent objective (no conflicting signals)
-        3. Natural anti-oscillation (mathematically impossible to exploit)
-        4. Self-tuning urgency (scales with potential magnitude)
+        At -0.003/step over 500 steps = -1.5 unscaled = -0.15 scaled.
+        This is ~15% of PBRS reward (8-12 range), creating urgency without
+        overwhelming the primary objective signal.
+
+        Benefits:
+        - Accelerates convergence in advanced phase
+        - Encourages efficient paths without penalizing learning
+        - Complements γ<1 PBRS without violating policy invariance
+        - Scales with training progress
 
         Returns:
-            0.0 (always - time pressure now handled by γ<1 PBRS)
+            0.0 (<20% success): No time pressure during learning
+            -0.001 (20-40%): Very light pressure for mid learning
+            -0.002 (40-60%): Moderate pressure for advanced optimization
+            -0.003 (60%+): Speed optimization for mastery
         """
         # Allow Optuna override for hyperparameter search (backwards compatibility)
         if self._time_penalty_per_step_override is not None:
             return self._time_penalty_per_step_override
 
-        # Time penalty disabled - γ<1 PBRS provides unified time pressure
-        return 0.0
+        # UPDATED 2025-12-29: Re-enable light time penalty for advanced phase optimization
+        # While γ=0.99 PBRS provides implicit time pressure, it's too weak in practice
+        # Light explicit penalty accelerates convergence without overwhelming primary signal
+        if self.recent_success_rate < 0.20:
+            return 0.0  # No time pressure during learning
+        elif self.recent_success_rate < 0.40:
+            return -0.001  # Very light pressure
+        elif self.recent_success_rate < 0.60:
+            return -0.002  # Moderate pressure
+        return -0.003  # Speed optimization phase
 
     @property
     def exploration_bonus(self) -> float:
@@ -302,23 +320,29 @@ class RewardConfig:
         3. Reduces penalty as agent demonstrates mine avoidance (->0)
         4. Enables bold risk-taking once competent (0 at >40% success)
 
-        Penalty scaling ensures forward progress is ALWAYS better than camping:
-        - Discovery: 50% risky progress > 16% safe camping (see REWARD_BALANCE_VERIFICATION.md)
-        - Requires ~20% progress to justify death risk (breakeven analysis)
-        - Completion always strongly preferred over partial progress
+        UPDATED 2025-12-29: Maintained meaningful penalty in advanced phase to preserve
+        risk/reward tradeoffs. Previous -2.0 at 40%+ success was too lenient (only 1% of
+        completion reward), making death effectively costless and slowing convergence.
 
-        Combined with strong PBRS (40 in discovery), this creates hierarchy:
-        - Complete level (40 PBRS + 50 completion + 40 switch) = +130 = +13.0 scaled (BEST)
-        - Switch + death (30 PBRS + 40 switch - 8 penalty) = +62 = +6.2 scaled (good milestone)
-        - 50% progress + death (20 PBRS - 8 penalty) = +12 = +1.2 scaled (acceptable risk)
-        - Camp 16% + timeout (6.4 PBRS - 1.5 time) = +4.9 = +0.49 scaled (poor)
-        - Stagnate <15% + timeout (PBRS - 20 penalty - 1.5 time) = negative (WORST)
+        New schedule maintains strategic risk consideration throughout training:
+        - Discovery: -30.0 (strong deterrent against "die quickly" strategy)
+        - Early: -10.0 (lighter as agent learns basics)
+        - Mid: -5.0 (minimal as agent shows competence)
+        - Advanced: -4.0 (still meaningful - requires ~33% progress to justify risk)
+        - Mastery: -3.0 (maintains consideration - requires ~25% progress to justify risk)
+
+        Combined with new PBRS weights (40→8), this creates balanced hierarchy:
+        - Complete level (12 PBRS + 200 completion + 100 switch) = +312 (BEST)
+        - Switch + death (9 PBRS + 100 switch - 4 penalty) = +105 (good milestone)
+        - 50% progress + death (6 PBRS - 4 penalty) = +2 (risky but acceptable)
+        - Quick death (<10% progress - 4 penalty) = -3 (clearly bad)
 
         Returns:
-            -15.0 (<5% success): Strong deterrent making death more costly than oscillation
-            -6.0 (5-20% success): Lighter deterrent as skills improve
-            -3.0 (20-40% success): Minimal deterrent, agent showing competence
-            0.0 (>40% success): Zero penalty for advanced play
+            -30.0 (<5% success): Strong deterrent for discovery
+            -10.0 (5-20% success): Lighter deterrent for early learning
+            -5.0 (20-40% success): Minimal deterrent for mid learning
+            -4.0 (40-60% success): Meaningful penalty for advanced optimization
+            -3.0 (60%+ success): Strategic risk consideration for mastery
         """
         # Check for Optuna override first
         if self._death_penalty_override is not None:
@@ -330,7 +354,11 @@ class RewardConfig:
             return -10.0  # Lighter deterrent
         elif self.recent_success_rate < 0.40:  # Mid learning
             return -5.0  # Minimal deterrent, agent showing competence
-        return -2.0  # Advanced: encourage bold risk-taking
+        elif self.recent_success_rate < 0.60:  # Advanced learning
+            return -4.0  # Still meaningful risk consideration
+        return (
+            -3.0
+        )  # Mastery: maintains strategic risk-taking while penalizing recklessness
 
     @property
     def level_completion_reward(self) -> float:
@@ -453,20 +481,20 @@ class GoalCurriculumConfig:
     """
 
     # Enable/disable goal curriculum
-    enabled: bool = False
+    enabled: bool = True
 
     # Distance interval between switch and exit, and advancement step size (pixels)
     # With 150px: agent learns 150px subsections, each requiring ~25 steps at 6px/step
-    stage_distance_interval: float = 150.0
+    stage_distance_interval: float = 100.0
 
     # Success rate threshold to advance to next stage (0.0-1.0)
     # When rolling completion rate exceeds this threshold, both entities advance
-    advancement_threshold: float = 0.50
+    advancement_threshold: float = 0.80
 
     # Rolling window size for success rate calculation (episodes)
-    rolling_window: int = 100
+    rolling_window: int = 500
 
     # DEPRECATED: Kept for backwards compatibility
     # Sliding window model uses stage_distance_interval instead
-    progress_stages: tuple = (0.25, 0.50, 0.75, 1.0)
+    progress_stages: tuple = (0.2, 0.4, 0.6, 0.8, 1.0)
     virtual_goal_radius: float = 15.0

@@ -461,7 +461,11 @@ class FrameStackWrapper(ObservationWrapper):
         # Stack back into array
         return np.stack(augmented_frames, axis=0)
 
-    # Passthrough methods for route visualization (SubprocVecEnv env_method support)
+    # Passthrough methods for route visualization and curriculum (SubprocVecEnv env_method support)
+    def set_curriculum_stage(self, new_stage: int) -> None:
+        """Passthrough to underlying environment for global curriculum coordination."""
+        return self.env.set_curriculum_stage(new_stage)
+
     def get_route_visualization_tile_data(self):
         """Passthrough to underlying environment for route visualization."""
         return self.env.get_route_visualization_tile_data()
@@ -484,12 +488,12 @@ class FrameStackWrapper(ObservationWrapper):
 
     def get_pbrs_path_for_visualization(self, start_pos, goal_pos, switch_activated):
         """Passthrough to underlying environment for PBRS path visualization.
-        
+
         Args:
             start_pos: Agent's starting position (x, y)
             goal_pos: Goal position (x, y) - switch or exit
             switch_activated: Whether switch has been activated
-            
+
         Returns:
             List of (x, y) node positions forming the path, or None if unreachable
         """

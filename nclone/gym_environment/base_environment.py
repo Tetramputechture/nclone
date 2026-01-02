@@ -84,6 +84,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         shared_level_cache: Optional[
             Any
         ] = None,  # Shared level cache for multi-worker training
+        shared_level_caches_by_stage: Optional[
+            Dict[int, Any]
+        ] = None,  # Multi-stage shared caches for goal curriculum
         goal_curriculum_config: Optional[
             Any
         ] = None,  # GoalCurriculumConfig for intermediate goal curriculum
@@ -166,6 +169,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.current_route = []
         self._warned_about_position = False
 
+        # Track switch activation frame for route visualization
+        self._switch_activation_frame = None
+
+        # Track curriculum stage that was active at EPISODE START (not current stage)
+        # This is captured at reset() and used in _build_episode_info() for correct visualization
+        self._episode_start_curriculum_stage: Optional[int] = None
+
         # Frame skip for temporal abstraction (always enabled)
         self.frame_skip = max(1, frame_skip)  # Ensure at least 1
 
@@ -201,8 +211,46 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             test_dataset_path=test_dataset_path,
         )
 
-        # Store shared level cache reference for mixins (ReachabilityMixin needs it)
+        # Store shared level cache references for mixins (ReachabilityMixin needs it)
         self.shared_level_cache = shared_level_cache
+        self.shared_level_caches_by_stage = shared_level_caches_by_stage
+
+        # Initialize goal curriculum manager BEFORE reward calculator
+        # This manages entity repositioning for intermediate goal curriculum
+        self.goal_curriculum_manager = None
+        if goal_curriculum_config is not None and goal_curriculum_config.enabled:
+            from .reward_calculation.intermediate_goal_manager import (
+                IntermediateGoalManager,
+            )
+
+            self.goal_curriculum_manager = IntermediateGoalManager(
+                goal_curriculum_config
+            )
+            logger.info(
+                "Goal curriculum enabled: entities will be repositioned along optimal path"
+            )
+
+            # INFO: Multi-stage SharedLevelCache support for goal curriculum
+            # If shared_level_caches_by_stage is provided, the system will automatically
+            # select the appropriate cache for each curriculum stage, providing correct
+            # distances at all difficulty levels with shared memory efficiency.
+            if shared_level_caches_by_stage is not None:
+                num_stages = len(shared_level_caches_by_stage)
+                total_memory = sum(
+                    c.memory_usage_kb for c in shared_level_caches_by_stage.values()
+                )
+                logger.info(
+                    f"Multi-stage SharedLevelCache active with goal curriculum: "
+                    f"{num_stages} stages, {total_memory:.0f}KB total. "
+                    f"Cache will automatically switch as curriculum advances."
+                )
+            elif shared_level_cache is not None:
+                # Single cache with curriculum - should not happen with proper factory setup
+                logger.warning(
+                    "Single SharedLevelCache with goal curriculum - positions may mismatch! "
+                    "Expected multi-stage caches but got single cache. "
+                    "This may cause validation failures and BFS fallbacks."
+                )
 
         # Initialize observation processor with performance optimizations
         # training_mode=True disables validation for ~12% performance boost
@@ -217,6 +265,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             reward_config=reward_config,
             pbrs_gamma=pbrs_gamma,
             shared_level_cache=shared_level_cache,
+            shared_level_caches_by_stage=shared_level_caches_by_stage,
+            goal_curriculum_manager=self.goal_curriculum_manager,
         )
 
         # Initialize truncation checker
@@ -258,36 +308,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Loaded from demonstration analysis, used for momentum-aware PBRS
         self._cached_momentum_waypoints: Optional[List[Any]] = None
         self._cached_waypoints_level_id: Optional[str] = None
-
-        # Initialize goal curriculum manager if enabled
-        # This manages entity repositioning for intermediate goal curriculum
-        self.goal_curriculum_manager = None
-        if goal_curriculum_config is not None and goal_curriculum_config.enabled:
-            from .reward_calculation.intermediate_goal_manager import (
-                IntermediateGoalManager,
-            )
-
-            self.goal_curriculum_manager = IntermediateGoalManager(
-                goal_curriculum_config
-            )
-            logger.info(
-                "Goal curriculum enabled: entities will be repositioned along optimal path"
-            )
-
-            # VALIDATION: Warn if SharedLevelCache is used with goal curriculum
-            # SharedLevelCache stores pre-computed distances to ORIGINAL goal positions.
-            # When curriculum repositions entities, those distances become stale.
-            # PBRS will still work (uses dynamic goal positions from observations),
-            # but SharedLevelCache lookup will be incorrect.
-            if shared_level_cache is not None:
-                logger.warning(
-                    "SharedLevelCache detected with goal curriculum active! "
-                    "SharedLevelCache contains pre-computed distances to ORIGINAL goal positions, "
-                    "which will be stale when curriculum repositions entities. "
-                    "PBRS will use dynamic goal positions from observations (correct), "
-                    "but cache lookups may be suboptimal. "
-                    "For curriculum training, use per-worker caches instead of SharedLevelCache."
-                )
 
         # Load the initial map
         self.map_loader.load_map()
@@ -376,6 +396,72 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         return hoz_input, jump_input
 
+    def set_curriculum_stage(self, new_stage: int) -> None:
+        """Set curriculum stage externally (called by global curriculum callback).
+
+        This method allows the global curriculum callback to synchronize all parallel
+        environments to the same curriculum stage. The callback aggregates success rates
+        across all environments and coordinates stage advancement globally.
+
+        CRITICAL: Stage change is DEFERRED until next episode reset to prevent mid-episode
+        corruption. When callback calls this on all 256+ workers, some are mid-episode with
+        collected switches. Changing unified_stage immediately would cause cache/entity mismatches.
+
+        Args:
+            new_stage: New curriculum stage index
+        """
+        if self.goal_curriculum_manager is None:
+            logger.warning(
+                "set_curriculum_stage called but no curriculum manager exists"
+            )
+            return
+
+        old_stage = self.goal_curriculum_manager.state.unified_stage
+
+        if old_stage == new_stage:
+            return  # Already at this stage
+
+        # CRITICAL: Defer BOTH stage change and entity repositioning to next reset
+        # Store pending stage instead of applying immediately
+        # This prevents mid-episode corruption when callback updates all workers simultaneously
+        if not hasattr(self, "_pending_curriculum_stage"):
+            self._pending_curriculum_stage = None
+
+        # PROTECTION: Detect stage skipping (rapid advancement)
+        # If pending stage already exists and is different from new_stage, we're skipping a stage
+        if (
+            self._pending_curriculum_stage is not None
+            and self._pending_curriculum_stage != new_stage
+        ):
+            logger.warning(
+                f"[CURRICULUM] Rapid stage advancement detected! "
+                f"Overwriting pending stage {self._pending_curriculum_stage} with {new_stage}. "
+                f"Current: {old_stage}, Pending was: {self._pending_curriculum_stage}, New: {new_stage}. "
+                f"This worker will skip stage {self._pending_curriculum_stage}!"
+            )
+
+        self._pending_curriculum_stage = new_stage
+
+        frame_count = (
+            self.nplay_headless.sim.frame if hasattr(self, "nplay_headless") else 0
+        )
+
+        print(
+            f"[set_curriculum_stage] Stage change queued: {old_stage} → {new_stage} "
+            f"(will apply at next reset, current frame={frame_count})"
+        )
+        logger.info(
+            f"[CURRICULUM] Stage change queued: {old_stage} → {new_stage} "
+            f"(will apply at next reset, current frame={frame_count})"
+        )
+
+        # DEFERRED: Both stage change AND cache invalidation happen at next reset
+        # This prevents mid-episode cache/entity mismatches where:
+        # - unified_stage changes → SharedLevelCache switches to new stage
+        # - But actual entities haven't moved yet → cache positions ≠ entity positions
+        # - PBRS pathfinds to cache positions, not actual entity positions
+        # All changes are deferred to next reset when entities are freshly loaded
+
     def step(self, action: int):
         """Execute one environment step with frame skip and enhanced episode info.
 
@@ -427,6 +513,63 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
                 frames_executed = i + 1
 
+                # Track switch activation frame precisely (cheap check, ~1μs)
+                # Must happen inside loop to capture exact frame, not end-of-skip frame
+                if (
+                    self._switch_activation_frame is None
+                    and headless.exit_switch_activated()
+                ):
+                    self._switch_activation_frame = headless.sim.frame
+
+                    # DIAGNOSTIC: Log when switch is activated for debugging immediate activation
+                    # ninja_pos = headless.ninja_position()
+                    switch_pos = headless.exit_switch_position()
+                    # distance = (
+                    #     (ninja_pos[0] - switch_pos[0]) ** 2
+                    #     + (ninja_pos[1] - switch_pos[1]) ** 2
+                    # ) ** 0.5
+
+                    # Get curriculum info
+                    curriculum_stage = "N/A"
+                    expected_switch_pos = "N/A"
+                    if self.goal_curriculum_manager is not None:
+                        curriculum_stage = (
+                            self.goal_curriculum_manager.state.unified_stage
+                        )
+                        expected_switch_pos = self.goal_curriculum_manager.get_curriculum_switch_position()
+
+                    # print(
+                    #     f"\n{'!' * 60}\n"
+                    #     f"[SWITCH_ACTIVATED] Frame {self._switch_activation_frame}\n"
+                    #     f"  Curriculum stage: {curriculum_stage}\n"
+                    #     f"  Ninja pos: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})\n"
+                    #     f"  Switch pos (from sim): ({switch_pos[0]:.1f}, {switch_pos[1]:.1f})\n"
+                    #     f"  Expected switch pos: {expected_switch_pos}\n"
+                    #     f"  Distance ninja→switch: {distance:.1f}px\n"
+                    #     f"{'!' * 60}\n"
+                    # )
+
+                    # CRITICAL CHECK: If activated in first 10 frames at stage > 0, something is WRONG
+                    if (
+                        self._switch_activation_frame <= 10
+                        and curriculum_stage != "N/A"
+                        and curriculum_stage > 0
+                    ):
+                        # Check if switch is at wrong position
+                        if expected_switch_pos != "N/A":
+                            pos_error = (
+                                (switch_pos[0] - expected_switch_pos[0]) ** 2
+                                + (switch_pos[1] - expected_switch_pos[1]) ** 2
+                            ) ** 0.5
+                            if pos_error > 10:
+                                print(
+                                    f"[CURRICULUM_BUG] Switch at WRONG POSITION!\n"
+                                    f"  Actual: {switch_pos}\n"
+                                    f"  Expected: {expected_switch_pos}\n"
+                                    f"  Error: {pos_error:.1f}px\n"
+                                    f"  This explains immediate activation - switch never moved!"
+                                )
+
                 # OPTIMIZATION: Only check death/win per frame (cheap attribute lookup)
                 # Skip truncation check in intermediate frames (it's time-based, won't change in 4 frames)
                 player_won = headless.ninja_has_won()
@@ -456,6 +599,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
             # Cache observation for reward calculation in next step
             self._prev_obs_cache = final_obs
+
+            # NOTE: Switch activation frame is now tracked inside the frame_skip loop
+            # for precise frame-level accuracy (see loop above)
 
             # Get player_won for reward calculation
             player_won = final_obs.get("player_won", False)
@@ -1005,6 +1151,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             curriculum_success = False
             full_level_success = False
 
+        # CRITICAL: Capture entity positions FRESH from simulator at episode end
+        # Do NOT use _cached_switch_pos/_cached_exit_pos - these can be stale!
+        # With goal curriculum, entities are repositioned at reset, and the cached values
+        # may not reflect the actual curriculum positions used during the episode.
+        # Fresh reads ensure visualization shows correct positions.
+        exit_switch_pos = self.nplay_headless.exit_switch_position()
+        exit_door_pos = self.nplay_headless.exit_door_position()
+
         info = {
             "is_success": player_won,
             "terminated": terminated,
@@ -1016,16 +1170,32 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "level_id": self.map_loader.current_map_name,
             "config_flags": self.config_flags.copy(),
             "terminal_impact": self.nplay_headless.get_ninja_terminal_impact(),
-            "exit_switch_pos": self._cached_switch_pos,
-            "exit_door_pos": self._cached_exit_pos,
+            "exit_switch_pos": exit_switch_pos,
+            "exit_door_pos": exit_door_pos,
             # CRITICAL: Include switch_activated for PBRS visualization and waypoint phase
             # This must be in base info dict (not just _extend_info_hook) because it's
             # accessed within _build_episode_info itself for waypoint phase selection
             "switch_activated": self.nplay_headless.exit_switch_activated(),
-            # Curriculum success tracking: separate metrics for curriculum vs full level
-            "curriculum_success": curriculum_success,
-            "full_level_success": full_level_success,
+            # Switch activation frame for route visualization (None if never activated)
+            "switch_activation_frame": self._switch_activation_frame,
         }
+
+        # # DIAGNOSTIC: Log switch activation frame in episode info
+        # if terminated or truncated:
+        #     print(
+        #         f"[EPISODE_INFO] switch_activation_frame={self._switch_activation_frame}, "
+        #         f"switch_activated={self.nplay_headless.exit_switch_activated()}, "
+        #         f"episode_length={episode_frames}, "
+        #         f"curriculum_stage={self._episode_start_curriculum_stage}"
+        #     )
+
+        info.update(
+            {
+                # Curriculum success tracking: separate metrics for curriculum vs full level
+                "curriculum_success": curriculum_success,
+                "full_level_success": full_level_success,
+            }
+        )
 
         # Add episode route for visualization if episode is ending
         if terminated or truncated:
@@ -1053,6 +1223,93 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             info["episode_locked_doors"] = (
                 self.get_route_visualization_locked_door_data()
             )
+
+            # Capture curriculum stage for visualization (shows which stage this episode was)
+            # CRITICAL: Use _episode_start_curriculum_stage (captured at reset), NOT current stage!
+            # The current stage might have advanced mid-episode due to success rates.
+            if self.goal_curriculum_manager is not None:
+                # Use the stage that was ACTIVE when this episode started
+                episode_stage = (
+                    self._episode_start_curriculum_stage
+                    if self._episode_start_curriculum_stage is not None
+                    else self.goal_curriculum_manager.state.unified_stage
+                )
+                info["episode_curriculum_stage"] = episode_stage
+                # Also capture original positions for comparison visualization
+                info["goal_curriculum"] = {
+                    "enabled": True,
+                    "unified_stage": episode_stage,  # Use episode start stage
+                    "curriculum_switch_pos": exit_switch_pos,  # Fresh read from above
+                    "curriculum_exit_pos": exit_door_pos,  # Fresh read from above
+                    "original_switch_pos": (
+                        self.goal_curriculum_manager._original_switch_pos
+                    ),
+                    "original_exit_pos": (
+                        self.goal_curriculum_manager._original_exit_pos
+                    ),
+                }
+
+                # Add sub-goal collection metrics for TensorBoard logging
+                if (
+                    hasattr(self, "reward_calculator")
+                    and self.reward_calculator is not None
+                ):
+                    # Count collected sub-goals by phase
+                    collected_positions = self.reward_calculator._collected_sub_goals
+                    pre_switch_collected = sum(
+                        1
+                        for sg in self.reward_calculator._sub_goals_pre_switch
+                        if sg.position in collected_positions
+                    )
+                    post_switch_collected = sum(
+                        1
+                        for sg in self.reward_calculator._sub_goals_post_switch
+                        if sg.position in collected_positions
+                    )
+                    total_sub_goals = len(
+                        self.reward_calculator._sub_goals_pre_switch
+                    ) + len(self.reward_calculator._sub_goals_post_switch)
+                    total_collected = pre_switch_collected + post_switch_collected
+
+                    # Calculate collection rate
+                    collection_rate = (
+                        total_collected / total_sub_goals
+                        if total_sub_goals > 0
+                        else 0.0
+                    )
+
+                    info["sub_goal_metrics"] = {
+                        "collected_pre_switch": pre_switch_collected,
+                        "collected_post_switch": post_switch_collected,
+                        "total_collected": total_collected,
+                        "total_available": total_sub_goals,
+                        "collection_rate": collection_rate,
+                    }
+                    info["sub_goal_pre_switch"] = [
+                        {
+                            "position": sg.position,
+                            "radius": sg.radius,
+                            "phase": sg.phase,
+                            "reward_value": sg.reward_value,
+                            "path_distance": sg.path_distance,
+                            "waypoint_type": sg.waypoint_type,
+                        }
+                        for sg in self.reward_calculator._sub_goals_pre_switch
+                    ]
+                    info["sub_goal_post_switch"] = [
+                        {
+                            "position": sg.position,
+                            "radius": sg.radius,
+                            "phase": sg.phase,
+                            "reward_value": sg.reward_value,
+                            "path_distance": sg.path_distance,
+                            "waypoint_type": sg.waypoint_type,
+                        }
+                        for sg in self.reward_calculator._sub_goals_post_switch
+                    ]
+                    info["sub_goals_collected"] = list(
+                        self.reward_calculator._collected_sub_goals
+                    )
 
             # Add checkpoint route if this episode started from a Go-Explore checkpoint
             # This path was recorded during checkpoint replay at episode start
@@ -1168,11 +1425,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     switch_activated=switch_activated, completed=curriculum_success
                 )
 
-                # Check if curriculum stage advanced - invalidate PBRS cache
+                # Check if curriculum stage advanced - invalidate PBRS cache and switch to new stage cache
                 if self.goal_curriculum_manager.needs_cache_rebuild():
+                    new_stage = self.goal_curriculum_manager.state.unified_stage
                     logger.info(
-                        "[CURRICULUM] Stage advanced, invalidating PBRS cache. "
-                        "Next PBRS calculation will rebuild with curriculum goal positions."
+                        f"[CURRICULUM] Stage advanced to {new_stage}, switching shared cache and invalidating PBRS caches. "
+                        "Next PBRS calculation will use new stage's SharedLevelCache with curriculum goal positions."
                     )
                     # Clear PBRS normalization cache (will rebuild on next step with curriculum positions)
                     if hasattr(
@@ -1182,6 +1440,27 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         self.reward_calculator.pbrs_calculator._cached_combined_path_distance = None
                         self.reward_calculator.pbrs_calculator._cached_spawn_to_switch_distance = None
                         self.reward_calculator.pbrs_calculator._cached_switch_to_exit_distance = None
+
+                    # Clear level_data cache (contains old stage's entity positions)
+                    self._cached_level_data = None
+                    self._cached_entities = None
+                    self._cached_switch_pos = None
+                    self._cached_exit_pos = None
+
+                    # Stage-aware level_ids automatically trigger cache rebuilds
+                    # Just clear step cache for immediate effect
+                    if hasattr(
+                        self.reward_calculator.pbrs_calculator, "path_calculator"
+                    ):
+                        path_calc = (
+                            self.reward_calculator.pbrs_calculator.path_calculator
+                        )
+                        # Clear step cache only (level cache will rebuild due to new level_id)
+                        path_calc.clear_step_cache()
+                        logger.debug(
+                            f"Cleared step cache for curriculum stage {new_stage}. "
+                            f"Level cache will rebuild automatically due to stage-aware level_id."
+                        )
 
         # Add curriculum info if using custom map (for route visualization)
         if self.custom_map_path:
@@ -1300,6 +1579,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.current_route = []
         self._warned_about_position = False
 
+        # Reset switch activation tracking
+        self._switch_activation_frame = None
+
+        # Capture curriculum stage at EPISODE START for correct visualization
+        # This is the stage that determines entity positions for THIS episode
+        if self.goal_curriculum_manager is not None:
+            self._episode_start_curriculum_stage = (
+                self.goal_curriculum_manager.state.unified_stage
+            )
+        else:
+            self._episode_start_curriculum_stage = None
+
         # Invalidate observation cache
         self._cached_observation = None
 
@@ -1353,6 +1644,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     logger.debug(
                         "Skipped nplay_headless.reset() - map was just loaded externally"
                     )
+
+        # NOTE: Curriculum stage change logic removed from BaseNppEnvironment.reset()
+        # NppEnvironment completely overrides reset() without calling super(), making
+        # stage logic here unreachable dead code. Curriculum stage application now
+        # happens in NppEnvironment.reset() where it can properly coordinate with
+        # entity repositioning before graph building.
 
         # If checkpoint provided, replay action sequence to restore state
         if checkpoint is not None:
@@ -1601,7 +1898,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                             door_entity.xpos = checkpoint_exit_pos[0]
                             door_entity.ypos = checkpoint_exit_pos[1]
 
-                            # Update grid placement
+                            # Update cell attribute but do NOT add to grid_entity!
+                            # Exit door should only be in grid after switch activation
                             new_cell = clamp_cell(
                                 math.floor(checkpoint_exit_pos[0] / 24),
                                 math.floor(checkpoint_exit_pos[1] / 24),
@@ -1609,17 +1907,19 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                             if new_cell != old_cell and old_cell in sim.grid_entity:
                                 if door_entity in sim.grid_entity[old_cell]:
                                     sim.grid_entity[old_cell].remove(door_entity)
-                                door_entity.cell = new_cell
-                                if new_cell not in sim.grid_entity:
-                                    sim.grid_entity[new_cell] = []
-                                sim.grid_entity[new_cell].append(door_entity)
+                            # Also remove from new cell if present
+                            if new_cell in sim.grid_entity:
+                                if door_entity in sim.grid_entity[new_cell]:
+                                    sim.grid_entity[new_cell].remove(door_entity)
+                            door_entity.cell = new_cell
+                            # NOTE: Do NOT append to grid_entity - awaiting switch
 
                             entity_state_modified = (
                                 True  # Mark that we modified exit position
                             )
                             logger.info(
                                 f"[CHECKPOINT REPLAY] Set exit to checkpoint position for replay: "
-                                f"{saved_exit_pos} → {checkpoint_exit_pos}"
+                                f"{saved_exit_pos} → {checkpoint_exit_pos} (not in grid until switch)"
                             )
                         else:
                             logger.warning(
@@ -1826,6 +2126,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         door_entity.xpos = saved_exit_pos[0]
                         door_entity.ypos = saved_exit_pos[1]
 
+                        # Update cell but do NOT add to grid_entity - awaiting switch
                         new_cell = clamp_cell(
                             math.floor(saved_exit_pos[0] / 24),
                             math.floor(saved_exit_pos[1] / 24),
@@ -1833,10 +2134,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         if new_cell != old_cell and old_cell in sim.grid_entity:
                             if door_entity in sim.grid_entity[old_cell]:
                                 sim.grid_entity[old_cell].remove(door_entity)
-                            door_entity.cell = new_cell
-                            if new_cell not in sim.grid_entity:
-                                sim.grid_entity[new_cell] = []
-                            sim.grid_entity[new_cell].append(door_entity)
+                        # Also remove from new cell if present
+                        if new_cell in sim.grid_entity:
+                            if door_entity in sim.grid_entity[new_cell]:
+                                sim.grid_entity[new_cell].remove(door_entity)
+                        door_entity.cell = new_cell
+                        # NOTE: Do NOT append to grid_entity - awaiting switch
 
                     # CRITICAL: Invalidate position caches since entity positions changed!
                     self._cached_switch_pos = None
@@ -2385,11 +2688,58 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Cache static positions on first access
         # CRITICAL: Validate positions are not (0, 0) which indicates entities not loaded
-        if self._cached_switch_pos is None:
+        # CRITICAL: For curriculum, ensure we're not caching positions before repositioning
+        # CRITICAL: During first few frames of episode, always read fresh positions if curriculum active
+        # This prevents caching stale positions from before curriculum repositioning
+        current_frame = self.nplay_headless.sim.frame
+        force_fresh_read = (
+            self.goal_curriculum_manager is not None
+            and current_frame <= 10
+            and self._cached_switch_pos is not None
+        )
+
+        if self._cached_switch_pos is None or force_fresh_read:
             switch_pos = self.nplay_headless.exit_switch_position()
             # Only cache if valid (not the default (0, 0) returned when entities missing)
             if switch_pos != (0, 0):
-                self._cached_switch_pos = switch_pos
+                # DIAGNOSTIC: If curriculum is active, verify position matches curriculum expectations
+                # This catches cases where we're caching positions before curriculum repositioning
+                if self.goal_curriculum_manager is not None:
+                    expected_pos = (
+                        self.goal_curriculum_manager.get_curriculum_switch_position()
+                    )
+                    dx = abs(switch_pos[0] - expected_pos[0])
+                    dy = abs(switch_pos[1] - expected_pos[1])
+
+                    # If position doesn't match curriculum, log warning
+                    # During first 10 frames, don't cache mismatched positions (force re-read)
+                    should_cache = True
+                    if dx > 1.0 or dy > 1.0:
+                        stage = self.goal_curriculum_manager.state.unified_stage
+                        if current_frame <= 10:
+                            logger.error(
+                                f"[OBS_CACHE] Switch position mismatch in first 10 frames! "
+                                f"frame={current_frame}, stage={stage}, "
+                                f"read_pos={switch_pos}, expected={expected_pos}, "
+                                f"error=({dx:.1f}, {dy:.1f})px. "
+                                f"NOT caching - will force fresh read next time."
+                            )
+                            # Don't cache - force fresh read next time
+                            should_cache = False
+                        else:
+                            logger.warning(
+                                f"[OBS_CACHE] Caching switch position that doesn't match curriculum! "
+                                f"frame={current_frame}, stage={stage}, "
+                                f"caching_pos={switch_pos}, expected={expected_pos}, "
+                                f"error=({dx:.1f}, {dy:.1f})px."
+                            )
+
+                    # Only cache if position matches curriculum (or curriculum not active)
+                    if should_cache:
+                        self._cached_switch_pos = switch_pos
+                else:
+                    # No curriculum check needed, cache normally
+                    self._cached_switch_pos = switch_pos
             else:
                 # Don't cache (0, 0) - force re-fetch next time
                 # Log warning to help diagnose curriculum loading issues
@@ -2397,10 +2747,49 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     f"exit_switch_position() returned (0, 0) - entities may not be loaded yet. "
                     f"entity_dic keys: {list(self.nplay_headless.sim.entity_dic.keys())}"
                 )
-        if self._cached_exit_pos is None:
+        # Same safeguard for exit position as switch position
+        force_fresh_exit_read = (
+            self.goal_curriculum_manager is not None
+            and current_frame <= 10
+            and self._cached_exit_pos is not None
+        )
+
+        if self._cached_exit_pos is None or force_fresh_exit_read:
             exit_pos = self.nplay_headless.exit_door_position()
             if exit_pos != (0, 0):
-                self._cached_exit_pos = exit_pos
+                # DIAGNOSTIC: If curriculum is active, verify position matches curriculum expectations
+                if self.goal_curriculum_manager is not None:
+                    expected_pos = (
+                        self.goal_curriculum_manager.get_curriculum_exit_position()
+                    )
+                    dx = abs(exit_pos[0] - expected_pos[0])
+                    dy = abs(exit_pos[1] - expected_pos[1])
+
+                    should_cache = True
+                    if dx > 1.0 or dy > 1.0:
+                        stage = self.goal_curriculum_manager.state.unified_stage
+                        if current_frame <= 10:
+                            logger.error(
+                                f"[OBS_CACHE] Exit position mismatch in first 10 frames! "
+                                f"frame={current_frame}, stage={stage}, "
+                                f"read_pos={exit_pos}, expected={expected_pos}, "
+                                f"error=({dx:.1f}, {dy:.1f})px. "
+                                f"NOT caching - will force fresh read next time."
+                            )
+                            should_cache = False
+                        else:
+                            logger.warning(
+                                f"[OBS_CACHE] Caching exit position that doesn't match curriculum! "
+                                f"frame={current_frame}, stage={stage}, "
+                                f"caching_pos={exit_pos}, expected={expected_pos}, "
+                                f"error=({dx:.1f}, {dy:.1f})px."
+                            )
+
+                    if should_cache:
+                        self._cached_exit_pos = exit_pos
+                else:
+                    # No curriculum check needed, cache normally
+                    self._cached_exit_pos = exit_pos
             else:
                 logger.warning(
                     "exit_door_position() returned (0, 0) - entities may not be loaded yet."
@@ -2467,6 +2856,30 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Get map name for waypoint lookups (use actual filename instead of auto-generated level_id)
         map_name = getattr(self.map_loader, "current_map_name", None)
 
+        # CRITICAL: Get fresh switch_activated state (NEVER cache this value)
+        # This must always reflect current entity state, not stale cached value
+        switch_activated = self.nplay_headless.exit_switch_activated()
+
+        # DIAGNOSTIC: Verify switch position matches curriculum expectations at episode start
+        if (
+            current_frame <= 10
+            and self.goal_curriculum_manager is not None
+            and switch_pos != (0, 0)
+        ):
+            expected_pos = self.goal_curriculum_manager.get_curriculum_switch_position()
+            dx = abs(switch_pos[0] - expected_pos[0])
+            dy = abs(switch_pos[1] - expected_pos[1])
+
+            if dx > 1.0 or dy > 1.0:
+                stage = self.goal_curriculum_manager.state.unified_stage
+                logger.error(
+                    f"[OBS_CORRUPTION] Observation has WRONG switch position at episode start! "
+                    f"frame={current_frame}, stage={stage}, "
+                    f"observed_switch_pos={switch_pos}, expected={expected_pos}, "
+                    f"error=({dx:.1f}, {dy:.1f})px. "
+                    f"Entity repositioning failed or was undone! Switch will be collected immediately!"
+                )
+
         obs = {
             "game_state": game_state,
             "player_dead": self.nplay_headless.ninja_has_died(),
@@ -2479,7 +2892,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "player_xspeed_old": ninja_vel_old[0],
             "player_yspeed_old": ninja_vel_old[1],
             "player_airborn_old": self.nplay_headless.ninja_airborn_old(),
-            "switch_activated": self.nplay_headless.exit_switch_activated(),
+            "switch_activated": switch_activated,  # Use fresh value, not cached
             "switch_x": switch_pos[0],
             "switch_y": switch_pos[1],
             "exit_door_x": exit_pos[0],
@@ -2645,11 +3058,21 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         if hasattr(self, "_get_switch_states_from_env"):
             switch_states = self._get_switch_states_from_env()
 
+        # Include curriculum stage in level_id for proper cache invalidation
+        # Each stage gets a unique level_id to force cache rebuilds when stage advances
+        curriculum_stage = None
+        if (
+            hasattr(self, "goal_curriculum_manager")
+            and self.goal_curriculum_manager is not None
+        ):
+            curriculum_stage = self.goal_curriculum_manager.state.unified_stage
+
         return LevelData(
             start_position=start_position,
             tiles=tiles,
             entities=entities,
             switch_states=switch_states,
+            curriculum_stage=curriculum_stage,
         )
 
     @property

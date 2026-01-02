@@ -16,6 +16,7 @@ from .pathfinding_utils import (
     get_cached_surface_area,
     NODE_WORLD_COORD_OFFSET,
 )
+from .directional_connectivity import compute_directional_platform_distances
 from ...constants.entity_types import EntityType
 from ...constants.physics_constants import (
     MAP_TILE_WIDTH,
@@ -38,12 +39,12 @@ def compute_reachability_features_from_graph(
     path_calculator: CachedPathDistanceCalculator,
 ) -> np.ndarray:
     """
-    Compute 25-dimensional reachability features using adjacency graph and lookup tables.
+    Compute 38-dimensional reachability features using adjacency graph and lookup tables.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     No linear searches or Euclidean distance calculations.
 
-    Features (25 dims):
+    Features (38 dims):
     Base features (4):
         0. Reachable area ratio (0-1)
         1. Distance to nearest switch (normalized, inverted)
@@ -87,6 +88,16 @@ def compute_reachability_features_from_graph(
         24. Path curvature (0-1) - dot product of next_hop and multi_hop directions
                                     (1.0=straight path, 0.0=90° turn, -1.0=180° turn)
 
+    Directional connectivity (8) - Phase 5 for blind jump verification:
+        30. Platform distance East [0, 1]
+        31. Platform distance Northeast [0, 1]
+        32. Platform distance North [0, 1]
+        33. Platform distance Northwest [0, 1]
+        34. Platform distance West [0, 1]
+        35. Platform distance Southwest [0, 1]
+        36. Platform distance South [0, 1]
+        37. Platform distance Southeast [0, 1]
+
     Args:
         adjacency: Graph adjacency structure from GraphBuilder
         graph_data: Full graph data dict with spatial_hash
@@ -111,7 +122,7 @@ def compute_reachability_features_from_graph(
     # Total possible nodes (approximate: all traversable tiles)
     total_possible_nodes = MAP_TILE_WIDTH * MAP_TILE_HEIGHT
 
-    features = np.zeros(25, dtype=np.float32)
+    features = np.zeros(38, dtype=np.float32)
 
     # Track raw distances and positions for direction vectors
     switch_distance_raw = float("inf")
@@ -665,5 +676,102 @@ def compute_reachability_features_from_graph(
                     # Normalize to [0, 1] for easier learning: (curvature + 1) / 2
                     # 1.0 = straight, 0.5 = 90° turn, 0.0 = 180° turn
                     features[24] = (curvature + 1.0) / 2.0
+
+    # ========================================================================
+    # Features 25-29: Exit Lookahead Features (Phase 4 - Switch Transition Continuity)
+    # Ensures continuous path guidance even when agent reaches switch node
+    # ========================================================================
+
+    # Features 25-28: Exit path direction (ALWAYS computed, regardless of switch_activated)
+    # This solves discontinuity at switch: agent can see exit path before switch activation
+    # Critical for LSTM temporal credit assignment through goal transitions
+    if (
+        hasattr(path_calculator, "level_cache")
+        and path_calculator.level_cache is not None
+        and exit_pos_for_direction is not None
+    ):
+        from .pathfinding_utils import find_ninja_node
+
+        # Find ninja node for exit path calculation
+        exit_ninja_node = find_ninja_node(
+            ninja_pos,
+            adjacency,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+            ninja_radius=NINJA_RADIUS,
+            level_cache=path_calculator.level_cache,
+            goal_id="exit",  # Always use exit for features 25-28
+        )
+
+        if exit_ninja_node is not None:
+            # Features 25-26: Next hop toward exit (immediate direction)
+            exit_next_hop = path_calculator.level_cache.get_next_hop(
+                exit_ninja_node, "exit"
+            )
+
+            if exit_next_hop is not None:
+                # Convert to world coordinates
+                exit_next_hop_world_x = exit_next_hop[0] + NODE_WORLD_COORD_OFFSET
+                exit_next_hop_world_y = exit_next_hop[1] + NODE_WORLD_COORD_OFFSET
+
+                # Compute direction from ninja to exit next_hop
+                dx = exit_next_hop_world_x - ninja_x
+                dy = exit_next_hop_world_y - ninja_y
+                dist = np.sqrt(dx * dx + dy * dy)
+
+                if dist > 0.001:
+                    features[25] = dx / dist  # X component
+                    features[26] = dy / dist  # Y component
+
+            # Features 27-28: Multi-hop direction toward exit (8-hop lookahead)
+            exit_multi_hop_direction = path_calculator.level_cache.get_multi_hop_direction(
+                exit_ninja_node, "exit"
+            )
+
+            if exit_multi_hop_direction is not None:
+                # Multi-hop direction is already normalized (unit vector)
+                features[27] = exit_multi_hop_direction[0]  # X component
+                features[28] = exit_multi_hop_direction[1]  # Y component
+
+    # Feature 29: Near-switch transition indicator
+    # Signals when agent is approaching switch activation (provides temporal context)
+    # Ramps from 0.0 (far from switch) to 1.0 (at switch)
+    # This helps LSTM prepare for goal transition
+    if switch_pos_for_direction is not None:
+        dx = switch_pos_for_direction[0] - ninja_x
+        dy = switch_pos_for_direction[1] - ninja_y
+        dist_to_switch = np.sqrt(dx * dx + dy * dy)
+        # Ramp over 50px radius: 1.0 at switch, 0.0 at 50px+ away
+        features[29] = 1.0 - np.clip(dist_to_switch / 50.0, 0.0, 1.0)
+
+    # ========================================================================
+    # Features 30-37: Directional Connectivity (Phase 5)
+    # Solves blind jump problem via platform distance verification in 8 directions
+    # ========================================================================
+
+    # Requires physics_cache for grounded node identification
+    physics_cache = graph_data.get("node_physics") if graph_data else None
+    if physics_cache is not None:
+        # Convert ninja_pos from world space to tile data space
+        ninja_tile_x = ninja_x - NODE_WORLD_COORD_OFFSET
+        ninja_tile_y = ninja_y - NODE_WORLD_COORD_OFFSET
+        ninja_tile_pos = (int(ninja_tile_x), int(ninja_tile_y))
+
+        directional_distances = compute_directional_platform_distances(
+            ninja_tile_pos,
+            adjacency,
+            physics_cache,
+            spatial_hash=spatial_hash,
+            max_distance=500.0,
+        )
+        features[30:38] = directional_distances
+    else:
+        # Fallback: physics cache not available, fill with zeros
+        # This shouldn't happen if graph building is correct
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.warning("Physics cache not available for directional connectivity")
+        features[30:38] = 0.0
 
     return features

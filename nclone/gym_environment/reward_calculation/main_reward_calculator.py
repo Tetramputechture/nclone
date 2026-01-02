@@ -94,6 +94,8 @@ class RewardCalculator:
         reward_config: Optional[RewardConfig] = None,
         pbrs_gamma: float = PBRS_GAMMA,
         shared_level_cache: Optional[Any] = None,
+        shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
+        goal_curriculum_manager: Optional[Any] = None,
     ):
         """Initialize simplified reward calculator.
 
@@ -101,6 +103,8 @@ class RewardCalculator:
             reward_config: RewardConfig instance managing curriculum-aware component lifecycle
             pbrs_gamma: Discount factor for PBRS (γ in F(s,s') = γ * Φ(s') - Φ(s))
             shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
+            shared_level_caches_by_stage: Optional multi-stage caches for goal curriculum
+            goal_curriculum_manager: Optional IntermediateGoalManager for stage-aware cache selection
         """
         # Single config object manages all curriculum logic
         self.config = reward_config or RewardConfig()
@@ -113,11 +117,16 @@ class RewardCalculator:
         # PBRS configuration (kept for backwards compatibility with path calculator)
         self.pbrs_gamma = pbrs_gamma
 
-        # Create path calculator for PBRS (with optional shared cache)
+        # Store goal curriculum manager for stage-aware cache selection
+        self.goal_curriculum_manager = goal_curriculum_manager
+
+        # Create path calculator for PBRS (with optional shared cache(s))
         path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200,
             use_astar=True,
             shared_level_cache=shared_level_cache,
+            shared_level_caches_by_stage=shared_level_caches_by_stage,
+            goal_curriculum_manager=goal_curriculum_manager,
         )
         # Pass reward_config to PBRS calculator for curriculum-adaptive weights (Phase 1.2)
         self.pbrs_calculator = PBRSCalculator(
@@ -191,11 +200,36 @@ class RewardCalculator:
         self._last_collected_waypoint: Optional[Any] = None
         self._frames_since_last_collection: int = 0
 
+        # Sub-goal curriculum tracking for milestone rewards
+        self._sub_goals_pre_switch: List[Any] = []  # List[SubGoal]
+        self._sub_goals_post_switch: List[Any] = []  # List[SubGoal]
+        self._collected_sub_goals: set = set()  # Set of collected sub-goal positions
+
         # Track diagnostic data for PBRS visualization (Phase 1 enhancement)
         self.velocity_history: List[Tuple[float, float]] = []
         self.alignment_history: List[float] = []
         self.path_gradient_history: List[Optional[Tuple[float, float]]] = []
         self.potential_history: List[float] = []
+
+    def set_sub_goals(
+        self,
+        sub_goals_pre_switch: List[Any],
+        sub_goals_post_switch: List[Any],
+    ) -> None:
+        """Set sub-goals from IntermediateGoalManager for milestone rewards.
+
+        Called by BaseEnvironment after level load and path extraction.
+
+        Args:
+            sub_goals_pre_switch: List of SubGoal objects for pre-switch phase
+            sub_goals_post_switch: List of SubGoal objects for post-switch phase
+        """
+        self._sub_goals_pre_switch = sub_goals_pre_switch
+        self._sub_goals_post_switch = sub_goals_post_switch
+        logger.info(
+            f"Sub-goals set: pre_switch={len(sub_goals_pre_switch)}, "
+            f"post_switch={len(sub_goals_post_switch)}"
+        )
 
     def calculate_reward(
         self,
@@ -380,6 +414,16 @@ class RewardCalculator:
         # Now add it to the running reward for non-terminal steps.
         if switch_just_activated:
             reward += SWITCH_ACTIVATION_REWARD
+
+        # === SUB-GOAL MILESTONE REWARDS (curriculum-based path following) ===
+        # Check for sub-goal collisions and award rewards for reaching milestones
+        # Sub-goals are phase-locked and one-time collectible per episode
+        current_player_pos = (obs["player_x"], obs["player_y"])
+        switch_activated = obs.get("switch_activated", False)
+        sub_goal_reward = self._check_sub_goal_collision(
+            current_player_pos, switch_activated
+        )
+        reward += sub_goal_reward
 
         # === PBRS OBJECTIVE POTENTIAL (curriculum-scaled, policy-invariant) ===
         # Calculate F(s,s') = γ * Φ(s') - Φ(s) for dense, policy-invariant path guidance
@@ -867,6 +911,7 @@ class RewardCalculator:
             "pbrs_reward": pbrs_reward,
             "time_penalty": time_penalty,
             "milestone_reward": milestone_reward,
+            "sub_goal_reward": sub_goal_reward,
             "waypoint_bonus": waypoint_bonus,
             "waypoint_metrics": waypoint_metrics,
             "exit_direction_bonus": exit_direction_bonus,
@@ -932,6 +977,62 @@ class RewardCalculator:
         self._prev_distance_to_goal = distance_to_goal
 
         return scaled_reward
+
+    def _check_sub_goal_collision(
+        self,
+        player_pos: Tuple[float, float],
+        switch_activated: bool,
+    ) -> float:
+        """Check for sub-goal collisions and return reward.
+
+        Sub-goals are phase-locked and one-time collectible:
+        - Pre-switch sub-goals only active before switch activation
+        - Post-switch sub-goals only active after switch activation
+        - Already collected sub-goals yield 0 reward (no exploitation)
+
+        Args:
+            player_pos: Current player position (x, y)
+            switch_activated: Whether exit switch has been activated
+
+        Returns:
+            Total reward from collected sub-goals this step (0.0 if none)
+        """
+        from ...constants.physics_constants import NINJA_RADIUS
+
+        sub_goal_reward = 0.0
+
+        # Get phase-appropriate sub-goals
+        active_sub_goals = (
+            self._sub_goals_post_switch
+            if switch_activated
+            else self._sub_goals_pre_switch
+        )
+
+        # Check each active sub-goal for collision
+        for sub_goal in active_sub_goals:
+            # Skip if already collected this episode
+            if sub_goal.position in self._collected_sub_goals:
+                continue
+
+            # Collision check: player radius + sub-goal radius
+            collision_dist = NINJA_RADIUS + sub_goal.radius
+            dx = player_pos[0] - sub_goal.position[0]
+            dy = player_pos[1] - sub_goal.position[1]
+            dist = (dx * dx + dy * dy) ** 0.5
+
+            if dist <= collision_dist:
+                # Mark as collected
+                self._collected_sub_goals.add(sub_goal.position)
+                sub_goal_reward += sub_goal.reward_value
+
+                logger.debug(
+                    f"Sub-goal collected: type={sub_goal.waypoint_type}, "
+                    f"reward={sub_goal.reward_value:.1f}, "
+                    f"phase={sub_goal.phase}, "
+                    f"pos=({sub_goal.position[0]:.0f}, {sub_goal.position[1]:.0f})"
+                )
+
+        return sub_goal_reward
 
     def validate_level_solvability(self, obs: Dict[str, Any]) -> bool:
         """Validate that goals are reachable from spawn.
@@ -1086,6 +1187,9 @@ class RewardCalculator:
         self._next_expected_waypoint_index = 0
         self._last_collected_waypoint = None
         self._frames_since_last_collection = 0
+
+        # Reset sub-goal collection tracking for new episode
+        self._collected_sub_goals = set()
 
         # Reset diagnostic tracking for visualization (Phase 1 enhancement)
         self.velocity_history = []
@@ -2215,6 +2319,17 @@ class RewardCalculator:
             else 0.0
         )
 
+        # Count sub-goals collected this episode
+        sub_goals_collected = len(self._collected_sub_goals)
+        sub_goals_total_available = len(self._sub_goals_pre_switch) + len(
+            self._sub_goals_post_switch
+        )
+        sub_goal_collection_rate = (
+            sub_goals_collected / sub_goals_total_available
+            if sub_goals_total_available > 0
+            else 0.0
+        )
+
         return {
             "pbrs_total": pbrs_total,
             "time_penalty_total": penalty_total,
@@ -2238,4 +2353,8 @@ class RewardCalculator:
             "waypoints_collected": waypoints_collected,
             "waypoints_total": waypoints_total_available,
             "waypoint_collection_rate": waypoint_collection_rate,
+            # Sub-goal collection metrics
+            "sub_goals_collected": sub_goals_collected,
+            "sub_goals_total": sub_goals_total_available,
+            "sub_goal_collection_rate": sub_goal_collection_rate,
         }

@@ -9,10 +9,11 @@ mixins for better code organization and maintainability.
 import logging
 import numpy as np
 from gymnasium.spaces import box, Dict as SpacesDict
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 
 from ..graph.common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM
+from ..constants import MAP_TILE_HEIGHT, MAP_TILE_WIDTH
 from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 from .constants import (
     GAME_STATE_CHANNELS,
@@ -85,6 +86,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             enable_visual_observations=self.config.enable_visual_observations,
             frame_skip=self.config.frame_skip,
             shared_level_cache=self.config.shared_level_cache,
+            shared_level_caches_by_stage=getattr(
+                self.config, "shared_level_caches_by_stage", None
+            ),
             goal_curriculum_config=self.config.goal_curriculum_config,
         )
 
@@ -447,6 +451,18 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Reset observation processor
         self.observation_processor.reset()
 
+        # ============================================================
+        # CRITICAL: Reset tracking variables from BaseNppEnvironment
+        # NppEnvironment doesn't call super().reset(), so we must do it here
+        # ============================================================
+
+        # Reset switch activation tracking (BaseNppEnvironment.reset line 1519)
+        self._switch_activation_frame = None
+
+        # Reset position tracking for route visualization (BaseNppEnvironment.reset line 1515-1516)
+        self.current_route = []
+        self._warned_about_position = False
+
         # Reset reward calculator
         self.reward_calculator.reset()
 
@@ -505,24 +521,146 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                         "Skipped nplay_headless.reset() - map was just loaded externally"
                     )
 
-        # === GOAL CURRICULUM: Move entities before graph building ===
-        # Apply curriculum entity repositioning if enabled
-        # TIMING: Must happen AFTER map load, BEFORE graph building
-        # This ensures all observations reflect curriculum positions
+        # CRITICAL: Reset all entity activation states after map/sim operations
+        # Checkpoint replay and previous episodes can leave switches activated
+        # New episodes must always start with switches deactivated
+        try:
+            sim = self.nplay_headless.sim
+
+            # Reset exit DOOR (type 3) - switch_hit=False and remove from grid_entity
+            exit_doors = sim.entity_dic.get(3, [])
+            for door in exit_doors:
+                if type(door).__name__ == "EntityExit":
+                    # Reset switch_hit flag
+                    if hasattr(door, "switch_hit"):
+                        door.switch_hit = False
+                    # CRITICAL: Remove exit door from grid_entity if present
+                    # The door should only be in grid after switch collection
+                    if (
+                        door.cell in sim.grid_entity
+                        and door in sim.grid_entity[door.cell]
+                    ):
+                        sim.grid_entity[door.cell].remove(door)
+                        logger.debug(f"Removed exit door from grid_entity[{door.cell}]")
+
+            # Reset exit SWITCH (type 4) - active=True (not collected)
+            exit_switches = sim.entity_dic.get(4, [])
+            for switch in exit_switches:
+                if type(switch).__name__ == "EntityExitSwitch":
+                    if hasattr(switch, "active"):
+                        switch.active = True  # True = not collected
+                    logger.debug("Reset exit switch: active=True")
+
+            # Reset locked door switches to deactivated
+            locked_door_entities = sim.entity_dic.get(6, [])
+            for door in locked_door_entities:
+                if hasattr(door, "active"):
+                    door.active = True  # True = not collected
+                if hasattr(door, "open"):
+                    door.open = False  # False = door closed
+
+            if self.enable_logging:
+                logger.debug("Reset all entity activation states for new episode")
+        except Exception as e:
+            logger.warning(f"Failed to reset entity states: {e}")
+
+        # === GOAL CURRICULUM: Apply stage change and reposition entities ===
+        # CRITICAL ORDER:
+        # 1. Update unified_stage (needed by get_curriculum_switch_position())
+        # 2. Reposition entities (uses unified_stage to calculate curriculum positions)
+        # 3. THEN allow any extraction/caching (will read correct curriculum positions)
+
+        # Step 1: Apply pending stage change (if any) - update unified_stage FIRST
+        if (
+            hasattr(self, "_pending_curriculum_stage")
+            and self._pending_curriculum_stage is not None
+            and self.goal_curriculum_manager is not None
+        ):
+            new_stage = self._pending_curriculum_stage
+            old_stage = self.goal_curriculum_manager.state.unified_stage
+
+            # print(
+            #     f"[NppEnvironment.reset()] APPLYING pending stage change: {old_stage} → {new_stage}"
+            # )
+
+            # VALIDATION: Check for stage skipping
+            if new_stage != old_stage + 1 and old_stage != new_stage:
+                logger.warning(
+                    f"[CURRICULUM] Non-sequential stage change: {old_stage} → {new_stage} "
+                    f"(skipped {new_stage - old_stage - 1} stages). "
+                    f"This indicates rapid advancement. Entities will jump positions, "
+                    f"but SharedLevelCache should handle this correctly."
+                )
+
+            # CRITICAL: Update unified_stage BEFORE repositioning!
+            # get_curriculum_switch_position() uses unified_stage to calculate position
+            self.goal_curriculum_manager.state.unified_stage = new_stage
+
+            # Clear pending stage
+            self._pending_curriculum_stage = None
+
+            logger.info(
+                f"[CURRICULUM] unified_stage updated: {old_stage} → {new_stage} "
+                f"(before entity repositioning, so positions use correct stage)"
+            )
+
+        # CRITICAL: Capture curriculum stage for THIS episode AFTER pending stage is applied
+        # This ensures visualization uses the correct stage for this episode
         if self.goal_curriculum_manager is not None:
-            # 1. Store original entity positions (from loaded map)
-            switch_pos = self.nplay_headless.exit_switch_position()
-            exit_pos = self.nplay_headless.exit_door_position()
-            self.goal_curriculum_manager.store_original_positions(switch_pos, exit_pos)
+            self._episode_start_curriculum_stage = (
+                self.goal_curriculum_manager.state.unified_stage
+            )
+        else:
+            self._episode_start_curriculum_stage = None
+
+        # Step 2: Reposition entities BEFORE any extraction/caching
+        # TIMING: Must happen AFTER map load/reset AND stage update, BEFORE _extract_level_data()
+        if self.goal_curriculum_manager is not None:
+            # 1. Store original entity positions (from freshly loaded/reset map)
+            orig_switch_pos = self.nplay_headless.exit_switch_position()
+            orig_exit_pos = self.nplay_headless.exit_door_position()
+
+            if self.enable_logging:
+                logger.info(
+                    f"[CURRICULUM] Original entity positions after map/reset: "
+                    f"switch={orig_switch_pos}, exit={orig_exit_pos}"
+                )
+
+            self.goal_curriculum_manager.store_original_positions(
+                orig_switch_pos, orig_exit_pos
+            )
 
             # 2. Build optimal paths using ORIGINAL positions
-            # Need level_data for mine proximity calculations
-            # Note: level_data is built from map tiles, doesn't depend on entity positions
-            level_data_for_paths = self._extract_level_data()
-            spawn_pos = level_data_for_paths.start_position
+            # Extract minimal level_data WITHOUT caching (_extract_level_data caches!)
+            tile_dic = self.nplay_headless.get_tile_data()
+            tiles = np.zeros((MAP_TILE_HEIGHT, MAP_TILE_WIDTH), dtype=np.int32)
+            for (x, y), tile_id in tile_dic.items():
+                inner_x = x - 1
+                inner_y = y - 1
+                if 0 <= inner_x < MAP_TILE_WIDTH and 0 <= inner_y < MAP_TILE_HEIGHT:
+                    tiles[inner_y, inner_x] = int(tile_id)
 
-            # Build temporary graph for pathfinding (without curriculum positions)
-            # We need this to extract the TRUE optimal path before moving entities
+            from ..graph.level_data import (
+                extract_start_position_from_map_data,
+                LevelData,
+            )
+
+            spawn_pos = extract_start_position_from_map_data(
+                self.nplay_headless.sim.map_data
+            )
+
+            # Extract entities at ORIGINAL positions (before repositioning)
+            # Do NOT use _cached_entities here - extract fresh
+            entities_original = self.entity_extractor.extract_graph_entities()
+
+            level_data_for_paths = LevelData(
+                start_position=spawn_pos,
+                tiles=tiles,
+                entities=entities_original,
+                switch_states={},
+            )
+
+            # Build temporary graph for pathfinding (with original positions)
             temp_graph_data = self.graph_builder.build_graph(
                 level_data_for_paths, ninja_pos=(int(spawn_pos[0]), int(spawn_pos[1]))
             )
@@ -531,17 +669,127 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 temp_graph_data, level_data_for_paths, spawn_pos
             )
 
-            # 3. Move entities to curriculum positions
+            # Wire sub-goals from goal curriculum to reward calculator for milestone rewards
+            if (
+                hasattr(self, "reward_calculator")
+                and self.reward_calculator is not None
+            ):
+                sub_goals_pre = self.goal_curriculum_manager.get_active_sub_goals(
+                    switch_activated=False
+                )
+                sub_goals_post = self.goal_curriculum_manager.get_active_sub_goals(
+                    switch_activated=True
+                )
+                self.reward_calculator.set_sub_goals(sub_goals_pre, sub_goals_post)
+
+            # 3. NOW move entities to curriculum positions
             self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
 
-            # 4. Invalidate ALL entity-dependent caches (will rebuild with curriculum positions)
-            # CRITICAL: Must clear ALL caches that contain entity positions/references
+            # CRITICAL: Clear ALL position caches IMMEDIATELY after repositioning
+            # This prevents any code from caching old positions
+            # Must happen BEFORE any observation access or level_data property access
+            self._cached_switch_pos = None
+            self._cached_exit_pos = None
+            self._cached_level_data = None
+            self._cached_entities = None
+            self._cached_observation = None
+
+            # VERIFY entities were actually moved
+            actual_switch_pos = self.nplay_headless.exit_switch_position()
+            expected_switch_pos = (
+                self.goal_curriculum_manager.get_curriculum_switch_position()
+            )
+            actual_exit_pos = self.nplay_headless.exit_door_position()
+            expected_exit_pos = (
+                self.goal_curriculum_manager.get_curriculum_exit_position()
+            )
+
+            # Validation: Check if repositioning worked
+            switch_dx = abs(actual_switch_pos[0] - expected_switch_pos[0])
+            switch_dy = abs(actual_switch_pos[1] - expected_switch_pos[1])
+            exit_dx = abs(actual_exit_pos[0] - expected_exit_pos[0])
+            exit_dy = abs(actual_exit_pos[1] - expected_exit_pos[1])
+
+            # Also verify grid_entity placement (critical for collision detection)
+            try:
+                sim = self.nplay_headless.sim
+                exit_entities = sim.entity_dic.get(3, [])
+                switch_entity = None
+                for entity in reversed(exit_entities):
+                    if type(entity).__name__ == "EntityExitSwitch":
+                        switch_entity = entity
+                        break
+
+                if switch_entity:
+                    expected_cell = (
+                        int(expected_switch_pos[0] // 24),
+                        int(expected_switch_pos[1] // 24),
+                    )
+                    actual_cell = switch_entity.cell
+                    switch_in_grid = switch_entity in sim.grid_entity.get(
+                        actual_cell, []
+                    )
+
+                    if self.enable_logging:
+                        logger.info(
+                            f"[CURRICULUM] Switch grid placement: "
+                            f"entity.cell={actual_cell}, expected={expected_cell}, "
+                            f"in_grid_entity={switch_in_grid}, "
+                            f"entity.active={getattr(switch_entity, 'active', 'N/A')}"
+                        )
+            except Exception as e:
+                logger.debug(f"Failed to verify grid placement: {e}")
+
+            if self.enable_logging:
+                logger.info(
+                    f"[CURRICULUM] Entity positions AFTER apply_to_simulator: "
+                    f"switch={actual_switch_pos} (expected {expected_switch_pos}), "
+                    f"exit={actual_exit_pos} (expected {expected_exit_pos}), "
+                    f"switch_error=({switch_dx:.1f}, {switch_dy:.1f})px, "
+                    f"exit_error=({exit_dx:.1f}, {exit_dy:.1f})px"
+                )
+
+            if switch_dx > 1.0 or switch_dy > 1.0:
+                logger.error(
+                    f"[CURRICULUM] Entity repositioning FAILED for switch! "
+                    f"Expected: {expected_switch_pos}, Actual: {actual_switch_pos}, "
+                    f"Error: ({switch_dx:.1f}, {switch_dy:.1f})px. "
+                    f"This will cause immediate switch collection at spawn!"
+                )
+
+            if exit_dx > 1.0 or exit_dy > 1.0:
+                logger.error(
+                    f"[CURRICULUM] Entity repositioning FAILED for exit! "
+                    f"Expected: {expected_exit_pos}, Actual: {actual_exit_pos}, "
+                    f"Error: ({exit_dx:.1f}, {exit_dy:.1f})px."
+                )
+
+        # Step 3: Invalidate ALL caches after repositioning
+        # Any caches filled during path building have OLD positions
+        if self.goal_curriculum_manager is not None:
             self._cached_switch_pos = None
             self._cached_exit_pos = None
             self._cached_level_data = None  # Contains entity references
             self._cached_entities = None  # Contains entity list
+            self._cached_observation = None
+
             # Force switch cache invalidation to clear path distance caches
             self.invalidate_switch_cache()
+
+            # Clear PBRS normalization cache (will rebuild with curriculum positions)
+            if hasattr(self, "reward_calculator") and hasattr(
+                self.reward_calculator, "pbrs_calculator"
+            ):
+                pbrs_calc = self.reward_calculator.pbrs_calculator
+                if hasattr(pbrs_calc, "_cached_combined_path_distance"):
+                    pbrs_calc._cached_combined_path_distance = None
+                    pbrs_calc._cached_spawn_to_switch_distance = None
+                    pbrs_calc._cached_switch_to_exit_distance = None
+
+            # Force path distance calculator to switch to new stage's SharedLevelCache
+            if hasattr(self, "_path_calculator") and self._path_calculator is not None:
+                self._path_calculator.level_cache = None
+                self._path_calculator.clear_cache()
 
             if self.enable_logging:
                 logger.debug(
@@ -554,6 +802,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Build graph from the newly loaded map (with curriculum entity positions)
         self._update_graph_from_env_state()
+
+        # Trigger feature extractor cache precomputation (for hybrid_cached_graph)
+        # This precomputes static graph embeddings once per level for O(1) runtime extraction
+        if hasattr(self, "_feature_extractor_cache_callback"):
+            level_id = self.map_loader.current_map_name
+            self._feature_extractor_cache_callback(level_id, self.current_graph_data)
 
         # Extract path-based waypoints from optimal A* paths (if enabled)
         # This provides immediate dense guidance from first episode
@@ -663,6 +917,105 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     f"(surface_area={surface_area:.0f}, mines={reachable_mine_count})"
                 )
 
+        # VALIDATION: Verify curriculum positions match actual entity positions
+        # This catches any issues where entities got reset after repositioning
+        if self.goal_curriculum_manager is not None:
+            expected_switch = (
+                self.goal_curriculum_manager.get_curriculum_switch_position()
+            )
+            actual_switch = self.nplay_headless.exit_switch_position()
+            expected_exit = self.goal_curriculum_manager.get_curriculum_exit_position()
+            actual_exit = self.nplay_headless.exit_door_position()
+            ninja_pos = self.nplay_headless.ninja_position()
+
+            # Calculate distances
+            # ninja_to_switch = (
+            #     (ninja_pos[0] - actual_switch[0]) ** 2
+            #     + (ninja_pos[1] - actual_switch[1]) ** 2
+            # ) ** 0.5
+            # ninja_to_expected = (
+            #     (ninja_pos[0] - expected_switch[0]) ** 2
+            #     + (ninja_pos[1] - expected_switch[1]) ** 2
+            # ) ** 0.5
+
+            switch_match = (
+                abs(actual_switch[0] - expected_switch[0]) < 1.0
+                and abs(actual_switch[1] - expected_switch[1]) < 1.0
+            )
+            exit_match = (
+                abs(actual_exit[0] - expected_exit[0]) < 1.0
+                and abs(actual_exit[1] - expected_exit[1]) < 1.0
+            )
+
+            stage = self.goal_curriculum_manager.state.unified_stage
+
+            # DIAGNOSTIC: Always print curriculum validation at reset
+            # print(
+            #     f"\n{'#' * 60}\n"
+            #     f"[CURRICULUM_RESET_VALIDATION] Stage {stage}\n"
+            #     f"  Ninja: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})\n"
+            #     f"  Switch actual: ({actual_switch[0]:.1f}, {actual_switch[1]:.1f})\n"
+            #     f"  Switch expected: ({expected_switch[0]:.1f}, {expected_switch[1]:.1f})\n"
+            #     f"  Switch match: {switch_match}\n"
+            #     f"  Distance ninja→actual_switch: {ninja_to_switch:.1f}px\n"
+            #     f"  Distance ninja→expected_switch: {ninja_to_expected:.1f}px\n"
+            #     f"{'#' * 60}\n"
+            # )
+
+            # Also check grid_entity placement
+            try:
+                sim = self.nplay_headless.sim
+                exit_entities = sim.entity_dic.get(3, [])
+                switch_entity = None
+                for entity in reversed(exit_entities):
+                    if type(entity).__name__ == "EntityExitSwitch":
+                        switch_entity = entity
+                        break
+
+                if switch_entity:
+                    expected_cell = (
+                        int(expected_switch[0] // 24),
+                        int(expected_switch[1] // 24),
+                    )
+                    actual_cell = switch_entity.cell
+                    # entity_in_grid = switch_entity in sim.grid_entity.get(
+                    #     actual_cell, []
+                    # )
+                    ninja_cell = (int(ninja_pos[0] // 24), int(ninja_pos[1] // 24))
+
+                    # print(
+                    #     f"[CURRICULUM_GRID_CHECK]\n"
+                    #     f"  Switch entity.cell: {actual_cell}\n"
+                    #     f"  Expected cell: {expected_cell}\n"
+                    #     f"  Entity in grid_entity[{actual_cell}]: {entity_in_grid}\n"
+                    #     f"  Ninja cell: {ninja_cell}\n"
+                    #     f"  Switch entity.active: {switch_entity.active}\n"
+                    #     f"  Switch entity pos: ({switch_entity.xpos:.1f}, {switch_entity.ypos:.1f})\n"
+                    # )
+
+                    # CRITICAL: If ninja spawns in same cell as switch, immediate activation!
+                    if ninja_cell == actual_cell:
+                        print(
+                            f"[CURRICULUM_WARNING] Ninja and switch in SAME CELL! "
+                            f"Cell: {ninja_cell}. This causes immediate activation!"
+                        )
+            except Exception as e:
+                print(f"[CURRICULUM_GRID_CHECK] Error: {e}")
+
+            if not switch_match or not exit_match:
+                logger.error(
+                    f"[CURRICULUM] POSITION MISMATCH at episode start! "
+                    f"Stage: {stage}, "
+                    f"Switch - Expected: {expected_switch}, Actual: {actual_switch}, Match: {switch_match} | "
+                    f"Exit - Expected: {expected_exit}, Actual: {actual_exit}, Match: {exit_match}. "
+                    f"This will cause immediate switch collection and wrong PBRS distances!"
+                )
+            elif self.enable_logging:
+                logger.debug(
+                    f"[CURRICULUM] Position validation passed at episode start: "
+                    f"stage={stage}, switch={actual_switch}, exit={actual_exit}"
+                )
+
         # NOW get initial observation (with valid graph data)
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
@@ -719,6 +1072,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Add privileged features for asymmetric critic (if enabled)
         # These provide oracle information to the critic (not actor) for better value estimation
         obs["privileged_features"] = self._compute_privileged_features(obs)
+
+        # Add metadata for cached graph extraction (hybrid_cached_graph architecture)
+        # These are not trainable features, just identifiers for cache lookup
+        obs["level_id"] = self.map_loader.current_map_name
+        obs["ninja_node_pos"] = self._get_ninja_node_position_for_cache()
 
         return obs
 
@@ -1531,6 +1889,48 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             level_width=LEVEL_WIDTH_PX,
             level_height=LEVEL_HEIGHT_PX,
         )
+
+    def _get_ninja_node_position_for_cache(self) -> Tuple[int, int]:
+        """Get ninja's current graph node position for cached graph extraction.
+
+        Returns node position in tile data space (not world space).
+        Used by hybrid_cached_graph architecture for O(1) k-hop extraction.
+
+        Returns:
+            Tuple of (x, y) in tile data space, or (0, 0) if node not found
+        """
+        from nclone.graph.reachability.pathfinding_utils import find_ninja_node
+
+        ninja_pos = self.nplay_headless.ninja_position()  # World space
+
+        if not hasattr(self, "current_graph_data") or self.current_graph_data is None:
+            return (0, 0)  # Fallback
+
+        adjacency = self.current_graph_data.get("adjacency")
+        spatial_hash = self.current_graph_data.get("spatial_hash")
+
+        if adjacency is None:
+            return (0, 0)
+
+        ninja_node = find_ninja_node(
+            ninja_pos,
+            adjacency,
+            spatial_hash=spatial_hash,
+            ninja_radius=10.0,
+        )
+
+        return ninja_node if ninja_node is not None else (0, 0)
+
+    def set_feature_extractor_callback(self, callback):
+        """Set callback for feature extractor cache precomputation.
+
+        Called by EnvironmentFactory to wire hybrid_cached_graph extractor.
+        The callback is triggered at reset() to precompute static graph embeddings.
+
+        Args:
+            callback: Function(level_id, graph_data) to call at level load
+        """
+        self._feature_extractor_cache_callback = callback
 
     def clear_caches(self, verbose: bool = False):
         """

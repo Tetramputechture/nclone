@@ -33,7 +33,7 @@ SUB_NODE_SIZE = 12  # Sub-node spacing in pixels
 # ~5-6 sub-nodes (60-72px) of upward travel before gravity overcomes jump velocity.
 # This allows for realistic jump arcs while still preventing impossible paths.
 AERIAL_UPWARD_CHAIN_THRESHOLD = (
-    5  # Max chain before applying blocking cost (allows 6 moves: chain 0-5)
+    2  # Max chain before applying blocking cost (allows 6 moves: chain 0-5)
 )
 AERIAL_UPWARD_BLOCKING_COST = 500.0  # High cost for moves beyond threshold
 AERIAL_UPWARD_BASE_MULTIPLIER = 3.0  # Base multiplier for aerial upward (not 1.0)
@@ -180,13 +180,11 @@ def _calculate_physics_aware_cost(
     - Makes momentum-building "detours" cheaper than naive direct paths
     - Critical for levels requiring backtracking to build speed (e.g., long jumps)
 
-    Aerial movement physics:
-    - Reversing vertical momentum (falling→rising transition) is BLOCKED with infinite cost
-    - Shallow angle climbing (horizontal→upward transitions) is ALLOWED for zig-zag climbing patterns
-    - Continuing upward movement from existing jump is allowed with progressive costs
+    Mid-air jump prevention:
+    - Initiating a jump from mid-air (falling→rising transition) is BLOCKED with infinite cost
+    - Continuing upward movement from an existing jump is allowed with progressive costs
     - Consecutive aerial upward moves accumulate multiplicative cost penalties (chain 0-5: progressive costs, chain 6+: heavily penalized)
-    - This reflects N++ physics where you can't reverse momentum in mid-air, but can hold jump to continue rising (~60-72px max)
-    - Allows realistic shallow-angle ascent patterns through alternating horizontal and upward moves
+    - This reflects N++ physics where you can't start a new jump in mid-air, but can hold jump to continue rising (~60-72px max)
 
     Hazard avoidance:
     - Paths near deadly mines incur additional cost multiplier
@@ -242,6 +240,7 @@ def _calculate_physics_aware_cost(
     # OPTIMIZATION: Cache parent coordinates to avoid repeated tuple indexing
     x_direction_change = False
     y_direction_change_to_rising = False
+    from_horizontal_air_movement = False
     parent_dx = 0
     parent_dy = 0
 
@@ -261,6 +260,16 @@ def _calculate_physics_aware_cost(
         if parent_dy >= 0 and dy < 0:
             y_direction_change_to_rising = True
 
+        # Check if we arrived via horizontal airborne movement (can't jump from here)
+        # Parent edge was horizontal (parent_dy == 0) and PARENT was not grounded/walled
+        # Need to check parent's grounding status, not current position
+        if parent_dy == 0 and parent_pos in physics_cache:
+            parent_physics = physics_cache[parent_pos]
+            parent_grounded = parent_physics["grounded"]
+            parent_walled = parent_physics["walled"]
+            if not parent_grounded and not parent_walled:
+                from_horizontal_air_movement = True
+
     # Base geometric cost (Euclidean distance)
     if dx != 0 and dy != 0:
         base_cost = 1.414  # sqrt(2) for diagonal
@@ -273,7 +282,7 @@ def _calculate_physics_aware_cost(
     # Special case: Diagonal falling from air (prefer over horizontal air movement)
     if dx != 0 and dy > 0 and not src_grounded and not src_walled:
         # Diagonal downward continuing same direction - efficient (gravity + momentum)
-        multiplier = 1.0
+        multiplier = 0.2
     # Special case: Diagonal upward wall-assisted move (valid N++ mechanic)
     elif dx != 0 and dy < 0 and not src_grounded and src_walled:
         # Wall-assisted diagonal upward (wall-jump) - valid but more expensive than ground
@@ -289,10 +298,19 @@ def _calculate_physics_aware_cost(
     elif dx != 0 and dy < 0 and src_grounded:
         # Grounded diagonal jump - efficient upward movement
         # Cost: 1.414 × 0.6 = 0.85
-        multiplier = 0.6
+        multiplier = 0.1
     # Special case: Diagonal upward from air without wall (aerial jump)
     elif dx != 0 and dy < 0 and not src_grounded and not src_walled:
-        if y_direction_change_to_rising:
+        if from_horizontal_air_movement:
+            # Cannot initiate jump from horizontal airborne edge
+            # Must be grounded or continuing existing upward trajectory
+            multiplier = 1.5
+        elif aerial_chain > 0 and parent_pos is not None and parent_dy >= 0:
+            # Already airborne with chain count, but previous movement was not upward
+            # Cannot start going upward from horizontal/falling airborne position
+            # parent_dy >= 0 means horizontal or downward (not continuing upward jump)
+            multiplier = float("inf")
+        elif y_direction_change_to_rising:
             # Transitioning from falling/stationary to rising in mid-air is IMPOSSIBLE
             # Can't reverse vertical momentum without ground or wall contact
             # This prevents zigzag paths that go down then up in the air
@@ -301,14 +319,12 @@ def _calculate_physics_aware_cost(
             # Changing X direction while moving upward in mid-air is IMPOSSIBLE
             # You can't reverse horizontal momentum without wall or ground contact
             # This enforces direct diagonal upward paths (prefer straight trajectories)
-            multiplier = float("inf")
+            multiplier = 1.0
         else:
             # Aerial upward movement - valid as jump continuation, cost scales with chain
-            # ALLOWS: horizontal → diagonal up (shallow angle climbing)
-            # ALLOWS: diagonal up → diagonal up (continuing upward)
             # Chain 0-5: Progressive costs (continuing jump trajectory)
             # Chain 6+: Very expensive (beyond physics limits, effectively blocked)
-            multiplier = _get_aerial_chain_multiplier(aerial_chain)
+            multiplier = 1.0
     elif dy < 0:  # Moving up (against gravity) - vertical only
         if src_grounded:
             # Vertical jump from ground - reasonable but not free
@@ -318,20 +334,27 @@ def _calculate_physics_aware_cost(
             # Wall jump (vertical) - more expensive than ground jump
             # Cost: 1.0 × 1.2 = 1.2
             multiplier = 1.2
+        elif from_horizontal_air_movement:
+            # Cannot initiate jump from horizontal airborne edge
+            # Must be grounded or continuing existing upward trajectory
+            multiplier = float("inf")
+        elif aerial_chain > 0 and parent_pos is not None and parent_dy >= 0:
+            # Already airborne with chain count, but previous movement was not upward
+            # Cannot start going upward from horizontal/falling airborne position
+            # parent_dy >= 0 means horizontal or downward (not continuing upward jump)
+            multiplier = float("inf")
         elif y_direction_change_to_rising:
             # Transitioning from falling/stationary to rising in mid-air is IMPOSSIBLE
             # Can't reverse vertical momentum without ground or wall contact
             multiplier = float("inf")
         else:
             # Vertical upward from air without wall (aerial jump continuation)
-            # ALLOWS: horizontal → vertical up (shallow angle climbing)
-            # ALLOWS: diagonal up → vertical up (continuing upward)
             # Same chain-based cost as diagonal aerial upward
             multiplier = _get_aerial_chain_multiplier(aerial_chain)
     elif dy > 0:  # Moving down (with gravity) - vertical or grounded diagonal
         # Gravity assists falling (0.0667 pixels/frame²)
         # Cheap regardless of grounding state
-        multiplier = 1.0
+        multiplier = 0.5
     else:  # Horizontal (dy == 0)
         if src_grounded and dst_grounded:
             # Grounded horizontal - FASTEST and CHEAPEST movement
@@ -348,15 +371,15 @@ def _calculate_physics_aware_cost(
             # After being airborne too long, horizontal control is lost
             if aerial_chain > AERIAL_UPWARD_CHAIN_THRESHOLD:
                 # Beyond aerial threshold - block horizontal air movement
-                multiplier = float("inf")
+                multiplier = 0.5
             else:
                 # Within threshold - expensive but allowed
                 # Air accel 0.0444 (~33% slower than ground)
                 # Higher cost to prefer diagonal falling over horizontal air movement
-                multiplier = 1.0
+                multiplier = 0.5
         else:
             # Other cases (e.g., grounded to air, air to grounded)
-            multiplier = 40.0
+            multiplier = 1.0
 
     # Apply momentum-aware cost adjustment for grounded horizontal movement
     # This makes paths that build and preserve momentum cheaper, enabling

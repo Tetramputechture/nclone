@@ -73,66 +73,70 @@ GLOBAL_REWARD_SCALE = 0.1  # Divide all rewards by 10
 # Terminal rewards are the primary learning signals that define task completion
 #
 # REWARD HIERARCHY (critical for correct learning):
-#   Success (+105) >> Timeout+Progress (-1) >> Progress+Death (-8) >> Quick Death (-15)
+#   Success (+340) >> High Progress+Timeout (+8) >> Progress+Death (+2) >> Quick Death (-30)
 #
-# UPDATED 2025-12-20: Rebalanced to prevent both "die quickly" and "wander forever" exploits
-#   1. PBRS weight reduced (60→15) to allow exploration mistakes
-#   2. Death penalty increased (-8→-15) to make quick death unattractive
-#   3. Very light time penalty (-0.0005) provides mild completion urgency without survival tax
-#   4. RND exploration bonuses (+0.3 to +1.5) make new state discovery rewarding
-#   5. Velocity alignment (+1.0) guides agent along curved optimal paths
+# UPDATED 2025-12-29: Rebalanced for faster convergence in advanced phase (40%+ success)
+#   1. PBRS weight curve flattened (50→8 instead of 50→5) to maintain gradient signal
+#   2. Death penalty kept meaningful in advanced phase (-4 to -3 instead of -2)
+#   3. Time penalty re-enabled for speed optimization (-0.001 to -0.003 by phase)
+#   4. Stronger PBRS throughout training accelerates policy convergence
 #
-# Example with discovery phase (PBRS weight=15, death penalty=-15, time=-0.0005):
-#   - Complete: +15 (PBRS) + 50 (completion) + 40 (switch) = +105 (BEST)
-#   - 99% + timeout: +14.85 (PBRS) - 0.25 (time) + approach bonus = ~+15 (good!)
-#   - 50% progress + death: +7.5 (PBRS) - 15 (death) - 0.125 (time) = -7.6 (risky)
-#   - Quick death (200f): -15 (death) - 0.3 (PBRS) - 0.025 (time) = -15.3 (WORST)
+# Example with DISCOVERY phase (PBRS=40, death=-30, time=0):
+#   - Complete: +40 (PBRS) + 200 (completion) + 100 (switch) = +340 (BEST)
+#   - 90% + timeout: +36 (PBRS) + 100 (switch) = +136 (good milestone)
+#   - 50% progress + death: +20 (PBRS) - 30 (death) = -10 (bad - need >75% to justify)
+#   - Quick death (10% progress): +4 (PBRS) - 30 (death) = -26 (WORST)
 #
-# The math guarantees: Completion > Exploration > Death
-# Light time penalty prevents "wander forever" without creating "die quickly" incentive
+# Example with ADVANCED phase (PBRS=12, death=-4, time=-0.002/step):
+#   - Complete: +12 (PBRS) + 200 (completion) + 100 (switch) - 1.0 (time) = +311 (BEST)
+#   - 90% + timeout: +10.8 (PBRS) + 100 (switch) - 1.0 (time) = +109.8 (good)
+#   - 50% progress + death: +6 (PBRS) - 4 (death) - 0.5 (time) = +1.5 (risky but acceptable)
+#   - Quick death (10% progress): +1.2 (PBRS) - 4 (death) - 0.2 (time) = -3.0 (bad)
+#
+# The math guarantees: Completion > Progress > Death, with meaningful tradeoffs preserved
 
 # Level completion reward - primary learning signal
-# Rationale: Increased from 20.0 to 50.0 (2.5×) to ensure terminal rewards
-# dominate over accumulated shaping penalties. With reduced PBRS weights (15.0 max)
-# and reduced revisit penalties, this ensures successful episodes have higher
-# rewards than failed episodes.
+# Rationale: Set at 200.0 to ensure terminal rewards strongly dominate over
+# accumulated shaping signals. With PBRS weights ranging from 40 (discovery) to
+# 8 (mastery), completion reward is 5-25× larger than maximum PBRS contribution,
+# ensuring successful episodes are always strongly preferred over failed episodes
+# while maintaining meaningful dense gradient signal throughout training.
 LEVEL_COMPLETION_REWARD = 200.0
 
 # Death penalty - CURRICULUM-ADAPTIVE (scaled with agent competence)
 #
-# UPDATED 2025-12-17: Reintroduced with curriculum scaling to fix local minima.
+# UPDATED 2025-12-29: Maintained meaningful penalty in advanced phase for faster convergence.
 #
-# Problem identified at 5M steps:
-# - Agent stuck at <5% success making 50% progress then dying to same mine
-# - With PBRS weight=80 and death penalty=0, "progress+death" gives +4.0 reward
-# - This is better than safer alternatives, creating stable local optimum
-# - Agent never learns mine avoidance because risky strategy is optimal
+# Previous approach of dropping to -2 at 40%+ success made death effectively costless
+# (only 1% of completion reward), eliminating risk/reward tradeoffs and slowing convergence.
+# Analysis showed this contributed to slow optimization in advanced training phase.
 #
-# Solution: Curriculum-based penalties that break early-phase local minima:
-# - Discovery (<5%): -15 penalty makes risky death less attractive than completion
-# - Early (5-20%): -10 penalty continues to favor safe completion
-# - Mid (20-40%): -5 penalty reduces as agent shows mine avoidance competence
-# - Advanced (>40%): 0 penalty encourages risk-taking in advanced play
+# New curriculum-based penalties maintain strategic risk consideration throughout:
+# - Discovery (<5%): -30 penalty strongly deters "die quickly" strategy
+# - Early (5-20%): -10 penalty continues favoring safe completion during learning
+# - Mid (20-40%): -5 penalty reduces as agent demonstrates competence
+# - Advanced (40-60%): -4 penalty maintains meaningful risk (requires ~33% progress to justify)
+# - Mastery (60%+): -3 penalty preserves strategic consideration (requires ~25% progress)
 #
-# This preserves original intent (encourage bold play at high skill) while
-# preventing the "rush to death" local minimum that traps early learning.
+# This balances encouraging bold play with maintaining clear incentive structures.
+# With PBRS weights of 8-12 in advanced phase, agent must achieve substantial progress
+# to justify death risk, creating meaningful optimization pressure.
 #
 # NOTE: These are BASE values. Actual penalties calculated in RewardConfig
 # based on real-time success rate tracking.
 
 # Death penalties are now managed by RewardConfig.death_penalty property
 # These constants serve as reference values for the curriculum
-DEATH_PENALTY_DISCOVERY = (
-    -8.0
-)  # <5% success: balanced deterrent (10% extra progress needed)
-DEATH_PENALTY_EARLY = -6.0  # 5-20% success: lighter deterrent (7.5% extra progress)
-DEATH_PENALTY_MID = -3.0  # 20-40% success: mild deterrent (3.75% extra progress)
-DEATH_PENALTY_ADVANCED = 0.0  # >40% success: encourage risk-taking
+DEATH_PENALTY_DISCOVERY = -30.0  # <5% success: strong deterrent against quick death
+DEATH_PENALTY_EARLY = -10.0  # 5-20% success: lighter deterrent as skills improve
+DEATH_PENALTY_MID = -5.0  # 20-40% success: minimal deterrent, agent showing competence
+DEATH_PENALTY_ADVANCED = -4.0  # 40-60% success: still meaningful risk consideration
+DEATH_PENALTY_MASTERY = -3.0  # 60%+ success: maintains strategic risk-taking
 
 # Legacy constants for backward compatibility (use RewardConfig instead)
-DEATH_PENALTY = -8.0  # Default to discovery phase
-IMPACT_DEATH_PENALTY = -8.0
-HAZARD_DEATH_PENALTY = -8.0
+DEATH_PENALTY = -30.0  # Default to discovery phase
+IMPACT_DEATH_PENALTY = -30.0
+HAZARD_DEATH_PENALTY = -30.0
 
 # Timeout/truncation penalty (episode time limit exceeded)
 # UPDATED 2025-12-25: Stagnation penalty REMOVED - redundant and confusing
@@ -175,26 +179,54 @@ STAGNATION_PROGRESS_THRESHOLD = (
 MINE_DEATH_PENALTY = HAZARD_DEATH_PENALTY
 
 # Switch activation reward
-# Rationale: CRITICAL MILESTONE reward (80% of completion) - ensures routes that
+# Rationale: CRITICAL MILESTONE reward (50% of completion) - ensures routes that
 # reach the switch are significantly more valuable than routes that die halfway.
 # This is the key differentiator between "almost" and "success".
 #
-# UPDATED 2025-12-17: Increased from 30.0 to 40.0 to make switch a major milestone.
-# UPDATED 2025-12-18: Rebalanced for PBRS weight=40 (reduced from 80, increased from 20)
+# UPDATED 2025-12-29: Rebalanced examples for new PBRS weight curve (40→8 by phase)
 #
-# With discovery PBRS weight=40:
-# - 50% progress + death (no switch): +20 PBRS - 8 death = +12 (good risk)
-# - Reach switch + death: +30 PBRS + 40 switch - 8 death = +62 (5.2x better!)
+# With discovery phase (PBRS=40, death=-30, time=0):
+# - 50% progress + death (no switch): +20 PBRS - 30 death = -10 (bad - need 75%+ to justify)
+# - Reach switch + death: +30 PBRS + 100 switch - 30 death = +100 (5x better!)
+# - Complete: +40 PBRS + 100 switch + 200 completion = +340 (best)
 #
-# This creates clear milestone hierarchy:
-# - Complete (50 + 40 switch + 40 PBRS) = 130 (best)
-# - Switch + death (40 switch + 30 PBRS - 8 death) = 62 (excellent milestone)
-# - Half progress + death (20 PBRS - 8 death) = 12 (acceptable bold exploration)
-# - Camp 16% = 6.4 PBRS - 1.5 time = 4.9 (poor, low value)
-# - Stagnate <15% = PBRS - 20 penalty - 1.5 time ≈ -15 (worst)
+# With advanced phase (PBRS=12, death=-4, time=-0.002/step):
+# - 50% progress + death: +6 PBRS - 4 death - 0.5 time = +1.5 (risky but acceptable)
+# - Reach switch + death: +9 PBRS + 100 switch - 4 death - 0.75 time = +104.25 (excellent!)
+# - Complete: +12 PBRS + 100 switch + 200 completion - 1.0 time = +311 (best)
 #
-# Agent learns: "Reaching switch is a major achievement worth pursuing even with death risk"
+# This creates clear milestone hierarchy where reaching switch is always a major achievement
+# worth pursuing, while maintaining meaningful risk/reward tradeoffs throughout training.
+# Agent learns: "Reaching switch is valuable even with death risk, but completion is best"
 SWITCH_ACTIVATION_REWARD = 100.0
+
+# Sub-goal rewards for goal curriculum milestone progression
+# ADDED 2026-01-02: Sub-goals bridge the gap between switch and exit when curriculum
+# stages advance far apart. They provide discrete milestone rewards for path following.
+#
+# Design Philosophy:
+# - Phase-locked: Pre-switch sub-goals only active before switch, post-switch after
+# - One-time collection: Cannot be re-collected for exploitation
+# - Hybrid placement: Uniform spacing + extra rewards at critical turns
+# - Reward hierarchy: Sub-goals < Switch (100) < Completion (200)
+#
+# Reward Rationale:
+# - Progress sub-goals (uniform spacing): 10.0 reward each
+# - Turn sub-goals (45-90 degree turns): 15.0 reward each
+# - Critical turn sub-goals (>90 degree turns): 20.0 reward each
+# - Typical episode: 5-10 sub-goals between switch/exit = 50-200 total
+# - Comparable to switch reward, encouraging path following without dominating
+#
+# Example with 8 sub-goals (6 progress + 2 turns) between switch and exit:
+# - Sub-goal collection: 6×10 + 2×15 = 90 reward (meaningful milestone)
+# - Full path: 90 (sub-goals) + 100 (switch) + 200 (completion) = 390 (best)
+# - Skip sub-goals: 0 + 100 (switch) + 200 (completion) = 300 (still good)
+# - This creates gradient favoring path following without making it mandatory
+SUB_GOAL_REWARD_PROGRESS = 10.0  # Uniform spacing sub-goals
+SUB_GOAL_REWARD_TURN = 15.0  # Turn point sub-goals (45-90 deg)
+SUB_GOAL_REWARD_CRITICAL_TURN = 20.0  # Sharp turn sub-goals (>90 deg)
+SUB_GOAL_RADIUS = 6.0  # Sub-goal collision radius (pixels)
+SUB_GOAL_SPACING = 100.0  # Uniform spacing between progress sub-goals (pixels)
 
 
 # =============================================================================
@@ -229,11 +261,15 @@ SWITCH_ACTIVATION_REWARD = 100.0
 PBRS_GAMMA = 0.99
 
 # NOTE: PBRS objective weight is now managed by RewardConfig with curriculum scaling:
-# - Early training (0-1M steps): weight = 15.0 (strong guidance for small movements)
-# - Mid training (1M-3M steps): weight = 10.0 (moderate guidance)
-# - Late training (3M+ steps): weight = 5.0 (light shaping)
-# Weights SIGNIFICANTLY increased (5×) to provide stronger gradients for long-horizon tasks.
-# With frame skip (6-8px typical movement), this ensures meaningful PBRS signal.
+# UPDATED 2025-12-29: Flattened weight curve to maintain gradient signal in advanced phase
+# - Discovery (0-5%): weight = 40.0 (strong but stable guidance)
+# - Early (5-20%): weight = 25.0 (stronger learning signal)
+# - Mid (20-40%): weight = 18.0 (maintained gradient strength)
+# - Advanced (40-60%): weight = 12.0 (still meaningful for optimization)
+# - Mastery (60%+): weight = 8.0 (preserved gradient signal)
+# Flatter curve prevents dense shaping signal from being drowned out by terminal rewards,
+# accelerating convergence in advanced training phase. With frame skip (6-8px typical movement),
+# this ensures meaningful PBRS signal throughout training.
 # Kept here for backwards compatibility; RewardConfig overrides during training.
 PBRS_OBJECTIVE_WEIGHT = (
     2.5  # Static default (increased from 0.3, not used during curriculum training)
