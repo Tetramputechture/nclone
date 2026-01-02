@@ -481,7 +481,7 @@ class NPlayHeadless:
 
     def _sim_exit_switch(self):
         """Get exit switch entity (type 4, stored in entity_dic[3]).
-        
+
         Note: entity_dic[3] contains both EntityExit (exit doors) and EntityExitSwitch
         (exit switches). We must filter by type to ensure we get the switch, not the door.
         """
@@ -489,17 +489,22 @@ class NPlayHeadless:
         exit_entities = self.sim.entity_dic.get(3, [])
         if len(exit_entities) == 0:
             return None
-        
+
         # Find the actual EntityExitSwitch (not EntityExit) by checking type name
         # Iterate in reverse to prioritize more recently added entities
         for entity in reversed(exit_entities):
             if type(entity).__name__ == "EntityExitSwitch":
                 return entity
-        
+
         # No exit switch found in the list
         return None
 
     def exit_switch_activated(self):
+        """Check if exit switch has been activated (collected).
+
+        Returns:
+            True if switch is activated/collected (active=False), False if not collected (active=True)
+        """
         exit_switch = self._sim_exit_switch()
         if exit_switch is None:
             return True  # No exit switch means it's "activated" (for empty maps)

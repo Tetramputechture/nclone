@@ -169,6 +169,8 @@ class EnvironmentConfig:
 
     # Shared level cache (for zero-copy multi-worker training on same level)
     shared_level_cache: Optional[Any] = None
+    # Multi-stage shared caches (for goal curriculum with shared memory)
+    shared_level_caches_by_stage: Optional[Dict[int, Any]] = None
 
     # Frame skip
     frame_skip: int = 4

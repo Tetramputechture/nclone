@@ -42,6 +42,7 @@ class SharedLevelCache:
         node_positions: List[Tuple[int, int]],
         goal_ids: List[str],
         goal_pos_mapping: Optional[Dict[str, Tuple[int, int]]] = None,
+        curriculum_stage: Optional[int] = None,
     ):
         """Initialize shared memory arrays for level cache.
 
@@ -51,6 +52,7 @@ class SharedLevelCache:
             node_positions: List of node positions [(x, y), ...] for index mapping
             goal_ids: List of goal identifiers ["switch", "exit", "waypoint_0", ...]
             goal_pos_mapping: Optional dict mapping goal_id -> goal_pos for view compatibility
+            curriculum_stage: Optional curriculum stage index for cache identification
         """
         # STRICT VALIDATION: Ensure we have valid data
         if num_nodes == 0 or not node_positions:
@@ -69,6 +71,9 @@ class SharedLevelCache:
 
         self.num_nodes = num_nodes
         self.num_goals = num_goals
+        
+        # Store curriculum stage for cache identification and validation
+        self.curriculum_stage = curriculum_stage
 
         # Create index mappings (serialize to shared bytes for pickling)
         self.node_pos_to_idx: Dict[Tuple[int, int], int] = {

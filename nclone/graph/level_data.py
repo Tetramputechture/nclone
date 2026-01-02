@@ -121,6 +121,7 @@ class LevelData:
     metadata: Optional[Dict[str, Any]] = None
     switch_states: Dict[str, bool] = field(default_factory=dict)
     entity_start_positions: List[Tuple[float, float]] = field(default_factory=list)
+    curriculum_stage: Optional[int] = None  # Goal curriculum stage (if active)
 
     def __post_init__(self):
         """Validate the data structure after initialization."""
@@ -145,7 +146,24 @@ class LevelData:
         # different curriculum levels with similar characteristics
         if self.level_id is None:
             tiles_hash = hash(self.tiles.tobytes())
-            self.level_id = f"level_{tiles_hash}_{len(self.entities)}_{self.start_position[0]}_{self.start_position[1]}"
+            exit_switches = self.get_entities_by_type(EntityType.EXIT_SWITCH)
+            exit_doors = self.get_entities_by_type(EntityType.EXIT_DOOR)
+            exit_switch_positions = [
+                (entity.get("x", 0.0), entity.get("y", 0.0)) for entity in exit_switches
+            ]
+            exit_door_positions = [
+                (entity.get("x", 0.0), entity.get("y", 0.0)) for entity in exit_doors
+            ]
+            exit_switch_positions_hash = hash(tuple(exit_switch_positions))
+            exit_door_positions_hash = hash(tuple(exit_door_positions))
+            base_id = f"level_{tiles_hash}_{len(self.entities)}_{self.start_position[0]}_{self.start_position[1]}_{exit_switch_positions_hash}_{exit_door_positions_hash}"
+
+            # Include curriculum stage in level_id for cache differentiation
+            # Each stage is treated as a distinct "level" to force cache rebuilds
+            if self.curriculum_stage is not None:
+                self.level_id = f"{base_id}_stage{self.curriculum_stage}"
+            else:
+                self.level_id = base_id
 
     @property
     def height(self) -> int:

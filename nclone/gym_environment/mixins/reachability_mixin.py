@@ -43,11 +43,15 @@ class ReachabilityMixin:
 
         # Get shared_level_cache from parent environment if available
         shared_cache = getattr(self, "shared_level_cache", None)
+        shared_caches_by_stage = getattr(self, "shared_level_caches_by_stage", None)
+        curriculum_manager = getattr(self, "goal_curriculum_manager", None)
 
         self._path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200,
             use_astar=True,
             shared_level_cache=shared_cache,
+            shared_level_caches_by_stage=shared_caches_by_stage,
+            goal_curriculum_manager=curriculum_manager,
         )
 
         # Initialize logging if debug is enabled
@@ -61,7 +65,7 @@ class ReachabilityMixin:
             self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
-        """Get 25-dimensional reachability features (expanded in Phases 1-3).
+        """Get 38-dimensional reachability features (expanded in Phases 1-5).
 
         Features include:
         - Base (4): reachable_area_ratio, dist_to_switch_inv, dist_to_exit_inv, exit_reachable
@@ -72,6 +76,8 @@ class ReachabilityMixin:
         - Path direction (8): next_hop_dir_x/y, waypoint_dir_x/y, waypoint_dist, path_detour_flag, mine_clearance_dir_x/y
         - Path difficulty (1): path_difficulty_ratio (physics_cost/geometric_distance)
         - Path curvature (3): multi_hop_dir_x/y, path_curvature (8-hop lookahead and turn indicator)
+        - Exit lookahead (5): exit_next_hop_x/y, exit_multi_hop_x/y, near_switch_indicator
+        - Directional connectivity (8): platform_dist_E, NE, N, NW, W, SW, S, SE
         """
         reachability_features = self._compute_reachability(
             self.nplay_headless.ninja_position()
@@ -81,7 +87,7 @@ class ReachabilityMixin:
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
-        Compute 25-dimensional reachability features using adjacency graph (expanded in Phases 1-3).
+        Compute 38-dimensional reachability features using adjacency graph (expanded in Phases 1-5).
 
         Base features (4 dims):
         0. Reachable area ratio (0-1)
@@ -106,7 +112,7 @@ class ReachabilityMixin:
         Phase indicator (1 dim):
         12. Switch activated flag (0-1) - CRITICAL for Markov property
 
-        Path direction features (8 dims) - NEW Phase 1.1:
+        Path direction features (8 dims) - Phase 1.1:
         13. Next hop direction X (-1 to 1) - optimal path direction
         14. Next hop direction Y (-1 to 1)
         15. Waypoint direction X (-1 to 1) - toward discovered waypoint
@@ -116,13 +122,23 @@ class ReachabilityMixin:
         19. Mine clearance direction X (-1 to 1) - safe direction
         20. Mine clearance direction Y (-1 to 1)
 
-        Path difficulty (1 dim) - NEW Phase 3.3:
+        Path difficulty (1 dim) - Phase 3.3:
         21. Path difficulty ratio (0-1) - physics_cost/geometric_distance
 
-        Path curvature features (3 dims) - NEW for anticipatory turning:
+        Path curvature features (3 dims) - Phase 3.4:
         22. Multi-hop direction X (-1 to 1) - 8-hop weighted lookahead
         23. Multi-hop direction Y (-1 to 1) - anticipates upcoming path curvature
         24. Path curvature (0-1) - dot product alignment (1=straight, 0=90° turn, -1=180° turn)
+
+        Exit lookahead (5 dims) - Phase 4:
+        25. Exit next hop direction X (-1 to 1)
+        26. Exit next hop direction Y (-1 to 1)
+        27. Exit multi-hop direction X (-1 to 1)
+        28. Exit multi-hop direction Y (-1 to 1)
+        29. Near-switch transition indicator (0-1)
+
+        Directional connectivity (8 dims) - Phase 5:
+        30-37. Platform distance in 8 directions [E, NE, N, NW, W, SW, S, SE] (0-1)
 
         """
         # Get graph data from GraphMixin (required)

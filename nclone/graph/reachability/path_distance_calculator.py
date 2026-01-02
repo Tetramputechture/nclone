@@ -60,6 +60,8 @@ class CachedPathDistanceCalculator:
         use_astar: bool = True,
         enable_timing: bool = False,
         shared_level_cache: Optional[Any] = None,
+        shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
+        goal_curriculum_manager: Optional[Any] = None,
     ):
         """
         Initialize cached path distance calculator.
@@ -71,6 +73,8 @@ class CachedPathDistanceCalculator:
             use_astar: Use A* (True) or BFS (False) for pathfinding
             enable_timing: Enable performance timing instrumentation
             shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
+            shared_level_caches_by_stage: Optional dict of stage -> SharedLevelCache for curriculum
+            goal_curriculum_manager: Optional IntermediateGoalManager for stage selection
         """
         self.use_astar = use_astar
         # Per-query cache for physics-optimal paths (start_node, goal_node) → distance
@@ -82,13 +86,20 @@ class CachedPathDistanceCalculator:
         self.hits = 0
         self.misses = 0
 
-        # Store shared cache reference (used instead of local caches if provided)
+        # Store shared cache references (used instead of local caches if provided)
         self._shared_level_cache = shared_level_cache
+        self._shared_level_caches_by_stage = shared_level_caches_by_stage
+        self.goal_curriculum_manager = goal_curriculum_manager
+
+        # Determine which shared cache to use
+        has_shared_cache = (
+            shared_level_cache is not None or shared_level_caches_by_stage is not None
+        )
 
         # Level-based cache for precomputed distances
         # If shared cache provided, this will be set to a view wrapper
         self.level_cache: Optional[LevelBasedPathDistanceCache] = (
-            None if shared_level_cache is not None else LevelBasedPathDistanceCache()
+            None if has_shared_cache else LevelBasedPathDistanceCache()
         )
         self.level_data: Optional[LevelData] = None
 
@@ -164,6 +175,40 @@ class CachedPathDistanceCalculator:
         # With generous memory budget, we can cache extensively
         self._geometric_cache_max_size = 5000
 
+    def _select_curriculum_cache(self) -> Optional[Any]:
+        """Select appropriate SharedLevelCache based on current curriculum stage.
+
+        When goal curriculum is active, shared caches are DISABLED entirely to avoid
+        position/distance mismatches. Local caches (LevelBasedPathDistanceCache) are
+        built fresh with correct curriculum entity positions.
+
+        Returns:
+            SharedLevelCache for current stage, or None if curriculum is active or no caches
+        """
+        # SIMPLIFIED: When goal curriculum is active, disable ALL shared caches
+        # Local caches will be built with correct curriculum entity positions
+        if self.goal_curriculum_manager is not None:
+            stage = self.goal_curriculum_manager.state.unified_stage
+            logger.debug(
+                f"[CURRICULUM_CACHE] Goal curriculum active (stage {stage}). "
+                f"Shared caches disabled - using local cache with curriculum positions."
+            )
+            return None
+
+        # No curriculum active - use shared caches if available
+        if self._shared_level_caches_by_stage is not None:
+            # Multi-stage mode (shouldn't happen without curriculum, but handle it)
+            selected_cache = self._shared_level_caches_by_stage.get(0)
+            if selected_cache is not None:
+                logger.debug(
+                    f"[SHARED_CACHE] Using multi-stage cache stage 0 "
+                    f"({selected_cache.num_nodes} nodes, {selected_cache.num_goals} goals)"
+                )
+            return selected_cache
+
+        # Standard mode: return single shared cache
+        return self._shared_level_cache
+
     def build_level_cache(
         self,
         level_data: LevelData,
@@ -190,6 +235,24 @@ class CachedPathDistanceCalculator:
         """
         # Fast rejection: skip if same level (avoid expensive LevelData comparison)
         # This makes redundant calls essentially free (single string comparison)
+
+        # Log cache rebuild decisions for curriculum debugging
+        current_stage = (
+            self.goal_curriculum_manager.state.unified_stage
+            if self.goal_curriculum_manager
+            else "N/A"
+        )
+        will_rebuild = (
+            self._current_level_id is None
+            or level_data.level_id != self._current_level_id
+        )
+        logger.info(
+            f"[CACHE_BUILD] level_id={level_data.level_id}, "
+            f"curriculum_stage={current_stage}, "
+            f"current_level_id={self._current_level_id}, "
+            f"will_rebuild={will_rebuild}"
+        )
+
         if (
             self._current_level_id is not None
             and level_data.level_id == self._current_level_id
@@ -197,27 +260,52 @@ class CachedPathDistanceCalculator:
             return False  # Cache already valid for this level
 
         # OPTIMIZATION: If shared cache is provided, use view wrappers instead of building locally
-        if self._shared_level_cache is not None:
-            if self.level_cache is None:
-                # Initialize view wrappers on first call
-                self.level_cache = self._shared_level_cache.get_path_cache_view()
+        # Select appropriate cache based on curriculum stage
+        active_shared_cache = self._select_curriculum_cache()
+
+        if active_shared_cache is not None:
+            # Check if we need to switch to a different stage's cache
+            needs_cache_switch = self.level_cache is None or (
+                hasattr(self.level_cache, "shared_cache")
+                and self.level_cache.shared_cache != active_shared_cache
+            )
+
+            if needs_cache_switch:
+                # Initialize or switch to view wrappers for shared cache
+                # NOTE: This path only executes when curriculum is NOT active
+                # (curriculum active returns None from _select_curriculum_cache)
+                self.level_cache = active_shared_cache.get_path_cache_view()
                 self.mine_proximity_cache = (
-                    self._shared_level_cache.get_mine_proximity_view()
+                    active_shared_cache.get_mine_proximity_view()
                 )
-                self.mine_sdf = self._shared_level_cache.get_sdf_view()
+                self.mine_sdf = active_shared_cache.get_sdf_view()
 
                 # Store level data for consistency checks
                 self.level_data = level_data
                 self._current_level_id = level_data.level_id
 
+                # Update cached entity positions from level_data for goal_id inference
+                from ...constants.entity_types import EntityType
+
+                self._cached_switch_positions = [
+                    (entity.get("x", 0), entity.get("y", 0))
+                    for entity in level_data.get_entities_by_type(
+                        EntityType.EXIT_SWITCH
+                    )
+                ]
+                self._cached_exit_positions = [
+                    (entity.get("x", 0), entity.get("y", 0))
+                    for entity in level_data.get_entities_by_type(EntityType.EXIT_DOOR)
+                ]
+
                 logger.debug(
-                    f"Using shared level cache: {self._shared_level_cache.memory_usage_kb:.1f}KB, "
-                    f"{self._shared_level_cache.num_nodes} nodes, {self._shared_level_cache.num_goals} goals"
+                    f"[SHARED_CACHE] Switched to shared cache: "
+                    f"{active_shared_cache.num_nodes} nodes, {active_shared_cache.num_goals} goals"
                 )
 
-                return True  # "Rebuilt" by using shared cache
+                return True  # "Rebuilt" by using/switching shared cache
 
-            return False  # Already using shared cache, no rebuild needed
+            return False  # Already using correct shared cache, no rebuild needed
 
         # Standard path: build caches locally
         if self.level_cache is None:
@@ -877,6 +965,20 @@ class CachedPathDistanceCalculator:
                                 goal_id = "exit"  # Use generic alias
                                 break
 
+                    # Log goal_id inference for curriculum debugging
+                    if goal_id is not None:
+                        current_stage = (
+                            self.goal_curriculum_manager.state.unified_stage
+                            if self.goal_curriculum_manager
+                            else "N/A"
+                        )
+                        logger.debug(
+                            f"[GOAL_ID_INFER] goal={goal}, inferred goal_id={goal_id}, "
+                            f"cached_switch_positions={self._cached_switch_positions[:2] if len(self._cached_switch_positions) > 0 else []}, "
+                            f"cached_exit_positions={self._cached_exit_positions[:2] if len(self._cached_exit_positions) > 0 else []}, "
+                            f"stage={current_stage}"
+                        )
+
                 if goal_id is not None:
                     # Get goal_pos for validation
                     goal_pos = self.level_cache.get_goal_pos_from_id(goal_id)
@@ -886,6 +988,21 @@ class CachedPathDistanceCalculator:
                         # This prevents returning wrong cached distance if multiple goals map to same node
                         dx = abs(goal_pos[0] - goal[0])
                         dy = abs(goal_pos[1] - goal[1])
+
+                        # Log validation failures with curriculum context
+                        if dx > 12 or dy > 12:
+                            current_stage = (
+                                self.goal_curriculum_manager.state.unified_stage
+                                if self.goal_curriculum_manager
+                                else "N/A"
+                            )
+                            logger.warning(
+                                f"[VALIDATION_FAIL] get_distance: goal_id={goal_id}, "
+                                f"goal={goal} (from caller), goal_pos={goal_pos} (from cache), "
+                                f"dx={dx:.1f}, dy={dy:.1f}, threshold=12, stage={current_stage}. "
+                                f"Cache/entity position mismatch. Skipping level cache."
+                            )
+
                         if (
                             dx <= 12 and dy <= 12
                         ):  # Within half tile (matching old validation logic)
@@ -1483,18 +1600,31 @@ class CachedPathDistanceCalculator:
                         dx_check = abs(goal_pos[0] - goal[0])
                         dy_check = abs(goal_pos[1] - goal[1])
 
-                        # DIAGNOSTIC: Log validation failures
+                        # DIAGNOSTIC: Log validation failures with curriculum context
                         if dx_check > 12 or dy_check > 12:
                             if not hasattr(self, "_validation_fail_count"):
                                 self._validation_fail_count = 0
                             self._validation_fail_count += 1
+
+                            # Get curriculum stage for diagnostics
+                            current_stage = (
+                                self.goal_curriculum_manager.state.unified_stage
+                                if self.goal_curriculum_manager
+                                else "N/A"
+                            )
+
                             if self._validation_fail_count <= 5:
                                 logger.warning(
                                     f"[VALIDATION_FAIL #{self._validation_fail_count}] goal_id={goal_id}, "
-                                    f"goal={goal}, goal_pos={goal_pos}, "
-                                    f"dx={dx_check:.1f}, dy={dy_check:.1f}, "
-                                    f"threshold=12"
+                                    f"goal={goal} (from observation), goal_pos={goal_pos} (from cache), "
+                                    f"dx={dx_check:.1f}, dy={dy_check:.1f}, threshold=12, "
+                                    f"stage={current_stage}. "
+                                    f"Cache has wrong stage's positions! Forcing BFS fallback."
                                 )
+
+                            # Skip using this mismatched cache entry - force BFS fallback
+                            # This prevents using stage 1 cache when entities are at stage 0
+                            goal_id = None
 
                         if dx_check <= 12 and dy_check <= 12:
                             # Find ninja node using canonical selection

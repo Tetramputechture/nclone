@@ -24,7 +24,7 @@ observation_space = SpacesDict({
     
     # Game state (OPTIMIZED)
     'game_state': Box(-1, 1, (41,), np.float32),  # 40 ninja physics + 1 time_remaining
-    'reachability_features': Box(-1, 1, (22,), np.float32),  # 13 base + 8 path_direction + 1 difficulty (Phase 1-3)
+    'reachability_features': Box(-1, 1, (38,), np.float32),  # 13 base + 8 path + 1 difficulty + 3 curvature + 5 exit + 8 directional (Phases 1-5)
     'spatial_context': Box(-1, 1, (96,), np.float32),  # 64 local_tile_grid + 32 mine_overlay
     
     # Graph (GCN-optimized: spatial + entity features) - OPTIONAL with spatial_context
@@ -119,7 +119,7 @@ Visual modalities are available but not used for training. The agent learns pure
 - `[40]` Time remaining [0, 1] (curriculum-aware dynamic truncation)
 
 ### `reachability_features`
-`(13,)` float32, range [-1, 1]
+`(30,)` float32, range [-1, 1]
 
 Graph-based reachability features with path distances, direction vectors, and phase indicator.
 
@@ -133,7 +133,7 @@ Graph-based reachability features with path distances, direction vectors, and ph
 - `[4]` Path distance to switch [0, 1] (normalized)
 - `[5]` Path distance to exit [0, 1] (normalized)
 
-**Direction Vectors (4)** - unit vectors toward goals
+**Direction Vectors (4)** - unit vectors toward goals (Euclidean)
 - `[6]` Direction to switch X [-1, 1]
 - `[7]` Direction to switch Y [-1, 1]
 - `[8]` Direction to exit X [-1, 1]
@@ -146,8 +146,41 @@ Graph-based reachability features with path distances, direction vectors, and ph
 **Phase Indicator (1)**
 - `[12]` Switch activated flag {0, 1} - **CRITICAL for Markov property**
   - Explicit indicator of which objective to pursue (switch vs exit)
-  - Enables proper credit assignment for +2.0 milestone reward
+  - Enables proper credit assignment for milestone reward
   - Ensures agent observes two-phase task structure clearly
+
+**Path Direction to Current Goal (8)** - Phase 1.1
+- `[13]` Next hop direction X [-1, 1] (optimal path to current goal)
+- `[14]` Next hop direction Y [-1, 1]
+- `[15]` Waypoint direction X [-1, 1] (toward active waypoint)
+- `[16]` Waypoint direction Y [-1, 1]
+- `[17]` Waypoint distance [0, 1] (normalized)
+- `[18]` Path requires detour {0, 1} (binary flag if next_hop points away from goal)
+- `[19]` Mine clearance direction X [-1, 1] (safe direction from SDF)
+- `[20]` Mine clearance direction Y [-1, 1]
+
+**Path Difficulty (1)** - Phase 3.3
+- `[21]` Path difficulty ratio [0, 1] (physics_cost / geometric_distance, log-normalized)
+
+**Path Curvature to Current Goal (3)** - Phase 3.4
+- `[22]` Multi-hop direction X [-1, 1] (8-hop lookahead to current goal)
+- `[23]` Multi-hop direction Y [-1, 1]
+- `[24]` Path curvature [0, 1] (dot product of next_hop and multi_hop, 1.0=straight, 0.0=90° turn)
+
+**Exit Lookahead (5)** - Phase 4 (Switch Transition Continuity)
+- `[25]` Exit next hop direction X [-1, 1] (always computed, even pre-switch)
+- `[26]` Exit next hop direction Y [-1, 1]
+- `[27]` Exit multi-hop direction X [-1, 1] (8-hop lookahead to exit, always computed)
+- `[28]` Exit multi-hop direction Y [-1, 1]
+- `[29]` Near-switch transition indicator [0, 1] (1.0 at switch, 0.0 at 50px+ away)
+
+**Directional Connectivity (8)** - Phase 5 (Blind Jump Verification)
+- `[30-37]` Platform distance in 8 directions [0, 1] (E, NE, N, NW, W, SW, S, SE)
+  - Distance to nearest grounded platform in each compass direction
+  - Normalized: 0.0 = adjacent, 1.0 = >500px or unreachable
+  - Solves blind jump problem: verifies landing platforms beyond spatial context visibility (192px)
+  - Computed from graph using physics cache to identify grounded nodes only
+  - Example: 15-tile gap (360px) → F30=0.72 confirms platform exists before blind jump
 
 ### `spatial_context`
 `(96,)` float32, range [-1, 1]
@@ -226,7 +259,7 @@ Binary masks {0, 1} indicating valid nodes/edges (vs padding).
 - **Node features**: 6 dims (spatial + mine + entity) - optimized for navigation
 - **Edge features**: None (GCN uses graph structure only)
 - **Game state**: 41 dims (40 ninja physics + 1 time_remaining)
-- **Reachability features**: 13 dims (extended with path distances and direction vectors)
+- **Reachability features**: 38 dims (extended with path directions, curvature, exit lookahead, and directional connectivity)
 - **Spatial context**: 96 dims (graph-free alternative - 64 tile grid + 32 mine overlay)
 
 ### Memory Comparison
