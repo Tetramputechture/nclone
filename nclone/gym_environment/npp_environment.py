@@ -351,6 +351,46 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         else:
             info["graph_num_nodes"] = 0
 
+        # Add waypoints for visualization (every step)
+        waypoints_active = []
+        waypoints_reached = []
+
+        if hasattr(self.reward_calculator, "current_path_waypoints_by_phase"):
+            # Get all waypoints from all phases for visualization
+            # Visualization should show complete path, not just current phase
+            waypoints_dict = getattr(
+                self.reward_calculator, "current_path_waypoints_by_phase", {}
+            )
+            if waypoints_dict is None:
+                waypoints_dict = {}
+
+            # Combine ALL waypoints from all phases for visualization
+            # Keep phase information for phase-aware coloring
+            for phase_name, phase_list in waypoints_dict.items():
+                # Convert PathWaypoint objects to dict format for visualization
+                for wp in phase_list:
+                    # DIAGNOSTIC: Verify phase is being set correctly
+                    # Use wp.phase (from PathWaypoint) not phase_name (from dict key)
+                    # to ensure we're reading the actual waypoint's phase attribute
+                    waypoint_dict = {
+                        "position": wp.position,
+                        "value": wp.value,
+                        "type": wp.waypoint_type,
+                        "source": "path",  # These are path waypoints
+                        "phase": wp.phase,  # Use waypoint's phase attribute, not dict key
+                        "discovery_count": 1,  # Not tracked for path waypoints
+                    }
+                    waypoints_active.append(waypoint_dict)
+
+            # Get collected waypoints for this episode
+            collected = getattr(
+                self.reward_calculator, "_collected_path_waypoints", set()
+            )
+            waypoints_reached = list(collected)
+
+        info["_waypoints_active"] = waypoints_active
+        info["_waypoints_reached"] = waypoints_reached
+
     def _build_door_feature_cache(self):
         """
         Build precomputed door feature cache.
@@ -630,6 +670,52 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 orig_switch_pos, orig_exit_pos
             )
 
+            # CRITICAL: Check if we have multi-stage SharedLevelCaches
+            # If so, use pre-computed curriculum positions instead of recalculating
+            if (
+                hasattr(self, "shared_level_caches_by_stage")
+                and self.shared_level_caches_by_stage is not None
+            ):
+                current_stage = self.goal_curriculum_manager.state.unified_stage
+                stage_cache = self.shared_level_caches_by_stage.get(current_stage)
+
+                if stage_cache is not None:
+                    # Get pre-computed curriculum positions from cache
+                    curriculum_positions = stage_cache.get_curriculum_entity_positions()
+
+                    if curriculum_positions:
+                        # Use cached positions to ensure exact match with cache
+                        self.goal_curriculum_manager.set_curriculum_position_overrides(
+                            curriculum_positions
+                        )
+                        if self.enable_logging:
+                            logger.info(
+                                f"[CURRICULUM] Using pre-computed positions from SharedLevelCache stage {current_stage}: "
+                                f"switch={curriculum_positions.get('switch')}, "
+                                f"exit={curriculum_positions.get('exit')}"
+                            )
+                    else:
+                        # Clear overrides if cache doesn't have positions
+                        self.goal_curriculum_manager.set_curriculum_position_overrides(
+                            None
+                        )
+                        if self.enable_logging:
+                            logger.warning(
+                                f"[CURRICULUM] SharedLevelCache stage {current_stage} has no curriculum positions, "
+                                f"will calculate from paths"
+                            )
+                else:
+                    # Clear overrides if no cache for this stage
+                    self.goal_curriculum_manager.set_curriculum_position_overrides(None)
+                    if self.enable_logging:
+                        logger.warning(
+                            f"[CURRICULUM] No SharedLevelCache for stage {current_stage}, "
+                            f"will calculate positions from paths"
+                        )
+            else:
+                # No multi-stage caches, clear any overrides
+                self.goal_curriculum_manager.set_curriculum_position_overrides(None)
+
             # 2. Build optimal paths using ORIGINAL positions
             # Extract minimal level_data WITHOUT caching (_extract_level_data caches!)
             tile_dic = self.nplay_headless.get_tile_data()
@@ -668,19 +754,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.goal_curriculum_manager.build_paths_for_level(
                 temp_graph_data, level_data_for_paths, spawn_pos
             )
-
-            # Wire sub-goals from goal curriculum to reward calculator for milestone rewards
-            if (
-                hasattr(self, "reward_calculator")
-                and self.reward_calculator is not None
-            ):
-                sub_goals_pre = self.goal_curriculum_manager.get_active_sub_goals(
-                    switch_activated=False
-                )
-                sub_goals_post = self.goal_curriculum_manager.get_active_sub_goals(
-                    switch_activated=True
-                )
-                self.reward_calculator.set_sub_goals(sub_goals_pre, sub_goals_post)
 
             # 3. NOW move entities to curriculum positions
             self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)

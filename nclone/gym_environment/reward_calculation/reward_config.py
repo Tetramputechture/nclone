@@ -30,14 +30,14 @@ class RewardConfig:
         0.0  # Curriculum stage success rate (when curriculum active)
     )
 
-    # Waypoint system configuration (DISABLED 2025-12-25)
-    # Waypoints no longer provide reward bonuses - PBRS handles path following
-    enable_path_waypoints: bool = (
-        False  # Disabled - PBRS provides distance reduction signal
+    # Waypoint system configuration (SIMPLIFIED 2026-01-03)
+    # Provides guidance through non-linear paths where PBRS alone fails
+    # Simplified to uniform 12px spacing along optimal path (matches sub-node spacing)
+    enable_path_waypoints: bool = True  # Re-enabled for non-linear path guidance
+    path_waypoint_progress_spacing: float = (
+        12.0  # Sub-node spacing for uniform coarse rewards
     )
-    path_waypoint_progress_spacing: float = 35.0  # Kept for visualization only
-    path_waypoint_min_angle: float = 35.0  # Kept for visualization only
-    path_waypoint_cluster_radius: float = 20.0  # Kept for visualization only
+    path_waypoint_cluster_radius: float = 10.0  # Matches collection radius
 
     # Curriculum phase thresholds
     # UPDATED 2025-12-07: Success-rate based progression with minimum timestep gates
@@ -222,16 +222,42 @@ class RewardConfig:
 
     @property
     def pbrs_normalization_scale(self) -> float:
-        """DEPRECATED: Scale factor no longer used with direct path normalization.
+        """Base PBRS normalization scale (curriculum-adjusted in reward calculator).
 
-        Kept for backward compatibility with code that passes this parameter,
-        but it's ignored in the new direct normalization approach.
-        Gradient strength is now controlled entirely by pbrs_objective_weight.
+        Base scale factor for PBRS potential normalization. The actual scale is
+        curriculum-aware and computed in the reward calculator based on curriculum
+        stage to maintain gradient strength over longer paths at later stages.
 
         Returns:
-            1.0: Always 1.0 (no scaling effect)
+            1.0: Base scale (adjusted by curriculum stage at runtime)
         """
-        return 1.0  # No longer used - gradient control via weights only
+        return 1.0  # Base scale - curriculum adjustment applied in reward calculator
+
+    def get_curriculum_pbrs_scale(
+        self, curriculum_stage: int, num_stages: int
+    ) -> float:
+        """DEPRECATED (2026-01-04): Gradient scaling now handled automatically in PBRS calculator.
+
+        This method is no longer used. Gradient scaling is now computed automatically
+        in PBRSCalculator.calculate_combined_potential() based on the actual path length,
+        using sqrt scaling: gradient_scale = sqrt(path_length / 200px).
+
+        This provides more accurate and consistent per-step gradients across all path
+        lengths (50px to 2000px) without requiring curriculum stage information.
+
+        See: pbrs_potentials.py - PBRSCalculator.calculate_combined_potential()
+             reward_constants.py - PBRS_GRADIENT_REFERENCE_DISTANCE, PBRS_GRADIENT_SCALE_CAP
+
+        Args:
+            curriculum_stage: Current curriculum stage (0 to num_stages-1) [UNUSED]
+            num_stages: Total number of curriculum stages [UNUSED]
+
+        Returns:
+            1.0: Always returns base scale (deprecated, no longer applied)
+        """
+        # DEPRECATED: Return 1.0 to avoid breaking existing code that calls this method
+        # The actual gradient scaling is now computed in the PBRS calculator
+        return 1.0
 
     @property
     def waypoint_action_diversity_bonus(self) -> float:
@@ -314,51 +340,51 @@ class RewardConfig:
     def death_penalty(self) -> float:
         """Curriculum-adaptive death penalty scaled with agent competence.
 
+        CRITICAL UPDATE 2026-01-03: With increased waypoint rewards (+8 × ~15 = +120 max) and
+        PBRS distance reduction, discovery/early phases must heavily penalize death to prevent
+        learning "doomed trajectory" patterns where agent gets close to goal but dies.
+
+        Problem scenario at 0% success rate: "Fast fail" strategy (jump directly, reduce
+        distance quickly, die) vs "Waypoint collection" (follow non-linear path, collect waypoints):
+            Fast fail: +15 PBRS (quick distance) - 80 death = -65 (CLEARLY BAD)
+            Waypoint strategy: +30 PBRS + 96 waypoints (80%) - 80 death = +46 (GOOD!)
+            This creates strong preference for following waypoint guidance.
+
+        Discovery phase analysis with -80 penalty and +8 waypoint rewards:
+        - Complete: +40 PBRS + 120 waypoints + 100 switch + 200 completion = +460 (BEST)
+        - 80% waypoints + death: +32 PBRS + 96 waypoints - 80 death = +48 (decent progress)
+        - 50% waypoints + death: +20 PBRS + 60 waypoints - 80 death = +0 (neutral)
+        - Fast fail (quick death): +15 PBRS - 80 death = -65 (strongly discouraged)
+
         Implements graduated penalty system that:
-        1. Breaks "progress+death" local minima in discovery phase (-8)
-        2. Encourages forward progress over safe camping (10% extra progress justifies risk)
-        3. Reduces penalty as agent demonstrates mine avoidance (->0)
-        4. Enables bold risk-taking once competent (0 at >40% success)
-
-        UPDATED 2025-12-29: Maintained meaningful penalty in advanced phase to preserve
-        risk/reward tradeoffs. Previous -2.0 at 40%+ success was too lenient (only 1% of
-        completion reward), making death effectively costless and slowing convergence.
-
-        New schedule maintains strategic risk consideration throughout training:
-        - Discovery: -30.0 (strong deterrent against "die quickly" strategy)
-        - Early: -10.0 (lighter as agent learns basics)
-        - Mid: -5.0 (minimal as agent shows competence)
-        - Advanced: -4.0 (still meaningful - requires ~33% progress to justify risk)
-        - Mastery: -3.0 (maintains consideration - requires ~25% progress to justify risk)
-
-        Combined with new PBRS weights (40→8), this creates balanced hierarchy:
-        - Complete level (12 PBRS + 200 completion + 100 switch) = +312 (BEST)
-        - Switch + death (9 PBRS + 100 switch - 4 penalty) = +105 (good milestone)
-        - 50% progress + death (6 PBRS - 4 penalty) = +2 (risky but acceptable)
-        - Quick death (<10% progress - 4 penalty) = -3 (clearly bad)
+        1. Breaks "doomed trajectory" local minima in discovery (-80)
+        2. Maintains completion preference in early learning (-50)
+        3. Allows tactical risk-taking in mid-level (-20)
+        4. Prevents waypoint farming in advanced (-8)
+        5. Maintains strategic awareness in mastery (-6)
 
         Returns:
-            -30.0 (<5% success): Strong deterrent for discovery
-            -10.0 (5-20% success): Lighter deterrent for early learning
-            -5.0 (20-40% success): Minimal deterrent for mid learning
-            -4.0 (40-60% success): Meaningful penalty for advanced optimization
-            -3.0 (60%+ success): Strategic risk consideration for mastery
+            -80.0 (<5% success): Prevents "doomed trajectory" exploitation
+            -50.0 (5-20% success): Strong completion preference
+            -20.0 (20-40% success): Balanced risk-taking
+            -8.0 (40-60% success): Prevents waypoint farming
+            -6.0 (60%+ success): Strategic risk consideration
         """
         # Check for Optuna override first
         if self._death_penalty_override is not None:
             return self._death_penalty_override
 
         if self.recent_success_rate < 0.05:  # Discovery phase
-            return -30.0  # Strong penalty to discourage "die quickly" strategy
+            return -80.0  # Prevents "doomed trajectory" patterns (get close + die)
         elif self.recent_success_rate < 0.20:  # Early learning
-            return -10.0  # Lighter deterrent
-        elif self.recent_success_rate < 0.40:  # Mid learning
-            return -5.0  # Minimal deterrent, agent showing competence
+            return -50.0  # Strong completion preference while learning
+        elif self.recent_success_rate < 0.40:  # Mid-level learning
+            return -20.0  # Balancing speed vs safety
         elif self.recent_success_rate < 0.60:  # Advanced learning
-            return -4.0  # Still meaningful risk consideration
+            return -8.0  # Prevents "collect waypoints + die" exploitation
         return (
-            -3.0
-        )  # Mastery: maintains strategic risk-taking while penalizing recklessness
+            -6.0
+        )  # Mastery: maintains strategic risk-taking, prevents waypoint farming
 
     @property
     def level_completion_reward(self) -> float:
@@ -380,7 +406,7 @@ class RewardConfig:
 
         The combination of:
         - Higher death penalty (-15)
-        - Zero time penalty in discovery
+        - Zero time penalty in discoveryR
         - RND exploration bonuses
 
         Already provides sufficient incentive to survive without explicit survival rewards.
@@ -394,31 +420,35 @@ class RewardConfig:
     def entropy_coefficient(self) -> float:
         """Adaptive entropy coefficient based on learning progress.
 
-        UPDATED 2025-12-27: Reduced values to prevent entropy saturation.
-        Previous training run showed ent_coef=0.1 caused 99.65% of maximum entropy
-        (essentially uniform random policy). Adaptive system now stays in safe 0.01-0.02 range.
+        UPDATED 2026-01-03: Increased for multi-sequence momentum learning with GRU.
+        Previous 0.01-0.02 range was too conservative for exploring action sequence
+        variations (e.g., RIGHT×3→JUMP vs RIGHT×4→JUMP timing differences).
 
-        Strategy:
-        - Start low (0.01) for focused learning from BC pretraining
-        - MODEST boost to 0.02 when stuck (<5% success after 1M steps)
-        - Drop back to 0.01 as success improves
+        Strategy for multi-sequence levels:
+        - Discovery phase: Higher entropy (0.03) to explore action sequences
+        - Early learning: Moderate entropy (0.025) for sequence refinement
+        - Advanced: Reduced entropy (0.02) for convergence on optimal sequences
 
-        Benefits of conservative entropy:
-        - Allows PBRS gradient signal to guide policy (not drowned by exploration noise)
-        - Maintains task-relevant action distribution (not uniform random)
-        - Still permits exploration through RND intrinsic motivation
-        - Compatible with unified γ=0.99 PBRS design
+        GRU benefits from action diversity:
+        - Needs to observe multiple jump timing variations to learn momentum dependencies
+        - 0.025-0.03 allows structured exploration without becoming random
+        - Still much lower than problematic 0.1 (which caused 99.65% max entropy)
+
+        Compatible with:
+        - RND intrinsic motivation (state exploration)
+        - PBRS gradient signals (path following)
+        - GRU temporal learning (sequence memory)
 
         Returns:
-            0.01 (< 1M steps): Initial learning with BC pretraining guidance
-            0.02 (<5% success, >1M steps): Modest boost when stuck
-            0.01 (>5% success): Standard exploitation throughout
+            0.03 (<5% success): Discovery - explore action sequence variations
+            0.025 (5-20% success): Early learning - refine momentum sequences
+            0.02 (>20% success): Advanced - converge on optimal sequences
         """
-        if self.current_timesteps < 1_000_000:
-            return 0.01  # Low initial - trust BC pretraining
-        elif self.recent_success_rate < 0.05:
-            return 0.02  # Modest boost when stuck (not too high!)
-        return 0.01  # Standard exploitation
+        if self.recent_success_rate < 0.05:
+            return 0.03  # Discovery: explore action sequences for multi-jump chains
+        elif self.recent_success_rate < 0.20:
+            return 0.025  # Early learning: refine sequences with GRU memory
+        return 0.02  # Advanced: converge on optimal momentum patterns
 
     def update(self, timesteps: int, success_rate: float) -> None:
         """Update configuration with current training metrics.

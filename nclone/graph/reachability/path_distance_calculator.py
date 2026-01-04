@@ -118,6 +118,9 @@ class CachedPathDistanceCalculator:
         # Track current level to avoid redundant cache rebuilds
         self._current_level_id: Optional[str] = None
 
+        # Track current curriculum stage to detect stage changes (for multi-stage caches)
+        self._current_curriculum_stage: Optional[int] = None
+
         # Spatial hash for fast node lookup (updated per level)
         self._spatial_hash: Optional[any] = None
 
@@ -178,20 +181,37 @@ class CachedPathDistanceCalculator:
     def _select_curriculum_cache(self) -> Optional[Any]:
         """Select appropriate SharedLevelCache based on current curriculum stage.
 
-        When goal curriculum is active, shared caches are DISABLED entirely to avoid
-        position/distance mismatches. Local caches (LevelBasedPathDistanceCache) are
-        built fresh with correct curriculum entity positions.
+        When goal curriculum is active, selects the precomputed cache for the current
+        stage from multi-stage caches. This enables SharedLevelCache to work with
+        curriculum without rebuilding caches locally.
 
         Returns:
-            SharedLevelCache for current stage, or None if curriculum is active or no caches
+            SharedLevelCache for current stage, or None if no caches available
         """
-        # SIMPLIFIED: When goal curriculum is active, disable ALL shared caches
-        # Local caches will be built with correct curriculum entity positions
+        # Goal curriculum active - select stage-specific cache
         if self.goal_curriculum_manager is not None:
             stage = self.goal_curriculum_manager.state.unified_stage
+
+            # Use multi-stage caches if available (precomputed for each stage)
+            if self._shared_level_caches_by_stage is not None:
+                selected_cache = self._shared_level_caches_by_stage.get(stage)
+                if selected_cache is not None:
+                    logger.debug(
+                        f"[CURRICULUM_CACHE] Using precomputed cache for stage {stage} "
+                        f"({selected_cache.num_nodes} nodes, {selected_cache.num_goals} goals)"
+                    )
+                    return selected_cache
+                else:
+                    logger.warning(
+                        f"[CURRICULUM_CACHE] No cache for stage {stage}, falling back to local build. "
+                        f"Available stages: {list(self._shared_level_caches_by_stage.keys())}"
+                    )
+                    return None
+
+            # No multi-stage caches - fall back to local cache building
             logger.debug(
-                f"[CURRICULUM_CACHE] Goal curriculum active (stage {stage}). "
-                f"Shared caches disabled - using local cache with curriculum positions."
+                f"[CURRICULUM_CACHE] Goal curriculum active (stage {stage}) but no "
+                f"multi-stage caches available. Using local cache with curriculum positions."
             )
             return None
 
@@ -236,28 +256,32 @@ class CachedPathDistanceCalculator:
         # Fast rejection: skip if same level (avoid expensive LevelData comparison)
         # This makes redundant calls essentially free (single string comparison)
 
-        # Log cache rebuild decisions for curriculum debugging
+        # Get current curriculum stage (for stage change detection)
         current_stage = (
             self.goal_curriculum_manager.state.unified_stage
             if self.goal_curriculum_manager
-            else "N/A"
+            else None
         )
-        will_rebuild = (
+
+        # Detect level or stage changes
+        level_changed = (
             self._current_level_id is None
             or level_data.level_id != self._current_level_id
         )
+        stage_changed = self._current_curriculum_stage != current_stage
+
+        # Log cache rebuild decisions for curriculum debugging
         logger.info(
             f"[CACHE_BUILD] level_id={level_data.level_id}, "
-            f"curriculum_stage={current_stage}, "
+            f"curriculum_stage={current_stage if current_stage is not None else 'N/A'}, "
             f"current_level_id={self._current_level_id}, "
-            f"will_rebuild={will_rebuild}"
+            f"level_changed={level_changed}, "
+            f"stage_changed={stage_changed}"
         )
 
-        if (
-            self._current_level_id is not None
-            and level_data.level_id == self._current_level_id
-        ):
-            return False  # Cache already valid for this level
+        # Fast rejection: skip if same level AND same stage
+        if not level_changed and not stage_changed:
+            return False  # Cache already valid for this level and stage
 
         # OPTIMIZATION: If shared cache is provided, use view wrappers instead of building locally
         # Select appropriate cache based on curriculum stage
@@ -265,9 +289,14 @@ class CachedPathDistanceCalculator:
 
         if active_shared_cache is not None:
             # Check if we need to switch to a different stage's cache
-            needs_cache_switch = self.level_cache is None or (
-                hasattr(self.level_cache, "shared_cache")
-                and self.level_cache.shared_cache != active_shared_cache
+            # Triggers on: no cache, stage change, or cache object mismatch
+            needs_cache_switch = (
+                self.level_cache is None
+                or stage_changed
+                or (
+                    hasattr(self.level_cache, "shared_cache")
+                    and self.level_cache.shared_cache != active_shared_cache
+                )
             )
 
             if needs_cache_switch:
@@ -283,6 +312,7 @@ class CachedPathDistanceCalculator:
                 # Store level data for consistency checks
                 self.level_data = level_data
                 self._current_level_id = level_data.level_id
+                self._current_curriculum_stage = current_stage
 
                 # Update cached entity positions from level_data for goal_id inference
                 from ...constants.entity_types import EntityType
@@ -298,9 +328,13 @@ class CachedPathDistanceCalculator:
                     for entity in level_data.get_entities_by_type(EntityType.EXIT_DOOR)
                 ]
 
+                stage_info = (
+                    f", stage={current_stage}" if current_stage is not None else ""
+                )
                 logger.debug(
                     f"[SHARED_CACHE] Switched to shared cache: "
                     f"{active_shared_cache.num_nodes} nodes, {active_shared_cache.num_goals} goals"
+                    f"{stage_info}"
                 )
 
                 return True  # "Rebuilt" by using/switching shared cache
@@ -415,6 +449,7 @@ class CachedPathDistanceCalculator:
             # Update level ID tracking so get_distance() knows cache is ready
             # LevelData.__post_init__ always sets level_id, so we can trust it exists
             self._current_level_id = level_data.level_id
+            self._current_curriculum_stage = current_stage
 
             # Cache adjacency bounds for fast bounds checking
             if adjacency:
@@ -636,7 +671,6 @@ class CachedPathDistanceCalculator:
             # Get current node's physics properties for chain tracking
             current_physics = physics_cache[current]
             current_grounded = current_physics["grounded"]
-            current_walled = current_physics["walled"]
             current_chain = aerial_chains.get(current, 0)
 
             # OPTIMIZATION: Cache parent/grandparent lookups to avoid repeated dict.get()
@@ -655,9 +689,9 @@ class CachedPathDistanceCalculator:
 
                     # Determine if this edge is aerial upward (for chain tracking)
                     dy = neighbor[1] - current[1]
-                    is_aerial_upward = (
-                        not current_grounded and not current_walled and dy < 0
-                    )
+                    # NOTE: walled status does NOT affect aerial state - you can be in air next to a wall!
+                    # Only grounding (solid surface below) determines if airborne
+                    is_aerial_upward = not current_grounded and dy < 0
 
                     # Calculate new chain count: increment for aerial upward, reset otherwise
                     new_chain = current_chain + 1 if is_aerial_upward else 0
@@ -725,7 +759,6 @@ class CachedPathDistanceCalculator:
             # Get current node's physics properties for chain tracking
             current_physics = physics_cache[current]
             current_grounded = current_physics["grounded"]
-            current_walled = current_physics["walled"]
             current_chain = aerial_chains.get(current, 0)
 
             # OPTIMIZATION: Cache parent/grandparent lookups to avoid repeated dict.get()
@@ -746,9 +779,9 @@ class CachedPathDistanceCalculator:
 
                 # Determine if this edge is aerial upward (for chain tracking)
                 dy = neighbor[1] - current[1]
-                is_aerial_upward = (
-                    not current_grounded and not current_walled and dy < 0
-                )
+                # NOTE: walled status does NOT affect aerial state - you can be in air next to a wall!
+                # Only grounding (solid surface below) determines if airborne
+                is_aerial_upward = not current_grounded and dy < 0
 
                 # Calculate new chain count: increment for aerial upward, reset otherwise
                 new_chain = current_chain + 1 if is_aerial_upward else 0
@@ -1933,6 +1966,7 @@ class CachedPathDistanceCalculator:
 
         # Clear level tracking, spatial hash, and adjacency bounds
         self._current_level_id = None
+        self._current_curriculum_stage = None
         self._spatial_hash = None
         self._adjacency_bounds = None
 

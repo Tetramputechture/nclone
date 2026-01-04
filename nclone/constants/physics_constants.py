@@ -9,7 +9,9 @@ from pathlib import Path
 # === ENTITY PHYSICS CONSTANTS ===
 # Basic entity properties
 NINJA_RADIUS = 10  # Ninja collision radius in pixels
-NINJA_RADIUS_SQ = NINJA_RADIUS * NINJA_RADIUS  # Precomputed squared radius for performance
+NINJA_RADIUS_SQ = (
+    NINJA_RADIUS * NINJA_RADIUS
+)  # Precomputed squared radius for performance
 DRONE_RADIUS = 7.5  # Drone collision radius in pixels
 MINI_DRONE_RADIUS = 4.0  # Mini drone collision radius in pixels
 
@@ -386,3 +388,15 @@ TERMINAL_DISTANCE_QUANTIZATION = (
 TERMINAL_IMPACT_SIMULATION_FRAMES = (
     30  # Max frames to simulate forward for impact prediction
 )
+
+# === DETERMINISTIC PATH MASKING CONSTANTS ===
+# Masks actions that are provably suboptimal on trivial straight paths
+# This ensures 100% success on simple corridor scenarios
+
+# Path straightness detection thresholds
+STRAIGHT_PATH_HORIZONTAL_THRESHOLD = 0.8  # |dx| must exceed this for horizontal path
+STRAIGHT_PATH_VERTICAL_THRESHOLD = 0.1  # |dy| must be below this for horizontal path
+STRAIGHT_PATH_DOWNWARD_THRESHOLD = (
+    0.3  # dy must exceed this for downward path (positive = down)
+)
+STRAIGHT_PATH_MIN_DISTANCE = 12.0  # Only apply masking for goals >12px away (half-tile)

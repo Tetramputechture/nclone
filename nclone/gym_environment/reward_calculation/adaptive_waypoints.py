@@ -180,6 +180,62 @@ class AdaptiveWaypointSystem:
                         f"weighted_value={weighted_value:.2f}, phase={phase}"
                     )
 
+        # === DESCENT-ASCENT PATTERN DETECTION (RAMP MOMENTUM) ===
+        # Detect "valley" patterns where agent descends then ascends (ramp jumping)
+        # This is critical for levels requiring momentum building via downward movement
+        descent_ascent_waypoints = []
+        for i in range(5, len(positions) - 5):
+            # Look at y-position changes over a window
+            # Descent: y increases (going down)
+            # Ascent: y decreases (going up)
+            y_before = positions[i - 5][1]
+            y_current = positions[i][1]
+            y_after = positions[i + 5][1]
+
+            # Detect valley: descended before, ascending after
+            descent_amount = y_current - y_before  # Positive = went down
+            ascent_amount = y_before - y_after  # Positive = going up overall
+
+            # Significant descent (>20px) followed by ascent (>20px)
+            if descent_amount > 20.0 and ascent_amount > 20.0:
+                # This is a momentum-building descent point
+                distance_to_goal = distances[i] if i < len(distances) else 0.0
+                distance_factor = distance_to_goal / total_path_distance
+                base_value = 1.5  # High value for critical momentum points
+                weighted_value = base_value * (1.0 + distance_factor)
+
+                phase = self._determine_waypoint_phase(i, switch_activation_frame)
+
+                descent_ascent_waypoints.append(
+                    (positions[i], weighted_value, "ramp_momentum", phase)
+                )
+                logger.info(
+                    f"Ramp momentum point detected at ({positions[i][0]:.0f}, {positions[i][1]:.0f}), "
+                    f"descent={descent_amount:.1f}px, ascent={ascent_amount:.1f}px, "
+                    f"weighted_value={weighted_value:.2f}, phase={phase}"
+                )
+
+        # Add descent-ascent waypoints (avoiding duplicates)
+        for (
+            new_wp_pos,
+            new_wp_value,
+            new_wp_type,
+            new_wp_phase,
+        ) in descent_ascent_waypoints:
+            is_duplicate = False
+            for existing_wp_pos, _, _, _ in new_waypoints:
+                dx = new_wp_pos[0] - existing_wp_pos[0]
+                dy = new_wp_pos[1] - existing_wp_pos[1]
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist < 30.0:  # Within clustering radius
+                    is_duplicate = True
+                    break
+
+            if not is_duplicate:
+                new_waypoints.append(
+                    (new_wp_pos, new_wp_value, new_wp_type, new_wp_phase)
+                )
+
         # === MOMENTUM PEAK DETECTION ===
         # For each inflection point, look back 10-20 steps to find momentum-building position
         # This captures preparation maneuvers (e.g., running left to build speed before jumping right)

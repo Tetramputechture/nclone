@@ -831,12 +831,15 @@ class GraphBuilder:
             temp_spatial_hash.build(list(adjacency.keys()))
 
             # Use shared flood fill utility
+            # Use base_adjacency for grounding checks (physics_cache not yet computed at this point)
             reachable_nodes = flood_fill_reachable_nodes(
                 initial_player_pos,
                 adjacency,
                 spatial_hash=temp_spatial_hash,
                 subcell_lookup=None,  # Will be auto-loaded by flood_fill
                 player_radius=PLAYER_RADIUS,
+                physics_cache=None,  # Not yet computed
+                base_adjacency=base_graph["adjacency"],  # Use base adjacency for grounding
             )
 
             # Validate that flood fill found reachable nodes
@@ -896,7 +899,9 @@ class GraphBuilder:
         # Optimization: Only recompute flood fill if player moved >= 12px from last cached position
         if ninja_pos is not None:
             reachable = self._get_cached_flood_fill(
-                level_id, ninja_pos, adjacency, spatial_hash
+                level_id, ninja_pos, adjacency, spatial_hash,
+                physics_cache=node_physics_cache,
+                base_adjacency=base_graph["adjacency"]
             )
             result["reachable"] = reachable
 
@@ -1136,10 +1141,13 @@ class GraphBuilder:
     def _is_node_grounded(
         self,
         node_pos: Tuple[int, int],
-        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
     ) -> bool:
         """
         Check if a node is grounded (has solid/blocked surface directly below).
+
+        IMPORTANT: Uses base_adjacency (tile geometry only) to ensure grounding
+        is determined by level tiles, NOT entity positions (mines/doors).
 
         A node is grounded if there's a solid surface preventing downward movement.
         In screen coordinates: y=0 is top, y increases going DOWN.
@@ -1152,7 +1160,7 @@ class GraphBuilder:
 
         Args:
             node_pos: Node position (x, y) in pixels
-            adjacency: Current adjacency graph being built
+            base_adjacency: Base adjacency graph (pre-entity-mask) for geometry-only checks
 
         Returns:
             True if node is grounded (on a surface), False otherwise (mid-air)
@@ -1161,14 +1169,14 @@ class GraphBuilder:
         below_pos = (x, y + SUB_NODE_SIZE)  # 12px down (y increases downward)
 
         # If node directly below doesn't exist in graph, this node is on solid surface
-        if below_pos not in adjacency:
+        if below_pos not in base_adjacency:
             return True
 
         # Node below exists - check if we have a direct vertical edge to it
         # If we CAN fall to it (edge exists), we're NOT grounded
         # If we CAN'T fall to it (no edge), we ARE grounded
-        if node_pos in adjacency:
-            neighbors = adjacency[node_pos]
+        if node_pos in base_adjacency:
+            neighbors = base_adjacency[node_pos]
             for neighbor_pos, _ in neighbors:
                 if neighbor_pos == below_pos:
                     # Found direct vertical edge downward - NOT grounded (can fall)
@@ -1316,7 +1324,7 @@ class GraphBuilder:
         self,
         pos: Tuple[int, int],
         sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],
-        adjacency: Optional[
+        base_adjacency: Optional[
             Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
         ] = None,
         prefer_grounded: bool = False,
@@ -1327,11 +1335,14 @@ class GraphBuilder:
         Uses the fact that sub-nodes are on a 12px grid at positions:
         tile*24 + {6, 18} for each dimension.
 
+        IMPORTANT: Uses base_adjacency (tile geometry only) for grounding checks,
+        not entity-masked adjacency.
+
         Args:
             pos: Query position (x, y) in pixels
             sub_nodes: Dict mapping node positions to tile info
-            adjacency: Optional adjacency graph for grounding checks
-            prefer_grounded: If True and adjacency provided, prefer grounded nodes
+            base_adjacency: Optional base adjacency graph for grounding checks
+            prefer_grounded: If True and base_adjacency provided, prefer grounded nodes
         """
         if not sub_nodes:
             return None
@@ -1346,11 +1357,11 @@ class GraphBuilder:
         # Check if snapped position exists
         if (snap_x, snap_y) in sub_nodes:
             snapped_node = (snap_x, snap_y)
-            # If not preferring grounded or no adjacency, return immediately
-            if not prefer_grounded or adjacency is None:
+            # If not preferring grounded or no base_adjacency, return immediately
+            if not prefer_grounded or base_adjacency is None:
                 return snapped_node
             # If snapped node is grounded, return it
-            if self._is_node_grounded(snapped_node, adjacency):
+            if self._is_node_grounded(snapped_node, base_adjacency):
                 return snapped_node
             # Otherwise, continue searching for grounded alternative
 
@@ -1367,13 +1378,13 @@ class GraphBuilder:
                 if candidate in sub_nodes:
                     candidates.append(candidate)
 
-        # If preferring grounded and we have adjacency, separate candidates
-        if prefer_grounded and adjacency is not None and candidates:
+        # If preferring grounded and we have base_adjacency, separate candidates
+        if prefer_grounded and base_adjacency is not None and candidates:
             grounded_candidates = []
             air_candidates = []
 
             for candidate in candidates:
-                if self._is_node_grounded(candidate, adjacency):
+                if self._is_node_grounded(candidate, base_adjacency):
                     grounded_candidates.append(candidate)
                 else:
                     air_candidates.append(candidate)
@@ -1887,6 +1898,8 @@ class GraphBuilder:
         ninja_pos: Tuple[int, int],
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         spatial_hash: Any,
+        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        base_adjacency: Optional[Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]] = None,
     ) -> Set[Tuple[int, int]]:
         """
         Get flood fill results with caching based on player position.
@@ -1897,8 +1910,10 @@ class GraphBuilder:
         Args:
             level_id: Level identifier for cache key
             ninja_pos: Current ninja position (x, y) in pixels
-            adjacency: Graph adjacency structure
+            adjacency: Graph adjacency structure (entity-masked, for pathfinding)
             spatial_hash: SpatialHash for optimization
+            physics_cache: Optional pre-computed physics properties for grounding checks
+            base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
         Returns:
             Set of reachable node positions from ninja_pos
@@ -1925,6 +1940,8 @@ class GraphBuilder:
             spatial_hash=spatial_hash,
             subcell_lookup=None,  # Will be auto-loaded by flood_fill
             player_radius=PLAYER_RADIUS,
+            physics_cache=physics_cache,
+            base_adjacency=base_adjacency,
         )
 
         # Cache the result with LRU eviction

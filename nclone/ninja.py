@@ -736,6 +736,53 @@ class Ninja:
                             mask[2] = False  # Mask RIGHT if NOT triggering wall slide
                         # Keep JUMP+RIGHT (action 5) valid - triggers wall jump
 
+        # === DETERMINISTIC MASKING FOR TRIVIAL STRAIGHT PATHS ===
+        # If path is provably straight (horizontal or downward), mask suboptimal actions
+        # This ensures 100% success on trivial scenarios
+        #
+        # This masking is applied AFTER physics-based masking (wall/jump masking)
+        # and uses pre-computed multi-hop path direction (8 hops, ~96-192px lookahead)
+        # from the level cache. Zero performance cost (O(1) lookup).
+        #
+        # The multi-hop direction already respects graph structure (platforms, hazards),
+        # so we can aggressively mask actions that move against the optimal direction.
+        #
+        # Conservative by design: only masks when path characteristics are very clear
+        # to avoid over-constraining on complex paths.
+        path_direction = getattr(self.sim, "_path_straightness_direction", None)
+        if path_direction == "left":
+            # Goal is directly to the left on straight horizontal path
+            # Mask: RIGHT (2), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
+            # Keep: NOOP (0), LEFT (1)
+            #
+            # Rationale:
+            # - Only LEFT is needed on a straight horizontal path to the left
+            # - All other actions are suboptimal (wrong direction or unnecessary jumps)
+            mask[2] = False  # Mask RIGHT (wrong direction)
+            mask[3] = False  # Mask JUMP (unnecessary on straight path)
+            mask[4] = False  # Mask JUMP+LEFT (jumping is unnecessary)
+            mask[5] = False  # Mask JUMP+RIGHT (wrong direction + unnecessary jump)
+        elif path_direction == "right":
+            # Goal is directly to the right on straight horizontal path
+            # Mask: LEFT (1), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
+            # Keep: NOOP (0), RIGHT (2)
+            mask[1] = False  # Mask LEFT (wrong direction)
+            mask[3] = False  # Mask JUMP (unnecessary on straight path)
+            mask[4] = False  # Mask JUMP+LEFT (wrong direction + unnecessary jump)
+            mask[5] = False  # Mask JUMP+RIGHT (jumping is unnecessary)
+        elif path_direction == "down":
+            # Goal is downward (vertically or diagonally down)
+            # Mask: JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
+            # Keep: NOOP (0), LEFT (1), RIGHT (2)
+            #
+            # Rationale:
+            # - Path goes DOWN, but JUMP moves UP (opposite of optimal direction)
+            # - Horizontal movements are still allowed (may need to navigate while falling)
+            # - This handles downward slopes, drops, and descending paths
+            mask[3] = False  # Mask JUMP (moves up when we need to go down)
+            mask[4] = False  # Mask JUMP+LEFT (moves up when we need to go down)
+            mask[5] = False  # Mask JUMP+RIGHT (moves up when we need to go down)
+
         # Ensure at least one action is always valid
         # If all actions are masked (inevitable death scenario), unmask NOOP
         # This prevents NaN in the policy distribution

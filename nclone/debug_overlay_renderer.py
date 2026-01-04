@@ -620,7 +620,7 @@ class DebugOverlayRenderer:
         # Import shared utilities from pathfinding modules
         from nclone.graph.reachability.pathfinding_utils import (
             bfs_distance_from_start,
-            find_shortest_path,
+            find_shortest_path_with_fallback,
             extract_spatial_lookups_from_graph_data,
             find_goal_node_closest_to_start,
             find_ninja_node,
@@ -959,8 +959,8 @@ class DebugOverlayRenderer:
                                 #     f"switch_node={switch_node}, mine_cache_size={mine_cache_size}"
                                 # )
 
-                                # Compute path with mine avoidance costs
-                                path, path_cost = find_shortest_path(
+                                # Compute path with mine avoidance costs and fallback for unstable positions
+                                path, path_cost = find_shortest_path_with_fallback(
                                     closest_node,
                                     switch_node,
                                     adjacency,
@@ -1007,8 +1007,8 @@ class DebugOverlayRenderer:
                                 #     f"exit_node={exit_node}, mine_cache_size={mine_cache_size}"
                                 # )
 
-                                # Compute path with mine avoidance costs
-                                path, path_cost = find_shortest_path(
+                                # Compute path with mine avoidance costs and fallback for unstable positions
+                                path, path_cost = find_shortest_path_with_fallback(
                                     closest_node,
                                     exit_node,
                                     adjacency,
