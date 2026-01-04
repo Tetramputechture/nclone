@@ -200,33 +200,48 @@ MINE_DEATH_PENALTY = HAZARD_DEATH_PENALTY
 # Agent learns: "Reaching switch is valuable even with death risk, but completion is best"
 SWITCH_ACTIVATION_REWARD = 100.0
 
-# Sub-goal rewards for goal curriculum milestone progression
-# ADDED 2026-01-02: Sub-goals bridge the gap between switch and exit when curriculum
-# stages advance far apart. They provide discrete milestone rewards for path following.
+# Milestone rewards for curriculum-based progress
+# ADDED 2026-01-02: Distance-based milestones replace pre-computed waypoints
+# Rewards are given when shortest path distance decreases by >= SUB_GOAL_SPACING
 #
 # Design Philosophy:
-# - Phase-locked: Pre-switch sub-goals only active before switch, post-switch after
-# - One-time collection: Cannot be re-collected for exploitation
-# - Hybrid placement: Uniform spacing + extra rewards at critical turns
-# - Reward hierarchy: Sub-goals < Switch (100) < Completion (200)
+# - Distance-based: No pre-computation needed, uses PBRS path distances
+# - Curriculum-aware: Automatically uses curriculum goal positions
+# - One-time per milestone: Distance threshold prevents re-collection
+# - Reward hierarchy: Milestones (30) < Switch (100) < Completion (200)
 #
-# Reward Rationale:
-# - Progress sub-goals (uniform spacing): 10.0 reward each
-# - Turn sub-goals (45-90 degree turns): 15.0 reward each
-# - Critical turn sub-goals (>90 degree turns): 20.0 reward each
-# - Typical episode: 5-10 sub-goals between switch/exit = 50-200 total
-# - Comparable to switch reward, encouraging path following without dominating
+# Example progression (500px total path, 48px spacing):
+# - Start: 500px from goal
+# - Reduce to 452px: +30 reward (first milestone)
+# - Reduce to 404px: +30 reward (second milestone)
+# - Continue every 48px reduction
+# - Typical episode: 10-15 milestones = 300-450 total reward
 #
-# Example with 8 sub-goals (6 progress + 2 turns) between switch and exit:
-# - Sub-goal collection: 6×10 + 2×15 = 90 reward (meaningful milestone)
-# - Full path: 90 (sub-goals) + 100 (switch) + 200 (completion) = 390 (best)
-# - Skip sub-goals: 0 + 100 (switch) + 200 (completion) = 300 (still good)
-# - This creates gradient favoring path following without making it mandatory
-SUB_GOAL_REWARD_PROGRESS = 10.0  # Uniform spacing sub-goals
-SUB_GOAL_REWARD_TURN = 15.0  # Turn point sub-goals (45-90 deg)
-SUB_GOAL_REWARD_CRITICAL_TURN = 20.0  # Sharp turn sub-goals (>90 deg)
-SUB_GOAL_RADIUS = 6.0  # Sub-goal collision radius (pixels)
-SUB_GOAL_SPACING = 100.0  # Uniform spacing between progress sub-goals (pixels)
+# Benefits over pre-computed waypoints:
+# - No path recomputation when curriculum changes
+# - Rewards any path that makes progress (not just optimal)
+# - Simpler implementation (~500 lines removed)
+# - Uses existing cached distances (no extra overhead)
+SUB_GOAL_REWARD_PROGRESS = 30.0  # Distance milestone reward (3x baseline)
+SUB_GOAL_SPACING = 48.0  # Distance reduction threshold for milestone (pixels)
+
+# Waypoint collection rewards (RE-ENABLED 2026-01-03)
+# Provides guidance through non-linear optimal paths where agent must move away
+# from goal first (e.g., drop down to ramp, then jump up-right to exit).
+# Pure PBRS fails on such paths as direct-but-fatal approach reduces distance faster.
+#
+# Design:
+# - Flat +8 per waypoint (increased from +5 to overcome "fast fail" local minima)
+# - 10px collection radius (loosened from 6px to ensure discovery phase agents can collect)
+# - One-time collection per episode (prevents farming)
+# - Curriculum-aware: only waypoints within reachable path segment
+# - 48px spacing: matches SUB_GOAL_SPACING (~4 tiles)
+#
+# With ~15 waypoints = +120 max contribution (vs +40 PBRS + quick death -80 = -40),
+# combined with increased death penalties, ensures waypoint collection strategy
+# strongly dominates "fast fail" approach in discovery phase.
+WAYPOINT_COLLECTION_REWARD = 8.0  # Increased to break "fast fail" local minima
+WAYPOINT_COLLECTION_RADIUS = 10.0  # pixels - loosened for discovery phase collection  # Distance reduction threshold for milestone (pixels)
 
 
 # =============================================================================
@@ -280,18 +295,48 @@ PBRS_OBJECTIVE_WEIGHT = (
 PBRS_SWITCH_DISTANCE_SCALE = 1.0
 PBRS_EXIT_DISTANCE_SCALE = 1.0
 
+# PBRS Gradient Scaling (maintains consistent per-step signal across path lengths)
+# ADDED 2026-01-04: Adaptive weight scaling to maintain effective gradients on long paths
+#
+# Problem: Linear normalization Φ(d) = 1 - d/k causes gradient decay with path length:
+# - 200px path: 12px movement = 0.06 potential change (strong signal)
+# - 2000px path: 12px movement = 0.006 potential change (10x weaker!)
+#
+# Solution: Scale PBRS weight by sqrt(path_length / reference) to compensate:
+# - 200px: scale = 1.0x (baseline)
+# - 500px: scale = 1.58x (moderate boost)
+# - 1000px: scale = 2.24x (significant boost)
+# - 2000px: scale = 3.16x (strong boost)
+#
+# This reduces gradient decay from 10x to 3.16x across the path length range,
+# maintaining effective learning signal on longer levels while preventing
+# instability from unbounded scaling.
+PBRS_GRADIENT_REFERENCE_DISTANCE = 200.0  # Reference path length for base gradient
+PBRS_GRADIENT_SCALE_CAP = 5.0  # Maximum scaling factor to prevent instability
+
 # DEPRECATED: Path normalization factor (no longer used)
-# The actual normalization uses direct path distance: Φ(s) = 1 - (distance / combined_path_distance)
+# The actual normalization uses LINEAR potential: Φ(d) = 1 - d/k
+# where k is the characteristic distance (spawn_to_switch or switch_to_exit distance).
 # This constant exists for historical reasons but is NOT applied in the calculation.
-# See PBRS_CALCULATION_VERIFICATION.md for details on the actual normalization formula.
 #
-# Actual normalization (in pbrs_potentials.py):
-#   effective_normalization = max(800.0, combined_path_distance)
-#   potential = 1.0 - (distance / effective_normalization)
+# Actual normalization (in pbrs_potentials.py) UPDATED 2026-01-03:
+#   SWITCHED FROM HYPERBOLIC TO LINEAR for uniform gradient strength
+#   k = max(200.0, spawn_to_switch_distance)  # Linear potential
+#   potential_raw = max(0, 1.0 - distance / k)  # Clamped linear
+#   potential = 0.5 * potential_raw  # Scale to [0, 0.5] for switch phase
 #
-# This gives clean, interpretable gradients:
-# - With combined_path=1000px, weight=20: 12px forward = +0.24 potential = +0.16 PBRS
-# - Gradient strength controlled entirely by objective_weight (20.0 in discovery)
+# Linear potential provides UNIFORM gradients (each part of path matters equally):
+#   dΦ/dd = -1/k everywhere (constant!)
+#
+# Fallback defaults for large levels (up to 2000px):
+#   - spawn_to_switch_distance: 1000.0 (fallback)
+#   - switch_to_exit_distance: 1000.0 (fallback)
+#   - MIN_SCALE: 200.0 (prevents overly steep gradients)
+#
+# Gradient examples with weight=40 (discovery phase):
+# - Small level (k=500px): 12px forward = +0.012 potential = +0.48 PBRS (strong!)
+# - Large level (k=2000px): 12px forward = +0.003 potential = +0.12 PBRS (appropriate)
+# - Gradient UNIFORM across entire path (same at spawn, halfway, and near goal)
 PBRS_PATH_NORMALIZATION_FACTOR = (
     1.0  # DEPRECATED - not used in actual calculation, kept for backward compatibility
 )

@@ -51,6 +51,8 @@ from .reward_constants import (
     PBRS_SWITCH_DISTANCE_SCALE,
     PBRS_EXIT_DISTANCE_SCALE,
     VELOCITY_ALIGNMENT_MIN_SPEED,
+    PBRS_GRADIENT_REFERENCE_DISTANCE,
+    PBRS_GRADIENT_SCALE_CAP,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,18 +163,30 @@ class PBRSPotentials:
         graph_data: Optional[Dict[str, Any]] = None,
         scale_factor: float = 1.0,
     ) -> float:
-        """Hyperbolic potential: Φ(d) = 1/(1 + d/k) for curriculum robustness.
+        """Linear potential: Φ(d) = 1 - d/k for uniform gradient strength.
 
-        Uses hyperbolic potential function that is:
-        - Absolutely bounded [0, 1] for ANY distance (even d → ∞)
-        - Always produces positive gradient for forward progress
-        - No normalization issues - k is scale parameter, not hard limit
-        - Robust to stale cache and curriculum mismatches
-        - Stronger gradient near goal (derivative ∝ 1/(1+d/k)²)
+        UPDATED 2026-01-03: Switched from hyperbolic to linear potential for uniform gradients.
+        Navigation tasks benefit from equal reward for each part of the path, not just near goal.
+
+        Linear potential provides:
+        - **Uniform gradient**: Same reward per pixel everywhere (dΦ/dd = constant)
+        - **Stronger signal far from goal**: Better exploration in early training
+        - **Each part matters equally**: Reflects that all navigation progress is valuable
+        - **Simpler**: Easier to understand and debug
+
+        Comparison (k=1000px, 12px movement):
+        - Linear: ΔΦ = 12/1000 = 0.012 (uniform everywhere!)
+        - Hyperbolic at spawn (d=1000): ΔΦ ≈ 0.003 (4× weaker)
+        - Hyperbolic at goal (d=0): ΔΦ ≈ 0.012 (matches linear)
 
         Two-phase design for switch activation continuity:
-        - Switch phase: Φ ∈ [0.0, 0.5], k = spawn_to_switch_distance
-        - Exit phase: Φ ∈ [0.5, 1.0], k = switch_to_exit_distance
+        - Switch phase: Φ ∈ [0.0, 0.5], normalized by spawn_to_switch_distance
+        - Exit phase: Φ ∈ [0.5, 1.0], normalized by switch_to_exit_distance
+
+        Robustness via clamping:
+        - If d > k (cache mismatch): clamp to 0 (no negative potentials)
+        - If d < 0 (numerical error): clamp to 1.0 (at goal)
+        - Always bounded [0, 1] via max(0, min(1, ...))
 
         Mathematical property: For any d' < d, PBRS = γΦ(d') - Φ(d) > 0
         This GUARANTEES forward progress always yields positive reward.
@@ -232,27 +246,39 @@ class PBRSPotentials:
             raise RuntimeError(f"PBRS distance failed: {e}") from e
 
         # Get scale parameters from cache
-        spawn_to_switch_distance = state.get("_pbrs_spawn_to_switch_distance", 400.0)
-        switch_to_exit_distance = state.get("_pbrs_switch_to_exit_distance", 400.0)
+        # UPDATED 2026-01-03: Increased fallbacks for large levels (up to 2000px)
+        # These should always be computed, but robust fallbacks prevent crashes
+        spawn_to_switch_distance = state.get("_pbrs_spawn_to_switch_distance", 1000.0)
+        switch_to_exit_distance = state.get("_pbrs_switch_to_exit_distance", 1000.0)
 
         if distance == float("inf"):
             return 0.0
 
-        # === HYPERBOLIC POTENTIAL ===
-        # Φ(d) = 1/(1 + d/k) where k is characteristic distance
-        # Bounded [0, 1] for ALL distances, always positive gradient
-        MIN_SCALE = 100.0
+        # === LINEAR POTENTIAL (UNIFORM GRADIENT) ===
+        # UPDATED 2026-01-03: Switched from hyperbolic to linear
+        # Φ(d) = 1 - d/k provides constant gradient: dΦ/dd = -1/k
+        # Every pixel of progress = same reward, regardless of position
+        #
+        # MIN_SCALE prevents overly steep gradients on tiny levels
+        # For k=100px: 12px movement = 0.12 potential change (strong)
+        # For k=2000px: 12px movement = 0.006 potential change (appropriate)
+        MIN_SCALE = 200.0  # Minimum normalization distance
 
         if not state["switch_activated"]:
-            # Switch phase: k from spawn-to-switch, scale to [0, 0.5]
+            # Switch phase: Φ ∈ [0, 0.5], normalized by spawn→switch distance
             k = max(MIN_SCALE, spawn_to_switch_distance)
-            potential_raw = 1.0 / (1.0 + distance / k)
-            potential = 0.5 * potential_raw
+            # Linear: 1.0 at switch (d=0), 0.0 at spawn (d=k)
+            normalized_distance = distance / k
+            potential_raw = 1.0 - normalized_distance  # Can go negative if d > k
+            potential_raw = max(0.0, potential_raw)  # Clamp to [0, 1]
+            potential = 0.5 * potential_raw  # Scale to [0, 0.5]
         else:
-            # Exit phase: k from switch-to-exit, scale to [0.5, 1.0]
+            # Exit phase: Φ ∈ [0.5, 1.0], normalized by switch→exit distance
             k = max(MIN_SCALE, switch_to_exit_distance)
-            potential_raw = 1.0 / (1.0 + distance / k)
-            potential = 0.5 + 0.5 * potential_raw
+            normalized_distance = distance / k
+            potential_raw = 1.0 - normalized_distance
+            potential_raw = max(0.0, potential_raw)
+            potential = 0.5 + 0.5 * potential_raw  # Scale to [0.5, 1.0]
 
         # Diagnostic storage
         state["_pbrs_normalized_distance"] = distance / k
@@ -482,10 +508,11 @@ class PBRSPotentials:
                     )
 
                 # Normalize using same adaptive strategy as standard potential
+                # UPDATED 2026-01-03: Increased defaults for large levels (up to 2000px)
                 combined_path_distance = state.get(
-                    "_pbrs_combined_path_distance", 800.0
+                    "_pbrs_combined_path_distance", 1500.0
                 )
-                MIN_NORMALIZATION_DISTANCE = 800.0
+                MIN_NORMALIZATION_DISTANCE = 1500.0  # Supports levels up to ~2000px
                 ADAPTIVE_FACTOR = 1.0
                 effective_normalization = max(
                     MIN_NORMALIZATION_DISTANCE, combined_path_distance * ADAPTIVE_FACTOR
@@ -1149,10 +1176,11 @@ class PBRSCalculator:
                         )
 
                         # Convert to potential using same normalization as full calculation
+                        # UPDATED 2026-01-03: Increased for large levels (up to 2000px)
                         combined_path = state_with_metrics.get(
-                            "_pbrs_combined_path_distance", 800.0
+                            "_pbrs_combined_path_distance", 1500.0
                         )
-                        MIN_NORMALIZATION = 800.0
+                        MIN_NORMALIZATION = 1500.0  # Supports levels up to ~2000px
                         effective_norm = max(MIN_NORMALIZATION, combined_path)
 
                         normalized_distance = interpolated_distance / effective_norm
@@ -1391,6 +1419,36 @@ class PBRSCalculator:
             self._cached_switch_to_exit_distance
         )
 
+        # === ADAPTIVE GRADIENT SCALING (2026-01-04) ===
+        # Scale PBRS weight by sqrt(path_length / reference) to maintain consistent
+        # per-step gradient signal across different path lengths (50px to 2000px).
+        #
+        # Problem: Linear normalization Φ(d) = 1 - d/k causes 10x gradient decay
+        # from 200px paths to 2000px paths, resulting in vanishing gradients and
+        # slow learning on longer levels.
+        #
+        # Solution: Square root scaling provides balanced compensation:
+        # - 200px: scale = 1.0x (baseline)
+        # - 500px: scale = 1.58x
+        # - 1000px: scale = 2.24x
+        # - 2000px: scale = 3.16x
+        #
+        # This reduces gradient decay from 10x to 3.16x across the path length range.
+        combined_path = (
+            self._cached_combined_path_distance or PBRS_GRADIENT_REFERENCE_DISTANCE
+        )
+        gradient_scale = math.sqrt(combined_path / PBRS_GRADIENT_REFERENCE_DISTANCE)
+        gradient_scale = min(
+            gradient_scale, PBRS_GRADIENT_SCALE_CAP
+        )  # Cap at 5.0 for stability
+
+        # Apply gradient scaling to objective weight
+        scaled_objective_weight = objective_weight * gradient_scale
+
+        # Store gradient scale for diagnostics
+        state_with_metrics["_pbrs_gradient_scale"] = gradient_scale
+        state_with_metrics["_pbrs_scaled_weight"] = scaled_objective_weight
+
         current_pos = (float(state["player_x"]), float(state["player_y"]))
         current_goal_id = (
             "switch" if not state.get("switch_activated", False) else "exit"
@@ -1432,6 +1490,22 @@ class PBRSCalculator:
         )
         state["_pbrs_surface_area"] = state_with_metrics.get("_pbrs_surface_area")
 
+        # Copy phase-specific distances for switch activation continuity verification
+        state["_pbrs_spawn_to_switch_distance"] = state_with_metrics.get(
+            "_pbrs_spawn_to_switch_distance"
+        )
+        state["_pbrs_switch_to_exit_distance"] = state_with_metrics.get(
+            "_pbrs_switch_to_exit_distance"
+        )
+
+        # Copy gradient scaling diagnostics for TensorBoard logging
+        state["_pbrs_gradient_scale"] = state_with_metrics.get(
+            "_pbrs_gradient_scale", 1.0
+        )
+        state["_pbrs_scaled_weight"] = state_with_metrics.get(
+            "_pbrs_scaled_weight", objective_weight
+        )
+
         # Copy timing data for profiling
         state["_pbrs_cache_hit"] = state_with_metrics.get("_pbrs_cache_hit", False)
 
@@ -1449,11 +1523,16 @@ class PBRSCalculator:
         # SIMPLIFIED: Removed velocity alignment - PBRS gradient (position-based potential
         # differences) already provides directional signal
 
-        # Apply phase-specific scaling (switch vs exit) and curriculum weight
+        # Apply phase-specific scaling (switch vs exit) with gradient-scaled weight
+        # UPDATED 2026-01-04: Use scaled_objective_weight for consistent gradients
         if not state.get("switch_activated", False):
-            potential = PBRS_SWITCH_DISTANCE_SCALE * objective_pot * objective_weight
+            potential = (
+                PBRS_SWITCH_DISTANCE_SCALE * objective_pot * scaled_objective_weight
+            )
         else:
-            potential = PBRS_EXIT_DISTANCE_SCALE * objective_pot * objective_weight
+            potential = (
+                PBRS_EXIT_DISTANCE_SCALE * objective_pot * scaled_objective_weight
+            )
 
         # # CRITICAL DEBUG: Log potential calculation to diagnose zero PBRS
         # if objective_pot == 0.0 or potential == 0.0:
@@ -1519,3 +1598,21 @@ class PBRSCalculator:
         # Keep combined path distance cache - it's per level, not per episode
         # Keep momentum waypoints - they're per level, not per episode
         # These will be invalidated when level_data or switch_states change
+
+    def get_last_distance_to_goal(self, goal_id: str) -> Optional[float]:
+        """Get last computed path distance to goal (from most recent potential calculation).
+
+        This exposes the cached distance computed during the last PBRS potential calculation,
+        allowing other reward components (like distance milestones) to reuse the same
+        distance without additional pathfinding overhead.
+
+        Args:
+            goal_id: "switch" or "exit"
+
+        Returns:
+            Distance in pixels, or None if not yet computed or goal doesn't match last calculation
+        """
+        # Only return distance if it matches the last goal we computed for
+        if self._last_goal_id == goal_id and self._cached_distance is not None:
+            return self._cached_distance
+        return None

@@ -24,7 +24,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-MIN_EPISODES_FOR_RATE_ESTIMATE = 100
+MIN_EPISODES_FOR_RATE_ESTIMATE = 500
 
 
 @dataclass
@@ -42,31 +42,6 @@ class GoalCurriculumState:
     switch_activation_count: int = 0
     completion_count: int = 0
     episode_count: int = 0
-
-
-@dataclass
-class SubGoal:
-    """Sub-goal milestone for curriculum-based path following.
-
-    Sub-goals are collectible positions along the optimal path that provide
-    discrete rewards when the player collides with them. They bridge the gap
-    between switch and exit when curriculum stages advance far apart.
-
-    Attributes:
-        position: World coordinates (x, y) in pixels
-        radius: Collision radius in pixels (default 6.0)
-        phase: "pre_switch" or "post_switch" for phase-aware activation
-        reward_value: Reward awarded when collected
-        path_distance: Distance along path from phase start (for ordering)
-        waypoint_type: "progress" (uniform spacing), "turn", or "critical_turn"
-    """
-
-    position: Tuple[float, float]
-    radius: float = 6.0
-    phase: str = "pre_switch"
-    reward_value: float = 10.0
-    path_distance: float = 0.0
-    waypoint_type: str = "progress"
 
 
 class IntermediateGoalManager:
@@ -121,10 +96,6 @@ class IntermediateGoalManager:
         self._combined_distance: float = 0.0
         self._num_stages: int = 0
 
-        # Sub-goal milestones for discrete rewards along path
-        self._sub_goals_pre_switch: List[SubGoal] = []
-        self._sub_goals_post_switch: List[SubGoal] = []
-
         # Rolling window success tracking for automatic stage advancement
         # Uses deque with maxlen for efficient sliding window
         self._recent_switch_activations: deque = deque(maxlen=config.rolling_window)
@@ -133,12 +104,42 @@ class IntermediateGoalManager:
         # Cache rebuild flag for PBRS integration
         self._cache_needs_rebuild = False
 
+        # Override positions from SharedLevelCache (for multi-stage cache consistency)
+        # When set, these override position calculations from paths
+        self._curriculum_positions_override: Optional[
+            Dict[str, Tuple[float, float]]
+        ] = None
+
         logger.info(
             f"IntermediateGoalManager initialized (sliding window): "
             f"interval={config.stage_distance_interval}px, "
             f"threshold={config.advancement_threshold}, "
             f"window={config.rolling_window}"
         )
+
+    def set_curriculum_position_overrides(
+        self, positions: Optional[Dict[str, Tuple[float, float]]]
+    ) -> None:
+        """Set override positions from SharedLevelCache.
+
+        When using multi-stage SharedLevelCaches, environments MUST use the exact
+        positions that were used during cache building to avoid validation failures.
+        This method allows injecting those pre-computed positions.
+
+        Args:
+            positions: Dict mapping entity type ("switch", "exit") to (x, y) position,
+                      or None to clear overrides and use calculated positions
+        """
+        self._curriculum_positions_override = positions
+        if positions:
+            logger.debug(
+                f"[CURRICULUM] Using position overrides from SharedLevelCache: "
+                f"switch={positions.get('switch')}, exit={positions.get('exit')}"
+            )
+        else:
+            logger.debug(
+                "[CURRICULUM] Cleared position overrides, will calculate from paths"
+            )
 
     def store_original_positions(
         self, switch_pos: Tuple[float, float], exit_pos: Tuple[float, float]
@@ -315,18 +316,10 @@ class IntermediateGoalManager:
             # NEW: Compute number of stages based on combined distance
             self._num_stages = self._compute_num_stages()
 
-            # Extract sub-goals from paths for milestone rewards
-            self._extract_sub_goals_from_paths()
+            # NOTE: Sub-goal extraction deferred to curriculum-aware rebuild
+            # Sub-goals will be extracted based on curriculum stage via rebuild_sub_goals_for_stage()
+            # This ensures sub-goals are only placed within reachable curriculum distances
 
-            # print(
-            #     f"[build_paths_for_level] Paths extracted: "
-            #     f"spawn→switch={len(self._spawn_to_switch_path)} nodes "
-            #     f"({self._spawn_to_switch_distance:.1f}px, cost={spawn_to_switch_cost:.2f}), "
-            #     f"switch→exit={len(self._switch_to_exit_path)} nodes "
-            #     f"({self._switch_to_exit_distance:.1f}px, cost={switch_to_exit_cost:.2f}), "
-            #     f"combined={self._combined_distance:.1f}px, "
-            #     f"stages={self._num_stages}"
-            # )
             logger.info(
                 f"Goal curriculum paths extracted: "
                 f"spawn→switch={len(self._spawn_to_switch_path)} nodes "
@@ -334,9 +327,8 @@ class IntermediateGoalManager:
                 f"switch→exit={len(self._switch_to_exit_path)} nodes "
                 f"({self._switch_to_exit_distance:.1f}px, cost={switch_to_exit_cost:.2f}), "
                 f"combined={self._combined_distance:.1f}px, "
-                f"stages={self._num_stages}, "
-                f"sub_goals_pre_switch={len(self._sub_goals_pre_switch)}, "
-                f"sub_goals_post_switch={len(self._sub_goals_post_switch)}"
+                f"stages={self._num_stages} "
+                f"(sub-goals will be extracted based on curriculum stage)"
             )
 
         except Exception as e:
@@ -367,6 +359,73 @@ class IntermediateGoalManager:
 
         return total_distance
 
+    def get_curriculum_truncated_paths(
+        self,
+    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]], float, float]:
+        """Get paths truncated to current curriculum stage distances.
+
+        For curriculum-aware waypoint extraction, only waypoints within the
+        currently reachable path segment should be generated. This prevents
+        waypoints from appearing beyond curriculum goals.
+
+        Returns:
+            Tuple of (truncated_spawn_to_switch, truncated_switch_to_exit,
+                     switch_distance, exit_distance)
+            Returns empty paths if paths not built yet
+        """
+        if not self._spawn_to_switch_path or not self._switch_to_exit_path:
+            return [], [], 0.0, 0.0
+
+        interval = self.config.stage_distance_interval
+
+        # Calculate curriculum distances
+        # Switch at (stage + 1) * interval, clamped to original
+        switch_distance = min(
+            (self.state.unified_stage + 1) * interval, self._spawn_to_switch_distance
+        )
+
+        # Exit at (stage + 2) * interval along combined path
+        exit_combined_distance = min(
+            (self.state.unified_stage + 2) * interval, self._combined_distance
+        )
+
+        # Truncate spawn→switch path
+        truncated_spawn_to_switch = self._truncate_path_at_distance(
+            self._spawn_to_switch_path, switch_distance
+        )
+
+        # Truncate switch→exit path
+        # Exit distance relative to switch position
+        # FIXED: Compare with curriculum switch_distance, not original _spawn_to_switch_distance
+        if exit_combined_distance <= switch_distance:
+            # Exit hasn't reached curriculum switch yet (very early curriculum stages)
+            truncated_switch_to_exit = []
+            exit_distance_from_switch = 0.0
+        else:
+            # Exit is past curriculum switch - calculate offset from curriculum switch
+            exit_distance_from_switch = exit_combined_distance - switch_distance
+            truncated_switch_to_exit = self._truncate_path_at_distance(
+                self._switch_to_exit_path, exit_distance_from_switch
+            )
+
+        # DIAGNOSTIC: Log truncation results
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.debug(
+            f"[CURRICULUM] get_curriculum_truncated_paths stage={self.state.unified_stage}: "
+            f"spawn→switch: {len(self._spawn_to_switch_path)} → {len(truncated_spawn_to_switch)} nodes, "
+            f"switch→exit: {len(self._switch_to_exit_path)} → {len(truncated_switch_to_exit)} nodes, "
+            f"switch_dist={switch_distance:.0f}px, exit_dist_from_switch={exit_distance_from_switch:.0f}px"
+        )
+
+        return (
+            truncated_spawn_to_switch,
+            truncated_switch_to_exit,
+            switch_distance,
+            exit_combined_distance,
+        )
+
     def _compute_num_stages(self) -> int:
         """Compute number of curriculum stages based on combined path distance.
 
@@ -382,193 +441,47 @@ class IntermediateGoalManager:
 
         return num_stages
 
-    def _extract_sub_goals_from_paths(self) -> None:
-        """Extract sub-goals from optimal paths using hybrid placement.
-
-        Hybrid approach:
-        1. Uniform spacing: Place sub-goals every SUB_GOAL_SPACING pixels
-        2. Critical turns: Add extra sub-goals at sharp turns (>60 degree curvature)
-
-        Sub-goals are phase-locked:
-        - Pre-switch: Along spawn→switch path
-        - Post-switch: Along switch→exit path
-        """
-        # Import constants for sub-goal extraction
-        from .reward_constants import (
-            SUB_GOAL_SPACING,
-            SUB_GOAL_REWARD_PROGRESS,
-            SUB_GOAL_REWARD_TURN,
-            SUB_GOAL_REWARD_CRITICAL_TURN,
-            SUB_GOAL_RADIUS,
-        )
-
-        self._sub_goals_pre_switch = []
-        self._sub_goals_post_switch = []
-
-        # Extract pre-switch sub-goals from spawn→switch path
-        if self._spawn_to_switch_path and len(self._spawn_to_switch_path) >= 2:
-            self._sub_goals_pre_switch = self._extract_sub_goals_from_single_path(
-                path=self._spawn_to_switch_path,
-                phase="pre_switch",
-                spacing=SUB_GOAL_SPACING,
-                reward_progress=SUB_GOAL_REWARD_PROGRESS,
-                reward_turn=SUB_GOAL_REWARD_TURN,
-                reward_critical_turn=SUB_GOAL_REWARD_CRITICAL_TURN,
-                radius=SUB_GOAL_RADIUS,
-            )
-
-        # Extract post-switch sub-goals from switch→exit path
-        if self._switch_to_exit_path and len(self._switch_to_exit_path) >= 2:
-            self._sub_goals_post_switch = self._extract_sub_goals_from_single_path(
-                path=self._switch_to_exit_path,
-                phase="post_switch",
-                spacing=SUB_GOAL_SPACING,
-                reward_progress=SUB_GOAL_REWARD_PROGRESS,
-                reward_turn=SUB_GOAL_REWARD_TURN,
-                reward_critical_turn=SUB_GOAL_REWARD_CRITICAL_TURN,
-                radius=SUB_GOAL_RADIUS,
-            )
-
-        logger.debug(
-            f"Extracted sub-goals: pre_switch={len(self._sub_goals_pre_switch)}, "
-            f"post_switch={len(self._sub_goals_post_switch)}"
-        )
-
-    def _extract_sub_goals_from_single_path(
-        self,
-        path: List[Tuple[int, int]],
-        phase: str,
-        spacing: float,
-        reward_progress: float,
-        reward_turn: float,
-        reward_critical_turn: float,
-        radius: float,
-    ) -> List[SubGoal]:
-        """Extract sub-goals from a single path using hybrid placement.
+    def _truncate_path_at_distance(
+        self, path: List[Tuple[int, int]], max_distance: float
+    ) -> List[Tuple[int, int]]:
+        """Truncate path to only include nodes within max_distance from start.
 
         Args:
-            path: List of node positions from pathfinding
-            phase: "pre_switch" or "post_switch"
-            spacing: Uniform spacing between progress sub-goals in pixels
-            reward_progress: Reward for uniform spacing sub-goals
-            reward_turn: Reward for turn sub-goals (45-90 degrees)
-            reward_critical_turn: Reward for critical turn sub-goals (>90 degrees)
-            radius: Sub-goal collision radius
+            path: Full path as list of node positions
+            max_distance: Maximum distance along path to include (pixels)
 
         Returns:
-            List of SubGoal objects
+            Truncated path containing only nodes within max_distance
         """
+        if not path or len(path) < 2 or max_distance <= 0:
+            return path[:1] if path else []  # Return at least start node
+
         import math
 
-        sub_goals = []
+        truncated = [path[0]]  # Always include start
+        cumulative_distance = 0.0
 
-        # Calculate cumulative distances along path
-        cumulative_distances = [0.0]
         for i in range(1, len(path)):
+            # Calculate segment distance
             dx = path[i][0] - path[i - 1][0]
             dy = path[i][1] - path[i - 1][1]
             segment_dist = math.sqrt(dx * dx + dy * dy)
-            cumulative_distances.append(cumulative_distances[-1] + segment_dist)
 
-        total_distance = cumulative_distances[-1]
+            # Check if adding this node would exceed max_distance
+            if cumulative_distance + segment_dist > max_distance:
+                # Interpolate final node at exact max_distance
+                if segment_dist > 0:
+                    remaining = max_distance - cumulative_distance
+                    t = remaining / segment_dist
+                    interp_x = int(path[i - 1][0] + t * dx)
+                    interp_y = int(path[i - 1][1] + t * dy)
+                    truncated.append((interp_x, interp_y))
+                break
 
-        # Skip if path too short for sub-goals
-        if total_distance < spacing:
-            return []
+            truncated.append(path[i])
+            cumulative_distance += segment_dist
 
-        # 1. Add uniform spacing sub-goals
-        current_distance = spacing  # Start at first spacing interval
-        while current_distance < total_distance - spacing / 2:  # Leave gap before goal
-            position = self._sample_position_at_distance(path, current_distance)
-            sub_goals.append(
-                SubGoal(
-                    position=position,
-                    radius=radius,
-                    phase=phase,
-                    reward_value=reward_progress,
-                    path_distance=current_distance,
-                    waypoint_type="progress",
-                )
-            )
-            current_distance += spacing
-
-        # 2. Add turn sub-goals at inflection points
-        TURN_ANGLE_THRESHOLD = 45.0  # Minimum angle to consider a turn
-        CRITICAL_TURN_THRESHOLD = 90.0  # Sharp turn threshold
-        MIN_TURN_SPACING = spacing / 3  # Minimum distance between turn sub-goals
-
-        for i in range(1, len(path) - 1):
-            # Calculate turn angle at this node
-            prev_node = path[i - 1]
-            curr_node = path[i]
-            next_node = path[i + 1]
-
-            # Vectors before and after current node
-            vec_in_x = curr_node[0] - prev_node[0]
-            vec_in_y = curr_node[1] - prev_node[1]
-            vec_out_x = next_node[0] - curr_node[0]
-            vec_out_y = next_node[1] - curr_node[1]
-
-            # Normalize vectors
-            len_in = math.sqrt(vec_in_x * vec_in_x + vec_in_y * vec_in_y)
-            len_out = math.sqrt(vec_out_x * vec_out_x + vec_out_y * vec_out_y)
-
-            if len_in < 0.1 or len_out < 0.1:
-                continue
-
-            vec_in_x /= len_in
-            vec_in_y /= len_in
-            vec_out_x /= len_out
-            vec_out_y /= len_out
-
-            # Dot product for angle
-            dot = vec_in_x * vec_out_x + vec_in_y * vec_out_y
-            dot = max(-1.0, min(1.0, dot))  # Clamp for numerical stability
-            angle_rad = math.acos(dot)
-            angle_deg = math.degrees(angle_rad)
-
-            # Check if this is a significant turn
-            if angle_deg < TURN_ANGLE_THRESHOLD:
-                continue
-
-            # Get position at this turn
-            turn_distance = cumulative_distances[i]
-            turn_position = (float(curr_node[0]) + 24.0, float(curr_node[1]) + 24.0)
-
-            # Check if too close to existing sub-goals
-            too_close = False
-            for existing in sub_goals:
-                dx = turn_position[0] - existing.position[0]
-                dy = turn_position[1] - existing.position[1]
-                dist = math.sqrt(dx * dx + dy * dy)
-                if dist < MIN_TURN_SPACING:
-                    too_close = True
-                    break
-
-            if not too_close:
-                # Determine reward based on turn severity
-                if angle_deg >= CRITICAL_TURN_THRESHOLD:
-                    reward = reward_critical_turn
-                    waypoint_type = "critical_turn"
-                else:
-                    reward = reward_turn
-                    waypoint_type = "turn"
-
-                sub_goals.append(
-                    SubGoal(
-                        position=turn_position,
-                        radius=radius,
-                        phase=phase,
-                        reward_value=reward,
-                        path_distance=turn_distance,
-                        waypoint_type=waypoint_type,
-                    )
-                )
-
-        # Sort sub-goals by path distance for consistent ordering
-        sub_goals.sort(key=lambda sg: sg.path_distance)
-
-        return sub_goals
+        return truncated
 
     def _sample_position_at_distance(
         self, path: List[Tuple[int, int]], target_distance: float
@@ -659,12 +572,20 @@ class IntermediateGoalManager:
     def get_curriculum_switch_position(self) -> Tuple[float, float]:
         """Get curriculum-adjusted switch position for sliding window model.
 
-        Switch position = unified_stage * interval, clamped to original switch distance.
+        Switch position = (unified_stage + 1) * interval, clamped to original switch distance.
+        Using (stage + 1) ensures minimum distance of one interval at stage 0.
         This creates a sliding window where switch advances until reaching original position.
 
         Returns:
             (x, y) position where switch should be placed for current difficulty
         """
+        # Use override position from SharedLevelCache if available
+        if (
+            self._curriculum_positions_override is not None
+            and "switch" in self._curriculum_positions_override
+        ):
+            return self._curriculum_positions_override["switch"]
+
         if not self._spawn_to_switch_path:
             # Fallback to original if paths not built
             print(
@@ -676,8 +597,9 @@ class IntermediateGoalManager:
         interval = self.config.stage_distance_interval
 
         # Switch distance along spawn→switch path, clamped to original
+        # Use (stage + 1) to ensure minimum distance of one interval at stage 0
         switch_distance = min(
-            self.state.unified_stage * interval, self._spawn_to_switch_distance
+            (self.state.unified_stage + 1) * interval, self._spawn_to_switch_distance
         )
 
         # # DIAGNOSTIC: Always print position calculation
@@ -720,21 +642,30 @@ class IntermediateGoalManager:
     def get_curriculum_exit_position(self) -> Tuple[float, float]:
         """Get curriculum-adjusted exit position for sliding window model.
 
-        Exit position = (unified_stage + 1) * interval along combined path, clamped to original.
+        Exit position = (unified_stage + 2) * interval along combined path, clamped to original.
+        Using (stage + 2) maintains fixed spacing (one interval) between switch and exit.
         This maintains fixed spacing between switch and exit, sliding forward together.
 
         Returns:
             (x, y) position where exit door should be placed for current difficulty
         """
+        # Use override position from SharedLevelCache if available
+        if (
+            self._curriculum_positions_override is not None
+            and "exit" in self._curriculum_positions_override
+        ):
+            return self._curriculum_positions_override["exit"]
+
         if not self._combined_path:
             # Fallback to original if paths not built
             return self._original_exit_pos or (0.0, 0.0)
 
         interval = self.config.stage_distance_interval
 
-        # Exit position = (stage + 1) * interval along combined path, clamped to total
+        # Exit position = (stage + 2) * interval along combined path, clamped to total
+        # This maintains one-interval spacing from switch position at (stage + 1)
         exit_combined_distance = min(
-            (self.state.unified_stage + 1) * interval, self._combined_distance
+            (self.state.unified_stage + 2) * interval, self._combined_distance
         )
 
         # print(
@@ -765,24 +696,6 @@ class IntermediateGoalManager:
             return self._sample_position_at_distance(
                 self._switch_to_exit_path, exit_offset
             )
-
-    def get_active_sub_goals(self, switch_activated: bool) -> List[SubGoal]:
-        """Get sub-goals for the current phase (pre-switch or post-switch).
-
-        Phase-locking ensures agents follow the correct path:
-        - Before switch: Only pre-switch sub-goals are active
-        - After switch: Only post-switch sub-goals are active
-
-        Args:
-            switch_activated: Whether the exit switch has been activated
-
-        Returns:
-            List of SubGoal objects for the current phase
-        """
-        if switch_activated:
-            return self._sub_goals_post_switch
-        else:
-            return self._sub_goals_pre_switch
 
     def apply_to_simulator(self, sim) -> None:
         """Move entity positions in sim.entity_dic to curriculum positions.

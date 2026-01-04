@@ -203,39 +203,59 @@ class SubcellNodeLookupLoader:
     def _is_node_grounded(
         self,
         node_pos: Tuple[int, int],
-        adjacency: Dict[Tuple[int, int], list],
+        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        base_adjacency: Optional[Dict[Tuple[int, int], list]] = None,
     ) -> bool:
         """
         Check if a node is grounded (has solid surface directly below).
 
+        IMPORTANT: Uses physics_cache or base_adjacency (tile geometry only)
+        to ensure grounding is determined by level tiles, NOT entity positions.
+
         Args:
             node_pos: Node position (x, y) in pixels
-            adjacency: Graph adjacency structure
+            physics_cache: Optional pre-computed physics properties for O(1) lookup
+            base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
         Returns:
             True if node is grounded, False otherwise
+
+        Raises:
+            ValueError: If neither physics_cache nor base_adjacency is provided
         """
-        x, y = node_pos
-        below_pos = (x, y + 12)  # 12px down
+        # Prefer physics_cache for O(1) lookup
+        if physics_cache is not None and node_pos in physics_cache:
+            return physics_cache[node_pos]["grounded"]
+        
+        # Fallback to base_adjacency traversal
+        if base_adjacency is not None:
+            x, y = node_pos
+            below_pos = (x, y + 12)  # 12px down
 
-        # If node directly below doesn't exist, this node is on solid surface
-        if below_pos not in adjacency:
-            return True
+            # If node directly below doesn't exist, this node is on solid surface
+            if below_pos not in base_adjacency:
+                return True
 
-        # Check if there's a direct downward edge
-        if node_pos in adjacency:
-            neighbors = adjacency[node_pos]
-            for neighbor_info in neighbors:
-                # Handle both tuple format (neighbor_pos, cost) and just neighbor_pos
-                if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
-                    neighbor_pos = neighbor_info[0]
-                else:
-                    neighbor_pos = neighbor_info
-                
-                if neighbor_pos == below_pos:
-                    return False  # Can fall down, not grounded
+            # Check if there's a direct downward edge
+            if node_pos in base_adjacency:
+                neighbors = base_adjacency[node_pos]
+                for neighbor_info in neighbors:
+                    # Handle both tuple format (neighbor_pos, cost) and just neighbor_pos
+                    if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
+                        neighbor_pos = neighbor_info[0]
+                    else:
+                        neighbor_pos = neighbor_info
+                    
+                    if neighbor_pos == below_pos:
+                        return False  # Can fall down, not grounded
 
-        return True  # No downward edge, grounded
+            return True  # No downward edge, grounded
+        
+        # Error: neither source provided
+        raise ValueError(
+            "_is_node_grounded requires either physics_cache or base_adjacency. "
+            "This ensures grounding is determined by tile geometry only, not mines/doors."
+        )
 
     def find_closest_node_position(
         self,
@@ -244,6 +264,8 @@ class SubcellNodeLookupLoader:
         adjacency: Dict[Tuple[int, int], list],
         max_radius: float = 12.0,
         prefer_grounded: bool = False,
+        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+        base_adjacency: Optional[Dict[Tuple[int, int], list]] = None,
     ) -> Optional[Tuple[int, int]]:
         """
         Find closest node position using precomputed lookup table.
@@ -252,12 +274,17 @@ class SubcellNodeLookupLoader:
         Checks neighboring subcells if primary candidate doesn't exist.
         Handles out-of-bounds queries by clamping to extended lookup table bounds.
 
+        IMPORTANT: When prefer_grounded=True, uses physics_cache or base_adjacency
+        to ensure grounding is determined by tile geometry only, not entity positions.
+
         Args:
             query_x: Query X coordinate in pixels (tile data space)
             query_y: Query Y coordinate in pixels (tile data space)
-            adjacency: Graph adjacency structure (keys are node positions)
+            adjacency: Graph adjacency structure (keys are node positions, for candidate filtering)
             max_radius: Maximum search radius in pixels (default 12px for entity radius)
             prefer_grounded: If True, prioritize grounded nodes over air nodes
+            physics_cache: Optional pre-computed physics properties for grounding checks
+            base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
         Returns:
             Closest node position (x, y) if found, None otherwise
@@ -337,7 +364,7 @@ class SubcellNodeLookupLoader:
             air_nodes = []
             
             for candidate in candidates:
-                if self._is_node_grounded(candidate, adjacency):
+                if self._is_node_grounded(candidate, physics_cache, base_adjacency):
                     grounded.append(candidate)
                 else:
                     air_nodes.append(candidate)

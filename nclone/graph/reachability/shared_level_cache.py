@@ -71,7 +71,7 @@ class SharedLevelCache:
 
         self.num_nodes = num_nodes
         self.num_goals = num_goals
-        
+
         # Store curriculum stage for cache identification and validation
         self.curriculum_stage = curriculum_stage
 
@@ -144,6 +144,31 @@ class SharedLevelCache:
         gradients = SDF_HEIGHT * SDF_WIDTH * 2 * 4
         mappings = len(pickle.dumps((self.node_pos_to_idx, self.goal_id_to_idx)))
         return (path_distances + mine_costs + sdf + gradients + mappings) / 1024.0
+
+    def get_curriculum_entity_positions(
+        self,
+    ) -> Optional[Dict[str, Tuple[float, float]]]:
+        """Get curriculum entity positions used to build this cache.
+
+        When using multi-stage SharedLevelCaches, environments MUST use these
+        positions instead of recalculating them to ensure entity positions
+        exactly match what was used during cache building.
+
+        Returns:
+            Dict mapping entity type ("switch", "exit") to (x, y) position,
+            or None if no goal_pos_mapping is available
+        """
+        if not self.goal_pos_mapping:
+            return None
+
+        # Extract switch and exit positions from goal_pos_mapping
+        result = {}
+        if "switch" in self.goal_pos_mapping:
+            result["switch"] = self.goal_pos_mapping["switch"]
+        if "exit" in self.goal_pos_mapping:
+            result["exit"] = self.goal_pos_mapping["exit"]
+
+        return result if result else None
 
     def set_path_distance(
         self,

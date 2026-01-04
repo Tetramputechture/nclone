@@ -231,6 +231,9 @@ def _calculate_physics_aware_cost(
 
     # OPTIMIZATION: Direct dict access with local caching (avoid 19.7M dict.get() calls)
     # Extract physics properties once and cache in local variables
+    # IMPORTANT: physics_cache is pre-built from base_adjacency (tile geometry only),
+    # so grounded/walled checks correctly ignore entity positions (mines/doors).
+    # Agent cannot walk on mines - grounding determined by tiles, not dynamic entities.
     src_physics = physics_cache[src_pos]
     dst_physics = physics_cache[dst_pos]
     src_grounded = src_physics["grounded"]
@@ -261,13 +264,15 @@ def _calculate_physics_aware_cost(
             y_direction_change_to_rising = True
 
         # Check if we arrived via horizontal airborne movement (can't jump from here)
-        # Parent edge was horizontal (parent_dy == 0) and PARENT was not grounded/walled
-        # Need to check parent's grounding status, not current position
-        if parent_dy == 0 and parent_pos in physics_cache:
-            parent_physics = physics_cache[parent_pos]
-            parent_grounded = parent_physics["grounded"]
-            parent_walled = parent_physics["walled"]
-            if not parent_grounded and not parent_walled:
+        # Parent edge was horizontal (parent_dy == 0) and CURRENT node (src) is not grounded
+        # Need to check CURRENT node's grounding status (where we're trying to jump FROM)
+        # IMPORTANT: Using physics_cache (built from base_adjacency) ensures grounding
+        # is checked against tile geometry only, not entity positions (mines can't ground you)
+        # NOTE: walled status is irrelevant - you can move horizontally in air next to a wall
+        if parent_dy == 0:
+            # Use already-extracted src_grounded (computed from physics_cache[src_pos])
+            # Only check grounded status - being next to a wall doesn't prevent horizontal air movement
+            if not src_grounded:
                 from_horizontal_air_movement = True
 
     # Base geometric cost (Euclidean distance)
@@ -282,11 +287,15 @@ def _calculate_physics_aware_cost(
     # Special case: Diagonal falling from air (prefer over horizontal air movement)
     if dx != 0 and dy > 0 and not src_grounded and not src_walled:
         # Diagonal downward continuing same direction - efficient (gravity + momentum)
-        multiplier = 0.2
+        multiplier = 0.15
     # Special case: Diagonal upward wall-assisted move (valid N++ mechanic)
     elif dx != 0 and dy < 0 and not src_grounded and src_walled:
         # Wall-assisted diagonal upward (wall-jump) - valid but more expensive than ground
-        if x_direction_change:
+        # BUT: Cannot wall-jump after horizontal air movement or if transitioning from falling
+        if from_horizontal_air_movement or y_direction_change_to_rising:
+            # Block impossible physics sequence (down→horizontal→up or horizontal→up)
+            multiplier = float("inf")
+        elif x_direction_change:
             # Changing X direction while wall jumping is expensive
             # Cost: 1.414 × 1.5 = 2.12
             multiplier = 1.5
@@ -298,13 +307,13 @@ def _calculate_physics_aware_cost(
     elif dx != 0 and dy < 0 and src_grounded:
         # Grounded diagonal jump - efficient upward movement
         # Cost: 1.414 × 0.6 = 0.85
-        multiplier = 0.1
+        multiplier = 0.2
     # Special case: Diagonal upward from air without wall (aerial jump)
     elif dx != 0 and dy < 0 and not src_grounded and not src_walled:
         if from_horizontal_air_movement:
             # Cannot initiate jump from horizontal airborne edge
             # Must be grounded or continuing existing upward trajectory
-            multiplier = 1.5
+            multiplier = float("inf")
         elif aerial_chain > 0 and parent_pos is not None and parent_dy >= 0:
             # Already airborne with chain count, but previous movement was not upward
             # Cannot start going upward from horizontal/falling airborne position
@@ -332,8 +341,13 @@ def _calculate_physics_aware_cost(
             multiplier = 0.7
         elif src_walled:
             # Wall jump (vertical) - more expensive than ground jump
-            # Cost: 1.0 × 1.2 = 1.2
-            multiplier = 1.2
+            # BUT: Cannot wall-jump after horizontal air movement or if transitioning from falling
+            if from_horizontal_air_movement or y_direction_change_to_rising:
+                # Block impossible physics sequence (down→horizontal→up or horizontal→up)
+                multiplier = float("inf")
+            else:
+                # Cost: 1.0 × 1.2 = 1.2
+                multiplier = 1.2
         elif from_horizontal_air_movement:
             # Cannot initiate jump from horizontal airborne edge
             # Must be grounded or continuing existing upward trajectory
@@ -367,16 +381,12 @@ def _calculate_physics_aware_cost(
             # Very limited air control in N++ - can't reverse momentum without wall/ground
             multiplier = 1.5
         elif not src_grounded and not src_walled:
-            # Air horizontal - only allowed within aerial threshold
-            # After being airborne too long, horizontal control is lost
-            if aerial_chain > AERIAL_UPWARD_CHAIN_THRESHOLD:
-                # Beyond aerial threshold - block horizontal air movement
-                multiplier = 0.5
-            else:
-                # Within threshold - expensive but allowed
-                # Air accel 0.0444 (~33% slower than ground)
-                # Higher cost to prefer diagonal falling over horizontal air movement
-                multiplier = 0.5
+            # Air horizontal - expensive but allowed
+            # Air accel 0.0444 (~33% slower than ground)
+            # Higher cost to prefer diagonal falling over horizontal air movement
+            # NOTE: aerial_chain threshold should NOT apply to horizontal movement
+            # The threshold is for preventing infinite UPWARD chains, not blocking horizontal movement after falling
+            multiplier = 0.5
         else:
             # Other cases (e.g., grounded to air, air to grounded)
             multiplier = 1.0
@@ -810,6 +820,10 @@ def find_closest_node_to_position(
     spatial_hash: Optional[any] = None,
     subcell_lookup: Optional[any] = None,
     prefer_grounded: bool = False,
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    base_adjacency: Optional[
+        Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+    ] = None,
 ) -> Optional[Tuple[int, int]]:
     """
     Find the closest node to a world position with optional spatial indexing.
@@ -824,15 +838,20 @@ def find_closest_node_to_position(
     - World positions (entities, ninja): Full map space (includes 1-tile padding)
     - Offset: Add +24 to node coords to convert to world coords for comparison
 
+    IMPORTANT: When prefer_grounded=True, uses physics_cache or base_adjacency
+    to ensure grounding is determined by tile geometry only, not entity positions.
+
     Args:
         world_pos: World position (x, y) in pixels (full map space)
-        adjacency: Graph adjacency structure (keys in tile data space)
+        adjacency: Graph adjacency structure (keys in tile data space, for candidate filtering)
         threshold: Maximum distance threshold (if None, calculated as ninja_radius + entity_radius)
         entity_radius: Collision radius of the entity at world_pos (default 0.0)
         ninja_radius: Collision radius of the ninja (default 10.0)
         spatial_hash: Optional SpatialHash instance for O(1) lookup
         subcell_lookup: Optional SubcellNodeLookupLoader instance for fastest lookup
         prefer_grounded: If True, prioritize grounded nodes over air nodes
+        physics_cache: Optional pre-computed physics properties for grounding checks
+        base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
     Returns:
         Closest node position (in tile data space), or None if no node within threshold
@@ -868,6 +887,8 @@ def find_closest_node_to_position(
                 adjacency,
                 max_radius=threshold,
                 prefer_grounded=prefer_grounded,
+                physics_cache=physics_cache,
+                base_adjacency=base_adjacency,
             )
             if closest_node is not None:
                 return closest_node
@@ -917,50 +938,45 @@ def find_closest_node_to_position(
 
 def _is_node_grounded(
     node_pos: Tuple[int, int],
-    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    base_adjacency: Optional[
+        Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+    ] = None,
 ) -> bool:
     """
     Check if a node is grounded (has solid/blocked surface directly below).
 
+    Uses physics_cache for O(1) lookup if available, otherwise falls back to
+    base_adjacency traversal. IMPORTANT: Uses base_adjacency (tile geometry only),
+    NOT entity-masked adjacency, to ensure mines/doors don't affect grounding status.
+
     A node is grounded if there's a solid surface preventing downward movement.
     In screen coordinates: y=0 is top, y increases going DOWN.
 
-    A node is grounded if the position 12px directly below (same x, y+12):
-    - Does NOT exist in the adjacency graph (solid tile below), OR
-    - Exists but there's NO direct vertical edge to it (blocked by geometry)
-
     Args:
         node_pos: Node position (x, y) in pixels
-        adjacency: Adjacency graph structure
+        physics_cache: Optional pre-computed physics properties for O(1) lookup
+        base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
     Returns:
         True if node is grounded (on a surface), False otherwise (mid-air)
+
+    Raises:
+        ValueError: If neither physics_cache nor base_adjacency is provided
     """
-    x, y = node_pos
-    below_pos = (x, y + 12)  # 12px down (y increases downward)
+    # Prefer physics_cache for O(1) lookup (consistent with pathfinding)
+    if physics_cache is not None and node_pos in physics_cache:
+        return physics_cache[node_pos]["grounded"]
 
-    # If node directly below doesn't exist in graph, this node is on solid surface
-    if below_pos not in adjacency:
-        return True
+    # Fallback to base_adjacency traversal
+    if base_adjacency is not None:
+        return _is_node_grounded_util(node_pos, base_adjacency)
 
-    # Node below exists - check if we have a direct vertical edge to it
-    # If we CAN fall to it (edge exists), we're NOT grounded
-    # If we CAN'T fall to it (no edge), we ARE grounded
-    if node_pos in adjacency:
-        neighbors = adjacency[node_pos]
-        for neighbor_info in neighbors:
-            # Handle both tuple format (neighbor_pos, cost) and just neighbor_pos
-            if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
-                neighbor_pos = neighbor_info[0]
-            else:
-                neighbor_pos = neighbor_info
-
-            if neighbor_pos == below_pos:
-                # Found direct vertical edge downward - NOT grounded (can fall)
-                return False
-
-    # No direct downward edge found - node is grounded
-    return True
+    # Error: neither source provided
+    raise ValueError(
+        "_is_node_grounded requires either physics_cache or base_adjacency. "
+        "This ensures grounding is determined by tile geometry only, not mines/doors."
+    )
 
 
 def find_start_node_for_player(
@@ -971,6 +987,10 @@ def find_start_node_for_player(
     subcell_lookup: Optional[any] = None,
     goal_pos: Optional[Tuple[int, int]] = None,
     prefer_grounded: bool = True,
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    base_adjacency: Optional[
+        Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+    ] = None,
 ) -> Optional[Tuple[int, int]]:
     """
     Find best start node for player position, preferring grounded nodes.
@@ -983,14 +1003,19 @@ def find_start_node_for_player(
        - Otherwise: select topmost (lowest y value)
     3. If no overlapped nodes, closest node within threshold
 
+    IMPORTANT: Grounding checks use physics_cache or base_adjacency to ensure
+    grounding is determined by tile geometry only, not entity positions (mines/doors).
+
     Args:
         player_pos: Player world position (x, y) in pixels
-        adjacency: Graph adjacency structure
+        adjacency: Graph adjacency structure (for pathfinding/candidate filtering)
         player_radius: Player collision radius (default 10.0)
         spatial_hash: Optional SpatialHash for fast lookup
         subcell_lookup: Optional SubcellNodeLookupLoader for fastest lookup
         goal_pos: Optional goal position to prefer nodes in goal direction
         prefer_grounded: If True, prioritize grounded nodes (default True)
+        physics_cache: Optional pre-computed physics properties for grounding checks
+        base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
     Returns:
         Best start node, or None if none found
@@ -1023,7 +1048,12 @@ def find_start_node_for_player(
         try:
             # Use subcell lookup to find nodes within search radius
             closest = subcell_lookup.find_closest_node_position(
-                query_x, query_y, adjacency, max_radius=search_radius
+                query_x,
+                query_y,
+                adjacency,
+                max_radius=search_radius,
+                physics_cache=physics_cache,
+                base_adjacency=base_adjacency,
             )
             if closest is not None:
                 # Get all nearby candidates using spatial hash or linear search
@@ -1060,7 +1090,11 @@ def find_start_node_for_player(
         dist_sq = (nx - query_x) ** 2 + (ny - query_y) ** 2
         dist = dist_sq**0.5
 
-        is_grounded = _is_node_grounded(node, adjacency) if prefer_grounded else False
+        is_grounded = (
+            _is_node_grounded(node, physics_cache, base_adjacency)
+            if prefer_grounded
+            else False
+        )
 
         if dist <= player_radius:
             # Node center is within player radius (overlapped)
@@ -1583,8 +1617,10 @@ def bfs_distance_from_start(
                 src_physics = physics_cache[current]
                 src_grounded_physics = src_physics["grounded"]
 
-                # Increment chain if airborne (not grounded by tiles, not walled), reset if grounded
-                is_airborne = not src_grounded_physics and not src_physics["walled"]
+                # Increment chain if airborne (not grounded by tiles), reset if grounded
+                # NOTE: walled status does NOT affect airborne state - you can be in air next to a wall!
+                # Only grounding (solid surface below) resets the chain
+                is_airborne = not src_grounded_physics
                 neighbor_aerial_chain = current_aerial_chain + 1 if is_airborne else 0
 
                 # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
@@ -1602,6 +1638,11 @@ def bfs_distance_from_start(
                     mine_sdf,  # Pass SDF for velocity-aware mine costs
                     None,  # hazard_cost_multiplier
                 )
+
+            # Skip edges with infinite cost (impossible movements)
+            # This prevents pathfinding from traversing physically impossible edges
+            if cost == float("inf"):
+                continue
 
             new_dist = current_dist + cost
 
@@ -1955,8 +1996,10 @@ def find_shortest_path(
             src_physics = physics_cache[current]
             src_grounded_physics = src_physics["grounded"]
 
-            # Increment chain if airborne (not grounded by tiles, not walled), reset if grounded
-            is_airborne = not src_grounded_physics and not src_physics["walled"]
+            # Increment chain if airborne (not grounded by tiles), reset if grounded
+            # NOTE: walled status does NOT affect airborne state - you can be in air next to a wall!
+            # Only grounding (solid surface below) resets the chain
+            is_airborne = not src_grounded_physics
             neighbor_aerial_chain = current_aerial_chain + 1 if is_airborne else 0
 
             # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
@@ -1975,6 +2018,11 @@ def find_shortest_path(
                 None,  # hazard_cost_multiplier
             )
 
+            # Skip edges with infinite cost (impossible movements)
+            # This prevents pathfinding from traversing physically impossible edges
+            if cost == float("inf"):
+                continue
+
             new_dist = current_dist + cost
 
             # OPTIMIZATION: Direct comparison instead of .get() with default
@@ -1990,6 +2038,195 @@ def find_shortest_path(
     return None, float("inf")
 
 
+def find_nearest_stable_position(
+    start_node: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    physics_cache: Dict[Tuple[int, int], Dict[str, bool]],
+    level_data: Optional[Any] = None,
+    mine_proximity_cache: Optional[Any] = None,
+) -> Optional[Tuple[int, int]]:
+    """
+    Find the nearest grounded or walled position reachable from start_node.
+
+    This is used as a fallback when direct pathfinding fails. The agent can navigate
+    to a stable position (grounded/walled) first, then continue pathfinding from there.
+
+    This enables:
+    - Falling long distances to reach a platform
+    - Jumping towards distant platforms
+    - Recovery from mid-air positions
+
+    Args:
+        start_node: Starting node position
+        adjacency: Masked graph adjacency structure
+        base_adjacency: Base graph adjacency structure (for physics checks)
+        physics_cache: Pre-computed physics properties for O(1) lookups
+        level_data: Optional LevelData for mine proximity checks
+        mine_proximity_cache: Optional MineProximityCostCache
+
+    Returns:
+        Nearest stable (grounded or walled) node position, or None if unreachable
+    """
+    if physics_cache is None:
+        return None
+
+    # Check if start is already stable
+    start_physics = physics_cache.get(start_node)
+    if start_physics and (start_physics.get("grounded") or start_physics.get("walled")):
+        return start_node
+
+    # BFS to find nearest stable position
+    from collections import deque
+
+    queue = deque([(start_node, 0.0)])  # (node, distance)
+    visited = {start_node}
+    best_stable = None
+    best_distance = float("inf")
+
+    while queue:
+        current, dist = queue.popleft()
+
+        # Check if current is stable
+        current_physics = physics_cache.get(current)
+        if current_physics and (
+            current_physics.get("grounded") or current_physics.get("walled")
+        ):
+            if dist < best_distance:
+                best_stable = current
+                best_distance = dist
+                # Early exit if we found a very close stable position
+                if dist < 100.0:  # ~4-5 nodes away
+                    return best_stable
+
+        # Explore neighbors (but don't go too far)
+        if dist < 500.0:  # Max search distance
+            neighbors = adjacency.get(current, [])
+            for neighbor_pos, _ in neighbors:
+                if neighbor_pos not in visited:
+                    visited.add(neighbor_pos)
+                    # Calculate actual edge cost
+                    edge_dist = (
+                        (neighbor_pos[0] - current[0]) ** 2
+                        + (neighbor_pos[1] - current[1]) ** 2
+                    ) ** 0.5
+                    queue.append((neighbor_pos, dist + edge_dist))
+
+    return best_stable
+
+
+def find_shortest_path_with_fallback(
+    start_node: Tuple[int, int],
+    end_node: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    level_data: Optional[Any] = None,
+    mine_proximity_cache: Optional[Any] = None,
+) -> Tuple[Optional[List[Tuple[int, int]]], float]:
+    """
+    Find shortest path with two-phase fallback for unstable starting positions.
+
+    Strategy:
+    1. Try direct pathfinding from start to end
+    2. If that fails and start is unstable (not grounded/walled):
+       a. Find nearest stable position from start
+       b. Pathfind from stable position to end
+       c. Concatenate paths: start→stable→end
+
+    This allows agents to:
+    - Fall long distances to reach platforms
+    - Jump towards distant platforms and continue from there
+    - Handle situations where direct path is impossible due to physics
+
+    Args:
+        start_node: Starting node position
+        end_node: Target node position
+        adjacency: Masked graph adjacency structure
+        base_adjacency: Base graph adjacency structure (for physics checks)
+        physics_cache: Optional pre-computed physics properties
+        level_data: Optional LevelData for mine proximity checks
+        mine_proximity_cache: Optional MineProximityCostCache
+
+    Returns:
+        Tuple of (path, distance):
+        - path: List of node positions from start to end, or None if unreachable
+        - distance: Total path distance, or float('inf') if unreachable
+    """
+    # Phase 1: Try direct pathfinding
+    path, cost = find_shortest_path(
+        start_node,
+        end_node,
+        adjacency,
+        base_adjacency,
+        physics_cache,
+        level_data,
+        mine_proximity_cache,
+    )
+
+    if path is not None:
+        return path, cost
+
+    # Phase 2: Fallback - find nearest stable position and path from there
+    if physics_cache is None:
+        return None, float("inf")
+
+    # Check if start is unstable
+    start_physics = physics_cache.get(start_node)
+    if not start_physics or (
+        start_physics.get("grounded") or start_physics.get("walled")
+    ):
+        # Start is stable, direct path failed, no fallback needed
+        return None, float("inf")
+
+    # Find nearest stable position
+    stable_node = find_nearest_stable_position(
+        start_node,
+        adjacency,
+        base_adjacency,
+        physics_cache,
+        level_data,
+        mine_proximity_cache,
+    )
+
+    if stable_node is None:
+        return None, float("inf")
+
+    # Path from start to stable position (simple geometric path - falling/jumping)
+    path_to_stable, cost_to_stable = find_shortest_path(
+        start_node,
+        stable_node,
+        adjacency,
+        base_adjacency,
+        physics_cache,
+        level_data,
+        mine_proximity_cache,
+    )
+
+    if path_to_stable is None:
+        return None, float("inf")
+
+    # Path from stable position to goal
+    path_from_stable, cost_from_stable = find_shortest_path(
+        stable_node,
+        end_node,
+        adjacency,
+        base_adjacency,
+        physics_cache,
+        level_data,
+        mine_proximity_cache,
+    )
+
+    if path_from_stable is None:
+        return None, float("inf")
+
+    # Concatenate paths (remove duplicate stable_node)
+    combined_path = path_to_stable[:-1] + path_from_stable
+    combined_cost = cost_to_stable + cost_from_stable
+
+    return combined_path, combined_cost
+
+
 def flood_fill_reachable_nodes(
     start_pos: Tuple[int, int],
     adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
@@ -1997,6 +2234,10 @@ def flood_fill_reachable_nodes(
     subcell_lookup: Optional[any] = None,
     player_radius: float = 10.0,
     prefer_grounded_start: bool = True,
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    base_adjacency: Optional[
+        Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]
+    ] = None,
 ) -> set:
     """
     Perform flood fill from start position to find all reachable nodes.
@@ -2009,13 +2250,18 @@ def flood_fill_reachable_nodes(
     - adjacency keys are in tile data space (excludes 1-tile padding)
     - Conversion: tile_data = world - NODE_WORLD_COORD_OFFSET (24px)
 
+    IMPORTANT: When prefer_grounded_start=True, uses physics_cache or base_adjacency
+    to ensure grounding is determined by tile geometry only, not entity positions.
+
     Args:
         start_pos: Starting position in world space (x, y) pixels
-        adjacency: Graph adjacency structure (keys in tile data space)
+        adjacency: Graph adjacency structure (keys in tile data space, for pathfinding)
         spatial_hash: Optional SpatialHash instance for O(1) lookup
         subcell_lookup: Optional SubcellNodeLookupLoader instance
         player_radius: Player collision radius in pixels (default 10.0)
         prefer_grounded_start: If True, prefer grounded start nodes (default True)
+        physics_cache: Optional pre-computed physics properties for grounding checks
+        base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
     Returns:
         Set of reachable node positions (in tile data space)
@@ -2041,6 +2287,8 @@ def flood_fill_reachable_nodes(
         spatial_hash=spatial_hash,
         subcell_lookup=subcell_lookup,
         prefer_grounded=prefer_grounded_start,
+        physics_cache=physics_cache,
+        base_adjacency=base_adjacency,
     )
 
     _logger.debug(
@@ -2057,6 +2305,8 @@ def flood_fill_reachable_nodes(
             spatial_hash=spatial_hash,
             subcell_lookup=subcell_lookup,
             prefer_grounded=prefer_grounded_start,
+            physics_cache=physics_cache,
+            base_adjacency=base_adjacency,
         )
         _logger.debug(
             f"[FLOOD_FILL] Fallback attempt (radius=50.0, prefer_grounded={prefer_grounded_start}): "
@@ -2149,9 +2399,20 @@ def compute_reachable_surface_area(
     # Extract spatial lookups from graph_data for optimization
     spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
 
+    # Extract physics cache and base_adjacency for grounding checks
+    physics_cache = graph_data.get("node_physics") if graph_data is not None else None
+    base_adjacency = (
+        graph_data.get("base_adjacency") if graph_data is not None else None
+    )
+
     # Perform flood fill to find all reachable nodes
     reachable_nodes = flood_fill_reachable_nodes(
-        start_pos, adjacency, spatial_hash, subcell_lookup
+        start_pos,
+        adjacency,
+        spatial_hash,
+        subcell_lookup,
+        physics_cache=physics_cache,
+        base_adjacency=base_adjacency,
     )
 
     if not reachable_nodes:

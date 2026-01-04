@@ -665,7 +665,7 @@ def build_multi_stage_shared_cache(
     )
 
     # Step 4: Compute number of stages
-    interval = curriculum_config.get("stage_distance_interval", 150.0)
+    interval = curriculum_config.get("stage_distance_interval", 100.0)
     num_stages = max(2, int(combined_dist / interval) + 1)
     logger.info(
         f"  [4/7] Computing {num_stages} curriculum stages (interval={interval}px)"

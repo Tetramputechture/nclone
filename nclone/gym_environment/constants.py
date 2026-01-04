@@ -5,7 +5,7 @@ import numpy as np
 # Max time in frames per level before episode truncation (fallback)
 # Note: Actual truncation limits are now calculated dynamically per level
 # based on PBRS surface area and reachable mine count
-MAX_TIME_IN_FRAMES = 1000  # Fallback when dynamic calculation unavailable
+MAX_TIME_IN_FRAMES = 3000  # Fallback when dynamic calculation unavailable
 
 # Player frame size
 PLAYER_FRAME_WIDTH = 84
