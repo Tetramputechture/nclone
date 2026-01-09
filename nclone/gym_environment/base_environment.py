@@ -1483,6 +1483,32 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 info["episode_pbrs_metrics"] = (
                     self.reward_calculator.get_episode_reward_metrics()
                 )
+            
+            # Add waypoint collection metrics (2026-01-09)
+            # Track sequential guidance effectiveness
+            if hasattr(self.reward_calculator, "_episode_waypoint_bonus_total"):
+                info["waypoint_bonus_total"] = (
+                    self.reward_calculator._episode_waypoint_bonus_total
+                )
+                info["waypoint_collections_in_sequence"] = (
+                    self.reward_calculator._episode_waypoint_collections_in_sequence
+                )
+                info["waypoint_collections_out_of_sequence"] = (
+                    self.reward_calculator._episode_waypoint_collections_out_of_sequence
+                )
+                info["waypoint_max_sequence_streak"] = (
+                    self.reward_calculator._episode_waypoint_max_streak
+                )
+                # Calculate and include skip distance if there were out-of-sequence collections
+                if self.reward_calculator._episode_waypoint_collections_out_of_sequence > 0:
+                    # Average skip distance per out-of-sequence collection
+                    total_collections = (
+                        self.reward_calculator._episode_waypoint_collections_in_sequence +
+                        self.reward_calculator._episode_waypoint_collections_out_of_sequence
+                    )
+                    if total_collections > 0:
+                        # This is a placeholder - actual skip distances are tracked in the method
+                        info["waypoint_skip_distance"] = 0  # Will be set by callback from metrics
 
             # Add reward config state for curriculum tracking
             if hasattr(self.reward_calculator, "get_config_state"):

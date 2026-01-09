@@ -225,29 +225,39 @@ SWITCH_ACTIVATION_REWARD = 100.0
 SUB_GOAL_REWARD_PROGRESS = 30.0  # Distance milestone reward (3x baseline)
 SUB_GOAL_SPACING = 48.0  # Distance reduction threshold for milestone (pixels)
 
-# Waypoint collection rewards (RE-ENABLED 2026-01-03)
+# Waypoint collection rewards (RE-ENABLED 2026-01-03, ENHANCED 2026-01-09)
 # Provides guidance through non-linear optimal paths where agent must move away
 # from goal first (e.g., drop down to ramp, then jump up-right to exit).
-# Pure PBRS fails on such paths as direct-but-fatal approach reduces distance faster.
 #
-# Design:
-# - Flat +8 per waypoint (increased from +5 to overcome "fast fail" local minima)
-# - 10px collection radius (loosened from 6px to ensure discovery phase agents can collect)
-# - One-time collection per episode (prevents farming)
-# - Curriculum-aware: only waypoints within reachable path segment
-# - 48px spacing: matches SUB_GOAL_SPACING (~4 tiles)
+# CRITICAL INSIGHT: Pure PBRS with path distance is INSUFFICIENT for detours because:
+# 1. Shortcuts temporarily reduce path distance (positive PBRS signal)
+# 2. Death penalty comes too late (agent already learned wrong pattern)
+# 3. Sequential waypoints provide IMMEDIATE, UNAMBIGUOUS guidance for correct path
 #
-# With ~15 waypoints = +120 max contribution (vs +40 PBRS + quick death -80 = -40),
-# combined with increased death penalties, ensures waypoint collection strategy
-# strongly dominates "fast fail" approach in discovery phase.
-WAYPOINT_COLLECTION_REWARD = 8.0  # Increased to break "fast fail" local minima
-WAYPOINT_COLLECTION_RADIUS = 10.0  # pixels - loosened for discovery phase collection  # Distance reduction threshold for milestone (pixels)
+# SEQUENTIAL COLLECTION BONUS (NEW 2026-01-09):
+# - Base reward for any waypoint collection: 0.5
+# - Sequential bonus for in-order collection: base × (1.0 + streak × 0.1)
+# - Out-of-order collection: base × 0.3 (discourages shortcuts)
+# - Collection radius: 18.0 pixels (1.5 × sub-node size for reliable collection)
+#
+# Example rewards (base = 0.5):
+# - Waypoint 0 (in-sequence, streak=1): 0.5 × 1.1 = 0.55
+# - Waypoint 1 (in-sequence, streak=2): 0.5 × 1.2 = 0.60
+# - Waypoint 2 (in-sequence, streak=3): 0.5 × 1.3 = 0.65
+# - Waypoint 5 (skipped 3,4, out-of-order): 0.5 × 0.3 = 0.15
+#
+# With ~30 waypoints collected in-sequence = ~18 total bonus (meaningful but not dominant)
+# This creates immediate gradient toward following path, preventing "shortcut then die" pattern.
+WAYPOINT_BASE_BONUS = 0.5  # Base reward for waypoint collection
+WAYPOINT_COLLECTION_RADIUS = (
+    18.0  # pixels - 1.5 × sub-node size for reliable collection
+)
+WAYPOINT_SEQUENCE_MULTIPLIER = 0.1  # Streak bonus per consecutive in-order collection
+WAYPOINT_OUT_OF_ORDER_SCALE = 0.3  # Reduced reward for out-of-order collection
 
-# Progressive waypoint scaling (incentivizes exploring later portions of path)
-# reward = WAYPOINT_COLLECTION_REWARD × (1 + progress × WAYPOINT_PROGRESS_SCALE)
-# Where progress = waypoint_node_index / max_waypoint_index (0.0 to 1.0)
-# This creates a gradient from start (1x) to end (1+scale multiplier)
-WAYPOINT_PROGRESS_SCALE_BASE = 2.0  # Max multiplier increase at end of path
+# Legacy constants (deprecated, kept for compatibility)
+WAYPOINT_COLLECTION_REWARD = 8.0  # DEPRECATED - use WAYPOINT_BASE_BONUS instead
+WAYPOINT_PROGRESS_SCALE_BASE = 2.0  # DEPRECATED - use sequential system instead
 
 
 # =============================================================================
@@ -384,16 +394,12 @@ VELOCITY_ALIGNMENT_WEIGHT_RATIO = 0.0  # DEPRECATED
 
 
 # =============================================================================
-# DISABLED AUXILIARY COMPONENTS (2025-12-25)
+# DISABLED AUXILIARY COMPONENTS (2025-12-25, UPDATED 2026-01-09)
 # =============================================================================
 # The following auxiliary shaping components have been disabled to focus learning
 # on core objectives: level completion and speed optimization.
 #
 # DISABLED COMPONENTS:
-# - Path waypoint bonuses: Redundant with PBRS distance reduction
-#   * Waypoints provided discrete rewards for reaching turns/inflection points
-#   * PBRS already rewards moving along optimal path through potential changes
-#
 # - Velocity alignment bonuses: PBRS gradient provides directional signal
 #   * Attempted to reward moving in the "correct" direction
 #   * PBRS naturally guides direction through distance reduction rewards
@@ -406,16 +412,19 @@ VELOCITY_ALIGNMENT_WEIGHT_RATIO = 0.0  # DEPRECATED
 #   * Quadratic bonus in final 50px to encourage completion
 #   * PBRS gradient naturally intensifies as distance decreases
 #
-# Rationale: These components added complexity without improving learning.
-# PBRS (Potential-Based Reward Shaping) with shortest path distance already
-# provides dense, continuous gradients that guide the agent toward completion.
-# Removing auxiliary components simplifies the reward structure and allows the
-# agent to focus on the core objective: reducing path distance to goal.
+# RE-ENABLED COMPONENTS (2026-01-09):
+# - Sequential waypoint bonuses: CRITICAL for non-linear paths with detours
+#   * CORRECTED UNDERSTANDING: Pure PBRS fails on detours because shortcuts
+#     temporarily reduce path distance before causing death
+#   * Sequential bonuses provide IMMEDIATE positive signal for correct routing
+#   * Not redundant - they solve the "shortcut then die" local minimum
+#   * See reward_constants.py lines 228-254 for sequential bonus design
 #
 # Active reward components:
-# 1. Terminal rewards: Completion (+50), Switch (+60), Death (curriculum -15 to 0)
+# 1. Terminal rewards: Completion (+200), Switch (+100), Death (curriculum -30 to -3)
 # 2. PBRS: F(s,s') = γ * Φ(s') - Φ(s) for path distance reduction
-# 3. Time penalty: Small curriculum-based penalty (-0.0005 to -0.015) for speed
+# 3. Sequential waypoint bonuses: Immediate guidance for non-linear paths (RE-ENABLED)
+# 4. Time penalty: Small curriculum-based penalty (-0.0005 to -0.015) for speed
 
 
 # =============================================================================
@@ -480,6 +489,11 @@ MINE_PENALIZE_DEADLY_ONLY = True
 # REMOVED: Oscillation penalties (PBRS gives 0 net reward for oscillation)
 # REMOVED: Revisit penalties (PBRS penalizes returning to higher-distance states)
 # REMOVED: Velocity alignment bonuses (PBRS gradient provides directional signal)
-# REMOVED: Waypoint bonuses (PBRS rewards reaching any path position that reduces distance)
 #
-# Total: ~31 redundant components removed for focused distance-reduction objective
+# RE-ENABLED 2026-01-09:
+# RESTORED: Sequential waypoint bonuses (CRITICAL for non-linear detour paths)
+#   * Original removal was based on incorrect assumption that PBRS alone suffices
+#   * Detour paths create "shortcut then die" local minimum that PBRS cannot solve
+#   * Sequential bonuses provide immediate positive signal for correct routing
+#
+# Total: ~30 redundant components removed for focused distance-reduction objective
