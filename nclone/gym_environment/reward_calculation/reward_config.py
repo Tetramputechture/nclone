@@ -35,14 +35,22 @@ class RewardConfig:
     _curriculum_stage: int = 0
     _num_curriculum_stages: int = 1
 
-    # Waypoint system configuration (SIMPLIFIED 2026-01-03)
+    # Waypoint system configuration (ENHANCED 2026-01-09)
     # Provides guidance through non-linear paths where PBRS alone fails
-    # Simplified to uniform 12px spacing along optimal path (matches sub-node spacing)
+    # UPDATED: Sequential collection bonus prevents "shortcut then die" pattern
     enable_path_waypoints: bool = True  # Re-enabled for non-linear path guidance
     path_waypoint_progress_spacing: float = (
         12.0  # Sub-node spacing for uniform coarse rewards
     )
     path_waypoint_cluster_radius: float = 10.0  # Matches collection radius
+    
+    # Sequential waypoint bonus configuration (NEW 2026-01-09)
+    # Rewards collecting waypoints in-order along the optimal path
+    # Prevents shortcuts by providing immediate positive signal for correct routing
+    waypoint_base_bonus: float = 0.5  # Base reward for waypoint collection
+    waypoint_collection_radius: float = 18.0  # Collection radius (1.5 × sub-node size)
+    waypoint_sequence_multiplier: float = 0.1  # Streak bonus per consecutive collection
+    waypoint_out_of_order_scale: float = 0.3  # Reduced reward for out-of-order
 
     # Curriculum phase thresholds
     # UPDATED 2025-12-07: Success-rate based progression with minimum timestep gates

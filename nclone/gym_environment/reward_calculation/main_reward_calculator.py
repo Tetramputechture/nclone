@@ -198,6 +198,13 @@ class RewardCalculator:
         self._last_collected_waypoint: Optional[Any] = None
         self._frames_since_last_collection: int = 0
 
+        # Waypoint episode metrics (for TensorBoard logging)
+        self._episode_waypoint_bonus_total: float = 0.0
+        self._episode_waypoint_collections_in_sequence: int = 0
+        self._episode_waypoint_collections_out_of_sequence: int = 0
+        self._episode_waypoint_max_streak: int = 0
+        self._episode_waypoint_current_streak: int = 0
+
         # Distance-based milestone tracking (replaces pre-computed subgoals)
         # Rewards when shortest path distance decreases by >= milestone_interval
         self._last_milestone_distance_to_switch: Optional[float] = None
@@ -719,31 +726,31 @@ class RewardCalculator:
         #         f"backtrack_steps={self.episode_backtrack_steps}"
         #     )
 
-        # === AUXILIARY COMPONENTS DISABLED (2025-12-25) ===
-        # All auxiliary shaping components removed to focus learning on core objectives:
-        # - Path waypoint bonuses: Redundant with PBRS distance reduction
-        # - Velocity alignment: PBRS gradient provides directional signal
-        # - Exit direction bonus: Not needed with pure PBRS
-        # - Completion approach bonus: PBRS provides sufficient gradient near goal
+        # === SEQUENTIAL WAYPOINT BONUSES (RE-ENABLED 2026-01-09) ===
+        # Provides IMMEDIATE guidance through non-linear paths where PBRS alone fails.
+        #
+        # CRITICAL INSIGHT: Pure PBRS with path distance is INSUFFICIENT for detours:
+        # 1. Shortcuts temporarily reduce path distance (positive PBRS signal)
+        # 2. Death penalty comes too late (agent already learned wrong pattern)
+        # 3. Sequential waypoints provide immediate, unambiguous guidance for correct path
+        #
+        # The comment "Path waypoint bonuses: Redundant with PBRS distance reduction"
+        # was INCORRECT for non-linear paths. This has been fixed.
 
         switch_activated = obs.get("switch_activated", False)
-        waypoint_bonus = 0.0
-        velocity_alignment_bonus = 0.0
-        exit_direction_bonus = 0.0
-        completion_approach_bonus = 0.0
 
-        # Keep waypoint tracking for visualization only (no reward impact)
-        self._track_waypoint_collection(
+        # Calculate sequential waypoint bonus (RE-ENABLED)
+        waypoint_bonus, waypoint_metrics = self._calculate_sequential_waypoint_bonus(
             current_player_pos, self.prev_player_pos, switch_activated
         )
 
-        # Initialize metrics dict for logging compatibility
-        waypoint_metrics = {
-            "sequence_multiplier": 0.0,
-            "collection_type": "none",
-            "skip_distance": 0,
-            "approach_bonus": 0.0,
-        }
+        # Add waypoint bonus to total reward (CRITICAL FIX)
+        reward += waypoint_bonus
+
+        # Disabled auxiliary components (still correct to disable these)
+        velocity_alignment_bonus = 0.0
+        exit_direction_bonus = 0.0
+        completion_approach_bonus = 0.0
 
         # Track frames since last waypoint collection (for compatibility)
         if hasattr(self, "_frames_since_last_collection"):
@@ -1180,6 +1187,14 @@ class RewardCalculator:
         # Reset waypoint collection tracking for new episode
         self._collected_path_waypoints = set()
         self._next_expected_waypoint_index = 0
+        self._waypoint_sequence = []  # Clear sequence for new episode
+
+        # Reset waypoint episode metrics
+        self._episode_waypoint_bonus_total = 0.0
+        self._episode_waypoint_collections_in_sequence = 0
+        self._episode_waypoint_collections_out_of_sequence = 0
+        self._episode_waypoint_max_streak = 0
+        self._episode_waypoint_current_streak = 0
         self._last_collected_waypoint = None
         self._frames_since_last_collection = 0
 
@@ -2180,7 +2195,9 @@ class RewardCalculator:
 
         # Calculate max waypoint index for progressive reward normalization
         # This allows us to compute progress_fraction = waypoint_index / max_index
-        max_waypoint_index = max(wp.node_index for wp in phase_waypoints) if phase_waypoints else 1
+        max_waypoint_index = (
+            max(wp.node_index for wp in phase_waypoints) if phase_waypoints else 1
+        )
 
         # Check each waypoint to see if we just crossed into its radius
         for wp in phase_waypoints:
@@ -2210,7 +2227,9 @@ class RewardCalculator:
                 # Where progress_fraction = waypoint_index / max_index (0.0 to 1.0)
                 progress_fraction = wp.node_index / max(1, max_waypoint_index)
                 progress_scale = self.config.waypoint_progress_scale
-                bonus = WAYPOINT_COLLECTION_REWARD * (1.0 + progress_fraction * progress_scale)
+                bonus = WAYPOINT_COLLECTION_REWARD * (
+                    1.0 + progress_fraction * progress_scale
+                )
                 total_bonus += bonus
 
                 # Mark as collected
@@ -2333,6 +2352,166 @@ class RewardCalculator:
             # we'll rely on path waypoints for bonuses and use demos only for PBRS routing
 
         return merged
+
+    def _calculate_sequential_waypoint_bonus(
+        self,
+        current_pos: Optional[Tuple[float, float]],
+        previous_pos: Optional[Tuple[float, float]],
+        switch_activated: bool,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """Calculate sequential waypoint collection bonus (RE-ENABLED 2026-01-09).
+
+        CRITICAL: This provides IMMEDIATE, UNAMBIGUOUS guidance for non-linear paths.
+        Pure PBRS with path distance fails on detours because shortcuts temporarily
+        reduce distance before causing death. Sequential bonuses create instant positive
+        signal for following the correct path.
+
+        Reward Structure:
+        - In-sequence collection: base × (1.0 + streak × multiplier)
+        - Out-of-sequence collection: base × out_of_order_scale
+        - No collection: 0.0 (no penalty)
+
+        The streak multiplier rewards consistent path-following, while out-of-order
+        collection still provides some reward for progress (better than shortcuts).
+
+        Args:
+            current_pos: Current agent position
+            previous_pos: Previous agent position (for movement check)
+            switch_activated: Whether exit switch is activated
+
+        Returns:
+            Tuple of (bonus_reward, metrics_dict)
+        """
+        # Initialize return values
+        bonus = 0.0
+        metrics = {
+            "sequence_multiplier": 0.0,
+            "collection_type": "none",
+            "skip_distance": 0,
+            "approach_bonus": 0.0,
+        }
+
+        # Validate inputs
+        if (
+            current_pos is None
+            or previous_pos is None
+            or not self.current_path_waypoints_by_phase
+        ):
+            return bonus, metrics
+
+        # Get collection parameters from config
+        base_bonus = self.config.waypoint_base_bonus
+        collection_radius = self.config.waypoint_collection_radius
+        sequence_multiplier = self.config.waypoint_sequence_multiplier
+        out_of_order_scale = self.config.waypoint_out_of_order_scale
+
+        # Check if path waypoints are enabled
+        if not self.config.enable_path_waypoints:
+            return bonus, metrics
+
+        # Build ordered waypoint sequence on first call (if not already built)
+        if not self._waypoint_sequence:
+            all_waypoints = []
+            for phase_name in ["pre_switch", "post_switch"]:  # Order matters
+                waypoints = self.current_path_waypoints_by_phase.get(phase_name, [])
+                for wp in waypoints:
+                    # Store (waypoint, phase, index_in_phase)
+                    wp_phase = getattr(wp, "phase", phase_name)
+                    wp_index = getattr(wp, "node_index", 0)
+                    all_waypoints.append((wp, wp_phase, wp_index))
+
+            # Sort by phase (pre_switch first) then by node_index
+            all_waypoints.sort(key=lambda x: (x[1] != "pre_switch", x[2]))
+            self._waypoint_sequence = all_waypoints
+
+        if not self._waypoint_sequence:
+            return bonus, metrics
+
+        # Track if we collected any waypoints this step
+        collected_waypoint = None
+        collected_index = None
+
+        # Check waypoints for collection
+        for seq_idx, (wp, wp_phase, node_idx) in enumerate(self._waypoint_sequence):
+            wp_pos = wp.position
+
+            # Skip if already collected
+            if (wp_pos, wp_phase) in self._collected_path_waypoints:
+                continue
+
+            # Block post-switch waypoints until switch is activated
+            if wp_phase == "post_switch" and not switch_activated:
+                continue
+
+            # Check if agent passed through waypoint radius
+            prev_dist = math.sqrt(
+                (previous_pos[0] - wp_pos[0]) ** 2 + (previous_pos[1] - wp_pos[1]) ** 2
+            )
+            curr_dist = math.sqrt(
+                (current_pos[0] - wp_pos[0]) ** 2 + (current_pos[1] - wp_pos[1]) ** 2
+            )
+
+            # Collect if currently within radius OR passed through during movement
+            if curr_dist <= collection_radius or prev_dist <= collection_radius:
+                self._collected_path_waypoints.add((wp_pos, wp_phase))
+                collected_waypoint = wp
+                collected_index = seq_idx
+                break  # Only process first collected waypoint per step
+
+        # Calculate bonus based on collection type
+        if collected_waypoint is not None:
+            # Check if this is the next expected waypoint in sequence
+            if collected_index == self._next_expected_waypoint_index:
+                # IN-SEQUENCE COLLECTION: Apply streak bonus
+                # Streak starts at 0, so first waypoint gets 1.0x multiplier
+                streak_bonus = 1.0 + (
+                    self._next_expected_waypoint_index * sequence_multiplier
+                )
+                bonus = base_bonus * streak_bonus
+
+                # Update tracking
+                self._next_expected_waypoint_index += 1
+                self._last_collected_waypoint = collected_waypoint
+
+                # Update episode metrics
+                self._episode_waypoint_collections_in_sequence += 1
+                self._episode_waypoint_current_streak += 1
+                self._episode_waypoint_max_streak = max(
+                    self._episode_waypoint_max_streak,
+                    self._episode_waypoint_current_streak,
+                )
+
+                # Update metrics
+                metrics["sequence_multiplier"] = streak_bonus
+                metrics["collection_type"] = "in_sequence"
+                metrics["skip_distance"] = 0
+
+            else:
+                # OUT-OF-SEQUENCE COLLECTION: Reduced reward, reset streak
+                bonus = base_bonus * out_of_order_scale
+
+                # Calculate how many waypoints were skipped
+                skip_distance = max(
+                    0, collected_index - self._next_expected_waypoint_index
+                )
+
+                # Update tracking (set next expected to one after this)
+                self._next_expected_waypoint_index = collected_index + 1
+                self._last_collected_waypoint = collected_waypoint
+
+                # Update episode metrics
+                self._episode_waypoint_collections_out_of_sequence += 1
+                self._episode_waypoint_current_streak = 0  # Reset streak
+
+                # Update metrics
+                metrics["sequence_multiplier"] = out_of_order_scale
+                metrics["collection_type"] = "out_of_sequence"
+                metrics["skip_distance"] = skip_distance
+
+            # Track total bonus for episode
+            self._episode_waypoint_bonus_total += bonus
+
+        return bonus, metrics
 
     def _track_waypoint_collection(
         self,
