@@ -960,6 +960,8 @@ class DebugOverlayRenderer:
                                 # )
 
                                 # Compute path with mine avoidance costs and fallback for unstable positions
+                                # Pass ninja velocity for velocity-aware first edge costs
+                                ninja_velocity = path_aware_info.get("ninja_velocity")
                                 path, path_cost = find_shortest_path_with_fallback(
                                     closest_node,
                                     switch_node,
@@ -968,6 +970,9 @@ class DebugOverlayRenderer:
                                     physics_cache,
                                     level_data,
                                     self._mine_proximity_cache,
+                                    ninja_velocity,
+                                    debug=True,  # Enable diagnostic logging
+                                    allow_high_cost_edges=True,  # Allow risky paths for visualization
                                 )
                                 if path:
                                     # logger.warning(
@@ -1008,6 +1013,8 @@ class DebugOverlayRenderer:
                                 # )
 
                                 # Compute path with mine avoidance costs and fallback for unstable positions
+                                # Pass ninja velocity for velocity-aware first edge costs
+                                ninja_velocity = path_aware_info.get("ninja_velocity")
                                 path, path_cost = find_shortest_path_with_fallback(
                                     closest_node,
                                     exit_node,
@@ -1016,6 +1023,9 @@ class DebugOverlayRenderer:
                                     physics_cache,
                                     level_data,
                                     self._mine_proximity_cache,
+                                    ninja_velocity,
+                                    debug=True,  # Enable diagnostic logging
+                                    allow_high_cost_edges=True,  # Allow risky paths for visualization
                                 )
                                 if path:
                                     # logger.warning(
@@ -1234,6 +1244,8 @@ class DebugOverlayRenderer:
                     if switch_node is not None:
                         # BFS from ninja to switch using shared utility
                         # Use mine proximity cache for consistent path distances with training
+                        # Pass ninja velocity for velocity-aware first edge costs
+                        ninja_velocity = path_aware_info.get("ninja_velocity")
                         distances, target_dist, _, _ = bfs_distance_from_start(
                             closest_node,
                             switch_node,
@@ -1243,6 +1255,7 @@ class DebugOverlayRenderer:
                             physics_cache,
                             level_data,
                             self._mine_proximity_cache,
+                            ninja_velocity=ninja_velocity,
                         )
 
                         if target_dist is not None:
@@ -1265,6 +1278,8 @@ class DebugOverlayRenderer:
                     if exit_node is not None:
                         # BFS from ninja to exit using shared utility
                         # Use mine proximity cache for consistent path distances with training
+                        # Pass ninja velocity for velocity-aware first edge costs
+                        ninja_velocity = path_aware_info.get("ninja_velocity")
                         distances, target_dist, _, _ = bfs_distance_from_start(
                             closest_node,
                             exit_node,
@@ -1274,6 +1289,7 @@ class DebugOverlayRenderer:
                             physics_cache,
                             level_data,
                             self._mine_proximity_cache,
+                            ninja_velocity=ninja_velocity,
                         )
 
                         if target_dist is not None:

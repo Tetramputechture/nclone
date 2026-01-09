@@ -243,6 +243,12 @@ SUB_GOAL_SPACING = 48.0  # Distance reduction threshold for milestone (pixels)
 WAYPOINT_COLLECTION_REWARD = 8.0  # Increased to break "fast fail" local minima
 WAYPOINT_COLLECTION_RADIUS = 10.0  # pixels - loosened for discovery phase collection  # Distance reduction threshold for milestone (pixels)
 
+# Progressive waypoint scaling (incentivizes exploring later portions of path)
+# reward = WAYPOINT_COLLECTION_REWARD × (1 + progress × WAYPOINT_PROGRESS_SCALE)
+# Where progress = waypoint_node_index / max_waypoint_index (0.0 to 1.0)
+# This creates a gradient from start (1x) to end (1+scale multiplier)
+WAYPOINT_PROGRESS_SCALE_BASE = 2.0  # Max multiplier increase at end of path
+
 
 # =============================================================================
 # PBRS CONSTANTS (Curriculum-Managed)

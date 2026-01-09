@@ -46,6 +46,26 @@ MOMENTUM_BUILDING_THRESHOLD = (
     12  # Min horizontal displacement (1 sub-node) to have momentum
 )
 
+# Velocity-aware first-edge cost constants
+# These apply only to the first edge from ninja's current position, using actual velocity
+# Reflects ninja's current momentum state for more accurate pathfinding
+NINJA_RISING_FAST_THRESHOLD = (
+    -2.0
+)  # Below this yspeed = strong upward momentum (continuing jump)
+NINJA_RISING_SLOW_THRESHOLD = (
+    0.0  # Below this yspeed = some upward momentum (jump ending)
+)
+NINJA_HORIZONTAL_MOMENTUM_THRESHOLD = (
+    2.0  # ~60% of MAX_HOR_SPEED (3.333) for significant momentum
+)
+
+# Cost multipliers for first edge based on ninja's actual velocity
+VELOCITY_UPWARD_FAST_MULTIPLIER = 0.3  # Continuing strong jump (high upward velocity)
+VELOCITY_UPWARD_SLOW_MULTIPLIER = 0.7  # Jump ending (low upward velocity)
+VELOCITY_HORIZONTAL_CONTINUE_MULTIPLIER = 0.5  # Moving with momentum (same direction)
+VELOCITY_HORIZONTAL_REVERSE_SLOW_MULTIPLIER = 1.5  # Slight direction change (low speed)
+VELOCITY_HORIZONTAL_REVERSE_FAST_MULTIPLIER = 2.5  # Hard brake and reverse (high speed)
+
 
 def _get_aerial_chain_multiplier(chain_count: int) -> float:
     """Multiplicative cost scaling for consecutive aerial upward moves.
@@ -158,6 +178,7 @@ def _calculate_physics_aware_cost(
     grandparent_pos: Optional[Tuple[int, int]] = None,
     mine_sdf: Optional[Any] = None,
     hazard_cost_multiplier: Optional[float] = None,
+    ninja_velocity: Optional[Tuple[float, float]] = None,
 ) -> float:
     """
     Calculate edge cost based on N++ movement physics, momentum, and mine hazard proximity.
@@ -211,6 +232,7 @@ def _calculate_physics_aware_cost(
         grandparent_pos: Optional grandparent position for momentum inference
         mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
         hazard_cost_multiplier: Optional curriculum-adaptive mine hazard cost multiplier
+        ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
 
     Returns:
         Edge cost (float) where 1.0 = baseline movement cost
@@ -280,6 +302,44 @@ def _calculate_physics_aware_cost(
         base_cost = 1.414  # sqrt(2) for diagonal
     else:
         base_cost = 1.0  # Unit cost for cardinal directions
+
+    # Velocity-aware first-edge cost adjustment
+    # Only applies when this is the first edge (parent_pos is None) and ninja_velocity is provided
+    # Uses ninja's actual velocity to make more realistic cost estimates for initial movement
+    velocity_multiplier = 1.0
+    if parent_pos is None and ninja_velocity is not None:
+        ninja_xspeed, ninja_yspeed = ninja_velocity
+
+        # Vertical velocity adjustments (for upward edges)
+        if dy < 0:  # Moving upward (negative y in screen coords)
+            if not src_grounded:  # Only apply velocity logic when airborne
+                # Check ninja's vertical velocity to determine if upward movement is possible
+                if ninja_yspeed >= NINJA_RISING_SLOW_THRESHOLD:
+                    # Ninja is falling or stationary - CANNOT jump in mid-air
+                    velocity_multiplier = float("inf")
+                elif ninja_yspeed < NINJA_RISING_FAST_THRESHOLD:
+                    # Ninja has strong upward momentum - continuing jump is cheap
+                    velocity_multiplier = VELOCITY_UPWARD_FAST_MULTIPLIER
+                else:
+                    # Ninja has some upward momentum but slowing - moderate cost
+                    velocity_multiplier = VELOCITY_UPWARD_SLOW_MULTIPLIER
+
+        # Horizontal velocity adjustments (for horizontal edges)
+        elif dy == 0 and dx != 0:  # Pure horizontal movement
+            # Check if moving with or against momentum
+            ninja_has_momentum = abs(ninja_xspeed) > NINJA_HORIZONTAL_MOMENTUM_THRESHOLD
+            same_direction = (ninja_xspeed * dx) > 0  # Both positive or both negative
+
+            if ninja_has_momentum:
+                if same_direction:
+                    # Moving with momentum - cheaper
+                    velocity_multiplier = VELOCITY_HORIZONTAL_CONTINUE_MULTIPLIER
+                else:
+                    # Moving against momentum - expensive (brake and reverse)
+                    velocity_multiplier = VELOCITY_HORIZONTAL_REVERSE_FAST_MULTIPLIER
+            elif not same_direction and abs(ninja_xspeed) > 0.5:
+                # Low speed but reversing direction - moderate cost
+                velocity_multiplier = VELOCITY_HORIZONTAL_REVERSE_SLOW_MULTIPLIER
 
     # Physics multipliers based on movement type
     # Screen coordinates: y increases downward
@@ -465,7 +525,13 @@ def _calculate_physics_aware_cost(
                     )  # / 12.0 * 2.0
                     mine_multiplier *= velocity_factor
 
-    return base_cost * multiplier * momentum_multiplier * mine_multiplier
+    return (
+        base_cost
+        * multiplier
+        * momentum_multiplier
+        * mine_multiplier
+        * velocity_multiplier
+    )
 
 
 def _is_node_grounded_util(
@@ -1411,13 +1477,14 @@ def find_ninja_node(
         overlapping_nodes.sort(key=lambda node: node[1])  # Sort by distance
         return overlapping_nodes[0][0]
 
-    # Fallback: visual matching within 5 pixels (for blue node coloring consistency)
-    # This handles edge cases where ninja is very close but not quite overlapping
+    # Fallback: visual matching within 24 pixels (1 tile, for airborne ninja tolerance)
+    # This handles edge cases where ninja is airborne between nodes
+    # Increased from 5px to 24px to be more tolerant when ninja is in midair
     for pos in adjacency.keys():
         x, y = pos
         if (
-            abs(x + NODE_WORLD_COORD_OFFSET - ninja_pos[0]) < 5
-            and abs(y + NODE_WORLD_COORD_OFFSET - ninja_pos[1]) < 5
+            abs(x + NODE_WORLD_COORD_OFFSET - ninja_pos[0]) < 24
+            and abs(y + NODE_WORLD_COORD_OFFSET - ninja_pos[1]) < 24
         ):
             return pos
 
@@ -1437,6 +1504,7 @@ def bfs_distance_from_start(
     use_geometric_costs: bool = False,
     track_geometric_distances: bool = False,
     mine_sdf: Optional[Any] = None,
+    ninja_velocity: Optional[Tuple[float, float]] = None,
 ) -> Tuple[
     Dict[Tuple[int, int], float],
     Optional[float],
@@ -1478,6 +1546,7 @@ def bfs_distance_from_start(
             returning the pixel length of the physics-optimal path. The priority queue
             still uses physics costs for ordering.
         mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
+        ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
 
     Returns:
         Tuple of (distances_dict, target_distance, parents_dict, geometric_distances_dict):
@@ -1625,6 +1694,12 @@ def bfs_distance_from_start(
 
                 # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
                 # OPTIMIZATION: Pass cached parent/grandparent instead of dict.get() calls
+                # Pass ninja_velocity only for first edges (from start_node with no parent)
+                edge_ninja_velocity = (
+                    ninja_velocity
+                    if (current == start_node and current_parent is None)
+                    else None
+                )
                 cost = _calculate_physics_aware_cost(
                     current,
                     neighbor_pos,
@@ -1637,6 +1712,7 @@ def bfs_distance_from_start(
                     current_grandparent,  # Pass cached grandparent
                     mine_sdf,  # Pass SDF for velocity-aware mine costs
                     None,  # hazard_cost_multiplier
+                    edge_ninja_velocity,  # Velocity-aware costs for first edge only
                 )
 
             # Skip edges with infinite cost (impossible movements)
@@ -1688,6 +1764,7 @@ def calculate_geometric_path_distance(
     level_data: Optional[Any] = None,
     mine_proximity_cache: Optional[Any] = None,
     mine_sdf: Optional[Any] = None,
+    ninja_velocity: Optional[Tuple[float, float]] = None,
 ) -> float:
     """
     Calculate the geometric (pixel) path distance along the physics-optimal path.
@@ -1773,6 +1850,7 @@ def calculate_geometric_path_distance(
         use_geometric_costs=False,  # Use physics costs for pathfinding priority
         track_geometric_distances=True,  # Track pixel distances along physics path
         return_parents=True,  # Request parents for sub-node resolution
+        ninja_velocity=ninja_velocity,  # Pass velocity for first-edge cost adjustment
     )
 
     if geometric_distances is None:
@@ -1873,6 +1951,8 @@ def find_shortest_path(
     physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
     level_data: Optional[Any] = None,
     mine_proximity_cache: Optional[Any] = None,
+    ninja_velocity: Optional[Tuple[float, float]] = None,
+    allow_high_cost_edges: bool = False,
 ) -> Tuple[Optional[List[Tuple[int, int]]], float]:
     """
     Find shortest path from start to end node using Dijkstra's algorithm with physics validation.
@@ -2004,6 +2084,12 @@ def find_shortest_path(
 
             # Calculate physics-aware edge cost with momentum tracking (uses base_adjacency)
             # OPTIMIZATION: Pass cached parent/grandparent
+            # Pass ninja_velocity only for first edges (from start_node with no parent)
+            edge_ninja_velocity = (
+                ninja_velocity
+                if (current == start_node and current_parent is None)
+                else None
+            )
             cost = _calculate_physics_aware_cost(
                 current,
                 neighbor_pos,
@@ -2016,12 +2102,19 @@ def find_shortest_path(
                 current_grandparent,  # Pass cached grandparent
                 None,  # mine_sdf
                 None,  # hazard_cost_multiplier
+                edge_ninja_velocity,  # Velocity-aware costs for first edge only
             )
 
             # Skip edges with infinite cost (impossible movements)
             # This prevents pathfinding from traversing physically impossible edges
+            # For visualization/debugging, allow high cost edges with capped cost
             if cost == float("inf"):
-                continue
+                if allow_high_cost_edges:
+                    # Cap infinite cost at 10000 for visualization purposes
+                    # This allows paths to be found even through "impossible" movements
+                    cost = 10000.0
+                else:
+                    continue
 
             new_dist = current_dist + cost
 
@@ -2047,26 +2140,36 @@ def find_nearest_stable_position(
     mine_proximity_cache: Optional[Any] = None,
 ) -> Optional[Tuple[int, int]]:
     """
-    Find the nearest grounded or walled position reachable from start_node.
+    Find the nearest SAFE grounded or walled position reachable from start_node.
 
     This is used as a fallback when direct pathfinding fails. The agent can navigate
     to a stable position (grounded/walled) first, then continue pathfinding from there.
 
+    PRIORITIZES safety: Prefers stable positions with masked edges (safe areas) over
+    stable positions in dangerous areas (surrounded by mines), even if farther away.
+    This prevents invalid routes that would path through deadly hazards.
+
+    Uses base_adjacency (unmasked graph) for the BFS search to allow finding platforms
+    beyond dangerous areas, but prefers destinations that are actually safe.
+
     This enables:
-    - Falling long distances to reach a platform
-    - Jumping towards distant platforms
+    - Falling long distances to reach safe platforms
+    - Jumping towards distant safe platforms
     - Recovery from mid-air positions
+    - Finding routes that AVOID dangerous areas rather than pathing through them
 
     Args:
         start_node: Starting node position
-        adjacency: Masked graph adjacency structure
-        base_adjacency: Base graph adjacency structure (for physics checks)
+        adjacency: Masked graph adjacency structure (used to determine safety)
+        base_adjacency: Base graph adjacency structure (used for BFS pathfinding)
         physics_cache: Pre-computed physics properties for O(1) lookups
         level_data: Optional LevelData for mine proximity checks
         mine_proximity_cache: Optional MineProximityCostCache
 
     Returns:
-        Nearest stable (grounded or walled) node position, or None if unreachable
+        Nearest SAFE stable (grounded or walled with masked edges) node position.
+        Falls back to unsafe stable position if no safe one found.
+        Falls back to start_node if no stable position found at all.
     """
     if physics_cache is None:
         return None
@@ -2077,31 +2180,49 @@ def find_nearest_stable_position(
         return start_node
 
     # BFS to find nearest stable position
+    # CRITICAL: Prioritize SAFE stable positions (with masked edges) over dangerous ones
     from collections import deque
 
     queue = deque([(start_node, 0.0)])  # (node, distance)
     visited = {start_node}
-    best_stable = None
-    best_distance = float("inf")
+
+    # Track best safe stable (grounded + has masked edges) and best any stable
+    best_safe_stable = None
+    best_safe_distance = float("inf")
+    best_any_stable = None
+    best_any_distance = float("inf")
 
     while queue:
         current, dist = queue.popleft()
 
-        # Check if current is stable
+        # Check if current is stable (grounded or walled)
         current_physics = physics_cache.get(current)
         if current_physics and (
             current_physics.get("grounded") or current_physics.get("walled")
         ):
-            if dist < best_distance:
-                best_stable = current
-                best_distance = dist
-                # Early exit if we found a very close stable position
-                if dist < 100.0:  # ~4-5 nodes away
-                    return best_stable
+            # Check if it's also SAFE (has masked edges available)
+            current_masked_edges = adjacency.get(current, [])
+            is_safe = len(current_masked_edges) > 0
 
-        # Explore neighbors (but don't go too far)
-        if dist < 500.0:  # Max search distance
-            neighbors = adjacency.get(current, [])
+            if is_safe:
+                # Found a SAFE stable position - this is preferred!
+                if dist < best_safe_distance:
+                    best_safe_stable = current
+                    best_safe_distance = dist
+                    # Early exit if we found a reasonably close SAFE stable position
+                    if dist < 2400.0:  # ~16 nodes away - worth traveling for safety
+                        return best_safe_stable
+            else:
+                # Found a stable position but it's in a dangerous area
+                if dist < best_any_distance:
+                    best_any_stable = current
+                    best_any_distance = dist
+
+        # Explore neighbors with much larger search radius to find safe areas
+        if dist < 2400.0:  # Max search distance (~100 tiles, can span entire map)
+            # Use base_adjacency to allow escape from dangerous positions (e.g., near mines)
+            # The agent exists at start_node, so we need to allow movement away from it
+            neighbors = base_adjacency.get(current, [])
             for neighbor_pos, _ in neighbors:
                 if neighbor_pos not in visited:
                     visited.add(neighbor_pos)
@@ -2112,7 +2233,16 @@ def find_nearest_stable_position(
                     ) ** 0.5
                     queue.append((neighbor_pos, dist + edge_dist))
 
-    return best_stable
+    # Prefer safe stable positions over dangerous ones, even if farther away
+    # Only use dangerous stable positions if no safe ones were found
+    if best_safe_stable is not None:
+        return best_safe_stable
+    elif best_any_stable is not None:
+        return best_any_stable
+    else:
+        # Always return at least the start_node as fallback
+        # The agent exists there currently and should be treated as a valid starting point
+        return start_node
 
 
 def find_shortest_path_with_fallback(
@@ -2123,37 +2253,82 @@ def find_shortest_path_with_fallback(
     physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
     level_data: Optional[Any] = None,
     mine_proximity_cache: Optional[Any] = None,
+    ninja_velocity: Optional[Tuple[float, float]] = None,
+    debug: bool = False,
+    allow_high_cost_edges: bool = False,
 ) -> Tuple[Optional[List[Tuple[int, int]]], float]:
     """
-    Find shortest path with two-phase fallback for unstable starting positions.
+    Find shortest path with two-phase fallback for unstable or dangerous starting positions.
 
     Strategy:
-    1. Try direct pathfinding from start to end
-    2. If that fails and start is unstable (not grounded/walled):
-       a. Find nearest stable position from start
-       b. Pathfind from stable position to end
-       c. Concatenate paths: start→stable→end
+    1. Try direct pathfinding from start to end using masked adjacency (safe routing)
+    2. If that fails (including when masked adjacency blocks all edges from start):
+       a. Find nearest SAFE stable position (grounded + has masked edges) using BFS
+          - Searches up to 2400px (~100 tiles, can span entire map)
+          - Prioritizes safe positions (with masked edges) over dangerous ones
+          - Only uses dangerous positions as last resort
+       b. Pathfind from start to stable using base_adjacency (escape dangerous area)
+       c. Pathfind from stable to end using:
+          - masked adjacency IF stable is in safe area (has masked edges) - NORMAL CASE
+          - base_adjacency IF stable is still in danger zone (0 masked edges) - RARE FALLBACK
+       d. Concatenate paths: start→stable→end
 
     This allows agents to:
-    - Fall long distances to reach platforms
-    - Jump towards distant platforms and continue from there
-    - Handle situations where direct path is impossible due to physics
+    - Fall long distances to reach SAFE platforms
+    - Jump towards distant SAFE platforms and continue from there
+    - ESCAPE from dangerous positions (e.g., airborne near mines) to safe ground
+    - AVOID pathing through deadly hazards by finding safe routes around them
+    - Handle situations where direct path is impossible due to physics or hazards
 
     Args:
         start_node: Starting node position
         end_node: Target node position
-        adjacency: Masked graph adjacency structure
-        base_adjacency: Base graph adjacency structure (for physics checks)
+        adjacency: Masked graph adjacency structure (hazards blocked)
+        base_adjacency: Base graph adjacency structure (all physically possible edges)
         physics_cache: Optional pre-computed physics properties
         level_data: Optional LevelData for mine proximity checks
         mine_proximity_cache: Optional MineProximityCostCache
+        ninja_velocity: Optional ninja velocity (xspeed, yspeed) for first edge cost adjustment
+        debug: Enable diagnostic logging
+        allow_high_cost_edges: Allow edges with infinite cost (for visualization/debugging)
 
     Returns:
         Tuple of (path, distance):
         - path: List of node positions from start to end, or None if unreachable
         - distance: Total path distance, or float('inf') if unreachable
     """
+    if debug:
+        print("\n" + "=" * 80)
+        print("[PATHFIND_DIAG] find_shortest_path_with_fallback called")
+        print(f"  start_node: {start_node}")
+        print(f"  end_node: {end_node}")
+        print(f"  ninja_velocity: {ninja_velocity}")
+
+        # Check adjacency availability
+        masked_neighbors = adjacency.get(start_node, [])
+        base_neighbors = base_adjacency.get(start_node, [])
+        print(f"  start_node masked edges: {len(masked_neighbors)}")
+        print(f"  start_node base edges: {len(base_neighbors)}")
+
+        # Check physics
+        if physics_cache:
+            start_physics = physics_cache.get(start_node, {})
+            print(
+                f"  start_node physics: grounded={start_physics.get('grounded')}, walled={start_physics.get('walled')}"
+            )
+
+        # Check mine proximity
+        if mine_proximity_cache and hasattr(mine_proximity_cache, "cache"):
+            mine_cache_size = len(mine_proximity_cache.cache)
+            is_near_mine = start_node in mine_proximity_cache.cache
+            print(
+                f"  mine cache size: {mine_cache_size}, start near mine: {is_near_mine}"
+            )
+
     # Phase 1: Try direct pathfinding
+    if debug:
+        print("\n[PATHFIND_DIAG] Phase 1: Direct pathfinding (masked adjacency)")
+
     path, cost = find_shortest_path(
         start_node,
         end_node,
@@ -2162,24 +2337,43 @@ def find_shortest_path_with_fallback(
         physics_cache,
         level_data,
         mine_proximity_cache,
+        ninja_velocity,
+        allow_high_cost_edges,
     )
 
     if path is not None:
+        if debug:
+            print(
+                f"[PATHFIND_DIAG] Phase 1 SUCCESS: path length={len(path)}, cost={cost:.2f}"
+            )
         return path, cost
 
+    if debug:
+        print("[PATHFIND_DIAG] Phase 1 FAILED: No direct path found")
+
     # Phase 2: Fallback - find nearest stable position and path from there
+    # This fallback is critical for escaping dangerous positions (e.g., airborne near mines)
+    # where the masked adjacency has blocked all edges from start_node
+    if debug:
+        print(
+            "\n[PATHFIND_DIAG] Phase 2: Fallback pathfinding (base adjacency for escape)"
+        )
+
     if physics_cache is None:
+        if debug:
+            print("[PATHFIND_DIAG] Phase 2 FAILED: No physics cache")
         return None, float("inf")
 
-    # Check if start is unstable
-    start_physics = physics_cache.get(start_node)
-    if not start_physics or (
-        start_physics.get("grounded") or start_physics.get("walled")
-    ):
-        # Start is stable, direct path failed, no fallback needed
-        return None, float("inf")
+    # Note: We always attempt fallback even if start is stable, because Phase 1 failed
+    # This handles cases where masked adjacency blocks all edges from start (e.g., mines)
+    # but base_adjacency allows escape
 
-    # Find nearest stable position
+    # Find nearest stable position using unmasked graph to allow escape
+    # This will always return at least start_node as fallback, ensuring we always
+    # have a valid starting point for pathfinding (the agent exists there currently)
+    if debug:
+        print(f"[PATHFIND_DIAG] Finding nearest stable position from {start_node}...")
+
     stable_node = find_nearest_stable_position(
         start_node,
         adjacency,
@@ -2189,40 +2383,130 @@ def find_shortest_path_with_fallback(
         mine_proximity_cache,
     )
 
-    if stable_node is None:
-        return None, float("inf")
+    if debug:
+        is_same = stable_node == start_node
+        stable_physics = physics_cache.get(stable_node, {}) if physics_cache else {}
+        print(
+            f"[PATHFIND_DIAG] Found stable_node: {stable_node} (same as start: {is_same})"
+        )
+        print(
+            f"  stable_node physics: grounded={stable_physics.get('grounded')}, walled={stable_physics.get('walled')}"
+        )
 
     # Path from start to stable position (simple geometric path - falling/jumping)
+    # If stable_node == start_node, this will return [start_node] with cost 0.0,
+    # and we'll proceed to path from current position to goal
+    # Use base_adjacency (unmasked) to allow escape from dangerous positions (e.g., near mines)
+    # The agent exists at start_node, so we must allow movement away from it
+    if debug:
+        print(
+            "[PATHFIND_DIAG] Phase 2a: Path from start to stable (using base_adjacency)"
+        )
+
     path_to_stable, cost_to_stable = find_shortest_path(
         start_node,
         stable_node,
-        adjacency,
+        base_adjacency,  # Use unmasked graph to allow escape from dangerous positions
         base_adjacency,
         physics_cache,
         level_data,
         mine_proximity_cache,
+        ninja_velocity,  # Use ninja velocity for first segment
+        allow_high_cost_edges,
     )
 
     if path_to_stable is None:
+        if debug:
+            print("[PATHFIND_DIAG] Phase 2a FAILED: No path from start to stable")
+            print("  This should not happen - base_adjacency should allow movement")
+            # Show what edges are available
+            base_neighbors = base_adjacency.get(start_node, [])
+            print(f"  Available base edges from start: {len(base_neighbors)}")
+            if base_neighbors and len(base_neighbors) <= 10:
+                print(f"  Edges: {[n[0] for n in base_neighbors[:10]]}")
         return None, float("inf")
 
+    if debug:
+        print(
+            f"[PATHFIND_DIAG] Phase 2a SUCCESS: path length={len(path_to_stable)}, cost={cost_to_stable:.2f}"
+        )
+
     # Path from stable position to goal
+    # Stable position is now prioritized to be in a SAFE area (has masked edges)
+    # But as a fallback, if stable_node == start_node OR has no masked edges (still in danger zone),
+    # use base_adjacency to allow continued escape (though this should be rare now)
+    # Otherwise use masked adjacency for safe routing from stable position
+    stable_masked_edges = adjacency.get(stable_node, [])
+    use_unmasked_for_escape = stable_node == start_node or len(stable_masked_edges) == 0
+
+    if debug:
+        adjacency_type = "base (escape)" if use_unmasked_for_escape else "masked (safe)"
+        print(
+            f"[PATHFIND_DIAG] Phase 2b: Path from stable to goal (using {adjacency_type} adjacency)"
+        )
+        if stable_node == start_node:
+            print(
+                "  Using base_adjacency because stable_node == start_node (still at dangerous position)"
+            )
+        elif len(stable_masked_edges) == 0:
+            print(
+                "  Using base_adjacency because stable_node has 0 masked edges (in danger zone)"
+            )
+
+        # Check edge availability from stable_node
+        if use_unmasked_for_escape:
+            stable_edges = base_adjacency.get(stable_node, [])
+        else:
+            stable_edges = adjacency.get(stable_node, [])
+        print(f"  Edges available from stable_node: {len(stable_edges)}")
+
     path_from_stable, cost_from_stable = find_shortest_path(
         stable_node,
         end_node,
-        adjacency,
+        base_adjacency
+        if use_unmasked_for_escape
+        else adjacency,  # Allow escape if still at dangerous start
         base_adjacency,
         physics_cache,
         level_data,
         mine_proximity_cache,
+        None,  # No velocity for subsequent segment
+        allow_high_cost_edges,
     )
 
     if path_from_stable is None:
+        if debug:
+            print("[PATHFIND_DIAG] Phase 2b FAILED: No path from stable to goal")
+            print(f"  stable_node: {stable_node}")
+            print(f"  end_node: {end_node}")
+            print(f"  adjacency type used: {adjacency_type}")
+
+            # Check if nodes exist in graph
+            stable_in_graph = stable_node in base_adjacency
+            end_in_graph = end_node in base_adjacency
+            print(f"  stable_node in base_adjacency: {stable_in_graph}")
+            print(f"  end_node in base_adjacency: {end_in_graph}")
+
+            if not end_in_graph:
+                print("  ISSUE: end_node not in graph! Cannot path to it.")
+
+            print("=" * 80 + "\n")
         return None, float("inf")
+
+    if debug:
+        print(
+            f"[PATHFIND_DIAG] Phase 2b SUCCESS: path length={len(path_from_stable)}, cost={cost_from_stable:.2f}"
+        )
 
     # Concatenate paths (remove duplicate stable_node)
     combined_path = path_to_stable[:-1] + path_from_stable
     combined_cost = cost_to_stable + cost_from_stable
+
+    if debug:
+        print("[PATHFIND_DIAG] Phase 2 SUCCESS: Combined path")
+        print(f"  Total path length: {len(combined_path)}")
+        print(f"  Total cost: {combined_cost:.2f}")
+        print("=" * 80 + "\n")
 
     return combined_path, combined_cost
 

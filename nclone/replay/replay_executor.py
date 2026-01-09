@@ -969,13 +969,20 @@ class ReplayExecutor:
         if adjacency is None:
             raise RuntimeError("adjacency not found in cached graph_data")
 
+        # Get pre-computed goal positions from nplay_headless (O(1) entity_dic access)
+        goal_positions = None
+        if hasattr(self.nplay_headless, "get_goal_positions_for_features"):
+            goal_positions = self.nplay_headless.get_goal_positions_for_features()
+
         # Compute features using shared function with cached data
-        features = compute_reachability_features_from_graph(
+        # Note: function now returns (features, switch_distance, exit_distance) for PBRS optimization
+        features, _, _ = compute_reachability_features_from_graph(
             adjacency,
             self._cached_graph_data,
             self._cached_level_data,
             ninja_pos,
             self.path_calculator,
+            goal_positions=goal_positions,
         )
 
         return features

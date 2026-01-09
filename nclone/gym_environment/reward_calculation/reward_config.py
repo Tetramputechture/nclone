@@ -30,6 +30,11 @@ class RewardConfig:
         0.0  # Curriculum stage success rate (when curriculum active)
     )
 
+    # Curriculum stage tracking (for action masking mode)
+    # ADDED 2026-01-05: Used by action_masking_mode property
+    _curriculum_stage: int = 0
+    _num_curriculum_stages: int = 1
+
     # Waypoint system configuration (SIMPLIFIED 2026-01-03)
     # Provides guidance through non-linear paths where PBRS alone fails
     # Simplified to uniform 12px spacing along optimal path (matches sub-node spacing)
@@ -58,6 +63,7 @@ class RewardConfig:
     _velocity_alignment_weight_override: Optional[float] = None
     _mine_hazard_cost_multiplier_override: Optional[float] = None
     _revisit_penalty_weight_override: Optional[float] = None
+    _entropy_coefficient_override: Optional[float] = None
 
     @property
     def training_phase(self) -> str:
@@ -281,6 +287,45 @@ class RewardConfig:
         return 0.0
 
     @property
+    def waypoint_progress_scale(self) -> float:
+        """Curriculum-adaptive scaling for progressive waypoint rewards.
+
+        ADDED 2026-01-05: Implements progressive waypoint rewards where later waypoints
+        along the path are worth more than earlier ones, incentivizing exploration of
+        novel sequences further along complex paths.
+
+        Formula: reward = base_reward × (1 + progress_fraction × scale)
+        Where progress_fraction = waypoint_node_index / max_waypoint_index (0.0 to 1.0)
+
+        This breaks "stuck near start" local minima by creating a reward gradient that
+        strongly pulls the agent toward exploring later sections of the path.
+
+        Discovery phase example (scale=2.0):
+        - First waypoint (0%): 8 × (1 + 0) = 8
+        - Middle waypoint (50%): 8 × (1 + 1) = 16
+        - Last waypoint (100%): 8 × (1 + 2) = 24
+
+        Strategy:
+        - Discovery (<5%): Strong scaling (2.0) to break local minima, 3x gradient
+        - Early learning (5-20%): Moderate scaling (1.5) to maintain exploration, 2.5x gradient
+        - Mid learning (20-40%): Light scaling (1.0) for balanced optimization, 2x gradient
+        - Advanced (>40%): Minimal scaling (0.5) for natural convergence, 1.5x gradient
+
+        Returns:
+            2.0 (<5% success): Strong gradient for discovery (3x from start to end)
+            1.5 (5-20% success): Moderate gradient for early learning (2.5x)
+            1.0 (20-40% success): Balanced gradient for mid learning (2x)
+            0.5 (>40% success): Light gradient for advanced optimization (1.5x)
+        """
+        if self.recent_success_rate < 0.05:  # Discovery phase
+            return 2.0  # 3x gradient (first=8, last=24)
+        elif self.recent_success_rate < 0.20:  # Early learning
+            return 1.5  # 2.5x gradient (first=8, last=20)
+        elif self.recent_success_rate < 0.40:  # Mid learning
+            return 1.0  # 2x gradient (first=8, last=16)
+        return 0.5  # 1.5x gradient in advanced (first=8, last=12)
+
+    @property
     def completion_approach_bonus_weight(self) -> float:
         """DISABLED 2025-12-25: PBRS provides sufficient gradient near goal.
 
@@ -424,6 +469,9 @@ class RewardConfig:
         Previous 0.01-0.02 range was too conservative for exploring action sequence
         variations (e.g., RIGHT×3→JUMP vs RIGHT×4→JUMP timing differences).
 
+        UPDATED 2026-01-06: Added HPO override support for fair trial comparison.
+        When HPO override is set, it takes precedence over curriculum-adaptive values.
+
         Strategy for multi-sequence levels:
         - Discovery phase: Higher entropy (0.03) to explore action sequences
         - Early learning: Moderate entropy (0.025) for sequence refinement
@@ -440,15 +488,141 @@ class RewardConfig:
         - GRU temporal learning (sequence memory)
 
         Returns:
+            Override value if set by HPO, else:
             0.03 (<5% success): Discovery - explore action sequence variations
             0.025 (5-20% success): Early learning - refine momentum sequences
             0.02 (>20% success): Advanced - converge on optimal sequences
         """
+        # Check for HPO override first (for fair hyperparameter comparison)
+        if self._entropy_coefficient_override is not None:
+            return self._entropy_coefficient_override
+
+        # Curriculum-adaptive (default behavior)
         if self.recent_success_rate < 0.05:
             return 0.03  # Discovery: explore action sequences for multi-jump chains
         elif self.recent_success_rate < 0.20:
             return 0.025  # Early learning: refine sequences with GRU memory
         return 0.02  # Advanced: converge on optimal momentum patterns
+
+    @property
+    def safety_critic_weight(self) -> float:
+        """Curriculum-adaptive safety critic contribution weight.
+
+        Modulates both auxiliary training loss and inference logit penalties
+        based on agent competence. During early training (<5% success), reduces
+        safety constraints to enable riskier exploration and discovery.
+
+        Strategy:
+        - Discovery (<5%): 0.1x weight - minimal safety constraints for exploration
+        - Early learning (5-20%): 0.5x weight - gradual safety introduction
+        - Mid learning (20-40%): 0.75x weight - balanced risk/safety
+        - Advanced (>40%): 1.0x weight - full safety critic influence
+
+        Applied to:
+        1. Training: Auxiliary loss weight (base 0.1 * this multiplier)
+        2. Inference: Logit penalty strength (-20/-10/-5 * this multiplier)
+
+        Returns:
+            0.1 (<5% success): Minimal safety - enable risky exploration
+            0.5 (5-20% success): Moderate safety - learning fundamentals
+            0.75 (20-40% success): Strong safety - refinement
+            1.0 (>40% success): Full safety - optimization
+        """
+        if self.recent_success_rate < 0.05:  # Discovery phase
+            return 0.1  # Very low - enable risky exploration
+        elif self.recent_success_rate < 0.20:  # Early learning
+            return 0.5  # Moderate increase as competence grows
+        elif self.recent_success_rate < 0.40:  # Mid learning
+            return 0.75  # Further increase for refinement
+        return 1.0  # Full strength for advanced optimization
+
+    @property
+    def action_masking_mode(self) -> str:
+        """Curriculum-aware action masking mode for annealed guidance.
+
+        ADDED 2026-01-05: Implements annealed masking schedule that transitions from
+        hard masking (early) through soft logit biasing (mid) to no guidance (late).
+
+        Uses dual criteria (success rate AND curriculum stage) to prevent premature
+        removal of guidance when curriculum just advanced but success temporarily dropped.
+
+        Mode transitions:
+        - Hard masking: Early curriculum (<30% progress) OR low success (<15%)
+          * Eliminates obviously wrong actions on trivial straight paths
+          * Focuses learning on physics and timing, not basic direction
+          * Applied in Ninja.get_valid_action_mask() for path-direction masking
+
+        - Soft biasing: Mid curriculum (30-70% progress) OR moderate success (15-40%)
+          * Adds logit bias toward heuristic actions without hard constraints
+          * Preserves exploration while guiding toward promising actions
+          * Applied in policy forward pass via compute_heuristic_logit_bias()
+
+        - No guidance: Late curriculum (>70% progress) AND high success (>40%)
+          * Policy must be fully autonomous and robust
+          * Generalizes beyond scaffolded training distribution
+          * No masking or biasing applied
+
+        Design Philosophy:
+        - Use OR for hard/soft (guidance when either condition met)
+        - Use AND for none (full autonomy only when both conditions met)
+        - This ensures guidance persists through curriculum difficulty spikes
+
+        Returns:
+            'hard': Hard action masking for trivial paths
+            'soft': Soft logit biasing toward heuristic actions
+            'none': No masking or biasing
+        """
+        # Calculate curriculum progress (avoid division by zero)
+        # Note: curriculum_stage and num_stages come from goal curriculum
+        curriculum_stage = getattr(self, "_curriculum_stage", 0)
+        num_stages = getattr(self, "_num_curriculum_stages", 1)
+        curriculum_progress = curriculum_stage / max(num_stages - 1, 1)
+
+        # Hard masking: Early curriculum OR low success
+        if curriculum_progress < 0.3 or self.recent_success_rate < 0.15:
+            return "hard"
+
+        # Soft biasing: Mid curriculum OR moderate success
+        if curriculum_progress < 0.7 or self.recent_success_rate < 0.40:
+            return "soft"
+
+        # No guidance: Late curriculum AND high success
+        return "none"
+
+    @property
+    def logit_bias_strength(self) -> float:
+        """Logit bias strength for soft masking mode.
+
+        ADDED 2026-01-05: Controls strength of heuristic logit bias during soft mode.
+        Decays linearly as success rate increases to create smooth transition.
+
+        Strength schedule:
+        - 15% success: 2.0 (strong guidance at soft mode start)
+        - 27.5% success: 1.25 (moderate guidance at midpoint)
+        - 40% success: 0.5 (light guidance before transition to none)
+
+        Returns:
+            Bias strength multiplier (0.0 if not in soft mode)
+        """
+        if self.action_masking_mode != "soft":
+            return 0.0
+
+        # Linear decay from 2.0 to 0.5 as success rate increases 15%->40%
+        t = (self.recent_success_rate - 0.15) / 0.25
+        t = min(max(t, 0.0), 1.0)  # Clamp to [0, 1]
+        return 2.0 - 1.5 * t  # 2.0 at t=0, 0.5 at t=1
+
+    def set_curriculum_stage(self, stage: int, num_stages: int) -> None:
+        """Update curriculum stage for action masking mode calculation.
+
+        Called by GoalCurriculumCallback when curriculum stage advances.
+
+        Args:
+            stage: Current curriculum stage index (0 to num_stages-1)
+            num_stages: Total number of curriculum stages
+        """
+        self._curriculum_stage = stage
+        self._num_curriculum_stages = num_stages
 
     def update(self, timesteps: int, success_rate: float) -> None:
         """Update configuration with current training metrics.
@@ -478,11 +652,15 @@ class RewardConfig:
             "time_penalty_per_step": self.time_penalty_per_step,
             "completion_approach_bonus_weight": self.completion_approach_bonus_weight,
             "entropy_coefficient": self.entropy_coefficient,  # NEW: Adaptive entropy
+            "safety_critic_weight": self.safety_critic_weight,  # NEW: Adaptive safety
             "exploration_bonus": self.exploration_bonus,
             "revisit_penalty_weight": self.revisit_penalty_weight,
             "pbrs_normalization_scale": self.pbrs_normalization_scale,
             "velocity_alignment_weight": self.velocity_alignment_weight,
             "mine_hazard_cost_multiplier": self.mine_hazard_cost_multiplier,
+            "waypoint_progress_scale": self.waypoint_progress_scale,  # NEW: Progressive waypoint rewards
+            "action_masking_mode": self.action_masking_mode,  # NEW: Annealed action masking
+            "logit_bias_strength": self.logit_bias_strength,  # NEW: Soft guidance strength
         }
 
     def __str__(self) -> str:

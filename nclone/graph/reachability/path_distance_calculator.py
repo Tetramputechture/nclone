@@ -580,6 +580,7 @@ class CachedPathDistanceCalculator:
         mine_proximity_cache: Optional[Any] = None,
         mine_sdf: Optional[Any] = None,
         hazard_cost_multiplier: Optional[float] = None,
+        ninja_velocity: Optional[Tuple[float, float]] = None,
     ) -> float:
         """
         Calculate shortest navigable path distance using BFS or A*.
@@ -594,6 +595,7 @@ class CachedPathDistanceCalculator:
             mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
             mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
             hazard_cost_multiplier: Optional curriculum-adaptive mine hazard cost multiplier
+            ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
 
         Returns:
             Shortest path distance in pixels, or float('inf') if unreachable
@@ -629,6 +631,7 @@ class CachedPathDistanceCalculator:
                 mine_proximity_cache,
                 mine_sdf,
                 hazard_cost_multiplier,
+                ninja_velocity,
             )
         else:
             return self._bfs_distance(
@@ -641,6 +644,7 @@ class CachedPathDistanceCalculator:
                 mine_proximity_cache,
                 mine_sdf,
                 hazard_cost_multiplier,
+                ninja_velocity,
             )
 
     def _bfs_distance(
@@ -654,6 +658,7 @@ class CachedPathDistanceCalculator:
         mine_proximity_cache: Optional[Any] = None,
         mine_sdf: Optional[Any] = None,
         hazard_cost_multiplier: Optional[float] = None,
+        ninja_velocity: Optional[Tuple[float, float]] = None,
     ) -> float:
         """BFS pathfinding - guaranteed shortest path with physics and momentum validation."""
         queue = deque([(start, 0.0)])
@@ -698,6 +703,10 @@ class CachedPathDistanceCalculator:
 
                     # Calculate physics-aware edge cost with momentum tracking
                     # OPTIMIZATION: Pass cached parent/grandparent
+                    # Pass ninja_velocity only for first edges (from start with no parent)
+                    edge_ninja_velocity = (
+                        ninja_velocity if (current == start and current_parent is None) else None
+                    )
                     edge_cost = _calculate_physics_aware_cost(
                         current,
                         neighbor,
@@ -710,6 +719,7 @@ class CachedPathDistanceCalculator:
                         current_grandparent,  # Pass cached grandparent
                         mine_sdf,  # Pass SDF for velocity-aware mine costs
                         hazard_cost_multiplier,  # Curriculum-adaptive mine costs
+                        edge_ninja_velocity,  # Velocity-aware costs for first edge only
                     )
 
                     visited.add(neighbor)
@@ -731,6 +741,7 @@ class CachedPathDistanceCalculator:
         mine_proximity_cache: Optional[Any] = None,
         mine_sdf: Optional[Any] = None,
         hazard_cost_multiplier: Optional[float] = None,
+        ninja_velocity: Optional[Tuple[float, float]] = None,
     ) -> float:
         """A* pathfinding - faster than BFS with heuristic, physics, and momentum validation."""
 
@@ -788,6 +799,10 @@ class CachedPathDistanceCalculator:
 
                 # Calculate physics-aware edge cost with momentum tracking
                 # OPTIMIZATION: Pass cached parent/grandparent
+                # Pass ninja_velocity only for first edges (from start with no parent)
+                edge_ninja_velocity = (
+                    ninja_velocity if (current == start and current_parent is None) else None
+                )
                 edge_cost = _calculate_physics_aware_cost(
                     current,
                     neighbor,
@@ -800,6 +815,7 @@ class CachedPathDistanceCalculator:
                     current_grandparent,  # Pass cached grandparent
                     mine_sdf,  # Pass SDF for velocity-aware mine costs
                     hazard_cost_multiplier,  # Curriculum-adaptive mine costs
+                    edge_ninja_velocity,  # Velocity-aware costs for first edge only
                 )
 
                 tentative_g = current_g + edge_cost
@@ -828,6 +844,7 @@ class CachedPathDistanceCalculator:
         ninja_radius: float = 10.0,
         hazard_cost_multiplier: Optional[float] = None,
         goal_id: Optional[str] = None,
+        ninja_velocity: Optional[Tuple[float, float]] = None,
     ) -> float:
         """
         Get physics-weighted path distance with caching and spatial indexing.
@@ -848,6 +865,7 @@ class CachedPathDistanceCalculator:
             entity_radius: Collision radius of the goal entity (default 0.0)
             ninja_radius: Collision radius of the ninja (default 10.0)
             goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
+            ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
         Returns:
             Shortest physics-weighted path distance
         """
@@ -1432,6 +1450,7 @@ class CachedPathDistanceCalculator:
                 self.mine_proximity_cache,
                 self.mine_sdf,
                 hazard_cost_multiplier,
+                ninja_velocity,
             )
 
         # Cache raw node-to-node distance (before adjustment)
@@ -1463,6 +1482,7 @@ class CachedPathDistanceCalculator:
         entity_radius: float = 0.0,
         ninja_radius: float = 10.0,
         goal_id: Optional[str] = None,
+        ninja_velocity: Optional[Tuple[float, float]] = None,
     ) -> float:
         """
         Get GEOMETRIC path distance (actual pixels) along physics-optimal path.
@@ -1488,6 +1508,7 @@ class CachedPathDistanceCalculator:
             entity_radius: Collision radius of the goal entity (default 0.0)
             ninja_radius: Collision radius of the ninja (default 10.0)
             goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
+            ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
         Returns:
             Geometric path distance in pixels, or float('inf') if unreachable
         """
@@ -1932,6 +1953,7 @@ class CachedPathDistanceCalculator:
             level_data=level_data,  # Pass for mine proximity calculations
             mine_proximity_cache=self.mine_proximity_cache,  # Pass for mine avoidance
             mine_sdf=self.mine_sdf,  # Pass for velocity-aware mine costs
+            ninja_velocity=ninja_velocity,  # Pass for first-edge velocity-aware costs
         )
 
         # Store in step cache even for BFS fallback (avoid duplicate BFS within same step)

@@ -41,6 +41,11 @@ class ReachabilityMixin:
 
         self._reachability_system = ReachabilitySystem()
 
+        # OPTIMIZATION: Cell-based feature caching
+        # Most frames ninja is in same cell, so we can reuse features
+        self._last_reachability_key = None
+        self._cached_reachability_features = None
+
         # Get shared_level_cache from parent environment if available
         shared_cache = getattr(self, "shared_level_cache", None)
         shared_caches_by_stage = getattr(self, "shared_level_caches_by_stage", None)
@@ -141,6 +146,23 @@ class ReachabilityMixin:
         30-37. Platform distance in 8 directions [E, NE, N, NW, W, SW, S, SE] (0-1)
 
         """
+        # OPTIMIZATION: Cell-based caching - most frames ninja is in same cell
+        # Cache key: (ninja_cell, switch_activated) - only recompute when these change
+        ninja_cell = (int(ninja_pos[0] // 24), int(ninja_pos[1] // 24))
+        switch_activated = (
+            self.nplay_headless.exit_switch_activated()
+            if hasattr(self, "nplay_headless")
+            else False
+        )
+        cache_key = (ninja_cell, switch_activated)
+
+        if (
+            cache_key == self._last_reachability_key
+            and self._cached_reachability_features is not None
+        ):
+            # Cache hit - return cached features
+            return self._cached_reachability_features.copy()
+
         # Get graph data from GraphMixin (required)
         if not hasattr(self, "current_graph_data") or self.current_graph_data is None:
             raise RuntimeError(
@@ -165,15 +187,37 @@ class ReachabilityMixin:
             level_data, adjacency, base_adjacency, self.current_graph_data
         )
 
+        # OPTIMIZATION: Get pre-computed goal positions (O(1) entity_dic lookups)
+        # This eliminates O(n) entity iteration in feature computation
+        goal_positions = None
+        if hasattr(self, "nplay_headless") and hasattr(
+            self.nplay_headless, "get_goal_positions_for_features"
+        ):
+            goal_positions = self.nplay_headless.get_goal_positions_for_features()
+
         # Compute all reachability features (22 dims)
         # Includes: 4 base + 2 path distances + 4 direction vectors + 2 mine context + 1 phase indicator + 8 path direction + 1 difficulty
-        features = compute_reachability_features_from_graph(
-            adjacency,
-            self.current_graph_data,
-            level_data,
-            ninja_pos,
-            self._path_calculator,
+        t_reach = self._profile_start("reach_features")
+        features, switch_distance_raw, exit_distance_raw = (
+            compute_reachability_features_from_graph(
+                adjacency,
+                self.current_graph_data,
+                level_data,
+                ninja_pos,
+                self._path_calculator,
+                goal_positions=goal_positions,  # Pass pre-computed positions
+            )
         )
+        self._profile_end("reach_features", t_reach)
+
+        # OPTIMIZATION: Cache raw distances for PBRS to avoid duplicate computation
+        # Store in instance variable to be added to observation in _get_observation
+        self._cached_switch_distance = switch_distance_raw
+        self._cached_exit_distance = exit_distance_raw
+
+        # OPTIMIZATION: Cache features for next call if ninja is still in same cell
+        self._last_reachability_key = cache_key
+        self._cached_reachability_features = features.copy()
 
         return features
 

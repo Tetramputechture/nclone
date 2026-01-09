@@ -8,7 +8,8 @@ This module provides graph-based feature computation that uses:
 """
 
 import numpy as np
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple, Any, Optional
+from collections import OrderedDict
 
 from .pathfinding_utils import (
     find_closest_node_to_position,
@@ -30,6 +31,103 @@ from ...gym_environment.constants import LEVEL_DIAGONAL
 from .subcell_node_lookup import SUB_NODE_SIZE
 from .path_distance_calculator import CachedPathDistanceCalculator
 
+# Global profiling data for reachability features (optional, disabled by default)
+ENABLE_FEATURE_PROFILING = False
+_feature_timings = {}
+
+# Cache for exit path features (features 25-28) - static per level
+# Stores numpy array [next_hop_x, next_hop_y, multi_hop_x, multi_hop_y]
+_exit_path_features_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+MAX_EXIT_PATH_CACHE_SIZE = 100
+
+
+def get_cached_exit_path_features(
+    level_id: str,
+    switch_pos: Tuple[int, int],
+    exit_pos: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], list],
+    spatial_hash: Dict[Tuple[int, int], list],
+    subcell_lookup: Optional[Any],
+    path_calculator: CachedPathDistanceCalculator,
+) -> np.ndarray:
+    """
+    Get or compute exit path features (25-28) with caching.
+
+    These features show the path from exit switch to exit door and are static
+    per level (independent of ninja position or switch state).
+
+    Args:
+        level_id: Unique identifier for level (without switch states)
+        switch_pos: Exit switch position in world coordinates
+        exit_pos: Exit door position in world coordinates
+        adjacency: Graph adjacency structure
+        spatial_hash: Spatial hash for node lookups
+        subcell_lookup: Subcell lookup structure
+        path_calculator: Path calculator with level cache
+
+    Returns:
+        numpy array [next_hop_x, next_hop_y, multi_hop_x, multi_hop_y]
+    """
+    # Check cache first
+    if level_id in _exit_path_features_cache:
+        cached_features = _exit_path_features_cache[level_id]
+        # Move to end to maintain LRU ordering
+        _exit_path_features_cache.move_to_end(level_id)
+        return cached_features.copy()  # Return copy to prevent external modification
+
+    # Compute features
+    exit_features = np.zeros(4, dtype=np.float32)
+
+    # Find the exit switch node
+    exit_switch_node = find_closest_node_to_position(
+        switch_pos,
+        adjacency,
+        threshold=50.0,
+        spatial_hash=spatial_hash,
+        subcell_lookup=subcell_lookup,
+    )
+
+    if exit_switch_node is not None:
+        # Features 0-1: Next hop from exit switch toward exit door
+        exit_next_hop = path_calculator.level_cache.get_next_hop(
+            exit_switch_node, "exit"
+        )
+
+        if exit_next_hop is not None:
+            # Convert to world coordinates
+            exit_next_hop_world_x = exit_next_hop[0] + NODE_WORLD_COORD_OFFSET
+            exit_next_hop_world_y = exit_next_hop[1] + NODE_WORLD_COORD_OFFSET
+
+            # Compute direction from exit switch to exit next_hop
+            switch_x, switch_y = switch_pos
+            dx = exit_next_hop_world_x - switch_x
+            dy = exit_next_hop_world_y - switch_y
+            dist = np.sqrt(dx * dx + dy * dy)
+
+            if dist > 0.001:
+                exit_features[0] = dx / dist  # X component
+                exit_features[1] = dy / dist  # Y component
+
+        # Features 2-3: Multi-hop direction from exit switch toward exit door
+        exit_multi_hop_direction = path_calculator.level_cache.get_multi_hop_direction(
+            exit_switch_node, "exit"
+        )
+
+        if exit_multi_hop_direction is not None:
+            # Multi-hop direction is already normalized (unit vector)
+            exit_features[2] = exit_multi_hop_direction[0]  # X component
+            exit_features[3] = exit_multi_hop_direction[1]  # Y component
+
+    # Cache the result with LRU eviction
+    _exit_path_features_cache[level_id] = exit_features
+    _exit_path_features_cache.move_to_end(level_id)
+
+    # Enforce cache size limit
+    while len(_exit_path_features_cache) > MAX_EXIT_PATH_CACHE_SIZE:
+        _exit_path_features_cache.popitem(last=False)  # Remove oldest (first) item
+
+    return exit_features.copy()
+
 
 def compute_reachability_features_from_graph(
     adjacency: Dict[Tuple[int, int], list],
@@ -37,7 +135,8 @@ def compute_reachability_features_from_graph(
     level_data: Any,
     ninja_pos: Tuple[int, int],
     path_calculator: CachedPathDistanceCalculator,
-) -> np.ndarray:
+    goal_positions: Optional[Dict[str, Any]] = None,
+) -> Tuple[np.ndarray, float, float]:
     """
     Compute 38-dimensional reachability features using adjacency graph and lookup tables.
 
@@ -88,6 +187,13 @@ def compute_reachability_features_from_graph(
         24. Path curvature (0-1) - dot product of next_hop and multi_hop directions
                                     (1.0=straight path, 0.0=90° turn, -1.0=180° turn)
 
+    Exit lookahead features (5) - Phase 4 for switch transition continuity:
+        25. Exit switch to door next hop X (-1 to 1) - ONLY before switch activation
+        26. Exit switch to door next hop Y (-1 to 1) - shows immediate exit path from switch
+        27. Exit switch to door multi-hop X (-1 to 1) - 8-hop lookahead from switch to exit
+        28. Exit switch to door multi-hop Y (-1 to 1) - anticipates exit path curvature
+        29. Near-switch transition indicator (0-1) - ramps to 1.0 as agent approaches switch
+
     Directional connectivity (8) - Phase 5 for blind jump verification:
         30. Platform distance East [0, 1]
         31. Platform distance Northeast [0, 1]
@@ -104,6 +210,8 @@ def compute_reachability_features_from_graph(
         level_data: LevelData object with entities
         ninja_pos: Current ninja position (x, y) in world coordinates
         path_calculator: CachedPathDistanceCalculator instance
+        goal_positions: Optional pre-computed goal positions from nplay_headless.get_goal_positions_for_features()
+                       If provided, skips O(n) entity iteration for massive speedup
 
     Returns:
         25-dimensional numpy array with normalized features
@@ -116,7 +224,6 @@ def compute_reachability_features_from_graph(
     if graph_data is None:
         raise RuntimeError("graph_data is None")
 
-    # Extract spatial lookups for O(1) node finding
     spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
 
     # Total possible nodes (approximate: all traversable tiles)
@@ -159,42 +266,63 @@ def compute_reachability_features_from_graph(
         # Fallback to LEVEL_DIAGONAL if computation fails
         pass
 
-    # Get entities from level_data
-    entities = level_data.entities if hasattr(level_data, "entities") else []
+    # OPTIMIZATION: Use pre-computed goal positions if provided (O(1) instead of O(n))
+    # This eliminates entity iteration bottleneck by using nplay_headless helper methods
+    if goal_positions is not None:
+        # Extract from pre-computed dict (O(1) entity_dic lookups)
+        switch_pos_precomputed = goal_positions.get("switch_pos", (0, 0))
+        exit_pos_precomputed = goal_positions.get("exit_pos", (0, 0))
+        switch_activated_precomputed = goal_positions.get("switch_activated", False)
+        locked_door_switches_precomputed = goal_positions.get(
+            "locked_door_switches", []
+        )
 
-    # Helper function to extract position from entity (handles both dict and Entity object)
+        # Build entity-like structures for compatibility with existing code
+        # (avoids rewriting all downstream logic)
+        exit_switches = []
+        if switch_pos_precomputed != (0, 0):
+            # Create minimal entity representation with position and active state
+            exit_switches = [
+                {
+                    "xpos": switch_pos_precomputed[0],
+                    "ypos": switch_pos_precomputed[1],
+                    "active": not switch_activated_precomputed,  # active=False means collected
+                    "type": EntityType.EXIT_SWITCH,
+                }
+            ]
+
+        exits = []
+        if exit_pos_precomputed != (0, 0):
+            exits = [
+                {
+                    "xpos": exit_pos_precomputed[0],
+                    "ypos": exit_pos_precomputed[1],
+                    "type": EntityType.EXIT_DOOR,
+                }
+            ]
+
+        locked_door_switches = locked_door_switches_precomputed
+    else:
+        raise RuntimeError("goal_positions is None")
+
+    # Helper function for pre-computed positions (dict format)
     def get_entity_position(entity):
-        """Extract position from entity, handling both dict and Entity object formats."""
         if isinstance(entity, dict):
-            return (int(entity.get("x", 0)), int(entity.get("y", 0)))
+            return (
+                int(entity.get("xpos", entity.get("x", 0))),
+                int(entity.get("ypos", entity.get("y", 0))),
+            )
         else:
-            # Entity object with xpos/ypos attributes
-            return (int(getattr(entity, "xpos", 0)), int(getattr(entity, "ypos", 0)))
+            return (
+                int(getattr(entity, "xpos", 0)),
+                int(getattr(entity, "ypos", 0)),
+            )
 
-    # Helper function to get entity type
     def get_entity_type(entity):
-        """Extract type from entity, handling both dict and Entity object formats."""
         if isinstance(entity, dict):
             return entity.get("type")
         else:
             return getattr(entity, "type", None)
-
-    # Find switches and exit using efficient lookups
-    switches = [
-        e
-        for e in entities
-        if get_entity_type(e) == EntityType.EXIT_SWITCH
-        or get_entity_type(e) == EntityType.LOCKED_DOOR_SWITCH
-    ]
-    exits = [e for e in entities if get_entity_type(e) == EntityType.EXIT_DOOR]
-
-    # Separate switch types for objective hierarchy
-    exit_switches = [
-        e for e in switches if get_entity_type(e) == EntityType.EXIT_SWITCH
-    ]
-    locked_door_switches = [
-        e for e in switches if get_entity_type(e) == EntityType.LOCKED_DOOR_SWITCH
-    ]
 
     # Feature 2: Distance to NEXT objective (normalized, inverted)
     # Uses objective hierarchy: exit switch -> locked door switches -> exit door
@@ -230,9 +358,6 @@ def compute_reachability_features_from_graph(
 
     # Second priority: Locked door switches (if exit switch collected but doors still closed)
     if not next_obj_distances:
-        locked_door_switches = [
-            e for e in switches if get_entity_type(e) == EntityType.LOCKED_DOOR_SWITCH
-        ]
         for switch in locked_door_switches:
             switch_active = getattr(switch, "active", True)
             if switch_active:  # Door not opened yet
@@ -350,29 +475,31 @@ def compute_reachability_features_from_graph(
 
     # Features 10-11: Mine context (simplified from detailed mine features)
     # Mine information is primarily handled by graph nodes, these provide high-level context
-    hazard_types = [
-        EntityType.TOGGLE_MINE,
-        EntityType.TOGGLE_MINE_TOGGLED,
-    ]
-    hazards = [e for e in entities if get_entity_type(e) in hazard_types]
+    # OPTIMIZATION: Use pre-computed mine entities if available (O(1) instead of O(n))
+    if goal_positions is not None and "mine_entities" in goal_positions:
+        # Direct entity_dic access - no iteration needed
+        toggle_mines, toggled_mines = goal_positions["mine_entities"]
 
-    # Feature 10: Total mines normalized (0-1)
-    total_mines = len(hazards)
-    features[10] = np.clip(total_mines / 10.0, 0.0, 1.0)  # Max 10 mines
+        # Feature 10: Total mines normalized (0-1)
+        total_mines = len(toggle_mines) + len(toggled_mines)
+        features[10] = np.clip(total_mines / 10.0, 0.0, 1.0)  # Max 10 mines
 
-    # Feature 11: Deadly mine ratio (0-1)
-    if total_mines > 0:
-        deadly_mines = 0
-        for hazard in hazards:
-            hazard_state = getattr(hazard, "state", 1)
-            # For TOGGLE_MINE_TOGGLED, state is always 0 (deadly)
-            if getattr(hazard, "entity_type", None) == EntityType.TOGGLE_MINE_TOGGLED:
-                hazard_state = 0
-            if hazard_state == 0:  # Deadly mine
-                deadly_mines += 1
-        features[11] = deadly_mines / total_mines
+        # Feature 11: Deadly mine ratio (0-1)
+        if total_mines > 0:
+            deadly_mines = 0
+            # Count deadly mines in toggle_mines (type 1)
+            for mine in toggle_mines:
+                if getattr(mine, "state", 1) == 0:  # state 0 = deadly
+                    deadly_mines += 1
+            # Count deadly mines in toggled_mines (type 21 - start deadly)
+            for mine in toggled_mines:
+                if getattr(mine, "state", 0) == 0:  # state 0 = deadly
+                    deadly_mines += 1
+            features[11] = deadly_mines / total_mines
+        else:
+            features[11] = 0.0
     else:
-        features[11] = 0.0
+        raise RuntimeError("goal_positions is None")
 
     # Feature 12: Switch activated flag (EXPLICIT phase indicator)
     # Critical for Markov property: agent needs to know which objective to pursue
@@ -398,46 +525,47 @@ def compute_reachability_features_from_graph(
         current_goal_id = "exit"
         current_goal_pos = exit_pos_for_direction
 
-    # Features 13-14: Next hop direction (optimal path direction)
-    # Uses level_cache.get_next_hop() to get direction along optimal path
-    # This solves "wrong direction" problem: tells agent to go LEFT even when goal is RIGHT
+    # OPTIMIZATION: Compute ninja_node ONCE and reuse for multiple features (13-14, 22-24)
+    # This avoids redundant find_ninja_node() calls with the same goal_id
+    ninja_node = None
     if (
         hasattr(path_calculator, "level_cache")
         and path_calculator.level_cache is not None
-        and current_goal_pos is not None
     ):
         from .pathfinding_utils import find_ninja_node
 
-        # Find current node
-        ninja_node = find_ninja_node(
-            ninja_pos,
-            adjacency,
-            spatial_hash=spatial_hash,
-            subcell_lookup=subcell_lookup,
-            ninja_radius=NINJA_RADIUS,
-            level_cache=path_calculator.level_cache,
-            goal_id=current_goal_id,
-        )
-
-        if ninja_node is not None:
-            # Get next hop toward goal
-            next_hop = path_calculator.level_cache.get_next_hop(
-                ninja_node, current_goal_id
+        # Find current node (for current goal: switch or exit)
+        if current_goal_pos is not None:
+            ninja_node = find_ninja_node(
+                ninja_pos,
+                adjacency,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=NINJA_RADIUS,
+                level_cache=path_calculator.level_cache,
+                goal_id=current_goal_id,
             )
 
-            if next_hop is not None:
-                # Convert to world coordinates
-                next_hop_world_x = next_hop[0] + NODE_WORLD_COORD_OFFSET
-                next_hop_world_y = next_hop[1] + NODE_WORLD_COORD_OFFSET
+    # Features 13-14: Next hop direction (optimal path direction)
+    # Uses level_cache.get_next_hop() to get direction along optimal path
+    # This solves "wrong direction" problem: tells agent to go LEFT even when goal is RIGHT
+    if ninja_node is not None:
+        # Get next hop toward goal
+        next_hop = path_calculator.level_cache.get_next_hop(ninja_node, current_goal_id)
 
-                # Compute direction from ninja to next_hop
-                dx = next_hop_world_x - ninja_x
-                dy = next_hop_world_y - ninja_y
-                dist = np.sqrt(dx * dx + dy * dy)
+        if next_hop is not None:
+            # Convert to world coordinates
+            next_hop_world_x = next_hop[0] + NODE_WORLD_COORD_OFFSET
+            next_hop_world_y = next_hop[1] + NODE_WORLD_COORD_OFFSET
 
-                if dist > 0.001:
-                    features[13] = dx / dist  # X component
-                    features[14] = dy / dist  # Y component
+            # Compute direction from ninja to next_hop
+            dx = next_hop_world_x - ninja_x
+            dy = next_hop_world_y - ninja_y
+            dist = np.sqrt(dx * dx + dy * dy)
+
+            if dist > 0.001:
+                features[13] = dx / dist  # X component
+                features[14] = dy / dist  # Y component
 
     # Features 15-17: Waypoint direction and distance (Phase 1.3)
     # Uses adaptive waypoint system to guide through inflection points
@@ -556,46 +684,40 @@ def compute_reachability_features_from_graph(
     #
     # This complements the physics-weighted PBRS by making difficulty explicit in observations
     # LSTM can learn: "high difficulty ahead → build momentum" or "low difficulty → direct route"
+    #
+    # OPTIMIZATION: Reuse physics distances already computed earlier (switch_distance_raw / exit_distance_raw)
+    # This avoids redundant get_distance() call. Only need to compute geometric distance.
     if (
         hasattr(path_calculator, "level_cache")
         and path_calculator.level_cache is not None
         and current_goal_pos is not None
     ):
-        # Extract base_adjacency for physics checks (defensive - already extracted above at line 186)
-        # Re-extract here for self-contained Feature 21 calculation
-        base_adjacency_for_difficulty = (
-            graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
-        )
+        # OPTIMIZATION: Reuse physics cost computed earlier based on current goal
+        if current_goal_id == "switch":
+            physics_cost = switch_distance_raw
+        else:  # current_goal_id == "exit"
+            physics_cost = exit_distance_raw
 
-        # Geometric distance (pixels)
-        geometric_dist = path_calculator.get_geometric_distance(
-            ninja_pos,
-            current_goal_pos,
-            adjacency,
-            base_adjacency_for_difficulty,
-            level_data=level_data,
-            graph_data=graph_data,
-            entity_radius=EXIT_SWITCH_RADIUS
-            if not switch_activated
-            else EXIT_DOOR_RADIUS,
-            ninja_radius=NINJA_RADIUS,
-            goal_id=current_goal_id,
-        )
-
-        # Physics cost (difficulty-weighted)
-        physics_cost = path_calculator.get_distance(
-            ninja_pos,
-            current_goal_pos,
-            adjacency,
-            base_adjacency_for_difficulty,
-            level_data=level_data,
-            graph_data=graph_data,
-            entity_radius=EXIT_SWITCH_RADIUS
-            if not switch_activated
-            else EXIT_DOOR_RADIUS,
-            ninja_radius=NINJA_RADIUS,
-            goal_id=current_goal_id,
-        )
+        # Geometric distance (pixels) - still need to compute this as it's different from physics
+        geometric_dist = float("inf")
+        if physics_cost != float("inf"):
+            # Only compute geometric distance if physics path exists
+            base_adjacency_for_difficulty = (
+                graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+            )
+            geometric_dist = path_calculator.get_geometric_distance(
+                ninja_pos,
+                current_goal_pos,
+                adjacency,
+                base_adjacency_for_difficulty,
+                level_data=level_data,
+                graph_data=graph_data,
+                entity_radius=EXIT_SWITCH_RADIUS
+                if not switch_activated
+                else EXIT_DOOR_RADIUS,
+                ninja_radius=NINJA_RADIUS,
+                goal_id=current_goal_id,
+            )
 
         if (
             geometric_dist != float("inf")
@@ -629,109 +751,76 @@ def compute_reachability_features_from_graph(
     # This anticipates upcoming path curvature by looking ahead 8 hops with exponential decay
     # Unlike next_hop (features 13-14) which shows immediate direction, this shows where
     # the path is heading in the mid-term, enabling agents to anticipate sharp turns
-    if (
-        hasattr(path_calculator, "level_cache")
-        and path_calculator.level_cache is not None
-        and current_goal_pos is not None
-    ):
-        from .pathfinding_utils import find_ninja_node
-
-        # Find current node (same logic as next_hop computation)
-        ninja_node = find_ninja_node(
-            ninja_pos,
-            adjacency,
-            spatial_hash=spatial_hash,
-            subcell_lookup=subcell_lookup,
-            ninja_radius=NINJA_RADIUS,
-            level_cache=path_calculator.level_cache,
-            goal_id=current_goal_id,
+    # OPTIMIZATION: Reuse ninja_node computed earlier instead of calling find_ninja_node again
+    if ninja_node is not None:
+        # Get multi-hop lookahead direction from level cache
+        multi_hop_direction = path_calculator.level_cache.get_multi_hop_direction(
+            ninja_node, current_goal_id
         )
 
-        if ninja_node is not None:
-            # Get multi-hop lookahead direction from level cache
-            multi_hop_direction = path_calculator.level_cache.get_multi_hop_direction(
-                ninja_node, current_goal_id
-            )
+        if multi_hop_direction is not None:
+            # Multi-hop direction is already normalized (unit vector)
+            features[22] = multi_hop_direction[0]  # X component
+            features[23] = multi_hop_direction[1]  # Y component
 
-            if multi_hop_direction is not None:
-                # Multi-hop direction is already normalized (unit vector)
-                features[22] = multi_hop_direction[0]  # X component
-                features[23] = multi_hop_direction[1]  # Y component
+            # Feature 24: Path curvature (dot product of next_hop and multi_hop)
+            # This explicitly tells the agent if the path curves ahead:
+            #   1.0 = straight path (next_hop aligned with multi_hop)
+            #   0.0 = 90° turn coming up
+            #  -1.0 = 180° turn (must go opposite direction first)
+            # This is critical for episodes with sharp turns near hazards
+            if features[13] != 0.0 or features[14] != 0.0:  # Next hop computed
+                next_hop_dir_x = features[13]
+                next_hop_dir_y = features[14]
+                multi_hop_dir_x = features[22]
+                multi_hop_dir_y = features[23]
 
-                # Feature 24: Path curvature (dot product of next_hop and multi_hop)
-                # This explicitly tells the agent if the path curves ahead:
-                #   1.0 = straight path (next_hop aligned with multi_hop)
-                #   0.0 = 90° turn coming up
-                #  -1.0 = 180° turn (must go opposite direction first)
-                # This is critical for episodes with sharp turns near hazards
-                if features[13] != 0.0 or features[14] != 0.0:  # Next hop computed
-                    next_hop_dir_x = features[13]
-                    next_hop_dir_y = features[14]
-                    multi_hop_dir_x = features[22]
-                    multi_hop_dir_y = features[23]
+                # Dot product: measures alignment (-1 to 1)
+                curvature = (
+                    next_hop_dir_x * multi_hop_dir_x + next_hop_dir_y * multi_hop_dir_y
+                )
 
-                    # Dot product: measures alignment (-1 to 1)
-                    curvature = next_hop_dir_x * multi_hop_dir_x + next_hop_dir_y * multi_hop_dir_y
-
-                    # Normalize to [0, 1] for easier learning: (curvature + 1) / 2
-                    # 1.0 = straight, 0.5 = 90° turn, 0.0 = 180° turn
-                    features[24] = (curvature + 1.0) / 2.0
+                # Normalize to [0, 1] for easier learning: (curvature + 1) / 2
+                # 1.0 = straight, 0.5 = 90° turn, 0.0 = 180° turn
+                features[24] = (curvature + 1.0) / 2.0
 
     # ========================================================================
     # Features 25-29: Exit Lookahead Features (Phase 4 - Switch Transition Continuity)
-    # Ensures continuous path guidance even when agent reaches switch node
+    # Shows path from exit switch to exit door BEFORE switch activation
     # ========================================================================
 
-    # Features 25-28: Exit path direction (ALWAYS computed, regardless of switch_activated)
-    # This solves discontinuity at switch: agent can see exit path before switch activation
-    # Critical for LSTM temporal credit assignment through goal transitions
+    # Features 25-28: Exit switch to exit door path (ONLY before switch activation)
+    # This gives agent context about the path from switch to exit before they activate it
+    # After activation, features 22-23 (multi-hop) provide guidance toward exit
+    # ONLY computed when switch not yet activated
+    # Uses caching since these features are static per level
     if (
-        hasattr(path_calculator, "level_cache")
-        and path_calculator.level_cache is not None
+        not switch_activated
+        and switch_pos_for_direction is not None
         and exit_pos_for_direction is not None
     ):
-        from .pathfinding_utils import find_ninja_node
-
-        # Find ninja node for exit path calculation
-        exit_ninja_node = find_ninja_node(
-            ninja_pos,
-            adjacency,
-            spatial_hash=spatial_hash,
-            subcell_lookup=subcell_lookup,
-            ninja_radius=NINJA_RADIUS,
-            level_cache=path_calculator.level_cache,
-            goal_id="exit",  # Always use exit for features 25-28
-        )
-
-        if exit_ninja_node is not None:
-            # Features 25-26: Next hop toward exit (immediate direction)
-            exit_next_hop = path_calculator.level_cache.get_next_hop(
-                exit_ninja_node, "exit"
+        try:
+            # Generate cache key WITHOUT switch states (path geometry is static)
+            exit_path_cache_key = level_data.get_cache_key_for_reachability(
+                include_switch_states=False
             )
 
-            if exit_next_hop is not None:
-                # Convert to world coordinates
-                exit_next_hop_world_x = exit_next_hop[0] + NODE_WORLD_COORD_OFFSET
-                exit_next_hop_world_y = exit_next_hop[1] + NODE_WORLD_COORD_OFFSET
-
-                # Compute direction from ninja to exit next_hop
-                dx = exit_next_hop_world_x - ninja_x
-                dy = exit_next_hop_world_y - ninja_y
-                dist = np.sqrt(dx * dx + dy * dy)
-
-                if dist > 0.001:
-                    features[25] = dx / dist  # X component
-                    features[26] = dy / dist  # Y component
-
-            # Features 27-28: Multi-hop direction toward exit (8-hop lookahead)
-            exit_multi_hop_direction = path_calculator.level_cache.get_multi_hop_direction(
-                exit_ninja_node, "exit"
+            # Get cached or compute exit path features
+            exit_path_features = get_cached_exit_path_features(
+                exit_path_cache_key,
+                switch_pos_for_direction,
+                exit_pos_for_direction,
+                adjacency,
+                spatial_hash,
+                subcell_lookup,
+                path_calculator,
             )
 
-            if exit_multi_hop_direction is not None:
-                # Multi-hop direction is already normalized (unit vector)
-                features[27] = exit_multi_hop_direction[0]  # X component
-                features[28] = exit_multi_hop_direction[1]  # Y component
+            # Copy cached features into output array
+            features[25:29] = exit_path_features
+        except Exception:
+            # If caching fails, features remain at 0.0 (safe fallback)
+            pass
 
     # Feature 29: Near-switch transition indicator
     # Signals when agent is approaching switch activation (provides temporal context)
@@ -774,4 +863,29 @@ def compute_reachability_features_from_graph(
         logger.warning("Physics cache not available for directional connectivity")
         features[30:38] = 0.0
 
-    return features
+    # Return features and raw distances for PBRS caching optimization
+    # This avoids duplicate distance computations in reward calculation
+    return features, switch_distance_raw, exit_distance_raw
+
+
+def get_feature_profiling_stats():
+    """Get profiling statistics for reachability features (if enabled)."""
+    if not ENABLE_FEATURE_PROFILING or not _feature_timings:
+        return None
+
+    stats = {}
+    for name, timings in _feature_timings.items():
+        stats[name] = {
+            "avg_ms": np.mean(timings),
+            "std_ms": np.std(timings),
+            "min_ms": np.min(timings),
+            "max_ms": np.max(timings),
+            "count": len(timings),
+        }
+    return stats
+
+
+def reset_feature_profiling():
+    """Reset profiling data."""
+    global _feature_timings
+    _feature_timings = {}
