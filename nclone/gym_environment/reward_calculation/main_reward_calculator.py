@@ -2100,14 +2100,22 @@ class RewardCalculator:
         previous_pos: Optional[Tuple[float, float]],
         switch_activated: bool,
     ) -> Tuple[float, Dict[str, Any]]:
-        """Calculate bonus for reaching path waypoints with soft sequential guidance.
+        """Calculate bonus for reaching path waypoints with progressive reward scaling.
 
-        NEW: Includes continuous approach bonus for turn waypoints (curvature > 60deg).
-        This provides anticipatory guidance as agent approaches critical turns, not just
-        binary reward on collection. Helps agent commit to turn direction before overshooting.
+        UPDATED 2026-01-05: Implements progressive waypoint rewards where later waypoints
+        along the path are worth more than earlier ones. This incentivizes exploration of
+        novel sequences further along complex paths, breaking "stuck near start" local minima.
 
-        Uses soft sequential multiplier that rewards following optimal path while
-        still allowing collection of any waypoint (enables novel path discovery).
+        Formula: reward = base_reward × (1 + progress_fraction × scale)
+        Where progress_fraction = waypoint_node_index / max_waypoint_index (0.0 to 1.0)
+
+        Discovery phase example (scale=2.0):
+        - First waypoint (0%): 8 × (1 + 0) = 8
+        - Middle waypoint (50%): 8 × (1 + 1) = 16
+        - Last waypoint (100%): 8 × (1 + 2) = 24
+
+        This creates a reward gradient from start to end, strongly pulling the agent
+        toward exploring later sections of the path in discovery phase.
 
         Args:
             current_pos: Current agent position
@@ -2116,10 +2124,10 @@ class RewardCalculator:
 
         Returns:
             Tuple of (waypoint_bonus, metrics_dict) where metrics_dict contains:
-            - sequence_multiplier: Multiplier applied (0.2-1.0)
-            - collection_type: "sequential", "skip_1", "skip_multiple", "backward", or "none"
-            - skip_distance: How many waypoints were skipped (0 for sequential)
-            - approach_bonus: Continuous bonus for approaching turn waypoints (0.0+)
+            - sequence_multiplier: Multiplier applied (always 1.0 in simplified system)
+            - collection_type: "collected" or "none"
+            - skip_distance: Always 0 (simplified system)
+            - approach_bonus: Always 0.0 (simplified system)
         """
         metrics = {
             "sequence_multiplier": 0.0,
@@ -2170,6 +2178,10 @@ class RewardCalculator:
             WAYPOINT_COLLECTION_RADIUS,
         )
 
+        # Calculate max waypoint index for progressive reward normalization
+        # This allows us to compute progress_fraction = waypoint_index / max_index
+        max_waypoint_index = max(wp.node_index for wp in phase_waypoints) if phase_waypoints else 1
+
         # Check each waypoint to see if we just crossed into its radius
         for wp in phase_waypoints:
             wp_pos = wp.position
@@ -2193,8 +2205,12 @@ class RewardCalculator:
                 prev_dist > WAYPOINT_COLLECTION_RADIUS
                 and curr_dist <= WAYPOINT_COLLECTION_RADIUS
             ):
-                # Flat reward per waypoint - simple and predictable
-                bonus = WAYPOINT_COLLECTION_REWARD
+                # Progressive reward: later waypoints worth more to incentivize exploration
+                # Formula: reward = base × (1 + progress_fraction × scale)
+                # Where progress_fraction = waypoint_index / max_index (0.0 to 1.0)
+                progress_fraction = wp.node_index / max(1, max_waypoint_index)
+                progress_scale = self.config.waypoint_progress_scale
+                bonus = WAYPOINT_COLLECTION_REWARD * (1.0 + progress_fraction * progress_scale)
                 total_bonus += bonus
 
                 # Mark as collected

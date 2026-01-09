@@ -65,7 +65,7 @@ class SubcellNodeLookupPrecomputer:
         self.x_offset = LOOKUP_X_OFFSET
         self.y_offset = LOOKUP_Y_OFFSET
 
-    def precompute_all(self, verbose: bool = True) -> np.ndarray:
+    def precompute_all(self, verbose: bool = False) -> np.ndarray:
         """
         Precompute closest node position for all subcells in extended region.
 
@@ -127,7 +127,7 @@ class SubcellNodeLookupPrecomputer:
 
         return lookup
 
-    def save_to_file(self, lookup: np.ndarray, filepath: str, verbose: bool = True):
+    def save_to_file(self, lookup: np.ndarray, filepath: str, verbose: bool = False):
         """
         Save precomputed lookup table to compressed file.
 
@@ -226,7 +226,7 @@ class SubcellNodeLookupLoader:
         # Prefer physics_cache for O(1) lookup
         if physics_cache is not None and node_pos in physics_cache:
             return physics_cache[node_pos]["grounded"]
-        
+
         # Fallback to base_adjacency traversal
         if base_adjacency is not None:
             x, y = node_pos
@@ -245,12 +245,12 @@ class SubcellNodeLookupLoader:
                         neighbor_pos = neighbor_info[0]
                     else:
                         neighbor_pos = neighbor_info
-                    
+
                     if neighbor_pos == below_pos:
                         return False  # Can fall down, not grounded
 
             return True  # No downward edge, grounded
-        
+
         # Error: neither source provided
         raise ValueError(
             "_is_node_grounded requires either physics_cache or base_adjacency. "
@@ -362,21 +362,27 @@ class SubcellNodeLookupLoader:
             # Separate grounded and air candidates
             grounded = []
             air_nodes = []
-            
+
             for candidate in candidates:
                 if self._is_node_grounded(candidate, physics_cache, base_adjacency):
                     grounded.append(candidate)
                 else:
                     air_nodes.append(candidate)
-            
+
             # Prefer grounded, fall back to air
             if grounded:
                 # Return closest grounded node
-                best = min(grounded, key=lambda c: (c[0] - query_x)**2 + (c[1] - query_y)**2)
+                best = min(
+                    grounded,
+                    key=lambda c: (c[0] - query_x) ** 2 + (c[1] - query_y) ** 2,
+                )
                 return best
             elif air_nodes:
                 # Return closest air node
-                best = min(air_nodes, key=lambda c: (c[0] - query_x)**2 + (c[1] - query_y)**2)
+                best = min(
+                    air_nodes,
+                    key=lambda c: (c[0] - query_x) ** 2 + (c[1] - query_y) ** 2,
+                )
                 return best
 
         # No candidates found
@@ -408,13 +414,13 @@ def main():
     precomputer = SubcellNodeLookupPrecomputer()
 
     # Run precomputation
-    lookup = precomputer.precompute_all(verbose=True)
+    lookup = precomputer.precompute_all(verbose=False)
 
     # Save to data file
     output_path = os.path.join(
         os.path.dirname(__file__), "../../data/subcell_node_lookup.pkl.gz"
     )
-    precomputer.save_to_file(lookup, output_path, verbose=True)
+    precomputer.save_to_file(lookup, output_path, verbose=False)
 
     print()
     print("=" * 70)

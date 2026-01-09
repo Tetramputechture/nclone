@@ -491,6 +491,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Reset observation processor
         self.observation_processor.reset()
 
+        # Reset spatial context cache (mine overlay position-based cache)
+        from .spatial_context import reset_mine_overlay_cache
+        reset_mine_overlay_cache()
+
         # ============================================================
         # CRITICAL: Reset tracking variables from BaseNppEnvironment
         # NppEnvironment doesn't call super().reset(), so we must do it here
@@ -1098,7 +1102,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
         # Get base observation
+        t_base = self._profile_start("obs_base")
         obs = super()._get_observation()
+        self._profile_end("obs_base", t_base)
 
         from .constants import NINJA_STATE_DIM
 
@@ -1109,9 +1115,20 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 
+        t_reach = self._profile_start("obs_reachability")
         obs["reachability_features"] = self._get_reachability_features()
+        self._profile_end("obs_reachability", t_reach)
 
+        # OPTIMIZATION: Add cached distances for PBRS to avoid duplicate computation
+        # These are computed during reachability feature extraction and stored in instance vars
+        if hasattr(self, '_cached_switch_distance'):
+            obs["_cached_switch_distance"] = self._cached_switch_distance
+        if hasattr(self, '_cached_exit_distance'):
+            obs["_cached_exit_distance"] = self._cached_exit_distance
+
+        t_graph = self._profile_start("obs_graph")
         obs.update(self._get_graph_observations())
+        self._profile_end("obs_graph", t_graph)
 
         # Extract locked door switch states from environment
         switch_states_dict = self._get_switch_states_from_env()
@@ -1125,8 +1142,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Store dict version for ICM and reachability systems
         obs["switch_states_dict"] = switch_states_dict
 
+        t_switch = self._profile_start("obs_switch_states")
         switch_states_array = self._build_switch_states_array(obs)
         obs["switch_states"] = switch_states_array
+        self._profile_end("obs_switch_states", t_switch)
 
         obs["level_data"] = self.level_data
 
@@ -1140,16 +1159,22 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Add mine SDF features for actor safety awareness (3 dims)
         # These provide GLOBAL mine danger signal from ALL mines (not just 8 nearest)
+        t_mine_sdf = self._profile_start("obs_mine_sdf")
         obs["mine_sdf_features"] = self._compute_mine_sdf_features(obs)
+        self._profile_end("obs_mine_sdf", t_mine_sdf)
 
         # Add privileged features for asymmetric critic (if enabled)
         # These provide oracle information to the critic (not actor) for better value estimation
+        t_priv = self._profile_start("obs_privileged")
         obs["privileged_features"] = self._compute_privileged_features(obs)
+        self._profile_end("obs_privileged", t_priv)
 
         # Add metadata for cached graph extraction (hybrid_cached_graph architecture)
         # These are not trainable features, just identifiers for cache lookup
         obs["level_id"] = self.map_loader.current_map_name
+        t_ninja_node = self._profile_start("obs_ninja_node")
         obs["ninja_node_pos"] = self._get_ninja_node_position_for_cache()
+        self._profile_end("obs_ninja_node", t_ninja_node)
 
         return obs
 
@@ -1910,7 +1935,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Add spatial_context (graph-free local geometry features)
         if "spatial_context" not in processed_obs:
+            t_spatial = self._profile_start("proc_spatial_context")
             processed_obs["spatial_context"] = self._compute_spatial_context()
+            self._profile_end("proc_spatial_context", t_spatial)
 
         # Add mine_sdf_features (global mine danger signal for actor safety)
         if "mine_sdf_features" not in processed_obs:
@@ -1947,21 +1974,33 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         Returns:
             np.ndarray: 112-dimensional spatial context features
         """
+        from .spatial_context import (
+            compute_local_tile_grid,
+            compute_mine_overlay_from_entities,
+        )
+        
         # Get ninja position and velocity (current state only - Markovian)
         ninja_pos = self.nplay_headless.ninja_position()
         ninja_velocity = self.nplay_headless.ninja_velocity()
 
-        # Get level data for tiles and entities
+        # Get level data for tiles
         level_data = self.level_data
 
-        return compute_spatial_context(
-            ninja_pos=ninja_pos,
-            ninja_velocity=ninja_velocity,
-            tiles=level_data.tiles,
-            entities=level_data.entities,
-            level_width=LEVEL_WIDTH_PX,
-            level_height=LEVEL_HEIGHT_PX,
+        # Profile tile grid computation
+        t_tiles = self._profile_start("spatial_tiles")
+        tile_grid = compute_local_tile_grid(ninja_pos, level_data.tiles)
+        self._profile_end("spatial_tiles", t_tiles)
+
+        # Profile mine overlay computation (optimized with direct entity access + caching)
+        t_mines = self._profile_start("spatial_mines")
+        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
+        mine_overlay = compute_mine_overlay_from_entities(
+            ninja_pos, ninja_velocity, toggle_mines, toggled_mines, LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
         )
+        self._profile_end("spatial_mines", t_mines)
+
+        # Concatenate features
+        return np.concatenate([tile_grid, mine_overlay])
 
     def _get_ninja_node_position_for_cache(self) -> Tuple[int, int]:
         """Get ninja's current graph node position for cached graph extraction.

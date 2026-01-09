@@ -56,9 +56,6 @@ class EnvMapLoader:
                              See curriculum_config.CATEGORY_NAMES for options
             test_dataset_path: Path to test dataset directory for evaluation (defaults to "datasets/test")
         """
-        _init_start = time.perf_counter()
-        logger = logging.getLogger(__name__)
-
         self.nplay_headless = nplay_headless
         self.rng = rng
         self.eval_mode = eval_mode
@@ -93,9 +90,6 @@ class EnvMapLoader:
 
         # Curriculum weights (category name -> relative weight)
         self._curriculum_weights = get_default_weights()
-
-        _init_time = time.perf_counter() - _init_start
-        logger.info(f"[TIMING] EnvMapLoader.__init__: {_init_time:.3f}s")
 
     def load_initial_map(self):
         """Load the first map based on configuration."""

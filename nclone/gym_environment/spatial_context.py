@@ -102,6 +102,13 @@ MINE_RADIUS_SAFE = 3.5 / 5.0  # 3.5px normalized
 MINE_RADIUS_TRANSITIONING = 4.5 / 5.0  # 4.5px normalized
 MINE_RADIUS_DEADLY = 4.0 / 5.0  # 4.0px normalized
 
+# Module-level cache for mine overlay (position-based caching)
+_mine_overlay_cache = {
+    "last_pos": None,
+    "result": None,
+}
+MINE_OVERLAY_CACHE_THRESHOLD = 12.0  # pixels - recompute when ninja moves > 12px (OPTIMIZED: doubled for better cache hit rate)
+
 
 def compute_local_tile_grid(
     ninja_pos: Tuple[float, float],
@@ -113,6 +120,8 @@ def compute_local_tile_grid(
     Returns simplified tile categories (0-4) normalized to [0, 1].
     Tiles outside level bounds are treated as solid (category 1).
 
+    OPTIMIZED: Uses vectorized numpy operations instead of Python loops.
+
     Args:
         ninja_pos: Ninja position (x, y) in world coordinates
         tiles: 2D numpy array of tile types [height, width]
@@ -120,8 +129,6 @@ def compute_local_tile_grid(
     Returns:
         64-dimensional numpy array with normalized tile categories [0, 1]
     """
-    grid = np.ones(LOCAL_GRID_DIM, dtype=np.float32) * 0.25  # Default: solid (1/4)
-
     # Convert ninja position to tile coordinates
     ninja_x, ninja_y = ninja_pos
     ninja_tile_col = int(ninja_x // CELL_SIZE)
@@ -130,24 +137,43 @@ def compute_local_tile_grid(
     # Grid is centered on ninja, so offset by half grid size
     half_grid = LOCAL_GRID_SIZE // 2
 
+    # Calculate slice bounds
+    row_start = ninja_tile_row - half_grid
+    row_end = row_start + LOCAL_GRID_SIZE
+    col_start = ninja_tile_col - half_grid
+    col_end = col_start + LOCAL_GRID_SIZE
+
     height, width = tiles.shape
 
-    for dy in range(LOCAL_GRID_SIZE):
-        for dx in range(LOCAL_GRID_SIZE):
-            # Calculate tile coordinates relative to ninja
-            tile_row = ninja_tile_row + (dy - half_grid)
-            tile_col = ninja_tile_col + (dx - half_grid)
+    # VECTORIZED: Extract tile slice with padding for out-of-bounds
+    # Default to solid (category 1) for out-of-bounds tiles
+    grid_2d = np.ones((LOCAL_GRID_SIZE, LOCAL_GRID_SIZE), dtype=np.int32)
 
-            # Bounds check
-            if 0 <= tile_row < height and 0 <= tile_col < width:
-                tile_type = tiles[tile_row, tile_col]
-                # Clamp to valid range (0-37)
-                tile_type = min(max(tile_type, 0), 37)
-                # Look up normalized category
-                grid[dy * LOCAL_GRID_SIZE + dx] = TILE_CATEGORIES_NORMALIZED[tile_type]
-            # else: already set to solid (0.25)
+    # Calculate valid slice bounds (clipped to tile array)
+    valid_row_start = max(0, row_start)
+    valid_row_end = min(height, row_end)
+    valid_col_start = max(0, col_start)
+    valid_col_end = min(width, col_end)
 
-    return grid
+    # Calculate corresponding positions in grid
+    grid_row_start = valid_row_start - row_start
+    grid_row_end = grid_row_start + (valid_row_end - valid_row_start)
+    grid_col_start = valid_col_start - col_start
+    grid_col_end = grid_col_start + (valid_col_end - valid_col_start)
+
+    # Copy valid tile data into grid
+    if valid_row_end > valid_row_start and valid_col_end > valid_col_start:
+        tile_slice = tiles[valid_row_start:valid_row_end, valid_col_start:valid_col_end]
+        # Clamp to valid range (0-37)
+        tile_slice = np.clip(tile_slice, 0, 37)
+        grid_2d[grid_row_start:grid_row_end, grid_col_start:grid_col_end] = tile_slice
+
+    # VECTORIZED: Convert tile types to normalized categories using lookup table
+    # TILE_CATEGORIES_NORMALIZED is a precomputed array indexed by tile type
+    grid_normalized = TILE_CATEGORIES_NORMALIZED[grid_2d]
+
+    # Flatten to 1D array (64 elements)
+    return grid_normalized.flatten().astype(np.float32)
 
 
 def compute_mine_overlay(
@@ -278,6 +304,219 @@ def compute_mine_overlay(
         overlay[base_idx + 5] = mine["distance_rate"]
 
     return overlay
+
+
+def compute_mine_overlay_from_entities(
+    ninja_pos: Tuple[float, float],
+    ninja_velocity: Tuple[float, float],
+    toggle_mines: List,  # EntityToggleMine objects (type 1)
+    toggled_mines: List,  # EntityToggleMine objects (type 21)
+    level_width: float = 1056.0,
+    level_height: float = 600.0,
+) -> np.ndarray:
+    """
+    Optimized mine overlay computation with position-based caching and direct entity access.
+
+    This function provides two key optimizations over compute_mine_overlay():
+    1. Direct entity access: Accepts mine entity objects directly, avoiding iteration
+       through all entities and type filtering overhead
+    2. Position-based caching: Caches results and only recomputes when ninja moves
+       more than MINE_OVERLAY_CACHE_THRESHOLD (6px) from last cached position
+
+    Since mines don't move, their relative positions change slowly with ninja movement.
+    Velocity features may be slightly stale between cache hits but remain useful.
+
+    Cache invalidation: Position change > 6px only (no mine state tracking for simplicity)
+
+    Args:
+        ninja_pos: Ninja position (x, y) in world coordinates
+        ninja_velocity: Ninja velocity (vx, vy) in pixels per frame
+        toggle_mines: List of EntityToggleMine objects (type 1 - start untoggled)
+        toggled_mines: List of EntityToggleMine objects (type 21 - start toggled)
+        level_width: Level width for normalization
+        level_height: Level height for normalization
+
+    Returns:
+        48-dimensional numpy array (8 mines × 6 features)
+    """
+    global _mine_overlay_cache
+
+    # Check cache validity (position threshold)
+    if _mine_overlay_cache["last_pos"] is not None:
+        dx = ninja_pos[0] - _mine_overlay_cache["last_pos"][0]
+        dy = ninja_pos[1] - _mine_overlay_cache["last_pos"][1]
+        dist_sq = dx * dx + dy * dy
+        if dist_sq < MINE_OVERLAY_CACHE_THRESHOLD**2:
+            # Cache hit - return cached result
+            return _mine_overlay_cache["result"]
+
+    # Cache miss - compute overlay with direct entity attribute access
+    overlay = _compute_mine_overlay_impl(
+        ninja_pos,
+        ninja_velocity,
+        toggle_mines,
+        toggled_mines,
+        level_width,
+        level_height,
+    )
+
+    # Update cache
+    _mine_overlay_cache["last_pos"] = ninja_pos
+    _mine_overlay_cache["result"] = overlay
+
+    return overlay
+
+
+def _compute_mine_overlay_impl(
+    ninja_pos: Tuple[float, float],
+    ninja_velocity: Tuple[float, float],
+    toggle_mines: List,
+    toggled_mines: List,
+    level_width: float,
+    level_height: float,
+) -> np.ndarray:
+    """
+    Implementation of mine overlay computation with direct entity attribute access.
+
+    This function processes mine entity objects directly without dictionary lookups,
+    providing significant performance improvement over the dictionary-based approach.
+
+    Args:
+        ninja_pos: Ninja position (x, y) in world coordinates
+        ninja_velocity: Ninja velocity (vx, vy) in pixels per frame
+        toggle_mines: List of EntityToggleMine objects (type 1)
+        toggled_mines: List of EntityToggleMine objects (type 21)
+        level_width: Level width for normalization
+        level_height: Level height for normalization
+
+    Returns:
+        48-dimensional numpy array (8 mines × 6 features)
+    """
+    overlay = np.zeros(MINE_OVERLAY_DIM, dtype=np.float32)
+
+    ninja_x, ninja_y = ninja_pos
+    ninja_vx, ninja_vy = ninja_velocity
+
+    # Collect all mines with distance (direct attribute access)
+    mines_with_distance = []
+
+    # Process toggle mines (type 1 - start untoggled/safe)
+    for mine in toggle_mines:
+        # Direct attribute access (no dictionary lookups)
+        mine_x = mine.xpos
+        mine_y = mine.ypos
+        state = mine.state  # 0=toggled/deadly, 1=untoggled/safe, 2=toggling
+
+        # Calculate distance to ninja
+        dx = mine_x - ninja_x
+        dy = mine_y - ninja_y
+        distance = (dx * dx + dy * dy) ** 0.5
+
+        # Map state to encoded value and radius
+        if state == 1:  # Untoggled (safe)
+            state_encoded = MINE_STATE_SAFE
+            radius_encoded = MINE_RADIUS_SAFE
+        elif state == 2:  # Toggling (transitioning)
+            state_encoded = MINE_STATE_TRANSITIONING
+            radius_encoded = MINE_RADIUS_TRANSITIONING
+        else:  # 0: Toggled (deadly)
+            state_encoded = MINE_STATE_DEADLY
+            radius_encoded = MINE_RADIUS_DEADLY
+
+        # Compute velocity-hazard features
+        if distance > 1e-6:
+            dir_x = dx / distance
+            dir_y = dy / distance
+            velocity_dot = (ninja_vx * dir_x + ninja_vy * dir_y) / MAX_HOR_SPEED
+            distance_rate = -velocity_dot
+        else:
+            velocity_dot = 0.0
+            distance_rate = 0.0
+
+        mines_with_distance.append(
+            {
+                "distance": distance,
+                "dx": dx,
+                "dy": dy,
+                "state": state_encoded,
+                "radius": radius_encoded,
+                "velocity_dot": np.clip(velocity_dot, -1.0, 1.0),
+                "distance_rate": np.clip(distance_rate, -1.0, 1.0),
+            }
+        )
+
+    # Process toggled mines (type 21 - start toggled/deadly)
+    for mine in toggled_mines:
+        # Direct attribute access
+        mine_x = mine.xpos
+        mine_y = mine.ypos
+        # Type 21 always starts in deadly state (0)
+        state = mine.state
+
+        # Calculate distance to ninja
+        dx = mine_x - ninja_x
+        dy = mine_y - ninja_y
+        distance = (dx * dx + dy * dy) ** 0.5
+
+        # Map state to encoded value and radius
+        if state == 1:  # Untoggled (safe)
+            state_encoded = MINE_STATE_SAFE
+            radius_encoded = MINE_RADIUS_SAFE
+        elif state == 2:  # Toggling (transitioning)
+            state_encoded = MINE_STATE_TRANSITIONING
+            radius_encoded = MINE_RADIUS_TRANSITIONING
+        else:  # 0: Toggled (deadly)
+            state_encoded = MINE_STATE_DEADLY
+            radius_encoded = MINE_RADIUS_DEADLY
+
+        # Compute velocity-hazard features
+        if distance > 1e-6:
+            dir_x = dx / distance
+            dir_y = dy / distance
+            velocity_dot = (ninja_vx * dir_x + ninja_vy * dir_y) / MAX_HOR_SPEED
+            distance_rate = -velocity_dot
+        else:
+            velocity_dot = 0.0
+            distance_rate = 0.0
+
+        mines_with_distance.append(
+            {
+                "distance": distance,
+                "dx": dx,
+                "dy": dy,
+                "state": state_encoded,
+                "radius": radius_encoded,
+                "velocity_dot": np.clip(velocity_dot, -1.0, 1.0),
+                "distance_rate": np.clip(distance_rate, -1.0, 1.0),
+            }
+        )
+
+    # Sort by distance and take nearest 8
+    mines_with_distance.sort(key=lambda m: m["distance"])
+    nearest_mines = mines_with_distance[:MAX_NEAREST_MINES]
+
+    # Fill overlay with mine features
+    for i, mine in enumerate(nearest_mines):
+        base_idx = i * MINE_FEATURES_PER
+        overlay[base_idx + 0] = np.clip(mine["dx"] / level_width, -1.0, 1.0)
+        overlay[base_idx + 1] = np.clip(mine["dy"] / level_height, -1.0, 1.0)
+        overlay[base_idx + 2] = mine["state"]
+        overlay[base_idx + 3] = mine["radius"]
+        overlay[base_idx + 4] = mine["velocity_dot"]
+        overlay[base_idx + 5] = mine["distance_rate"]
+
+    return overlay
+
+
+def reset_mine_overlay_cache():
+    """Reset mine overlay cache on episode reset.
+
+    This should be called at the start of each episode to ensure
+    fresh computation with the new level configuration.
+    """
+    global _mine_overlay_cache
+    _mine_overlay_cache["last_pos"] = None
+    _mine_overlay_cache["result"] = None
 
 
 def compute_spatial_context(

@@ -242,13 +242,21 @@ class UnifiedObservationExtractor:
             if not adjacency:
                 raise RuntimeError("No adjacency data in graph")
 
+            # Get pre-computed goal positions from nplay_headless (O(1) entity_dic access)
+            nplay_wrapper = self._create_nplay_headless_wrapper(sim)
+            goal_positions = None
+            if hasattr(nplay_wrapper, "get_goal_positions_for_features"):
+                goal_positions = nplay_wrapper.get_goal_positions_for_features()
+
             # Compute base reachability features (8 dims)
-            base_features = compute_reachability_features_from_graph(
+            # Note: function now returns (features, switch_distance, exit_distance) for PBRS optimization
+            base_features, _, _ = compute_reachability_features_from_graph(
                 adjacency,
                 graph_data,
                 level_data,
                 ninja_pos,
                 self._path_calculator,
+                goal_positions=goal_positions,
             )
 
             # Keep only first 4 features (Phase 6: removed redundant features)

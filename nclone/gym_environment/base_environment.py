@@ -110,7 +110,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 (graph + state + reachability contain all necessary information)
             enable_profiling: Enable detailed performance profiling (~5% overhead)
         """
-        _init_start = time.perf_counter()
         _logger = logging.getLogger(__name__)
 
         super().__init__()
@@ -446,6 +445,19 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         self._pending_curriculum_stage = new_stage
 
+        # ANNEALED MASKING (2026-01-05): Update RewardConfig with curriculum stage
+        # This allows action_masking_mode property to track curriculum progress
+        # for annealed masking transitions (hard -> soft -> none)
+        if hasattr(self, "reward_calculator") and self.reward_calculator.config:
+            num_stages = self.goal_curriculum_manager._num_stages
+            # Update immediately (not deferred) since masking mode only affects action selection
+            # No mid-episode corruption risk - just changes which actions are masked/biased
+            self.reward_calculator.config.set_curriculum_stage(new_stage, num_stages)
+            logger.debug(
+                f"[CURRICULUM] Updated RewardConfig curriculum stage: {new_stage}/{num_stages}, "
+                f"masking_mode={self.reward_calculator.config.action_masking_mode}"
+            )
+
         frame_count = (
             self.nplay_headless.sim.frame if hasattr(self, "nplay_headless") else 0
         )
@@ -476,6 +488,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         for subclasses to extend behavior at specific points.
         """
         logger = logging.getLogger(__name__)
+
+        # Profile entire step method
+        t_step = self._profile_start("step_total")
 
         try:
             # Get initial observation for frame skip reward calculation
@@ -653,10 +668,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self.current_ep_reward += reward
 
             # Process observation for training
+            t_proc = self._profile_start("observation_process")
             processed_obs = self._process_observation(final_obs)
+            self._profile_end("observation_process", t_proc)
 
             # Build episode info
+            t_info = self._profile_start("info_build")
             info = self._build_episode_info(player_won, terminated, truncated)
+            self._profile_end("info_build", t_info)
 
             # DIAGNOSTIC: Store reward breakdown in info for route visualization
             # This allows seeing reward components without needing logging enabled
@@ -712,6 +731,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
             # Hook: Add additional info fields
             self._extend_info_hook(info)
+
+            # End step profiling
+            self._profile_end("step_total", t_step)
 
             return processed_obs, reward, terminated, truncated, info
 
@@ -1515,6 +1537,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Reset observation processor
         self.observation_processor.reset()
+
+        # Reset spatial context cache (mine overlay position-based cache)
+        from .spatial_context import reset_mine_overlay_cache
+
+        reset_mine_overlay_cache()
 
         # Reset reward calculator
         self.reward_calculator.reset()
@@ -2951,6 +2978,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         to the Ninja for deterministic action masking (ensuring 100% success
         on simple corridors).
 
+        ANNEALED MASKING (2026-01-05): Path-direction masking now only applies
+        in 'hard' mode, transitioning to 'soft' (logit bias) and then 'none'
+        as training progresses.
+
         Args:
             ninja_pos: Current ninja position (x, y)
             switch_pos: Exit switch position (x, y)
@@ -2959,7 +2990,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         Returns:
             Action mask as numpy array of int8 (defensive copy to prevent memory sharing)
         """
+        # Get annealed masking mode from reward config
+        masking_mode = self.reward_calculator.config.action_masking_mode
+        self.nplay_headless.sim._action_masking_mode = masking_mode
+
         # Detect if path is straight (horizontal or downward) and pass to Ninja for deterministic masking
+        # Note: Path direction only used when masking_mode == "hard"
         straight_path_direction = self._detect_straight_path_direction()
         self.nplay_headless.sim._path_straightness_direction = straight_path_direction
 

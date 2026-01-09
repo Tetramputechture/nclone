@@ -500,3 +500,11 @@ class FrameStackWrapper(ObservationWrapper):
         return self.env.get_pbrs_path_for_visualization(
             start_pos, goal_pos, switch_activated
         )
+
+    def get_reward_config(self):
+        """Passthrough to underlying environment for reward configuration access.
+        
+        Returns:
+            RewardConfig object containing reward shaping parameters
+        """
+        return self.env.get_reward_config()

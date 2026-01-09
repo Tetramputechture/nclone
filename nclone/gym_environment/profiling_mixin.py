@@ -76,36 +76,48 @@ class ProfilingMixin:
         if step_times:
             total_avg = np.mean(list(step_times))
             print(f"\nTotal step time: {total_avg:.2f} ms/step ({1000/total_avg:.1f} steps/s)")
+        else:
+            total_avg = 1.0  # Fallback
         
-        # Breakdown by component
+        # Breakdown by component with hierarchical structure
         print("\nComponent breakdown (avg ± std | min → max | % of total):")
         print("-" * 80)
         
+        # Hierarchical component structure
         components = [
-            ("step_total", "TOTAL STEP"),
-            ("physics_tick", "  └─ Physics tick"),
-            ("observation_get", "  └─ Get observation"),
-            ("    graph_check", "     ├─ Graph should_update check"),
-            ("    graph_build", "     ├─ Graph build (if updated)"),
-            ("    graph_convert", "     │  └─ Convert to GraphData"),
-            ("    obs_process", "     └─ Observation processing"),
-            ("reward_calc", "  └─ Reward calculation"),
-            ("termination_check", "  └─ Termination check"),
+            ("step_total", "TOTAL STEP", 0),
+            ("physics_tick", "  └─ Physics tick", 1),
+            ("observation_get", "  └─ Get observation", 1),
+            ("obs_base", "       ├─ Base observation", 2),
+            ("obs_reachability", "       ├─ Reachability features", 2),
+            ("reach_features", "       │    └─ Feature computation", 3),
+            ("obs_graph", "       ├─ Graph observations", 2),
+            ("obs_switch_states", "       ├─ Switch states", 2),
+            ("proc_spatial_context", "       ├─ Spatial context", 2),
+            ("spatial_tiles", "       │    ├─ Tile grid", 3),
+            ("spatial_mines", "       │    └─ Mine overlay", 3),
+            ("obs_mine_sdf", "       ├─ Mine SDF features", 2),
+            ("obs_privileged", "       ├─ Privileged features", 2),
+            ("obs_ninja_node", "       └─ Ninja node lookup", 2),
+            ("reward_calc", "  └─ Reward calculation", 1),
+            ("observation_process", "  └─ Process observation", 1),
+            ("info_build", "  └─ Build episode info", 1),
+            ("graph_check", "  └─ Graph should_update check", 1),
+            ("graph_build", "  └─ Graph build (if updated)", 1),
+            ("graph_convert", "       └─ Convert to GraphData", 2),
         ]
         
-        total_time = total_avg if step_times else 1.0
-        
-        for key, label in components:
+        for key, label, level in components:
             if key in self._timing_data and self._timing_data[key]:
                 times = list(self._timing_data[key])
                 avg = np.mean(times)
                 std = np.std(times)
                 min_t = np.min(times)
                 max_t = np.max(times)
-                pct = (avg / total_time) * 100 if total_time > 0 else 0
+                pct = (avg / total_avg) * 100 if total_avg > 0 else 0
                 count = len(times)
                 
-                print(f"{label:<35} {avg:>6.2f}±{std:>5.2f} ms | "
+                print(f"{label:<40} {avg:>6.2f}±{std:>5.2f} ms | "
                       f"{min_t:>5.1f}→{max_t:>6.1f} ms | "
                       f"{pct:>5.1f}% | n={count}")
         

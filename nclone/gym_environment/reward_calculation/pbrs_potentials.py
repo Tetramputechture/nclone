@@ -219,6 +219,9 @@ class PBRSPotentials:
             goal_id = "exit"
 
         player_pos = (int(state["player_x"]), int(state["player_y"]))
+        
+        # Extract ninja velocity for velocity-aware first-edge pathfinding costs
+        ninja_velocity = (state.get("player_xspeed", 0.0), state.get("player_yspeed", 0.0))
 
         # Validate goal position
         if goal_pos[0] == 0 and goal_pos[1] == 0:
@@ -228,22 +231,48 @@ class PBRSPotentials:
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
 
-        # Get distance
-        try:
-            distance = path_calculator.get_geometric_distance(
-                player_pos,
-                goal_pos,
-                adjacency,
-                base_adjacency,
-                level_data,
-                graph_data,
-                entity_radius,
-                NINJA_RADIUS,
-                goal_id=goal_id,
-            )
-            state["_pbrs_last_distance_to_goal"] = distance
-        except Exception as e:
-            raise RuntimeError(f"PBRS distance failed: {e}") from e
+        # OPTIMIZATION: Check if distance was already computed during reachability feature extraction
+        # This avoids duplicate distance computations (~3-4ms savings per step)
+        #
+        # Flow:
+        # 1. reachability_mixin._compute_reachability() computes distances and stores in:
+        #    - self._cached_switch_distance
+        #    - self._cached_exit_distance
+        # 2. npp_environment._get_observation() adds these to obs dict:
+        #    - obs["_cached_switch_distance"]
+        #    - obs["_cached_exit_distance"]
+        # 3. This function reads from state dict to avoid recomputing
+        #
+        # With feature_computation.py optimizations (consolidated get_distance calls),
+        # distances are computed only ONCE per step and reused for:
+        # - Reachability features (distance features 4-5)
+        # - Path difficulty ratio (feature 21)
+        # - PBRS potential calculation (this function)
+        distance = None
+        if goal_id == "switch" and "_cached_switch_distance" in state:
+            distance = state["_cached_switch_distance"]
+        elif goal_id == "exit" and "_cached_exit_distance" in state:
+            distance = state["_cached_exit_distance"]
+
+        # Get distance if not cached (fallback for robustness)
+        if distance is None:
+            try:
+                distance = path_calculator.get_geometric_distance(
+                    player_pos,
+                    goal_pos,
+                    adjacency,
+                    base_adjacency,
+                    level_data,
+                    graph_data,
+                    entity_radius,
+                    NINJA_RADIUS,
+                    goal_id=goal_id,
+                    ninja_velocity=ninja_velocity,
+                )
+            except Exception as e:
+                raise RuntimeError(f"PBRS distance failed: {e}") from e
+        
+        state["_pbrs_last_distance_to_goal"] = distance
 
         # Get scale parameters from cache
         # UPDATED 2026-01-03: Increased fallbacks for large levels (up to 2000px)
@@ -464,6 +493,9 @@ class PBRSPotentials:
                 int(active_waypoint.position[0]),
                 int(active_waypoint.position[1]),
             )
+            
+            # Extract ninja velocity for velocity-aware first-edge pathfinding costs
+            ninja_velocity = (state.get("player_xspeed", 0.0), state.get("player_yspeed", 0.0))
 
             try:
                 # Distance to waypoint (momentum-aware pathfinding)
@@ -476,9 +508,10 @@ class PBRSPotentials:
                     graph_data=graph_data,
                     entity_radius=0.0,  # Waypoint is a position, not an entity
                     ninja_radius=NINJA_RADIUS,
+                    ninja_velocity=ninja_velocity,
                 )
 
-                # Distance from waypoint to goal (momentum-aware pathfinding)
+                # Distance from waypoint to goal (no velocity for waypoint→goal, only for player→waypoint)
                 dist_waypoint_to_goal = path_calculator.get_geometric_distance(
                     waypoint_pos,
                     goal_pos,
@@ -488,6 +521,7 @@ class PBRSPotentials:
                     graph_data=graph_data,
                     entity_radius=entity_radius,
                     ninja_radius=NINJA_RADIUS,
+                    ninja_velocity=None,  # No velocity context for intermediate segments
                 )
 
                 # Check for unreachable paths

@@ -2,12 +2,11 @@ import os
 import random
 import math
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from .nsim import Simulator
 from .map_generation.map_generator import generate_map
 from .sim_config import SimConfig
 import numpy as np
-from typing import List
 from .constants.physics_constants import (
     MAX_HOR_SPEED,
     TOGGLE_MINE_RADII,
@@ -609,6 +608,43 @@ class NPlayHeadless:
                     )
 
         return mines
+
+    def get_mine_entities(self) -> Tuple[List, List]:
+        """Return mine entity objects directly for efficient spatial context computation.
+
+        Returns raw entity objects instead of processed dictionaries for performance.
+        This avoids unnecessary dictionary creation and type filtering overhead.
+
+        Returns:
+            Tuple of (toggle_mines, toggled_mines) entity object lists
+        """
+        entity_dic = self.sim.entity_dic
+        return (entity_dic.get(1, []), entity_dic.get(21, []))
+
+    def get_goal_positions_for_features(self) -> Dict[str, Any]:
+        """Return pre-computed goal positions for reachability features (O(1) lookups).
+
+        This method provides direct entity_dic access to avoid O(n) entity iteration
+        in feature computation code. Uses existing helper methods that access entity_dic
+        directly by type.
+
+        Returns:
+            Dictionary containing:
+            - switch_pos: Exit switch position tuple (x, y)
+            - exit_pos: Exit door position tuple (x, y)
+            - switch_activated: Boolean, True if switch collected
+            - locked_doors: List of locked door entities
+            - locked_door_switches: List of locked door switch entities
+            - mine_entities: Tuple of (toggle_mines, toggled_mines) for mine counting
+        """
+        return {
+            "switch_pos": self.exit_switch_position(),
+            "exit_pos": self.exit_door_position(),
+            "switch_activated": self.exit_switch_activated(),
+            "locked_doors": self.locked_doors(),
+            "locked_door_switches": self.locked_door_switches(),
+            "mine_entities": self.get_mine_entities(),  # O(1) entity_dic access
+        }
 
     def locked_doors(self):
         """Return locked door entities (type 6). Includes their switch coordinates."""
