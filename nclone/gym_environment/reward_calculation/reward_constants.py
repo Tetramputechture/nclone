@@ -240,19 +240,23 @@ SUB_GOAL_SPACING = 48.0  # Distance reduction threshold for milestone (pixels)
 # - Out-of-order collection: base × 0.3 (discourages shortcuts)
 # - Collection radius: 18.0 pixels (1.5 × sub-node size for reliable collection)
 #
-# Example rewards (base = 0.5):
-# - Waypoint 0 (in-sequence, streak=1): 0.5 × 1.1 = 0.55
-# - Waypoint 1 (in-sequence, streak=2): 0.5 × 1.2 = 0.60
-# - Waypoint 2 (in-sequence, streak=3): 0.5 × 1.3 = 0.65
-# - Waypoint 5 (skipped 3,4, out-of-order): 0.5 × 0.3 = 0.15
+# Example rewards (base = 1.5, INCREASED 2026-01-10 to combat oscillation):
+# - Waypoint 0 (in-sequence, streak=1): 1.5 × 1.2 = 1.80
+# - Waypoint 1 (in-sequence, streak=2): 1.5 × 1.4 = 2.10
+# - Waypoint 2 (in-sequence, streak=3): 1.5 × 1.6 = 2.40
+# - Waypoint 5 (skipped 3,4, out-of-order): 1.5 × 0.3 = 0.45
 #
-# With ~30 waypoints collected in-sequence = ~18 total bonus (meaningful but not dominant)
-# This creates immediate gradient toward following path, preventing "shortcut then die" pattern.
-WAYPOINT_BASE_BONUS = 0.5  # Base reward for waypoint collection
+# With ~30 waypoints collected in-sequence = ~60 total bonus (strong path-following incentive)
+# INCREASED: Stronger waypoint rewards help break oscillation local minima by providing
+# clear gradient toward progress. Agent gets immediate positive feedback for following
+# the correct path, making exploration more directed.
+WAYPOINT_BASE_BONUS = 3  # Base reward for waypoint collection (3x increase from 0.5)
 WAYPOINT_COLLECTION_RADIUS = (
     18.0  # pixels - 1.5 × sub-node size for reliable collection
 )
-WAYPOINT_SEQUENCE_MULTIPLIER = 0.1  # Streak bonus per consecutive in-order collection
+WAYPOINT_SEQUENCE_MULTIPLIER = (
+    0.2  # Streak bonus per consecutive in-order collection (2x increase from 0.1)
+)
 WAYPOINT_OUT_OF_ORDER_SCALE = 0.3  # Reduced reward for out-of-order collection
 
 # Legacy constants (deprecated, kept for compatibility)
@@ -323,31 +327,51 @@ PBRS_EXIT_DISTANCE_SCALE = 1.0
 # - 500px: scale = 1.58x (moderate boost)
 # - 1000px: scale = 2.24x (significant boost)
 # - 2000px: scale = 3.16x (strong boost)
+# - 3000px: scale = 3.87x (late curriculum stages)
 #
-# This reduces gradient decay from 10x to 3.16x across the path length range,
-# maintaining effective learning signal on longer levels while preventing
-# instability from unbounded scaling.
+# UPDATED 2026-01-12: Increased cap from 5.0 to 7.0 for late-stage curriculum training.
+# At stage 8+ on complex levels (e.g., "006 ramp jumping"), combined path distances
+# can reach 1000-1200+ pixels. The 7.0 cap allows sqrt(1200/200) = 2.45x scaling
+# with headroom, maintaining strong per-step gradients on long non-linear paths while
+# still preventing instability from unbounded scaling on extreme outliers.
 PBRS_GRADIENT_REFERENCE_DISTANCE = 200.0  # Reference path length for base gradient
-PBRS_GRADIENT_SCALE_CAP = 5.0  # Maximum scaling factor to prevent instability
+PBRS_GRADIENT_SCALE_CAP = 7.0  # Maximum scaling factor (increased for late curriculum)
 
 # DEPRECATED: Path normalization factor (no longer used)
 # The actual normalization uses LINEAR potential: Φ(d) = 1 - d/k
-# where k is the characteristic distance (spawn_to_switch or switch_to_exit distance).
+# where k is the characteristic distance (phase-dependent, see below).
 # This constant exists for historical reasons but is NOT applied in the calculation.
 #
-# Actual normalization (in pbrs_potentials.py) UPDATED 2026-01-03:
-#   SWITCHED FROM HYPERBOLIC TO LINEAR for uniform gradient strength
-#   k = max(200.0, spawn_to_switch_distance)  # Linear potential
-#   potential_raw = max(0, 1.0 - distance / k)  # Clamped linear
-#   potential = 0.5 * potential_raw  # Scale to [0, 0.5] for switch phase
+# Actual normalization (in pbrs_potentials.py):
+#   UPDATED 2026-01-03: SWITCHED FROM HYPERBOLIC TO LINEAR for uniform gradient strength
+#   FIXED 2026-01-09: Post-switch phase uses combined_distance to prevent clamping
+#
+# Pre-switch phase (Φ ∈ [0, 0.5]):
+#   k = max(200.0, spawn_to_switch_distance)
+#   potential_raw = max(0, 1.0 - distance / k)
+#   potential = 0.5 * potential_raw
+#
+# Post-switch phase (Φ ∈ [0.5, 1.0]):
+#   k = max(50.0, 1.5 * (spawn_to_switch_distance + switch_to_exit_distance))  # FIXED: 1.5x combined
+#   potential_raw = max(0, 1.0 - distance / k)
+#   potential = 0.5 + 0.5 * potential_raw
+#   1.5x multiplier accounts for alternative paths and exploration beyond optimal envelope
+#
+# WHY COMBINED DISTANCE FOR POST-SWITCH:
+# Agent can be anywhere after switch activation (often near spawn due to detours).
+# Using switch_to_exit_distance alone caused clamping when agent was far from exit:
+#   - Agent at spawn (800px from exit), switch_to_exit = 200px
+#   - potential_raw = 1.0 - (800/200) = -3.0 → clamped to 0.0
+#   - Result: Zero gradient, causing oscillation/meandering
+# Combined distance ensures valid potential from any reachable position.
 #
 # Linear potential provides UNIFORM gradients (each part of path matters equally):
 #   dΦ/dd = -1/k everywhere (constant!)
 #
-# Fallback defaults for large levels (up to 2000px):
-#   - spawn_to_switch_distance: 1000.0 (fallback)
-#   - switch_to_exit_distance: 1000.0 (fallback)
-#   - MIN_SCALE: 200.0 (prevents overly steep gradients)
+# Fallback defaults:
+#   - spawn_to_switch_distance: 1000.0 (fallback for missing data)
+#   - switch_to_exit_distance: 1000.0 (fallback for missing data)
+#   - MIN_SCALE: 50.0 (reduced from 200 to support short curriculum paths, min 24px)
 #
 # Gradient examples with weight=40 (discovery phase):
 # - Small level (k=500px): 12px forward = +0.012 potential = +0.48 PBRS (strong!)

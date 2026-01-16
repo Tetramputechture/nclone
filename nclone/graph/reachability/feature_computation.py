@@ -40,6 +40,71 @@ _feature_timings = {}
 _exit_path_features_cache: OrderedDict[str, np.ndarray] = OrderedDict()
 MAX_EXIT_PATH_CACHE_SIZE = 100
 
+# Cache for directional connectivity (features 30-37) - static per level/cell
+# Stores numpy array [E, NE, N, NW, W, SW, S, SE] platform distances
+# Key: (ninja_cell_x, ninja_cell_y, level_id)
+_directional_connectivity_cache: OrderedDict[Tuple[int, int, str], np.ndarray] = (
+    OrderedDict()
+)
+MAX_DIRECTIONAL_CACHE_SIZE = 500  # High cache size for cell-based caching
+
+
+def get_cached_directional_connectivity(
+    ninja_cell_x: int,
+    ninja_cell_y: int,
+    level_id: str,
+    ninja_tile_pos: Tuple[int, int],
+    adjacency: Dict[Tuple[int, int], list],
+    physics_cache: Dict[Tuple[int, int], Any],
+    spatial_hash: Optional[Dict[Tuple[int, int], list]],
+) -> np.ndarray:
+    """
+    Get or compute directional connectivity features (30-37) with caching.
+
+    These features show platform distances in 8 directions and are static per
+    level/cell combination (ninja moves ~6px per second, so high cache hit rate).
+
+    Args:
+        ninja_cell_x: Ninja cell X coordinate (ninja_x // 24)
+        ninja_cell_y: Ninja cell Y coordinate (ninja_y // 24)
+        level_id: Unique identifier for level
+        ninja_tile_pos: Ninja position in tile data space
+        adjacency: Graph adjacency structure
+        physics_cache: Physics cache for grounded node identification
+        spatial_hash: Spatial hash for node lookups
+
+    Returns:
+        numpy array [E, NE, N, NW, W, SW, S, SE] platform distances (8 dims)
+    """
+    # Check cache first
+    cache_key = (ninja_cell_x, ninja_cell_y, level_id)
+    if cache_key in _directional_connectivity_cache:
+        cached_features = _directional_connectivity_cache[cache_key]
+        # Move to end to maintain LRU ordering
+        _directional_connectivity_cache.move_to_end(cache_key)
+        return cached_features.copy()  # Return copy to prevent external modification
+
+    # Compute features
+    directional_distances = compute_directional_platform_distances(
+        ninja_tile_pos,
+        adjacency,
+        physics_cache,
+        spatial_hash=spatial_hash,
+        max_distance=500.0,
+    )
+
+    # Cache the result with LRU eviction
+    _directional_connectivity_cache[cache_key] = directional_distances
+    _directional_connectivity_cache.move_to_end(cache_key)
+
+    # Enforce cache size limit
+    while len(_directional_connectivity_cache) > MAX_DIRECTIONAL_CACHE_SIZE:
+        _directional_connectivity_cache.popitem(
+            last=False
+        )  # Remove oldest (first) item
+
+    return directional_distances.copy()
+
 
 def get_cached_exit_path_features(
     level_id: str,
@@ -846,12 +911,24 @@ def compute_reachability_features_from_graph(
         ninja_tile_y = ninja_y - NODE_WORLD_COORD_OFFSET
         ninja_tile_pos = (int(ninja_tile_x), int(ninja_tile_y))
 
-        directional_distances = compute_directional_platform_distances(
+        # Compute cell coordinates for caching (24px cells)
+        ninja_cell_x = int(ninja_x // 24)
+        ninja_cell_y = int(ninja_y // 24)
+
+        # Get level_id for cache key
+        level_id = getattr(level_data, "level_id", None)
+        if level_id is None:
+            level_id = str(getattr(level_data, "start_position", "unknown"))
+
+        # Use cached directional connectivity computation
+        directional_distances = get_cached_directional_connectivity(
+            ninja_cell_x,
+            ninja_cell_y,
+            level_id,
             ninja_tile_pos,
             adjacency,
             physics_cache,
             spatial_hash=spatial_hash,
-            max_distance=500.0,
         )
         features[30:38] = directional_distances
     else:

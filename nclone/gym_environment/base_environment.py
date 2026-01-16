@@ -491,6 +491,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Profile entire step method
         t_step = self._profile_start("step_total")
+        
+        # OPTIMIZATION: Clear step-level cache to dedupe within-step distance queries
+        # Path calculator caches distance computations within a single step to avoid
+        # redundant pathfinding when multiple components request the same distance
+        if hasattr(self, "_path_calculator") and self._path_calculator is not None:
+            self._path_calculator.clear_step_cache()
 
         try:
             # Get initial observation for frame skip reward calculation

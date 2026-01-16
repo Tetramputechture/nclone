@@ -7,6 +7,13 @@ managing which components are active and their weights based on training progres
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
+from .reward_constants import (
+    WAYPOINT_BASE_BONUS,
+    WAYPOINT_COLLECTION_RADIUS,
+    WAYPOINT_SEQUENCE_MULTIPLIER,
+    WAYPOINT_OUT_OF_ORDER_SCALE,
+)
+
 
 @dataclass
 class RewardConfig:
@@ -43,20 +50,22 @@ class RewardConfig:
         12.0  # Sub-node spacing for uniform coarse rewards
     )
     path_waypoint_cluster_radius: float = 10.0  # Matches collection radius
-    
+
     # Sequential waypoint bonus configuration (NEW 2026-01-09)
     # Rewards collecting waypoints in-order along the optimal path
     # Prevents shortcuts by providing immediate positive signal for correct routing
-    waypoint_base_bonus: float = 0.5  # Base reward for waypoint collection
-    waypoint_collection_radius: float = 18.0  # Collection radius (1.5 × sub-node size)
-    waypoint_sequence_multiplier: float = 0.1  # Streak bonus per consecutive collection
-    waypoint_out_of_order_scale: float = 0.3  # Reduced reward for out-of-order
-
-    # Curriculum phase thresholds
-    # UPDATED 2025-12-07: Success-rate based progression with minimum timestep gates
-    # This accounts for complex levels that take longer to learn
-    MIN_TIMESTEPS_FOR_MID: int = 500_000  # Minimum steps before mid phase
-    MIN_TIMESTEPS_FOR_LATE: int = 1_500_000  # Minimum steps before late phase
+    waypoint_base_bonus: float = (
+        WAYPOINT_BASE_BONUS  # Base reward for waypoint collection
+    )
+    waypoint_collection_radius: float = (
+        WAYPOINT_COLLECTION_RADIUS  # Collection radius (1.5 × sub-node size)
+    )
+    waypoint_sequence_multiplier: float = (
+        WAYPOINT_SEQUENCE_MULTIPLIER  # Streak bonus per consecutive collection
+    )
+    waypoint_out_of_order_scale: float = (
+        WAYPOINT_OUT_OF_ORDER_SCALE  # Reduced reward for out-of-order
+    )
 
     # Success rate thresholds for phase transitions
     SUCCESS_THRESHOLD_MID: float = 0.15  # 15% success to enter mid phase
@@ -471,7 +480,7 @@ class RewardConfig:
 
     @property
     def entropy_coefficient(self) -> float:
-        """Adaptive entropy coefficient based on learning progress.
+        """Adaptive entropy coefficient based on learning progress and curriculum stage.
 
         UPDATED 2026-01-03: Increased for multi-sequence momentum learning with GRU.
         Previous 0.01-0.02 range was too conservative for exploring action sequence
@@ -480,14 +489,20 @@ class RewardConfig:
         UPDATED 2026-01-06: Added HPO override support for fair trial comparison.
         When HPO override is set, it takes precedence over curriculum-adaptive values.
 
+        UPDATED 2026-01-12: Added curriculum-stage-aware entropy boost for late stages.
+        At stage 7+ on complex non-linear paths, agent needs sustained exploration of
+        action sequence timing variations even if success rate is moderate. This prevents
+        premature convergence on suboptimal momentum patterns.
+
         Strategy for multi-sequence levels:
         - Discovery phase: Higher entropy (0.03) to explore action sequences
         - Early learning: Moderate entropy (0.025) for sequence refinement
-        - Advanced: Reduced entropy (0.02) for convergence on optimal sequences
+        - Late curriculum (stage 7+): Boosted entropy (0.04) for complex sequences
+        - Advanced (otherwise): Reduced entropy (0.02) for convergence
 
         GRU benefits from action diversity:
         - Needs to observe multiple jump timing variations to learn momentum dependencies
-        - 0.025-0.03 allows structured exploration without becoming random
+        - 0.025-0.04 allows structured exploration without becoming random
         - Still much lower than problematic 0.1 (which caused 99.65% max entropy)
 
         Compatible with:
@@ -496,8 +511,9 @@ class RewardConfig:
         - GRU temporal learning (sequence memory)
 
         Returns:
-            Override value if set by HPO, else:
+            Override value if set by HPO, else curriculum-adaptive:
             0.03 (<5% success): Discovery - explore action sequence variations
+            0.04 (stage 7+ AND <60% success): Late curriculum - sequence refinement
             0.025 (5-20% success): Early learning - refine momentum sequences
             0.02 (>20% success): Advanced - converge on optimal sequences
         """
@@ -505,7 +521,27 @@ class RewardConfig:
         if self._entropy_coefficient_override is not None:
             return self._entropy_coefficient_override
 
-        # Curriculum-adaptive (default behavior)
+        curriculum_stage = getattr(self, "_curriculum_stage", 0)
+
+        # STAGE 8+ COMMITMENT PHASE: Dynamically reduce entropy as success improves
+        # Addresses success-spike-then-crash pattern by preventing exploration from
+        # disrupting discovered patterns once agent shows consistent success.
+        # This "commitment phase" allows agent to solidify learned behavior.
+        if curriculum_stage >= 8:
+            if self.recent_success_rate >= 0.15:
+                return 0.018  # Exploitation - solidify learned pattern
+            elif self.recent_success_rate >= 0.05:
+                return 0.022  # Transitioning - moderate exploration
+            else:
+                return 0.028  # Discovery - still exploring
+
+        # LATE CURRICULUM BOOST: At stage 7, maintain higher entropy for complex sequences
+        # This prevents policy from becoming overly deterministic when exploring long
+        # non-linear paths requiring precise momentum-based jump timing variations
+        if curriculum_stage >= 7 and self.recent_success_rate < 0.60:
+            return 0.04  # Boosted entropy for late-stage sequence refinement
+
+        # Standard curriculum-adaptive (default behavior)
         if self.recent_success_rate < 0.05:
             return 0.03  # Discovery: explore action sequences for multi-jump chains
         elif self.recent_success_rate < 0.20:

@@ -66,6 +66,11 @@ VELOCITY_HORIZONTAL_CONTINUE_MULTIPLIER = 0.5  # Moving with momentum (same dire
 VELOCITY_HORIZONTAL_REVERSE_SLOW_MULTIPLIER = 1.5  # Slight direction change (low speed)
 VELOCITY_HORIZONTAL_REVERSE_FAST_MULTIPLIER = 2.5  # Hard brake and reverse (high speed)
 
+# Cost cap for impossible edges when allow_high_cost_edges is enabled
+# Used for PBRS and visualization to ensure gradient always exists
+# Matches existing value used in find_shortest_path() for visualization
+IMPOSSIBLE_EDGE_COST_CAP = 10000.0
+
 
 def _get_aerial_chain_multiplier(chain_count: int) -> float:
     """Multiplicative cost scaling for consecutive aerial upward moves.
@@ -1505,6 +1510,7 @@ def bfs_distance_from_start(
     track_geometric_distances: bool = False,
     mine_sdf: Optional[Any] = None,
     ninja_velocity: Optional[Tuple[float, float]] = None,
+    allow_high_cost_edges: bool = False,
 ) -> Tuple[
     Dict[Tuple[int, int], float],
     Optional[float],
@@ -1547,6 +1553,8 @@ def bfs_distance_from_start(
             still uses physics costs for ordering.
         mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
         ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
+        allow_high_cost_edges: If True, cap infinite cost edges at IMPOSSIBLE_EDGE_COST_CAP
+            instead of skipping them. Used for PBRS to ensure gradient always exists.
 
     Returns:
         Tuple of (distances_dict, target_distance, parents_dict, geometric_distances_dict):
@@ -1716,9 +1724,13 @@ def bfs_distance_from_start(
                 )
 
             # Skip edges with infinite cost (impossible movements)
-            # This prevents pathfinding from traversing physically impossible edges
+            # Unless allow_high_cost_edges is True, then cap at high value
+            # This ensures PBRS always has gradient even in difficult positions
             if cost == float("inf"):
-                continue
+                if allow_high_cost_edges:
+                    cost = IMPOSSIBLE_EDGE_COST_CAP
+                else:
+                    continue
 
             new_dist = current_dist + cost
 
@@ -1765,6 +1777,7 @@ def calculate_geometric_path_distance(
     mine_proximity_cache: Optional[Any] = None,
     mine_sdf: Optional[Any] = None,
     ninja_velocity: Optional[Tuple[float, float]] = None,
+    allow_high_cost_edges: bool = False,
 ) -> float:
     """
     Calculate the geometric (pixel) path distance along the physics-optimal path.
@@ -1792,6 +1805,8 @@ def calculate_geometric_path_distance(
         level_data: Optional LevelData for mine proximity checks
         mine_proximity_cache: Optional MineProximityCostCache for mine cost calculations
         mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
+        allow_high_cost_edges: If True, cap infinite cost edges at IMPOSSIBLE_EDGE_COST_CAP
+            instead of skipping them. Used for PBRS to ensure gradient always exists.
 
     Returns:
         Geometric path distance in pixels along the physics-optimal path,
@@ -1851,6 +1866,7 @@ def calculate_geometric_path_distance(
         track_geometric_distances=True,  # Track pixel distances along physics path
         return_parents=True,  # Request parents for sub-node resolution
         ninja_velocity=ninja_velocity,  # Pass velocity for first-edge cost adjustment
+        allow_high_cost_edges=allow_high_cost_edges,  # Pass through for PBRS gradient
     )
 
     if geometric_distances is None:
@@ -2110,9 +2126,9 @@ def find_shortest_path(
             # For visualization/debugging, allow high cost edges with capped cost
             if cost == float("inf"):
                 if allow_high_cost_edges:
-                    # Cap infinite cost at 10000 for visualization purposes
+                    # Cap infinite cost for visualization/PBRS purposes
                     # This allows paths to be found even through "impossible" movements
-                    cost = 10000.0
+                    cost = IMPOSSIBLE_EDGE_COST_CAP
                 else:
                     continue
 
