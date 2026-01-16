@@ -1954,6 +1954,7 @@ class CachedPathDistanceCalculator:
             mine_proximity_cache=self.mine_proximity_cache,  # Pass for mine avoidance
             mine_sdf=self.mine_sdf,  # Pass for velocity-aware mine costs
             ninja_velocity=ninja_velocity,  # Pass for first-edge velocity-aware costs
+            allow_high_cost_edges=True,  # PBRS: Always provide gradient even in difficult positions
         )
 
         # Store in step cache even for BFS fallback (avoid duplicate BFS within same step)

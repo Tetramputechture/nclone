@@ -24,7 +24,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-MIN_EPISODES_FOR_RATE_ESTIMATE = 500
+MIN_EPISODES_FOR_RATE_ESTIMATE = 1000
 
 
 @dataclass

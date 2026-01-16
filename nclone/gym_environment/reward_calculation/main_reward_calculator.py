@@ -506,52 +506,20 @@ class RewardCalculator:
             self.optimal_path_length = obs.get("_pbrs_combined_path_distance", 0.0)
 
         # Calculate PBRS shaping reward: F(s,s') = γ * Φ(s') - Φ(s)
+        # Provides continuous gradient everywhere on the map
         pbrs_reward = 0.0
-
-        # === TWO-PHASE PBRS NORMALIZATION (Continuous at Switch Activation) ===
-        # Potential is continuous across switch activation using two-phase normalization:
-        # - Switch phase: Φ ∈ [0.0, 0.5] normalized by spawn→switch distance
-        # - Exit phase: Φ ∈ [0.5, 1.0] normalized by switch→exit distance
-        # - At switch activation: both formulas yield Φ = 0.5 (continuous!)
-        #
-        # This eliminates the discontinuity that would occur with single-phase normalization:
-        #   OLD: Φ = 1 - (distance / combined_path_distance)
-        #        At switch: Φ_before = 1.0, Φ_after = 0.5 → PBRS penalty of -20!
-        #   NEW: Two-phase normalization ensures Φ = 0.5 on both sides
-        #        At switch: Φ_before = 0.5, Φ_after = 0.5 → PBRS = 0 (no penalty!)
-        #
-        # Benefits:
-        # - No negative PBRS penalty for achieving switch milestone
-        # - Equal per-pixel gradient in both phases
-        # - LSTM learns temporal dependencies across full episode without discontinuity
-        # - Policy invariance maintained (still valid PBRS)
-        # Track potential change for diagnostics (must be computed before updating prev_potential)
         actual_potential_change = 0.0
 
         if self.prev_potential is not None:
             # Apply PBRS formula for policy-invariant shaping
             pbrs_reward = self.pbrs_gamma * current_potential - self.prev_potential
-
-            # CRITICAL: Save potential change BEFORE updating prev_potential for correct logging
             actual_potential_change = current_potential - self.prev_potential
 
-            # # === DIAGNOSTIC LOGGING FOR SWITCH ACTIVATION ===
-            # # Verify two-phase normalization maintains continuity at switch activation
-            # if switch_just_activated:
-            #     spawn_to_switch = obs.get("_pbrs_spawn_to_switch_distance", 0.0)
-            #     switch_to_exit = obs.get("_pbrs_switch_to_exit_distance", 0.0)
-            #     combined = obs.get("_pbrs_combined_path_distance", 0.0)
-            #     logger.warning(
-            #         f"[SWITCH_ACTIVATION_PBRS] Two-phase normalization verification:\n"
-            #         f"  Φ(s) = {self.prev_potential:.4f} (switch phase, should be ~0.5)\n"
-            #         f"  Φ(s') = {current_potential:.4f} (exit phase, should be ~0.5)\n"
-            #         f"  ΔΦ = {actual_potential_change:.4f} (should be ~0.0 for continuity)\n"
-            #         f"  PBRS = {pbrs_reward:.4f} (should be ~0.0, not large negative!)\n"
-            #         f"  Path metrics: spawn→switch={spawn_to_switch:.1f}px, "
-            #         f"switch→exit={switch_to_exit:.1f}px, combined={combined:.1f}px\n"
-            #         f"  Switch milestone reward: {milestone_reward:.1f}\n"
-            #         f"  Total reward for switch frame: {milestone_reward + pbrs_reward:.1f}"
-            #     )
+            # Track forward/backtracking steps for logging
+            if actual_potential_change > 0.001:  # Forward progress
+                self.episode_forward_steps += 1
+            elif actual_potential_change < -0.001:  # Backtracking
+                self.episode_backtrack_steps += 1
 
             # Log PBRS components for debugging and verification
             logger.debug(
@@ -561,90 +529,6 @@ class RewardCalculator:
                 f"F(s,s')={pbrs_reward:.4f} "
                 f"(γ={self.pbrs_gamma})"
             )
-
-            # Track forward/backtracking steps for logging
-            if actual_potential_change > 0.001:  # Forward progress
-                self.episode_forward_steps += 1
-            elif actual_potential_change < -0.001:  # Backtracking
-                self.episode_backtrack_steps += 1
-
-            # === PBRS DIRECTION VALIDATION DIAGNOSTIC ===
-            # Check if movement direction aligns with expected path direction
-            # This catches the bug where PBRS rewards going TOWARD goal coordinates
-            # when the actual path requires going AWAY from goal first
-
-            # Initialize diagnostic tracking flags (Phase 1)
-            alignment_tracked = False
-
-            if self.prev_player_pos is not None and movement_distance > 0.5:
-                # Movement direction (normalized)
-                move_dx = (
-                    current_player_pos[0] - self.prev_player_pos[0]
-                ) / movement_distance
-                move_dy = (
-                    current_player_pos[1] - self.prev_player_pos[1]
-                ) / movement_distance
-
-                # Get current goal position for direction comparison
-                if not obs.get("switch_activated", False):
-                    diag_goal_x, diag_goal_y = obs["switch_x"], obs["switch_y"]
-                else:
-                    diag_goal_x, diag_goal_y = obs["exit_door_x"], obs["exit_door_y"]
-
-                # Calculate Euclidean direction to goal for comparison
-                goal_dx = diag_goal_x - current_player_pos[0]
-                goal_dy = diag_goal_y - current_player_pos[1]
-                euclidean_to_goal = (goal_dx * goal_dx + goal_dy * goal_dy) ** 0.5
-
-                if euclidean_to_goal > 1.0:
-                    # Normalized direction to goal (Euclidean)
-                    goal_dir_x = goal_dx / euclidean_to_goal
-                    goal_dir_y = goal_dy / euclidean_to_goal
-
-                    # Dot product: +1 = moving toward goal, -1 = moving away
-                    euclidean_alignment = move_dx * goal_dir_x + move_dy * goal_dir_y
-
-                    # Store alignment for TensorBoard logging
-                    obs["_pbrs_euclidean_alignment"] = euclidean_alignment
-                    obs["_pbrs_potential_change"] = actual_potential_change
-
-                    # === ENHANCED PBRS GRADIENT VERIFICATION ===
-                    # Verify PBRS gradient aligns with expected direction
-                    # This helps diagnose if PBRS is providing correct guidance
-
-                    # Check for PBRS/movement mismatch (potential bug indicator)
-                    moving_toward_goal = euclidean_alignment > 0.3  # Moving toward goal
-                    moving_away_goal = (
-                        euclidean_alignment < -0.3
-                    )  # Moving away from goal
-                    potential_increased = actual_potential_change > 0.01
-                    potential_decreased = actual_potential_change < -0.01
-
-                    # Expected: moving toward goal → potential increases
-                    # Expected: moving away from goal → potential decreases
-                    if moving_toward_goal and potential_decreased:
-                        logger.warning(
-                            f"[PBRS_MISMATCH] Moving toward goal but potential DECREASED! "
-                            f"alignment={euclidean_alignment:.3f}, ΔΦ={actual_potential_change:.4f}, "
-                            f"pos=({current_player_pos[0]:.0f},{current_player_pos[1]:.0f}), "
-                            f"goal=({diag_goal_x:.0f},{diag_goal_y:.0f}). "
-                            f"This suggests PBRS path may be incorrect or obstacles blocking."
-                        )
-                    elif moving_away_goal and potential_increased:
-                        logger.warning(
-                            f"[PBRS_PATH] Moving away from goal but potential increased "
-                            f"(alignment={euclidean_alignment:.3f}, ΔΦ={actual_potential_change:.4f}). "
-                            f"This is EXPECTED if optimal path requires detour. Verify path is correct."
-                        )
-
-            # === PATH DIRECTION DIAGNOSTICS (NO GATING) ===
-            # Track path direction for visualization but DO NOT gate PBRS rewards.
-            # The adjacency graph already encodes optimal paths via A* - trust it.
-            # Gating breaks policy invariance and blocks counter-intuitive navigation.
-            # REMOVED: All direction-based PBRS gating (lines 746-953 in original)
-            if not alignment_tracked:
-                self.alignment_history.append(0.0)
-                self.path_gradient_history.append(None)
 
             # Warn if potential decreased significantly (backtracking detected)
             if actual_potential_change < -0.05:
@@ -659,10 +543,10 @@ class RewardCalculator:
                     f"(PBRS reward: {pbrs_reward:.4f})"
                 )
 
-            # Store current potential for next step (only after successful comparison)
+            # Store current potential for next step
             self.prev_potential = current_potential
         else:
-            # First step of episode or after goal transition - initialize potential
+            # First step of episode - initialize potential
             self.prev_potential = current_potential
             logger.debug(f"Initializing PBRS potential: Φ(s')={current_potential:.4f}")
 
