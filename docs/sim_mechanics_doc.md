@@ -5,7 +5,7 @@ This is a simulation of the game N++. N++ is a 2D physics-based platformer where
 ## Level Structure
 
 ### Dimensions
-- **Level Size**: 42*23 grid cells (1056*600 pixels) - see `MAP_TILE_WIDTH`, `MAP_TILE_HEIGHT`, `FULL_MAP_WIDTH_PX`, `FULL_MAP_HEIGHT_PX` in physics_constants.py
+- **Level Size**: 42 * 23 grid cells (1056 * 600 pixels) - see `MAP_TILE_WIDTH`, `MAP_TILE_HEIGHT`, `FULL_MAP_WIDTH_PX`, `FULL_MAP_HEIGHT_PX` in physics_constants.py
 - **Cell Size**: 24*24 pixels per grid cell - see `TILE_PIXEL_SIZE` in physics_constants.py
 - **Coordinate System**: Origin at top-left, X increases rightward, Y increases downward
 - **Visibility**: The entire level is always visible to the player
