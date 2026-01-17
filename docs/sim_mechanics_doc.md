@@ -2,18 +2,6 @@
 
 This is a simulation of the game N++. N++ is a 2D physics-based platformer where the player controls a ninja character through levels filled with obstacles, enemies, and objectives. The game features precise physics simulation with momentum-based movement, wall jumping, and various interactive elements.
 
-## Physics Constants Reference
-
-**Important**: All physics constants referenced in this document are centralized in `nclone/constants/physics_constants.py`. When implementing game logic or AI systems, always use the named constants from that file rather than hardcoded values to ensure consistency and maintainability.
-
-For example:
-- Use `NINJA_RADIUS` instead of hardcoding `10`
-- Use `GRAVITY_FALL` instead of approximating `0.0667`
-- Use `MAX_HOR_SPEED` instead of hardcoding speed limits
-- Use entity-specific constants like `THWUMP_FORWARD_SPEED`, `DRONE_RADIUS`, etc.
-
-This ensures your code remains synchronized with any physics updates and makes the codebase more maintainable.
-
 ## Level Structure
 
 ### Dimensions
@@ -131,7 +119,6 @@ The ninja has 9 distinct movement states with specific transition conditions:
 - Buffers increment each frame when active (-1 to max)
 - New jump input while airborne initiates jump buffer
 - Touching wall/floor initiates respective buffers
-- Buffers enable delayed action execution for precise timing
 
 ## Physics Simulation
 
@@ -176,8 +163,7 @@ Each tile can contain:
 - **Circular Segments**: Curved collision surfaces (radius 24 pixels)
   
 Collision queries use the 24*24 grid directly: segments are stored per cell in `segment_dic[(x,y)]`,
-and physics gathers segments by iterating overlapped cells. This is accurate and efficient for the
-fixed 44*25 map size and small query regions used by the player physics.
+and physics gathers segments by iterating overlapped cells. 
 
 ## Entities and Interactive Elements
 
@@ -266,7 +252,6 @@ fixed 44*25 map size and small query regions used by the player physics.
 
 ### Victory Conditions
 - Touch the exit door after activating the exit switch
-- All gold collection is optional (in basic mode)
 
 ### Death Conditions
 1. **Impact Death**: Hitting surface at velocity > 6 pixels/frame
@@ -274,46 +259,8 @@ fixed 44*25 map size and small query regions used by the player physics.
 3. **Entity Contact**: Touching mines, drones, thwumps, or other hazards
 4. **Impact Formula**: `impact_vel > MAX_SURVIVABLE_IMPACT - 4/3 * abs(normal_y)`
 
-### Level Progression
-- Levels are procedurally generated or loaded from map files
-
-## AI Decision Framework
-
-### Critical State Information (Enhanced Game State)
-The game state representation has been optimized to eliminate redundancy with the graph system and provide more actionable information for RL agents:
-
-- **Movement Dynamics**: Velocity magnitude, direction, and movement state categories (ground/air/wall/special)
-- **Input State**: Current inputs and active input buffers for precise timing
-- **Surface Interactions**: Contact strength, floor/wall normals, and surface slopes
-- **Momentum & Physics**: Acceleration, momentum preservation, and impact risk
-- **Entity Proximity**: Distance to hazards and collectibles, threat assessment
-- **Level Progress**: Switch activation, exit accessibility, completion progress, and time pressure
-
-All features are normalized to [-1, 1] range for consistent RL training. The enhanced state eliminates redundant position information (handled by graph system) and deterministic physics parameters, focusing on actionable strategic information.
-
-### Key Decision Points
-1. **Jump Timing**: Use buffers for precise jump execution
-2. **Wall Interactions**: Leverage wall normals for efficient movement
-3. **Entity Avoidance**: Predict hazard states and patrol patterns
-4. **Route Planning**: Sequence switch→exit with optimal entity interactions
-5. **Momentum Management**: Use launch pads and bounce blocks strategically
-
 ### Action Space
 - **Horizontal Input**: {-1, 0, 1}
 - **Jump Input**: {0, 1}
 - **Combined Actions**: 6 total combinations
 - **Timing Sensitivity**: Frame-perfect inputs often required
-
-## Technical Implementation
-
-### Optimization Features
-- **Spatial Partitioning**: 24*24 pixel grid cells (no quadtree)
-- **Entity Management**: Active entity filtering and collision caching
-- **Cache Systems**: sqrt calculations and cell neighborhood lookups
-- **Deterministic**: Fixed timestep ensures consistent physics across runs
-
-### Performance Considerations
-- **Collision Detection**: O(1) cell-range queries (small constant neighborhood)
-- **Entity Updates**: Only active entities processed each frame
-- **Memory Management**: Periodic cache clearing prevents growth
-- **Headless Mode**: Supports training without rendering overhead
