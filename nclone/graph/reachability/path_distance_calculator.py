@@ -451,10 +451,21 @@ class CachedPathDistanceCalculator:
 
             # Cache adjacency bounds for fast bounds checking
             if adjacency:
-                min_x = min(n[0] for n in adjacency.keys())
-                max_x = max(n[0] for n in adjacency.keys())
-                min_y = min(n[1] for n in adjacency.keys())
-                max_y = max(n[1] for n in adjacency.keys())
+                # Single-pass calculation of all bounds (was 4 separate iterations)
+                min_x = max_x = min_y = max_y = None
+                for nx, ny in adjacency:
+                    if min_x is None:
+                        min_x = max_x = nx
+                        min_y = max_y = ny
+                    else:
+                        if nx < min_x:
+                            min_x = nx
+                        elif nx > max_x:
+                            max_x = nx
+                        if ny < min_y:
+                            min_y = ny
+                        elif ny > max_y:
+                            max_y = ny
                 self._adjacency_bounds = (min_x, max_x, min_y, max_y)
             else:
                 self._adjacency_bounds = None
@@ -604,7 +615,7 @@ class CachedPathDistanceCalculator:
         if start == goal:
             return 0.0
 
-        if physics_cache is None or len(physics_cache.keys()) == 0:
+        if physics_cache is None or len(physics_cache) == 0:
             raise ValueError(
                 "Physics cache is required for physics-aware cost calculation"
             )
@@ -880,7 +891,7 @@ class CachedPathDistanceCalculator:
             )
 
         physics_cache = graph_data.get("node_physics")
-        if physics_cache is None or len(physics_cache.keys()) == 0:
+        if physics_cache is None or len(physics_cache) == 0:
             raise ValueError(
                 "Physics cache (node_physics) not found in graph_data. "
                 "PBRS pathfinding requires physics_cache for accurate path costs. "

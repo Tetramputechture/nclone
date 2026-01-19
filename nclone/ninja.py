@@ -757,26 +757,35 @@ class Ninja:
         #
         # UPDATED 2026-01-06: Made conditional for hyperparameter optimization
         # Can be disabled via _enable_straightness_masking attribute (defaults to True)
-        enable_straightness_masking = getattr(self.sim, "_enable_straightness_masking", True)
+        enable_straightness_masking = getattr(
+            self.sim, "_enable_straightness_masking", True
+        )
         masking_mode = getattr(self.sim, "_action_masking_mode", "hard")
         if enable_straightness_masking and masking_mode == "hard":
             path_direction = getattr(self.sim, "_path_straightness_direction", None)
             if path_direction == "left":
                 # Goal is directly to the left on straight horizontal path
                 # Mask: RIGHT (2), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
-                # Keep: NOOP (0), LEFT (1)
+                # Keep: LEFT (1)
                 #
                 # Rationale:
                 # - Only LEFT is needed on a straight horizontal path to the left
                 # - All other actions are suboptimal (wrong direction or unnecessary jumps)
+                mask[0] = (
+                    False  # Mask NOOP (route has no time sensitive or dynanamic obstacles, so we should always move)
+                )
                 mask[2] = False  # Mask RIGHT (wrong direction)
                 mask[3] = False  # Mask JUMP (unnecessary on straight path)
                 mask[4] = False  # Mask JUMP+LEFT (jumping is unnecessary)
                 mask[5] = False  # Mask JUMP+RIGHT (wrong direction + unnecessary jump)
+
             elif path_direction == "right":
                 # Goal is directly to the right on straight horizontal path
                 # Mask: LEFT (1), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
-                # Keep: NOOP (0), RIGHT (2)
+                # Keep: RIGHT (2)
+                mask[0] = (
+                    False  # Mask NOOP (route has no time sensitive or dynanamic obstacles, so we should always move)
+                )
                 mask[1] = False  # Mask LEFT (wrong direction)
                 mask[3] = False  # Mask JUMP (unnecessary on straight path)
                 mask[4] = False  # Mask JUMP+LEFT (wrong direction + unnecessary jump)
