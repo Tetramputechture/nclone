@@ -71,9 +71,9 @@ class NPlayHeadless:
             import pygame
             from .nsim_renderer import NSimRenderer
 
-            # OPTIMIZATION: Always use grayscale in headless mode (grayscale_array)
-            # RGB only used for human viewing (render_mode="human")
-            # This eliminates expensive RGB->grayscale conversion (~30% speedup)
+            # OPTIMIZATION: Use grayscale surface only for grayscale_array mode
+            # RGB is used for human viewing (render_mode="human") and rgb_array (video recording)
+            # Grayscale mode eliminates expensive RGB->grayscale conversion (~30% speedup)
             use_grayscale = render_mode == "grayscale_array"
 
             self.sim_renderer = NSimRenderer(
@@ -110,6 +110,29 @@ class NPlayHeadless:
         self.last_rendered_tick = -1
         self.cached_render_surface = None
         self.cached_render_buffer = None
+
+    def _perform_rgb_conversion(self, surface: Any) -> np.ndarray:
+        """
+        Converts a Pygame surface to an RGB NumPy array (H, W, 3).
+        Used for rgb_array render mode (video recording).
+        """
+        import pygame
+
+        try:
+            # Get RGB array from surface (W, H, 3)
+            rgb_array_whc = pygame.surfarray.array3d(surface)
+            # Transpose to (H, W, 3)
+            rgb_array_hwc = np.transpose(rgb_array_whc, (1, 0, 2))
+            return rgb_array_hwc.astype(np.uint8)
+        except pygame.error:
+            # Fallback: use pixelcopy
+            rgb_buffer = np.empty(
+                (surface.get_width(), surface.get_height(), 3), dtype=np.uint8
+            )
+            pygame.pixelcopy.surface_to_array(rgb_buffer, surface)
+            # Transpose to (H, W, 3)
+            rgb_array_hwc = np.transpose(rgb_buffer, (1, 0, 2))
+            return rgb_array_hwc
 
     def _perform_grayscale_conversion(self, surface: Any) -> np.ndarray:
         """
@@ -303,19 +326,25 @@ class NPlayHeadless:
                 return self.cached_render_surface
 
             # If not human mode, or surface cache miss, check buffer cache
-            if self.cached_render_buffer is not None:  # This is H, W, 1 grayscale
+            if self.cached_render_buffer is not None:
+                # Cached buffer can be grayscale (H, W, 1) or RGB (H, W, 3)
                 return self.cached_render_buffer
             elif (
                 self.cached_render_surface is not None
-            ):  # Mode might have switched from human to grayscale_array, or first grayscale_array render
-                # Generate grayscaled buffer from self.cached_render_surface
-                gray_array_hw1 = self._perform_grayscale_conversion(
-                    self.cached_render_surface
-                )
-                self.cached_render_buffer = (
-                    gray_array_hw1.copy()
-                )  # Cache the new grayscale buffer
-                return self.cached_render_buffer
+            ):  # Mode might have switched, or first array render
+                # Generate appropriate buffer from self.cached_render_surface
+                if self.render_mode == "rgb_array":
+                    rgb_array_hw3 = self._perform_rgb_conversion(
+                        self.cached_render_surface
+                    )
+                    self.cached_render_buffer = rgb_array_hw3.copy()
+                    return self.cached_render_buffer
+                else:  # grayscale_array mode
+                    gray_array_hw1 = self._perform_grayscale_conversion(
+                        self.cached_render_surface
+                    )
+                    self.cached_render_buffer = gray_array_hw1.copy()
+                    return self.cached_render_buffer
 
         init = self.sim.frame <= 1
         surface = self.sim_renderer.draw(init, debug_info)
@@ -326,7 +355,13 @@ class NPlayHeadless:
         if self.render_mode == "human":
             # For human mode, the surface is already updated and displayed by NSimRenderer.draw
             return self.cached_render_surface
+        elif self.render_mode == "rgb_array":
+            # For rgb_array mode, convert surface to RGB numpy array (H, W, 3)
+            rgb_output_hw3 = self._perform_rgb_conversion(surface)
+            self.cached_render_buffer = rgb_output_hw3.copy()  # Cache the RGB array
+            return rgb_output_hw3
 
+        # For grayscale_array mode, convert to grayscale
         final_gray_output_hw1 = self._perform_grayscale_conversion(surface)
         self.cached_render_buffer = (
             final_gray_output_hw1.copy()

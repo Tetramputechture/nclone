@@ -26,7 +26,6 @@ from .constants import (
     MAX_LOCKED_DOORS_ATTENTION,
     SPATIAL_CONTEXT_DIM,
 )
-from .spatial_context import compute_spatial_context
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
@@ -208,9 +207,32 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         Note: Graph is still built internally for PBRS reward calculation regardless of this flag.
         This only controls whether graph arrays appear in the observation space.
         """
+        # Check if we're in minimal observation mode
+        from .config import ObservationMode
+        from .constants import MINIMAL_OBSERVATION_DIM
+
+        if self.config.observation_mode == ObservationMode.MINIMAL:
+            # Minimal mode: replace game_state with minimal_observation
+            # Only keep action_mask from base, remove game_state
+            obs_spaces = {
+                "minimal_observation": box.Box(
+                    low=-1.0,
+                    high=1.0,
+                    shape=(MINIMAL_OBSERVATION_DIM,),
+                    dtype=np.float32,
+                ),
+                "action_mask": box.Box(
+                    low=0,
+                    high=1,
+                    shape=(6,),
+                    dtype=np.int8,
+                ),
+            }
+            return SpacesDict(obs_spaces)
+
         obs_spaces = dict(self.observation_space.spaces)
 
-        # Add reachability features (always available)
+        # Full mode: Add reachability features (always available)
         obs_spaces["reachability_features"] = box.Box(
             low=0.0, high=1.0, shape=(REACHABILITY_FEATURES_DIM,), dtype=np.float32
         )
@@ -493,6 +515,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Reset spatial context cache (mine overlay position-based cache)
         from .spatial_context import reset_mine_overlay_cache
+
         reset_mine_overlay_cache()
 
         # ============================================================
@@ -539,10 +562,67 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # Same level being reset - clear only episode-specific caches
             clear_all_caches_for_reset(self)
 
+        # === PRE-LOAD: Apply pending curriculum stage BEFORE loading map ===
+        # This allows us to load the correct pre-cached map_data variant
+        curriculum_stage_for_map_load = None
+        if (
+            hasattr(self, "_pending_curriculum_stage")
+            and self._pending_curriculum_stage is not None
+            and self.goal_curriculum_manager is not None
+        ):
+            curriculum_stage_for_map_load = self._pending_curriculum_stage
+            # Update stage immediately (will be used by map cache lookup)
+            old_stage = self.goal_curriculum_manager.state.unified_stage
+            self.goal_curriculum_manager.state.unified_stage = (
+                curriculum_stage_for_map_load
+            )
+            self._pending_curriculum_stage = None
+            if self.enable_logging:
+                logger.info(
+                    f"[CURRICULUM] Pre-applied stage change {old_stage} → {curriculum_stage_for_map_load} "
+                    f"before map load (enables pre-cached map_data)"
+                )
+        elif self.goal_curriculum_manager is not None:
+            curriculum_stage_for_map_load = (
+                self.goal_curriculum_manager.state.unified_stage
+            )
+
         if not skip_map_load:
-            # Load map - this calls sim.load() which calls sim.reset()
-            self.map_loader.load_map()
+            # Check if we have pre-cached curriculum map data
+            use_curriculum_map_cache = (
+                self.goal_curriculum_manager is not None
+                and hasattr(self.config, "curriculum_map_cache")
+                and self.config.curriculum_map_cache is not None
+                and curriculum_stage_for_map_load is not None
+            )
+
+            if use_curriculum_map_cache:
+                # Load pre-cached map_data with entities at curriculum positions
+                curriculum_map_cache = self.config.curriculum_map_cache
+                try:
+                    map_data = curriculum_map_cache.get_map_data_for_stage(
+                        curriculum_stage_for_map_load
+                    )
+                    self.nplay_headless.load_map_from_map_data(map_data)
+                    if self.enable_logging:
+                        logger.info(
+                            f"[CURRICULUM] Loaded pre-cached map_data for stage {curriculum_stage_for_map_load} "
+                            f"(entities already at correct positions, ~10x faster than apply_to_simulator)"
+                        )
+                except (KeyError, AttributeError) as e:
+                    # Fallback to standard load if cache lookup fails
+                    logger.warning(
+                        f"[CURRICULUM] Failed to load pre-cached map_data for stage {curriculum_stage_for_map_load}: {e}. "
+                        f"Falling back to standard map load + apply_to_simulator()"
+                    )
+                    self.map_loader.load_map()
+                    use_curriculum_map_cache = False
+            else:
+                # Standard map load (original entity positions)
+                self.map_loader.load_map()
         else:
+            # Map loading skipped
+            use_curriculum_map_cache = False
             # Update map_loader.current_map_name if provided
             # This is critical for cache keying and momentum waypoint loading
             if map_name is not None:
@@ -608,58 +688,52 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         except Exception as e:
             logger.warning(f"Failed to reset entity states: {e}")
 
-        # === GOAL CURRICULUM: Apply stage change and reposition entities ===
-        # CRITICAL ORDER:
-        # 1. Update unified_stage (needed by get_curriculum_switch_position())
-        # 2. Reposition entities (uses unified_stage to calculate curriculum positions)
-        # 3. THEN allow any extraction/caching (will read correct curriculum positions)
+        # === GOAL CURRICULUM: Reposition entities (if not using pre-cached map) ===
+        # NOTE: If we loaded pre-cached map_data, entities are already at correct positions
+        # and we skip apply_to_simulator() entirely
 
-        # Step 1: Apply pending stage change (if any) - update unified_stage FIRST
-        if (
-            hasattr(self, "_pending_curriculum_stage")
-            and self._pending_curriculum_stage is not None
-            and self.goal_curriculum_manager is not None
-        ):
-            new_stage = self._pending_curriculum_stage
-            old_stage = self.goal_curriculum_manager.state.unified_stage
-
-            # print(
-            #     f"[NppEnvironment.reset()] APPLYING pending stage change: {old_stage} → {new_stage}"
-            # )
-
-            # VALIDATION: Check for stage skipping
-            if new_stage != old_stage + 1 and old_stage != new_stage:
-                logger.warning(
-                    f"[CURRICULUM] Non-sequential stage change: {old_stage} → {new_stage} "
-                    f"(skipped {new_stage - old_stage - 1} stages). "
-                    f"This indicates rapid advancement. Entities will jump positions, "
-                    f"but SharedLevelCache should handle this correctly."
-                )
-
-            # CRITICAL: Update unified_stage BEFORE repositioning!
-            # get_curriculum_switch_position() uses unified_stage to calculate position
-            self.goal_curriculum_manager.state.unified_stage = new_stage
-
-            # Clear pending stage
-            self._pending_curriculum_stage = None
-
-            logger.info(
-                f"[CURRICULUM] unified_stage updated: {old_stage} → {new_stage} "
-                f"(before entity repositioning, so positions use correct stage)"
-            )
-
-        # CRITICAL: Capture curriculum stage for THIS episode AFTER pending stage is applied
+        # CRITICAL: Capture curriculum stage for THIS episode
         # This ensures visualization uses the correct stage for this episode
         if self.goal_curriculum_manager is not None:
             self._episode_start_curriculum_stage = (
                 self.goal_curriculum_manager.state.unified_stage
             )
+
+            # If we used pre-cached map, store positions and set overrides
+            # (needed for curriculum info and visualization)
+            if use_curriculum_map_cache:
+                orig_switch_pos = self.nplay_headless.exit_switch_position()
+                orig_exit_pos = self.nplay_headless.exit_door_position()
+
+                if self.enable_logging:
+                    logger.info(
+                        f"[CURRICULUM] Pre-cached map loaded with stage {self._episode_start_curriculum_stage}: "
+                        f"switch={orig_switch_pos}, exit={orig_exit_pos} (already at curriculum positions)"
+                    )
+
+                # Store these as "original" for consistency with apply_to_simulator path
+                # In this case, the "original" positions ARE the curriculum positions
+                self.goal_curriculum_manager.store_original_positions(
+                    orig_switch_pos, orig_exit_pos
+                )
+
+                # CRITICAL: Set position overrides so get_curriculum_switch_position()
+                # returns the actual loaded positions without needing path building
+                self.goal_curriculum_manager.set_curriculum_position_overrides(
+                    {"switch": orig_switch_pos, "exit": orig_exit_pos}
+                )
+
+                if self.enable_logging:
+                    logger.debug(
+                        f"[CURRICULUM] Set position overrides for stage {self._episode_start_curriculum_stage}"
+                    )
         else:
             self._episode_start_curriculum_stage = None
 
         # Step 2: Reposition entities BEFORE any extraction/caching
         # TIMING: Must happen AFTER map load/reset AND stage update, BEFORE _extract_level_data()
-        if self.goal_curriculum_manager is not None:
+        # OPTIMIZATION: Skip if we loaded pre-cached map_data (entities already correct)
+        if self.goal_curriculum_manager is not None and not use_curriculum_map_cache:
             # 1. Store original entity positions (from freshly loaded/reset map)
             orig_switch_pos = self.nplay_headless.exit_switch_position()
             orig_exit_pos = self.nplay_headless.exit_door_position()
@@ -1102,9 +1176,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
         # Get base observation
-        t_base = self._profile_start("obs_base")
         obs = super()._get_observation()
-        self._profile_end("obs_base", t_base)
 
         from .constants import NINJA_STATE_DIM
 
@@ -1115,20 +1187,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 
-        t_reach = self._profile_start("obs_reachability")
         obs["reachability_features"] = self._get_reachability_features()
-        self._profile_end("obs_reachability", t_reach)
 
         # OPTIMIZATION: Add cached distances for PBRS to avoid duplicate computation
         # These are computed during reachability feature extraction and stored in instance vars
-        if hasattr(self, '_cached_switch_distance'):
+        if hasattr(self, "_cached_switch_distance"):
             obs["_cached_switch_distance"] = self._cached_switch_distance
-        if hasattr(self, '_cached_exit_distance'):
+        if hasattr(self, "_cached_exit_distance"):
             obs["_cached_exit_distance"] = self._cached_exit_distance
 
-        t_graph = self._profile_start("obs_graph")
         obs.update(self._get_graph_observations())
-        self._profile_end("obs_graph", t_graph)
 
         # Extract locked door switch states from environment
         switch_states_dict = self._get_switch_states_from_env()
@@ -1142,10 +1210,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Store dict version for ICM and reachability systems
         obs["switch_states_dict"] = switch_states_dict
 
-        t_switch = self._profile_start("obs_switch_states")
         switch_states_array = self._build_switch_states_array(obs)
         obs["switch_states"] = switch_states_array
-        self._profile_end("obs_switch_states", t_switch)
 
         obs["level_data"] = self.level_data
 
@@ -1159,23 +1225,19 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Add mine SDF features for actor safety awareness (3 dims)
         # These provide GLOBAL mine danger signal from ALL mines (not just 8 nearest)
-        t_mine_sdf = self._profile_start("obs_mine_sdf")
         obs["mine_sdf_features"] = self._compute_mine_sdf_features(obs)
-        self._profile_end("obs_mine_sdf", t_mine_sdf)
 
         # Add privileged features for asymmetric critic (if enabled)
         # These provide oracle information to the critic (not actor) for better value estimation
-        t_priv = self._profile_start("obs_privileged")
         obs["privileged_features"] = self._compute_privileged_features(obs)
-        self._profile_end("obs_privileged", t_priv)
 
         # Add metadata for cached graph extraction (hybrid_cached_graph architecture)
         # These are not trainable features, just identifiers for cache lookup
         obs["level_id"] = self.map_loader.current_map_name
-        t_ninja_node = self._profile_start("obs_ninja_node")
         obs["ninja_node_pos"] = self._get_ninja_node_position_for_cache()
-        self._profile_end("obs_ninja_node", t_ninja_node)
 
+        # Return full observation - conversion to minimal happens in _process_observation()
+        # This ensures reward calculator has access to all metadata
         return obs
 
     def _compute_mine_sdf_features(self, obs: Dict[str, Any]) -> np.ndarray:
@@ -1902,6 +1964,69 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         return features
 
+    def _calculate_reward(self, curr_obs, prev_obs, action=None):
+        """Calculate reward, handling minimal observation mode.
+
+        In minimal mode, graph/level data are stored separately to avoid
+        pickling issues, so we temporarily add them back for reward calculation.
+        """
+        from .config import ObservationMode
+
+        if self.config.observation_mode == ObservationMode.MINIMAL:
+            # Add graph/level data from cached observations
+            # Use current cache for curr_obs, previous cache for prev_obs
+            if hasattr(self, "_cached_full_obs"):
+                curr_full_obs = self._cached_full_obs
+                curr_metadata = {
+                    "_adjacency_graph": curr_full_obs.get("_adjacency_graph"),
+                    "_graph_data": curr_full_obs.get("_graph_data"),
+                    "level_data": curr_full_obs.get("level_data") or self.level_data,
+                    "switch_states_dict": curr_full_obs.get("switch_states_dict"),
+                }
+                curr_obs_with_metadata = dict(curr_obs)
+                curr_obs_with_metadata.update(curr_metadata)
+            else:
+                # Fallback: use instance variables directly
+                curr_obs_with_metadata = dict(curr_obs)
+                curr_obs_with_metadata.update(
+                    {
+                        "_adjacency_graph": self._get_adjacency_for_rewards(),
+                        "_graph_data": self.current_graph_data,
+                        "level_data": self.level_data,
+                        "switch_states_dict": self._get_switch_states_from_env(),
+                    }
+                )
+
+            if hasattr(self, "_prev_cached_full_obs"):
+                prev_full_obs = self._prev_cached_full_obs
+                prev_metadata = {
+                    "_adjacency_graph": prev_full_obs.get("_adjacency_graph"),
+                    "_graph_data": prev_full_obs.get("_graph_data"),
+                    "level_data": prev_full_obs.get("level_data") or self.level_data,
+                    "switch_states_dict": prev_full_obs.get("switch_states_dict"),
+                }
+                prev_obs_with_metadata = dict(prev_obs)
+                prev_obs_with_metadata.update(prev_metadata)
+            else:
+                # Fallback: use instance variables directly
+                prev_obs_with_metadata = dict(prev_obs)
+                prev_obs_with_metadata.update(
+                    {
+                        "_adjacency_graph": self._get_adjacency_for_rewards(),
+                        "_graph_data": self.current_graph_data,
+                        "level_data": self.level_data,
+                        "switch_states_dict": self._get_switch_states_from_env(),
+                    }
+                )
+
+            return self.reward_calculator.calculate_reward(
+                curr_obs_with_metadata,
+                prev_obs_with_metadata,
+                action,
+                curriculum_manager=self.goal_curriculum_manager,
+            )
+        return super()._calculate_reward(curr_obs, prev_obs, action)
+
     def _process_observation(self, obs):
         """Process the observation from the environment.
 
@@ -1911,6 +2036,46 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         Note: Graph is still built internally for PBRS reward calculation regardless.
         """
+        # Check if we're in minimal observation mode
+        from .config import ObservationMode
+
+        if self.config.observation_mode == ObservationMode.MINIMAL:
+            # Convert full observation to minimal observation
+            from .observation_processor import compute_minimal_observation
+
+            # Get spatial context for mine features
+            spatial_context = self._compute_spatial_context()
+
+            # Extract ninja state from nplay_headless
+            ninja = self.nplay_headless.sim.ninja
+
+            minimal_obs = compute_minimal_observation(
+                ninja=ninja,
+                reachability_features=obs["reachability_features"],
+                mine_overlay=spatial_context[
+                    64:
+                ],  # Skip 64 tile dims, use 48 mine dims
+            )
+
+            # Return minimal observation without unpicklable objects
+            return {
+                "minimal_observation": minimal_obs,
+                "action_mask": obs["action_mask"],
+                # Basic metadata (primitive types only, safe to pickle)
+                "player_x": obs["player_x"],
+                "player_y": obs["player_y"],
+                "player_won": obs["player_won"],
+                "player_dead": obs["player_dead"],
+                "death_cause": obs.get("death_cause", 0),
+                "switch_activated": obs["switch_activated"],
+                "switch_x": obs["switch_x"],
+                "switch_y": obs["switch_y"],
+                "exit_door_x": obs["exit_door_x"],
+                "exit_door_y": obs["exit_door_y"],
+                "_cached_switch_distance": obs.get("_cached_switch_distance"),
+                "_cached_exit_distance": obs.get("_cached_exit_distance"),
+            }
+
         processed_obs = super()._process_observation(obs)
 
         # Add reachability features if not already added (always present in raw obs)
@@ -1935,9 +2100,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Add spatial_context (graph-free local geometry features)
         if "spatial_context" not in processed_obs:
-            t_spatial = self._profile_start("proc_spatial_context")
             processed_obs["spatial_context"] = self._compute_spatial_context()
-            self._profile_end("proc_spatial_context", t_spatial)
 
         # Add mine_sdf_features (global mine danger signal for actor safety)
         if "mine_sdf_features" not in processed_obs:
@@ -1978,7 +2141,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             compute_local_tile_grid,
             compute_mine_overlay_from_entities,
         )
-        
+
         # Get ninja position and velocity (current state only - Markovian)
         ninja_pos = self.nplay_headless.ninja_position()
         ninja_velocity = self.nplay_headless.ninja_velocity()
@@ -1987,17 +2150,18 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         level_data = self.level_data
 
         # Profile tile grid computation
-        t_tiles = self._profile_start("spatial_tiles")
         tile_grid = compute_local_tile_grid(ninja_pos, level_data.tiles)
-        self._profile_end("spatial_tiles", t_tiles)
 
         # Profile mine overlay computation (optimized with direct entity access + caching)
-        t_mines = self._profile_start("spatial_mines")
         toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
         mine_overlay = compute_mine_overlay_from_entities(
-            ninja_pos, ninja_velocity, toggle_mines, toggled_mines, LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
+            ninja_pos,
+            ninja_velocity,
+            toggle_mines,
+            toggled_mines,
+            LEVEL_WIDTH_PX,
+            LEVEL_HEIGHT_PX,
         )
-        self._profile_end("spatial_mines", t_mines)
 
         # Concatenate features
         return np.concatenate([tile_grid, mine_overlay])

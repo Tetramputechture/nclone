@@ -443,9 +443,122 @@ class ObservationProcessor:
 
         return result
 
+    def compute_minimal_observation(
+        self, ninja, reachability_features: np.ndarray, mine_overlay: np.ndarray
+    ) -> np.ndarray:
+        """40-dim minimal observation for simplified training.
+
+        Args:
+            ninja: Ninja object with physics state
+            reachability_features: 38-dim reachability features array
+            mine_overlay: Mine overlay from spatial_context (48 dims, first 16 used)
+
+        Returns:
+            40-dim float32 array: [physics(12) + path(8) + mines(16) + buffers(4)]
+        """
+        obs = np.zeros(40, dtype=np.float32)
+
+        # Core physics (12 dims): velocity, state one-hot, airborne, walled, normals
+        obs[0] = ninja.xspeed / MAX_HOR_SPEED
+        obs[1] = ninja.yspeed / MAX_HOR_SPEED
+
+        # State one-hot (5 dims): states 0-4 (immobile, running, sliding, jumping, falling)
+        state = min(ninja.state, 4)  # Cap at 4 to handle special states
+        obs[2 + state] = 1.0
+
+        obs[7] = 1.0 if ninja.airborn else -1.0
+        obs[8] = 1.0 if ninja.walled else -1.0
+        obs[9] = ninja.wall_normal if ninja.walled else 0.0
+        obs[10] = ninja.floor_normalized_x
+        obs[11] = ninja.floor_normalized_y
+
+        # Path guidance (8 dims): from reachability_features
+        obs[12:14] = reachability_features[13:15]  # next_hop_dir x,y
+        obs[14:16] = reachability_features[15:17]  # waypoint_dir x,y
+        obs[16:18] = reachability_features[8:10]  # exit_dir x,y
+        obs[18] = reachability_features[12]  # phase (switch_activated)
+        obs[19] = reachability_features[24]  # path_curvature
+
+        # Mine context (16 dims): 4 nearest mines × 4 features
+        # Extract from mine_overlay (first 16 elements: 4 mines × 4 features each)
+        obs[20:36] = mine_overlay[:16]
+
+        # Buffers (4 dims): normalized to [-1, 1]
+        obs[36] = ninja.jump_buffer / 5.0 if ninja.jump_buffer >= 0 else -1.0
+        obs[37] = ninja.floor_buffer / 5.0 if ninja.floor_buffer >= 0 else -1.0
+        obs[38] = ninja.wall_buffer / 5.0 if ninja.wall_buffer >= 0 else -1.0
+        obs[39] = (
+            ninja.launch_pad_buffer / 4.0 if ninja.launch_pad_buffer >= 0 else -1.0
+        )
+
+        return obs
+
     def reset(self) -> None:
         """Reset processor state and clear buffers."""
         self._entity_positions_buffer.fill(0)
         if self.enable_visual_processing:
             self._player_frame_buffer.fill(0)
             self._global_view_buffer.fill(0)
+
+
+# Standalone function for minimal observation (used when observation_mode == MINIMAL)
+def compute_minimal_observation(
+    ninja, reachability_features: np.ndarray, mine_overlay: np.ndarray
+) -> np.ndarray:
+    """40-dim minimal observation for simplified training.
+
+    Args:
+        ninja: Ninja object with physics state
+        reachability_features: 38-dim reachability features array
+        mine_overlay: Mine overlay from spatial_context (48 dims: 8 mines × 6 features)
+            Features per mine: [relative_x, relative_y, state, radius, velocity_dot, distance_rate]
+
+    Returns:
+        40-dim float32 array: [physics(12) + path(8) + mines(16) + buffers(4)]
+    """
+    from nclone.constants import MAX_HOR_SPEED
+
+    obs = np.zeros(40, dtype=np.float32)
+
+    # Core physics (12 dims): velocity, state one-hot, airborne, walled, normals
+    obs[0] = ninja.xspeed / MAX_HOR_SPEED
+    obs[1] = ninja.yspeed / MAX_HOR_SPEED
+
+    # State one-hot (5 dims): states 0-4 (immobile, running, sliding, jumping, falling)
+    state = min(ninja.state, 4)  # Cap at 4 to handle special states
+    obs[2 + state] = 1.0
+
+    obs[7] = 1.0 if ninja.airborn else -1.0
+    obs[8] = 1.0 if ninja.walled else -1.0
+    obs[9] = ninja.wall_normal if ninja.walled else 0.0
+    obs[10] = ninja.floor_normalized_x
+    obs[11] = ninja.floor_normalized_y
+
+    # Path guidance (8 dims): from reachability_features
+    obs[12:14] = reachability_features[13:15]  # next_hop_dir x,y
+    obs[14:16] = reachability_features[15:17]  # waypoint_dir x,y
+    obs[16:18] = reachability_features[8:10]  # exit_dir x,y
+    obs[18] = reachability_features[12]  # phase (switch_activated)
+    obs[19] = reachability_features[24]  # path_curvature
+
+    # Mine context (16 dims): 4 nearest mines × 4 features
+    # Extract from mine_overlay (48 dims: 8 mines × 6 features)
+    # Take first 4 mines and use features: relative_x, relative_y, state, distance_rate
+    for i in range(4):
+        mine_offset = i * 6  # Each mine has 6 features in mine_overlay
+        obs_offset = 20 + i * 4  # Each mine gets 4 features in minimal obs
+
+        obs[obs_offset + 0] = mine_overlay[mine_offset + 0]  # relative_x
+        obs[obs_offset + 1] = mine_overlay[mine_offset + 1]  # relative_y
+        obs[obs_offset + 2] = mine_overlay[mine_offset + 2]  # state
+        obs[obs_offset + 3] = mine_overlay[
+            mine_offset + 5
+        ]  # distance_rate (how fast approaching)
+
+    # Buffers (4 dims): normalized to [-1, 1]
+    obs[36] = ninja.jump_buffer / 5.0 if ninja.jump_buffer >= 0 else -1.0
+    obs[37] = ninja.floor_buffer / 5.0 if ninja.floor_buffer >= 0 else -1.0
+    obs[38] = ninja.wall_buffer / 5.0 if ninja.wall_buffer >= 0 else -1.0
+    obs[39] = ninja.launch_pad_buffer / 4.0 if ninja.launch_pad_buffer >= 0 else -1.0
+
+    return obs

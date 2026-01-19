@@ -367,9 +367,7 @@ class CachedPathDistanceCalculator:
                 MINE_PENALIZE_DEADLY_ONLY,
             )
 
-            mines = level_data.get_entities_by_type(
-                EntityType.TOGGLE_MINE
-            ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+            mines = level_data.get_all_toggle_mines()
 
             # Count deadly mines (state 0) only if MINE_PENALIZE_DEADLY_ONLY is True
             # This matches the logic in mine_proximity_cache._precompute_mine_proximity_costs
@@ -705,7 +703,9 @@ class CachedPathDistanceCalculator:
                     # OPTIMIZATION: Pass cached parent/grandparent
                     # Pass ninja_velocity only for first edges (from start with no parent)
                     edge_ninja_velocity = (
-                        ninja_velocity if (current == start and current_parent is None) else None
+                        ninja_velocity
+                        if (current == start and current_parent is None)
+                        else None
                     )
                     edge_cost = _calculate_physics_aware_cost(
                         current,
@@ -801,7 +801,9 @@ class CachedPathDistanceCalculator:
                 # OPTIMIZATION: Pass cached parent/grandparent
                 # Pass ninja_velocity only for first edges (from start with no parent)
                 edge_ninja_velocity = (
-                    ninja_velocity if (current == start and current_parent is None) else None
+                    ninja_velocity
+                    if (current == start and current_parent is None)
+                    else None
                 )
                 edge_cost = _calculate_physics_aware_cost(
                     current,

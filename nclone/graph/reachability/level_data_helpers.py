@@ -100,9 +100,7 @@ def get_mine_state_signature(level_data: LevelData) -> Tuple:
     mines = []
 
     # Extract toggle mines (both TOGGLE_MINE and TOGGLE_MINE_TOGGLED)
-    toggle_mines = level_data.get_entities_by_type(
-        EntityType.TOGGLE_MINE
-    ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+    toggle_mines = level_data.get_all_toggle_mines()
 
     for mine in toggle_mines:
         x = mine.get("x", 0)
