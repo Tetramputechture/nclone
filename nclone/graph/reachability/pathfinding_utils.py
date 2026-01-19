@@ -10,6 +10,11 @@ import heapq
 from typing import Dict, Tuple, List, Optional, Any
 from collections import deque, OrderedDict
 
+# Import at module level for hot path performance (called 4M+ times)
+from ...gym_environment.reward_calculation.reward_constants import (
+    MINE_HAZARD_COST_MULTIPLIER,
+)
+
 # Node coordinate offset for world coordinate conversion
 # Nodes are in tile data space, entity positions in world space differ by 24px
 NODE_WORLD_COORD_OFFSET = 24
@@ -138,11 +143,6 @@ def _calculate_mine_proximity_cost(
     # This is acceptable for geometric distance calculations that don't need hazard costs
     if mine_proximity_cache is None:
         return 1.0
-
-    # OPTIMIZATION: Import once at module level would be better, but keep here for safety
-    from ...gym_environment.reward_calculation.reward_constants import (
-        MINE_HAZARD_COST_MULTIPLIER,
-    )
 
     # OPTIMIZATION: Early exit if hazard avoidance is disabled (check before cache lookup)
     # Most common case in early training phases
@@ -1998,7 +1998,7 @@ def find_shortest_path(
     if start_node == end_node:
         return [start_node], 0.0
 
-    if physics_cache is None or len(physics_cache.keys()) == 0:
+    if not physics_cache:
         raise ValueError(
             "Physics cache is required for physics-aware cost calculation. "
             "Ensure graph building includes physics cache precomputation."
@@ -2313,37 +2313,37 @@ def find_shortest_path_with_fallback(
         - path: List of node positions from start to end, or None if unreachable
         - distance: Total path distance, or float('inf') if unreachable
     """
-    if debug:
-        print("\n" + "=" * 80)
-        print("[PATHFIND_DIAG] find_shortest_path_with_fallback called")
-        print(f"  start_node: {start_node}")
-        print(f"  end_node: {end_node}")
-        print(f"  ninja_velocity: {ninja_velocity}")
+    # if debug:
+    #     print("\n" + "=" * 80)
+    #     print("[PATHFIND_DIAG] find_shortest_path_with_fallback called")
+    #     print(f"  start_node: {start_node}")
+    #     print(f"  end_node: {end_node}")
+    #     print(f"  ninja_velocity: {ninja_velocity}")
 
-        # Check adjacency availability
-        masked_neighbors = adjacency.get(start_node, [])
-        base_neighbors = base_adjacency.get(start_node, [])
-        print(f"  start_node masked edges: {len(masked_neighbors)}")
-        print(f"  start_node base edges: {len(base_neighbors)}")
+    #     # Check adjacency availability
+    #     masked_neighbors = adjacency.get(start_node, [])
+    #     base_neighbors = base_adjacency.get(start_node, [])
+    #     print(f"  start_node masked edges: {len(masked_neighbors)}")
+    #     print(f"  start_node base edges: {len(base_neighbors)}")
 
-        # Check physics
-        if physics_cache:
-            start_physics = physics_cache.get(start_node, {})
-            print(
-                f"  start_node physics: grounded={start_physics.get('grounded')}, walled={start_physics.get('walled')}"
-            )
+    #     # Check physics
+    #     if physics_cache:
+    #         start_physics = physics_cache.get(start_node, {})
+    #         print(
+    #             f"  start_node physics: grounded={start_physics.get('grounded')}, walled={start_physics.get('walled')}"
+    #         )
 
-        # Check mine proximity
-        if mine_proximity_cache and hasattr(mine_proximity_cache, "cache"):
-            mine_cache_size = len(mine_proximity_cache.cache)
-            is_near_mine = start_node in mine_proximity_cache.cache
-            print(
-                f"  mine cache size: {mine_cache_size}, start near mine: {is_near_mine}"
-            )
+    #     # Check mine proximity
+    #     if mine_proximity_cache and hasattr(mine_proximity_cache, "cache"):
+    #         mine_cache_size = len(mine_proximity_cache.cache)
+    #         is_near_mine = start_node in mine_proximity_cache.cache
+    #         print(
+    #             f"  mine cache size: {mine_cache_size}, start near mine: {is_near_mine}"
+    #         )
 
     # Phase 1: Try direct pathfinding
-    if debug:
-        print("\n[PATHFIND_DIAG] Phase 1: Direct pathfinding (masked adjacency)")
+    # if debug:
+    #     print("\n[PATHFIND_DIAG] Phase 1: Direct pathfinding (masked adjacency)")
 
     path, cost = find_shortest_path(
         start_node,
@@ -2358,10 +2358,10 @@ def find_shortest_path_with_fallback(
     )
 
     if path is not None:
-        if debug:
-            print(
-                f"[PATHFIND_DIAG] Phase 1 SUCCESS: path length={len(path)}, cost={cost:.2f}"
-            )
+        # if debug:
+        #     print(
+        #         f"[PATHFIND_DIAG] Phase 1 SUCCESS: path length={len(path)}, cost={cost:.2f}"
+        #     )
         return path, cost
 
     if debug:

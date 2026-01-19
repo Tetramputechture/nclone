@@ -160,13 +160,16 @@ class Simulator:
         self.ninja.record_action_start_position()
 
         # Cache active entities to avoid repeated filtering
-        # Use list comprehensions for faster entity filtering
-        all_entities = (
-            e for entity_list in self.entity_dic.values() for e in entity_list
-        )
-        active_entities = [e for e in all_entities if e.active]
-        active_movable_entities = [e for e in active_entities if e.is_movable]
-        active_thinkable_entities = [e for e in active_entities if e.is_thinkable]
+        # Single-pass classification (optimization - was 3 separate iterations)
+        active_movable_entities = []
+        active_thinkable_entities = []
+        for entity_list in self.entity_dic.values():
+            for e in entity_list:
+                if e.active:
+                    if e.is_movable:
+                        active_movable_entities.append(e)
+                    if e.is_thinkable:
+                        active_thinkable_entities.append(e)
 
         # Move all movable entities
         for entity in active_movable_entities:

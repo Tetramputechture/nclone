@@ -35,6 +35,12 @@ PLAYER_RADIUS = 10  # Player collision radius in pixels
 SUB_NODE_OFFSETS = [(6, 6), (18, 6), (6, 18), (18, 18)]
 SUB_NODE_COORDS = [(0, 0), (1, 0), (0, 1), (1, 1)]
 
+# Tile type sets for O(1) membership checks (optimization - avoids creating lists)
+_QUARTER_PIPE_TILES = frozenset({14, 15, 16, 17})
+_SLOPE_TILES = frozenset({18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33})
+_DIAGONAL_DIRECTIONS = frozenset({"NE", "SE", "SW", "NW"})
+_CARDINAL_DIRECTIONS = frozenset({"N", "S", "E", "W"})
+
 
 def _check_subnode_validity_simple(tile_type: int, pixel_x: int, pixel_y: int) -> bool:
     """
@@ -379,7 +385,7 @@ def _can_traverse_within_tile(
         return False
 
     # Quarter pipes (14-17): All sub-nodes connected (entire tile is traversable)
-    if tile_type in [14, 15, 16, 17]:
+    if tile_type in _QUARTER_PIPE_TILES:
         return True
 
     # Half tiles (2-5): Sub-nodes on same side connected
@@ -424,7 +430,7 @@ def _can_traverse_within_tile(
 
     # Mild and steep slopes (18-33): Check if line crosses the slope
     # For simplicity, use line intersection checks with the slope segments
-    if tile_type in [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]:
+    if tile_type in _SLOPE_TILES:
         # Get slope line from TILE_SEGMENT_DIAG_MAP
         from ...tile_definitions import TILE_SEGMENT_DIAG_MAP
 
@@ -477,7 +483,7 @@ def _check_line_crosses_tile_geometry(
         return True
 
     # Quarter pipes (14-17): All traversable
-    if tile_type in [14, 15, 16, 17]:
+    if tile_type in _QUARTER_PIPE_TILES:
         return False
 
     # Half tiles (2-5): Check if line crosses the half-tile boundary into solid area
@@ -515,7 +521,7 @@ def _check_line_crosses_tile_geometry(
         return _line_passes_through_circle(src_rel, dst_rel, (0, 24), 24)
 
     # Mild and steep slopes (18-33): Check if line crosses the slope
-    if tile_type in [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]:
+    if tile_type in _SLOPE_TILES:
         from ...tile_definitions import TILE_SEGMENT_DIAG_MAP
 
         if tile_type in TILE_SEGMENT_DIAG_MAP:
@@ -1611,7 +1617,7 @@ class GraphBuilder:
         dst_sub_y = 0 if (dst_pixel_y % CELL_SIZE) < 12 else 1
 
         # For diagonal movements, check intermediate tiles aren't blocking
-        if direction in ["NE", "SE", "SW", "NW"]:
+        if direction in _DIAGONAL_DIRECTIONS:
             if not self._check_diagonal_clear(
                 src_tile_x,
                 src_tile_y,
@@ -1636,7 +1642,7 @@ class GraphBuilder:
 
         # For cardinal cross-tile movements, check if line crosses solid geometry
         # in either source or destination tile (slopes, quarter circles, etc.)
-        if direction in ["N", "S", "E", "W"]:
+        if direction in _CARDINAL_DIRECTIONS:
             if not _check_cross_tile_line_clear(
                 src_pixel_x,
                 src_pixel_y,
