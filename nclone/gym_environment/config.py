@@ -7,10 +7,17 @@ and its various components, replacing the previous parameter explosion pattern.
 
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
+from enum import Enum
 import logging
 
 # Import RewardConfig for reward system integration
 from .reward_calculation.reward_config import RewardConfig
+
+
+class ObservationMode(Enum):
+    """Observation space mode selection."""
+    FULL = "full"           # Current: 41 game_state + 38 reach + 96 spatial + 3 sdf
+    MINIMAL = "minimal"     # New: 40 dims total (physics + path + mines + buffers)
 
 
 @dataclass
@@ -90,7 +97,7 @@ class RenderConfig:
 
     def __post_init__(self):
         """Validate render configuration."""
-        valid_modes = ["human", "grayscale_array"]
+        valid_modes = ["human", "grayscale_array", "rgb_array"]
         if self.render_mode not in valid_modes:
             raise ValueError(f"render_mode must be one of {valid_modes}")
 
@@ -152,6 +159,7 @@ class EnvironmentConfig:
         False  # If False, skip rendering entirely (graph+state+reachability sufficient)
     )
     enable_graph_observations: bool = True  # If False, skip graph arrays in observation space (spatial_context sufficient)  # Memory optimization: saves ~21KB per observation when using graph_free architecture
+    observation_mode: ObservationMode = ObservationMode.FULL  # Observation space mode
 
     # Component configurations
     frame_stack: FrameStackConfig = field(default_factory=FrameStackConfig)
@@ -171,6 +179,8 @@ class EnvironmentConfig:
     shared_level_cache: Optional[Any] = None
     # Multi-stage shared caches (for goal curriculum with shared memory)
     shared_level_caches_by_stage: Optional[Dict[int, Any]] = None
+    # Curriculum map cache (for pre-modified map_data per curriculum stage)
+    curriculum_map_cache: Optional[Any] = None
 
     # Frame skip
     frame_skip: int = 4

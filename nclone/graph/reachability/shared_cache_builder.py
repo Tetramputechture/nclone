@@ -388,9 +388,7 @@ def build_shared_level_cache(
         gradient_grid = np.zeros((SDF_HEIGHT, SDF_WIDTH, 2), dtype=np.float32)
 
         # Get mines for SDF (respecting MINE_PENALIZE_DEADLY_ONLY for consistency)
-        mines = level_data.get_entities_by_type(
-            EntityType.TOGGLE_MINE
-        ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+        mines = level_data.get_all_toggle_mines()
 
         sdf_mine_positions = []
         for mine in mines:
@@ -533,6 +531,9 @@ def build_multi_stage_shared_cache(
     entities = entity_extractor.extract_graph_entities()
 
     start_position = extract_start_position_from_map_data(nplay.sim.map_data)
+
+    # Store original map_data for CurriculumMapCache
+    original_map_data = list(nplay.sim.map_data)
 
     # Store ORIGINAL entity positions
     exit_switches = [e for e in entities if e.get("type") == EntityType.EXIT_SWITCH]
@@ -711,6 +712,7 @@ def build_multi_stage_shared_cache(
     # Step 5: Build cache for each stage
     logger.info("  [5/7] Building caches for each stage...")
     stage_caches = {}
+    stage_positions = {}  # Track positions for CurriculumMapCache
 
     # Get references to actual entity objects in simulator
     sim_switch = (
@@ -748,6 +750,12 @@ def build_multi_stage_shared_cache(
         logger.info(
             f"      Stage {stage} positions: switch={switch_pos}, exit={exit_pos}"
         )
+
+        # Store positions for CurriculumMapCache
+        stage_positions[stage] = {
+            "switch": switch_pos,
+            "exit": exit_pos
+        }
 
         # Move entities to this stage's curriculum positions
         sim_switch.xpos = switch_pos[0]
@@ -943,4 +951,15 @@ def build_multi_stage_shared_cache(
         f"  Memory per worker saved: {(256 * 520 - total_memory):.0f}KB (130MB → {total_memory / 1024:.1f}MB)"
     )
 
-    return stage_caches
+    # Step 6: Build CurriculumMapCache with pre-modified map_data for each stage
+    logger.info("  [6/7] Building CurriculumMapCache...")
+    from ...gym_environment.reward_calculation.curriculum_map_cache import (
+        CurriculumMapCache,
+    )
+
+    curriculum_map_cache = CurriculumMapCache(original_map_data, stage_positions)
+    logger.info(
+        f"✓ CurriculumMapCache built: {curriculum_map_cache.num_stages} stages"
+    )
+
+    return stage_caches, curriculum_map_cache

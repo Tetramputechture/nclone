@@ -100,9 +100,7 @@ class MineProximityCostCache:
         # Get all toggle mines from level_data
         # Type 1 (TOGGLE_MINE) starts untoggled (state 1)
         # Type 21 (TOGGLE_MINE_TOGGLED) starts toggled/deadly (state 0)
-        mines = level_data.get_entities_by_type(
-            EntityType.TOGGLE_MINE
-        ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+        mines = level_data.get_all_toggle_mines()
 
         if not mines:
             return  # No mines, all nodes get 1.0 multiplier (default)
@@ -353,9 +351,7 @@ class MineSignedDistanceField:
         )
 
         # Get all toggle mines from level_data
-        mines = level_data.get_entities_by_type(
-            EntityType.TOGGLE_MINE
-        ) + level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+        mines = level_data.get_all_toggle_mines()
 
         # Extract mine positions (respecting MINE_PENALIZE_DEADLY_ONLY for consistency)
         sdf_mine_positions = []

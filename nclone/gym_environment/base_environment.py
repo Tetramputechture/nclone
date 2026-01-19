@@ -6,7 +6,6 @@ mixins for graph, reachability, and debug features.
 """
 
 import logging
-import time
 import gymnasium
 from gymnasium.spaces import box, discrete, Dict as SpacesDict
 import random
@@ -491,7 +490,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Profile entire step method
         t_step = self._profile_start("step_total")
-        
+
         # OPTIMIZATION: Clear step-level cache to dedupe within-step distance queries
         # Path calculator caches distance computations within a single step to avoid
         # redundant pathfinding when multiple components request the same distance
@@ -1489,7 +1488,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 info["episode_pbrs_metrics"] = (
                     self.reward_calculator.get_episode_reward_metrics()
                 )
-            
+
             # Add waypoint collection metrics (2026-01-09)
             # Track sequential guidance effectiveness
             if hasattr(self.reward_calculator, "_episode_waypoint_bonus_total"):
@@ -1506,15 +1505,20 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     self.reward_calculator._episode_waypoint_max_streak
                 )
                 # Calculate and include skip distance if there were out-of-sequence collections
-                if self.reward_calculator._episode_waypoint_collections_out_of_sequence > 0:
+                if (
+                    self.reward_calculator._episode_waypoint_collections_out_of_sequence
+                    > 0
+                ):
                     # Average skip distance per out-of-sequence collection
                     total_collections = (
-                        self.reward_calculator._episode_waypoint_collections_in_sequence +
-                        self.reward_calculator._episode_waypoint_collections_out_of_sequence
+                        self.reward_calculator._episode_waypoint_collections_in_sequence
+                        + self.reward_calculator._episode_waypoint_collections_out_of_sequence
                     )
                     if total_collections > 0:
                         # This is a placeholder - actual skip distances are tracked in the method
-                        info["waypoint_skip_distance"] = 0  # Will be set by callback from metrics
+                        info["waypoint_skip_distance"] = (
+                            0  # Will be set by callback from metrics
+                        )
 
             # Add reward config state for curriculum tracking
             if hasattr(self.reward_calculator, "get_config_state"):
@@ -3802,11 +3806,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
             # STRICT: If mine cache is empty but level has mines, cache is stale
             if mine_cache_size == 0 and self.level_data:
-                from nclone.constants.entity_types import EntityType
-
-                mines = self.level_data.get_entities_by_type(
-                    EntityType.TOGGLE_MINE
-                ) + self.level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+                mines = self.level_data.get_all_toggle_mines()
                 if len(mines) > 0:
                     raise RuntimeError(
                         f"Level has {len(mines)} mines but mine proximity cache is EMPTY! "

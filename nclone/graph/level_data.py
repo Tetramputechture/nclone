@@ -141,6 +141,15 @@ class LevelData:
                 for entity in self.entities
             ]
 
+        # Build entity type index for O(1) lookups
+        # This eliminates O(n) iteration on every get_entities_by_type() call
+        self._entity_type_index: Dict[int, List[Dict[str, Any]]] = {}
+        for entity in self.entities:
+            entity_type = entity.get("type")
+            if entity_type not in self._entity_type_index:
+                self._entity_type_index[entity_type] = []
+            self._entity_type_index[entity_type].append(entity)
+
         # Generate level_id if not provided
         # Use tiles hash for better uniqueness - prevents cache collisions between
         # different curriculum levels with similar characteristics
@@ -210,13 +219,15 @@ class LevelData:
         """
         Get all entities of a specific type.
 
+        Uses pre-built entity type index for O(1) lookup instead of O(n) iteration.
+
         Args:
             entity_type: The entity type to filter by (can use EntityType constants)
 
         Returns:
             List of entity dictionaries matching the type
         """
-        return [entity for entity in self.entities if entity.get("type") == entity_type]
+        return self._entity_type_index.get(entity_type, [])
 
     def get_active_entities(self) -> List[Dict[str, Any]]:
         """Get all currently active entities."""
@@ -231,6 +242,20 @@ class LevelData:
     def get_switches(self) -> List[Dict[str, Any]]:
         """Get all switch entities."""
         return self.get_entities_by_type(EntityType.EXIT_SWITCH)
+
+    def get_all_toggle_mines(self) -> List[Dict[str, Any]]:
+        """
+        Get all toggle mines (both TOGGLE_MINE and TOGGLE_MINE_TOGGLED types).
+
+        This is a convenience method for the common pattern of retrieving both
+        toggled and untoggled mine types together.
+
+        Returns:
+            List of all toggle mine entity dictionaries
+        """
+        return self._entity_type_index.get(
+            EntityType.TOGGLE_MINE, []
+        ) + self._entity_type_index.get(EntityType.TOGGLE_MINE_TOGGLED, [])
 
     def get_doors(self) -> List[Dict[str, Any]]:
         """Get all door entities (regular, locked, trap)."""

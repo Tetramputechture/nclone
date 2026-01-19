@@ -284,9 +284,7 @@ class DebugMixin:
         if hasattr(self, "level_data") and self.level_data is not None:
             from ...constants.entity_types import EntityType
 
-            mines = self.level_data.get_entities_by_type(
-                EntityType.TOGGLE_MINE
-            ) + self.level_data.get_entities_by_type(EntityType.TOGGLE_MINE_TOGGLED)
+            mines = self.level_data.get_all_toggle_mines()
 
             for mine in mines:
                 mine_state = mine.get("state", 0)

@@ -62,6 +62,14 @@ MINE_SDF_FEATURES_DIM = 3
 #     - velocity_dot_direction(1) + distance_rate(1) [Markovian: current state only]
 SPATIAL_CONTEXT_DIM = 112
 
+# Minimal observation dimension (simplified for testing time-independence)
+# 40 features (core physics + path guidance + nearest mines + buffers):
+#   Core physics (12): velocity(2) + state_one_hot(5) + airborne + walled + wall_normal + floor_normal(2)
+#   Path guidance (8): next_hop_dir(2) + waypoint_dir(2) + exit_dir(2) + phase + curvature
+#   Mine context (16): 4 nearest mines × 4 features (x, y, state, distance)
+#   Buffers (4): jump_buffer + floor_buffer + wall_buffer + launch_pad_buffer
+MINIMAL_OBSERVATION_DIM = 40
+
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0
 LEVEL_DIAGONAL = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
