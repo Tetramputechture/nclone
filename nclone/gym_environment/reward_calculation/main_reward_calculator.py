@@ -170,6 +170,13 @@ class RewardCalculator:
             None  # Track distance for improvement calculation
         )
 
+        # Store computed paths for visualization (to ensure debug overlay shows same paths as reward uses)
+        self._cached_switch_path: Optional[List[Tuple[int, int]]] = None
+        self._cached_exit_path: Optional[List[Tuple[int, int]]] = None
+        self._cached_spawn_node: Optional[Tuple[int, int]] = None
+        self._cached_switch_node: Optional[Tuple[int, int]] = None
+        self._cached_exit_node: Optional[Tuple[int, int]] = None
+
         # Step-level component tracking for TensorBoard callback
         # Always populated after calculate_reward() for info dict logging
         self.last_pbrs_components = {}
@@ -1494,6 +1501,13 @@ class RewardCalculator:
                 f"switch→exit={len(switch_to_exit_path)} nodes"
             )
 
+            # Cache computed paths for visualization
+            self._cached_switch_path = spawn_to_switch_path
+            self._cached_exit_path = switch_to_exit_path
+            self._cached_spawn_node = spawn_node
+            self._cached_switch_node = switch_node
+            self._cached_exit_node = exit_node
+
             return spawn_to_switch_path, switch_to_exit_path
 
         except Exception as e:
@@ -1639,6 +1653,13 @@ class RewardCalculator:
             #     f"curriculum_switch→curriculum_exit={len(curriculum_switch_to_exit)} nodes ({switch_exit_dist:.0f}px)"
             # )
 
+            # Cache computed paths for visualization
+            self._cached_switch_path = spawn_to_curriculum_switch
+            self._cached_exit_path = curriculum_switch_to_exit
+            self._cached_spawn_node = spawn_node
+            self._cached_switch_node = curriculum_switch_node
+            self._cached_exit_node = curriculum_exit_node
+
             return spawn_to_curriculum_switch, curriculum_switch_to_exit
 
         except Exception as e:
@@ -1648,6 +1669,28 @@ class RewardCalculator:
                 f"Failed to compute curriculum paths: {e}\n{traceback.format_exc()}"
             )
             return [], []
+
+    def get_cached_paths(self) -> Dict[str, Any]:
+        """Get cached paths computed during waypoint extraction.
+
+        This ensures visualization uses the same paths that the reward calculator uses,
+        preventing divergence between what's shown and what's being rewarded.
+
+        Returns:
+            Dict containing:
+                - switch_path: Path from spawn to switch
+                - exit_path: Path from switch to exit
+                - spawn_node: Spawn node position
+                - switch_node: Switch node position
+                - exit_node: Exit node position
+        """
+        return {
+            "switch_path": self._cached_switch_path,
+            "exit_path": self._cached_exit_path,
+            "spawn_node": self._cached_spawn_node,
+            "switch_node": self._cached_switch_node,
+            "exit_node": self._cached_exit_node,
+        }
 
     def _calculate_path_distance(self, path: List[Tuple[int, int]]) -> float:
         """Calculate geometric distance along a path.

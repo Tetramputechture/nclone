@@ -26,7 +26,7 @@ class PathVisualizationCache:
         self._cached_level_data: Optional[LevelData] = None
         self._cached_mine_signature: Optional[Tuple] = None
         self._cached_mine_cache_size: Optional[int] = None  # Track mine cache state
-        self._ninja_move_threshold = 3.0  # pixels - update paths more frequently
+        self._ninja_move_threshold = 6.0  # pixels - update paths every 6px (half a tile) for accurate next-hop visualization
 
     def get_cached_paths(
         self,
@@ -88,6 +88,12 @@ class PathVisualizationCache:
         dy = ninja_pos[1] - self._cached_ninja_pos[1]
         dist_moved = (dx**2 + dy**2) ** 0.5
         if dist_moved >= self._ninja_move_threshold:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(
+                f"[PATH_CACHE_INVALIDATE] Ninja moved {dist_moved:.1f}px "
+                f"(threshold: {self._ninja_move_threshold}px). Invalidating path cache."
+            )
             return None
 
         # Check if entities changed

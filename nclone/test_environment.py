@@ -1840,11 +1840,17 @@ while running:
         env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
         env.set_show_paths_to_goals(show_paths_to_goals)
 
-        # Pass graph data to environment for visualization
+        # Get cached paths from reward calculator (ensures visualization matches what's being rewarded)
+        cached_paths = None
+        if hasattr(env, "reward_calculator") and env.reward_calculator:
+            cached_paths = env.reward_calculator.get_cached_paths()
+
+        # Pass graph data and cached paths to environment for visualization
         env.set_path_aware_data(
             graph_data=path_aware_system["current_graph"],
             entity_mask=path_aware_system.get("current_entity_mask"),
             level_data=level_data,
+            cached_paths=cached_paths,
         )
     elif path_aware_system is not None:
         # Turn off all path-aware debug flags when none are enabled

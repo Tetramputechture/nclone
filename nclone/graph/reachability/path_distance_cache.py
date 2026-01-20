@@ -498,7 +498,7 @@ class LevelBasedPathDistanceCache:
                 # This provides anticipatory guidance for sharp turns near hazards
                 # UPDATED: Increased from 5 to 8 hops for better inflection point visibility
                 multi_hop_direction = self._compute_multi_hop_direction(
-                    node_pos, parents, max_hops=8
+                    node_pos, parents, max_hops=4
                 )
                 self.multi_hop_direction_cache[(node_pos, goal_id)] = (
                     multi_hop_direction
@@ -518,7 +518,7 @@ class LevelBasedPathDistanceCache:
                     self.next_hop_cache[(node_pos, "switch")] = next_hop
                     # Also compute multi-hop direction for alias (8 hops for inflection points)
                     multi_hop_direction = self._compute_multi_hop_direction(
-                        node_pos, parents, max_hops=8
+                        node_pos, parents, max_hops=4
                     )
                     self.multi_hop_direction_cache[(node_pos, "switch")] = (
                         multi_hop_direction
@@ -532,7 +532,7 @@ class LevelBasedPathDistanceCache:
                     self.next_hop_cache[(node_pos, "exit")] = next_hop
                     # Also compute multi-hop direction for alias (8 hops for inflection points)
                     multi_hop_direction = self._compute_multi_hop_direction(
-                        node_pos, parents, max_hops=8
+                        node_pos, parents, max_hops=4
                     )
                     self.multi_hop_direction_cache[(node_pos, "exit")] = (
                         multi_hop_direction

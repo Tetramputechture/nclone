@@ -306,8 +306,6 @@ class DebugOverlayRenderer:
 
         sdf_grid = mine_sdf_info.get("sdf_grid")
         gradient_grid = mine_sdf_info.get("gradient_grid")
-        ninja_pos = mine_sdf_info.get("ninja_position", (0, 0))
-        deadly_mine_positions = mine_sdf_info.get("deadly_mine_positions", [])
 
         if sdf_grid is None:
             return surface
@@ -857,10 +855,10 @@ class DebugOverlayRenderer:
 
             logger = logging.getLogger(__name__)
             if mine_cache_rebuilt:
-                cache_size = len(self._mine_proximity_cache.cache)
                 # logger.warning(
-                #     f"[PATH_VIZ] Mine proximity cache rebuilt: {cache_size} nodes with mine costs"
+                #     f"[PATH_VIZ] Mine proximity cache rebuilt: {len(self._mine_proximity_cache.cache)} nodes with mine costs"
                 # )
+                pass
             elif len(self._mine_proximity_cache.cache) > 0:
                 # logger.warning(
                 #     f"[PATH_VIZ] Mine proximity cache valid: {len(self._mine_proximity_cache.cache)} nodes cached"
@@ -896,6 +894,11 @@ class DebugOverlayRenderer:
                     )
 
             if cached_data is None:
+                # NOTE: Reward calculator paths are computed from spawn and only update on reset
+                # For visualization, we need paths from CURRENT ninja position that update every 6px
+                # So we always recompute paths from current position (not using cached_reward_paths)
+                # print("[PATH_VIZ] Computing paths from current ninja position...")
+
                 # STRICT VALIDATION: Require physics_cache for physics-aware pathfinding
                 if physics_cache is None:
                     raise RuntimeError(
@@ -934,7 +937,7 @@ class DebugOverlayRenderer:
                 # Only proceed if we found a valid ninja node and it's reachable
                 if closest_node and closest_node in reachable:
                     # Draw path to nearest switch (if not yet activated)
-                    if switch_positions:  # Only if there are uncollected switches
+                    if switch_positions:
                         for switch_pos in switch_positions:
                             # Find goal node using same logic as pathfinding
                             # Filter adjacency to only reachable nodes first
@@ -988,19 +991,19 @@ class DebugOverlayRenderer:
 
                     # Draw path to nearest exit ONLY if switch has been activated
                     if exit_switch_activated and exit_positions:
+                        reachable_adjacency = {
+                            k: v for k, v in adjacency.items() if k in reachable
+                        }
                         for exit_pos in exit_positions:
                             # Find goal node using same logic as pathfinding
                             # Filter adjacency to only reachable nodes first
-                            reachable_adjacency = {
-                                k: v for k, v in adjacency.items() if k in reachable
-                            }
+
                             exit_node = find_goal_node_closest_to_start(
                                 exit_pos,
                                 closest_node,  # ninja start node
                                 reachable_adjacency,
                                 entity_radius=12.0,  # Exit door radius
                                 ninja_radius=10.0,
-                                spatial_hash=spatial_hash,
                                 subcell_lookup=subcell_lookup,
                             )
 
@@ -1061,6 +1064,7 @@ class DebugOverlayRenderer:
                         mine_cache_size=mine_cache_size,
                     )
 
+                # Create cached_data dict from newly computed paths
                 cached_data = {
                     "closest_node": closest_node,
                     "switch_path": switch_path,
@@ -1084,45 +1088,21 @@ class DebugOverlayRenderer:
                 # )
 
             # Draw paths (from cache or newly computed)
+            # IMPORTANT: Only draw the currently relevant path based on switch activation state
             if closest_node and cached_data:
-                # Draw switch path
-                if switch_path:
-                    # Draw path with color-coded edges
-                    for i in range(len(switch_path) - 1):
-                        node1 = switch_path[i]
-                        node2 = switch_path[i + 1]
+                # Select which path to draw based on switch activation state
+                if exit_switch_activated:
+                    # Switch collected - show path to exit
+                    current_path = exit_path
+                else:
+                    # Switch not collected - show path to switch
+                    current_path = switch_path
 
-                        # Verify nodes are adjacent in the graph
-                        neighbors = adjacency.get(node1, [])
-                        is_adjacent = any(n[0] == node2 for n in neighbors)
-
-                        if is_adjacent:
-                            # Classify edge type and get color (uses base_adjacency for physics)
-                            edge_type = classify_edge_type(node1, node2, base_adjacency)
-                            edge_color = get_edge_type_color(edge_type)
-                            used_edge_types.add(edge_type)
-
-                            x1, y1 = node1
-                            x2, y2 = node2
-                            # Add +24 offset to match node visualization (accounts for tile padding)
-                            screen_x1 = int(x1 * self.adjust + self.tile_x_offset) + 24
-                            screen_y1 = int(y1 * self.adjust + self.tile_y_offset) + 24
-                            screen_x2 = int(x2 * self.adjust + self.tile_x_offset) + 24
-                            screen_y2 = int(y2 * self.adjust + self.tile_y_offset) + 24
-                            pygame.draw.line(
-                                surface,
-                                edge_color,
-                                (screen_x1, screen_y1),
-                                (screen_x2, screen_y2),
-                                4,  # Thicker for better visibility
-                            )
-
-                # Draw exit path
-                if exit_path:
-                    # Draw path with color-coded edges
-                    for i in range(len(exit_path) - 1):
-                        node1 = exit_path[i]
-                        node2 = exit_path[i + 1]
+                # Draw the currently relevant path with color-coded edges
+                if current_path:
+                    for i in range(len(current_path) - 1):
+                        node1 = current_path[i]
+                        node2 = current_path[i + 1]
 
                         # Verify nodes are adjacent in the graph
                         neighbors = adjacency.get(node1, [])
@@ -1150,15 +1130,14 @@ class DebugOverlayRenderer:
                             )
 
             # === MOVEMENT VECTOR VISUALIZATION ===
-            # Draw optimal direction (next_hop) and actual velocity vectors
+            # Draw optimal direction (multi-hop lookahead) and actual velocity vectors
             if ninja_pos and closest_node:
                 ninja_x, ninja_y = ninja_pos
                 ninja_screen_x = int(ninja_x * self.adjust + self.tile_x_offset)
                 ninja_screen_y = int(ninja_y * self.adjust + self.tile_y_offset)
 
-                # Determine current goal and get next_hop from cached path
-                # The next hop is the second node in the path (first is current position)
-                next_hop = None
+                # Determine current goal and get path for multi-hop visualization
+                path = None
                 if cached_data:
                     if exit_switch_activated:
                         # Use exit path
@@ -1167,29 +1146,72 @@ class DebugOverlayRenderer:
                         # Use switch path
                         path = cached_data.get("switch_path")
 
-                    if path and len(path) >= 2:
-                        # Path starts at closest_node, so path[1] is the next hop
-                        next_hop = path[1]
+                # Draw next 4 hops with decreasing opacity/size
+                if path and len(path) >= 2:
+                    # Multi-hop visualization: show next 4 hops
+                    num_hops_to_show = min(4, len(path) - 1)
 
-                # Draw optimal direction arrow (green) from next_hop
-                if next_hop is not None:
-                    # Compute direction from current node to next_hop
-                    dx = next_hop[0] - closest_node[0]
-                    dy = next_hop[1] - closest_node[1]
-                    length = (dx * dx + dy * dy) ** 0.5
-                    if length > 0.001:
-                        # Normalize direction
-                        opt_dir = (dx / length, dy / length)
-                        # Draw arrow (length 40 pixels, bright green)
-                        self._draw_arrow(
-                            surface,
-                            (ninja_screen_x, ninja_screen_y),
-                            opt_dir,
-                            40,  # Arrow length
-                            (50, 255, 50, 255),  # Bright green
-                            width=3,
-                            head_size=10,
-                        )
+                    for hop_idx in range(1, num_hops_to_show + 1):
+                        next_hop = path[hop_idx]
+                        prev_node = path[hop_idx - 1]
+
+                        # Compute direction from previous node to this hop
+                        dx = next_hop[0] - prev_node[0]
+                        dy = next_hop[1] - prev_node[1]
+                        length = (dx * dx + dy * dy) ** 0.5
+
+                        if length > 0.001:
+                            # Normalize direction
+                            opt_dir = (dx / length, dy / length)
+
+                            # Compute start position for this arrow
+                            # All node positions need +24 offset to match path line rendering
+                            if hop_idx == 1:
+                                # First hop starts from ninja position (no +24 offset needed, already in screen space)
+                                start_x = ninja_screen_x
+                                start_y = ninja_screen_y
+                            else:
+                                # Subsequent hops start from previous node WITH +24 offset to match path lines
+                                start_x = (
+                                    int(prev_node[0] * self.adjust + self.tile_x_offset)
+                                    + 24
+                                )
+                                start_y = (
+                                    int(prev_node[1] * self.adjust + self.tile_y_offset)
+                                    + 24
+                                )
+
+                            # Visual properties fade with distance
+                            # Hop 1: bright green, full opacity, largest
+                            # Hop 2-4: progressively dimmer, smaller, more transparent
+                            opacity = max(
+                                100, 255 - (hop_idx - 1) * 50
+                            )  # 255, 205, 155, 105
+                            arrow_width = max(1, 4 - hop_idx)  # 3, 2, 1, 1
+                            arrow_length = max(
+                                25, 50 - (hop_idx - 1) * 8
+                            )  # 50, 42, 34, 26
+                            head_size = max(4, 12 - (hop_idx - 1) * 2)  # 12, 10, 8, 6
+
+                            # Color: bright green for hop 1, fade to yellow-green for later hops
+                            green_val = max(
+                                180, 255 - (hop_idx - 1) * 25
+                            )  # Keep high green
+                            red_val = min(
+                                150, 50 + (hop_idx - 1) * 33
+                            )  # Add yellow tint
+                            color = (red_val, green_val, 50, opacity)
+
+                            # Draw arrow for this hop
+                            self._draw_arrow(
+                                surface,
+                                (start_x, start_y),
+                                opt_dir,
+                                arrow_length,
+                                color,
+                                width=arrow_width,
+                                head_size=head_size,
+                            )
 
                 # Draw actual velocity arrow (cyan) from ninja velocity
                 ninja_velocity = path_aware_info.get("ninja_velocity")
@@ -1210,6 +1232,200 @@ class DebugOverlayRenderer:
                             (100, 220, 255, 255),  # Cyan
                             width=2,
                             head_size=8,
+                        )
+
+            # === STRAIGHTNESS MASKING DEBUG VISUALIZATION ===
+            # Show the exact physics-optimal path direction used for straightness masking
+            straightness_debug = path_aware_info.get("straightness_masking_debug")
+            if straightness_debug:
+                masking_ninja_node = straightness_debug.get("ninja_node")
+                short_horizon_dir = straightness_debug.get("short_horizon_direction")
+                multi_hop_geometric = straightness_debug.get(
+                    "multi_hop_direction_geometric"
+                )
+                path_segment = straightness_debug.get("path_segment", [])
+
+                if masking_ninja_node and short_horizon_dir:
+                    # Draw the ninja node used for straightness masking (bright magenta circle)
+                    node_x, node_y = masking_ninja_node
+                    screen_node_x = int(node_x * self.adjust + self.tile_x_offset) + 24
+                    screen_node_y = int(node_y * self.adjust + self.tile_y_offset) + 24
+
+                    # Bright magenta with pulsing effect
+                    pygame.draw.circle(
+                        surface, (255, 0, 255, 255), (screen_node_x, screen_node_y), 8
+                    )
+                    pygame.draw.circle(
+                        surface,
+                        (255, 255, 255, 255),
+                        (screen_node_x, screen_node_y),
+                        8,
+                        2,
+                    )
+
+                    # Draw PHYSICS-OPTIMAL direction arrow from ninja node (bright magenta)
+                    # This is the direction actually used for straightness masking
+                    # Computed from the actual physics-optimal path (with mine avoidance, momentum, etc.)
+                    dx_physics, dy_physics = short_horizon_dir
+                    arrow_length = 60
+                    self._draw_arrow(
+                        surface,
+                        (screen_node_x, screen_node_y),
+                        (dx_physics, dy_physics),
+                        arrow_length,
+                        (255, 0, 255, 255),  # Bright magenta
+                        width=5,  # Very thick for visibility
+                        head_size=14,
+                    )
+
+                    # Draw GEOMETRIC direction arrow for comparison (semi-transparent cyan)
+                    # This shows the geometric (straight-line) path from the level cache
+                    # which is NOT used for masking (only physics-optimal is used)
+                    if multi_hop_geometric:
+                        dx_geom, dy_geom = multi_hop_geometric
+                        self._draw_arrow(
+                            surface,
+                            (screen_node_x, screen_node_y),
+                            (dx_geom, dy_geom),
+                            arrow_length,
+                            (0, 255, 255, 140),  # Semi-transparent cyan
+                            width=2,
+                            head_size=8,
+                        )
+
+                    # Draw path segment nodes (the exact hops used for straightness check)
+                    for i, segment_node in enumerate(path_segment):
+                        seg_x, seg_y = segment_node
+                        screen_seg_x = (
+                            int(seg_x * self.adjust + self.tile_x_offset) + 24
+                        )
+                        screen_seg_y = (
+                            int(seg_y * self.adjust + self.tile_y_offset) + 24
+                        )
+
+                        if i == 0:
+                            # First node - bright magenta (start)
+                            color = (255, 0, 255, 255)
+                            radius = 8
+                        elif i == len(path_segment) - 1:
+                            # Last node - bright orange (end of segment)
+                            color = (255, 128, 0, 255)
+                            radius = 7
+                        else:
+                            # Middle nodes - yellow
+                            color = (255, 255, 0, 255)
+                            radius = 5
+
+                        pygame.draw.circle(
+                            surface, color, (screen_seg_x, screen_seg_y), radius
+                        )
+                        pygame.draw.circle(
+                            surface,
+                            (0, 0, 0, 255),
+                            (screen_seg_x, screen_seg_y),
+                            radius,
+                            2,
+                        )
+
+                        # Draw line between consecutive segment nodes
+                        if i > 0:
+                            prev_node = path_segment[i - 1]
+                            prev_x, prev_y = prev_node
+                            screen_prev_x = (
+                                int(prev_x * self.adjust + self.tile_x_offset) + 24
+                            )
+                            screen_prev_y = (
+                                int(prev_y * self.adjust + self.tile_y_offset) + 24
+                            )
+                            pygame.draw.line(
+                                surface,
+                                (255, 128, 0, 200),
+                                (screen_prev_x, screen_prev_y),
+                                (screen_seg_x, screen_seg_y),
+                                3,
+                            )
+
+                    # Draw text label showing the physics-optimal direction
+                    try:
+                        label_font = pygame.font.Font(None, 16)
+                    except pygame.error:
+                        label_font = pygame.font.SysFont("arial", 14)
+
+                    label_text = f"Physics: ({dx_physics:.2f}, {dy_physics:.2f})"
+                    label_surf = label_font.render(label_text, True, (255, 0, 255, 255))
+                    label_bg = pygame.Surface(
+                        (label_surf.get_width() + 8, label_surf.get_height() + 4),
+                        pygame.SRCALPHA,
+                    )
+                    label_bg.fill((0, 0, 0, 200))
+                    label_bg.blit(label_surf, (4, 2))
+
+                    # Position label near the arrow
+                    label_x = screen_node_x + int(dx_physics * 35)
+                    label_y = screen_node_y + int(dy_physics * 35) - 30
+                    surface.blit(label_bg, (label_x, label_y))
+
+                    # Draw label for geometric direction if available
+                    if multi_hop_geometric:
+                        dx_geom, dy_geom = multi_hop_geometric
+                        label_text_geom = f"Geometric: ({dx_geom:.2f}, {dy_geom:.2f})"
+                        label_surf_geom = label_font.render(
+                            label_text_geom, True, (0, 255, 255, 255)
+                        )
+                        label_bg_geom = pygame.Surface(
+                            (
+                                label_surf_geom.get_width() + 8,
+                                label_surf_geom.get_height() + 4,
+                            ),
+                            pygame.SRCALPHA,
+                        )
+                        label_bg_geom.fill((0, 0, 0, 200))
+                        label_bg_geom.blit(label_surf_geom, (4, 2))
+
+                        label_x_geom = screen_node_x + int(dx_geom * 35)
+                        label_y_geom = screen_node_y + int(dy_geom * 35) + 5
+                        surface.blit(label_bg_geom, (label_x_geom, label_y_geom))
+
+                    # Remove the old next hop visualization code
+                    masking_next_hop = None  # Not needed anymore
+
+                    if False and masking_next_hop:  # Disabled
+                        hop_x, hop_y = masking_next_hop
+                        screen_hop_x = (
+                            int(hop_x * self.adjust + self.tile_x_offset) + 24
+                        )
+                        screen_hop_y = (
+                            int(hop_y * self.adjust + self.tile_y_offset) + 24
+                        )
+
+                        # Draw dashed line
+                        num_dashes = 8
+                        for i in range(num_dashes):
+                            if i % 2 == 0:  # Only draw even dashes
+                                t1 = i / num_dashes
+                                t2 = (i + 1) / num_dashes
+                                x1 = screen_node_x + int(
+                                    (screen_hop_x - screen_node_x) * t1
+                                )
+                                y1 = screen_node_y + int(
+                                    (screen_hop_y - screen_node_y) * t1
+                                )
+                                x2 = screen_node_x + int(
+                                    (screen_hop_x - screen_node_x) * t2
+                                )
+                                y2 = screen_node_y + int(
+                                    (screen_hop_y - screen_node_y) * t2
+                                )
+                                pygame.draw.line(
+                                    surface, (255, 255, 0, 255), (x1, y1), (x2, y2), 2
+                                )
+
+                        # Draw next hop node (yellow circle)
+                        pygame.draw.circle(
+                            surface, (255, 255, 0, 255), (screen_hop_x, screen_hop_y), 6
+                        )
+                        pygame.draw.circle(
+                            surface, (0, 0, 0, 255), (screen_hop_x, screen_hop_y), 6, 2
                         )
 
         # Calculate and display switch/exit distances
@@ -1400,6 +1616,76 @@ class DebugOverlayRenderer:
                 text_surf = legend_font.render(text, True, TEXT_COLOR)
                 surface.blit(text_surf, (edge_legend_x + 45, y_offset))
                 y_offset += 22
+
+        # Draw straightness masking legend (when active)
+        straightness_debug = path_aware_info.get("straightness_masking_debug")
+        if straightness_debug:
+            try:
+                legend_font = pygame.font.Font(None, 18)
+            except pygame.error:
+                legend_font = pygame.font.SysFont("arial", 14)
+
+            # Position legend in top-right
+            legend_width = 240
+            legend_height = 100
+            legend_x = self.screen.get_width() - legend_width - 20
+            legend_y = 20
+
+            # Background
+            pygame.draw.rect(
+                surface,
+                (0, 0, 0, 220),
+                (legend_x, legend_y, legend_width, legend_height),
+                border_radius=5,
+            )
+            pygame.draw.rect(
+                surface,
+                (255, 0, 255, 255),  # Magenta border
+                (legend_x, legend_y, legend_width, legend_height),
+                2,
+                border_radius=5,
+            )
+
+            # Title
+            title_surf = legend_font.render("Straightness Masking:", True, TEXT_COLOR)
+            surface.blit(title_surf, (legend_x + 10, legend_y + 10))
+
+            # Legend items
+            items = [
+                ((255, 0, 255), "● Masking Node", "circle"),
+                ((255, 0, 255), "→ Multi-hop Dir", "arrow"),
+                ((255, 255, 0), "● Next Hop", "circle"),
+            ]
+
+            y_pos = legend_y + 35
+            for color, label, shape_type in items:
+                if shape_type == "circle":
+                    pygame.draw.circle(surface, color, (legend_x + 20, y_pos + 7), 5)
+                    pygame.draw.circle(
+                        surface, (255, 255, 255), (legend_x + 20, y_pos + 7), 5, 1
+                    )
+                elif shape_type == "arrow":
+                    # Draw small arrow
+                    pygame.draw.line(
+                        surface,
+                        color,
+                        (legend_x + 15, y_pos + 7),
+                        (legend_x + 25, y_pos + 7),
+                        2,
+                    )
+                    pygame.draw.polygon(
+                        surface,
+                        color,
+                        [
+                            (legend_x + 25, y_pos + 7),
+                            (legend_x + 21, y_pos + 4),
+                            (legend_x + 21, y_pos + 10),
+                        ],
+                    )
+
+                text_surf = legend_font.render(label, True, TEXT_COLOR)
+                surface.blit(text_surf, (legend_x + 35, y_pos))
+                y_pos += 20
 
         return surface
 

@@ -736,19 +736,20 @@ class Ninja:
                             mask[2] = False  # Mask RIGHT if NOT triggering wall slide
                         # Keep JUMP+RIGHT (action 5) valid - triggers wall jump
 
-        # === DETERMINISTIC MASKING FOR TRIVIAL STRAIGHT PATHS ===
-        # If path is provably straight (horizontal or downward), mask suboptimal actions
-        # This ensures 100% success on trivial scenarios
+        # === ENHANCED PATH-BASED ACTION MASKING ===
+        # Uses full direction vector (dx, dy) from physics-optimal path to mask
+        # provably suboptimal actions. More comprehensive than legacy "straight path"
+        # masking - handles diagonal paths, respects ninja state (grounded vs airborne).
         #
         # This masking is applied AFTER physics-based masking (wall/jump masking)
-        # and uses pre-computed multi-hop path direction (8 hops, ~96-192px lookahead)
-        # from the level cache. Zero performance cost (O(1) lookup).
+        # and uses multi-hop path direction (3-4 hops) from physics-optimal path.
+        # Zero performance cost (O(1) lookup from pre-computed path).
         #
-        # The multi-hop direction already respects graph structure (platforms, hazards),
-        # so we can aggressively mask actions that move against the optimal direction.
-        #
-        # Conservative by design: only masks when path characteristics are very clear
-        # to avoid over-constraining on complex paths.
+        # Key principles:
+        # 1. Mask horizontal actions moving away from goal (LEFT when goal is right, etc.)
+        # 2. Mask jumps when goal is DOWN and ninja is grounded (jumping goes up)
+        # 3. Mask NOOP when grounded with clear direction (no timing objectives)
+        # 4. Keep NOOP when airborne (needed for precise air control)
         #
         # ANNEALED MASKING (2026-01-05): Only apply hard masking in early training
         # Mode transitions: hard (early) -> soft (mid) -> none (late)
@@ -757,51 +758,101 @@ class Ninja:
         #
         # UPDATED 2026-01-06: Made conditional for hyperparameter optimization
         # Can be disabled via _enable_straightness_masking attribute (defaults to True)
-        enable_straightness_masking = getattr(
-            self.sim, "_enable_straightness_masking", True
-        )
+        enable_path_masking = getattr(self.sim, "_enable_straightness_masking", True)
         masking_mode = getattr(self.sim, "_action_masking_mode", "hard")
-        if enable_straightness_masking and masking_mode == "hard":
-            path_direction = getattr(self.sim, "_path_straightness_direction", None)
-            if path_direction == "left":
-                # Goal is directly to the left on straight horizontal path
-                # Mask: RIGHT (2), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
-                # Keep: LEFT (1)
-                #
-                # Rationale:
-                # - Only LEFT is needed on a straight horizontal path to the left
-                # - All other actions are suboptimal (wrong direction or unnecessary jumps)
-                mask[0] = (
-                    False  # Mask NOOP (route has no time sensitive or dynanamic obstacles, so we should always move)
+        if enable_path_masking and masking_mode == "hard":
+            path_direction_data = getattr(self.sim, "_path_direction_data", None)
+            if path_direction_data is not None:
+                from .constants import (
+                    PATH_DIRECTION_HORIZONTAL_THRESHOLD,
+                    PATH_DIRECTION_VERTICAL_THRESHOLD,
+                    STRAIGHT_PATH_HORIZONTAL_THRESHOLD,
+                    STRAIGHT_PATH_VERTICAL_THRESHOLD,
+                    STRAIGHT_PATH_DOWNWARD_THRESHOLD,
                 )
-                mask[2] = False  # Mask RIGHT (wrong direction)
-                mask[3] = False  # Mask JUMP (unnecessary on straight path)
-                mask[4] = False  # Mask JUMP+LEFT (jumping is unnecessary)
-                mask[5] = False  # Mask JUMP+RIGHT (wrong direction + unnecessary jump)
 
-            elif path_direction == "right":
-                # Goal is directly to the right on straight horizontal path
-                # Mask: LEFT (1), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
-                # Keep: RIGHT (2)
-                mask[0] = (
-                    False  # Mask NOOP (route has no time sensitive or dynanamic obstacles, so we should always move)
+                dx = path_direction_data.get("dx", 0.0)
+                dy = path_direction_data.get("dy", 0.0)
+                # distance = path_direction_data.get("distance", 0.0)  # Available if needed
+
+                # === STRICT STRAIGHT PATH MASKING (Highest Priority) ===
+                # For VERY straight paths, use aggressive masking to ensure optimal behavior
+                # Uses stricter thresholds than general direction masking
+
+                # Check for very straight horizontal path (flat corridor)
+                is_very_straight_horizontal = (
+                    abs(dy) < STRAIGHT_PATH_VERTICAL_THRESHOLD
+                    and abs(dx) > STRAIGHT_PATH_HORIZONTAL_THRESHOLD
                 )
-                mask[1] = False  # Mask LEFT (wrong direction)
-                mask[3] = False  # Mask JUMP (unnecessary on straight path)
-                mask[4] = False  # Mask JUMP+LEFT (wrong direction + unnecessary jump)
-                mask[5] = False  # Mask JUMP+RIGHT (jumping is unnecessary)
-            elif path_direction == "down":
-                # Goal is downward (vertically or diagonally down)
-                # Mask: JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
-                # Keep: NOOP (0), LEFT (1), RIGHT (2)
-                #
-                # Rationale:
-                # - Path goes DOWN, but JUMP moves UP (opposite of optimal direction)
-                # - Horizontal movements are still allowed (may need to navigate while falling)
-                # - This handles downward slopes, drops, and descending paths
-                mask[3] = False  # Mask JUMP (moves up when we need to go down)
-                mask[4] = False  # Mask JUMP+LEFT (moves up when we need to go down)
-                mask[5] = False  # Mask JUMP+RIGHT (moves up when we need to go down)
+
+                # Check for very straight downward path (vertical drop)
+                is_very_straight_downward = (
+                    dy > STRAIGHT_PATH_DOWNWARD_THRESHOLD and not self.airborn
+                )
+
+                if is_very_straight_horizontal:
+                    # Path is completely straight horizontal - mask everything except one direction
+                    if dx < 0:  # Straight path to the LEFT
+                        mask[0] = False  # Mask NOOP
+                        mask[2] = False  # Mask RIGHT (wrong direction)
+                        mask[3] = False  # Mask JUMP (unnecessary on flat path)
+                        mask[4] = False  # Mask JUMP+LEFT (jumping unnecessary)
+                        mask[5] = (
+                            False  # Mask JUMP+RIGHT (wrong direction + unnecessary)
+                        )
+                        # Keep only: LEFT (1)
+                    else:  # Straight path to the RIGHT
+                        mask[0] = False  # Mask NOOP
+                        mask[1] = False  # Mask LEFT (wrong direction)
+                        mask[3] = False  # Mask JUMP (unnecessary on flat path)
+                        mask[4] = (
+                            False  # Mask JUMP+LEFT (wrong direction + unnecessary)
+                        )
+                        mask[5] = False  # Mask JUMP+RIGHT (jumping unnecessary)
+                        # Keep only: RIGHT (2)
+
+                elif is_very_straight_downward:
+                    # Path goes straight down - mask all jumps (jumping goes UP)
+                    # Keep horizontal movement and NOOP for navigation while falling
+                    mask[3] = False  # Mask JUMP (moves up when we need down)
+                    mask[4] = False  # Mask JUMP+LEFT (moves up when we need down)
+                    mask[5] = False  # Mask JUMP+RIGHT (moves up when we need down)
+                    # Keep: NOOP (0), LEFT (1), RIGHT (2)
+
+                else:
+                    # Path is NOT very straight - apply general direction-based masking
+                    # This handles diagonal paths, angled paths, etc.
+
+                    # === HORIZONTAL MASKING ===
+                    # Mask actions moving opposite to goal's horizontal direction
+                    if abs(dx) > PATH_DIRECTION_HORIZONTAL_THRESHOLD:
+                        if dx < 0:  # Goal is to the LEFT
+                            mask[2] = False  # Mask RIGHT (wrong direction)
+                            mask[5] = False  # Mask JUMP+RIGHT (wrong direction)
+                        else:  # Goal is to the RIGHT
+                            mask[1] = False  # Mask LEFT (wrong direction)
+                            mask[4] = False  # Mask JUMP+LEFT (wrong direction)
+
+                    # === VERTICAL MASKING ===
+                    # Mask jumps when goal is DOWN and ninja is grounded
+                    # (jumping moves UP, opposite of goal direction)
+                    if abs(dy) > PATH_DIRECTION_VERTICAL_THRESHOLD:
+                        if dy > 0 and not self.airborn:  # Goal is DOWN, ninja grounded
+                            mask[3] = False  # Mask JUMP (moves up when we need down)
+                            mask[4] = (
+                                False  # Mask JUMP+LEFT (moves up when we need down)
+                            )
+                            mask[5] = (
+                                False  # Mask JUMP+RIGHT (moves up when we need down)
+                            )
+                        # Note: if dy < 0 (goal UP), we DON'T mask jumps - ninja needs to jump up
+
+                    # === NOOP MASKING ===
+                    # Mask NOOP when grounded with clear directional path
+                    # Keep NOOP when airborne (needed for precise air control)
+                    if not self.airborn:
+                        if abs(dx) > PATH_DIRECTION_HORIZONTAL_THRESHOLD:
+                            mask[0] = False  # Mask NOOP - should be moving toward goal
 
         # Ensure at least one action is always valid
         # If all actions are masked (inevitable death scenario), unmask NOOP
