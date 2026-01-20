@@ -3030,37 +3030,32 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         masking_mode = self.reward_calculator.config.action_masking_mode
         self.nplay_headless.sim._action_masking_mode = masking_mode
 
-        # Detect if path is straight (horizontal or downward) and pass to Ninja for deterministic masking
+        # Detect path direction and pass to Ninja for enhanced action masking
         # Note: Path direction only used when masking_mode == "hard"
-        straight_path_direction = self._detect_straight_path_direction()
-        self.nplay_headless.sim._path_straightness_direction = straight_path_direction
+        path_direction_data = self._detect_straight_path_direction()
+        self.nplay_headless.sim._path_direction_data = path_direction_data
 
         return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
 
-    def _detect_straight_path_direction(self) -> Optional[str]:
-        """Detect if the path to the current goal is straight (horizontal or downward).
+    def _detect_straight_path_direction(self) -> Optional[Dict[str, float]]:
+        """Detect path direction to current goal using physics-optimal path.
 
-        Uses multi-hop direction (8 hops ahead, ~96-192px lookahead) to verify path
-        straightness. This enables deterministic action masking on trivial scenarios,
-        ensuring 100% success by masking provably suboptimal actions.
-
-        Detection criteria:
-        1. Horizontal straight: |dx| > 0.8, |dy| < 0.1 → returns "left" or "right"
-        2. Downward: dy > 0.3 (positive = down in screen coords) → returns "down"
+        Uses multi-hop direction (3-4 hops ahead) from physics-optimal path to enable
+        enhanced action masking. Returns full direction vector (dx, dy) instead of
+        discrete categories, allowing nuanced masking decisions.
 
         Algorithm:
         1. Find current ninja node in graph
-        2. Get multi-hop direction from level cache (pre-computed, O(1) lookup)
-        3. Check path characteristics and return appropriate direction
+        2. Compute physics-optimal path (with mine avoidance)
+        3. Extract direction from first 3-4 nodes
+        4. Return normalized direction vector and distance
 
         Returns:
-            "left", "right", "down", or None
+            Dict with keys: "dx" (float), "dy" (float), "distance" (float)
+            Or None if path cannot be determined
         """
         from nclone.constants.physics_constants import (
-            STRAIGHT_PATH_HORIZONTAL_THRESHOLD,
-            STRAIGHT_PATH_VERTICAL_THRESHOLD,
-            STRAIGHT_PATH_DOWNWARD_THRESHOLD,
-            STRAIGHT_PATH_MIN_DISTANCE,
+            PATH_DIRECTION_MIN_DISTANCE,
         )
         from nclone.graph.reachability.pathfinding_utils import find_ninja_node
 
@@ -3094,12 +3089,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 goal_pos = self.nplay_headless.exit_switch_position()
                 goal_id = "switch"
 
-            # Check minimum distance threshold (only mask for goals >12px away)
+            # Check minimum distance threshold (only mask for goals >24px away)
             dx_goal = goal_pos[0] - ninja_pos[0]
             dy_goal = goal_pos[1] - ninja_pos[1]
             distance_to_goal = (dx_goal * dx_goal + dy_goal * dy_goal) ** 0.5
 
-            if distance_to_goal < STRAIGHT_PATH_MIN_DISTANCE:
+            if distance_to_goal < PATH_DIRECTION_MIN_DISTANCE:
                 return None  # Too close, don't apply masking
 
             # Get graph adjacency
@@ -3109,59 +3104,144 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if adjacency is None:
                 return None
 
-            # Find current ninja node in graph
+            # Find current ninja node in graph using EXACT SAME LOGIC as debug visualization
+            # (which colors the node light blue) - do NOT convert position to int
             ninja_node = find_ninja_node(
-                (int(ninja_pos[0]), int(ninja_pos[1])),
+                ninja_pos,  # Use float position directly, don't convert to int
                 adjacency,
                 spatial_hash=getattr(self, "_spatial_hash", None),
                 subcell_lookup=getattr(self, "_subcell_lookup", None),
-                ninja_radius=10,  # NINJA_RADIUS from constants
+                ninja_radius=10.0,  # Match debug viz: use 10.0 not 10
             )
 
             if ninja_node is None:
                 return None
 
-            # Get multi-hop direction from level cache (O(1) lookup, pre-computed)
-            if not hasattr(level_cache, "get_multi_hop_direction"):
+            # CRITICAL: For straightness masking, we MUST use the PHYSICS-OPTIMAL path
+            # (same one used for rewards and visualization), NOT the geometric path from level_cache.
+            #
+            # The level_cache uses geometric costs (straight-line, ignores physics/mines) while
+            # the actual optimal path uses physics costs (momentum, mine avoidance, gravity).
+            # Using geometric path for masking would mask actions on the wrong path!
+            #
+            # Instead, get the actual physics-optimal path from the reward calculator
+
+            # Try to get the actual physics-optimal path from reward calculator
+            actual_path = None
+            if hasattr(self.reward_calculator, "pbrs_calculator"):
+                pbrs_calc = self.reward_calculator.pbrs_calculator
+                if hasattr(pbrs_calc, "path_calculator"):
+                    # Get the current physics-optimal path (computed with mine avoidance)
+                    try:
+                        from nclone.graph.reachability.pathfinding_utils import (
+                            find_shortest_path_with_fallback,
+                        )
+
+                        # Determine goal node
+                        from nclone.constants.physics_constants import (
+                            EXIT_SWITCH_RADIUS,
+                            EXIT_DOOR_RADIUS,
+                        )
+                        from nclone.graph.reachability.pathfinding_utils import (
+                            find_goal_node_closest_to_start,
+                        )
+
+                        goal_node = find_goal_node_closest_to_start(
+                            goal_pos,
+                            ninja_node,
+                            adjacency,
+                            entity_radius=EXIT_SWITCH_RADIUS
+                            if goal_id == "switch"
+                            else EXIT_DOOR_RADIUS,
+                            ninja_radius=10.0,
+                            spatial_hash=getattr(self, "_spatial_hash", None),
+                            subcell_lookup=getattr(self, "_subcell_lookup", None),
+                        )
+
+                        if goal_node:
+                            # Compute physics-optimal path with mine avoidance
+                            base_adjacency = self.current_graph_data.get(
+                                "base_adjacency", adjacency
+                            )
+                            physics_cache = self.current_graph_data.get("node_physics")
+                            mine_proximity_cache = (
+                                pbrs_calc.path_calculator.mine_proximity_cache
+                            )
+
+                            actual_path, _ = find_shortest_path_with_fallback(
+                                ninja_node,
+                                goal_node,
+                                adjacency,
+                                base_adjacency,
+                                physics_cache,
+                                self.level_data,
+                                mine_proximity_cache,
+                                ninja_velocity=self.nplay_headless.ninja_velocity(),
+                                debug=False,
+                            )
+                    except Exception:
+                        actual_path = None
+
+            if actual_path is None or len(actual_path) < 2:
                 return None
 
-            multi_hop_direction = level_cache.get_multi_hop_direction(
+            # Use first 3-4 nodes of the ACTUAL physics-optimal path for straightness check
+            max_hops_for_straightness = min(4, len(actual_path))
+            path_segment = actual_path[:max_hops_for_straightness]
+
+            if len(path_segment) < 2:
+                return None  # Need at least 2 nodes to compute direction
+
+            # Compute direction from first to last node in segment
+            start_node = path_segment[0]
+            end_node = path_segment[-1]
+            dx_raw = end_node[0] - start_node[0]
+            dy_raw = end_node[1] - start_node[1]
+            distance = (dx_raw * dx_raw + dy_raw * dy_raw) ** 0.5
+
+            if distance < 1.0:
+                return None
+
+            # Normalize direction
+            dx = dx_raw / distance
+            dy = dy_raw / distance
+
+            # For debugging visualization, also get geometric direction for comparison
+            multi_hop_direction_geometric = level_cache.get_multi_hop_direction(
                 ninja_node, goal_id
             )
+            next_hop = level_cache.get_next_hop(ninja_node, goal_id)
 
-            if multi_hop_direction is None:
-                return None  # At goal or no path available
-
-            dx, dy = multi_hop_direction
-
-            # Check if path is nearly horizontal with strong directional component
-            is_horizontal = (
-                abs(dy) < STRAIGHT_PATH_VERTICAL_THRESHOLD
-                and abs(dx) > STRAIGHT_PATH_HORIZONTAL_THRESHOLD
-            )
-
-            # Check if path is going downward (positive dy = down in screen coordinates)
-            is_downward = dy > STRAIGHT_PATH_DOWNWARD_THRESHOLD
+            # Store path direction debug data for visualization
+            self.nplay_headless.sim._straightness_masking_debug = {
+                "ninja_pos": ninja_pos,
+                "ninja_node": ninja_node,
+                "next_hop": next_hop,
+                "short_horizon_direction": (
+                    dx,
+                    dy,
+                ),  # Physics-optimal path direction (used for masking)
+                "multi_hop_direction_geometric": multi_hop_direction_geometric,  # Geometric direction (for comparison)
+                "path_segment": path_segment,  # Exact physics-optimal path segment used
+                "full_physics_path": actual_path,  # Full physics-optimal path for visualization
+                "goal_id": goal_id,
+            }
 
             # Track masking application for TensorBoard monitoring
-            if is_horizontal:
-                # Return horizontal direction based on sign of dx
-                self._deterministic_mask_applied_count += 1
-                if dx < 0:
-                    return "left"
-                elif dx > 0:
-                    return "right"
-                else:
-                    return None  # Edge case: dx is exactly 0
-            elif is_downward:
-                # Path is going downward, mask all jump actions
-                self._deterministic_mask_applied_count += 1
-                return "down"
-            else:
-                return None  # Path is not straight in any detectable way
+            self._deterministic_mask_applied_count += 1
+
+            # Return full direction vector for enhanced masking
+            return {
+                "dx": dx,
+                "dy": dy,
+                "distance": distance_to_goal,
+            }
 
         except Exception as e:
             # Silently fail on any error to avoid breaking training
+            import traceback
+
+            traceback.print_exc()
             # Deterministic masking is an optimization, not critical
             import logging
 

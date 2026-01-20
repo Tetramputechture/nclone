@@ -43,6 +43,11 @@ class Simulator:
         # Cache clear optimization - track next frame to clear instead of using modulo
         self._next_cache_clear = CACHE_CLEAR_INTERVAL
 
+        # Action masking attributes (set by environment, used by ninja)
+        self._enable_straightness_masking = True
+        self._action_masking_mode = "hard"
+        self._path_direction_data = None  # Dict with dx, dy, distance
+
     def load(self, map_data):
         """From the given map data, initiate the level geometry, the entities and the ninja."""
         self.map_data = map_data
@@ -65,6 +70,8 @@ class Simulator:
         self.ninja = None
         # Reset cache clear counter when frame is reset
         self._next_cache_clear = CACHE_CLEAR_INTERVAL
+        # Reset action masking attributes
+        self._path_direction_data = None
         self.reset_map_entity_data()
         self.map_loader.load_map_entities()
 

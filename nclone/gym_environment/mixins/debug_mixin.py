@@ -76,12 +76,24 @@ class DebugMixin:
             or self._blocked_entities_debug_enabled
             or self._show_paths_to_goals
         ):
+            # Get straightness masking debug data if available
+            straightness_debug = None
+            if hasattr(self.nplay_headless, "sim") and hasattr(
+                self.nplay_headless.sim, "_straightness_masking_debug"
+            ):
+                straightness_debug = self.nplay_headless.sim._straightness_masking_debug
+            
+            # CRITICAL: Use current_graph_data to ensure visualization matches level_cache
+            # The level_cache (used for rewards and masking) is built from current_graph_data,
+            # so visualization must use the same graph to show consistent paths
+            graph_data_for_viz = getattr(self, "current_graph_data", self._path_aware_graph_data)
+            
             info["path_aware"] = {
                 "show_adjacency": self._adjacency_graph_debug_enabled,
                 "show_blocked": self._blocked_entities_debug_enabled,
                 "show_paths": self._show_paths_to_goals,
                 "show_segments": self._show_paths_to_goals,  # Auto-enable when paths shown
-                "graph_data": self._path_aware_graph_data,
+                "graph_data": graph_data_for_viz,  # Use current_graph_data for consistency
                 "entity_mask": self._path_aware_entity_mask,
                 "level_data": self._path_aware_level_data
                 or (self.level_data if hasattr(self, "level_data") else None),
@@ -90,6 +102,8 @@ class DebugMixin:
                 "entities": self.level_data.entities
                 if hasattr(self, "level_data")
                 else [],
+                "cached_reward_paths": getattr(self, "_cached_reward_paths", None),
+                "straightness_masking_debug": straightness_debug,
             }
 
         # Add mine SDF visualization payload if enabled
@@ -219,11 +233,19 @@ class DebugMixin:
         """Enable/disable path segment visualization."""
         self._path_segments_debug_enabled = bool(enabled)
 
-    def set_path_aware_data(self, graph_data=None, entity_mask=None, level_data=None):
-        """Set path-aware graph and entity mask data for visualization."""
+    def set_path_aware_data(self, graph_data=None, entity_mask=None, level_data=None, cached_paths=None):
+        """Set path-aware graph and entity mask data for visualization.
+        
+        Args:
+            graph_data: Graph adjacency data
+            entity_mask: Entity blocking data
+            level_data: Level data for mine avoidance
+            cached_paths: Pre-computed paths from reward calculator (ensures viz matches rewards)
+        """
         self._path_aware_graph_data = graph_data
         self._path_aware_entity_mask = entity_mask
         self._path_aware_level_data = level_data
+        self._cached_reward_paths = cached_paths
 
     def set_action_mask_debug_enabled(self, enabled: bool):
         """Enable/disable action mask debug visualization."""
