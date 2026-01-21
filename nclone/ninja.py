@@ -87,6 +87,10 @@ class Ninja:
         self.sim = sim
         self.xpos = sim.map_data[1231] * 6
         self.ypos = sim.map_data[1232] * 6
+        
+        # Store initial spawn position for fast reset
+        self._initial_xpos = self.xpos
+        self._initial_ypos = self.ypos
         self.xspeed = 0
         self.yspeed = 0
         self.applied_gravity = GRAVITY_FALL
@@ -775,8 +779,30 @@ class Ninja:
                 dy = path_direction_data.get("dy", 0.0)
                 # distance = path_direction_data.get("distance", 0.0)  # Available if needed
 
-                # === STRICT STRAIGHT PATH MASKING (Highest Priority) ===
-                # For VERY straight paths, use aggressive masking to ensure optimal behavior
+                # === UNIVERSAL HORIZONTAL MASKING (Applied First) ===
+                # ALWAYS mask actions moving opposite to goal's horizontal direction
+                # This applies regardless of airborne state or path straightness
+                # Rationale: If goal is LEFT, moving RIGHT is ALWAYS suboptimal
+                if abs(dx) > PATH_DIRECTION_HORIZONTAL_THRESHOLD:
+                    if dx < 0:  # Goal is to the LEFT
+                        mask[2] = False  # Mask RIGHT (always wrong direction)
+                        mask[5] = False  # Mask JUMP+RIGHT (always wrong direction)
+                    else:  # Goal is to the RIGHT
+                        mask[1] = False  # Mask LEFT (always wrong direction)
+                        mask[4] = False  # Mask JUMP+LEFT (always wrong direction)
+
+                # === UNIVERSAL VERTICAL MASKING (Applied Second) ===
+                # ALWAYS mask jumps when goal is BELOW and ninja is moving UPWARD
+                # Rationale: If goal is below and we're going up, continuing to jump is counterproductive
+                # Let gravity bring us back down instead
+                if dy > PATH_DIRECTION_VERTICAL_THRESHOLD and self.yspeed < 0:
+                    # Goal is BELOW (dy > 0) and ninja is moving UP (yspeed < 0)
+                    mask[3] = False  # Mask JUMP (going up when we need to go down)
+                    mask[4] = False  # Mask JUMP+LEFT (going up when we need to go down)
+                    mask[5] = False  # Mask JUMP+RIGHT (going up when we need to go down)
+
+                # === STRICT STRAIGHT PATH MASKING (Additional Restrictions) ===
+                # For VERY straight paths, apply even more aggressive masking
                 # Uses stricter thresholds than general direction masking
 
                 # Check for very straight horizontal path (flat corridor)
@@ -820,18 +846,8 @@ class Ninja:
                     # Keep: NOOP (0), LEFT (1), RIGHT (2)
 
                 else:
-                    # Path is NOT very straight - apply general direction-based masking
-                    # This handles diagonal paths, angled paths, etc.
-
-                    # === HORIZONTAL MASKING ===
-                    # Mask actions moving opposite to goal's horizontal direction
-                    if abs(dx) > PATH_DIRECTION_HORIZONTAL_THRESHOLD:
-                        if dx < 0:  # Goal is to the LEFT
-                            mask[2] = False  # Mask RIGHT (wrong direction)
-                            mask[5] = False  # Mask JUMP+RIGHT (wrong direction)
-                        else:  # Goal is to the RIGHT
-                            mask[1] = False  # Mask LEFT (wrong direction)
-                            mask[4] = False  # Mask JUMP+LEFT (wrong direction)
+                    # Path is NOT very straight - apply additional conditional masking
+                    # Horizontal masking already applied universally above
 
                     # === VERTICAL MASKING ===
                     # Mask jumps when goal is DOWN and ninja is grounded
@@ -1339,6 +1355,114 @@ class Ninja:
             )
             self.xposlog.append(self.xpos)
             self.yposlog.append(self.ypos)
+
+    def reset_state(self):
+        """Reset ninja to initial spawn state for fast environment reset.
+        
+        This method resets the ninja to its spawn position and initial state
+        without creating a new object. Used for optimized same-level resets.
+        """
+        # Reset position to spawn
+        self.xpos = self._initial_xpos
+        self.ypos = self._initial_ypos
+        
+        # Reset velocities
+        self.xspeed = 0
+        self.yspeed = 0
+        self.xspeed_old = 0
+        self.yspeed_old = 0
+        
+        # Reset physics parameters
+        self.applied_gravity = GRAVITY_FALL
+        self.applied_drag = DRAG_REGULAR
+        self.applied_friction = FRICTION_GROUND
+        
+        # Reset state flags
+        self.state = 0  # Immobile
+        self.airborn = False
+        self.airborn_old = False
+        self.walled = False
+        self.wall_normal = 0
+        
+        # Reset jump-related state
+        self.jump_input_old = 0
+        self.jump_duration = 0
+        self.jump_buffer = -1
+        self.floor_buffer = -1
+        self.wall_buffer = -1
+        self.launch_pad_buffer = -1
+        self.is_jump_useless = False
+        self.last_jump_was_buffered = False
+        
+        # Reset collision normals
+        self.floor_normalized_x = 0
+        self.floor_normalized_y = -1
+        self.ceiling_normalized_x = 0
+        self.ceiling_normalized_y = 1
+        
+        # Reset collision counters
+        self.floor_count = 0
+        self.wall_count = 0
+        self.ceiling_count = 0
+        self.floor_normal_x = 0
+        self.floor_normal_y = 0
+        self.ceiling_normal_x = 0
+        self.ceiling_normal_y = 0
+        self.is_crushable = False
+        self.x_crush = 0
+        self.y_crush = 0
+        self.crush_len = 0
+        
+        # Reset animation state
+        self.anim_state = 0
+        self.facing = 1
+        self.tilt = 0
+        self.anim_rate = 0
+        self.anim_frame = 11
+        self.frame_residual = 0
+        
+        # Reset inputs
+        self.hor_input = 0
+        self.jump_input = 0
+        
+        # Reset position tracking
+        self.xpos_old = 0
+        self.ypos_old = 0
+        self.death_xpos = 0
+        self.death_ypos = 0
+        self.terminal_impact = False
+        self.death_cause = None
+        self.xpos_at_action = self.xpos
+        self.ypos_at_action = self.ypos
+        
+        # Reset death speeds
+        self.death_xspeed = 0
+        self.death_yspeed = 0
+        
+        # Reset collectibles
+        self.gold_collected = 0
+        self.doors_opened = 0
+        
+        # Reset temporal tracking
+        self.frames_airborne = 0
+        self.state_change_frame = 0
+        self.previous_state = 0
+        self.consecutive_floor_frames = 0
+        self.consecutive_wall_frames = 0
+        
+        # Clear debug logs if enabled
+        if self.sim.sim_config.debug:
+            if self.poslog is not None:
+                self.poslog.clear()
+            if self.speedlog is not None:
+                self.speedlog.clear()
+            if self.xposlog is not None:
+                self.xposlog.clear()
+            if self.yposlog is not None:
+                self.yposlog.clear()
+        
+        # Re-log initial position
+        self.log()
 
     def has_won(self):
         return self.state == 8

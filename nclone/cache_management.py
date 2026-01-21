@@ -665,3 +665,88 @@ def clear_all_caches_for_reset(env: Any, verbose: bool = False) -> None:
 
     if verbose:
         print("All caches cleared for reset")
+
+
+def clear_episode_caches_only(env: Any, verbose: bool = False) -> None:
+    """Clear only episode-specific caches for fast same-level resets.
+    
+    This minimal cache clearing function is used with fast_reset() to clear only
+    the caches that MUST be cleared between episodes on the same level.
+    
+    CRITICAL: This should be used ONLY when the level has not changed. For new
+    levels, use clear_all_caches_for_new_level() instead.
+    
+    Clears (episode-specific only):
+    - _prev_obs_cache: Previous observation cache
+    - current_ep_reward: Episode reward accumulator
+    - current_route: Episode trajectory tracking
+    - _cached_observation: Current observation cache
+    - Render caches: Must be cleared as entity states change
+    
+    Does NOT clear (level-persistent):
+    - _cached_level_data: Level geometry (unchanged)
+    - _cached_entities: Entity data (unchanged)
+    - Graph caches: Level graph (unchanged)
+    - Pathfinding utility caches: Surface area cache (unchanged)
+    - Door feature caches: Can be invalidated via switch state tracking
+    - Renderer surface caches: Tile rendering (unchanged)
+    
+    Args:
+        env: Environment instance (NppEnvironment or similar)
+        verbose: If True, print cache clearing operations
+    
+    Example:
+        >>> # In fast reset path:
+        >>> env.nplay_headless.fast_reset()
+        >>> clear_episode_caches_only(env, verbose=True)
+        Cleared episode-specific caches (fast reset)
+    """
+    if verbose:
+        print("Clearing episode-specific caches (fast reset)...")
+    
+    # Clear observation cache
+    if hasattr(env, "_prev_obs_cache"):
+        env._prev_obs_cache = None
+        if verbose:
+            print("  - Cleared _prev_obs_cache")
+    
+    # Reset episode reward accumulator
+    if hasattr(env, "current_ep_reward"):
+        env.current_ep_reward = 0
+        if verbose:
+            print("  - Reset current_ep_reward")
+    
+    # Clear episode route tracking
+    if hasattr(env, "current_route"):
+        if hasattr(env.current_route, "clear"):
+            env.current_route.clear()
+        else:
+            env.current_route = []
+        if verbose:
+            print("  - Cleared current_route")
+    
+    # Clear current observation cache
+    if hasattr(env, "_cached_observation"):
+        env._cached_observation = None
+        if verbose:
+            print("  - Cleared _cached_observation")
+    
+    # Clear render caches (entity positions/states change each episode)
+    # Even though we're on the same level, entities move during the episode
+    # and render caches must be cleared to show the reset state
+    if hasattr(env, "nplay_headless"):
+        nplay_headless = env.nplay_headless
+        
+        # Render caches (surface and buffer)
+        if hasattr(nplay_headless, "cached_render_surface"):
+            nplay_headless.cached_render_surface = None
+            if verbose:
+                print("  - Cleared cached_render_surface")
+        
+        if hasattr(nplay_headless, "cached_render_buffer"):
+            nplay_headless.cached_render_buffer = None
+            if verbose:
+                print("  - Cleared cached_render_buffer")
+    
+    if verbose:
+        print("Cleared episode-specific caches (fast reset)")

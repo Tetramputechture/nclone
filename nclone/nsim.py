@@ -75,6 +75,70 @@ class Simulator:
         self.reset_map_entity_data()
         self.map_loader.load_map_entities()
 
+    def fast_reset(self):
+        """Fast reset for same-level training. Resets entity state without recreation.
+        
+        This method is significantly faster than reset() because it:
+        1. Resets ninja state in-place (no object allocation)
+        2. Resets entity states in-place (no object allocation)
+        3. Clears grid_entity lists (no dict recreation)
+        4. Skips door segment cleanup (segments unchanged for same level)
+        
+        CRITICAL: Must be called ONLY when the map has not changed since the last
+        reset. For new maps, use reset() instead.
+        
+        Curriculum compatibility: This method resets entities to their ORIGINAL positions.
+        The environment must call goal_curriculum_manager.apply_to_simulator() after
+        fast_reset() to move entities to curriculum positions.
+        """
+        # Reset frame counter and collision log
+        self.frame = 0
+        if self.sim_config.debug:
+            if self.collisionlog is not None:
+                self.collisionlog.clear()
+            else:
+                self.collisionlog = []
+        else:
+            self.collisionlog = None
+        
+        # Reset cache clear counter
+        self._next_cache_clear = CACHE_CLEAR_INTERVAL
+        
+        # Reset action masking attributes
+        self._path_direction_data = None
+        
+        # Reset ninja state in-place (no new Ninja object)
+        if self.ninja is not None:
+            self.ninja.reset_state()
+        else:
+            # Fallback: If ninja doesn't exist yet, create it
+            # This shouldn't happen in normal fast_reset usage
+            self.map_loader.load_map_entities()
+            return
+        
+        # Clear grid_entity lists (no dict recreation - major optimization)
+        for cell_list in self.grid_entity.values():
+            cell_list.clear()
+        
+        # Reset entities in-place and re-add to grid
+        # CRITICAL: Exit doors (EntityExit) must NOT be added to grid_entity
+        # They are only added when the exit switch is collected
+        for entity_list in self.entity_dic.values():
+            for entity in entity_list:
+                # Reset entity state to original position/state
+                if hasattr(entity, 'reset_state'):
+                    entity.reset_state()
+                else:
+                    # Fallback for entities without reset_state() method
+                    # Just reset active flag
+                    if hasattr(entity, 'active'):
+                        entity.active = True
+                
+                # Add to grid_entity, but skip exit doors (type 3, EntityExit class)
+                # Exit doors are only added to grid after switch collection
+                if type(entity).__name__ != "EntityExit":
+                    self.grid_entity[entity.cell].append(entity)
+
     def reset_map_entity_data(self):
         """Reset the map entity data. This is used when a new map is loaded or when the map is reset.
 

@@ -54,6 +54,11 @@ class EntityGold(Entity):
     def __init__(self, type, sim, xcoord, ycoord):
         super().__init__(type, sim, xcoord, ycoord)
         self.is_logical_collidable = True
+        
+        # Store initial values for fast reset
+        self._initial_xpos = self.xpos
+        self._initial_ypos = self.ypos
+        self._initial_cell = self.cell
 
     def logical_collision(self):
         """The gold is collected if touches by a ninja that is not in winning state."""
@@ -65,3 +70,10 @@ class EntityGold(Entity):
                 ninja.gold_collected += 1
                 self.active = False
                 self.log_collision()
+
+    def reset_state(self):
+        """Reset gold to initial state for fast environment reset."""
+        self.xpos = self._initial_xpos
+        self.ypos = self._initial_ypos
+        self.cell = self._initial_cell
+        self.active = True  # Gold must be active (not collected)

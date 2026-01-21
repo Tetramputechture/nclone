@@ -289,6 +289,36 @@ class NPlayHeadless:
             ):
                 clear_pathfinding_caches(self.sim_renderer.debug_overlay_renderer)
 
+    def fast_reset(self):
+        """Fast reset for same-level training.
+        
+        Uses Simulator.fast_reset() to reset entity states in-place without
+        recreating objects. Significantly faster than reset() for same-level
+        training scenarios.
+        
+        CRITICAL: Must be called ONLY when the map has not changed since the last
+        reset. For new maps, use reset() instead.
+        
+        Curriculum compatibility: This method resets entities to their ORIGINAL positions.
+        The environment must call goal_curriculum_manager.apply_to_simulator() after
+        fast_reset() to move entities to curriculum positions.
+        """
+        self.sim.fast_reset()
+        
+        if self.enable_rendering:
+            # Clear rendering caches (same as reset())
+            # Render caches must be cleared because entity positions may change
+            # (even if they reset to original positions, they may have moved during episode)
+            self.cached_render_surface = None
+            self.cached_render_buffer = None
+            
+            # Clear pathfinding cache when ninja resets (position changes)
+            if hasattr(self, "sim_renderer") and hasattr(
+                self.sim_renderer, "debug_overlay_renderer"
+            ):
+                from nclone.cache_management import clear_pathfinding_caches
+                clear_pathfinding_caches(self.sim_renderer.debug_overlay_renderer)
+
     def tick(self, horizontal_input: int, jump_input: int):
         """
         Tick the simulation with the given horizontal and jump inputs.
