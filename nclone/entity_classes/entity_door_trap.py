@@ -51,6 +51,11 @@ class EntityDoorTrap(EntityDoorBase):
     def __init__(self, type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord):
         super().__init__(type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord)
         self.change_state(closed=False)
+        
+        # Store initial values for fast reset (after parent init sets positions)
+        self._initial_xpos = self.xpos  # Switch position
+        self._initial_ypos = self.ypos  # Switch position
+        self._initial_cell = self.cell
 
     def logical_collision(self):
         """If the ninja collects the associated close switch, close the door."""
@@ -60,3 +65,13 @@ class EntityDoorTrap(EntityDoorBase):
         ):
             self.change_state(closed=True)
             self.active = False
+
+    def reset_state(self):
+        """Reset trap door to initial state for fast environment reset."""
+        self.xpos = self._initial_xpos
+        self.ypos = self._initial_ypos
+        self.cell = self._initial_cell
+        self.active = True  # Switch must be active (not collected)
+        # Reset door to open state (trap doors start open)
+        if self.closed:
+            self.change_state(closed=False)

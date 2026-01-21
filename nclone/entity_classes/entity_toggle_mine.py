@@ -80,6 +80,12 @@ class EntityToggleMine(Entity):
         self.is_thinkable = True
         self.is_logical_collidable = True
         self.set_state(state)
+        
+        # Store initial values for fast reset
+        self._initial_state = state
+        self._initial_xpos = self.xpos
+        self._initial_ypos = self.ypos
+        self._initial_cell = self.cell
 
     def think(self):
         """Handle interactions between the ninja and the untoggled mine"""
@@ -133,3 +139,11 @@ class EntityToggleMine(Entity):
         # Normalize state (0, 1, or 2)
         # state.append(max(0.0, min(1.0, float(self.state) / 2)))
         return state
+
+    def reset_state(self):
+        """Reset toggle mine to initial state for fast environment reset."""
+        self.xpos = self._initial_xpos
+        self.ypos = self._initial_ypos
+        self.cell = self._initial_cell
+        self.active = True
+        self.set_state(self._initial_state)

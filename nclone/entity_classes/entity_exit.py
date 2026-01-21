@@ -57,6 +57,11 @@ class EntityExit(Entity):
         super().__init__(type, sim, xcoord, ycoord)
         self.is_logical_collidable = True
         self.switch_hit = False
+        
+        # Store initial values for fast reset
+        self._initial_xpos = self.xpos
+        self._initial_ypos = self.ypos
+        self._initial_cell = self.cell
 
     def logical_collision(self):
         """The ninja wins if it touches the exit door. The door is not interactable from the entity
@@ -67,3 +72,19 @@ class EntityExit(Entity):
             self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
         ):
             ninja.win()
+
+    def reset_state(self):
+        """Reset exit door to initial state for fast environment reset.
+        
+        CRITICAL: Exit door must NOT be added to grid_entity during reset.
+        The door is only added to grid_entity when the exit switch is collected
+        (in EntityExitSwitch.logical_collision()).
+        
+        IMPORTANT: This method resets the door to ORIGINAL position.
+        The environment's curriculum manager will call apply_to_simulator()
+        after fast_reset() to move this door to the curriculum position.
+        """
+        self.xpos = self._initial_xpos
+        self.ypos = self._initial_ypos
+        self.cell = self._initial_cell
+        self.switch_hit = False  # Switch has not been collected yet

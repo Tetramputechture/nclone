@@ -45,6 +45,11 @@ class EntityDoorLocked(EntityDoorBase):
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord):
         super().__init__(type, sim, xcoord, ycoord, orientation, sw_xcoord, sw_ycoord)
+        
+        # Store initial values for fast reset (after parent init sets positions)
+        self._initial_xpos = self.xpos  # Switch position
+        self._initial_ypos = self.ypos  # Switch position
+        self._initial_cell = self.cell
 
     def logical_collision(self):
         """If the ninja collects the associated open switch, open the door."""
@@ -60,3 +65,13 @@ class EntityDoorLocked(EntityDoorBase):
             # PERFORMANCE: Enables efficient cache invalidation
             if hasattr(self.sim, 'gym_env') and self.sim.gym_env:
                 self.sim.gym_env.invalidate_switch_cache()
+
+    def reset_state(self):
+        """Reset locked door to initial state for fast environment reset."""
+        self.xpos = self._initial_xpos
+        self.ypos = self._initial_ypos
+        self.cell = self._initial_cell
+        self.active = True  # Switch must be active (not collected)
+        # Reset door to closed state
+        if not self.closed:
+            self.change_state(closed=True)

@@ -284,6 +284,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "pbrs_gamma": pbrs_gamma,
         }
 
+        # Track last reset map name for fast reset detection
+        self._last_reset_map_name = None
+
         # Build base observation space (will be extended by mixins)
         self.observation_space = self._build_base_observation_space()
 
@@ -1543,6 +1546,32 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 )
 
         return info
+
+    def _is_same_level_reset(self, options: Optional[Dict] = None) -> bool:
+        """Detect if this reset is for the same level (enables fast reset path).
+        
+        Fast reset can be used when:
+        1. The map has not changed since the last reset
+        2. No new map loading is required
+        3. Entities have already been created
+        
+        Returns:
+            True if this is a same-level reset, False otherwise
+        """
+        # If skip_map_load is explicitly True, this is likely a same-level reset
+        # (used by curriculum wrapper, test environment, etc.)
+        if options is not None and options.get("skip_map_load", False):
+            return True
+        
+        # Check if we're using a custom map (single-level training)
+        if self.custom_map_path is not None:
+            # Single map training - check if map name hasn't changed
+            current_map_name = self.map_loader.current_map_name
+            if current_map_name is not None and current_map_name == self._last_reset_map_name:
+                return True
+        
+        # Otherwise, this is a new level (different map or first reset)
+        return False
 
     def reset(self, seed=None, options=None):
         """Reset the environment.

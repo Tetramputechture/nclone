@@ -503,6 +503,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
     def reset(self, seed=None, options=None):
         """Reset the environment with planning components and visualization."""
+        
+        # Start profiling total reset time
+        reset_start_time = self._profile_start("reset_total")
 
         # Handle reinitialization after unpickling
         if hasattr(self, "_needs_reinit") and self._needs_reinit:
@@ -510,35 +513,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.reward_calculator.reset()
             self._needs_reinit = False
 
-        # Reset observation processor
-        self.observation_processor.reset()
-
-        # Reset spatial context cache (mine overlay position-based cache)
-        from .spatial_context import reset_mine_overlay_cache
-
-        reset_mine_overlay_cache()
-
-        # ============================================================
-        # CRITICAL: Reset tracking variables from BaseNppEnvironment
-        # NppEnvironment doesn't call super().reset(), so we must do it here
-        # ============================================================
-
-        # Reset switch activation tracking (BaseNppEnvironment.reset line 1519)
-        self._switch_activation_frame = None
-
-        # Reset position tracking for route visualization (BaseNppEnvironment.reset line 1515-1516)
-        self.current_route = []
-        self._warned_about_position = False
-
-        # Reset reward calculator
-        self.reward_calculator.reset()
-
-        # Reset truncation checker
-        self.truncation_checker.reset()
-
-        # Reset episode reward
-        self.current_ep_reward = 0
-
+        # === FAST RESET PATH DETECTION ===
+        # Detect if this is a same-level reset (enables optimized reset path)
+        same_level_reset = self._is_same_level_reset(options)
+        
         # Check if map loading should be skipped and if this is a new level
         skip_map_load = False
         new_level = False  # True if a different level was loaded externally
@@ -548,19 +526,142 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # When skip_map_load=True, assume new level unless explicitly told otherwise
             new_level = options.get("new_level", skip_map_load)
             map_name = options.get("map_name", None)
-
-        # Clear caches appropriately based on whether this is a new level
-        from nclone.cache_management import (
-            clear_all_caches_for_reset,
-            clear_all_caches_for_new_level,
+        
+        # === FAST RESET PATH (2-3x faster for single-level training) ===
+        # Use fast reset when:
+        # 1. Same level detected (no map change)
+        # 2. Not a new level load
+        # 3. Entities already exist (not first reset)
+        use_fast_reset = (
+            same_level_reset 
+            and not new_level 
+            and hasattr(self.nplay_headless, "sim") 
+            and self.nplay_headless.sim.ninja is not None
         )
-
-        if new_level:
-            # New level loaded externally - clear ALL caches including level-persistent ones
-            clear_all_caches_for_new_level(self)
+        
+        if use_fast_reset:
+            if self.enable_logging:
+                logger.info("[FAST_RESET] Using optimized reset path for same-level training")
+            
+            # Fast reset: entities in-place, no recreation
+            fast_sim_start = self._profile_start("reset_fast_sim")
+            self.nplay_headless.fast_reset()
+            self._profile_end("reset_fast_sim", fast_sim_start)
+            
+            # Clear only episode-specific caches (not level-persistent ones)
+            from nclone.cache_management import clear_episode_caches_only
+            clear_episode_caches_only(self)
+            
+            # Reset observation processor (buffer clearing, no reallocation)
+            self.observation_processor.reset()
+            
+            # Reset spatial context cache (mine overlay position-based cache)
+            from .spatial_context import reset_mine_overlay_cache
+            reset_mine_overlay_cache()
+            
+            # ============================================================
+            # Reset tracking variables from BaseNppEnvironment
+            # ============================================================
+            self._switch_activation_frame = None
+            self.current_route = []
+            self._warned_about_position = False
+            
+            # Reset reward calculator
+            self.reward_calculator.reset()
+            
+            # Reset truncation checker
+            self.truncation_checker.reset()
+            
+            # Reset episode reward
+            self.current_ep_reward = 0
+            
+            # === GOAL CURRICULUM: Reapply curriculum positions ===
+            # CRITICAL: fast_reset() resets entities to ORIGINAL positions
+            # We must call apply_to_simulator() to move them to curriculum positions
+            if self.goal_curriculum_manager is not None:
+                self._episode_start_curriculum_stage = (
+                    self.goal_curriculum_manager.state.unified_stage
+                )
+                
+                # Apply curriculum positioning (moves entities to curriculum positions)
+                curriculum_start = self._profile_start("reset_fast_curriculum")
+                self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
+                self._profile_end("reset_fast_curriculum", curriculum_start)
+                
+                if self.enable_logging:
+                    logger.info(
+                        f"[FAST_RESET] Applied curriculum stage {self._episode_start_curriculum_stage} "
+                        f"positioning after fast_reset"
+                    )
+            
+            # Reset graph state (fast - graph structure unchanged)
+            graph_start = self._profile_start("reset_fast_graph")
+            self._reset_graph_state()
+            self._reset_reachability_state()
+            
+            # Update graph from current env state (fast - uses cached graph structure)
+            self._update_graph_from_env_state()
+            self._profile_end("reset_fast_graph", graph_start)
+            
+            # Get initial observation and return
+            obs_start = self._profile_start("reset_fast_observation")
+            initial_obs = self._get_observation()
+            processed_obs = self._process_observation(initial_obs)
+            self._profile_end("reset_fast_observation", obs_start)
+            
+            # Track current map name for fast reset detection
+            self._last_reset_map_name = self.map_loader.current_map_name
+            
+            # End profiling and return
+            self._profile_end("reset_total", reset_start_time)
+            
+            return (processed_obs, {})
+        
+        # === STANDARD RESET PATH (full reset) ===
+        # Only reached if NOT using fast reset
         else:
-            # Same level being reset - clear only episode-specific caches
-            clear_all_caches_for_reset(self)
+            
+            # Reset observation processor
+            self.observation_processor.reset()
+
+            # Reset spatial context cache (mine overlay position-based cache)
+            from .spatial_context import reset_mine_overlay_cache
+
+            reset_mine_overlay_cache()
+
+            # ============================================================
+            # CRITICAL: Reset tracking variables from BaseNppEnvironment
+            # NppEnvironment doesn't call super().reset(), so we must do it here
+            # ============================================================
+
+            # Reset switch activation tracking (BaseNppEnvironment.reset line 1519)
+            self._switch_activation_frame = None
+
+            # Reset position tracking for route visualization (BaseNppEnvironment.reset line 1515-1516)
+            self.current_route = []
+            self._warned_about_position = False
+
+            # Reset reward calculator
+            self.reward_calculator.reset()
+
+            # Reset truncation checker
+            self.truncation_checker.reset()
+
+            # Reset episode reward
+            self.current_ep_reward = 0
+
+            # Clear caches appropriately based on whether this is a new level
+            from nclone.cache_management import (
+                clear_all_caches_for_reset,
+                clear_all_caches_for_new_level,
+            )
+
+            if new_level:
+                # New level loaded externally - clear ALL caches including level-persistent ones
+                clear_all_caches_for_new_level(self)
+            else:
+                # Same level being reset - clear only episode-specific caches
+                clear_all_caches_for_reset(self)
 
         # === PRE-LOAD: Apply pending curriculum stage BEFORE loading map ===
         # This allows us to load the correct pre-cached map_data variant
@@ -1170,6 +1271,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # NOW get initial observation (with valid graph data)
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
+        
+        # Track current map name for fast reset detection
+        self._last_reset_map_name = self.map_loader.current_map_name
+        
+        # End profiling (standard reset path)
+        self._profile_end("reset_total", reset_start_time)
 
         return (processed_obs, {})
 

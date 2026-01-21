@@ -59,6 +59,11 @@ class EntityExitSwitch(Entity):
         self.is_logical_collidable = True
         self.parent = parent
 
+        # Store initial values for fast reset
+        self._initial_xpos = self.xpos
+        self._initial_ypos = self.ypos
+        self._initial_cell = self.cell
+
     def logical_collision(self):
         """If the ninja is colliding with the switch, open its associated door. This is done in practice
         by adding the parent door entity to the entity grid.
@@ -122,3 +127,15 @@ class EntityExitSwitch(Entity):
             # PERFORMANCE: Enables efficient cache invalidation
             if hasattr(self.sim, "gym_env") and self.sim.gym_env:
                 self.sim.gym_env.invalidate_switch_cache()
+
+    def reset_state(self):
+        """Reset exit switch to initial state for fast environment reset.
+
+        IMPORTANT: This method resets the switch to ORIGINAL position.
+        The environment's curriculum manager will call apply_to_simulator()
+        after fast_reset() to move this switch to the curriculum position.
+        """
+        self.xpos = self._initial_xpos
+        self.ypos = self._initial_ypos
+        self.cell = self._initial_cell
+        self.active = True  # Switch must be active (not collected) at episode start
