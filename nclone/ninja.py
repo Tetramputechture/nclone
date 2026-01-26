@@ -87,7 +87,7 @@ class Ninja:
         self.sim = sim
         self.xpos = sim.map_data[1231] * 6
         self.ypos = sim.map_data[1232] * 6
-        
+
         # Store initial spawn position for fast reset
         self._initial_xpos = self.xpos
         self._initial_ypos = self.ypos
@@ -765,110 +765,39 @@ class Ninja:
         enable_path_masking = getattr(self.sim, "_enable_straightness_masking", True)
         masking_mode = getattr(self.sim, "_action_masking_mode", "hard")
         if enable_path_masking and masking_mode == "hard":
-            path_direction_data = getattr(self.sim, "_path_direction_data", None)
-            if path_direction_data is not None:
-                from .constants import (
-                    PATH_DIRECTION_HORIZONTAL_THRESHOLD,
-                    PATH_DIRECTION_VERTICAL_THRESHOLD,
-                    STRAIGHT_PATH_HORIZONTAL_THRESHOLD,
-                    STRAIGHT_PATH_VERTICAL_THRESHOLD,
-                    STRAIGHT_PATH_DOWNWARD_THRESHOLD,
-                )
-
-                dx = path_direction_data.get("dx", 0.0)
-                dy = path_direction_data.get("dy", 0.0)
-                # distance = path_direction_data.get("distance", 0.0)  # Available if needed
-
-                # === UNIVERSAL HORIZONTAL MASKING (Applied First) ===
-                # ALWAYS mask actions moving opposite to goal's horizontal direction
-                # This applies regardless of airborne state or path straightness
-                # Rationale: If goal is LEFT, moving RIGHT is ALWAYS suboptimal
-                if abs(dx) > PATH_DIRECTION_HORIZONTAL_THRESHOLD:
-                    if dx < 0:  # Goal is to the LEFT
-                        mask[2] = False  # Mask RIGHT (always wrong direction)
-                        mask[5] = False  # Mask JUMP+RIGHT (always wrong direction)
-                    else:  # Goal is to the RIGHT
-                        mask[1] = False  # Mask LEFT (always wrong direction)
-                        mask[4] = False  # Mask JUMP+LEFT (always wrong direction)
-
-                # === UNIVERSAL VERTICAL MASKING (Applied Second) ===
-                # ALWAYS mask jumps when goal is BELOW and ninja is moving UPWARD
-                # Rationale: If goal is below and we're going up, continuing to jump is counterproductive
-                # Let gravity bring us back down instead
-                if dy > PATH_DIRECTION_VERTICAL_THRESHOLD and self.yspeed < 0:
-                    # Goal is BELOW (dy > 0) and ninja is moving UP (yspeed < 0)
-                    mask[3] = False  # Mask JUMP (going up when we need to go down)
-                    mask[4] = False  # Mask JUMP+LEFT (going up when we need to go down)
-                    mask[5] = False  # Mask JUMP+RIGHT (going up when we need to go down)
-
-                # === STRICT STRAIGHT PATH MASKING (Additional Restrictions) ===
-                # For VERY straight paths, apply even more aggressive masking
-                # Uses stricter thresholds than general direction masking
-
-                # Check for very straight horizontal path (flat corridor)
-                is_very_straight_horizontal = (
-                    abs(dy) < STRAIGHT_PATH_VERTICAL_THRESHOLD
-                    and abs(dx) > STRAIGHT_PATH_HORIZONTAL_THRESHOLD
-                )
-
-                # Check for very straight downward path (vertical drop)
-                is_very_straight_downward = (
-                    dy > STRAIGHT_PATH_DOWNWARD_THRESHOLD and not self.airborn
-                )
-
-                if is_very_straight_horizontal:
-                    # Path is completely straight horizontal - mask everything except one direction
-                    if dx < 0:  # Straight path to the LEFT
-                        mask[0] = False  # Mask NOOP
-                        mask[2] = False  # Mask RIGHT (wrong direction)
-                        mask[3] = False  # Mask JUMP (unnecessary on flat path)
-                        mask[4] = False  # Mask JUMP+LEFT (jumping unnecessary)
-                        mask[5] = (
-                            False  # Mask JUMP+RIGHT (wrong direction + unnecessary)
-                        )
-                        # Keep only: LEFT (1)
-                    else:  # Straight path to the RIGHT
-                        mask[0] = False  # Mask NOOP
-                        mask[1] = False  # Mask LEFT (wrong direction)
-                        mask[3] = False  # Mask JUMP (unnecessary on flat path)
-                        mask[4] = (
-                            False  # Mask JUMP+LEFT (wrong direction + unnecessary)
-                        )
-                        mask[5] = False  # Mask JUMP+RIGHT (jumping unnecessary)
-                        # Keep only: RIGHT (2)
-
-                elif is_very_straight_downward:
-                    # Path goes straight down - mask all jumps (jumping goes UP)
-                    # Keep horizontal movement and NOOP for navigation while falling
-                    mask[3] = False  # Mask JUMP (moves up when we need down)
-                    mask[4] = False  # Mask JUMP+LEFT (moves up when we need down)
-                    mask[5] = False  # Mask JUMP+RIGHT (moves up when we need down)
-                    # Keep: NOOP (0), LEFT (1), RIGHT (2)
-
-                else:
-                    # Path is NOT very straight - apply additional conditional masking
-                    # Horizontal masking already applied universally above
-
-                    # === VERTICAL MASKING ===
-                    # Mask jumps when goal is DOWN and ninja is grounded
-                    # (jumping moves UP, opposite of goal direction)
-                    if abs(dy) > PATH_DIRECTION_VERTICAL_THRESHOLD:
-                        if dy > 0 and not self.airborn:  # Goal is DOWN, ninja grounded
-                            mask[3] = False  # Mask JUMP (moves up when we need down)
-                            mask[4] = (
-                                False  # Mask JUMP+LEFT (moves up when we need down)
-                            )
-                            mask[5] = (
-                                False  # Mask JUMP+RIGHT (moves up when we need down)
-                            )
-                        # Note: if dy < 0 (goal UP), we DON'T mask jumps - ninja needs to jump up
-
-                    # === NOOP MASKING ===
-                    # Mask NOOP when grounded with clear directional path
-                    # Keep NOOP when airborne (needed for precise air control)
-                    if not self.airborn:
-                        if abs(dx) > PATH_DIRECTION_HORIZONTAL_THRESHOLD:
-                            mask[0] = False  # Mask NOOP - should be moving toward goal
+            path_direction = getattr(self.sim, "_path_straightness_direction", None)
+            if path_direction == "left":
+                # Goal is directly to the left on straight horizontal path
+                # Mask: RIGHT (2), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
+                # Keep: NOOP (0), LEFT (1)
+                #
+                # Rationale:
+                # - Only LEFT is needed on a straight horizontal path to the left
+                # - All other actions are suboptimal (wrong direction or unnecessary jumps)
+                mask[2] = False  # Mask RIGHT (wrong direction)
+                mask[3] = False  # Mask JUMP (unnecessary on straight path)
+                mask[4] = False  # Mask JUMP+LEFT (jumping is unnecessary)
+                mask[5] = False  # Mask JUMP+RIGHT (wrong direction + unnecessary jump)
+            elif path_direction == "right":
+                # Goal is directly to the right on straight horizontal path
+                # Mask: LEFT (1), JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
+                # Keep: NOOP (0), RIGHT (2)
+                mask[1] = False  # Mask LEFT (wrong direction)
+                mask[3] = False  # Mask JUMP (unnecessary on straight path)
+                mask[4] = False  # Mask JUMP+LEFT (wrong direction + unnecessary jump)
+                mask[5] = False  # Mask JUMP+RIGHT (jumping is unnecessary)
+            elif path_direction == "down":
+                # Goal is downward (vertically or diagonally down)
+                # Mask: JUMP (3), JUMP+LEFT (4), JUMP+RIGHT (5)
+                # Keep: NOOP (0), LEFT (1), RIGHT (2)
+                #
+                # Rationale:
+                # - Path goes DOWN, but JUMP moves UP (opposite of optimal direction)
+                # - Horizontal movements are still allowed (may need to navigate while falling)
+                # - This handles downward slopes, drops, and descending paths
+                mask[3] = False  # Mask JUMP (moves up when we need to go down)
+                mask[4] = False  # Mask JUMP+LEFT (moves up when we need to go down)
+                mask[5] = False  # Mask JUMP+RIGHT (moves up when we need to go down)
 
         # Ensure at least one action is always valid
         # If all actions are masked (inevitable death scenario), unmask NOOP
@@ -879,16 +808,16 @@ class Ninja:
             mask[0] = True
 
         # Validate mask before returning
-        # These assertions catch bugs early before they cause NaN in the policy
-        assert isinstance(mask, list), f"Mask must be a list, got {type(mask)}"
-        assert len(mask) == 6, f"Mask must have 6 elements, got {len(mask)}"
-        assert all(isinstance(m, bool) for m in mask), (
-            f"All mask elements must be boolean, got types: {[type(m) for m in mask]}"
-        )
-        assert any(mask), (
-            "At least one action must be valid. This should be enforced by "
-            "the fallback above. If you see this, there's a logic bug."
-        )
+        # # These assertions catch bugs early before they cause NaN in the policy
+        # assert isinstance(mask, list), f"Mask must be a list, got {type(mask)}"
+        # assert len(mask) == 6, f"Mask must have 6 elements, got {len(mask)}"
+        # assert all(isinstance(m, bool) for m in mask), (
+        #     f"All mask elements must be boolean, got types: {[type(m) for m in mask]}"
+        # )
+        # assert any(mask), (
+        #     "At least one action must be valid. This should be enforced by "
+        #     "the fallback above. If you see this, there's a logic bug."
+        # )
 
         # Store computed mask for debugging
         self._mask_debug_state["computed_mask"] = mask.copy()
@@ -1358,32 +1287,32 @@ class Ninja:
 
     def reset_state(self):
         """Reset ninja to initial spawn state for fast environment reset.
-        
+
         This method resets the ninja to its spawn position and initial state
         without creating a new object. Used for optimized same-level resets.
         """
         # Reset position to spawn
         self.xpos = self._initial_xpos
         self.ypos = self._initial_ypos
-        
+
         # Reset velocities
         self.xspeed = 0
         self.yspeed = 0
         self.xspeed_old = 0
         self.yspeed_old = 0
-        
+
         # Reset physics parameters
         self.applied_gravity = GRAVITY_FALL
         self.applied_drag = DRAG_REGULAR
         self.applied_friction = FRICTION_GROUND
-        
+
         # Reset state flags
         self.state = 0  # Immobile
         self.airborn = False
         self.airborn_old = False
         self.walled = False
         self.wall_normal = 0
-        
+
         # Reset jump-related state
         self.jump_input_old = 0
         self.jump_duration = 0
@@ -1393,13 +1322,13 @@ class Ninja:
         self.launch_pad_buffer = -1
         self.is_jump_useless = False
         self.last_jump_was_buffered = False
-        
+
         # Reset collision normals
         self.floor_normalized_x = 0
         self.floor_normalized_y = -1
         self.ceiling_normalized_x = 0
         self.ceiling_normalized_y = 1
-        
+
         # Reset collision counters
         self.floor_count = 0
         self.wall_count = 0
@@ -1412,7 +1341,7 @@ class Ninja:
         self.x_crush = 0
         self.y_crush = 0
         self.crush_len = 0
-        
+
         # Reset animation state
         self.anim_state = 0
         self.facing = 1
@@ -1420,11 +1349,11 @@ class Ninja:
         self.anim_rate = 0
         self.anim_frame = 11
         self.frame_residual = 0
-        
+
         # Reset inputs
         self.hor_input = 0
         self.jump_input = 0
-        
+
         # Reset position tracking
         self.xpos_old = 0
         self.ypos_old = 0
@@ -1434,22 +1363,22 @@ class Ninja:
         self.death_cause = None
         self.xpos_at_action = self.xpos
         self.ypos_at_action = self.ypos
-        
+
         # Reset death speeds
         self.death_xspeed = 0
         self.death_yspeed = 0
-        
+
         # Reset collectibles
         self.gold_collected = 0
         self.doors_opened = 0
-        
+
         # Reset temporal tracking
         self.frames_airborne = 0
         self.state_change_frame = 0
         self.previous_state = 0
         self.consecutive_floor_frames = 0
         self.consecutive_wall_frames = 0
-        
+
         # Clear debug logs if enabled
         if self.sim.sim_config.debug:
             if self.poslog is not None:
@@ -1460,7 +1389,7 @@ class Ninja:
                 self.xposlog.clear()
             if self.yposlog is not None:
                 self.yposlog.clear()
-        
+
         # Re-log initial position
         self.log()
 

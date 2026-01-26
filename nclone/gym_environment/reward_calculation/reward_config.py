@@ -155,6 +155,9 @@ class RewardConfig:
             return self._pbrs_objective_weight_override
 
         if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
+            # REVERTED 2026-01-24: Back to 40.0 since waypoint budget reverted to 30.0
+            # With GLOBAL_REWARD_SCALE=0.1 and waypoint budget=30, original balance restored.
+            # Discovery: PBRS=40, waypoints=30-60, completion=20, switch=10 (all scaled by 0.1)
             return 40.0  # Slightly reduced for stability
         elif self.recent_success_rate < 0.20:  # Early learning (5-20% success)
             return 25.0  # Stronger early learning
@@ -303,6 +306,66 @@ class RewardConfig:
         """
         return 0.0
 
+    def get_waypoint_bonus(
+        self, collected_idx: int, total_waypoints: int, is_in_sequence: bool
+    ) -> float:
+        """Path-normalized waypoint bonus for consistent contribution across curriculum.
+
+        ADDED 2026-01-21: Normalizes waypoint rewards by path length to prevent
+        late-stage curriculum from accumulating excessive waypoint bonuses (16x variance).
+
+        Design Philosophy:
+        - Total waypoint budget: 30.0 (target cumulative contribution)
+        - Per-waypoint reward scales inversely with total waypoints
+        - Progressive scaling: later waypoints worth more (incentivize exploration)
+        - Sequence multiplier: in-order collection gets bonus, out-of-order reduced
+
+        Examples (30 total waypoints, in-sequence):
+        - Waypoint 0: (30/30) × (1 + 0×2.0) = 1.0
+        - Waypoint 15: (30/30) × (1 + 0.5×2.0) = 2.0
+        - Waypoint 29: (30/30) × (1 + 1.0×2.0) = 3.0
+        - Total: ~60 (progressive scaling doubles base budget)
+
+        Examples (5 total waypoints, early curriculum, in-sequence):
+        - Waypoint 0: (30/5) × (1 + 0×2.0) = 6.0
+        - Waypoint 2: (30/5) × (1 + 0.5×2.0) = 12.0
+        - Waypoint 4: (30/5) × (1 + 1.0×2.0) = 18.0
+        - Total: ~60 (same as long path!)
+
+        Args:
+            collected_idx: Index of collected waypoint (0-based)
+            total_waypoints: Total number of waypoints in path
+            is_in_sequence: Whether waypoint was collected in order
+
+        Returns:
+            Normalized waypoint bonus reward
+        """
+        # Fixed budget for total waypoint contribution
+        # REVERTED 2026-01-24: Back to 30.0 since GLOBAL_REWARD_SCALE reverted to 0.1
+        # The 300.0 value was correct for 1.0 scale but caused issues with value function.
+        # With 0.1 scale: waypoints contribute 30-60 total (appropriate balance)
+        TOTAL_WAYPOINT_BUDGET = 30.0
+
+        # Base per-waypoint value inversely proportional to path length
+        # This ensures short and long paths have similar total waypoint contribution
+        base_per_waypoint = TOTAL_WAYPOINT_BUDGET / max(total_waypoints, 1)
+
+        # Apply progressive scaling (later waypoints worth more)
+        # This incentivizes exploration further along complex paths
+        progress_fraction = collected_idx / max(total_waypoints - 1, 1)
+        progress_multiplier = 1.0 + progress_fraction * self.waypoint_progress_scale
+
+        # Calculate bonus
+        bonus = base_per_waypoint * progress_multiplier
+
+        # Apply sequence multiplier for in-order vs out-of-order collection
+        if is_in_sequence:
+            # In-sequence: use full bonus (already has progressive scaling)
+            return bonus
+        else:
+            # Out-of-order: reduce by out_of_order_scale factor
+            return bonus * self.waypoint_out_of_order_scale
+
     @property
     def waypoint_progress_scale(self) -> float:
         """Curriculum-adaptive scaling for progressive waypoint rewards.
@@ -450,14 +513,90 @@ class RewardConfig:
 
     @property
     def level_completion_reward(self) -> float:
-        """Level completion reward (constant or overridden by Optuna).
+        """Curriculum-adaptive level completion reward.
+
+        UPDATED 2026-01-21: Scales completion reward with curriculum difficulty to
+        maintain consistent returns across stages. Early curriculum stages have much
+        shorter paths (5-10x shorter), making completion proportionally easier.
+
+        Scaling Strategy:
+        - Stage 0 (early curriculum): 0.5x base reward (100 vs 200)
+        - Final stage (full level): 1.0x base reward (200)
+        - Linear interpolation between stages
+
+        This prevents early stages from providing disproportionately high returns
+        for easier completions, while maintaining strong completion preference
+        throughout training.
+
+        Rationale:
+        - Early stage (100px path): Easier to complete → lower reward (100)
+        - Late stage (1000px path): Harder to complete → full reward (200)
+        - Maintains ~2:1 completion-to-death ratio across all stages
 
         Returns:
-            Override value if set by Optuna, else 50.0 (standard completion reward)
+            Curriculum-scaled completion reward (100-200 unscaled)
         """
+        # Check for Optuna override first
         if self._level_completion_reward_override is not None:
             return self._level_completion_reward_override
-        return 50.0  # Standard from reward_constants.LEVEL_COMPLETION_REWARD
+
+        BASE_COMPLETION_REWARD = 200.0
+
+        # No curriculum or single-stage: use full reward
+        if self._num_curriculum_stages <= 1:
+            return BASE_COMPLETION_REWARD
+
+        # Calculate curriculum progress (0.0 at stage 0, 1.0 at final stage)
+        curriculum_progress = self._curriculum_stage / max(
+            self._num_curriculum_stages - 1, 1
+        )
+
+        # Scale from 0.5x at stage 0 to 1.0x at final stage
+        # This accounts for proportionally easier completion on shorter paths
+        scale = 0.5 + 0.5 * curriculum_progress
+
+        return BASE_COMPLETION_REWARD * scale
+
+    @property
+    def switch_activation_reward(self) -> float:
+        """Curriculum-adaptive switch activation reward.
+
+        ADDED 2026-01-21: Scales switch reward with curriculum difficulty to
+        maintain consistent returns across stages. Early curriculum stages have
+        switch positioned much closer to spawn (5-10x closer).
+
+        Scaling Strategy:
+        - Stage 0 (early curriculum): 0.5x base reward (50 vs 100)
+        - Final stage (full level): 1.0x base reward (100)
+        - Linear interpolation between stages
+
+        This maintains the critical 50% milestone relationship with completion
+        reward across all curriculum stages: switch = 0.5 × completion.
+
+        Rationale:
+        - Early stage: Reaching switch is easier → proportionally lower reward
+        - Late stage: Reaching switch is harder → full milestone reward
+        - Preserves completion > switch > death hierarchy throughout
+
+        Returns:
+            Curriculum-scaled switch activation reward (50-100 unscaled)
+        """
+        BASE_SWITCH_REWARD = 100.0
+
+        # No curriculum or single-stage: use full reward
+        if self._num_curriculum_stages <= 1:
+            return BASE_SWITCH_REWARD
+
+        # Calculate curriculum progress (0.0 at stage 0, 1.0 at final stage)
+        curriculum_progress = self._curriculum_stage / max(
+            self._num_curriculum_stages - 1, 1
+        )
+
+        # Scale from 0.5x at stage 0 to 1.0x at final stage
+        # Matches completion reward scaling to preserve relative importance
+        scale = 0.5 + 0.5 * curriculum_progress
+
+        return BASE_SWITCH_REWARD * scale
 
     @property
     def survival_bonus_per_100_frames(self) -> float:

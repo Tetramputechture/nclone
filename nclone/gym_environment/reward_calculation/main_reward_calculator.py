@@ -31,8 +31,6 @@ from .reward_config import RewardConfig
 from .pbrs_potentials import PBRSCalculator
 from .path_waypoint_extractor import PathWaypointExtractor
 from .reward_constants import (
-    LEVEL_COMPLETION_REWARD,
-    SWITCH_ACTIVATION_REWARD,
     PBRS_GAMMA,
     GLOBAL_REWARD_SCALE,
 )
@@ -301,7 +299,10 @@ class RewardCalculator:
         switch_just_activated = obs.get("switch_activated", False) and not prev_obs.get(
             "switch_activated", False
         )
-        milestone_reward = SWITCH_ACTIVATION_REWARD if switch_just_activated else 0.0
+        # UPDATED 2026-01-21: Use curriculum-scaled switch reward
+        milestone_reward = (
+            self.config.switch_activation_reward if switch_just_activated else 0.0
+        )
 
         # SIMPLIFIED: Removed hierarchical exploration reset - no longer using position tracker
 
@@ -346,8 +347,9 @@ class RewardCalculator:
             return scaled_reward
 
         # Completion reward with path efficiency bonus
+        # UPDATED 2026-01-21: Use curriculum-scaled completion reward
         if obs.get("player_won", False):
-            terminal_reward = LEVEL_COMPLETION_REWARD
+            terminal_reward = self.config.level_completion_reward
 
             # Path efficiency bonus: reward direct paths to encourage optimal navigation
             # efficiency = optimal_path / actual_path (1.0 = perfect, 0.5 = 2x optimal)
@@ -362,7 +364,9 @@ class RewardCalculator:
                 path_efficiency = self.optimal_path_length / self.episode_path_length
                 # Cap efficiency at 1.0 (can't be better than optimal)
                 efficiency_bonus = (
-                    LEVEL_COMPLETION_REWARD * 0.5 * min(1.0, path_efficiency)
+                    self.config.level_completion_reward
+                    * 0.5
+                    * min(1.0, path_efficiency)
                 )
                 terminal_reward += efficiency_bonus
 
@@ -405,8 +409,9 @@ class RewardCalculator:
         # === MILESTONE REWARD (already computed above, add to running reward) ===
         # Switch activation was checked before terminal rewards to credit even on death.
         # Now add it to the running reward for non-terminal steps.
+        # UPDATED 2026-01-21: Use curriculum-scaled switch reward
         if switch_just_activated:
-            reward += SWITCH_ACTIVATION_REWARD
+            reward += self.config.switch_activation_reward
 
         # === DISTANCE-BASED MILESTONE REWARDS (curriculum-aware progress tracking) ===
         switch_activated = obs.get("switch_activated", False)
@@ -467,13 +472,20 @@ class RewardCalculator:
         # Store potential for route visualization
         self.potential_history.append(current_potential)
 
-        # # CRITICAL DEBUG: Log potential calculation to diagnose zero PBRS bug
+        # DEBUG: Log every append for first 30 steps to diagnose 2x issue
+        # if self.steps_taken <= 30:
+        #     logger.warning(
+        #         f"[POTENTIAL_APPEND] step={self.steps_taken}, appended={current_potential:.6f}, "
+        #         f"total_count={len(self.potential_history)}"
+        #     )
+
+        # CRITICAL DEBUG: Log potential calculation to diagnose zero PBRS bug
         # if self.steps_taken % 100 == 0 and self.steps_taken > 0:
         #     prev_pot = self.prev_potential if self.prev_potential is not None else 0.0
         #     combined_path = obs.get("_pbrs_combined_path_distance", "MISSING")
         #     combined_physics = obs.get("_pbrs_combined_physics_cost", "MISSING")
 
-        #     logger.error(
+        #     logger.warning(
         #         f"[POTENTIAL_DEBUG] step={self.steps_taken}, "
         #         f"current_potential={current_potential:.6f}, "
         #         f"prev_potential={prev_pot:.6f}, "
@@ -1094,12 +1106,21 @@ class RewardCalculator:
         self._last_milestone_distance_to_exit = None
 
         # Reset diagnostic tracking for visualization (Phase 1 enhancement)
+        # old_potential_count = (
+        #     len(self.potential_history) if hasattr(self, "potential_history") else 0
+        # )
         self.velocity_history = []
         self.alignment_history = []
         self.path_gradient_history = []
         self.potential_history = []
         self._last_next_hop_world = None
         self._last_next_hop_goal_id = None
+
+        # # DEBUG: Log potential_history reset
+        # if old_potential_count > 0:
+        #     logger.warning(
+        #         f"[POTENTIAL_HISTORY_RESET] Cleared {old_potential_count} potentials during reward_calculator.reset()"
+        #     )
 
         # Validation: Check level is solvable (helpful for debugging 0% success rate)
         # Only run occasionally to avoid performance impact
@@ -1200,172 +1221,151 @@ class RewardCalculator:
         if self.path_waypoint_extractor is None:
             return 0
 
-        try:
-            # CRITICAL: Compute paths TO curriculum entity positions, not truncated original paths
-            # Waypoints must reflect where the curriculum entities actually are
-            if self.goal_curriculum_manager is not None:
-                # Get actual curriculum entity positions
-                curriculum_switch_pos = (
-                    self.goal_curriculum_manager.get_curriculum_switch_position()
-                )
-                curriculum_exit_pos = (
-                    self.goal_curriculum_manager.get_curriculum_exit_position()
-                )
+        # CRITICAL: Compute paths TO curriculum entity positions, not truncated original paths
+        # Waypoints must reflect where the curriculum entities actually are
+        if self.goal_curriculum_manager is not None:
+            # Get actual curriculum entity positions
+            curriculum_switch_pos = (
+                self.goal_curriculum_manager.get_curriculum_switch_position()
+            )
+            curriculum_exit_pos = (
+                self.goal_curriculum_manager.get_curriculum_exit_position()
+            )
 
-                # Compute NEW paths to curriculum positions
-                spawn_to_switch_path, switch_to_exit_path = (
-                    self._compute_curriculum_paths(
-                        level_data,
-                        graph_data,
-                        curriculum_switch_pos,
-                        curriculum_exit_pos,
-                    )
+            # Compute NEW paths to curriculum positions
+            spawn_to_switch_path, switch_to_exit_path = self._compute_curriculum_paths(
+                level_data,
+                graph_data,
+                curriculum_switch_pos,
+                curriculum_exit_pos,
+            )
+
+            # Calculate distances for logging
+            curriculum_switch_dist = self._calculate_path_distance(spawn_to_switch_path)
+            curriculum_exit_dist = self._calculate_path_distance(switch_to_exit_path)
+
+            # Early curriculum stages may have degenerate paths
+            if not spawn_to_switch_path and not switch_to_exit_path:
+                logger.error(
+                    f"[WAYPOINT] Both curriculum paths empty "
+                    f"(stage {self.goal_curriculum_manager.state.unified_stage}) - skipping waypoint extraction"
                 )
+                return 0  # Skip waypoint extraction entirely
 
-                # Calculate distances for logging
-                curriculum_switch_dist = self._calculate_path_distance(
-                    spawn_to_switch_path
+            # If one path is empty, log it but continue with the non-empty path
+            if not switch_to_exit_path:
+                logger.warning(
+                    f"[WAYPOINT] Early curriculum stage {self.goal_curriculum_manager.state.unified_stage}: "
+                    f"exit overlaps with switch, extracting waypoints only from spawn→curriculum_switch path "
+                    f"({len(spawn_to_switch_path)} nodes, {curriculum_switch_dist:.0f}px)"
                 )
-                curriculum_exit_dist = self._calculate_path_distance(
-                    switch_to_exit_path
+            elif not spawn_to_switch_path:
+                logger.warning(
+                    f"Unusual curriculum state at stage {self.goal_curriculum_manager.state.unified_stage}: "
+                    f"spawn→curriculum_switch path empty, extracting waypoints only from curriculum_switch→curriculum_exit path "
+                    f"({len(switch_to_exit_path)} nodes, {curriculum_exit_dist:.0f}px)"
                 )
+        else:
+            # No curriculum - compute paths from original positions
+            spawn_to_switch_path, switch_to_exit_path = self._compute_original_paths(
+                level_data, graph_data
+            )
 
-                # Early curriculum stages may have degenerate paths
-                if not spawn_to_switch_path and not switch_to_exit_path:
-                    logger.error(
-                        f"[WAYPOINT] Both curriculum paths empty "
-                        f"(stage {self.goal_curriculum_manager.state.unified_stage}) - skipping waypoint extraction"
-                    )
-                    return 0  # Skip waypoint extraction entirely
-
-                # If one path is empty, log it but continue with the non-empty path
-                if not switch_to_exit_path:
-                    logger.warning(
-                        f"[WAYPOINT] Early curriculum stage {self.goal_curriculum_manager.state.unified_stage}: "
-                        f"exit overlaps with switch, extracting waypoints only from spawn→curriculum_switch path "
-                        f"({len(spawn_to_switch_path)} nodes, {curriculum_switch_dist:.0f}px)"
-                    )
-                elif not spawn_to_switch_path:
-                    logger.warning(
-                        f"Unusual curriculum state at stage {self.goal_curriculum_manager.state.unified_stage}: "
-                        f"spawn→curriculum_switch path empty, extracting waypoints only from curriculum_switch→curriculum_exit path "
-                        f"({len(switch_to_exit_path)} nodes, {curriculum_exit_dist:.0f}px)"
-                    )
-            else:
-                # No curriculum - compute paths from original positions
-                spawn_to_switch_path, switch_to_exit_path = (
-                    self._compute_original_paths(level_data, graph_data)
-                )
-
-                # Without curriculum, we expect both paths to exist
-                if not spawn_to_switch_path or not switch_to_exit_path:
-                    logger.warning("Cannot extract waypoints: no valid paths found")
-                    return 0
-
-                # Calculate distances for logging
-                curriculum_switch_dist = self._calculate_path_distance(
-                    spawn_to_switch_path
-                )
-                curriculum_exit_dist = self._calculate_path_distance(
-                    switch_to_exit_path
-                )
-
-            # Extract graph components for waypoint extraction
-            physics_cache = graph_data.get("node_physics")
-
-            if not physics_cache:
-                logger.warning("Cannot extract path waypoints: missing physics cache")
+            # Without curriculum, we expect both paths to exist
+            if not spawn_to_switch_path or not switch_to_exit_path:
+                logger.warning("Cannot extract waypoints: no valid paths found")
                 return 0
 
-            # Extract waypoints from curriculum-aware paths
-            # These will be evenly spaced along the actual PBRS-optimal path
-            # IMPORTANT: Disable cache when using curriculum (paths change per stage)
-            use_waypoint_cache = (
-                self.goal_curriculum_manager is None
-            )  # Only cache when no curriculum
+        # Calculate distances for logging
+        curriculum_switch_dist = self._calculate_path_distance(spawn_to_switch_path)
+        curriculum_exit_dist = self._calculate_path_distance(switch_to_exit_path)
 
-            # Calculate path distances for diagnostics
-            spawn_to_switch_distance = 0.0
-            if len(spawn_to_switch_path) > 1:
-                for i in range(1, len(spawn_to_switch_path)):
-                    dx = spawn_to_switch_path[i][0] - spawn_to_switch_path[i - 1][0]
-                    dy = spawn_to_switch_path[i][1] - spawn_to_switch_path[i - 1][1]
-                    spawn_to_switch_distance += (dx * dx + dy * dy) ** 0.5
+        # Extract graph components for waypoint extraction
+        physics_cache = graph_data.get("node_physics")
 
-            switch_to_exit_distance = 0.0
-            if len(switch_to_exit_path) > 1:
-                for i in range(1, len(switch_to_exit_path)):
-                    dx = switch_to_exit_path[i][0] - switch_to_exit_path[i - 1][0]
-                    dy = switch_to_exit_path[i][1] - switch_to_exit_path[i - 1][1]
-                    switch_to_exit_distance += (dx * dx + dy * dy) ** 0.5
-
-            # logger.warning(
-            #     f"[WAYPOINT] Extracting waypoints: "
-            #     f"spawn_to_switch={len(spawn_to_switch_path)} nodes ({spawn_to_switch_distance:.0f}px), "
-            #     f"switch_to_exit={len(switch_to_exit_path)} nodes ({switch_to_exit_distance:.0f}px), "
-            #     f"use_cache={use_waypoint_cache}"
-            # )
-
-            # Extract waypoints from paths (curriculum-aware or original)
-            # When curriculum is active, paths are already computed to curriculum positions
-            # so waypoints naturally have correct phase labels
-            waypoints_list = self.path_waypoint_extractor.extract_waypoints_from_paths(
-                spawn_to_switch_path=spawn_to_switch_path,
-                switch_to_exit_path=switch_to_exit_path,
-                physics_cache=physics_cache,
-                level_id=map_name,
-                use_cache=use_waypoint_cache,
-            )
-
-            # logger.warning(
-            #     f"[WAYPOINT] Extracted {len(waypoints_list)} raw waypoints from paths"
-            # )
-
-            # Convert list to dictionary grouped by phase for efficient filtering
-            waypoints_by_phase = {
-                "pre_switch": [wp for wp in waypoints_list if wp.phase == "pre_switch"],
-                "post_switch": [
-                    wp for wp in waypoints_list if wp.phase == "post_switch"
-                ],
-            }
-
-            # Store for reward calculation
-            self.current_path_waypoints_by_phase = waypoints_by_phase
-            # Also store full list for metrics (waypoint_collection_rate calculation)
-            self.current_path_waypoints = waypoints_list
-
-            # DEBUG: Verify waypoint phases match their dict keys
-            # for phase_key, wps in waypoints_by_phase.items():
-            #     if len(wps) > 0:
-            #         first_wp_phase = getattr(wps[0], "phase", "N/A")
-            #         logger.debug(
-            #             f"[WAYPOINT] Stored {len(wps)} waypoints in dict['{phase_key}'], "
-            #             f"first waypoint.phase={first_wp_phase}"
-            #         )
-
-            total_waypoints = sum(len(wps) for wps in waypoints_by_phase.values())
-            # logger.warning(
-            #     f"[WAYPOINT] ✓ Extracted {total_waypoints} curriculum-aware waypoints: "
-            #     f"pre_switch={len(waypoints_by_phase.get('pre_switch', []))}, "
-            #     f"post_switch={len(waypoints_by_phase.get('post_switch', []))}"
-            # )
-
-            if total_waypoints == 0:
-                logger.warning(
-                    f"[WAYPOINT] ⚠️  No waypoints extracted! Path lengths: "
-                    f"spawn→switch={len(spawn_to_switch_path)}, "
-                    f"switch→exit={len(switch_to_exit_path)}"
-                )
-
-            return total_waypoints
-
-        except Exception as e:
-            import traceback
-
-            logger.error(
-                f"Failed to extract path waypoints: {e}\n{traceback.format_exc()}"
-            )
+        if not physics_cache:
+            logger.warning("Cannot extract path waypoints: missing physics cache")
             return 0
+
+        # Extract waypoints from curriculum-aware paths
+        # These will be evenly spaced along the actual PBRS-optimal path
+        # IMPORTANT: Disable cache when using curriculum (paths change per stage)
+        use_waypoint_cache = (
+            self.goal_curriculum_manager is None
+        )  # Only cache when no curriculum
+
+        # Calculate path distances for diagnostics
+        spawn_to_switch_distance = 0.0
+        if len(spawn_to_switch_path) > 1:
+            for i in range(1, len(spawn_to_switch_path)):
+                dx = spawn_to_switch_path[i][0] - spawn_to_switch_path[i - 1][0]
+                dy = spawn_to_switch_path[i][1] - spawn_to_switch_path[i - 1][1]
+                spawn_to_switch_distance += (dx * dx + dy * dy) ** 0.5
+
+        switch_to_exit_distance = 0.0
+        if len(switch_to_exit_path) > 1:
+            for i in range(1, len(switch_to_exit_path)):
+                dx = switch_to_exit_path[i][0] - switch_to_exit_path[i - 1][0]
+                dy = switch_to_exit_path[i][1] - switch_to_exit_path[i - 1][1]
+                switch_to_exit_distance += (dx * dx + dy * dy) ** 0.5
+
+        # logger.warning(
+        #     f"[WAYPOINT] Extracting waypoints: "
+        #     f"spawn_to_switch={len(spawn_to_switch_path)} nodes ({spawn_to_switch_distance:.0f}px), "
+        #     f"switch_to_exit={len(switch_to_exit_path)} nodes ({switch_to_exit_distance:.0f}px), "
+        #     f"use_cache={use_waypoint_cache}"
+        # )
+
+        # Extract waypoints from paths (curriculum-aware or original)
+        # When curriculum is active, paths are already computed to curriculum positions
+        # so waypoints naturally have correct phase labels
+        waypoints_list = self.path_waypoint_extractor.extract_waypoints_from_paths(
+            spawn_to_switch_path=spawn_to_switch_path,
+            switch_to_exit_path=switch_to_exit_path,
+            physics_cache=physics_cache,
+            level_id=map_name,
+            use_cache=use_waypoint_cache,
+        )
+
+        # logger.warning(
+        #     f"[WAYPOINT] Extracted {len(waypoints_list)} raw waypoints from paths"
+        # )
+
+        # Convert list to dictionary grouped by phase for efficient filtering
+        waypoints_by_phase = {
+            "pre_switch": [wp for wp in waypoints_list if wp.phase == "pre_switch"],
+            "post_switch": [wp for wp in waypoints_list if wp.phase == "post_switch"],
+        }
+
+        # Store for reward calculation
+        self.current_path_waypoints_by_phase = waypoints_by_phase
+        # Also store full list for metrics (waypoint_collection_rate calculation)
+        self.current_path_waypoints = waypoints_list
+
+        # DEBUG: Verify waypoint phases match their dict keys
+        # for phase_key, wps in waypoints_by_phase.items():
+        #     if len(wps) > 0:
+        #         first_wp_phase = getattr(wps[0], "phase", "N/A")
+        #         logger.debug(
+        #             f"[WAYPOINT] Stored {len(wps)} waypoints in dict['{phase_key}'], "
+        #             f"first waypoint.phase={first_wp_phase}"
+        #         )
+
+        total_waypoints = sum(len(wps) for wps in waypoints_by_phase.values())
+        # logger.warning(
+        #     f"[WAYPOINT] ✓ Extracted {total_waypoints} curriculum-aware waypoints: "
+        #     f"pre_switch={len(waypoints_by_phase.get('pre_switch', []))}, "
+        #     f"post_switch={len(waypoints_by_phase.get('post_switch', []))}"
+        # )
+
+        if total_waypoints == 0:
+            logger.warning(
+                f"[WAYPOINT] ⚠️  No waypoints extracted! Path lengths: "
+                f"spawn→switch={len(spawn_to_switch_path)}, "
+                f"switch→exit={len(switch_to_exit_path)}"
+            )
+
+        return total_waypoints
 
     def _compute_original_paths(
         self, level_data: Any, graph_data: Dict[str, Any]
@@ -2327,9 +2327,7 @@ class RewardCalculator:
             return bonus, metrics
 
         # Get collection parameters from config
-        base_bonus = self.config.waypoint_base_bonus
         collection_radius = self.config.waypoint_collection_radius
-        sequence_multiplier = self.config.waypoint_sequence_multiplier
         out_of_order_scale = self.config.waypoint_out_of_order_scale
 
         # Check if path waypoints are enabled
@@ -2387,14 +2385,18 @@ class RewardCalculator:
 
         # Calculate bonus based on collection type
         if collected_waypoint is not None:
+            # UPDATED 2026-01-21: Use path-normalized waypoint bonus
+            # This ensures consistent total waypoint contribution across curriculum stages
+            total_waypoints = len(self._waypoint_sequence)
+
             # Check if this is the next expected waypoint in sequence
             if collected_index == self._next_expected_waypoint_index:
-                # IN-SEQUENCE COLLECTION: Apply streak bonus
-                # Streak starts at 0, so first waypoint gets 1.0x multiplier
-                streak_bonus = 1.0 + (
-                    self._next_expected_waypoint_index * sequence_multiplier
+                # IN-SEQUENCE COLLECTION: Use normalized bonus with progressive scaling
+                bonus = self.config.get_waypoint_bonus(
+                    collected_idx=collected_index,
+                    total_waypoints=total_waypoints,
+                    is_in_sequence=True,
                 )
-                bonus = base_bonus * streak_bonus
 
                 # Update tracking
                 self._next_expected_waypoint_index += 1
@@ -2408,14 +2410,25 @@ class RewardCalculator:
                     self._episode_waypoint_current_streak,
                 )
 
+                # Calculate effective multiplier for logging
+                # (bonus / base_per_waypoint ratio)
+                base_per_waypoint = 30.0 / max(total_waypoints, 1)
+                effective_multiplier = (
+                    bonus / base_per_waypoint if base_per_waypoint > 0 else 1.0
+                )
+
                 # Update metrics
-                metrics["sequence_multiplier"] = streak_bonus
+                metrics["sequence_multiplier"] = effective_multiplier
                 metrics["collection_type"] = "in_sequence"
                 metrics["skip_distance"] = 0
 
             else:
-                # OUT-OF-SEQUENCE COLLECTION: Reduced reward, reset streak
-                bonus = base_bonus * out_of_order_scale
+                # OUT-OF-SEQUENCE COLLECTION: Use normalized bonus with reduced reward
+                bonus = self.config.get_waypoint_bonus(
+                    collected_idx=collected_index,
+                    total_waypoints=total_waypoints,
+                    is_in_sequence=False,
+                )
 
                 # Calculate how many waypoints were skipped
                 skip_distance = max(
@@ -2479,15 +2492,6 @@ class RewardCalculator:
                 all_waypoints.append((wp, wp_phase))
 
         phase_waypoints = all_waypoints
-
-        # DEBUG: Log total waypoints being checked (only once per episode to reduce spam)
-        if len(all_waypoints) > 0 and len(self._collected_path_waypoints) == 0:
-            pre_count = sum(1 for wp, p in all_waypoints if p == "pre_switch")
-            post_count = sum(1 for wp, p in all_waypoints if p == "post_switch")
-            # logger.debug(
-            #     f"[WAYPOINT] Episode start: Checking {len(all_waypoints)} total waypoints: "
-            #     f"{pre_count} pre_switch, {post_count} post_switch"
-            # )
 
         if not phase_waypoints:
             return

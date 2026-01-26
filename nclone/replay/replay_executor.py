@@ -474,7 +474,7 @@ class ReplayExecutor:
         - exit_door_x, exit_door_y: exit door position
         - switch_activated: whether switch has been activated
         - game_state: ninja state (NINJA_STATE_DIM=41 features, enhanced physics + time_remaining)
-        - reachability_features: 22-dimensional reachability vector (expanded in Phases 1-3)
+        - reachability_features: 38-dimensional reachability vector (expanded in Phases 1-5)
         - player_won: whether the player has won
         - player_dead: whether the player has died
         """
@@ -543,7 +543,7 @@ class ReplayExecutor:
         # Create 41D game_state (40D physics + 1D time_remaining) to match environment
         game_state = np.append(ninja_state[:40], time_remaining).astype(np.float32)
 
-        # Compute reachability features (22-dim, expanded in Phases 1-3)
+        # Compute reachability features (38-dim, expanded in Phases 1-5)
         reachability_features = self._compute_reachability_features(
             ninja_x, ninja_y, switch_x, switch_y, exit_door_x, exit_door_y
         )
@@ -919,9 +919,9 @@ class ReplayExecutor:
         exit_door_y: float,
     ) -> np.ndarray:
         """
-        Compute 22-dimensional reachability features using adjacency graph (expanded in Phases 1-3).
+        Compute 38-dimensional reachability features using adjacency graph (expanded in Phases 1-5).
 
-        Features (22 total):
+        Features (38 total):
         Base features (4 dims):
         0. Reachable area ratio (0-1)
         1. Distance to nearest switch (normalized, inverted)
@@ -954,6 +954,18 @@ class ReplayExecutor:
 
         Path difficulty (1 dim) - NEW Phase 3.3:
         21. Path difficulty ratio (physics_cost/geometric_distance)
+
+        Path curvature features (3 dims) - NEW Phase 3.4:
+        22-23. Multi-hop direction X/Y (8-hop weighted lookahead)
+        24. Path curvature (0-1)
+
+        Exit lookahead features (5 dims) - NEW Phase 4:
+        25-26. Exit switch to door next hop X/Y
+        27-28. Exit switch to door multi-hop X/Y
+        29. Near-switch transition indicator (0-1)
+
+        Directional connectivity (8 dims) - NEW Phase 5:
+        30-37. Platform distance in 8 directions [E, NE, N, NW, W, SW, S, SE]
         """
         # Use cached graph and level data (built once per replay)
         if self._cached_graph_data is None or self._cached_level_data is None:

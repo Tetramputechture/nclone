@@ -1140,6 +1140,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             position = self.nplay_headless.ninja_position()
             if position is not None:
                 self.current_route.append((float(position[0]), float(position[1])))
+                # # DEBUG: Log first 30 position appends to diagnose 2x issue
+                # if len(self.current_route) <= 30:
+                #     logger.warning(
+                #         f"[POSITION_APPEND] count={len(self.current_route)}, "
+                #         f"pos=({position[0]:.1f}, {position[1]:.1f})"
+                #     )
             else:
                 if not self._warned_about_position:
                     logger.warning(
@@ -1442,13 +1448,27 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         "Next PBRS calculation will use new stage's SharedLevelCache with curriculum goal positions."
                     )
                     # Clear PBRS normalization cache (will rebuild on next step with curriculum positions)
-                    if hasattr(
-                        self.reward_calculator.pbrs_calculator,
-                        "_cached_combined_path_distance",
-                    ):
-                        self.reward_calculator.pbrs_calculator._cached_combined_path_distance = None
-                        self.reward_calculator.pbrs_calculator._cached_spawn_to_switch_distance = None
-                        self.reward_calculator.pbrs_calculator._cached_switch_to_exit_distance = None
+                    # CRITICAL: All position-dependent PBRS caches must be cleared on curriculum advancement
+                    if hasattr(self.reward_calculator, "pbrs_calculator"):
+                        pbrs_calc = self.reward_calculator.pbrs_calculator
+
+                        # Clear path distance caches (used for PBRS normalization)
+                        pbrs_calc._cached_combined_path_distance = None
+                        pbrs_calc._cached_spawn_to_switch_distance = None
+                        pbrs_calc._cached_switch_to_exit_distance = None
+                        pbrs_calc._cached_combined_physics_cost = None
+
+                        # Clear surface area cache (geometry-based, not position-based, but clear for safety)
+                        pbrs_calc._cached_surface_area = None
+
+                        # Clear level/state tracking (forces recomputation on next step)
+                        pbrs_calc._cached_level_id = None
+                        pbrs_calc._cached_switch_states = None
+
+                        # Clear per-step caches (distance to current goal)
+                        pbrs_calc._cached_distance = None
+                        pbrs_calc._cached_start_node = None
+                        pbrs_calc._cached_next_hop = None
 
                     # Clear level_data cache (contains old stage's entity positions)
                     self._cached_level_data = None
@@ -1530,13 +1550,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Add PBRS diagnostic data for route visualization (Phase 1 enhancement)
             if hasattr(self.reward_calculator, "get_pbrs_diagnostic_data"):
                 diagnostic_data = self.reward_calculator.get_pbrs_diagnostic_data()
-                info["_velocity_history"] = diagnostic_data["velocity_history"]
-                info["_alignment_history"] = diagnostic_data["alignment_history"]
-                info["_path_gradient_history"] = diagnostic_data[
-                    "path_gradient_history"
-                ]
-                info["_pbrs_potential_history"] = diagnostic_data.get(
-                    "potential_history", []
+                info["_velocity_history"] = list(diagnostic_data["velocity_history"])
+                info["_alignment_history"] = list(diagnostic_data["alignment_history"])
+                info["_path_gradient_history"] = list(
+                    diagnostic_data["path_gradient_history"]
+                )
+                info["_pbrs_potential_history"] = list(
+                    diagnostic_data.get("potential_history", [])
                 )
                 info["_last_next_hop_world"] = diagnostic_data.get(
                     "last_next_hop_world"
@@ -1545,16 +1565,33 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     "last_next_hop_goal_id"
                 )
 
+                # NOTE: Episode state clearing removed (redundant)
+                # RewardCalculator.reset() already clears all episode state in the standard reset flow.
+                # This clearing was originally added for VecEnv auto-reset scenarios, but VecEnv
+                # ALWAYS calls reset() after done=True, so this clearing is unnecessary.
+                #
+                # State properly cleared by RewardCalculator.reset() during both fast and full reset paths.
+
+                # DEBUG: Log lengths to diagnose 2x mismatch
+                route_len = len(info["episode_route"]) if "episode_route" in info else 0
+                potential_len = len(info["_pbrs_potential_history"])
+                if route_len > 0 and potential_len != route_len:
+                    logger.warning(
+                        f"[DIAGNOSTIC_DATA_MISMATCH] current_route={route_len}, "
+                        f"potential_history={potential_len}, "
+                        f"steps_taken={self.reward_calculator.steps_taken}"
+                    )
+
         return info
 
     def _is_same_level_reset(self, options: Optional[Dict] = None) -> bool:
         """Detect if this reset is for the same level (enables fast reset path).
-        
+
         Fast reset can be used when:
         1. The map has not changed since the last reset
         2. No new map loading is required
         3. Entities have already been created
-        
+
         Returns:
             True if this is a same-level reset, False otherwise
         """
@@ -1562,14 +1599,17 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # (used by curriculum wrapper, test environment, etc.)
         if options is not None and options.get("skip_map_load", False):
             return True
-        
+
         # Check if we're using a custom map (single-level training)
         if self.custom_map_path is not None:
             # Single map training - check if map name hasn't changed
             current_map_name = self.map_loader.current_map_name
-            if current_map_name is not None and current_map_name == self._last_reset_map_name:
+            if (
+                current_map_name is not None
+                and current_map_name == self._last_reset_map_name
+            ):
                 return True
-        
+
         # Otherwise, this is a new level (different map or first reset)
         return False
 
@@ -3059,32 +3099,37 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         masking_mode = self.reward_calculator.config.action_masking_mode
         self.nplay_headless.sim._action_masking_mode = masking_mode
 
-        # Detect path direction and pass to Ninja for enhanced action masking
-        # Note: Path direction only used when masking_mode == "hard"
-        path_direction_data = self._detect_straight_path_direction()
-        self.nplay_headless.sim._path_direction_data = path_direction_data
+        # Detect if path is straight (horizontal or downward) and pass to Ninja for deterministic masking
+        # Note: Path straightness only used when masking_mode == "hard"
+        straight_path_direction = self._detect_straight_path_direction()
+        self.nplay_headless.sim._path_straightness_direction = straight_path_direction
 
         return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
 
-    def _detect_straight_path_direction(self) -> Optional[Dict[str, float]]:
-        """Detect path direction to current goal using physics-optimal path.
+    def _detect_straight_path_direction(self) -> Optional[str]:
+        """Detect if the path to the current goal is straight (horizontal or downward).
 
-        Uses multi-hop direction (3-4 hops ahead) from physics-optimal path to enable
-        enhanced action masking. Returns full direction vector (dx, dy) instead of
-        discrete categories, allowing nuanced masking decisions.
+        Uses multi-hop direction (8 hops ahead, ~96-192px lookahead) to verify path
+        straightness. This enables deterministic action masking on trivial scenarios,
+        ensuring 100% success by masking provably suboptimal actions.
+
+        Detection criteria:
+        1. Horizontal straight: |dx| > 0.8, |dy| < 0.1 → returns "left" or "right"
+        2. Downward: dy > 0.3 (positive = down in screen coords) → returns "down"
 
         Algorithm:
         1. Find current ninja node in graph
-        2. Compute physics-optimal path (with mine avoidance)
-        3. Extract direction from first 3-4 nodes
-        4. Return normalized direction vector and distance
+        2. Get multi-hop direction from level cache (pre-computed, O(1) lookup)
+        3. Check path characteristics and return appropriate direction
 
         Returns:
-            Dict with keys: "dx" (float), "dy" (float), "distance" (float)
-            Or None if path cannot be determined
+            "left", "right", "down", or None
         """
         from nclone.constants.physics_constants import (
-            PATH_DIRECTION_MIN_DISTANCE,
+            STRAIGHT_PATH_HORIZONTAL_THRESHOLD,
+            STRAIGHT_PATH_VERTICAL_THRESHOLD,
+            STRAIGHT_PATH_DOWNWARD_THRESHOLD,
+            STRAIGHT_PATH_MIN_DISTANCE,
         )
         from nclone.graph.reachability.pathfinding_utils import find_ninja_node
 
@@ -3118,12 +3163,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 goal_pos = self.nplay_headless.exit_switch_position()
                 goal_id = "switch"
 
-            # Check minimum distance threshold (only mask for goals >24px away)
+            # Check minimum distance threshold (only mask for goals >12px away)
             dx_goal = goal_pos[0] - ninja_pos[0]
             dy_goal = goal_pos[1] - ninja_pos[1]
             distance_to_goal = (dx_goal * dx_goal + dy_goal * dy_goal) ** 0.5
 
-            if distance_to_goal < PATH_DIRECTION_MIN_DISTANCE:
+            if distance_to_goal < STRAIGHT_PATH_MIN_DISTANCE:
                 return None  # Too close, don't apply masking
 
             # Get graph adjacency
@@ -3146,125 +3191,40 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if ninja_node is None:
                 return None
 
-            # CRITICAL: For straightness masking, we MUST use the PHYSICS-OPTIMAL path
-            # (same one used for rewards and visualization), NOT the geometric path from level_cache.
-            #
-            # The level_cache uses geometric costs (straight-line, ignores physics/mines) while
-            # the actual optimal path uses physics costs (momentum, mine avoidance, gravity).
-            # Using geometric path for masking would mask actions on the wrong path!
-            #
-            # Instead, get the actual physics-optimal path from the reward calculator
-
-            # Try to get the actual physics-optimal path from reward calculator
-            actual_path = None
-            if hasattr(self.reward_calculator, "pbrs_calculator"):
-                pbrs_calc = self.reward_calculator.pbrs_calculator
-                if hasattr(pbrs_calc, "path_calculator"):
-                    # Get the current physics-optimal path (computed with mine avoidance)
-                    try:
-                        from nclone.graph.reachability.pathfinding_utils import (
-                            find_shortest_path_with_fallback,
-                        )
-
-                        # Determine goal node
-                        from nclone.constants.physics_constants import (
-                            EXIT_SWITCH_RADIUS,
-                            EXIT_DOOR_RADIUS,
-                        )
-                        from nclone.graph.reachability.pathfinding_utils import (
-                            find_goal_node_closest_to_start,
-                        )
-
-                        goal_node = find_goal_node_closest_to_start(
-                            goal_pos,
-                            ninja_node,
-                            adjacency,
-                            entity_radius=EXIT_SWITCH_RADIUS
-                            if goal_id == "switch"
-                            else EXIT_DOOR_RADIUS,
-                            ninja_radius=10.0,
-                            spatial_hash=getattr(self, "_spatial_hash", None),
-                            subcell_lookup=getattr(self, "_subcell_lookup", None),
-                        )
-
-                        if goal_node:
-                            # Compute physics-optimal path with mine avoidance
-                            base_adjacency = self.current_graph_data.get(
-                                "base_adjacency", adjacency
-                            )
-                            physics_cache = self.current_graph_data.get("node_physics")
-                            mine_proximity_cache = (
-                                pbrs_calc.path_calculator.mine_proximity_cache
-                            )
-
-                            actual_path, _ = find_shortest_path_with_fallback(
-                                ninja_node,
-                                goal_node,
-                                adjacency,
-                                base_adjacency,
-                                physics_cache,
-                                self.level_data,
-                                mine_proximity_cache,
-                                ninja_velocity=self.nplay_headless.ninja_velocity(),
-                                debug=False,
-                            )
-                    except Exception:
-                        actual_path = None
-
-            if actual_path is None or len(actual_path) < 2:
+            # Get multi-hop direction from level cache (O(1) lookup, pre-computed)
+            if not hasattr(level_cache, "get_multi_hop_direction"):
                 return None
 
-            # Use first 3-4 nodes of the ACTUAL physics-optimal path for straightness check
-            max_hops_for_straightness = min(4, len(actual_path))
-            path_segment = actual_path[:max_hops_for_straightness]
-
-            if len(path_segment) < 2:
-                return None  # Need at least 2 nodes to compute direction
-
-            # Compute direction from first to last node in segment
-            start_node = path_segment[0]
-            end_node = path_segment[-1]
-            dx_raw = end_node[0] - start_node[0]
-            dy_raw = end_node[1] - start_node[1]
-            distance = (dx_raw * dx_raw + dy_raw * dy_raw) ** 0.5
-
-            if distance < 1.0:
-                return None
-
-            # Normalize direction
-            dx = dx_raw / distance
-            dy = dy_raw / distance
-
-            # For debugging visualization, also get geometric direction for comparison
-            multi_hop_direction_geometric = level_cache.get_multi_hop_direction(
+            multi_hop_direction = level_cache.get_multi_hop_direction(
                 ninja_node, goal_id
             )
-            next_hop = level_cache.get_next_hop(ninja_node, goal_id)
 
-            # Store path direction debug data for visualization
-            self.nplay_headless.sim._straightness_masking_debug = {
-                "ninja_pos": ninja_pos,
-                "ninja_node": ninja_node,
-                "next_hop": next_hop,
-                "short_horizon_direction": (
-                    dx,
-                    dy,
-                ),  # Physics-optimal path direction (used for masking)
-                "multi_hop_direction_geometric": multi_hop_direction_geometric,  # Geometric direction (for comparison)
-                "path_segment": path_segment,  # Exact physics-optimal path segment used
-                "full_physics_path": actual_path,  # Full physics-optimal path for visualization
-                "goal_id": goal_id,
-            }
+            if multi_hop_direction is None:
+                return None  # At goal or no path available
 
-            # Track masking application for TensorBoard monitoring
-            self._deterministic_mask_applied_count += 1
+            dx, dy = multi_hop_direction
 
-            # Return full direction vector for enhanced masking
-            return {
-                "dx": dx,
-                "dy": dy,
-                "distance": distance_to_goal,
-            }
+            # Check if path is nearly horizontal with strong directional component
+            is_horizontal = (
+                abs(dy) < STRAIGHT_PATH_VERTICAL_THRESHOLD
+                and abs(dx) > STRAIGHT_PATH_HORIZONTAL_THRESHOLD
+            )
+
+            # Check if path is going downward (positive dy = down in screen coordinates)
+            is_downward = dy > STRAIGHT_PATH_DOWNWARD_THRESHOLD
+
+            if is_horizontal:
+                # Very straight horizontal path
+                if dx < 0:
+                    return "left"
+                else:
+                    return "right"
+            elif is_downward:
+                # Downward path
+                return "down"
+            else:
+                # Path is not straight enough for deterministic masking
+                return None
 
         except Exception as e:
             # Silently fail on any error to avoid breaking training
