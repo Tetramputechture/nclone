@@ -503,8 +503,16 @@ class FrameStackWrapper(ObservationWrapper):
 
     def get_reward_config(self):
         """Passthrough to underlying environment for reward configuration access.
-        
+
         Returns:
             RewardConfig object containing reward shaping parameters
         """
         return self.env.get_reward_config()
+
+    def get_current_action_sequence(self):
+        """Passthrough to underlying environment for action sequence tracking.
+
+        Returns:
+            List of actions taken during the current episode
+        """
+        return self.env.get_current_action_sequence()

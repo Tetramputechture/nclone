@@ -503,7 +503,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
     def reset(self, seed=None, options=None):
         """Reset the environment with planning components and visualization."""
-        
+
         # Start profiling total reset time
         reset_start_time = self._profile_start("reset_total")
 
@@ -516,7 +516,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # === FAST RESET PATH DETECTION ===
         # Detect if this is a same-level reset (enables optimized reset path)
         same_level_reset = self._is_same_level_reset(options)
-        
+
         # Check if map loading should be skipped and if this is a new level
         skip_map_load = False
         new_level = False  # True if a different level was loaded externally
@@ -526,101 +526,138 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # When skip_map_load=True, assume new level unless explicitly told otherwise
             new_level = options.get("new_level", skip_map_load)
             map_name = options.get("map_name", None)
-        
+
         # === FAST RESET PATH (2-3x faster for single-level training) ===
         # Use fast reset when:
         # 1. Same level detected (no map change)
         # 2. Not a new level load
         # 3. Entities already exist (not first reset)
+        # 4. CRITICAL: No pending curriculum stage change (stage advancement requires full reset)
+        has_curriculum_stage_change = (
+            hasattr(self, "_pending_curriculum_stage")
+            and self._pending_curriculum_stage is not None
+        )
+
         use_fast_reset = (
-            same_level_reset 
-            and not new_level 
-            and hasattr(self.nplay_headless, "sim") 
+            same_level_reset
+            and not new_level
+            and not has_curriculum_stage_change  # Full reset needed for curriculum advancement
+            and hasattr(self.nplay_headless, "sim")
             and self.nplay_headless.sim.ninja is not None
         )
-        
+
         if use_fast_reset:
             if self.enable_logging:
-                logger.info("[FAST_RESET] Using optimized reset path for same-level training")
-            
+                logger.info(
+                    "[FAST_RESET] Using optimized reset path for same-level training"
+                )
+
             # Fast reset: entities in-place, no recreation
             fast_sim_start = self._profile_start("reset_fast_sim")
             self.nplay_headless.fast_reset()
             self._profile_end("reset_fast_sim", fast_sim_start)
-            
+
             # Clear only episode-specific caches (not level-persistent ones)
             from nclone.cache_management import clear_episode_caches_only
+
             clear_episode_caches_only(self)
-            
+
             # Reset observation processor (buffer clearing, no reallocation)
             self.observation_processor.reset()
-            
+
             # Reset spatial context cache (mine overlay position-based cache)
             from .spatial_context import reset_mine_overlay_cache
+
             reset_mine_overlay_cache()
-            
+
             # ============================================================
             # Reset tracking variables from BaseNppEnvironment
             # ============================================================
             self._switch_activation_frame = None
             self.current_route = []
             self._warned_about_position = False
-            
+
             # Reset reward calculator
             self.reward_calculator.reset()
-            
+
             # Reset truncation checker
             self.truncation_checker.reset()
-            
+
             # Reset episode reward
             self.current_ep_reward = 0
-            
+
             # === GOAL CURRICULUM: Reapply curriculum positions ===
             # CRITICAL: fast_reset() resets entities to ORIGINAL positions
             # We must call apply_to_simulator() to move them to curriculum positions
+            # NOTE: Fast reset only used when curriculum stage has NOT changed (line 544)
+            # so existing waypoints are still valid for current stage
             if self.goal_curriculum_manager is not None:
                 self._episode_start_curriculum_stage = (
                     self.goal_curriculum_manager.state.unified_stage
                 )
-                
+
                 # Apply curriculum positioning (moves entities to curriculum positions)
                 curriculum_start = self._profile_start("reset_fast_curriculum")
                 self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
                 self._profile_end("reset_fast_curriculum", curriculum_start)
-                
+
                 if self.enable_logging:
                     logger.info(
                         f"[FAST_RESET] Applied curriculum stage {self._episode_start_curriculum_stage} "
-                        f"positioning after fast_reset"
+                        f"positioning after fast_reset (waypoints unchanged - same stage)"
                     )
-            
+
+            # Clear per-step PBRS caches (ninja position resets to spawn)
+            # NOTE: We keep normalization caches (_cached_combined_path_distance, etc.)
+            # because entity positions haven't changed (same curriculum stage)
+            if hasattr(self, "reward_calculator") and hasattr(
+                self.reward_calculator, "pbrs_calculator"
+            ):
+                pbrs_calc = self.reward_calculator.pbrs_calculator
+                # Clear per-step caches (distance from current ninja position to goal)
+                pbrs_calc._cached_distance = None
+                pbrs_calc._cached_start_node = None
+                pbrs_calc._cached_next_hop = None
+
             # Reset graph state (fast - graph structure unchanged)
             graph_start = self._profile_start("reset_fast_graph")
             self._reset_graph_state()
             self._reset_reachability_state()
-            
+
             # Update graph from current env state (fast - uses cached graph structure)
             self._update_graph_from_env_state()
             self._profile_end("reset_fast_graph", graph_start)
-            
+
             # Get initial observation and return
             obs_start = self._profile_start("reset_fast_observation")
             initial_obs = self._get_observation()
             processed_obs = self._process_observation(initial_obs)
             self._profile_end("reset_fast_observation", obs_start)
-            
+
             # Track current map name for fast reset detection
             self._last_reset_map_name = self.map_loader.current_map_name
-            
+
             # End profiling and return
             self._profile_end("reset_total", reset_start_time)
-            
+
             return (processed_obs, {})
-        
+
         # === STANDARD RESET PATH (full reset) ===
         # Only reached if NOT using fast reset
         else:
-            
+            # Log why we're not using fast reset
+            if self.enable_logging and same_level_reset and has_curriculum_stage_change:
+                old_stage = (
+                    self.goal_curriculum_manager.state.unified_stage
+                    if self.goal_curriculum_manager
+                    else None
+                )
+                new_stage = self._pending_curriculum_stage
+                logger.info(
+                    f"[RESET] Curriculum stage advancing {old_stage} → {new_stage}: "
+                    f"Using full reset to rebuild paths and reposition entities"
+                )
+
             # Reset observation processor
             self.observation_processor.reset()
 
@@ -1029,14 +1066,35 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.invalidate_switch_cache()
 
             # Clear PBRS normalization cache (will rebuild with curriculum positions)
+            # CRITICAL: All position-dependent PBRS caches must be cleared on curriculum advancement
             if hasattr(self, "reward_calculator") and hasattr(
                 self.reward_calculator, "pbrs_calculator"
             ):
                 pbrs_calc = self.reward_calculator.pbrs_calculator
-                if hasattr(pbrs_calc, "_cached_combined_path_distance"):
-                    pbrs_calc._cached_combined_path_distance = None
-                    pbrs_calc._cached_spawn_to_switch_distance = None
-                    pbrs_calc._cached_switch_to_exit_distance = None
+
+                # Clear path distance caches (used for PBRS normalization)
+                pbrs_calc._cached_combined_path_distance = None
+                pbrs_calc._cached_spawn_to_switch_distance = None
+                pbrs_calc._cached_switch_to_exit_distance = None
+                pbrs_calc._cached_combined_physics_cost = None
+
+                # Clear surface area cache (geometry-based, not position-based, but clear for safety)
+                pbrs_calc._cached_surface_area = None
+
+                # Clear level/state tracking (forces recomputation on next step)
+                pbrs_calc._cached_level_id = None
+                pbrs_calc._cached_switch_states = None
+
+                # Clear per-step caches (distance to current goal)
+                pbrs_calc._cached_distance = None
+                pbrs_calc._cached_start_node = None
+                pbrs_calc._cached_next_hop = None
+
+                if self.enable_logging:
+                    logger.info(
+                        "[CURRICULUM] Cleared all PBRS caches for curriculum stage advancement - "
+                        "PBRS will recompute distances with new entity positions"
+                    )
 
             # Force path distance calculator to switch to new stage's SharedLevelCache
             if hasattr(self, "_path_calculator") and self._path_calculator is not None:
@@ -1047,6 +1105,33 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 logger.debug(
                     "Invalidated all entity-dependent caches after curriculum entity movement"
                 )
+
+        # CRITICAL FIX: Clear PBRS caches ALWAYS when curriculum is enabled
+        # This must happen even when using pre-cached curriculum maps (use_curriculum_map_cache=True)
+        # because PBRS caches persist across episodes but entity positions change with stage advancement
+        if self.goal_curriculum_manager is not None:
+            if hasattr(self, "reward_calculator") and hasattr(
+                self.reward_calculator, "pbrs_calculator"
+            ):
+                pbrs_calc = self.reward_calculator.pbrs_calculator
+
+                # Clear ALL PBRS caches for curriculum stage
+                pbrs_calc._cached_combined_path_distance = None
+                pbrs_calc._cached_spawn_to_switch_distance = None
+                pbrs_calc._cached_switch_to_exit_distance = None
+                pbrs_calc._cached_combined_physics_cost = None
+                pbrs_calc._cached_surface_area = None
+                pbrs_calc._cached_level_id = None
+                pbrs_calc._cached_switch_states = None
+                pbrs_calc._cached_distance = None
+                pbrs_calc._cached_start_node = None
+                pbrs_calc._cached_next_hop = None
+
+                if self.enable_logging:
+                    logger.info(
+                        "[PBRS_FIX] Cleared all PBRS caches on full reset with curriculum - "
+                        "ensures fresh distance calculations with current stage entity positions"
+                    )
 
         # CRITICAL: Reset and rebuild graph BEFORE getting observation
         self._reset_graph_state()
@@ -1271,10 +1356,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # NOW get initial observation (with valid graph data)
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
-        
+
         # Track current map name for fast reset detection
         self._last_reset_map_name = self.map_loader.current_map_name
-        
+
         # End profiling (standard reset path)
         self._profile_end("reset_total", reset_start_time)
 

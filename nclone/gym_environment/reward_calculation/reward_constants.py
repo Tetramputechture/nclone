@@ -34,30 +34,41 @@ References:
 # =============================================================================
 # GLOBAL REWARD SCALING (Value Function Stability)
 # =============================================================================
-# Scale ALL rewards by this factor to reduce value loss magnitudes.
+# UPDATED 2026-01-21: Set to 1.0 to rely on PPO's native advantage normalization.
 #
-# WHY THIS HELPS:
-# - TensorBoard showed value_loss ~76, episode rewards -500 to -800
-# - Large returns cause high variance in value function targets
-# - Scaling by 0.1 (divide by 10) reduces returns to -50 to -80 range
-# - This makes value function easier to learn (lower MSE targets)
+# RATIONALE FOR REMOVING 0.1 SCALING:
+# 1. PPO already normalizes advantages by (advantage - mean) / std per batch
+# 2. The 0.1 multiplier added unnecessary complexity and made TensorBoard harder to interpret
+# 3. With curriculum-scaled terminal rewards, raw values are now more consistent (100-200 range)
+# 4. Value function capacity increased (256 width) can handle slightly larger targets
+# 5. May have interfered with RND intrinsic reward scaling (different magnitude order)
 #
-# CRITICAL: This does NOT change learning dynamics because:
-# - All rewards are scaled uniformly (relative magnitudes preserved)
-# - Optimal policy is unchanged (argmax over scaled rewards = argmax over original)
-# - PPO's advantage normalization already handles scale (mean/std normalization)
-# - The ratio of positive to negative rewards stays the same
-#
-# WHAT CHANGES:
-# - Value estimates: -4 to -123 → -0.4 to -12.3
-# - Value loss: ~76 → ~0.76
-# - Episode rewards (logged): -500 → -50
+# WHAT THIS CHANGES:
+# - Episode rewards (logged): now show actual values (50-200 vs 5-20)
+# - Value estimates: larger magnitude (10-20 vs 1-2)
+# - Value loss: proportionally larger (but relative to targets, so same difficulty)
 #
 # WHAT STAYS THE SAME:
-# - Relative importance: completion(+50) >> death(-12) >> time_penalty(-0.02)
-# - Learning signal quality: same gradients, just scaled
-# - Convergence rate: PPO is scale-invariant due to advantage normalization
-GLOBAL_REWARD_SCALE = 0.1  # Divide all rewards by 10
+# - Learning dynamics: PPO is scale-invariant due to advantage normalization
+# - Optimal policy: unchanged (argmax doesn't depend on reward scale)
+# - Relative importance: completion(200) >> switch(100) >> death(-80/-50/-20)
+# - Convergence rate: determined by advantage gradients, not raw reward magnitude
+#
+# If value function training becomes unstable, consider:
+# - Increasing vf_coef (e.g., 1.5 → 2.0) to strengthen value learning
+# - Using separate value network architecture (code change required)
+# - Reverting to 0.1 scaling as fallback
+#
+# REVERTED 2026-01-24: Analysis of failed training run revealed value function explosion:
+# - Value loss mean: 390.7 (should be <100)
+# - Value loss max: 91,614 (catastrophic spike)
+# - Coefficient of variation: 9.11 (extreme instability)
+# Root cause: Value network calibrated for 0.1 scale, 10x jump caused miscalibration.
+# Advantages became garbage, policy couldn't learn (entropy stuck at 1.066, no convergence).
+#
+# Path forward: Use proven 0.1 scale. Future scaling must be gradual: 0.1→0.3→0.5→1.0
+# with fine-tuning at each step to let value function adapt.
+GLOBAL_REWARD_SCALE = 0.1  # Proven scale - value function calibrated for this
 
 # CRITICAL: This scale must be applied to ALL reward components including:
 # - Terminal rewards (completion, death, switch) - applied in main_reward_calculator.py
@@ -250,6 +261,8 @@ SUB_GOAL_SPACING = 48.0  # Distance reduction threshold for milestone (pixels)
 # INCREASED: Stronger waypoint rewards help break oscillation local minima by providing
 # clear gradient toward progress. Agent gets immediate positive feedback for following
 # the correct path, making exploration more directed.
+# REVERTED 2026-01-24: Back to 3 since GLOBAL_REWARD_SCALE reverted to 0.1
+# The 30 value was correct for 1.0 scale but not needed with 0.1 scale.
 WAYPOINT_BASE_BONUS = 3  # Base reward for waypoint collection (3x increase from 0.5)
 WAYPOINT_COLLECTION_RADIUS = (
     18.0  # pixels - 1.5 × sub-node size for reliable collection

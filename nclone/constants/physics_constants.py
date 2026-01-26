@@ -393,22 +393,15 @@ TERMINAL_IMPACT_SIMULATION_FRAMES = (
 # Masks actions that are provably suboptimal on trivial straight paths
 # This ensures 100% success on simple corridor scenarios
 
-# Path straightness detection thresholds (LEGACY - used for visualization)
-STRAIGHT_PATH_HORIZONTAL_THRESHOLD = 0.4  # |dx| must exceed this for horizontal path
-STRAIGHT_PATH_VERTICAL_THRESHOLD = 0.2  # |dy| must be below this for horizontal path
+# Path straightness detection thresholds
+STRAIGHT_PATH_HORIZONTAL_THRESHOLD = 0.8  # |dx| must exceed this for horizontal path
+STRAIGHT_PATH_VERTICAL_THRESHOLD = 0.1  # |dy| must be below this for horizontal path
 STRAIGHT_PATH_DOWNWARD_THRESHOLD = (
     0.3  # dy must exceed this for downward path (positive = down)
 )
 STRAIGHT_PATH_MIN_DISTANCE = 12.0  # Only apply masking for goals >12px away (half-tile)
 
-# === DIRECTION-BASED ACTION MASKING CONSTANTS ===
-# Enhanced masking that uses full direction vector (dx, dy) for nuanced decisions
-# Less strict than "straight path" - applies to more scenarios (diagonal paths, etc.)
-
-PATH_DIRECTION_HORIZONTAL_THRESHOLD = (
-    0.3  # |dx| must exceed this to mask opposite direction
+# Straightness masking: extend path with switch-to-exit when switch is this close
+MIN_SWITCH_HOPS_FOR_PATH_EXTENSION = (
+    4  # If path to switch < 4 hops, extend with switch-to-exit path
 )
-PATH_DIRECTION_VERTICAL_THRESHOLD = (
-    0.3  # |dy| must exceed this to mask vertical actions
-)
-PATH_DIRECTION_MIN_DISTANCE = 24.0  # Only apply for goals >24px away (full tile)
