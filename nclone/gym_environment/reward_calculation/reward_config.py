@@ -314,23 +314,37 @@ class RewardConfig:
         ADDED 2026-01-21: Normalizes waypoint rewards by path length to prevent
         late-stage curriculum from accumulating excessive waypoint bonuses (16x variance).
 
+        UPDATED 2026-01-29: Added reference-based scaling to prevent reward inflation at
+        late curriculum stages. Analysis showed stage 9 (62 waypoints) generates +25 mean
+        waypoint reward, making death profitable (+17 net with -8 penalty). By scaling budget
+        relative to a reference count (20 waypoints), late stages see reduced per-waypoint
+        rewards while early stages maintain current balance.
+
         Design Philosophy:
-        - Total waypoint budget: 30.0 (target cumulative contribution)
+        - Total waypoint budget: 30.0 base, scaled by reference ratio
+        - Reference waypoint count: 20 (typical early-mid stage)
+        - Late stage scaling: budget × (20/62) = ~10 instead of 30
         - Per-waypoint reward scales inversely with total waypoints
         - Progressive scaling: later waypoints worth more (incentivize exploration)
         - Sequence multiplier: in-order collection gets bonus, out-of-order reduced
 
-        Examples (30 total waypoints, in-sequence):
-        - Waypoint 0: (30/30) × (1 + 0×2.0) = 1.0
-        - Waypoint 15: (30/30) × (1 + 0.5×2.0) = 2.0
-        - Waypoint 29: (30/30) × (1 + 1.0×2.0) = 3.0
+        Examples (20 total waypoints, in-sequence, reference match):
+        - Budget: 30.0 × min(1.0, 20/20) = 30.0
+        - Waypoint 0: (30/20) × (1 + 0×2.0) = 1.5
+        - Waypoint 10: (30/20) × (1 + 0.5×2.0) = 3.0
         - Total: ~60 (progressive scaling doubles base budget)
 
+        Examples (62 total waypoints, late stage, in-sequence):
+        - Budget: 30.0 × min(1.0, 20/62) = 9.68
+        - Waypoint 0: (9.68/62) × (1 + 0×2.0) = 0.16
+        - Waypoint 31: (9.68/62) × (1 + 0.5×2.0) = 0.31
+        - Total: ~20 (reduced from ~60, prevents inflation!)
+
         Examples (5 total waypoints, early curriculum, in-sequence):
+        - Budget: 30.0 × min(1.0, 20/5) = 30.0 (capped at 1.0x)
         - Waypoint 0: (30/5) × (1 + 0×2.0) = 6.0
         - Waypoint 2: (30/5) × (1 + 0.5×2.0) = 12.0
-        - Waypoint 4: (30/5) × (1 + 1.0×2.0) = 18.0
-        - Total: ~60 (same as long path!)
+        - Total: ~60 (early stages unaffected)
 
         Args:
             collected_idx: Index of collected waypoint (0-based)
@@ -340,11 +354,18 @@ class RewardConfig:
         Returns:
             Normalized waypoint bonus reward
         """
-        # Fixed budget for total waypoint contribution
-        # REVERTED 2026-01-24: Back to 30.0 since GLOBAL_REWARD_SCALE reverted to 0.1
-        # The 300.0 value was correct for 1.0 scale but caused issues with value function.
-        # With 0.1 scale: waypoints contribute 30-60 total (appropriate balance)
-        TOTAL_WAYPOINT_BUDGET = 30.0
+        # Reference-based budget scaling to prevent late-stage inflation
+        # NEW 2026-01-29: Scale budget inversely with waypoint count relative to reference
+        # Early stages (≤20 waypoints): full budget (30.0)
+        # Mid stages (20-40 waypoints): proportionally scaled
+        # Late stages (60+ waypoints): heavily scaled (~10)
+        BASE_WAYPOINT_BUDGET = 30.0
+        REFERENCE_WAYPOINT_COUNT = 20  # Typical early-mid curriculum stage
+
+        # Scale budget down for stages with more waypoints than reference
+        # Caps at 1.0x to never scale UP (early stages keep full budget)
+        budget_scale = min(1.0, REFERENCE_WAYPOINT_COUNT / max(total_waypoints, 1))
+        TOTAL_WAYPOINT_BUDGET = BASE_WAYPOINT_BUDGET * budget_scale
 
         # Base per-waypoint value inversely proportional to path length
         # This ensures short and long paths have similar total waypoint contribution
@@ -407,20 +428,39 @@ class RewardConfig:
 
     @property
     def completion_approach_bonus_weight(self) -> float:
-        """DISABLED 2025-12-25: PBRS provides sufficient gradient near goal.
+        """RE-ENABLED 2026-01-29: Curriculum-adaptive bonus for late stages.
 
-        The completion approach bonus attempted to provide an exponential gradient
-        in the final 50px. However, PBRS already provides stronger gradient as the
-        agent gets closer (same denominator, decreasing numerator = increasing
-        gradient per pixel moved).
+        DISABLED 2025-12-25: PBRS provides sufficient gradient near goal.
+        RE-ENABLED 2026-01-29: Late curriculum stages (8+) need additional gradient.
 
-        The natural PBRS gradient is sufficient to guide completion without
-        additional shaping.
+        Analysis showed at stage 9, agent gets stuck in "profitable death" local minimum:
+        - Collects waypoints (+25-27)
+        - Dies at avg 275px from goal (-8 penalty)
+        - Net reward: +17 (POSITIVE!)
+        - Completion delta: only +41 over dying
+
+        The completion approach bonus provides exponential gradient in final 100px,
+        creating ~5 additional reward (0.5 scaled) to push through completion instead
+        of dying after exploration. This makes the completion delta more attractive.
+
+        Curriculum-adaptive schedule:
+        - Stages 0-7: 0.0 (PBRS alone sufficient)
+        - Stage 8: 0.5x (light boost, 60% success rate shows agent can complete)
+        - Stage 9+: 1.0x (full boost to overcome profitable death)
 
         Returns:
-            0.0: Always disabled - PBRS provides sufficient gradient near goal
+            0.0 (stages 0-7): PBRS provides sufficient gradient
+            0.5 (stage 8): Light proximity boost
+            1.0 (stage 9+): Full proximity boost to overcome waypoint inflation
         """
-        return 0.0  # Disabled - PBRS provides sufficient gradient
+        curriculum_stage = getattr(self, "_curriculum_stage", 0)
+
+        if curriculum_stage >= 9:
+            return 1.0  # Full boost for very late stages
+        elif curriculum_stage >= 8:
+            return 0.5  # Light boost for stage 8
+        else:
+            return 0.0  # Disabled for early-mid stages
 
     @property
     def velocity_alignment_weight(self) -> float:
@@ -469,6 +509,11 @@ class RewardConfig:
         PBRS distance reduction, discovery/early phases must heavily penalize death to prevent
         learning "doomed trajectory" patterns where agent gets close to goal but dies.
 
+        LATE STAGE UPDATE 2026-01-29: Added curriculum stage scaling for stages 8+ to combat
+        "profitable death" local minimum where waypoint accumulation makes dying profitable.
+        At late stages with long paths (60+ waypoints), waypoint rewards can exceed death penalty,
+        creating stable but suboptimal equilibrium where agent farms waypoints then dies.
+
         Problem scenario at 0% success rate: "Fast fail" strategy (jump directly, reduce
         distance quickly, die) vs "Waypoint collection" (follow non-linear path, collect waypoints):
             Fast fail: +15 PBRS (quick distance) - 80 death = -65 (CLEARLY BAD)
@@ -481,35 +526,61 @@ class RewardConfig:
         - 50% waypoints + death: +20 PBRS + 60 waypoints - 80 death = +0 (neutral)
         - Fast fail (quick death): +15 PBRS - 80 death = -65 (strongly discouraged)
 
+        Late stage analysis (stage 9, 62 waypoints):
+        - Without stage scaling: +25 waypoints - 8 death = +17 (profitable death!)
+        - With 1.75x scaling: +25 waypoints - 14 death = +11 (still positive but marginal)
+        - Completion still best: +27 waypoints + 18 completion + 9 switch = +54
+
         Implements graduated penalty system that:
         1. Breaks "doomed trajectory" local minima in discovery (-80)
         2. Maintains completion preference in early learning (-50)
         3. Allows tactical risk-taking in mid-level (-20)
         4. Prevents waypoint farming in advanced (-8)
         5. Maintains strategic awareness in mastery (-6)
+        6. SCALES UP at late curriculum stages (8+) to combat waypoint inflation
 
         Returns:
-            -80.0 (<5% success): Prevents "doomed trajectory" exploitation
-            -50.0 (5-20% success): Strong completion preference
-            -20.0 (20-40% success): Balanced risk-taking
-            -8.0 (40-60% success): Prevents waypoint farming
-            -6.0 (60%+ success): Strategic risk consideration
+            Base penalties (success-rate scaled):
+                -80.0 (<5% success): Prevents "doomed trajectory" exploitation
+                -50.0 (5-20% success): Strong completion preference
+                -20.0 (20-40% success): Balanced risk-taking
+                -8.0 (40-60% success): Prevents waypoint farming
+                -6.0 (60%+ success): Strategic risk consideration
+
+            Stage scaling (applied to base):
+                Stage 8: 1.5x multiplier
+                Stage 9: 1.75x multiplier
+                Stage 10+: 2.0x multiplier
         """
         # Check for Optuna override first
         if self._death_penalty_override is not None:
             return self._death_penalty_override
 
+        # Base penalty from success rate
         if self.recent_success_rate < 0.05:  # Discovery phase
-            return -80.0  # Prevents "doomed trajectory" patterns (get close + die)
+            base_penalty = (
+                -80.0
+            )  # Prevents "doomed trajectory" patterns (get close + die)
         elif self.recent_success_rate < 0.20:  # Early learning
-            return -50.0  # Strong completion preference while learning
+            base_penalty = -50.0  # Strong completion preference while learning
         elif self.recent_success_rate < 0.40:  # Mid-level learning
-            return -20.0  # Balancing speed vs safety
+            base_penalty = -20.0  # Balancing speed vs safety
         elif self.recent_success_rate < 0.60:  # Advanced learning
-            return -8.0  # Prevents "collect waypoints + die" exploitation
-        return (
-            -6.0
-        )  # Mastery: maintains strategic risk-taking, prevents waypoint farming
+            base_penalty = -8.0  # Prevents "collect waypoints + die" exploitation
+        else:
+            base_penalty = -6.0  # Mastery: maintains strategic risk-taking
+
+        # NEW: Curriculum stage scaling for late stages (8+)
+        # At late stages, longer paths create more waypoints (60+ vs 20 early)
+        # This inflates waypoint rewards, making death profitable even with strong base penalty
+        # Stage scaling ensures death penalty grows with waypoint density
+        if self._curriculum_stage >= 8:
+            # Progressive scaling: stage 8 = 1.5x, stage 9 = 1.75x, stage 10+ = 2.0x
+            # Caps at 2.0x to prevent over-penalization while still making completion preferable
+            stage_multiplier = min(2.0, 1.0 + (self._curriculum_stage - 7) * 0.25)
+            base_penalty *= stage_multiplier
+
+        return base_penalty
 
     @property
     def level_completion_reward(self) -> float:

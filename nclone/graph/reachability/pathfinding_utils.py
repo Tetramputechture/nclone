@@ -1580,15 +1580,15 @@ def bfs_distance_from_start(
             if hasattr(mine_proximity_cache, "cache")
             else 0
         )
-        if mine_cache_size == 0:
-            _logger.warning(
-                f"[BFS_START] Mine proximity cache is EMPTY during BFS from {start_node}. "
-                f"Paths will NOT avoid mines! This likely means mine cache wasn't built before level cache."
-            )
-        else:
-            _logger.info(
-                f"[BFS_START] BFS from {start_node} with mine avoidance: {mine_cache_size} nodes with costs"
-            )
+        # if mine_cache_size == 0:
+        #     _logger.warning(
+        #         f"[BFS_START] Mine proximity cache is EMPTY during BFS from {start_node}. "
+        #         f"Paths will NOT avoid mines! This likely means mine cache wasn't built before level cache."
+        #     )
+        # else:
+        #     _logger.info(
+        #         f"[BFS_START] BFS from {start_node} with mine avoidance: {mine_cache_size} nodes with costs"
+        #     )
     elif not use_geometric_costs and mine_proximity_cache is None:
         raise ValueError(
             "mine_proximity_cache is None during BFS! "

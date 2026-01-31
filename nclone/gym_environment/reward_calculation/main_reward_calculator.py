@@ -324,6 +324,21 @@ class RewardCalculator:
             # Credit switch activation if it happened (before death)
             terminal_reward += milestone_reward
 
+            # === PROGRESS-GATED WAYPOINT PENALTY (NEW 2026-01-29) ===
+            # Penalize excessive waypoint farming on failed episodes with low completion.
+            # At late stages, agents can collect many waypoints then die with positive net reward.
+            # This penalty gates the waypoint contribution by actual progress toward goal.
+            #
+            # Analysis: Stage 9 deaths at 275px (70% progress) with +25 waypoints, -8 death = +17 net
+            # With penalty: +25 waypoints -8 death -5 farming penalty = +12 net (less attractive)
+            waypoint_farming_penalty = self._calculate_waypoint_farming_penalty(
+                distance_to_goal=obs.get("_pbrs_last_distance_to_goal"),
+                optimal_distance=self.optimal_path_length,
+                waypoints_collected=len(self._collected_path_waypoints),
+                total_waypoints=len(self._waypoint_sequence),
+            )
+            terminal_reward += waypoint_farming_penalty
+
             self.episode_terminal_reward = terminal_reward
             scaled_reward = terminal_reward * GLOBAL_REWARD_SCALE
 
@@ -337,6 +352,7 @@ class RewardCalculator:
                 "milestone_reward": milestone_reward,
                 "pbrs_reward": 0.0,
                 "time_penalty": 0.0,
+                "waypoint_farming_penalty": waypoint_farming_penalty,
                 "total_reward": terminal_reward,
                 "scaled_reward": scaled_reward,
                 "is_terminal": True,
@@ -653,7 +669,9 @@ class RewardCalculator:
         # Disabled auxiliary components (still correct to disable these)
         velocity_alignment_bonus = 0.0
         exit_direction_bonus = 0.0
-        completion_approach_bonus = 0.0
+        completion_approach_bonus = (
+            0.0  # Will be calculated after distance_to_goal is available
+        )
 
         # Track frames since last waypoint collection (for compatibility)
         if hasattr(self, "_frames_since_last_collection"):
@@ -723,6 +741,18 @@ class RewardCalculator:
             )
             if distance_to_exit < self.closest_distance_to_exit:
                 self.closest_distance_to_exit = distance_to_exit
+
+        # === COMPLETION PROXIMITY BONUS (RE-ENABLED 2026-01-29 for late stages) ===
+        # Provides exponential gradient in final 100px to overcome "profitable death" local minimum.
+        # At late curriculum stages (9+), agent can collect waypoints and die with positive reward.
+        # This bonus creates strong gradient to close the final gap instead of dying.
+        #
+        # Analysis showed agent dying at average 275px from goal at stage 9 with +17 net reward.
+        # This bonus makes states closer to goal significantly more valuable, encouraging completion.
+        completion_approach_bonus = self._calculate_completion_approach_bonus(
+            distance_to_goal
+        )
+        reward += completion_approach_bonus
 
         # # === PATH vs EUCLIDEAN DISTANCE DIVERGENCE DIAGNOSTIC ===
         # # NOTE: distance_to_goal is PHYSICS-WEIGHTED (not geometric pixels)
@@ -2452,6 +2482,161 @@ class RewardCalculator:
             self._episode_waypoint_bonus_total += bonus
 
         return bonus, metrics
+
+    def _calculate_completion_approach_bonus(
+        self, distance_to_goal: Optional[float]
+    ) -> float:
+        """Calculate exponential bonus for final approach to goal.
+
+        RE-ENABLED 2026-01-29: Addresses "profitable death" local minimum at late curriculum
+        stages where waypoint accumulation makes dying profitable. Creates strong gradient
+        in final 100px to encourage completion over exploration+death pattern.
+
+        Analysis context:
+        - Stage 9: Agent dying at avg 275px from goal with +17 net reward
+        - Waypoint contribution: +25-27 per episode
+        - Death penalty: -8 (too weak vs waypoints)
+        - Problem: Dying after exploration is more profitable than pushing to complete
+
+        Exponential bonus design:
+        - 100px from goal: +0.0 bonus (normal reward structure)
+        - 50px from goal: +1.25 bonus (0.5^2 × 5.0)
+        - 25px from goal: +2.81 bonus (0.75^2 × 5.0)
+        - 10px from goal: +4.05 bonus (0.9^2 × 5.0)
+        - At goal: +5.0 bonus (1.0^2 × 5.0)
+
+        This creates ~5 additional reward (0.5 scaled) for pushing through final approach,
+        making completion delta +46 instead of +41 over dying at 275px.
+
+        Args:
+            distance_to_goal: Current shortest path distance to goal (pixels)
+
+        Returns:
+            Proximity bonus reward (unscaled, 0.0 to 5.0)
+        """
+        if distance_to_goal is None or distance_to_goal == float("inf"):
+            return 0.0
+
+        # Completion approach bonus parameters
+        COMPLETION_APPROACH_RADIUS = 100.0  # Active within 100px of goal
+        COMPLETION_APPROACH_MAX_BONUS = 5.0  # Max bonus at goal (0.5 after scaling)
+
+        # Only apply within approach radius
+        if distance_to_goal >= COMPLETION_APPROACH_RADIUS:
+            return 0.0
+
+        # Calculate exponential bonus: quadratic falloff from goal
+        # proximity_ratio: 0.0 at 100px, 1.0 at goal
+        proximity_ratio = 1.0 - (distance_to_goal / COMPLETION_APPROACH_RADIUS)
+
+        # Quadratic scaling: creates strong gradient very close to goal
+        # At 50px: (0.5)^2 = 0.25 → 1.25 bonus
+        # At 25px: (0.75)^2 = 0.56 → 2.81 bonus
+        # At 10px: (0.9)^2 = 0.81 → 4.05 bonus
+        approach_bonus = COMPLETION_APPROACH_MAX_BONUS * (proximity_ratio**2)
+
+        return approach_bonus
+
+    def _calculate_waypoint_farming_penalty(
+        self,
+        distance_to_goal: Optional[float],
+        optimal_distance: Optional[float],
+        waypoints_collected: int,
+        total_waypoints: int,
+    ) -> float:
+        """Calculate penalty for waypoint farming on failed episodes.
+
+        NEW 2026-01-29: Gates waypoint rewards by episode progress/outcome.
+        Penalizes episodes that collect many waypoints but die without making substantial
+        progress toward completion. This addresses the "profitable death" local minimum
+        at late curriculum stages.
+
+        Problem: At stage 9, agent collects ~45 waypoints (+25 reward) then dies (-8 penalty)
+        with net +17 reward, making exploration+death more profitable than completion attempts.
+
+        Solution: Apply progressive penalty based on:
+        1. Progress fraction (how close to goal when died)
+        2. Waypoint collection ratio (how many waypoints collected)
+
+        Penalty formula:
+        - Progress < 50%: penalty proportional to waypoints collected
+        - Progress 50-70%: reduced penalty (some progress made)
+        - Progress > 70%: minimal penalty (close to completion, acceptable)
+
+        Examples (62 waypoints total, 45 collected):
+        - Death at 275px from 929px optimal (70% progress):
+          * Waypoint ratio: 45/62 = 0.73
+          * Progress: 0.70
+          * Penalty: -5.0 × 0.73 × (1 - 0.70) = -1.09
+
+        - Death at 465px from 929px optimal (50% progress):
+          * Waypoint ratio: 45/62 = 0.73
+          * Progress: 0.50
+          * Penalty: -5.0 × 0.73 × (1 - 0.50) = -1.83
+
+        - Death at 650px from 929px optimal (30% progress):
+          * Waypoint ratio: 45/62 = 0.73
+          * Progress: 0.30
+          * Penalty: -5.0 × 0.73 × (1 - 0.30) = -2.56
+
+        Args:
+            distance_to_goal: Current distance to goal when died (pixels)
+            optimal_distance: Optimal path length from spawn to goal (pixels)
+            waypoints_collected: Number of waypoints collected this episode
+            total_waypoints: Total waypoints available in level
+
+        Returns:
+            Penalty for waypoint farming (negative, 0.0 to -10.0 range)
+        """
+        # Only apply on death with collected waypoints
+        if waypoints_collected == 0 or total_waypoints == 0:
+            return 0.0
+
+        # Skip if distance data not available
+        if (
+            distance_to_goal is None
+            or optimal_distance is None
+            or optimal_distance <= 0
+        ):
+            return 0.0
+
+        # Skip if distance is infinite (off-graph / unreachable)
+        if distance_to_goal == float("inf"):
+            return 0.0
+
+        # Calculate progress fraction (0.0 = at spawn, 1.0 = at goal)
+        # Invert distance: closer to goal = higher progress
+        progress_fraction = 1.0 - min(1.0, distance_to_goal / optimal_distance)
+
+        # Calculate waypoint collection ratio
+        waypoint_ratio = waypoints_collected / total_waypoints
+
+        # Progressive penalty: penalize more when progress is low
+        # But reduce penalty for high progress (close to completion is acceptable)
+        MAX_FARMING_PENALTY = (
+            -10.0
+        )  # Maximum penalty for extensive farming with no progress
+
+        # Penalty = max_penalty × waypoint_ratio × (1 - progress)
+        # This creates:
+        # - Low progress (30%): high penalty if many waypoints collected
+        # - High progress (70%): low penalty (agent made good progress)
+        # - High progress (90%): minimal penalty (almost completed)
+        progress_penalty_scale = 1.0 - progress_fraction
+
+        # Apply waypoint ratio: only penalize if collecting many waypoints
+        # If only collecting a few waypoints, penalty is minimal
+        farming_penalty = MAX_FARMING_PENALTY * waypoint_ratio * progress_penalty_scale
+
+        # DIAGNOSTIC: Log significant farming penalties
+        if farming_penalty < -2.0:
+            logger.debug(
+                f"[FARMING_PENALTY] Waypoint farming detected: penalty={farming_penalty:.2f}, "
+                f"progress={progress_fraction:.1%}, waypoints={waypoints_collected}/{total_waypoints}, "
+                f"distance={distance_to_goal:.0f}px / {optimal_distance:.0f}px"
+            )
+
+        return farming_penalty
 
     def _track_waypoint_collection(
         self,

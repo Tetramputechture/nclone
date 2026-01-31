@@ -271,13 +271,13 @@ class CachedPathDistanceCalculator:
         stage_changed = self._current_curriculum_stage != current_stage
 
         # Log cache rebuild decisions for curriculum debugging
-        logger.info(
-            f"[CACHE_BUILD] level_id={level_data.level_id}, "
-            f"curriculum_stage={current_stage if current_stage is not None else 'N/A'}, "
-            f"current_level_id={self._current_level_id}, "
-            f"level_changed={level_changed}, "
-            f"stage_changed={stage_changed}"
-        )
+        # logger.info(
+        #     f"[CACHE_BUILD] level_id={level_data.level_id}, "
+        #     f"curriculum_stage={current_stage if current_stage is not None else 'N/A'}, "
+        #     f"current_level_id={self._current_level_id}, "
+        #     f"level_changed={level_changed}, "
+        #     f"stage_changed={stage_changed}"
+        # )
 
         # Fast rejection: skip if same level AND same stage
         if not level_changed and not stage_changed:

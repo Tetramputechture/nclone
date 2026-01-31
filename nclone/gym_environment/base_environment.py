@@ -3169,7 +3169,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             distance_to_goal = (dx_goal * dx_goal + dy_goal * dy_goal) ** 0.5
 
             if distance_to_goal < STRAIGHT_PATH_MIN_DISTANCE:
-                return None  # Too close, don't apply masking
+                # Too close for path-based masking, but provide basic direction hint
+                # This helps with curriculum stages where goals are very close
+                # Just use direct line-of-sight direction
+                if abs(dx_goal) > abs(dy_goal) * 2:  # Primarily horizontal
+                    if dx_goal < 0:
+                        return "left"
+                    else:
+                        return "right"
+                return None  # Too ambiguous, no masking
 
             # Get graph adjacency
             if not hasattr(self, "current_graph_data"):
@@ -3215,15 +3223,21 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
             if is_horizontal:
                 # Very straight horizontal path
+                # Track masking application for TensorBoard monitoring
+                self._deterministic_mask_applied_count += 1
                 if dx < 0:
                     return "left"
                 else:
                     return "right"
             elif is_downward:
                 # Downward path
+                # Track masking application for TensorBoard monitoring
+                self._deterministic_mask_applied_count += 1
                 return "down"
             else:
-                # Path is not straight enough for deterministic masking
+                # Path is not straight enough for strict deterministic masking
+                # But we should still return None to allow normal action selection
+                # (Jan 15 behavior: only mask on very clear straight paths)
                 return None
 
         except Exception as e:
