@@ -365,6 +365,17 @@ class RewardConfig:
         # Scale budget down for stages with more waypoints than reference
         # Caps at 1.0x to never scale UP (early stages keep full budget)
         budget_scale = min(1.0, REFERENCE_WAYPOINT_COUNT / max(total_waypoints, 1))
+        
+        # TIER 1 FIX (2026-02-02): Stage-aware reduction to make PBRS dominant at late stages
+        # Analysis: Agent at stage 9 collects 47 waypoints × ~0.6 = +28 reward (immediate)
+        # vs PBRS -155 (delayed over 100+ steps). Waypoint signal dominates, causing
+        # deceptive local minimum where agent optimizes waypoint collection via terrible paths.
+        # Solution: Aggressively reduce waypoint budget at late stages to shift gradient balance.
+        if self._curriculum_stage >= 8:
+            budget_scale *= 0.3  # 70% reduction: 30 × (20/60) × 0.3 = 3 budget → ~9 reward
+        elif self._curriculum_stage >= 6:
+            budget_scale *= 0.5  # 50% reduction: gradual transition from guidance to optimization
+        
         TOTAL_WAYPOINT_BUDGET = BASE_WAYPOINT_BUDGET * budget_scale
 
         # Base per-waypoint value inversely proportional to path length
@@ -575,9 +586,11 @@ class RewardConfig:
         # This inflates waypoint rewards, making death profitable even with strong base penalty
         # Stage scaling ensures death penalty grows with waypoint density
         if self._curriculum_stage >= 8:
-            # Progressive scaling: stage 8 = 1.5x, stage 9 = 1.75x, stage 10+ = 2.0x
-            # Caps at 2.0x to prevent over-penalization while still making completion preferable
-            stage_multiplier = min(2.0, 1.0 + (self._curriculum_stage - 7) * 0.25)
+            # TIER 1 FIX (2026-02-02): Increased cap 2.0x → 3.0x and steeper scaling
+            # Progressive scaling: stage 8 = 1.5x, stage 9 = 2.0x, stage 10+ = 2.5x, capped at 3.0x
+            # Analysis: At stage 9 with ~28 waypoint reward, death penalty -8 × 2.0 = -16 insufficient
+            # New: -8 × 3.0 = -24 makes completion (+20) clearly superior to death after waypoints
+            stage_multiplier = min(3.0, 1.0 + (self._curriculum_stage - 7) * 0.5)
             base_penalty *= stage_multiplier
 
         return base_penalty
@@ -737,11 +750,19 @@ class RewardConfig:
         # Addresses success-spike-then-crash pattern by preventing exploration from
         # disrupting discovered patterns once agent shows consistent success.
         # This "commitment phase" allows agent to solidify learned behavior.
-        if curriculum_stage >= 8:
+        # 
+        # TIER 2 FIX (2026-02-02): More aggressive convergence at late stages with success
+        # Analysis: Tuned run had 0.96 entropy at stage 9 (too high), preventing commitment
+        # to optimal patterns. Lower entropy forces convergence once good patterns discovered.
+        if curriculum_stage >= 9 and self.recent_success_rate >= 0.10:
+            return 0.012  # Strong commitment - force convergence on optimal patterns
+        elif curriculum_stage >= 8 and self.recent_success_rate >= 0.05:
+            return 0.015  # Moderate commitment - reduce exploration significantly
+        elif curriculum_stage >= 8:
             if self.recent_success_rate >= 0.15:
-                return 0.018  # Exploitation - solidify learned pattern
+                return 0.018  # Exploitation - solidify learned pattern (original)
             elif self.recent_success_rate >= 0.05:
-                return 0.022  # Transitioning - moderate exploration
+                return 0.022  # Transitioning - moderate exploration (original)
             else:
                 return 0.028  # Discovery - still exploring
 
