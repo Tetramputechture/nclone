@@ -309,11 +309,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_door_switches: Optional[list] = None
         self._cached_toggle_mines: Optional[list] = None
 
-        # Momentum waypoints cache (per level)
-        # Loaded from demonstration analysis, used for momentum-aware PBRS
-        self._cached_momentum_waypoints: Optional[List[Any]] = None
-        self._cached_waypoints_level_id: Optional[str] = None
-
         # Load the initial map
         self.map_loader.load_map()
 
@@ -492,7 +487,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         logger = logging.getLogger(__name__)
 
         # Profile entire step method
-        t_step = self._profile_start("step_total")
+        # t_step = self._profile_start("step_total")
 
         # OPTIMIZATION: Clear step-level cache to dedupe within-step distance queries
         # Path calculator caches distance computations within a single step to avoid
@@ -535,9 +530,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             for i in range(self.frame_skip):
                 # Execute physics tick (inline profiling check to avoid function call overhead)
                 if _profile:
-                    t_physics = self._profile_start("physics_tick")
+                    # t_physics = self._profile_start("physics_tick")
                     headless.tick(action_hoz, action_jump)
-                    self._profile_end("physics_tick", t_physics)
+                    # self._profile_end("physics_tick", t_physics)
                 else:
                     headless.tick(action_hoz, action_jump)
 
@@ -623,9 +618,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._post_action_hook()
 
             # Get final observation - OBSERVATION GENERATION
-            t_obs = self._profile_start("observation_get")
+            # t_obs = self._profile_start("observation_get")
             final_obs = self._get_observation()
-            self._profile_end("observation_get", t_obs)
+            # self._profile_end("observation_get", t_obs)
 
             # Cache observation for reward calculation in next step
             self._prev_obs_cache = final_obs
@@ -640,7 +635,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._pre_reward_hook(final_obs, player_won)
 
             # Calculate reward using initial→final transition with frame count scaling
-            t_reward = self._profile_start("reward_calc")
+            # t_reward = self._profile_start("reward_calc")
             reward = self.reward_calculator.calculate_reward(
                 final_obs,
                 initial_obs,
@@ -648,7 +643,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 frames_executed=frames_executed,
                 curriculum_manager=self.goal_curriculum_manager,
             )
-            self._profile_end("reward_calc", t_reward)
+            # self._profile_end("reward_calc", t_reward)
 
             # Update dynamic truncation limit if PBRS surface area is now available
             self._update_dynamic_truncation_if_needed()
@@ -676,14 +671,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self.current_ep_reward += reward
 
             # Process observation for training
-            t_proc = self._profile_start("observation_process")
+            # t_proc = self._profile_start("observation_process")
             processed_obs = self._process_observation(final_obs)
-            self._profile_end("observation_process", t_proc)
+            # self._profile_end("observation_process", t_proc)
 
             # Build episode info
-            t_info = self._profile_start("info_build")
+            # t_info = self._profile_start("info_build")
             info = self._build_episode_info(player_won, terminated, truncated)
-            self._profile_end("info_build", t_info)
+            # self._profile_end("info_build", t_info)
 
             # DIAGNOSTIC: Store reward breakdown in info for route visualization
             # This allows seeing reward components without needing logging enabled
@@ -741,7 +736,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._extend_info_hook(info)
 
             # End step profiling
-            self._profile_end("step_total", t_step)
+            # self._profile_end("step_total", t_step)
 
             return processed_obs, reward, terminated, truncated, info
 
@@ -1371,46 +1366,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         f"Values >25 indicate reward accumulation bug (checkpoint created during checkpoint episode)."
                     )
 
-            # Extract waypoints from reward calculator for visualization
-            waypoints_active = []
-            waypoints_reached = []
-
-            if hasattr(self.reward_calculator, "current_path_waypoints_by_phase"):
-                # Get all waypoints from all phases for visualization
-                # Visualization should show complete path, not just current phase
-                waypoints_dict = getattr(
-                    self.reward_calculator, "current_path_waypoints_by_phase", {}
-                )
-                if waypoints_dict is None:
-                    waypoints_dict = {}
-
-                # Combine ALL waypoints from all phases for visualization
-                # Keep phase information for phase-aware coloring
-                for phase_name, phase_list in waypoints_dict.items():
-                    # Convert PathWaypoint objects to dict format for visualization
-                    for wp in phase_list:
-                        # DIAGNOSTIC: Use wp.phase (from PathWaypoint) not phase_name (from dict key)
-                        # to ensure we're reading the actual waypoint's phase attribute
-                        waypoints_active.append(
-                            {
-                                "position": wp.position,
-                                "value": wp.value,
-                                "type": wp.waypoint_type,
-                                "source": "path",  # These are path waypoints
-                                "phase": wp.phase,  # Use waypoint's phase attribute, not dict key
-                                "discovery_count": 1,  # Not tracked for path waypoints
-                            }
-                        )
-
-                # Get collected waypoints for this episode
-                collected = getattr(
-                    self.reward_calculator, "_collected_path_waypoints", set()
-                )
-                waypoints_reached = list(collected)
-
-            info["_waypoints_active"] = waypoints_active
-            info["_waypoints_reached"] = waypoints_reached
-
         # DIAGNOSTIC: Validate episode stats are reasonable
         if (terminated or truncated) and self.enable_logging:
             if self.current_ep_reward == 0.0:
@@ -1720,10 +1675,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_doors = None
         self._cached_locked_door_switches = None
         self._cached_toggle_mines = None
-
-        # Invalidate momentum waypoints cache (new level = new waypoints)
-        self._cached_momentum_waypoints = None
-        self._cached_waypoints_level_id = None
 
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
@@ -2212,9 +2163,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # This allows us to report only episode frames (excluding replay) in info dict
         self._checkpoint_replay_frame_count = frames_replayed
 
-        # Pre-mark waypoints crossed during replay to prevent double-rewarding
-        self._mark_checkpoint_waypoints_as_collected(checkpoint_route)
-
         # Store checkpoint route for inclusion in episode end info
         # This persists through the episode so route visualization can access it
         self._checkpoint_route = checkpoint_route
@@ -2315,19 +2263,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             )
 
         return (processed_obs, info)
-
-    def _mark_checkpoint_waypoints_as_collected(
-        self, checkpoint_route: List[Tuple[float, float]]
-    ) -> None:
-        """Mark waypoints crossed during checkpoint replay as collected.
-
-        SIMPLIFIED: No-op since waypoint system is no longer used.
-
-        Args:
-            checkpoint_route: List of positions traversed during checkpoint replay
-        """
-        # SIMPLIFIED: Waypoint system removed, this is now a no-op
-        pass
 
     def get_current_action_sequence(self) -> List[int]:
         """Get the action sequence since last reset.
@@ -2645,9 +2580,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 [f"a{i}:{a}->({p[0]:.1f},{p[1]:.1f})" for i, a, p in _debug_positions]
             )
             logger.error(f"[REPLAY_DEBUG] First 10 positions: {pos_log}")
-
-        # Pre-mark waypoints crossed during replay to prevent double-rewarding
-        self._mark_checkpoint_waypoints_as_collected(checkpoint_route)
 
         # DEBUG: Log replay completion
         actual_position = self.nplay_headless.ninja_position()
@@ -3026,6 +2958,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     f"Entity repositioning failed or was undone! Switch will be collected immediately!"
                 )
 
+        # Extract jump_duration_remaining from ninja_state (index 11, 0-indexed)
+        # This is normalized [0, 1]: 1.0 = full jump available, 0.0 = no jump frames left
+        jump_duration_remaining = (
+            float(ninja_state[11]) if len(ninja_state) > 11 else 0.0
+        )
+
         obs = {
             "game_state": game_state,
             "player_dead": self.nplay_headless.ninja_has_died(),
@@ -3038,6 +2976,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "player_xspeed_old": ninja_vel_old[0],
             "player_yspeed_old": ninja_vel_old[1],
             "player_airborn_old": self.nplay_headless.ninja_airborn_old(),
+            "jump_duration_remaining": jump_duration_remaining,  # For physics-aware PBRS
             "switch_activated": switch_activated,  # Use fresh value, not cached
             "switch_x": switch_pos[0],
             "switch_y": switch_pos[1],
@@ -3419,56 +3358,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     def current_map_name(self) -> str:
         """Get the current map name."""
         return self.map_loader.current_map_name
-
-    def _load_momentum_waypoints_if_available(self) -> Optional[List[Any]]:
-        """Load momentum waypoints for current level from cache if available.
-
-        Momentum waypoints are extracted from expert demonstrations and cached
-        per level. They inform PBRS potential calculation for momentum-aware
-        reward shaping.
-
-        Returns:
-            List of MomentumWaypoint objects if cache exists, None otherwise
-        """
-        level_id = self.map_loader.current_map_name
-
-        # Check if already cached for this level
-        if (
-            self._cached_waypoints_level_id == level_id
-            and self._cached_momentum_waypoints is not None
-        ):
-            return self._cached_momentum_waypoints
-
-        # Try to load from cache
-        try:
-            from ..analysis.momentum_waypoint_extractor import MomentumWaypointExtractor
-
-            waypoints = MomentumWaypointExtractor.load_waypoints_from_cache(level_id)
-
-            # Cache the result (even if None)
-            self._cached_momentum_waypoints = waypoints
-            self._cached_waypoints_level_id = level_id
-
-            if waypoints:
-                logger.debug(
-                    f"Loaded {len(waypoints)} momentum waypoints for level {level_id}"
-                )
-            else:
-                logger.debug(f"No momentum waypoints cache found for level {level_id}")
-
-            return waypoints
-
-        except Exception as e:
-            logger.debug(f"Failed to load momentum waypoints: {e}")
-            return None
-
-    def _update_path_waypoints_for_current_level(self) -> None:
-        """Extract path-based waypoints from optimal A* paths.
-
-        SIMPLIFIED: No-op since waypoint system is no longer used.
-        """
-        # SIMPLIFIED: Waypoint system removed, this is now a no-op
-        pass
 
     def get_route_visualization_tile_data(self) -> Dict[Tuple[int, int], int]:
         """Get tile data for route visualization.

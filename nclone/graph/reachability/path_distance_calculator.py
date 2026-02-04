@@ -134,7 +134,6 @@ class CachedPathDistanceCalculator:
         self._cached_waypoint_positions: List[Tuple[int, int]] = []
 
         # Cache graph data for waypoint-triggered cache rebuilds
-        # Allows set_waypoints() to rebuild cache when waypoints change mid-episode
         self._last_adjacency: Optional[Dict] = None
         self._last_base_adjacency: Optional[Dict] = None
         self._last_graph_data: Optional[Dict] = None
@@ -498,86 +497,6 @@ class CachedPathDistanceCalculator:
 
         return rebuilt or mine_cache_rebuilt or sdf_rebuilt
 
-    def set_waypoints(self, waypoints: Optional[List[Any]]) -> None:
-        """Set waypoints for precomputed caching.
-
-        Should be called before build_level_cache() to include waypoints
-        in the BFS flood-fill precomputation.
-
-        If called after cache is built, automatically triggers cache rebuild
-        to include the new waypoints.
-
-        Args:
-            waypoints: List of waypoint objects with .position attribute
-        """
-        # Convert waypoints to positions
-        new_waypoint_positions = []
-        if waypoints:
-            new_waypoint_positions = [
-                (int(wp.position[0]), int(wp.position[1])) for wp in waypoints
-            ]
-
-        # Check if waypoints changed
-        waypoints_changed = new_waypoint_positions != self._cached_waypoint_positions
-
-        # DIAGNOSTIC: Log BEFORE setting to see if we're clearing accidentally
-        logger.info(
-            f"[WAYPOINT_CACHE] BEFORE set: {len(self._cached_waypoint_positions)} waypoints, "
-            f"NEW: {len(new_waypoint_positions)} waypoints, "
-            f"changed={waypoints_changed}"
-        )
-
-        self._cached_waypoint_positions = new_waypoint_positions
-
-        logger.info(
-            f"[WAYPOINT_CACHE] AFTER set: {len(self._cached_waypoint_positions)} waypoints for caching: "
-            f"{self._cached_waypoint_positions}"
-        )
-
-        # DIAGNOSTIC: Log waypoint list id to track if list object changes
-        logger.info(
-            f"[WAYPOINT_CACHE] Waypoint list id: {id(self._cached_waypoint_positions)}"
-        )
-
-        # CRITICAL: If waypoints changed and cache already exists, rebuild it
-        # This handles mid-episode waypoint discovery by adaptive waypoint system
-        if (
-            waypoints_changed
-            and self.level_cache is not None
-            and self.level_data is not None
-        ):
-            logger.info(
-                f"[WAYPOINT_CACHE] Waypoints changed, rebuilding level cache to include "
-                f"{len(self._cached_waypoint_positions)} new waypoints"
-            )
-            # Rebuild cache with new waypoints
-            # Need to get adjacency from somewhere - check if we have cached graph data
-            if (
-                hasattr(self, "_last_adjacency")
-                and hasattr(self, "_last_base_adjacency")
-                and hasattr(self, "_last_graph_data")
-            ):
-                # Clear level ID to bypass fast rejection check and force rebuild
-                old_level_id = self._current_level_id
-                self._current_level_id = None
-                logger.info(
-                    f"[WAYPOINT_CACHE] Cleared level_id (was {old_level_id}) to force cache rebuild"
-                )
-                self.build_level_cache(
-                    self.level_data,
-                    self._last_adjacency,
-                    self._last_base_adjacency,
-                    self._last_graph_data,
-                )
-                logger.info(
-                    f"[WAYPOINT_CACHE] Cache rebuild complete, level_id now={self._current_level_id}"
-                )
-            else:
-                logger.warning(
-                    "[WAYPOINT_CACHE] Cannot rebuild cache - no cached graph data. "
-                    "Waypoints will use BFS fallback until next cache build."
-                )
-
     def _calculate_distance(
         self,
         start: Tuple[int, int],
@@ -701,43 +620,47 @@ class CachedPathDistanceCalculator:
                     ):
                         continue
 
-                    # Determine if this edge is aerial upward (for chain tracking)
-                    dy = neighbor[1] - current[1]
-                    # NOTE: walled status does NOT affect aerial state - you can be in air next to a wall!
-                    # Only grounding (solid surface below) determines if airborne
-                    is_aerial_upward = not current_grounded and dy < 0
+                # Determine if this edge is aerial upward (for chain tracking)
+                dy = neighbor[1] - current[1]
+                # CRITICAL: Aerial chains only apply to FREE-FALL upward movement
+                # Wall jumps are a distinct mechanic with their own costs (handled separately)
+                # Reset chain on: ground contact, wall contact, or non-upward movement
+                current_walled = current_physics["walled"]
+                is_aerial_upward = (
+                    not current_grounded and not current_walled and dy < 0
+                )
 
-                    # Calculate new chain count: increment for aerial upward, reset otherwise
-                    new_chain = current_chain + 1 if is_aerial_upward else 0
+                # Calculate new chain count: increment for aerial upward, reset otherwise
+                new_chain = current_chain + 1 if is_aerial_upward else 0
 
-                    # Calculate physics-aware edge cost with momentum tracking
-                    # OPTIMIZATION: Pass cached parent/grandparent
-                    # Pass ninja_velocity only for first edges (from start with no parent)
-                    edge_ninja_velocity = (
-                        ninja_velocity
-                        if (current == start and current_parent is None)
-                        else None
-                    )
-                    edge_cost = _calculate_physics_aware_cost(
-                        current,
-                        neighbor,
-                        base_adjacency,
-                        current_parent,
-                        physics_cache,
-                        level_data,
-                        mine_proximity_cache,
-                        current_chain,  # Pass current chain count for cost calculation
-                        current_grandparent,  # Pass cached grandparent
-                        mine_sdf,  # Pass SDF for velocity-aware mine costs
-                        hazard_cost_multiplier,  # Curriculum-adaptive mine costs
-                        edge_ninja_velocity,  # Velocity-aware costs for first edge only
-                    )
+                # Calculate physics-aware edge cost with momentum tracking
+                # OPTIMIZATION: Pass cached parent/grandparent
+                # Pass ninja_velocity only for first edges (from start with no parent)
+                edge_ninja_velocity = (
+                    ninja_velocity
+                    if (current == start and current_parent is None)
+                    else None
+                )
+                edge_cost = _calculate_physics_aware_cost(
+                    current,
+                    neighbor,
+                    base_adjacency,
+                    current_parent,
+                    physics_cache,
+                    level_data,
+                    mine_proximity_cache,
+                    current_chain,  # Pass current chain count for cost calculation
+                    current_grandparent,  # Pass cached grandparent
+                    mine_sdf,  # Pass SDF for velocity-aware mine costs
+                    hazard_cost_multiplier,  # Curriculum-adaptive mine costs
+                    edge_ninja_velocity,  # Velocity-aware costs for first edge only
+                )
 
-                    visited.add(neighbor)
-                    parents[neighbor] = current  # Track parent
-                    grandparents[neighbor] = current_parent  # Track cached grandparent
-                    aerial_chains[neighbor] = new_chain  # Track chain count
-                    queue.append((neighbor, dist + edge_cost))
+                visited.add(neighbor)
+                parents[neighbor] = current  # Track parent
+                grandparents[neighbor] = current_parent  # Track cached grandparent
+                aerial_chains[neighbor] = new_chain  # Track chain count
+                queue.append((neighbor, dist + edge_cost))
 
         return float("inf")
 
@@ -753,8 +676,15 @@ class CachedPathDistanceCalculator:
         mine_sdf: Optional[Any] = None,
         hazard_cost_multiplier: Optional[float] = None,
         ninja_velocity: Optional[Tuple[float, float]] = None,
+        jump_duration_remaining: Optional[float] = None,
     ) -> float:
-        """A* pathfinding - faster than BFS with heuristic, physics, and momentum validation."""
+        """
+        A* pathfinding with physics-aware edge costs, momentum tracking, and jump duration validation.
+
+        Args:
+            jump_duration_remaining: Normalized remaining jump frames [0, 1]. Used with ninja_velocity
+                                   for first-edge feasibility. If <= 0, upward airborne edges return inf.
+        """
 
         def manhattan_heuristic(pos: Tuple[int, int]) -> float:
             """Manhattan distance heuristic (admissible)."""
@@ -801,21 +731,24 @@ class CachedPathDistanceCalculator:
 
                 # Determine if this edge is aerial upward (for chain tracking)
                 dy = neighbor[1] - current[1]
-                # NOTE: walled status does NOT affect aerial state - you can be in air next to a wall!
-                # Only grounding (solid surface below) determines if airborne
-                is_aerial_upward = not current_grounded and dy < 0
+                # CRITICAL: Aerial chains only apply to FREE-FALL upward movement
+                # Wall jumps are a distinct mechanic with their own costs (handled separately)
+                # Reset chain on: ground contact, wall contact, or non-upward movement
+                current_walled = current_physics["walled"]
+                is_aerial_upward = (
+                    not current_grounded and not current_walled and dy < 0
+                )
 
                 # Calculate new chain count: increment for aerial upward, reset otherwise
                 new_chain = current_chain + 1 if is_aerial_upward else 0
 
                 # Calculate physics-aware edge cost with momentum tracking
                 # OPTIMIZATION: Pass cached parent/grandparent
-                # Pass ninja_velocity only for first edges (from start with no parent)
-                edge_ninja_velocity = (
-                    ninja_velocity
-                    if (current == start and current_parent is None)
-                    else None
-                )
+                # Pass ninja_velocity and jump_duration_remaining only for first edges (from start with no parent)
+                is_first_edge = current == start and current_parent is None
+                edge_ninja_velocity = ninja_velocity if is_first_edge else None
+                edge_jump_duration = jump_duration_remaining if is_first_edge else None
+
                 edge_cost = _calculate_physics_aware_cost(
                     current,
                     neighbor,
@@ -829,6 +762,7 @@ class CachedPathDistanceCalculator:
                     mine_sdf,  # Pass SDF for velocity-aware mine costs
                     hazard_cost_multiplier,  # Curriculum-adaptive mine costs
                     edge_ninja_velocity,  # Velocity-aware costs for first edge only
+                    edge_jump_duration,  # Jump duration for first edge feasibility
                 )
 
                 tentative_g = current_g + edge_cost
@@ -1483,6 +1417,207 @@ class CachedPathDistanceCalculator:
         # by checking minimum distance among nearby nodes.
         total_dist = max(0.0, distance - (ninja_radius + entity_radius))
         return total_dist
+
+    def get_physics_cost(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        adjacency: Dict,
+        base_adjacency: Dict,
+        level_data: Any,
+        graph_data: Optional[Dict],
+        entity_radius: float,
+        ninja_radius: float,
+        ninja_velocity: Tuple[float, float],
+        jump_duration_remaining: Optional[float] = None,
+        goal_id: Optional[str] = None,
+    ) -> float:
+        """
+        Get physics-weighted path cost from start to goal.
+
+        Unlike get_geometric_distance(), this uses full physics costs including:
+        - Velocity-aware first-edge costs (critical for trajectory feasibility)
+        - Jump duration remaining checks (prevents exhausted jump frames)
+        - Aerial chain tracking
+        - Momentum preservation/reversal costs
+        - Mine proximity costs
+
+        This should be used for PBRS potential computation where trajectory
+        feasibility matters. Returns inf for impossible trajectories.
+
+        Args:
+            start: Start position (x, y) in world coordinates
+            goal: Goal position (x, y) in world coordinates
+            adjacency: Masked graph adjacency structure
+            base_adjacency: Base graph adjacency (pre-entity-mask)
+            level_data: LevelData instance
+            graph_data: Graph data dict with node_physics, spatial_hash
+            entity_radius: Goal entity collision radius
+            ninja_radius: Ninja collision radius
+            ninja_velocity: Current ninja velocity (vx, vy) - REQUIRED
+            jump_duration_remaining: Normalized remaining jump frames [0, 1], optional.
+                                    If provided and <= 0, airborne upward edges return inf.
+            goal_id: Optional goal identifier for caching
+
+        Returns:
+            Physics-weighted path cost, or float('inf') if unreachable
+        """
+        # Extract required data
+        physics_cache = graph_data.get("node_physics") if graph_data else None
+        spatial_hash = graph_data.get("spatial_hash") if graph_data else None
+        subcell_lookup = graph_data.get("subcell_lookup") if graph_data else None
+
+        if physics_cache is None:
+            raise ValueError("Physics cache required for physics cost calculation")
+
+        # CRITICAL: Early exit for invalid goal positions
+        if goal[0] == 0 and goal[1] == 0:
+            return float("inf")
+
+        # Find start and goal nodes
+        start_node = find_ninja_node(
+            start,
+            adjacency,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+            ninja_radius=ninja_radius,
+        )
+
+        goal_node = find_closest_node_to_position(
+            goal,
+            adjacency,
+            threshold=entity_radius + ninja_radius,
+            spatial_hash=spatial_hash,
+            subcell_lookup=subcell_lookup,
+        )
+
+        if start_node is None or goal_node is None:
+            return float("inf")
+
+        if start_node == goal_node:
+            return 0.0
+
+        # Check step cache with velocity bucketing
+        # Bucket velocities to 0.5 px/frame increments for better cache hits
+        vel_bucket = (int(ninja_velocity[0] * 2), int(ninja_velocity[1] * 2))
+        cache_key = (start_node, goal_node, vel_bucket, "physics")
+
+        if cache_key in self._step_cache:
+            self._step_cache_hits += 1
+            return self._step_cache[cache_key]
+
+        self._step_cache_misses += 1
+
+        # Compute A* with physics costs and velocity
+        cost = self._astar_distance(
+            start_node,
+            goal_node,
+            adjacency,
+            base_adjacency,
+            physics_cache,
+            level_data,
+            self.mine_proximity_cache,
+            self.mine_sdf,
+            hazard_cost_multiplier=None,
+            ninja_velocity=ninja_velocity,  # Critical: pass actual velocity
+            jump_duration_remaining=jump_duration_remaining,  # Critical: pass jump frames
+        )
+
+        # Cache result
+        self._step_cache[cache_key] = cost
+        return cost
+
+    def compute_baseline_physics_costs(
+        self,
+        spawn_pos: Tuple[int, int],
+        switch_pos: Tuple[int, int],
+        exit_pos: Tuple[int, int],
+        adjacency: Dict,
+        base_adjacency: Dict,
+        level_data: Any,
+        graph_data: Optional[Dict],
+    ) -> Tuple[float, float, float]:
+        """
+        Compute baseline physics costs for PBRS normalization.
+
+        Uses zero velocity and full jump duration to get "neutral" baseline costs
+        representing the minimum physics cost to traverse each path segment without
+        velocity state dependency.
+
+        Args:
+            spawn_pos: Spawn position (x, y)
+            switch_pos: Switch position (x, y)
+            exit_pos: Exit position (x, y)
+            adjacency: Masked graph adjacency structure
+            base_adjacency: Base graph adjacency (pre-entity-mask)
+            level_data: LevelData instance
+            graph_data: Graph data dict with node_physics, spatial_hash
+
+        Returns:
+            (spawn_to_switch_cost, switch_to_exit_cost, combined_cost)
+        """
+        from ...constants.physics_constants import (
+            EXIT_SWITCH_RADIUS,
+            EXIT_DOOR_RADIUS,
+            NINJA_RADIUS,
+        )
+
+        zero_velocity = (0.0, 0.0)
+        full_jump_duration = 1.0  # Neutral baseline: full jump frames available
+
+        # Compute spawn→switch physics cost
+        spawn_to_switch = self.get_physics_cost(
+            spawn_pos,
+            switch_pos,
+            adjacency,
+            base_adjacency,
+            level_data,
+            graph_data,
+            entity_radius=EXIT_SWITCH_RADIUS,
+            ninja_radius=NINJA_RADIUS,
+            ninja_velocity=zero_velocity,
+            jump_duration_remaining=full_jump_duration,
+        )
+
+        # Compute switch→exit physics cost
+        switch_to_exit = self.get_physics_cost(
+            switch_pos,
+            exit_pos,
+            adjacency,
+            base_adjacency,
+            level_data,
+            graph_data,
+            entity_radius=EXIT_DOOR_RADIUS,
+            ninja_radius=NINJA_RADIUS,
+            ninja_velocity=zero_velocity,
+            jump_duration_remaining=full_jump_duration,
+        )
+
+        # Handle infinite costs (unreachable)
+        if spawn_to_switch == float("inf"):
+            logger.warning(
+                f"Baseline physics cost spawn→switch is infinite. "
+                f"Positions: spawn={spawn_pos}, switch={switch_pos}"
+            )
+            spawn_to_switch = 2000.0  # Fallback
+
+        if switch_to_exit == float("inf"):
+            logger.warning(
+                f"Baseline physics cost switch→exit is infinite. "
+                f"Positions: switch={switch_pos}, exit={exit_pos}"
+            )
+            switch_to_exit = 2000.0  # Fallback
+
+        combined = spawn_to_switch + switch_to_exit
+
+        logger.debug(
+            f"[PBRS] Baseline physics costs: "
+            f"spawn→switch={spawn_to_switch:.1f}, "
+            f"switch→exit={switch_to_exit:.1f}, "
+            f"combined={combined:.1f}"
+        )
+
+        return spawn_to_switch, switch_to_exit, combined
 
     def get_geometric_distance(
         self,

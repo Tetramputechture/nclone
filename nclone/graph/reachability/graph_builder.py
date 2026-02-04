@@ -1968,8 +1968,8 @@ class GraphBuilder:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get performance statistics."""
-        avg_time = np.mean(self.build_times) if self.build_times else 0
-        max_time = np.max(self.build_times) if self.build_times else 0
+        avg_time = np.mean(self.build_times) if len(self.build_times) > 0 else 0
+        max_time = np.max(self.build_times) if len(self.build_times) > 0 else 0
 
         return {
             "total_builds": len(self.build_times),

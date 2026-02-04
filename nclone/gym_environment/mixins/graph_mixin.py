@@ -456,19 +456,6 @@ class GraphMixin:
                                         f"Built reward calculator's path cache for level {level_id}"
                                     )
 
-                                    # Extract path waypoints after cache is built
-                                    # This ensures waypoints are available for visualization
-                                    # and provide guidance through non-linear paths (RE-ENABLED 2026-01-03)
-                                    waypoints_extracted = self.reward_calculator.extract_path_waypoints_for_level(
-                                        level_data=level_data,
-                                        graph_data=self.current_graph_data,
-                                        map_name=level_id,
-                                    )
-                                    if waypoints_extracted > 0:
-                                        _logger.info(
-                                            f"Extracted {waypoints_extracted} path waypoints for visualization and guidance"
-                                        )
-
         # Update switch and mine state tracking
         self.last_switch_states = self._get_switch_states_from_env()
         self.last_mine_states = self._get_mine_states_from_env()

@@ -226,6 +226,10 @@ class PBRSPotentials:
             state.get("player_yspeed", 0.0),
         )
 
+        # Extract jump duration remaining for first-edge feasibility checks
+        # This prevents rewarding trajectories that exhaust jump frames before critical jumps
+        jump_duration_remaining = state.get("jump_duration_remaining", None)
+
         # Validate goal position
         if goal_pos[0] == 0 and goal_pos[1] == 0:
             return 0.0
@@ -234,138 +238,147 @@ class PBRSPotentials:
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
 
-        # OPTIMIZATION: Check if distance was already computed during reachability feature extraction
-        # This avoids duplicate distance computations (~3-4ms savings per step)
-        #
-        # Flow:
-        # 1. reachability_mixin._compute_reachability() computes distances and stores in:
-        #    - self._cached_switch_distance
-        #    - self._cached_exit_distance
-        # 2. npp_environment._get_observation() adds these to obs dict:
-        #    - obs["_cached_switch_distance"]
-        #    - obs["_cached_exit_distance"]
-        # 3. This function reads from state dict to avoid recomputing
-        #
-        # With feature_computation.py optimizations (consolidated get_distance calls),
-        # distances are computed only ONCE per step and reused for:
-        # - Reachability features (distance features 4-5)
-        # - Path difficulty ratio (feature 21)
-        # - PBRS potential calculation (this function)
-        distance = None
-        if goal_id == "switch" and "_cached_switch_distance" in state:
-            distance = state["_cached_switch_distance"]
-        elif goal_id == "exit" and "_cached_exit_distance" in state:
-            distance = state["_cached_exit_distance"]
+        # === PHYSICS-AWARE PBRS: Use physics cost instead of geometric distance ===
+        # Physics cost encodes trajectory feasibility - returns inf for doomed trajectories
+        # Includes jump duration remaining to prevent rewarding exhausted jump frames
+        try:
+            physics_cost = path_calculator.get_physics_cost(
+                player_pos,
+                goal_pos,
+                adjacency,
+                base_adjacency,
+                level_data,
+                graph_data,
+                entity_radius,
+                NINJA_RADIUS,
+                ninja_velocity=ninja_velocity,
+                jump_duration_remaining=jump_duration_remaining,
+                goal_id=goal_id,
+            )
+        except Exception as e:
+            raise RuntimeError(f"PBRS physics cost calculation failed: {e}") from e
 
-        # Get distance if not cached (fallback for robustness)
-        if distance is None:
-            try:
-                distance = path_calculator.get_geometric_distance(
-                    player_pos,
-                    goal_pos,
-                    adjacency,
-                    base_adjacency,
-                    level_data,
-                    graph_data,
-                    entity_radius,
-                    NINJA_RADIUS,
-                    goal_id=goal_id,
-                    ninja_velocity=ninja_velocity,
-                )
-            except Exception as e:
-                raise RuntimeError(f"PBRS distance failed: {e}") from e
+        state["_pbrs_physics_cost"] = physics_cost
+        state["_pbrs_last_distance_to_goal"] = physics_cost  # For compatibility
 
-        state["_pbrs_last_distance_to_goal"] = distance
+        # Get baseline physics costs for normalization
+        spawn_to_switch_cost = state.get("_pbrs_spawn_to_switch_cost", 500.0)
+        switch_to_exit_cost = state.get("_pbrs_switch_to_exit_cost", 500.0)
 
-        # Get scale parameters from cache
-        # UPDATED 2026-01-03: Increased fallbacks for large levels (up to 2000px)
-        # These should always be computed, but robust fallbacks prevent crashes
-        spawn_to_switch_distance = state.get("_pbrs_spawn_to_switch_distance", 1000.0)
-        switch_to_exit_distance = state.get("_pbrs_switch_to_exit_distance", 1000.0)
-
-        # CRITICAL FIX (2026-01-11): Never return zero gradient!
-        # If pathfinding fails (unreachable/off-graph), use Euclidean distance fallback
-        # This ensures agent ALWAYS has gradient to follow, preventing local minima
-        if distance == float("inf"):
-            # Calculate Euclidean distance as fallback
-            euclidean_distance = (
-                (goal_pos[0] - player_pos[0]) ** 2 + (goal_pos[1] - player_pos[1]) ** 2
-            ) ** 0.5
-            distance = euclidean_distance
-            logger.debug(
-                f"[PBRS_FALLBACK] Pathfinding failed, using Euclidean distance: {distance:.1f}px. "
-                f"Agent at ({player_pos[0]}, {player_pos[1]}), goal at ({goal_pos[0]}, {goal_pos[1]}). "
-                f"This provides fallback gradient when agent is off-graph or temporarily unreachable."
+        # === CASCADING FALLBACK FOR UNREACHABLE TRAJECTORIES ===
+        # Level 1: Physics cost with velocity (primary)
+        # Level 2: Geometric distance without velocity (recovery path)
+        # Level 3: Zero potential (truly unreachable)
+        if physics_cost == float("inf"):
+            # Current velocity makes goal unreachable
+            # Try geometric distance (best-case with velocity recovery)
+            fallback_distance = path_calculator.get_geometric_distance(
+                player_pos,
+                goal_pos,
+                adjacency,
+                base_adjacency,
+                level_data,
+                graph_data,
+                entity_radius,
+                NINJA_RADIUS,
+                goal_id=goal_id,
+                ninja_velocity=None,  # No velocity constraint for recovery path
             )
 
-        # === LINEAR POTENTIAL (UNIFORM GRADIENT) ===
-        # UPDATED 2026-01-03: Switched from hyperbolic to linear
-        # Φ(d) = 1 - d/k provides constant gradient: dΦ/dd = -1/k
-        # Every pixel of progress = same reward, regardless of position
+            if fallback_distance == float("inf"):
+                # Goal is TRULY unreachable (no path exists even with velocity recovery)
+                # Return ZERO potential - be honest, don't encourage impossible movement
+                state["_pbrs_unreachable"] = True
+                logger.debug(
+                    f"[PBRS_UNREACHABLE] Both physics and geometric costs are infinite. "
+                    f"Agent at ({player_pos[0]}, {player_pos[1]}), goal at ({goal_pos[0]}, {goal_pos[1]}). "
+                    f"No path exists - returning zero potential."
+                )
+                return 0.0
+
+            # Goal is reachable with velocity recovery
+            # Use geometric distance with reduced weight for weak gradient
+            state["_pbrs_velocity_doomed"] = True
+            logger.debug(
+                f"[PBRS_RECOVERY] Physics cost infinite but geometric distance is {fallback_distance:.1f}px. "
+                f"Using recovery path gradient with 0.2x scale."
+            )
+
+            # Use fallback distance for potential calculation with reduced scale
+            MIN_SCALE = 50.0
+            if not state["switch_activated"]:
+                k = max(MIN_SCALE, spawn_to_switch_cost)
+                normalized = fallback_distance / k
+                if normalized <= 1.0:
+                    fallback_raw = 1.0 - normalized
+                else:
+                    overshoot = normalized - 1.0
+                    fallback_raw = 1.0 / (1.0 + overshoot)
+                fallback_potential = 0.5 * fallback_raw * 0.2  # 0.2x scale for recovery
+            else:
+                combined_cost = spawn_to_switch_cost + switch_to_exit_cost
+                k = max(MIN_SCALE, combined_cost * 2.0)
+                normalized = fallback_distance / k
+                if normalized <= 1.0:
+                    fallback_raw = 1.0 - normalized
+                else:
+                    overshoot = normalized - 1.0
+                    fallback_raw = 1.0 / (1.0 + overshoot)
+                fallback_potential = (0.5 + 0.5 * fallback_raw) * 0.2  # 0.2x scale
+
+            state["_pbrs_normalized_cost"] = normalized
+            state["_pbrs_potential_raw"] = fallback_raw
+            state["_pbrs_k_scale"] = k
+            return max(0.0, min(1.0, fallback_potential))
+
+        state["_pbrs_unreachable"] = False
+
+        # === LINEAR POTENTIAL WITH PHYSICS COST NORMALIZATION ===
+        # UPDATED 2026-02-03: Use physics cost instead of geometric distance
+        # Φ(cost) = 1 - cost/k provides gradient based on trajectory feasibility
+        # Impossible trajectories (cost=inf) already handled by cascading fallback above
         #
         # MIN_SCALE prevents overly steep gradients on degenerate tiny paths
-        # UPDATED 2026-01-09: Reduced from 200px to 50px to support short curriculum paths
-        # Curriculum stages can have paths as short as 24px (1-2 tiles)
-        # - k=24px: 12px movement = 0.5 potential change (appropriate for short path!)
-        # - k=50px: 12px movement = 0.24 potential change (reasonable minimum)
-        # - k=2000px: 12px movement = 0.006 potential change (appropriate for long path)
-        MIN_SCALE = (
-            50.0  # Minimum normalization distance (protects against degenerate cases)
-        )
+        MIN_SCALE = 50.0  # Minimum normalization (protects against degenerate cases)
 
         if not state["switch_activated"]:
-            # Switch phase: Φ ∈ [0, 0.5], normalized by spawn→switch distance
-            k = max(MIN_SCALE, spawn_to_switch_distance)
-            # Linear: 1.0 at switch (d=0), 0.0 at spawn (d=k)
-            # CRITICAL (2026-01-11): Use soft clamping to maintain gradient beyond k
-            # Instead of hard clamp max(0, 1-d/k), use 1 / (1 + (d/k - 1)) for d > k
-            # This ensures non-zero gradient even when agent explores far off-path
-            normalized_distance = distance / k
-            if normalized_distance <= 1.0:
-                potential_raw = 1.0 - normalized_distance  # Linear region [0, 1]
+            # Switch phase: Φ ∈ [0, 0.5], normalized by spawn→switch physics cost
+            k = max(MIN_SCALE, spawn_to_switch_cost)
+            # Linear: 1.0 at switch (cost=0), 0.0 at spawn (cost=k)
+            # Use soft clamping to maintain gradient beyond k
+            normalized_cost = physics_cost / k
+            if normalized_cost <= 1.0:
+                potential_raw = 1.0 - normalized_cost  # Linear region [0, 1]
             else:
-                # Soft decay for d > k: maintains gradient but approaches 0 asymptotically
-                # At d=2k: potential_raw = 0.5, at d=3k: 0.33, at d=10k: 0.1
-                overshoot = normalized_distance - 1.0
+                # Soft decay for cost > k: maintains gradient but approaches 0 asymptotically
+                overshoot = normalized_cost - 1.0
                 potential_raw = 1.0 / (1.0 + overshoot)  # Hyperbolic decay beyond k
             potential = 0.5 * potential_raw  # Scale to [0, 0.5]
         else:
-            # Exit phase: Φ ∈ [0.5, 1.0], normalized by MAXIMUM possible distance to exit
-            # FIXED 2026-01-09: Use combined path distance to handle agent anywhere in level
-            # Agent can be at spawn (far from exit) after switch activation due to backtracking
-            # or detour paths. Normalizing by switch_to_exit_distance caused clamping and zero
-            # gradient for most of post-switch journey, leading to oscillation/meandering.
-            #
-            # Use 2.0x combined distance (increased from 1.5x) to account for:
-            # - Alternative paths longer than optimal
-            # - Exploration beyond optimal path envelope
-            # - Very short curriculum paths where MIN_SCALE would otherwise dominate
-            # CRITICAL (2026-01-11): Use soft clamping for gradient beyond k
-            combined_distance = spawn_to_switch_distance + switch_to_exit_distance
-            k = max(MIN_SCALE, combined_distance * 2.0)  # Increased from 1.5x to 2.0x
-            normalized_distance = distance / k
-            if normalized_distance <= 1.0:
-                potential_raw = 1.0 - normalized_distance  # Linear region [0, 1]
+            # Exit phase: Φ ∈ [0.5, 1.0], normalized by combined physics cost
+            # Use combined cost * 2.0 to account for alternative paths and exploration
+            combined_cost = spawn_to_switch_cost + switch_to_exit_cost
+            k = max(MIN_SCALE, combined_cost * 2.0)
+            normalized_cost = physics_cost / k
+            if normalized_cost <= 1.0:
+                potential_raw = 1.0 - normalized_cost  # Linear region [0, 1]
             else:
-                # Soft decay for d > k: maintains gradient but approaches 0 asymptotically
-                overshoot = normalized_distance - 1.0
+                # Soft decay for cost > k
+                overshoot = normalized_cost - 1.0
                 potential_raw = 1.0 / (1.0 + overshoot)  # Hyperbolic decay beyond k
             potential = 0.5 + 0.5 * potential_raw  # Scale to [0.5, 1.0]
 
         # Diagnostic storage
-        state["_pbrs_normalized_distance"] = distance / k
+        state["_pbrs_normalized_cost"] = normalized_cost
         state["_pbrs_potential_raw"] = potential_raw
         state["_pbrs_k_scale"] = k
 
-        # DIAGNOSTIC: Log post-switch clamping to monitor off-path exploration (2026-01-09)
-        # Occasional clamping is OK when agent explores far from optimal path
-        # Frequent clamping indicates normalization multiplier needs adjustment
+        # DIAGNOSTIC: Log potential clamping
         if state["switch_activated"] and potential_raw <= 0.0:
             logger.debug(
-                f"[PBRS_CLAMP] Post-switch potential clamped (agent exploring off-path): "
-                f"distance={distance:.1f}px, k={k:.1f}px (1.5x combined_distance), "
-                f"normalized={normalized_distance:.3f}. "
-                f"Agent is {(distance - k):.1f}px beyond expected exploration range."
+                f"[PBRS_CLAMP] Post-switch potential clamped: "
+                f"physics_cost={physics_cost:.1f}, k={k:.1f}, "
+                f"normalized={normalized_cost:.3f}"
             )
 
         return max(0.0, min(1.0, potential))
@@ -1007,6 +1020,43 @@ class PBRSCalculator:
         )
         physics_cache = graph_data.get("node_physics") if graph_data else None
 
+        # #region agent log
+        import json
+
+        try:
+            with open("/home/tetra/projects/nclone/.cursor/debug.log", "a") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "initial",
+                            "hypothesisId": "B",
+                            "location": "pbrs_potentials.py:1024-pre",
+                            "message": "Graph initialization check",
+                            "data": {
+                                "graph_data_exists": graph_data is not None,
+                                "physics_cache_exists": physics_cache is not None,
+                                "physics_cache_size": len(physics_cache)
+                                if physics_cache
+                                else 0,
+                                "base_adjacency_size": len(base_adjacency)
+                                if base_adjacency
+                                else 0,
+                                "spatial_hash_exists": spatial_hash is not None,
+                                "subcell_lookup_exists": subcell_lookup is not None,
+                                "spawn_pos": spawn_pos,
+                                "switch_pos": switch_pos,
+                                "exit_pos": exit_pos,
+                            },
+                            "timestamp": __import__("time").time() * 1000,
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
+
         # STRICT VALIDATION: Physics cache MUST be available for PBRS pathfinding
         if physics_cache is None:
             raise ValueError(
@@ -1035,6 +1085,7 @@ class PBRSCalculator:
                 level_data=level_data,  # CRITICAL: Pass for mine proximity
                 mine_proximity_cache=self.path_calculator.mine_proximity_cache,  # CRITICAL: Pass for mine avoidance
                 mine_sdf=self.path_calculator.mine_sdf,  # Optional: velocity-aware costs
+                allow_high_cost_edges=True,  # CRITICAL: Cap infinite costs to ensure PBRS gradient always exists
             )
 
             # Physics cost (difficulty-weighted) - tracked for diagnostics only
@@ -1061,6 +1112,36 @@ class PBRSCalculator:
                 ) from e
 
         except Exception as e:
+            # #region agent log
+            import json
+            import traceback
+
+            try:
+                with open("/home/tetra/projects/nclone/.cursor/debug.log", "a") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "sessionId": "debug-session",
+                                "runId": "initial",
+                                "hypothesisId": "A,B,C,D,E",
+                                "location": "pbrs_potentials.py:1076-exception",
+                                "message": "spawn→switch calculation failed",
+                                "data": {
+                                    "error_type": type(e).__name__,
+                                    "error_message": str(e),
+                                    "traceback": traceback.format_exc(),
+                                    "spawn_pos": spawn_pos,
+                                    "switch_pos": switch_pos,
+                                },
+                                "timestamp": __import__("time").time() * 1000,
+                            }
+                        )
+                        + "\n"
+                    )
+            except:
+                pass
+            # #endregion
+
             logger.warning(
                 f"Failed to calculate spawn→switch distances: {e}. Using inf."
             )
@@ -1085,6 +1166,7 @@ class PBRSCalculator:
                 level_data=level_data,  # CRITICAL: Pass for mine proximity
                 mine_proximity_cache=self.path_calculator.mine_proximity_cache,  # CRITICAL: Pass for mine avoidance
                 mine_sdf=self.path_calculator.mine_sdf,  # Optional: velocity-aware costs
+                allow_high_cost_edges=True,  # CRITICAL: Cap infinite costs to ensure PBRS gradient always exists
             )
 
             # Physics cost (difficulty-weighted) - tracked for diagnostics only
@@ -1170,11 +1252,37 @@ class PBRSCalculator:
                 f"This indicates a pathfinding bug."
             )
 
+        # NEW: Compute baseline physics costs for PBRS normalization
+        # Use zero velocity to get neutral baseline
+        baseline_costs = self.path_calculator.compute_baseline_physics_costs(
+            spawn_pos,
+            switch_pos,
+            exit_pos,
+            base_adjacency,
+            base_adjacency,
+            level_data,
+            graph_data,
+        )
+
+        baseline_spawn_to_switch = baseline_costs[0]
+        baseline_switch_to_exit = baseline_costs[1]
+        baseline_combined = baseline_costs[2]
+
+        logger.info(
+            f"[PBRS DEBUG] Baseline physics costs (zero velocity):\n"
+            f"  Spawn→Switch baseline: {baseline_spawn_to_switch:.1f}\n"
+            f"  Switch→Exit baseline: {baseline_switch_to_exit:.1f}\n"
+            f"  Combined baseline: {baseline_combined:.1f}"
+        )
+
         return (
             combined_distance,
             combined_physics_cost,
             spawn_to_switch_geo,
             switch_to_exit_geo,
+            baseline_spawn_to_switch,
+            baseline_switch_to_exit,
+            baseline_combined,
         )
 
     def _get_cached_or_compute_potential(
@@ -1187,14 +1295,18 @@ class PBRSCalculator:
         graph_data: Optional[Dict[str, Any]] = None,
         scale_factor: float = 1.0,
     ) -> float:
-        """Get potential with position-based caching for small movements.
+        """Get potential WITHOUT position-based caching (incompatible with velocity-dependent physics costs).
 
-        OPTIMIZATION: When player moves < 6px from last cached position, use
-        sub-node interpolation instead of full path distance recalculation.
-        This provides dense per-step rewards without expensive pathfinding.
+        IMPORTANT: Position-based caching is DISABLED for physics-aware PBRS.
+        The same position with different velocities will have different physics costs,
+        so caching by position alone is incorrect and would break velocity-aware trajectory evaluation.
 
-        The interpolation uses the cached next_hop direction to project
-        small movements onto the optimal path, giving accurate PBRS gradients.
+        For example:
+        - Position (100, 50) with velocity (0, -6.0) → low physics cost (strong momentum)
+        - Position (100, 50) with velocity (0, -0.5) → high/inf physics cost (exhausted frames)
+
+        The path_calculator already uses velocity-bucketed step caching internally,
+        so there's minimal performance loss from disabling this position cache.
 
         Args:
             current_pos: Current player position (x, y)
@@ -1208,13 +1320,8 @@ class PBRSCalculator:
         Returns:
             Objective distance potential [0, 1]
         """
-        # Check if we can use cached value with interpolation
-        use_cache = (
-            self._last_player_pos is not None
-            and self._last_goal_id == goal_id
-            and self._cached_distance is not None
-            and self._cached_start_node is not None
-        )
+        # DISABLED: Position-based caching incompatible with velocity-dependent physics costs
+        use_cache = False
 
         if use_cache:
             # Calculate squared distance moved (avoid sqrt for speed)
@@ -1301,6 +1408,11 @@ class PBRSCalculator:
         self._last_player_pos = current_pos
         self._last_goal_id = goal_id
 
+        # CRITICAL: Cache physics cost (not geometric distance) for milestone tracking
+        # Milestones should trigger based on physics cost reduction, not geometric distance
+        # The state dict now contains _pbrs_physics_cost from objective_distance_potential()
+        self._cached_distance = state_with_metrics.get("_pbrs_physics_cost", None)
+
         # Check if path_calculator has cached the node from get_geometric_distance
         # Note: goal_id here is "switch" or "exit" but path_calculator uses
         # "exit_switch_0" or "exit_door_0" - check if types match
@@ -1309,9 +1421,10 @@ class PBRSCalculator:
             goal_id == "exit" and "door" in cached_goal_id
         )
         if self.path_calculator._last_start_node is not None and goal_type_matches:
-            # Reuse cached node info from path_calculator
+            # Reuse cached node info from path_calculator for interpolation
             self._cached_start_node = self.path_calculator._last_start_node
-            self._cached_distance = self.path_calculator._last_geometric_distance
+            # NOTE: We already cached physics cost above - don't overwrite with geometric!
+            # self._cached_distance is now physics cost for milestone tracking
             self._cached_next_hop = self.path_calculator._last_next_hop
         elif self.path_calculator.level_cache is not None:
             # Fallback: find node manually (shouldn't normally happen)
@@ -1479,6 +1592,9 @@ class PBRSCalculator:
                 self._cached_combined_physics_cost,
                 self._cached_spawn_to_switch_distance,
                 self._cached_switch_to_exit_distance,
+                self._cached_spawn_to_switch_cost,
+                self._cached_switch_to_exit_cost,
+                baseline_combined,
             ) = self._compute_combined_path_distance(
                 adjacency, level_data, graph_data, curriculum_manager
             )
@@ -1488,7 +1604,9 @@ class PBRSCalculator:
                 f"geometric={self._cached_combined_path_distance:.1f}px, "
                 f"physics_cost={self._cached_combined_physics_cost:.1f}, "
                 f"spawn→switch={self._cached_spawn_to_switch_distance:.1f}px, "
-                f"switch→exit={self._cached_switch_to_exit_distance:.1f}px"
+                f"switch→exit={self._cached_switch_to_exit_distance:.1f}px, "
+                f"baseline_spawn_to_switch_cost={self._cached_spawn_to_switch_cost:.1f}, "
+                f"baseline_switch_to_exit_cost={self._cached_switch_to_exit_cost:.1f}"
             )
 
         # Add metrics to state for potential calculation
@@ -1505,6 +1623,13 @@ class PBRSCalculator:
         )
         state_with_metrics["_pbrs_switch_to_exit_distance"] = (
             self._cached_switch_to_exit_distance
+        )
+        # NEW: Inject baseline physics costs for PBRS normalization
+        state_with_metrics["_pbrs_spawn_to_switch_cost"] = (
+            self._cached_spawn_to_switch_cost
+        )
+        state_with_metrics["_pbrs_switch_to_exit_cost"] = (
+            self._cached_switch_to_exit_cost
         )
 
         # === ADAPTIVE GRADIENT SCALING (2026-01-04) ===
@@ -1634,35 +1759,6 @@ class PBRSCalculator:
 
         # PBRS purely position-based (Ng et al. 1999) - no velocity components
         return potential
-
-    def set_momentum_waypoints(
-        self, waypoints: Optional[List[Any]], waypoint_source: str = "unknown"
-    ) -> None:
-        """Set momentum waypoints for current level.
-
-        Called when level changes or waypoints are loaded from cache.
-
-        Args:
-            waypoints: List of MomentumWaypoint or PathWaypoint objects, or None to disable
-            waypoint_source: Source of waypoints ("path", "demo", "adaptive") for logging
-        """
-        self.momentum_waypoints = waypoints or []
-        self.waypoint_source = waypoint_source
-
-        # Pass waypoints to path calculator for precomputed caching
-        if self.path_calculator is not None:
-            logger.debug(
-                f"[PBRS] Set {len(self.momentum_waypoints)} {waypoint_source} waypoints "
-                f"for multi-stage routing"
-            )
-            self.path_calculator.set_waypoints(waypoints)
-        else:
-            logger.warning("[PBRS] path_calculator is None, cannot set waypoints")
-
-        logger.debug(
-            f"Set {len(self.momentum_waypoints)} momentum waypoints for PBRS "
-            f"(source: {waypoint_source})"
-        )
 
     def reset(self) -> None:
         """Reset calculator state for new episode.

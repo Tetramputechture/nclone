@@ -206,7 +206,7 @@ class AdaptiveMultiPathPBRS(PBRSCalculator):
             )
 
         # Add exploration bonus for high uncertainty situations
-        overall_uncertainty = np.mean(uncertainties) if uncertainties else 0.0
+        overall_uncertainty = np.mean(uncertainties) if len(uncertainties) > 0 else 0.0
         exploration_bonus = self.uncertainty_bonus_weight * overall_uncertainty
         weighted_potential += exploration_bonus
 
@@ -475,7 +475,7 @@ class AdaptiveMultiPathPBRS(PBRSCalculator):
         """Get adaptive PBRS statistics."""
 
         recent_performance = (
-            np.mean(self.recent_outcomes) if self.recent_outcomes else 0.0
+            np.mean(self.recent_outcomes) if len(self.recent_outcomes) > 0 else 0.0
         )
 
         return {
@@ -484,10 +484,10 @@ class AdaptiveMultiPathPBRS(PBRSCalculator):
             "paths_in_memory": len(self.path_quality_memory),
             "recent_performance": recent_performance,
             "avg_path_quality": np.mean(list(self.path_quality_memory.values()))
-            if self.path_quality_memory
+            if len(self.path_quality_memory) > 0
             else 0.0,
             "avg_success_rate": np.mean(list(self.path_success_rates.values()))
-            if self.path_success_rates
+            if len(self.path_success_rates) > 0
             else 0.0,
         }
 

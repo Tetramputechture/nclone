@@ -7,13 +7,6 @@ managing which components are active and their weights based on training progres
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
-from .reward_constants import (
-    WAYPOINT_BASE_BONUS,
-    WAYPOINT_COLLECTION_RADIUS,
-    WAYPOINT_SEQUENCE_MULTIPLIER,
-    WAYPOINT_OUT_OF_ORDER_SCALE,
-)
-
 
 @dataclass
 class RewardConfig:
@@ -41,31 +34,6 @@ class RewardConfig:
     # ADDED 2026-01-05: Used by action_masking_mode property
     _curriculum_stage: int = 0
     _num_curriculum_stages: int = 1
-
-    # Waypoint system configuration (ENHANCED 2026-01-09)
-    # Provides guidance through non-linear paths where PBRS alone fails
-    # UPDATED: Sequential collection bonus prevents "shortcut then die" pattern
-    enable_path_waypoints: bool = True  # Re-enabled for non-linear path guidance
-    path_waypoint_progress_spacing: float = (
-        12.0  # Sub-node spacing for uniform coarse rewards
-    )
-    path_waypoint_cluster_radius: float = 10.0  # Matches collection radius
-
-    # Sequential waypoint bonus configuration (NEW 2026-01-09)
-    # Rewards collecting waypoints in-order along the optimal path
-    # Prevents shortcuts by providing immediate positive signal for correct routing
-    waypoint_base_bonus: float = (
-        WAYPOINT_BASE_BONUS  # Base reward for waypoint collection
-    )
-    waypoint_collection_radius: float = (
-        WAYPOINT_COLLECTION_RADIUS  # Collection radius (1.5 × sub-node size)
-    )
-    waypoint_sequence_multiplier: float = (
-        WAYPOINT_SEQUENCE_MULTIPLIER  # Streak bonus per consecutive collection
-    )
-    waypoint_out_of_order_scale: float = (
-        WAYPOINT_OUT_OF_ORDER_SCALE  # Reduced reward for out-of-order
-    )
 
     # Success rate thresholds for phase transitions
     SUCCESS_THRESHOLD_MID: float = 0.15  # 15% success to enter mid phase
@@ -125,92 +93,93 @@ class RewardConfig:
         in advanced phase. Previous steep drop-off (50→5) caused slow convergence at high
         success rates as dense shaping signal was drowned out by sparse terminal rewards.
 
-        New schedule maintains meaningful PBRS throughout training:
-        - Discovery: 40.0 (reduced from 50.0 for stability)
-        - Early: 25.0 (increased from 15.0 for stronger learning)
-        - Mid: 18.0 (increased from 12.0 to maintain gradient)
-        - Advanced: 12.0 (increased from 8.0 for continued optimization)
-        - Mastery: 8.0 (increased from 5.0 to preserve gradient signal)
+        UPDATED 2026-02-03: Flattened late-stage weights to maintain strong PBRS signal
+        throughout training. PBRS is now the sole dense shaping signal (waypoints removed).
+        Agent needs strong PBRS gradient to discover shortcuts even at high success rates (60%+).
+
+        Schedule maintains strong PBRS throughout training:
+        - Discovery: 40.0 (baseline for learning)
+        - Early: 30.0 (strong early learning)
+        - Mid: 25.0 (maintained gradient)
+        - Advanced: 20.0 (continued optimization)
+        - Mastery: 15.0 (preserved optimization signal)
 
         Max episode return = PBRS_weight + completion(200) + switch(100) ≈ weight + 300
 
-        With new weights:
+        With current weights:
         - Discovery (<5%): 40 + 300 = 340 max return
-        - Early learning (5-20%): 25 + 300 = 325 max return
-        - Mid learning (20-40%): 18 + 300 = 318 max return
-        - Advanced (40-60%): 12 + 300 = 312 max return
-        - Mastery (60%+): 8 + 300 = 308 max return
-
-        Flatter curve ensures PBRS remains influential for policy gradient even at high success rates.
+        - Early learning (5-20%): 30 + 300 = 330 max return
+        - Mid learning (20-40%): 25 + 300 = 325 max return
+        - Advanced (40-60%): 20 + 300 = 320 max return
+        - Mastery (60%+): 15 + 300 = 315 max return
 
         Returns:
             40.0 (0-5% success): Balanced guidance for discovery
-            25.0 (5-20% success): Stronger early learning signal
-            18.0 (20-40% success): Maintained gradient for mid learning
-            12.0 (40-60% success): Still meaningful for advanced optimization
-            8.0 (60%+ success): Preserved gradient for mastery
+            30.0 (5-20% success): Stronger early learning signal
+            25.0 (20-40% success): Strong gradient for mid learning
+            20.0 (40-60% success): Continued meaningful optimization signal
+            15.0 (60%+ success): Preserved strong gradient for mastery-level optimization
         """
         # Check for Optuna override first
         if self._pbrs_objective_weight_override is not None:
             return self._pbrs_objective_weight_override
 
         if self.recent_success_rate < 0.05:  # Discovery phase (0-5% success)
-            # REVERTED 2026-01-24: Back to 40.0 since waypoint budget reverted to 30.0
-            # With GLOBAL_REWARD_SCALE=0.1 and waypoint budget=30, original balance restored.
-            # Discovery: PBRS=40, waypoints=30-60, completion=20, switch=10 (all scaled by 0.1)
-            return 40.0  # Slightly reduced for stability
+            return 40.0  # Baseline for learning
         elif self.recent_success_rate < 0.20:  # Early learning (5-20% success)
-            return 25.0  # Stronger early learning
+            return 30.0  # Stronger early learning (increased from 25.0)
         elif self.recent_success_rate < 0.40:  # Mid learning (20-40% success)
-            return 18.0  # Maintain gradient strength
+            return 25.0  # Strong gradient for mid learning (increased from 18.0)
         elif self.recent_success_rate < 0.60:  # Advanced learning (40-60%)
-            return 12.0  # Still meaningful
-        return 8.0  # Keep gradient signal for optimization (60%+)
+            return 20.0  # Continued optimization (increased from 12.0)
+        return 15.0  # Preserve strong signal for mastery (increased from 8.0)
 
     @property
     def time_penalty_per_step(self) -> float:
-        """Light time penalty for speed optimization in advanced phases.
+        """Strengthened time penalty for path efficiency optimization.
 
-        UPDATED 2025-12-29: Re-enabled light explicit time penalty for advanced phase
-        to accelerate convergence. While γ=0.99 PBRS provides implicit time pressure
-        (-0.01×Φ per step), this is too weak in practice at high success rates.
+        UPDATED 2026-02-03: Significantly increased step penalty (10-20x) to make "fewer steps"
+        a first-class optimization target alongside completion. Previous values (-0.001 to -0.003)
+        were too weak - acting as "subtle afterthoughts" rather than meaningful signals.
+        Strong step penalty makes efficiency explicit rather than implicit.
 
-        Curriculum-adaptive schedule:
-        - Early (<20% success): 0.0 (no time pressure during learning)
-        - Mid (20-40%): -0.001/step (very light - ~0.5 over 500 steps)
-        - Advanced (40-60%): -0.002/step (moderate - ~1.0 over 500 steps)
-        - Mastery (60%+): -0.003/step (speed optimization - ~1.5 over 500 steps)
+        Curriculum-adaptive schedule (10-20x increase from previous):
+        - Discovery (<5% success): 0.0 (no pressure during initial learning)
+        - Early (5-20%): -0.01/step (light pressure as competence develops)
+        - Mid (20-40%): -0.02/step (moderate pressure for path refinement)
+        - Advanced (40-60%): -0.03/step (strong pressure for optimization)
+        - Mastery (60%+): -0.05/step (maximum speed optimization)
 
-        At -0.003/step over 500 steps = -1.5 unscaled = -0.15 scaled.
-        This is ~15% of PBRS reward (8-12 range), creating urgency without
-        overwhelming the primary objective signal.
+        Impact analysis (500-step episode):
+        - Previous: -0.5 to -1.5 unscaled (-0.05 to -0.15 scaled)
+        - New: -5 to -25 unscaled (-0.5 to -2.5 scaled)
+        - Creates strong incentive to find shorter paths (200-300 steps vs 500 steps)
 
-        Benefits:
-        - Accelerates convergence in advanced phase
-        - Encourages efficient paths without penalizing learning
-        - Complements γ<1 PBRS without violating policy invariance
-        - Scales with training progress
+        This makes step count a primary signal rather than afterthought, aligning with
+        the explicit goal of "find shortest path" rather than just "complete level".
 
         Returns:
-            0.0 (<20% success): No time pressure during learning
-            -0.001 (20-40%): Very light pressure for mid learning
-            -0.002 (40-60%): Moderate pressure for advanced optimization
-            -0.003 (60%+): Speed optimization for mastery
+            0.0 (<5% success): No time pressure during discovery
+            -0.01 (5-20% success): Light pressure for early learning
+            -0.02 (20-40% success): Moderate pressure for mid learning
+            -0.03 (40-60% success): Strong pressure for advanced optimization
+            -0.05 (60%+ success): Maximum speed optimization for mastery
         """
         # Allow Optuna override for hyperparameter search (backwards compatibility)
         if self._time_penalty_per_step_override is not None:
             return self._time_penalty_per_step_override
 
-        # UPDATED 2025-12-29: Re-enable light time penalty for advanced phase optimization
-        # While γ=0.99 PBRS provides implicit time pressure, it's too weak in practice
-        # Light explicit penalty accelerates convergence without overwhelming primary signal
-        if self.recent_success_rate < 0.20:
-            return 0.0  # No time pressure during learning
+        # UPDATED 2026-02-03: Strengthened step penalty to make efficiency first-class signal
+        # Pure PBRS + step penalty creates clear optimization objective
+        if self.recent_success_rate < 0.05:
+            return 0.0  # No time pressure during discovery
+        elif self.recent_success_rate < 0.20:
+            return -0.01  # Light pressure for early learning
         elif self.recent_success_rate < 0.40:
-            return -0.001  # Very light pressure
+            return -0.02  # Moderate pressure for mid learning
         elif self.recent_success_rate < 0.60:
-            return -0.002  # Moderate pressure
-        return -0.003  # Speed optimization phase
+            return -0.03  # Strong pressure for advanced optimization
+        return -0.05  # Maximum speed optimization for mastery
 
     @property
     def exploration_bonus(self) -> float:
@@ -287,191 +256,21 @@ class RewardConfig:
 
     @property
     def waypoint_action_diversity_bonus(self) -> float:
-        """Bonus for trying different actions near critical waypoints.
-
-        ADDED 2025-12-20: Encourages action exploration at inflection points to
-        discover optimal action sequences (e.g., RIGHT × N → JUMP+LEFT at turn).
-
-        With low base entropy (0.03), the policy becomes deterministic. This bonus
-        provides localized exploration at waypoints without disrupting overall learning.
-
-        Applied within 30px of sharp turn waypoints (>60° curvature) when:
-        - Action differs from the dominant action in recent history
-        - Helps discover transitions like "stop going RIGHT, do JUMP+LEFT"
+        """DISABLED: Action exploration bonus removed with waypoints.
 
         Returns:
-            0.3 (<5% success): Moderate bonus for action discovery
-            0.15 (5-20% success): Reduced as agent learns action sequences
-            0.0 (>20% success): Disabled when agent demonstrates competence
+            0.0: Always disabled
         """
         return 0.0
 
-    def get_waypoint_bonus(
-        self, collected_idx: int, total_waypoints: int, is_in_sequence: bool
-    ) -> float:
-        """Path-normalized waypoint bonus for consistent contribution across curriculum.
-
-        ADDED 2026-01-21: Normalizes waypoint rewards by path length to prevent
-        late-stage curriculum from accumulating excessive waypoint bonuses (16x variance).
-
-        UPDATED 2026-01-29: Added reference-based scaling to prevent reward inflation at
-        late curriculum stages. Analysis showed stage 9 (62 waypoints) generates +25 mean
-        waypoint reward, making death profitable (+17 net with -8 penalty). By scaling budget
-        relative to a reference count (20 waypoints), late stages see reduced per-waypoint
-        rewards while early stages maintain current balance.
-
-        Design Philosophy:
-        - Total waypoint budget: 30.0 base, scaled by reference ratio
-        - Reference waypoint count: 20 (typical early-mid stage)
-        - Late stage scaling: budget × (20/62) = ~10 instead of 30
-        - Per-waypoint reward scales inversely with total waypoints
-        - Progressive scaling: later waypoints worth more (incentivize exploration)
-        - Sequence multiplier: in-order collection gets bonus, out-of-order reduced
-
-        Examples (20 total waypoints, in-sequence, reference match):
-        - Budget: 30.0 × min(1.0, 20/20) = 30.0
-        - Waypoint 0: (30/20) × (1 + 0×2.0) = 1.5
-        - Waypoint 10: (30/20) × (1 + 0.5×2.0) = 3.0
-        - Total: ~60 (progressive scaling doubles base budget)
-
-        Examples (62 total waypoints, late stage, in-sequence):
-        - Budget: 30.0 × min(1.0, 20/62) = 9.68
-        - Waypoint 0: (9.68/62) × (1 + 0×2.0) = 0.16
-        - Waypoint 31: (9.68/62) × (1 + 0.5×2.0) = 0.31
-        - Total: ~20 (reduced from ~60, prevents inflation!)
-
-        Examples (5 total waypoints, early curriculum, in-sequence):
-        - Budget: 30.0 × min(1.0, 20/5) = 30.0 (capped at 1.0x)
-        - Waypoint 0: (30/5) × (1 + 0×2.0) = 6.0
-        - Waypoint 2: (30/5) × (1 + 0.5×2.0) = 12.0
-        - Total: ~60 (early stages unaffected)
-
-        Args:
-            collected_idx: Index of collected waypoint (0-based)
-            total_waypoints: Total number of waypoints in path
-            is_in_sequence: Whether waypoint was collected in order
-
-        Returns:
-            Normalized waypoint bonus reward
-        """
-        # Reference-based budget scaling to prevent late-stage inflation
-        # NEW 2026-01-29: Scale budget inversely with waypoint count relative to reference
-        # Early stages (≤20 waypoints): full budget (30.0)
-        # Mid stages (20-40 waypoints): proportionally scaled
-        # Late stages (60+ waypoints): heavily scaled (~10)
-        BASE_WAYPOINT_BUDGET = 30.0
-        REFERENCE_WAYPOINT_COUNT = 20  # Typical early-mid curriculum stage
-
-        # Scale budget down for stages with more waypoints than reference
-        # Caps at 1.0x to never scale UP (early stages keep full budget)
-        budget_scale = min(1.0, REFERENCE_WAYPOINT_COUNT / max(total_waypoints, 1))
-        
-        # TIER 1 FIX (2026-02-02): Stage-aware reduction to make PBRS dominant at late stages
-        # Analysis: Agent at stage 9 collects 47 waypoints × ~0.6 = +28 reward (immediate)
-        # vs PBRS -155 (delayed over 100+ steps). Waypoint signal dominates, causing
-        # deceptive local minimum where agent optimizes waypoint collection via terrible paths.
-        # Solution: Aggressively reduce waypoint budget at late stages to shift gradient balance.
-        if self._curriculum_stage >= 8:
-            budget_scale *= 0.3  # 70% reduction: 30 × (20/60) × 0.3 = 3 budget → ~9 reward
-        elif self._curriculum_stage >= 6:
-            budget_scale *= 0.5  # 50% reduction: gradual transition from guidance to optimization
-        
-        TOTAL_WAYPOINT_BUDGET = BASE_WAYPOINT_BUDGET * budget_scale
-
-        # Base per-waypoint value inversely proportional to path length
-        # This ensures short and long paths have similar total waypoint contribution
-        base_per_waypoint = TOTAL_WAYPOINT_BUDGET / max(total_waypoints, 1)
-
-        # Apply progressive scaling (later waypoints worth more)
-        # This incentivizes exploration further along complex paths
-        progress_fraction = collected_idx / max(total_waypoints - 1, 1)
-        progress_multiplier = 1.0 + progress_fraction * self.waypoint_progress_scale
-
-        # Calculate bonus
-        bonus = base_per_waypoint * progress_multiplier
-
-        # Apply sequence multiplier for in-order vs out-of-order collection
-        if is_in_sequence:
-            # In-sequence: use full bonus (already has progressive scaling)
-            return bonus
-        else:
-            # Out-of-order: reduce by out_of_order_scale factor
-            return bonus * self.waypoint_out_of_order_scale
-
-    @property
-    def waypoint_progress_scale(self) -> float:
-        """Curriculum-adaptive scaling for progressive waypoint rewards.
-
-        ADDED 2026-01-05: Implements progressive waypoint rewards where later waypoints
-        along the path are worth more than earlier ones, incentivizing exploration of
-        novel sequences further along complex paths.
-
-        Formula: reward = base_reward × (1 + progress_fraction × scale)
-        Where progress_fraction = waypoint_node_index / max_waypoint_index (0.0 to 1.0)
-
-        This breaks "stuck near start" local minima by creating a reward gradient that
-        strongly pulls the agent toward exploring later sections of the path.
-
-        Discovery phase example (scale=2.0):
-        - First waypoint (0%): 8 × (1 + 0) = 8
-        - Middle waypoint (50%): 8 × (1 + 1) = 16
-        - Last waypoint (100%): 8 × (1 + 2) = 24
-
-        Strategy:
-        - Discovery (<5%): Strong scaling (2.0) to break local minima, 3x gradient
-        - Early learning (5-20%): Moderate scaling (1.5) to maintain exploration, 2.5x gradient
-        - Mid learning (20-40%): Light scaling (1.0) for balanced optimization, 2x gradient
-        - Advanced (>40%): Minimal scaling (0.5) for natural convergence, 1.5x gradient
-
-        Returns:
-            2.0 (<5% success): Strong gradient for discovery (3x from start to end)
-            1.5 (5-20% success): Moderate gradient for early learning (2.5x)
-            1.0 (20-40% success): Balanced gradient for mid learning (2x)
-            0.5 (>40% success): Light gradient for advanced optimization (1.5x)
-        """
-        if self.recent_success_rate < 0.05:  # Discovery phase
-            return 2.0  # 3x gradient (first=8, last=24)
-        elif self.recent_success_rate < 0.20:  # Early learning
-            return 1.5  # 2.5x gradient (first=8, last=20)
-        elif self.recent_success_rate < 0.40:  # Mid learning
-            return 1.0  # 2x gradient (first=8, last=16)
-        return 0.5  # 1.5x gradient in advanced (first=8, last=12)
-
     @property
     def completion_approach_bonus_weight(self) -> float:
-        """RE-ENABLED 2026-01-29: Curriculum-adaptive bonus for late stages.
-
-        DISABLED 2025-12-25: PBRS provides sufficient gradient near goal.
-        RE-ENABLED 2026-01-29: Late curriculum stages (8+) need additional gradient.
-
-        Analysis showed at stage 9, agent gets stuck in "profitable death" local minimum:
-        - Collects waypoints (+25-27)
-        - Dies at avg 275px from goal (-8 penalty)
-        - Net reward: +17 (POSITIVE!)
-        - Completion delta: only +41 over dying
-
-        The completion approach bonus provides exponential gradient in final 100px,
-        creating ~5 additional reward (0.5 scaled) to push through completion instead
-        of dying after exploration. This makes the completion delta more attractive.
-
-        Curriculum-adaptive schedule:
-        - Stages 0-7: 0.0 (PBRS alone sufficient)
-        - Stage 8: 0.5x (light boost, 60% success rate shows agent can complete)
-        - Stage 9+: 1.0x (full boost to overcome profitable death)
+        """DISABLED 2025-12-25: PBRS provides sufficient gradient near goal.
 
         Returns:
-            0.0 (stages 0-7): PBRS provides sufficient gradient
-            0.5 (stage 8): Light proximity boost
-            1.0 (stage 9+): Full proximity boost to overcome waypoint inflation
+            0.0: Always disabled - PBRS provides sufficient gradient
         """
-        curriculum_stage = getattr(self, "_curriculum_stage", 0)
-
-        if curriculum_stage >= 9:
-            return 1.0  # Full boost for very late stages
-        elif curriculum_stage >= 8:
-            return 0.5  # Light boost for stage 8
-        else:
-            return 0.0  # Disabled for early-mid stages
+        return 0.0  # Disabled - PBRS provides sufficient gradient
 
     @property
     def velocity_alignment_weight(self) -> float:
@@ -516,52 +315,31 @@ class RewardConfig:
     def death_penalty(self) -> float:
         """Curriculum-adaptive death penalty scaled with agent competence.
 
-        CRITICAL UPDATE 2026-01-03: With increased waypoint rewards (+8 × ~15 = +120 max) and
-        PBRS distance reduction, discovery/early phases must heavily penalize death to prevent
-        learning "doomed trajectory" patterns where agent gets close to goal but dies.
+        Death penalties strongly deter learning "doomed trajectory" patterns where agent gets
+        close to goal but dies, especially critical in discovery/early phases.
 
-        LATE STAGE UPDATE 2026-01-29: Added curriculum stage scaling for stages 8+ to combat
-        "profitable death" local minimum where waypoint accumulation makes dying profitable.
-        At late stages with long paths (60+ waypoints), waypoint rewards can exceed death penalty,
-        creating stable but suboptimal equilibrium where agent farms waypoints then dies.
+        Discovery phase analysis with pure PBRS:
+        - Complete: +40 PBRS + 100 switch + 200 completion = +340 (BEST)
+        - 80% progress + death: +32 PBRS - 80 death = -48 (bad)
+        - 50% progress + death: +20 PBRS - 80 death = -60 (worse)
+        - Fast fail (quick death): +4 PBRS - 80 death = -76 (worst)
 
-        Problem scenario at 0% success rate: "Fast fail" strategy (jump directly, reduce
-        distance quickly, die) vs "Waypoint collection" (follow non-linear path, collect waypoints):
-            Fast fail: +15 PBRS (quick distance) - 80 death = -65 (CLEARLY BAD)
-            Waypoint strategy: +30 PBRS + 96 waypoints (80%) - 80 death = +46 (GOOD!)
-            This creates strong preference for following waypoint guidance.
-
-        Discovery phase analysis with -80 penalty and +8 waypoint rewards:
-        - Complete: +40 PBRS + 120 waypoints + 100 switch + 200 completion = +460 (BEST)
-        - 80% waypoints + death: +32 PBRS + 96 waypoints - 80 death = +48 (decent progress)
-        - 50% waypoints + death: +20 PBRS + 60 waypoints - 80 death = +0 (neutral)
-        - Fast fail (quick death): +15 PBRS - 80 death = -65 (strongly discouraged)
-
-        Late stage analysis (stage 9, 62 waypoints):
-        - Without stage scaling: +25 waypoints - 8 death = +17 (profitable death!)
-        - With 1.75x scaling: +25 waypoints - 14 death = +11 (still positive but marginal)
-        - Completion still best: +27 waypoints + 18 completion + 9 switch = +54
+        This creates clear hierarchy: completion >> progress, encouraging agents to
+        learn robust policies rather than risky "almost complete" trajectories.
 
         Implements graduated penalty system that:
         1. Breaks "doomed trajectory" local minima in discovery (-80)
         2. Maintains completion preference in early learning (-50)
         3. Allows tactical risk-taking in mid-level (-20)
-        4. Prevents waypoint farming in advanced (-8)
-        5. Maintains strategic awareness in mastery (-6)
-        6. SCALES UP at late curriculum stages (8+) to combat waypoint inflation
+        4. Reduces to light penalty as mastery develops (-8, -6)
 
         Returns:
             Base penalties (success-rate scaled):
                 -80.0 (<5% success): Prevents "doomed trajectory" exploitation
                 -50.0 (5-20% success): Strong completion preference
                 -20.0 (20-40% success): Balanced risk-taking
-                -8.0 (40-60% success): Prevents waypoint farming
-                -6.0 (60%+ success): Strategic risk consideration
-
-            Stage scaling (applied to base):
-                Stage 8: 1.5x multiplier
-                Stage 9: 1.75x multiplier
-                Stage 10+: 2.0x multiplier
+                -8.0 (40-60% success): Light penalty for advanced agents
+                -6.0 (60%+ success): Minimal penalty at mastery
         """
         # Check for Optuna override first
         if self._death_penalty_override is not None:
@@ -577,21 +355,9 @@ class RewardConfig:
         elif self.recent_success_rate < 0.40:  # Mid-level learning
             base_penalty = -20.0  # Balancing speed vs safety
         elif self.recent_success_rate < 0.60:  # Advanced learning
-            base_penalty = -8.0  # Prevents "collect waypoints + die" exploitation
+            base_penalty = -8.0  # Light penalty for advanced agents
         else:
             base_penalty = -6.0  # Mastery: maintains strategic risk-taking
-
-        # NEW: Curriculum stage scaling for late stages (8+)
-        # At late stages, longer paths create more waypoints (60+ vs 20 early)
-        # This inflates waypoint rewards, making death profitable even with strong base penalty
-        # Stage scaling ensures death penalty grows with waypoint density
-        if self._curriculum_stage >= 8:
-            # TIER 1 FIX (2026-02-02): Increased cap 2.0x → 3.0x and steeper scaling
-            # Progressive scaling: stage 8 = 1.5x, stage 9 = 2.0x, stage 10+ = 2.5x, capped at 3.0x
-            # Analysis: At stage 9 with ~28 waypoint reward, death penalty -8 × 2.0 = -16 insufficient
-            # New: -8 × 3.0 = -24 makes completion (+20) clearly superior to death after waypoints
-            stage_multiplier = min(3.0, 1.0 + (self._curriculum_stage - 7) * 0.5)
-            base_penalty *= stage_multiplier
 
         return base_penalty
 
@@ -750,7 +516,7 @@ class RewardConfig:
         # Addresses success-spike-then-crash pattern by preventing exploration from
         # disrupting discovered patterns once agent shows consistent success.
         # This "commitment phase" allows agent to solidify learned behavior.
-        # 
+        #
         # TIER 2 FIX (2026-02-02): More aggressive convergence at late stages with success
         # Analysis: Tuned run had 0.96 entropy at stage 9 (too high), preventing commitment
         # to optimal patterns. Lower entropy forces convergence once good patterns discovered.
@@ -857,10 +623,6 @@ class RewardConfig:
         if curriculum_progress < 0.3 or self.recent_success_rate < 0.15:
             return "hard"
 
-        # Soft biasing: Mid curriculum OR moderate success
-        if curriculum_progress < 0.7 or self.recent_success_rate < 0.40:
-            return "soft"
-
         # No guidance: Late curriculum AND high success
         return "none"
 
@@ -933,7 +695,6 @@ class RewardConfig:
             "pbrs_normalization_scale": self.pbrs_normalization_scale,
             "velocity_alignment_weight": self.velocity_alignment_weight,
             "mine_hazard_cost_multiplier": self.mine_hazard_cost_multiplier,
-            "waypoint_progress_scale": self.waypoint_progress_scale,  # NEW: Progressive waypoint rewards
             "action_masking_mode": self.action_masking_mode,  # NEW: Annealed action masking
             "logit_bias_strength": self.logit_bias_strength,  # NEW: Soft guidance strength
         }
@@ -975,7 +736,7 @@ class GoalCurriculumConfig:
     advancement_threshold: float = 0.80
 
     # Rolling window size for success rate calculation (episodes)
-    rolling_window: int = 500
+    rolling_window: int = 5000
 
     # DEPRECATED: Kept for backwards compatibility
     # Sliding window model uses stage_distance_interval instead

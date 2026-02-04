@@ -19,8 +19,12 @@ RENDERED_VIEW_WIDTH = 100  # 100 / 6
 RENDERED_VIEW_HEIGHT = 176  # 1056 / 6
 RENDERED_VIEW_CHANNELS = 1  # Grayscale
 
-# Game state feature dimensions (enhanced physics + time_remaining)
-NINJA_STATE_DIM = 41  # 40 enhanced physics features + 1 time_remaining
+# Game state feature dimensions (streamlined, no redundancies)
+# Version 2.0 (Feb 2026): Reduced from 41 to 27 dims by removing redundant features
+# Features: velocity(2) + movement_state(4) + airborne(1) + inputs(2) + buffers(3) +
+#           jump_duration_remaining(1) + contacts(3) + normals(3) + walled(1) +
+#           physics(3) + position(2) + time_remaining(1) = 26
+NINJA_STATE_DIM = 26  # Was 41: removed 14 redundant features
 GAME_STATE_CHANNELS = NINJA_STATE_DIM
 
 # Switch states array (legacy format, still used by some components)
@@ -33,19 +37,21 @@ MAX_LOCKED_DOORS_ATTENTION = 16
 LOCKED_DOOR_FEATURES_DIM = 8  # [switch_x, switch_y, switch_collected, switch_path_dist, door_x, door_y, door_open, door_path_dist]
 LOCKED_DOOR_ARRAY_SIZE = MAX_LOCKED_DOORS_ATTENTION * LOCKED_DOOR_FEATURES_DIM  # 128
 
-# Reachability features dimension
-# 38 features (expanded for blind jump verification - Phases 1-5):
-#   Base (4): [reachable_area_ratio, dist_to_switch_inv, dist_to_exit_inv, exit_reachable]
+# Reachability features dimension (streamlined, no misleading features)
+# Version 2.0 (Feb 2026): Reduced from 22 to 11 dims by removing redundant/misleading features
+# 11 features:
 #   Path distances (2): [path_dist_to_switch_norm, path_dist_to_exit_norm]
-#   Direction vectors (4): [dir_to_switch_x, dir_to_switch_y, dir_to_exit_x, dir_to_exit_y]
-#   Mine context (2): [total_mines_norm, deadly_mine_ratio]
-#   Phase indicator (1): [switch_activated] - critical for Markov property
-#   Path direction (8): [next_hop_dir_x/y, waypoint_dir_x/y, waypoint_dist, path_detour_flag, mine_clearance_dir_x/y]
-#   Path difficulty (1): [path_difficulty_ratio] - physics_cost/geometric_distance
-#   Path curvature (3): [multi_hop_dir_x/y, path_curvature] - 8-hop lookahead and turn indicator
-#   Exit lookahead (5): [exit_next_hop_x/y, exit_multi_hop_x/y, near_switch_indicator] - continuity at switch transition
-#   Directional connectivity (8): [platform_dist_E, NE, N, NW, W, SW, S, SE] - blind jump verification
-REACHABILITY_FEATURES_DIM = 38
+#   Phase (1): [switch_activated] - critical for Markov property
+#   A* guidance (2): [next_hop_dir_x, next_hop_dir_y] - optimal path direction
+#   Detour detection (1): [path_requires_detour] - flag when A* opposes Euclidean
+#   Mine clearance (2): [mine_clearance_dir_x, mine_clearance_dir_y] - SDF gradient
+#   Reachability (1): [exit_reachable]
+#   Platform distances (2): [platform_ahead, platform_below] - critical for blind jumps
+# REMOVED: Global stats (reachable_area_ratio, total_mines, deadly_mine_ratio),
+#          Euclidean directions (misleading, can point into walls),
+#          redundant inverses (dist_to_switch_inv, dist_to_exit_inv),
+#          6 of 8 directional connectivity features (kept only 2 most relevant)
+REACHABILITY_FEATURES_DIM = 11  # Was 22
 
 # Mine SDF features dimension (for actor safety awareness)
 # 3 features from global Mine Signed Distance Field:
@@ -62,13 +68,18 @@ MINE_SDF_FEATURES_DIM = 3
 #     - velocity_dot_direction(1) + distance_rate(1) [Markovian: current state only]
 SPATIAL_CONTEXT_DIM = 112
 
-# Minimal observation dimension (simplified for testing time-independence)
-# 40 features (core physics + path guidance + nearest mines + buffers):
+# Minimal observation dimension (waypoints + LSTM features removed 2026-02-03)
+# 30 features (core physics + path guidance + nearest mines + buffers):
 #   Core physics (12): velocity(2) + state_one_hot(5) + airborne + walled + wall_normal + floor_normal(2)
-#   Path guidance (8): next_hop_dir(2) + waypoint_dir(2) + exit_dir(2) + phase + curvature
-#   Mine context (16): 4 nearest mines × 4 features (x, y, state, distance)
+#   Path guidance (4): next_hop_dir(2) + exit_dir(2)
+#   Mine context (12): 3 nearest mines × 4 features (x, y, state, distance)
 #   Buffers (4): jump_buffer + floor_buffer + wall_buffer + launch_pad_buffer
-MINIMAL_OBSERVATION_DIM = 40
+# REMOVED: waypoints (2 + distance), phase indicator (frame stacking handles), curvature (LSTM-specific)
+MINIMAL_OBSERVATION_DIM = 30
+
+# Total observation space (for graph_free architecture, Version 2.0)
+# 27 (game_state) + 11 (reachability) + 112 (spatial_context) + 3 (mine_sdf) = 153 dims
+# Version 2.0 (Feb 2026): 49% reduction from 301 dims (v1 with frame stacking)
 
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0

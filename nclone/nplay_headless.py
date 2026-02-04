@@ -291,32 +291,33 @@ class NPlayHeadless:
 
     def fast_reset(self):
         """Fast reset for same-level training.
-        
+
         Uses Simulator.fast_reset() to reset entity states in-place without
         recreating objects. Significantly faster than reset() for same-level
         training scenarios.
-        
+
         CRITICAL: Must be called ONLY when the map has not changed since the last
         reset. For new maps, use reset() instead.
-        
+
         Curriculum compatibility: This method resets entities to their ORIGINAL positions.
         The environment must call goal_curriculum_manager.apply_to_simulator() after
         fast_reset() to move entities to curriculum positions.
         """
         self.sim.fast_reset()
-        
+
         if self.enable_rendering:
             # Clear rendering caches (same as reset())
             # Render caches must be cleared because entity positions may change
             # (even if they reset to original positions, they may have moved during episode)
             self.cached_render_surface = None
             self.cached_render_buffer = None
-            
+
             # Clear pathfinding cache when ninja resets (position changes)
             if hasattr(self, "sim_renderer") and hasattr(
                 self.sim_renderer, "debug_overlay_renderer"
             ):
                 from nclone.cache_management import clear_pathfinding_caches
+
                 clear_pathfinding_caches(self.sim_renderer.debug_overlay_renderer)
 
     def tick(self, horizontal_input: int, jump_input: int):
@@ -735,38 +736,38 @@ class NPlayHeadless:
     def get_ninja_state(self):
         """Get ninja state as a list of floats with fixed length, all normalized between -1 and 1.
 
-        Returns:
-            List of GAME_STATE_CHANNELS floats representing ninja state:
-            - Core movement state (8 features)
-            - Input and buffer state (5 features)
-            - Surface contact information (6 features)
-            - Additional physics state (7 features)
-            - Temporal features (6 features)
-            - Physics features (8 features)
+        Returns 26 features (time_remaining is appended separately in base_environment.py):
+            - Velocity (2): velocity_x, velocity_y
+            - Movement state categories (4): ground, air, wall, special
+            - Airborne status (1)
+            - Input and buffers (6): horizontal_input, jump_input, buffers (3), jump_duration_remaining
+            - Surface contact (3): floor, wall, ceiling
+            - Surface normals (3): floor_normal_x, floor_normal_y, wall_normal
+            - Physics parameters (3): applied_gravity, applied_drag, applied_friction
+            - Walled status (1)
+            - Position (2): position_x, position_y (normalized)
+
+        REMOVED from v1 (41 dims): velocity_magnitude, velocity_direction, floor_normal_strength,
+        surface_slope, ceiling_normal, temporal_features (6), kinetic_energy, potential_energy,
+        force_magnitude, energy_change_rate, contact_strength (2), surface_slope_angle,
+        wall_interaction_strength (14 features removed)
+
+        ADDED: jump_duration_remaining (MDP critical), position_x, position_y
         """
         ninja = self.sim.ninja
+        from .constants.physics_constants import MAX_JUMP_DURATION
+        from .gym_environment.constants import LEVEL_WIDTH, LEVEL_HEIGHT
+
         state = []
 
-        # === Core Movement State (8 features) ===
+        # === Velocity (2 features) ===
+        # 0-1. Direct velocity components (most information-dense features)
+        velocity_x = np.clip(ninja.xspeed / MAX_HOR_SPEED, -1, 1)
+        velocity_y = np.clip(ninja.yspeed / MAX_HOR_SPEED, -1, 1)
+        state.extend([velocity_x, velocity_y])
 
-        # 1. Velocity magnitude (normalized by max possible speed)
-        velocity_magnitude = (ninja.xspeed**2 + ninja.yspeed**2) ** 0.5
-        max_velocity = MAX_HOR_SPEED * 2  # Account for vertical velocity
-        velocity_mag_norm = (
-            min(velocity_magnitude / max_velocity, 1.0) * 2 - 1
-        )  # [-1, 1]
-        state.append(velocity_mag_norm)
-
-        # 2-3. Velocity direction (normalized, handling zero velocity)
-        if velocity_magnitude > 1e-6:
-            velocity_dir_x = ninja.xspeed / velocity_magnitude  # Already [-1, 1]
-            velocity_dir_y = ninja.yspeed / velocity_magnitude
-        else:
-            velocity_dir_x = 0.0
-            velocity_dir_y = 0.0
-        state.extend([velocity_dir_x, velocity_dir_y])
-
-        # 4-7. Movement state categories (compressed from 10 states to 4 categories)
+        # === Movement State Categories (4 features) ===
+        # 2-5. Movement state categories (binary classification of ninja state)
         ground_movement = (
             1.0 if ninja.state in [0, 1, 2] else -1.0
         )  # Immobile, Running, Ground sliding
@@ -777,58 +778,64 @@ class NPlayHeadless:
         )  # Dead, Awaiting death, Celebrating, Disabled
         state.extend([ground_movement, air_movement, wall_interaction, special_states])
 
-        # 8. Airborne status
+        # 6. Airborne status
         airborne_status = 1.0 if ninja.airborn else -1.0
         state.append(airborne_status)
 
-        # === Input and Buffer State (5 features) ===
-
-        # 9. Current horizontal input (normalized to [-1, 1])
+        # === Input and Buffer State (6 features) ===
+        # 7. Current horizontal input (normalized to [-1, 1])
         horizontal_input = float(ninja.hor_input)  # Already -1, 0, or 1
         state.append(horizontal_input)
 
-        # 10. Current jump input
+        # 8. Current jump input
         jump_input = 1.0 if ninja.jump_input else -1.0
         state.append(jump_input)
 
-        # 11-13. Buffer states (normalized to [-1, 1])
+        # 9-11. Buffer states (normalized to [-1, 1])
         buffer_window_size = 5.0
         jump_buffer_norm = (max(ninja.jump_buffer, 0) / buffer_window_size) * 2 - 1
         floor_buffer_norm = (max(ninja.floor_buffer, 0) / buffer_window_size) * 2 - 1
         wall_buffer_norm = (max(ninja.wall_buffer, 0) / buffer_window_size) * 2 - 1
         state.extend([jump_buffer_norm, floor_buffer_norm, wall_buffer_norm])
 
-        # === Surface Contact Information (6 features) ===
+        # 12. Jump duration remaining (NEW - MDP critical)
+        # When jumping (state 3), track remaining frames until forced fall
+        # Normalized to [0, 1]: 1.0 = full jump available, 0.0 = jump ending
+        if ninja.state == 3:  # Jumping state
+            jump_duration_remaining = (
+                max(0, MAX_JUMP_DURATION - ninja.jump_duration) / MAX_JUMP_DURATION
+            )
+        else:
+            jump_duration_remaining = 0.0
+        state.append(jump_duration_remaining)
 
-        # 14-16. Contact strength (normalized)
+        # === Surface Contact Information (3 features) ===
+        # 13-15. Contact states (binary)
         floor_contact = (min(ninja.floor_count, 1) * 2) - 1  # Convert 0,1 to -1,1
         wall_contact = (min(ninja.wall_count, 1) * 2) - 1
         ceiling_contact = (min(ninja.ceiling_count, 1) * 2) - 1
         state.extend([floor_contact, wall_contact, ceiling_contact])
 
-        # 17. Floor normal strength
-        floor_normal_strength = (
-            ninja.floor_normalized_x**2 + ninja.floor_normalized_y**2
-        ) ** 0.5
-        floor_normal_strength = (floor_normal_strength * 2) - 1  # Normalize to [-1, 1]
-        state.append(floor_normal_strength)
+        # === Surface Normals (3 features) ===
+        # 16-17. Floor normal (full vector, already [-1, 1])
+        floor_normal_x = ninja.floor_normalized_x
+        floor_normal_y = ninja.floor_normalized_y
+        state.extend([floor_normal_x, floor_normal_y])
 
-        # 18. Wall normal direction (if wall contact exists)
+        # 18. Wall normal direction (scalar, -1 or 1)
         if ninja.wall_count > 0 and hasattr(ninja, "wall_normal"):
-            # wall_normal is a scalar indicating direction (-1 or 1)
-            wall_direction = float(ninja.wall_normal)  # Already [-1, 1]
+            wall_normal = float(ninja.wall_normal)  # Already [-1, 1]
         else:
-            wall_direction = 0.0
-        state.append(wall_direction)
+            wall_normal = 0.0
+        state.append(wall_normal)
 
-        # 19. Surface slope (floor normal y component indicates slope)
-        surface_slope = ninja.floor_normalized_y  # Already [-1, 1]
-        state.append(surface_slope)
+        # === Walled Status (1 feature) ===
+        # 19. Walled status (boolean to -1/1)
+        walled_status = 1.0 if ninja.walled else -1.0
+        state.append(walled_status)
 
-        # === Additional Physics State (5 features) ===
-
+        # === Physics Parameters (3 features) ===
         # 20. Applied gravity (normalized between GRAVITY_JUMP and GRAVITY_FALL)
-        # GRAVITY_JUMP < GRAVITY_FALL, so normalize: -1 = GRAVITY_JUMP, 1 = GRAVITY_FALL
         gravity_range = GRAVITY_FALL - GRAVITY_JUMP
         if gravity_range > 1e-6:
             gravity_norm = (
@@ -838,21 +845,7 @@ class NPlayHeadless:
             gravity_norm = 0.0
         state.append(gravity_norm)
 
-        # 21. Walled status (boolean to -1/1)
-        walled_status = 1.0 if ninja.walled else -1.0
-        state.append(walled_status)
-
-        # 22. Floor normal x-component (full x-component, already [-1, 1])
-        floor_normal_x = ninja.floor_normalized_x
-        state.append(floor_normal_x)
-
-        # 23-24. Ceiling normal vector (full ceiling normal, already [-1, 1])
-        ceiling_normal_x = ninja.ceiling_normalized_x
-        ceiling_normal_y = ninja.ceiling_normalized_y
-        state.extend([ceiling_normal_x, ceiling_normal_y])
-
-        # 25. Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
-        # DRAG_SLOW < DRAG_REGULAR, so normalize: -1 = DRAG_SLOW, 1 = DRAG_REGULAR
+        # 21. Applied drag (normalized between DRAG_SLOW and DRAG_REGULAR)
         drag_range = DRAG_REGULAR - DRAG_SLOW
         if drag_range > 1e-6:
             drag_norm = (ninja.applied_drag - DRAG_SLOW) / drag_range * 2 - 1  # [-1, 1]
@@ -860,8 +853,7 @@ class NPlayHeadless:
             drag_norm = 0.0
         state.append(drag_norm)
 
-        # 26. Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
-        # FRICTION_GROUND_SLOW < FRICTION_GROUND, so normalize: -1 = FRICTION_GROUND_SLOW, 1 = FRICTION_GROUND
+        # 22. Applied friction (normalized between FRICTION_GROUND_SLOW and FRICTION_GROUND)
         friction_range = FRICTION_GROUND - FRICTION_GROUND_SLOW
         if friction_range > 1e-6:
             friction_norm = (
@@ -871,54 +863,13 @@ class NPlayHeadless:
             friction_norm = 0.0
         state.append(friction_norm)
 
-        # === Temporal Features (6 features) ===
-        # 27-32. Temporal dynamics from ninja.get_temporal_features()
-        temporal_features = ninja.get_temporal_features()
-        state.extend(temporal_features)
+        # === Position (2 features) ===
+        # 23-24. Position normalized to [0, 1]
+        position_x = ninja.xpos / LEVEL_WIDTH
+        position_y = ninja.ypos / LEVEL_HEIGHT
+        state.extend([position_x, position_y])
 
-        # === Enhanced Physics Features (8 features) ===
-
-        # 33. Kinetic energy (normalized, always computable from current velocity)
-        kinetic_energy = 0.5 * (ninja.xspeed**2 + ninja.yspeed**2)
-        kinetic_energy_norm = min(kinetic_energy / (MAX_HOR_SPEED**2), 1.0) * 2 - 1
-        state.append(kinetic_energy_norm)
-
-        # 34. Potential energy (height-based, using current position)
-        potential_energy_norm = (ninja.ypos / LEVEL_HEIGHT_PX) * 2 - 1
-        state.append(potential_energy_norm)
-
-        # 35. Applied force magnitude (from current physics constants)
-        force_magnitude = math.sqrt(
-            ninja.applied_gravity**2
-            + (GROUND_ACCEL if not ninja.airborn else AIR_ACCEL) ** 2
-        )
-        force_magnitude_norm = min(force_magnitude / 0.1, 1.0) * 2 - 1
-        state.append(force_magnitude_norm)
-
-        # 36. Energy change rate (using already-tracked xspeed_old, yspeed_old)
-        prev_kinetic = 0.5 * (ninja.xspeed_old**2 + ninja.yspeed_old**2)
-        energy_change_rate = (kinetic_energy - prev_kinetic) / max(
-            kinetic_energy + 0.01, 0.01
-        )
-        energy_change_norm = max(-1.0, min(1.0, energy_change_rate))
-        state.append(energy_change_norm)
-
-        # 37. Contact strength (normalized floor contact count)
-        floor_contact_strength = min(ninja.floor_count / 5.0, 1.0) * 2 - 1
-        state.append(floor_contact_strength)
-
-        # 38. Wall contact strength (normalized wall contact count)
-        wall_contact_strength = min(ninja.wall_count / 3.0, 1.0) * 2 - 1
-        state.append(wall_contact_strength)
-
-        # 39. Surface slope angle (from existing floor_normalized_x, floor_normalized_y)
-        surface_slope = (
-            math.atan2(ninja.floor_normalized_y, ninja.floor_normalized_x) / math.pi
-        )
-        state.append(surface_slope)
-
-        # 40. Wall interaction strength (from existing wall_normal, already computed)
-        wall_interaction = ninja.wall_normal if ninja.walled else 0.0
-        state.append(wall_interaction)
+        # Note: time_remaining (26th feature) is appended in base_environment.py
+        # to create the final 26-dimensional game state vector
 
         return state

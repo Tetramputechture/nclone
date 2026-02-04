@@ -373,46 +373,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         else:
             info["graph_num_nodes"] = 0
 
-        # Add waypoints for visualization (every step)
-        waypoints_active = []
-        waypoints_reached = []
-
-        if hasattr(self.reward_calculator, "current_path_waypoints_by_phase"):
-            # Get all waypoints from all phases for visualization
-            # Visualization should show complete path, not just current phase
-            waypoints_dict = getattr(
-                self.reward_calculator, "current_path_waypoints_by_phase", {}
-            )
-            if waypoints_dict is None:
-                waypoints_dict = {}
-
-            # Combine ALL waypoints from all phases for visualization
-            # Keep phase information for phase-aware coloring
-            for phase_name, phase_list in waypoints_dict.items():
-                # Convert PathWaypoint objects to dict format for visualization
-                for wp in phase_list:
-                    # DIAGNOSTIC: Verify phase is being set correctly
-                    # Use wp.phase (from PathWaypoint) not phase_name (from dict key)
-                    # to ensure we're reading the actual waypoint's phase attribute
-                    waypoint_dict = {
-                        "position": wp.position,
-                        "value": wp.value,
-                        "type": wp.waypoint_type,
-                        "source": "path",  # These are path waypoints
-                        "phase": wp.phase,  # Use waypoint's phase attribute, not dict key
-                        "discovery_count": 1,  # Not tracked for path waypoints
-                    }
-                    waypoints_active.append(waypoint_dict)
-
-            # Get collected waypoints for this episode
-            collected = getattr(
-                self.reward_calculator, "_collected_path_waypoints", set()
-            )
-            waypoints_reached = list(collected)
-
-        info["_waypoints_active"] = waypoints_active
-        info["_waypoints_reached"] = waypoints_reached
-
     def _build_door_feature_cache(self):
         """
         Build precomputed door feature cache.
@@ -505,7 +465,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         """Reset the environment with planning components and visualization."""
 
         # Start profiling total reset time
-        reset_start_time = self._profile_start("reset_total")
+        # reset_start_time = self._profile_start("reset_total")
 
         # Handle reinitialization after unpickling
         if hasattr(self, "_needs_reinit") and self._needs_reinit:
@@ -553,9 +513,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 )
 
             # Fast reset: entities in-place, no recreation
-            fast_sim_start = self._profile_start("reset_fast_sim")
+            # fast_sim_start = self._profile_start("reset_fast_sim")
             self.nplay_headless.fast_reset()
-            self._profile_end("reset_fast_sim", fast_sim_start)
+            # self._profile_end("reset_fast_sim", fast_sim_start)
 
             # Clear only episode-specific caches (not level-persistent ones)
             from nclone.cache_management import clear_episode_caches_only
@@ -597,9 +557,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 )
 
                 # Apply curriculum positioning (moves entities to curriculum positions)
-                curriculum_start = self._profile_start("reset_fast_curriculum")
+                # curriculum_start = self._profile_start("reset_fast_curriculum")
                 self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
-                self._profile_end("reset_fast_curriculum", curriculum_start)
+                # self._profile_end("reset_fast_curriculum", curriculum_start)
 
                 if self.enable_logging:
                     logger.info(
@@ -620,25 +580,25 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 pbrs_calc._cached_next_hop = None
 
             # Reset graph state (fast - graph structure unchanged)
-            graph_start = self._profile_start("reset_fast_graph")
+            # graph_start = self._profile_start("reset_fast_graph")
             self._reset_graph_state()
-            self._reset_reachability_state()
+            # self._reset_reachability_state()
 
             # Update graph from current env state (fast - uses cached graph structure)
             self._update_graph_from_env_state()
-            self._profile_end("reset_fast_graph", graph_start)
+            # self._profile_end("reset_fast_graph", graph_start)
 
             # Get initial observation and return
-            obs_start = self._profile_start("reset_fast_observation")
+            # obs_start = self._profile_start("reset_fast_observation")
             initial_obs = self._get_observation()
             processed_obs = self._process_observation(initial_obs)
-            self._profile_end("reset_fast_observation", obs_start)
+            # self._profile_end("reset_fast_observation", obs_start)
 
             # Track current map name for fast reset detection
             self._last_reset_map_name = self.map_loader.current_map_name
 
             # End profiling and return
-            self._profile_end("reset_total", reset_start_time)
+            # self._profile_end("reset_total", reset_start_time)
 
             return (processed_obs, {})
 
@@ -1146,10 +1106,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             level_id = self.map_loader.current_map_name
             self._feature_extractor_cache_callback(level_id, self.current_graph_data)
 
-        # Extract path-based waypoints from optimal A* paths (if enabled)
-        # This provides immediate dense guidance from first episode
-        self._update_path_waypoints_for_current_level()
-
         # # Validate spawn position can reach graph nodes (detect degenerate maps early)
         # if hasattr(self, "current_graph_data") and self.current_graph_data:
         #     adjacency = self.current_graph_data.get("adjacency")
@@ -1361,7 +1317,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._last_reset_map_name = self.map_loader.current_map_name
 
         # End profiling (standard reset path)
-        self._profile_end("reset_total", reset_start_time)
+        # self._profile_end("reset_total", reset_start_time)
 
         return (processed_obs, {})
 
@@ -1451,31 +1407,22 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         """
         mine_sdf_features = np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32)
 
-        try:
-            ninja_x = obs.get("player_x", 0.0)
-            ninja_y = obs.get("player_y", 0.0)
+        ninja_x = obs.get("player_x", 0.0)
+        ninja_y = obs.get("player_y", 0.0)
 
-            pbrs_calculator = self.reward_calculator.pbrs_calculator
-            if (
-                pbrs_calculator is not None
-                and pbrs_calculator.path_calculator is not None
-            ):
-                mine_sdf = pbrs_calculator.path_calculator.mine_sdf
-                if mine_sdf is not None and mine_sdf.sdf_grid is not None:
-                    # Feature 0: SDF value at ninja position
-                    # Negative = inside danger zone, positive = safe
-                    sdf_value = mine_sdf.get_sdf_at_position(ninja_x, ninja_y)
-                    mine_sdf_features[0] = sdf_value
+        pbrs_calculator = self.reward_calculator.pbrs_calculator
+        if pbrs_calculator is not None and pbrs_calculator.path_calculator is not None:
+            mine_sdf = pbrs_calculator.path_calculator.mine_sdf
+            # Feature 0: SDF value at ninja position
+            # Negative = inside danger zone, positive = safe
+            sdf_value = mine_sdf.get_sdf_at_position(ninja_x, ninja_y)
+            mine_sdf_features[0] = sdf_value
 
-                    # Features 1-2: Escape gradient (unit vector away from nearest mine)
-                    # Tells actor optimal direction to move for safety
-                    grad_x, grad_y = mine_sdf.get_gradient_at_position(ninja_x, ninja_y)
-                    mine_sdf_features[1] = grad_x
-                    mine_sdf_features[2] = grad_y
-
-        except Exception as e:
-            logger.debug(f"Failed to compute mine SDF features: {e}")
-            # Return safe zeros on failure
+            # Features 1-2: Escape gradient (unit vector away from nearest mine)
+            # Tells actor optimal direction to move for safety
+            grad_x, grad_y = mine_sdf.get_gradient_at_position(ninja_x, ninja_y)
+            mine_sdf_features[1] = grad_x
+            mine_sdf_features[2] = grad_y
 
         return mine_sdf_features
 

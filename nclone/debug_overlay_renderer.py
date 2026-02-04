@@ -1429,7 +1429,7 @@ class DebugOverlayRenderer:
                         )
 
         # Calculate and display switch/exit distances
-        if show_distances and ninja_pos and adjacency:
+        if ninja_pos and adjacency:
             # Extract ninja position for screen coordinates
             ninja_x, ninja_y = ninja_pos
 
@@ -1513,16 +1513,18 @@ class DebugOverlayRenderer:
 
                 # Draw info box with switch/exit distances
                 try:
+                    title_font = pygame.font.Font(None, 18)
                     box_font = pygame.font.Font(None, 20)
                 except pygame.error:
+                    title_font = pygame.font.SysFont("monospace", 14, bold=True)
                     box_font = pygame.font.SysFont("monospace", 16, bold=True)
 
                 ninja_screen_x = int(ninja_x * self.adjust + self.tile_x_offset)
                 ninja_screen_y = int(ninja_y * self.adjust + self.tile_y_offset)
 
                 # Draw background box
-                box_width = 180
-                box_height = 60
+                box_width = 200
+                box_height = 75
                 box_x = ninja_screen_x + 20
                 box_y = ninja_screen_y - 40
 
@@ -1535,157 +1537,40 @@ class DebugOverlayRenderer:
                 pygame.draw.rect(
                     surface,
                     (0, 0, 0, 200),
-                    (box_x, box_y, box_width, box_height),
+                    (50, 50, box_width, box_height),
                     border_radius=5,
                 )
                 pygame.draw.rect(
                     surface,
                     (100, 200, 255, 255),
-                    (box_x, box_y, box_width, box_height),
+                    (50, 50, box_width, box_height),
                     2,
                     border_radius=5,
                 )
 
-                # Draw text
-                switch_text = f"Switch: {int(switch_dist) if switch_dist != float('inf') else '∞'}"
+                # Draw title at top of box
+                title_text = "Physics Cost (PBRS)"
+                title_surf = title_font.render(title_text, True, (200, 200, 255, 255))
+                title_x = 50 + (box_width - title_surf.get_width()) // 2
+                surface.blit(title_surf, (title_x, 50 + 5))
+
+                # Draw text with clearer labels and decimal precision
+                switch_text = (
+                    f"Switch Cost: {switch_dist:.1f}"
+                    if switch_dist != float("inf")
+                    else "Switch Cost: ∞"
+                )
                 exit_text = (
-                    f"Exit: {int(exit_dist) if exit_dist != float('inf') else '∞'}"
+                    f"Exit Cost: {exit_dist:.1f}"
+                    if exit_dist != float("inf")
+                    else "Exit Cost: ∞"
                 )
 
                 switch_surf = box_font.render(switch_text, True, SWITCH_NODE_COLOR)
                 exit_surf = box_font.render(exit_text, True, EXIT_NODE_COLOR)
 
-                surface.blit(switch_surf, (box_x + 10, box_y + 10))
-                surface.blit(exit_surf, (box_x + 10, box_y + 35))
-
-        # Draw path edge types legend (only when paths are shown)
-        if show_paths and used_edge_types:
-            try:
-                legend_font = pygame.font.Font(None, 18)
-            except pygame.error:
-                legend_font = pygame.font.SysFont("arial", 14)
-
-            # Sort edge types by cost (cheapest first) for consistent display
-            sorted_edge_types = sorted(
-                used_edge_types, key=lambda et: get_edge_type_cost_multiplier(et)
-            )
-
-            # Calculate legend dimensions based on number of edge types
-            edge_legend_width = 220
-            edge_legend_height = 40 + len(sorted_edge_types) * 22
-            edge_legend_x = 20
-            edge_legend_y = self.screen.get_height() - edge_legend_height - 20
-
-            # Background
-            pygame.draw.rect(
-                surface,
-                (0, 0, 0, 200),
-                (edge_legend_x, edge_legend_y, edge_legend_width, edge_legend_height),
-                border_radius=5,
-            )
-            pygame.draw.rect(
-                surface,
-                (100, 200, 255, 255),
-                (edge_legend_x, edge_legend_y, edge_legend_width, edge_legend_height),
-                2,
-                border_radius=5,
-            )
-
-            # Title
-            title_surf = legend_font.render("Path Edge Types:", True, TEXT_COLOR)
-            surface.blit(title_surf, (edge_legend_x + 10, edge_legend_y + 10))
-
-            # Edge type items
-            y_offset = edge_legend_y + 35
-            for edge_type in sorted_edge_types:
-                # Get edge type info
-                edge_color = get_edge_type_color(edge_type)
-                edge_label = get_edge_type_label(edge_type)
-                edge_cost = get_edge_type_cost_multiplier(edge_type)
-
-                # Draw color indicator line
-                line_x1 = edge_legend_x + 15
-                line_y = y_offset + 8
-                line_x2 = edge_legend_x + 35
-                pygame.draw.line(
-                    surface, edge_color, (line_x1, line_y), (line_x2, line_y), 4
-                )
-
-                # Draw label and cost
-                text = f"{edge_label} ({edge_cost:.2f})"
-                text_surf = legend_font.render(text, True, TEXT_COLOR)
-                surface.blit(text_surf, (edge_legend_x + 45, y_offset))
-                y_offset += 22
-
-        # Draw straightness masking legend (when active)
-        straightness_debug = path_aware_info.get("straightness_masking_debug")
-        if straightness_debug:
-            try:
-                legend_font = pygame.font.Font(None, 18)
-            except pygame.error:
-                legend_font = pygame.font.SysFont("arial", 14)
-
-            # Position legend in top-right
-            legend_width = 240
-            legend_height = 100
-            legend_x = self.screen.get_width() - legend_width - 20
-            legend_y = 20
-
-            # Background
-            pygame.draw.rect(
-                surface,
-                (0, 0, 0, 220),
-                (legend_x, legend_y, legend_width, legend_height),
-                border_radius=5,
-            )
-            pygame.draw.rect(
-                surface,
-                (255, 0, 255, 255),  # Magenta border
-                (legend_x, legend_y, legend_width, legend_height),
-                2,
-                border_radius=5,
-            )
-
-            # Title
-            title_surf = legend_font.render("Straightness Masking:", True, TEXT_COLOR)
-            surface.blit(title_surf, (legend_x + 10, legend_y + 10))
-
-            # Legend items
-            items = [
-                ((255, 0, 255), "● Masking Node", "circle"),
-                ((255, 0, 255), "→ Multi-hop Dir", "arrow"),
-                ((255, 255, 0), "● Next Hop", "circle"),
-            ]
-
-            y_pos = legend_y + 35
-            for color, label, shape_type in items:
-                if shape_type == "circle":
-                    pygame.draw.circle(surface, color, (legend_x + 20, y_pos + 7), 5)
-                    pygame.draw.circle(
-                        surface, (255, 255, 255), (legend_x + 20, y_pos + 7), 5, 1
-                    )
-                elif shape_type == "arrow":
-                    # Draw small arrow
-                    pygame.draw.line(
-                        surface,
-                        color,
-                        (legend_x + 15, y_pos + 7),
-                        (legend_x + 25, y_pos + 7),
-                        2,
-                    )
-                    pygame.draw.polygon(
-                        surface,
-                        color,
-                        [
-                            (legend_x + 25, y_pos + 7),
-                            (legend_x + 21, y_pos + 4),
-                            (legend_x + 21, y_pos + 10),
-                        ],
-                    )
-
-                text_surf = legend_font.render(label, True, TEXT_COLOR)
-                surface.blit(text_surf, (legend_x + 35, y_pos))
-                y_pos += 20
+                surface.blit(switch_surf, (50 + 10, 50 + 28))
+                surface.blit(exit_surf, (50 + 10, 50 + 50))
 
         return surface
 

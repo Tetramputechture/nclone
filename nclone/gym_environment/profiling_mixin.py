@@ -73,7 +73,7 @@ class ProfilingMixin:
         
         # Calculate total step time
         step_times = self._timing_data.get("step_total", [])
-        if step_times:
+        if len(step_times) > 0:
             total_avg = np.mean(list(step_times))
             print(f"\nTotal step time: {total_avg:.2f} ms/step ({1000/total_avg:.1f} steps/s)")
         else:
@@ -108,7 +108,7 @@ class ProfilingMixin:
         ]
         
         for key, label, level in components:
-            if key in self._timing_data and self._timing_data[key]:
+            if key in self._timing_data and len(self._timing_data[key]) > 0:
                 times = list(self._timing_data[key])
                 avg = np.mean(times)
                 std = np.std(times)
@@ -141,7 +141,7 @@ class ProfilingMixin:
         
         summary = {}
         for key, times in self._timing_data.items():
-            if times:
+            if len(times) > 0:
                 summary[f"{key}_avg_ms"] = np.mean(list(times))
                 summary[f"{key}_std_ms"] = np.std(list(times))
         

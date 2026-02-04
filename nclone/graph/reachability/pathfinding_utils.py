@@ -184,6 +184,7 @@ def _calculate_physics_aware_cost(
     mine_sdf: Optional[Any] = None,
     hazard_cost_multiplier: Optional[float] = None,
     ninja_velocity: Optional[Tuple[float, float]] = None,
+    jump_duration_remaining: Optional[float] = None,
 ) -> float:
     """
     Calculate edge cost based on N++ movement physics, momentum, and mine hazard proximity.
@@ -205,6 +206,11 @@ def _calculate_physics_aware_cost(
     - Paths that reverse momentum get 2.5x penalty
     - Makes momentum-building "detours" cheaper than naive direct paths
     - Critical for levels requiring backtracking to build speed (e.g., long jumps)
+
+    Jump duration tracking:
+    - ninja_velocity and jump_duration_remaining work together for first-edge feasibility
+    - If airborne with jump_duration_remaining <= 0, upward edges return inf cost
+    - Prevents rewarding trajectories that exhaust jump frames before critical jumps
 
     Mid-air jump prevention:
     - Initiating a jump from mid-air (falling→rising transition) is BLOCKED with infinite cost
@@ -310,23 +316,35 @@ def _calculate_physics_aware_cost(
 
     # Velocity-aware first-edge cost adjustment
     # Only applies when this is the first edge (parent_pos is None) and ninja_velocity is provided
-    # Uses ninja's actual velocity to make more realistic cost estimates for initial movement
+    # Uses ninja's actual velocity AND jump duration to determine trajectory feasibility
     velocity_multiplier = 1.0
     if parent_pos is None and ninja_velocity is not None:
         ninja_xspeed, ninja_yspeed = ninja_velocity
 
         # Vertical velocity adjustments (for upward edges)
         if dy < 0:  # Moving upward (negative y in screen coords)
-            if not src_grounded:  # Only apply velocity logic when airborne
-                # Check ninja's vertical velocity to determine if upward movement is possible
+            # CRITICAL: Only apply velocity checks when airborne AND not on wall
+            # Wall jumps are a valid mechanic (handled by wall jump logic below)
+            if not src_grounded and not src_walled:
+                # Ninja is in free-fall (no wall contact) - check velocity feasibility
                 if ninja_yspeed >= NINJA_RISING_SLOW_THRESHOLD:
                     # Ninja is falling or stationary - CANNOT jump in mid-air
                     velocity_multiplier = float("inf")
                 elif ninja_yspeed < NINJA_RISING_FAST_THRESHOLD:
-                    # Ninja has strong upward momentum - continuing jump is cheap
+                    # Ninja has STRONG upward momentum - momentum carries them naturally
+                    # This works regardless of jump frames (no button hold needed)
                     velocity_multiplier = VELOCITY_UPWARD_FAST_MULTIPLIER
+                elif (
+                    jump_duration_remaining is not None
+                    and jump_duration_remaining <= 0.0
+                ):
+                    # Ninja has moderate upward velocity BUT jump frames exhausted
+                    # Cannot sustain rise without holding jump button - will start falling soon
+                    # This prevents agent from relying on exhausted jump frames
+                    velocity_multiplier = float("inf")
                 else:
-                    # Ninja has some upward momentum but slowing - moderate cost
+                    # Ninja has moderate upward momentum AND jump frames available
+                    # Can hold jump button to sustain rise - moderate cost
                     velocity_multiplier = VELOCITY_UPWARD_SLOW_MULTIPLIER
 
         # Horizontal velocity adjustments (for horizontal edges)
@@ -349,8 +367,13 @@ def _calculate_physics_aware_cost(
     # Physics multipliers based on movement type
     # Screen coordinates: y increases downward
 
+    # Special case: Diagonal falling from ground (stepping off platform)
+    if dx != 0 and dy > 0 and src_grounded:
+        # Stepping off platform diagonally - efficient (gravity + initial momentum)
+        # Slightly more expensive than airborne (need to initiate movement)
+        multiplier = 0.2
     # Special case: Diagonal falling from air (prefer over horizontal air movement)
-    if dx != 0 and dy > 0 and not src_grounded and not src_walled:
+    elif dx != 0 and dy > 0 and not src_grounded and not src_walled:
         # Diagonal downward continuing same direction - efficient (gravity + momentum)
         multiplier = 0.15
     # Special case: Diagonal upward wall-assisted move (valid N++ mechanic)
@@ -390,15 +413,12 @@ def _calculate_physics_aware_cost(
             # This prevents zigzag paths that go down then up in the air
             multiplier = float("inf")
         elif x_direction_change:
-            # Changing X direction while moving upward in mid-air is IMPOSSIBLE
-            # You can't reverse horizontal momentum without wall or ground contact
-            # This enforces direct diagonal upward paths (prefer straight trajectories)
-            multiplier = 1.0
+            # Changing X direction while rising in air - expensive (limited air control)
+            # Uses chain cost with additional penalty for direction change
+            multiplier = _get_aerial_chain_multiplier(aerial_chain) * 1.3
         else:
-            # Aerial upward movement - valid as jump continuation, cost scales with chain
-            # Chain 0-5: Progressive costs (continuing jump trajectory)
-            # Chain 6+: Very expensive (beyond physics limits, effectively blocked)
-            multiplier = 1.0
+            # Continuing diagonal upward in air - use chain cost
+            multiplier = _get_aerial_chain_multiplier(aerial_chain)
     elif dy < 0:  # Moving up (against gravity) - vertical only
         if src_grounded:
             # Vertical jump from ground - reasonable but not free
@@ -442,8 +462,8 @@ def _calculate_physics_aware_cost(
             # Base cost: 1.0 × 0.15 = 0.15
             multiplier = 0.15
         elif x_direction_change and not src_grounded and not src_walled:
-            # Changing horizontal direction in mid-air is IMPOSSIBLE
-            # Very limited air control in N++ - can't reverse momentum without wall/ground
+            # Changing horizontal direction in mid-air is EXPENSIVE (limited air control)
+            # N++ allows limited air steering, but reversing momentum is costly
             multiplier = 1.5
         elif not src_grounded and not src_walled:
             # Air horizontal - expensive but allowed
@@ -1618,8 +1638,19 @@ def bfs_distance_from_start(
         dx_target = target_node[0] - start_node[0]
         dy_target = target_node[1] - start_node[1]
         euclidean_to_target = (dx_target * dx_target + dy_target * dy_target) ** 0.5
-        # Termination threshold: 2x Euclidean (generous for winding paths)
-        early_termination_distance = euclidean_to_target * 2.0
+        # FIXED: Use much higher multiplier to allow for winding paths and aerial chain penalties
+        # Goals can be very far away and require complex paths (up to 10x euclidean for difficult terrain)
+        # Previously 2x was too aggressive and terminated before finding valid paths
+        early_termination_distance = euclidean_to_target * 10.0
+
+    # #region agent log
+    import json
+
+    bfs_iteration_count = 0
+    max_dist_reached = 0.0
+    closest_to_target = float("inf")
+    closest_node_to_target = None
+    # #endregion
 
     while pq:
         current_dist, current = heapq.heappop(pq)
@@ -1628,6 +1659,18 @@ def bfs_distance_from_start(
         if current in visited:
             continue
         visited.add(current)
+
+        # #region agent log
+        bfs_iteration_count += 1
+        max_dist_reached = max(max_dist_reached, current_dist)
+        if target_node is not None:
+            dist_to_target = (
+                (current[0] - target_node[0]) ** 2 + (current[1] - target_node[1]) ** 2
+            ) ** 0.5
+            if dist_to_target < closest_to_target:
+                closest_to_target = dist_to_target
+                closest_node_to_target = current
+        # #endregion
 
         # Early termination if we found target and it's requested
         if target_node is not None and current == target_node:
@@ -1645,6 +1688,36 @@ def bfs_distance_from_start(
             euclidean_to_target is not None
             and current_dist > early_termination_distance
         ):
+            # #region agent log
+            import json
+
+            try:
+                with open("/home/tetra/projects/nclone/.cursor/debug.log", "a") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "sessionId": "debug-session",
+                                "runId": "initial",
+                                "hypothesisId": "E-4",
+                                "location": "pathfinding_utils.py:1664-early-term",
+                                "message": "Early termination check triggered",
+                                "data": {
+                                    "current": current,
+                                    "current_dist": current_dist,
+                                    "euclidean_to_target": euclidean_to_target,
+                                    "early_termination_distance": early_termination_distance,
+                                    "target_in_distances": target_node in distances,
+                                    "visited_count": len(visited),
+                                },
+                                "timestamp": __import__("time").time() * 1000,
+                            }
+                        )
+                        + "\n"
+                    )
+            except:
+                pass
+            # #endregion
+
             # Check if we've found ANY path to target yet
             if target_node not in distances:
                 # Still searching, but current path is very long - likely unreachable
@@ -1668,10 +1741,89 @@ def bfs_distance_from_start(
             if neighbor_pos in visited:
                 continue
 
-            # Check horizontal rule before accepting edge (uses physics cache)
-            if _violates_horizontal_rule(
-                current, neighbor_pos, parents, base_adjacency, physics_cache
+            # #region agent log
+            import json
+
+            # Log only edges involving or leading to target node
+            if target_node is not None and (
+                neighbor_pos == target_node
+                or (current[0] - target_node[0]) ** 2
+                + (current[1] - target_node[1]) ** 2
+                <= 144
             ):
+                try:
+                    with open(
+                        "/home/tetra/projects/nclone/.cursor/debug.log", "a"
+                    ) as f:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "sessionId": "debug-session",
+                                    "runId": "initial",
+                                    "hypothesisId": "E-1,E-2,E-3",
+                                    "location": "pathfinding_utils.py:1692-neighbor",
+                                    "message": "Neighbor near target",
+                                    "data": {
+                                        "current": current,
+                                        "neighbor": neighbor_pos,
+                                        "target": target_node,
+                                        "dist_to_target": (
+                                            (neighbor_pos[0] - target_node[0]) ** 2
+                                            + (neighbor_pos[1] - target_node[1]) ** 2
+                                        )
+                                        ** 0.5,
+                                        "current_dist": current_dist,
+                                    },
+                                    "timestamp": __import__("time").time() * 1000,
+                                }
+                            )
+                            + "\n"
+                        )
+                except:
+                    pass
+            # #endregion
+
+            # Check horizontal rule before accepting edge (uses physics cache)
+            horizontal_violation = _violates_horizontal_rule(
+                current, neighbor_pos, parents, base_adjacency, physics_cache
+            )
+
+            # #region agent log
+            import json
+
+            # Log rejections for edges leading to target
+            if (
+                target_node is not None
+                and neighbor_pos == target_node
+                and horizontal_violation
+            ):
+                try:
+                    with open(
+                        "/home/tetra/projects/nclone/.cursor/debug.log", "a"
+                    ) as f:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "sessionId": "debug-session",
+                                    "runId": "initial",
+                                    "hypothesisId": "E-1",
+                                    "location": "pathfinding_utils.py:1694-horizontal-reject",
+                                    "message": "REJECTED by horizontal rule",
+                                    "data": {
+                                        "current": current,
+                                        "neighbor": neighbor_pos,
+                                        "parent": parents.get(current),
+                                    },
+                                    "timestamp": __import__("time").time() * 1000,
+                                }
+                            )
+                            + "\n"
+                        )
+                except:
+                    pass
+            # #endregion
+
+            if horizontal_violation:
                 continue
 
             # Calculate edge cost
@@ -1726,6 +1878,46 @@ def bfs_distance_from_start(
             # Skip edges with infinite cost (impossible movements)
             # Unless allow_high_cost_edges is True, then cap at high value
             # This ensures PBRS always has gradient even in difficult positions
+
+            # #region agent log
+            import json
+
+            # Log infinite cost edges to target
+            if (
+                target_node is not None
+                and neighbor_pos == target_node
+                and cost == float("inf")
+            ):
+                try:
+                    with open(
+                        "/home/tetra/projects/nclone/.cursor/debug.log", "a"
+                    ) as f:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "sessionId": "debug-session",
+                                    "runId": "initial",
+                                    "hypothesisId": "E-1",
+                                    "location": "pathfinding_utils.py:1749-inf-cost",
+                                    "message": "REJECTED infinite cost edge to target",
+                                    "data": {
+                                        "current": current,
+                                        "neighbor": neighbor_pos,
+                                        "cost": "inf",
+                                        "allow_high_cost_edges": allow_high_cost_edges,
+                                        "current_parent": current_parent,
+                                        "dx": dx,
+                                        "dy": dy,
+                                    },
+                                    "timestamp": __import__("time").time() * 1000,
+                                }
+                            )
+                            + "\n"
+                        )
+                except:
+                    pass
+            # #endregion
+
             if cost == float("inf"):
                 if allow_high_cost_edges:
                     cost = IMPOSSIBLE_EDGE_COST_CAP
@@ -1741,6 +1933,42 @@ def bfs_distance_from_start(
                 grandparents[neighbor_pos] = (
                     current_parent  # Track grandparent (cached)
                 )
+
+                # #region agent log
+                import json
+
+                # Log successful edges to target
+                if target_node is not None and neighbor_pos == target_node:
+                    try:
+                        with open(
+                            "/home/tetra/projects/nclone/.cursor/debug.log", "a"
+                        ) as f:
+                            f.write(
+                                json.dumps(
+                                    {
+                                        "sessionId": "debug-session",
+                                        "runId": "initial",
+                                        "hypothesisId": "E-3",
+                                        "location": "pathfinding_utils.py:1835-accepted",
+                                        "message": "ACCEPTED edge to target",
+                                        "data": {
+                                            "current": current,
+                                            "neighbor": neighbor_pos,
+                                            "cost": cost,
+                                            "new_dist": new_dist,
+                                            "current_parent": current_parent,
+                                            "dx": dx,
+                                            "dy": dy,
+                                        },
+                                        "timestamp": __import__("time").time() * 1000,
+                                    }
+                                )
+                                + "\n"
+                            )
+                    except:
+                        pass
+                # #endregion
+
                 aerial_chains[neighbor_pos] = (
                     neighbor_aerial_chain  # Track aerial chain
                 )
@@ -1756,6 +1984,49 @@ def bfs_distance_from_start(
                     geometric_distances[neighbor_pos] = (
                         current_geometric_dist + geometric_edge_cost
                     )
+
+    # #region agent log
+    import json
+
+    try:
+        with open("/home/tetra/projects/nclone/.cursor/debug.log", "a") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "initial",
+                        "hypothesisId": "E-4",
+                        "location": "pathfinding_utils.py:1924-bfs-complete",
+                        "message": "BFS completed",
+                        "data": {
+                            "start_node": start_node,
+                            "target_node": target_node,
+                            "iterations": bfs_iteration_count,
+                            "nodes_visited": len(visited),
+                            "max_dist_reached": max_dist_reached,
+                            "euclidean_to_target": euclidean_to_target,
+                            "early_termination_distance": early_termination_distance
+                            if euclidean_to_target
+                            else None,
+                            "closest_to_target": closest_to_target
+                            if target_node
+                            else None,
+                            "closest_node_to_target": closest_node_to_target,
+                            "target_found": target_node in distances
+                            if target_node
+                            else None,
+                            "target_distance": distances.get(target_node)
+                            if target_node
+                            else None,
+                        },
+                        "timestamp": __import__("time").time() * 1000,
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
 
     # Return distances dict, target distance, optionally parents, and optionally geometric distances
     target_distance = distances.get(target_node) if target_node else None
@@ -1844,6 +2115,37 @@ def calculate_geometric_path_distance(
         subcell_lookup=subcell_lookup,
     )
 
+    # #region agent log
+    import json
+
+    try:
+        with open("/home/tetra/projects/nclone/.cursor/debug.log", "a") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "initial",
+                        "hypothesisId": "A,D",
+                        "location": "pathfinding_utils.py:1867",
+                        "message": "Node lookup results",
+                        "data": {
+                            "start_pos": start_pos,
+                            "goal_pos": goal_pos,
+                            "start_node": start_node,
+                            "goal_node": goal_node,
+                            "spatial_hash_exists": spatial_hash is not None,
+                            "subcell_lookup_exists": subcell_lookup is not None,
+                            "adjacency_size": len(adjacency) if adjacency else 0,
+                        },
+                        "timestamp": __import__("time").time() * 1000,
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
+
     if start_node is None or goal_node is None:
         return float("inf")
 
@@ -1853,6 +2155,41 @@ def calculate_geometric_path_distance(
     # Use physics costs for pathfinding, but track geometric distances along the path
     # This gives us the pixel length of the physics-optimal path
     # REQUEST parents dict for sub-node resolution (extracting next_hop from path)
+
+    # #region agent log
+    import json
+
+    try:
+        with open("/home/tetra/projects/nclone/.cursor/debug.log", "a") as f:
+            start_neighbors = adjacency.get(start_node, []) if start_node else []
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "initial",
+                        "hypothesisId": "C,D",
+                        "location": "pathfinding_utils.py:1876-pre",
+                        "message": "Before BFS - adjacency check",
+                        "data": {
+                            "start_node": start_node,
+                            "goal_node": goal_node,
+                            "start_has_neighbors": len(start_neighbors) > 0,
+                            "start_neighbor_count": len(start_neighbors),
+                            "physics_cache_exists": physics_cache is not None,
+                            "mine_cache_exists": mine_proximity_cache is not None,
+                            "physics_cache_has_start": start_node in physics_cache
+                            if physics_cache and start_node
+                            else False,
+                        },
+                        "timestamp": __import__("time").time() * 1000,
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
+
     _, _, parents, geometric_distances = bfs_distance_from_start(
         start_node=start_node,
         target_node=goal_node,
@@ -1868,6 +2205,40 @@ def calculate_geometric_path_distance(
         ninja_velocity=ninja_velocity,  # Pass velocity for first-edge cost adjustment
         allow_high_cost_edges=allow_high_cost_edges,  # Pass through for PBRS gradient
     )
+
+    # #region agent log
+    import json
+
+    try:
+        with open("/home/tetra/projects/nclone/.cursor/debug.log", "a") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "initial",
+                        "hypothesisId": "E",
+                        "location": "pathfinding_utils.py:1892-post",
+                        "message": "After BFS - results",
+                        "data": {
+                            "geometric_distances_is_none": geometric_distances is None,
+                            "geometric_distances_size": len(geometric_distances)
+                            if geometric_distances
+                            else 0,
+                            "goal_in_distances": goal_node in geometric_distances
+                            if geometric_distances and goal_node
+                            else False,
+                            "goal_distance": geometric_distances.get(goal_node)
+                            if geometric_distances and goal_node
+                            else None,
+                        },
+                        "timestamp": __import__("time").time() * 1000,
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
 
     if geometric_distances is None:
         return float("inf")
