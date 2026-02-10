@@ -89,6 +89,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         goal_curriculum_config: Optional[
             Any
         ] = None,  # GoalCurriculumConfig for intermediate goal curriculum
+        value_function_dir: Optional[
+            str
+        ] = None,  # Directory with precomputed value functions
+        use_precomputed_pbrs: bool = False,  # Use precomputed value function for PBRS
     ):
         """
         Initialize the base N++ environment.
@@ -108,6 +112,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             enable_visual_observations: If False, skip rendering and visual observation processing
                 (graph + state + reachability contain all necessary information)
             enable_profiling: Enable detailed performance profiling (~5% overhead)
+            value_function_dir: Directory containing precomputed value functions (.npz files)
+            use_precomputed_pbrs: If True, use precomputed value function instead of path-based PBRS
         """
         _logger = logging.getLogger(__name__)
 
@@ -180,6 +186,21 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Frame skip for temporal abstraction (always enabled)
         self.frame_skip = max(1, frame_skip)  # Ensure at least 1
+
+        # Precomputed value function support
+        self.value_function_dir = value_function_dir
+        self.use_precomputed_pbrs = use_precomputed_pbrs
+        self._current_precomputed_pbrs = None  # Loaded per level
+
+        if use_precomputed_pbrs and value_function_dir:
+            _logger.info(
+                f"Precomputed value function PBRS enabled (dir: {value_function_dir})"
+            )
+        elif use_precomputed_pbrs and not value_function_dir:
+            _logger.warning(
+                "use_precomputed_pbrs=True but value_function_dir not specified, falling back to path-based PBRS"
+            )
+            self.use_precomputed_pbrs = False
 
         # Action sequence tracking for Go-Explore checkpoint replay
         # Stores all actions since last reset for deterministic replay

@@ -77,16 +77,16 @@ class Simulator:
 
     def fast_reset(self):
         """Fast reset for same-level training. Resets entity state without recreation.
-        
+
         This method is significantly faster than reset() because it:
         1. Resets ninja state in-place (no object allocation)
         2. Resets entity states in-place (no object allocation)
         3. Clears grid_entity lists (no dict recreation)
         4. Skips door segment cleanup (segments unchanged for same level)
-        
+
         CRITICAL: Must be called ONLY when the map has not changed since the last
         reset. For new maps, use reset() instead.
-        
+
         Curriculum compatibility: This method resets entities to their ORIGINAL positions.
         The environment must call goal_curriculum_manager.apply_to_simulator() after
         fast_reset() to move entities to curriculum positions.
@@ -100,13 +100,13 @@ class Simulator:
                 self.collisionlog = []
         else:
             self.collisionlog = None
-        
+
         # Reset cache clear counter
         self._next_cache_clear = CACHE_CLEAR_INTERVAL
-        
+
         # Reset action masking attributes
         self._path_direction_data = None
-        
+
         # Reset ninja state in-place (no new Ninja object)
         if self.ninja is not None:
             self.ninja.reset_state()
@@ -115,25 +115,25 @@ class Simulator:
             # This shouldn't happen in normal fast_reset usage
             self.map_loader.load_map_entities()
             return
-        
+
         # Clear grid_entity lists (no dict recreation - major optimization)
         for cell_list in self.grid_entity.values():
             cell_list.clear()
-        
+
         # Reset entities in-place and re-add to grid
         # CRITICAL: Exit doors (EntityExit) must NOT be added to grid_entity
         # They are only added when the exit switch is collected
         for entity_list in self.entity_dic.values():
             for entity in entity_list:
                 # Reset entity state to original position/state
-                if hasattr(entity, 'reset_state'):
+                if hasattr(entity, "reset_state"):
                     entity.reset_state()
                 else:
                     # Fallback for entities without reset_state() method
                     # Just reset active flag
-                    if hasattr(entity, 'active'):
+                    if hasattr(entity, "active"):
                         entity.active = True
-                
+
                 # Add to grid_entity, but skip exit doors (type 3, EntityExit class)
                 # Exit doors are only added to grid after switch collection
                 if type(entity).__name__ != "EntityExit":
@@ -290,3 +290,59 @@ class Simulator:
         if self.frame >= self._next_cache_clear:
             clear_caches()
             self._next_cache_clear = self.frame + CACHE_CLEAR_INTERVAL
+
+    def tick_physics_only(self, hor_input, jump_input):
+        """Execute one physics frame WITHOUT entity AI (for value iteration).
+
+        This method provides a lightweight physics simulation that skips
+        entity AI (entity.move() and entity.think()) but keeps all ninja
+        physics intact. Used by PhysicsStepWrapper for value function
+        precomputation where entity AI doesn't affect physics outcomes.
+
+        Skips:
+            - entity.move() and entity.think() (entity AI)
+            - graphics updates (ninja.update_graphics())
+            - logging (ninja.log(), entity.log_position())
+            - cache clearing (handled externally for batch operations)
+
+        Keeps:
+            - All ninja physics (integrate, collisions, post_collision, think)
+            - Static entity collisions (collide_vs_objects for mines, doors, etc.)
+            - Tile collisions (collide_vs_tiles)
+
+        Args:
+            hor_input: Horizontal input (-1, 0, or 1)
+            jump_input: Jump input (0 or 1)
+        """
+        # Increment frame counter (needed for some physics calculations)
+        self.frame += 1
+
+        # Store inputs as ninja variables
+        self.ninja.hor_input = hor_input
+        self.ninja.jump_input = jump_input
+
+        # Record position before physics execution
+        self.ninja.record_action_start_position()
+
+        # Execute ninja physics (same as tick() but without entity AI)
+        if self.ninja.state != 9:  # 9 typically means inactive
+            # Apply physics to ninja or ragdoll
+            ninja_to_update = (
+                self.ninja if self.ninja.state != 6 else self.ninja.ragdoll
+            )  # 6 for dead state
+
+            if ninja_to_update:
+                ninja_to_update.integrate()  # Apply drag, gravity, update position
+                ninja_to_update.pre_collision()  # Reset collision state
+
+                # Physics substeps (same 4 substeps as normal tick)
+                for _ in range(4):
+                    # Collide with static entities (mines, doors, etc.)
+                    ninja_to_update.collide_vs_objects()
+                    # Collide with tile segments
+                    ninja_to_update.collide_vs_tiles()
+
+                ninja_to_update.post_collision()  # Death checks, state transitions
+
+            # Ninja think (handles jump logic, state machine)
+            self.ninja.think()

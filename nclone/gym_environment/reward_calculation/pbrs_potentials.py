@@ -149,10 +149,42 @@ class PBRSPotentials:
 
     Available potentials:
     - objective_distance_potential: Distance to current objective (switch/exit)
+    - precomputed_optimal_potential: Precomputed optimal value function V*(s)
     - hazard_proximity_potential: Proximity to dangerous hazards
     - impact_risk_potential: Risk of high-velocity collisions
     - exploration_potential: Novelty of current state
     """
+
+    @staticmethod
+    def precomputed_optimal_potential(
+        state: Dict[str, Any],
+        precomputed_pbrs: Any,  # PrecomputedValuePBRS or TwoPhaseValuePBRS
+    ) -> float:
+        """Optimal potential using precomputed value function V*(s).
+
+        This potential uses the exact optimal cost-to-go computed via
+        backward dynamic programming on the full state space (position,
+        velocity, jump_frames). Provides:
+        - Exact physics-aware cost-to-go (no heuristic multipliers)
+        - Full state awareness (velocity + jump frames)
+        - O(1) runtime lookup via interpolation
+
+        The value function V*(s) represents minimum time to reach goal
+        from state s following optimal physics. The potential is:
+            Φ(s) = 1 - V*(s) / max_V
+
+        Args:
+            state: Game state dictionary
+            precomputed_pbrs: PrecomputedValuePBRS or TwoPhaseValuePBRS instance
+
+        Returns:
+            Potential in [0, 1]
+        """
+        if precomputed_pbrs is None:
+            logger.warning("Precomputed PBRS not available, returning 0.0")
+            return 0.0
+
+        return precomputed_pbrs.get_potential(state)
 
     @staticmethod
     def objective_distance_potential(
@@ -788,6 +820,8 @@ class PBRSCalculator:
         path_calculator: Optional[Any] = None,
         momentum_waypoints: Optional[List[Any]] = None,
         reward_config: Optional[Any] = None,
+        precomputed_pbrs: Optional[Any] = None,
+        use_precomputed: bool = False,
     ):
         """Initialize PBRS calculator with optional momentum waypoint support.
 
@@ -795,6 +829,8 @@ class PBRSCalculator:
             path_calculator: PathDistanceCalculator instance for shortest path distances
             momentum_waypoints: Optional list of MomentumWaypoint objects for momentum-aware routing
             reward_config: Optional RewardConfig instance for curriculum-adaptive weights
+            precomputed_pbrs: Optional PrecomputedValuePBRS or TwoPhaseValuePBRS instance
+            use_precomputed: If True, use precomputed value function instead of path-based
         """
         # Initialize path distance calculator for path-aware reward shaping
         self.path_calculator = path_calculator
@@ -804,6 +840,16 @@ class PBRSCalculator:
 
         # Reward configuration for curriculum-adaptive weights (Phase 1.2)
         self.reward_config = reward_config
+
+        # Precomputed value function for optimal PBRS (optional)
+        self.precomputed_pbrs = precomputed_pbrs
+        self.use_precomputed = use_precomputed
+
+        if use_precomputed and precomputed_pbrs is None:
+            logger.warning(
+                "use_precomputed=True but precomputed_pbrs=None, falling back to path-based PBRS"
+            )
+            self.use_precomputed = False
 
         # Cache for surface area per level (invalidated when level or switch states change)
         self._cached_surface_area: Optional[float] = None
@@ -1667,6 +1713,42 @@ class PBRSCalculator:
             "switch" if not state.get("switch_activated", False) else "exit"
         )
 
+        # === PRECOMPUTED VALUE FUNCTION PBRS (OPTIMAL) ===
+        # If precomputed value function is available, use it instead of path-based PBRS
+        # This provides exact optimal cost-to-go with full state awareness
+        if self.use_precomputed and self.precomputed_pbrs is not None:
+            objective_pot = PBRSPotentials.precomputed_optimal_potential(
+                state_with_metrics,
+                precomputed_pbrs=self.precomputed_pbrs,
+            )
+
+            # Store diagnostic info
+            state_with_metrics["_pbrs_using_precomputed"] = True
+
+            # Copy diagnostic values back to original state
+            state["_pbrs_using_precomputed"] = True
+
+            # Apply gradient scaling to objective weight (same as path-based)
+            combined_path = (
+                self._cached_combined_path_distance or PBRS_GRADIENT_REFERENCE_DISTANCE
+            )
+            gradient_scale = math.sqrt(combined_path / PBRS_GRADIENT_REFERENCE_DISTANCE)
+            gradient_scale = min(gradient_scale, PBRS_GRADIENT_SCALE_CAP)
+            scaled_objective_weight = objective_weight * gradient_scale
+
+            # Apply phase-specific scaling (same as path-based)
+            if not state.get("switch_activated", False):
+                potential = (
+                    PBRS_SWITCH_DISTANCE_SCALE * objective_pot * scaled_objective_weight
+                )
+            else:
+                potential = (
+                    PBRS_EXIT_DISTANCE_SCALE * objective_pot * scaled_objective_weight
+                )
+
+            return potential
+
+        # === PATH-BASED PBRS (LEGACY) ===
         # Use waypoint-aware potential if waypoints available
         if self.momentum_waypoints:
             objective_pot = self._get_cached_or_compute_potential_with_waypoints(

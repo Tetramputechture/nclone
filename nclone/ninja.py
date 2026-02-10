@@ -1393,6 +1393,89 @@ class Ninja:
         # Re-log initial position
         self.log()
 
+    def save_state(self) -> dict:
+        """Snapshot all physics-relevant state for restoration.
+
+        This method captures the complete physics state of the ninja,
+        allowing it to be restored later for value iteration purposes.
+        Used by PhysicsStepWrapper to enable stateless physics queries.
+
+        Returns:
+            Dictionary containing all physics-critical state fields
+        """
+        return {
+            # Core position and velocity
+            "xpos": self.xpos,
+            "ypos": self.ypos,
+            "xspeed": self.xspeed,
+            "yspeed": self.yspeed,
+            "xpos_old": self.xpos_old,
+            "ypos_old": self.ypos_old,
+            "xspeed_old": self.xspeed_old,
+            "yspeed_old": self.yspeed_old,
+            # Physics parameters
+            "applied_gravity": self.applied_gravity,
+            "applied_drag": self.applied_drag,
+            "applied_friction": self.applied_friction,
+            # State and flags
+            "state": self.state,
+            "airborn": self.airborn,
+            "airborn_old": self.airborn_old,
+            "walled": self.walled,
+            "wall_normal": self.wall_normal,
+            # Jump state
+            "jump_duration": self.jump_duration,
+            "jump_input_old": self.jump_input_old,
+            "jump_buffer": self.jump_buffer,
+            "floor_buffer": self.floor_buffer,
+            "wall_buffer": self.wall_buffer,
+            "launch_pad_buffer": self.launch_pad_buffer,
+            "is_jump_useless": self.is_jump_useless,
+            "last_jump_was_buffered": self.last_jump_was_buffered,
+            # Collision normals (derived but needed for death checks)
+            "floor_normalized_x": self.floor_normalized_x,
+            "floor_normalized_y": self.floor_normalized_y,
+            "ceiling_normalized_x": self.ceiling_normalized_x,
+            "ceiling_normalized_y": self.ceiling_normalized_y,
+            # Collision counters
+            "floor_count": self.floor_count,
+            "wall_count": self.wall_count,
+            "ceiling_count": self.ceiling_count,
+            "floor_normal_x": self.floor_normal_x,
+            "floor_normal_y": self.floor_normal_y,
+            "ceiling_normal_x": self.ceiling_normal_x,
+            "ceiling_normal_y": self.ceiling_normal_y,
+            "is_crushable": self.is_crushable,
+            "x_crush": self.x_crush,
+            "y_crush": self.y_crush,
+            "crush_len": self.crush_len,
+            # Input state
+            "hor_input": self.hor_input,
+            "jump_input": self.jump_input,
+            # Temporal tracking
+            "frames_airborne": self.frames_airborne,
+            "state_change_frame": self.state_change_frame,
+            "previous_state": self.previous_state,
+            "consecutive_floor_frames": self.consecutive_floor_frames,
+            "consecutive_wall_frames": self.consecutive_wall_frames,
+            # Death tracking
+            "terminal_impact": self.terminal_impact,
+            "death_cause": self.death_cause,
+        }
+
+    def restore_state(self, snapshot: dict):
+        """Restore ninja to a previous state snapshot.
+
+        This method restores all physics-relevant state from a snapshot
+        created by save_state(). Used by PhysicsStepWrapper to enable
+        stateless physics queries.
+
+        Args:
+            snapshot: Dictionary containing physics state (from save_state())
+        """
+        for key, value in snapshot.items():
+            setattr(self, key, value)
+
     def has_won(self):
         return self.state == 8
 
