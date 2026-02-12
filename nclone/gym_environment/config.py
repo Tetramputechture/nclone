@@ -188,9 +188,6 @@ class EnvironmentConfig:
     # Frame skip
     frame_skip: int = 4
 
-    # Physics backend: use Rust native simulator for benchmarking
-    use_native_physics: bool = False
-
     def __post_init__(self):
         """Validate environment configuration."""
         if self.enable_logging:

@@ -1,7 +1,7 @@
 # Performance Profile: N++ Environment Step
 
-**Profile date:** Feb 2026 — 500 frames, native physics (post-Optimization 1-5, profiling plan)  
-**Command:** `python nclone/test_environment.py --headless --native --profile-frames 500 --map nclone/test_maps/<map>`
+**Profile date:** Feb 2026 — 500 frames (post-Optimization 1-5, profiling plan)  
+**Command:** `python nclone/test_environment.py --headless --profile-frames 500 --map nclone/test_maps/<map>`
 
 ---
 
@@ -21,11 +21,11 @@
 
 ---
 
-## 1. High-Level Component Breakdown (Native Physics, simple-walk)
+## 1. High-Level Component Breakdown (simple-walk)
 
 ```
 TOTAL STEP                                 0.83 ms | 100%
-├── Physics (tick + sync)                   0.09 ms |  10.7%   ← OPTIMIZED (Rust)
+├── Physics (tick + sync)                   0.09 ms |  10.7%
 ├── Get observation                        0.30 ms |  36.5%   ← BOTTLENECK
 │   └── Feature computation                1.67 ms | 201.3%*  (*includes sub-calls)
 ├── Reward calculation                     0.25 ms |  30.0%   ← BOTTLENECK
@@ -69,8 +69,8 @@ Platform distances (features 8-9) now use `get_cached_directional_connectivity` 
 | **8.6%** | 36 | 2002 | `_get_cached_or_find_ninja_node` (path_distance_calculator.py:1991) |
 | **7.0%** | 29 | 501 | `_get_ninja_node_position_for_cache` (npp_environment.py:2309) |
 | **5.9%** | 25 | 500 | `_compute_spatial_context` (npp_environment.py:2266) |
-| **7.8%** | 33 | 500 | `tick` (native_headless.py:94) |
-| **1.9%** | 8 | 1002 | `LevelCache.get_distance` (Rust) |
+| **7.8%** | 33 | 500 | `tick` (nplay_headless) |
+| **1.9%** | 8 | 1002 | `LevelCache.get_distance` |
 | **1.2%** | 5 | 500 | `compute_local_tile_grid` (spatial_context.py:113) |
 
 ---
@@ -80,8 +80,8 @@ Platform distances (features 8-9) now use `get_cached_directional_connectivity` 
 ### 3.1 `get_path_cost` — **#1 bottleneck (~30%)**
 - **Calls:** 1006 over 500 steps ≈ **2 calls/step** (spawn→switch, switch→exit, etc.)
 - **Time:** 89ms total → **~89μs/call**
-- **Cause:** Path distance calculation. When Rust level cache hits: fast (`get_distance` ≈ 9μs for 1002 calls). Misses trigger Python A* or extra work.
-- **Opportunity:** Ensure Rust level cache hits more often; reduce number of distinct `get_path_cost` calls per step.
+- **Cause:** Path distance calculation. Level cache hits are fast; misses trigger Python A* or extra work.
+- **Opportunity:** Reduce number of distinct `get_path_cost` calls per step.
 
 ### 3.2 `find_ninja_node` — **#2 bottleneck (~14%, reduced from ~27%)**
 - **Calls:** 1006 over 500 steps ≈ **2 calls/step** (down from ~5/step after Optimization 1)
@@ -105,9 +105,9 @@ Platform distances (features 8-9) now use `get_cached_directional_connectivity` 
 
 | Component | Status |
 |-----------|--------|
-| Physics tick | Rust native (`tick` ~36ms for 500 steps) |
-| Level cache `get_distance` | Rust (1002 calls ≈ 9ms) |
-| Level cache `get_next_hop` | Rust (1002 calls ≈ 5ms) |
+| Physics tick | Python (`tick` ~36ms for 500 steps) |
+| Level cache `get_distance` | Python (1002 calls ≈ 9ms) |
+| Level cache `get_next_hop` | Python (1002 calls ≈ 5ms) |
 | Tile sync | Cached; `build_tile_dic` only on state change |
 | Step cache | Deduplicates path lookups within step |
 
@@ -125,16 +125,16 @@ Platform distances (features 8-9) now use `get_cached_directional_connectivity` 
    - Batch PBRS potential computation
    - Reuse path results across observation and reward
 
-3. **`get_phi` (Python)** — 500 calls, ~5ms. Options:
-   - Delegate to Rust `LevelCache.get_phi` when Rust cache is used
+3. **`get_phi`** — 500 calls, ~5ms. Options:
+   - Batch PBRS potential computation
+   - Reuse path results across observation and reward
 
 4. **`get_geometric_distance`** — 4508 calls (via `path_distance_cache`). Options:
-   - Route through Rust level cache where possible
    - Audit call sites to reduce redundancy
 
 5. **Feature computation** — Single expensive call (~1.66ms) during observation. See §1.1 for section breakdown. Options:
    - Feature-level profiling now available via `--profile-frames`
-   - `surface_area` and `exit_reachable_and_platform` dominate; move heavy parts to Rust (e.g. mine SDF already has Rust variant)
+   - `surface_area` and `exit_reachable_and_platform` dominate
 
 ---
 

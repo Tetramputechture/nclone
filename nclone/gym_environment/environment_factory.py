@@ -87,40 +87,6 @@ def create_visual_testing_env(
     return env
 
 
-def create_native_vecenv(
-    map_data: List[int],
-    num_envs: int = 4,
-    config: Optional[EnvironmentConfig] = None,
-    frame_skip: int = 4,
-    map_path: Optional[str] = None,
-):
-    """
-    Create NativeGymVecEnv: in-process vectorized environment with Rust physics.
-
-    Uses NativeVecEnv for batch physics; observation and reward computed in Python.
-    Single process, no IPC - beneficial for small N (e.g. 4-8) vs SubprocVecEnv.
-
-    Args:
-        map_data: Raw map bytes as list of ints
-        num_envs: Number of parallel environments
-        config: Environment config (uses for_training if None)
-        frame_skip: Physics frames per step
-        map_path: Path to .nmap file for graph build (temp file created if None)
-
-    Returns:
-        NativeGymVecEnv instance
-    """
-    from .native_vecenv import NativeGymVecEnv
-
-    return NativeGymVecEnv(
-        map_data=map_data,
-        num_envs=num_envs,
-        config=config,
-        frame_skip=frame_skip,
-        map_path=map_path,
-    )
-
-
 def make_vectorizable_env(
     env_factory: Callable[[], NppEnvironment],
 ) -> Callable[[], NppEnvironment]:

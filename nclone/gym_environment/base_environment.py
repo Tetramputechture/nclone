@@ -15,7 +15,6 @@ from typing import Tuple, Optional, Dict, Any, List
 # Core nclone imports
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..nplay_headless import NPlayHeadless
-from ..native_headless import NativePlayHeadless
 
 # Graph and level data imports
 from ..graph.level_data import LevelData, extract_start_position_from_map_data
@@ -94,7 +93,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             str
         ] = None,  # Directory with precomputed value functions
         use_precomputed_pbrs: bool = False,  # Use precomputed value function for PBRS
-        use_native_physics: bool = False,  # Use Rust native physics for benchmarking
     ):
         """
         Initialize the base N++ environment.
@@ -141,24 +139,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Initialize core game interface
         # Note: Grayscale rendering is automatic in headless mode (grayscale_array)
         # Skip rendering entirely if visual observations disabled for maximum performance
-        if use_native_physics:
-            self.nplay_headless = NativePlayHeadless(
-                render_mode=render_mode,
-                enable_animation=enable_animation,
-                enable_logging=enable_logging,
-                enable_debug_overlay=enable_debug_overlay,
-                seed=seed,
-                enable_rendering=enable_visual_observations,
-            )
-        else:
-            self.nplay_headless = NPlayHeadless(
-                render_mode=render_mode,
-                enable_animation=enable_animation,
-                enable_logging=enable_logging,
-                enable_debug_overlay=enable_debug_overlay,
-                seed=seed,
-                enable_rendering=enable_visual_observations,
-            )
+        self.nplay_headless = NPlayHeadless(
+            render_mode=render_mode,
+            enable_animation=enable_animation,
+            enable_logging=enable_logging,
+            enable_debug_overlay=enable_debug_overlay,
+            seed=seed,
+            enable_rendering=enable_visual_observations,
+        )
 
         # Set environment reference in simulator for cache invalidation
         # This allows entity collision methods to invalidate caches when switch states change

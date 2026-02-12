@@ -89,7 +89,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 self.config, "shared_level_caches_by_stage", None
             ),
             goal_curriculum_config=self.config.goal_curriculum_config,
-            use_native_physics=getattr(self.config, "use_native_physics", False),
         )
 
         # Initialize mixin systems using config

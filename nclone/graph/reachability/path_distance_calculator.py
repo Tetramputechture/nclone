@@ -152,9 +152,6 @@ class CachedPathDistanceCalculator:
         # Cached adjacency bounds (min_x, max_x, min_y, max_y) for fast bounds checking
         self._adjacency_bounds: Optional[Tuple[int, int, int, int]] = None
 
-        # Phase 4: Optional Rust level cache for O(1) path lookups (when nclone_native available)
-        self._rust_level_cache: Optional[Any] = None
-
         # Performance timing
         self.timer = PerformanceTimer(enabled=enable_timing)
         self.enable_timing = enable_timing
@@ -309,7 +306,6 @@ class CachedPathDistanceCalculator:
                     active_shared_cache.get_mine_proximity_view()
                 )
                 self.mine_sdf = active_shared_cache.get_sdf_view()
-                self._rust_level_cache = None  # Shared cache has no Rust backend
 
                 # Store level data for consistency checks
                 self.level_data = level_data
@@ -488,12 +484,6 @@ class CachedPathDistanceCalculator:
             # It's only set via set_waypoints() and should persist across cache rebuilds
             # If it gets cleared, that's a bug
 
-            # Phase 4: Build Rust level cache for O(1) path lookups when available
-            if rebuilt and adjacency and graph_data:
-                self._build_rust_level_cache(
-                    level_data, adjacency, graph_data, self.mine_proximity_cache
-                )
-
             # # DIAGNOSTIC: Log cache build details
             # if rebuilt and self.level_cache is not None:
             #     cache_stats = self.level_cache.get_statistics()
@@ -505,59 +495,6 @@ class CachedPathDistanceCalculator:
             #     )
 
         return rebuilt or mine_cache_rebuilt or sdf_rebuilt
-
-    def _build_rust_level_cache(
-        self,
-        level_data: LevelData,
-        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
-        graph_data: Dict[str, Any],
-        mine_proximity_cache: Any,
-    ) -> None:
-        """Build Rust level cache for O(1) path lookups when nclone_native is available."""
-        try:
-            from .level_data_helpers import extract_goal_positions
-            from .graph_serializer import serialize_adjacency_for_rust
-            import nclone_native
-
-            if not hasattr(nclone_native.LevelCache, "build_from_graph"):
-                self._rust_level_cache = None
-                return
-        except ImportError:
-            self._rust_level_cache = None
-            return
-        physics_cache = graph_data.get("node_physics") if graph_data else None
-        if not physics_cache:
-            return
-        goals = extract_goal_positions(level_data)
-        if not goals:
-            return
-        mine_prox = (
-            mine_proximity_cache.cache
-            if mine_proximity_cache and hasattr(mine_proximity_cache, "cache")
-            else {}
-        )
-        try:
-            serialized = serialize_adjacency_for_rust(
-                adjacency, physics_cache, goals, mine_prox
-            )
-            rust_cache = nclone_native.LevelCache.build_from_graph(
-                node_positions=serialized["node_positions"],
-                edges=serialized["edges"],
-                physics_grounded=serialized["physics_grounded"],
-                goals=serialized["goals"],
-            )
-            self._rust_level_cache = rust_cache
-            logger.debug(
-                f"[RUST_CACHE] Built Rust level cache: "
-                f"{len(serialized['node_positions'])} nodes, "
-                f"{len(serialized['goals'])} goals"
-            )
-        except Exception as e:
-            logger.debug(
-                f"[RUST_CACHE] Failed to build Rust level cache: {e}. "
-                "Falling back to Python cache."
-            )
-            self._rust_level_cache = None
 
     def _calculate_distance(
         self,
@@ -875,20 +812,7 @@ class CachedPathDistanceCalculator:
                                 cached_dist = None
                                 path_dir = None  # (dx, dy) normalized for sub-node
 
-                                # Phase 4: Try Rust cache first when available
-                                if self._rust_level_cache is not None:
-                                    rust_dist = self._rust_level_cache.get_distance(
-                                        start[0], start[1], goal_id
-                                    )
-                                    if rust_dist != float("inf"):
-                                        cached_dist = rust_dist
-                                        nh = self._rust_level_cache.get_next_hop(
-                                            start[0], start[1], goal_id
-                                        )
-                                        if nh is not None:
-                                            path_dir = nh  # Rust returns (dx, dy)
-
-                                # Fallback to Python level cache
+                                # Try Python level cache
                                 if cached_dist is None:
                                     cached_dist = self.level_cache.get_distance(
                                         start_node, goal_pos, goal_id

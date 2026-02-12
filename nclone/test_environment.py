@@ -21,21 +21,11 @@ R - Reset environment
 Examples:
 --------
 python test_environment.py --headless --export-frame test_level.png
-python test_environment.py --headless --native --profile-frames 1000  # Benchmark native Rust physics
+python test_environment.py --headless --profile-frames 1000  # Benchmark with profiling
 """
 
-# Preload nclone_native from build dir when available (enables Rust level cache in benchmarks)
 import os
 import sys
-import importlib.util
-_script_dir = os.path.dirname(os.path.abspath(__file__))
-_nclone_root = os.path.dirname(_script_dir)
-_build_so = os.path.join(_nclone_root, "nclone-native", "target", "debug", "libnclone_native.so")
-if os.path.isfile(_build_so) and "nclone_native" not in sys.modules:
-    spec = importlib.util.spec_from_file_location("nclone_native", _build_so)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["nclone_native"] = mod
-    spec.loader.exec_module(mod)
 
 import pygame
 from nclone.gym_environment.environment_factory import create_visual_testing_env
@@ -268,12 +258,6 @@ parser.add_argument(
     default=None,
     help="Custom map file path to load (overrides default map behavior).",
 )
-parser.add_argument(
-    "--native",
-    action="store_true",
-    help="Use Rust native physics simulator for realtime benchmarking (no rendering).",
-)
-
 # Graph visualization arguments
 parser.add_argument(
     "--visualize-graph",
@@ -419,13 +403,6 @@ parser.add_argument(
 args = parser.parse_args()
 
 print(f"Headless: {args.headless}")
-print(f"Native physics: {args.native}")
-
-if args.native and not args.headless:
-    print(
-        "Note: Native physics has no rendering support. Use --headless --native "
-        "for benchmarking, or expect a blank/black display."
-    )
 
 # Display discrete action mode info
 if args.discrete_actions:
@@ -590,8 +567,8 @@ if args.map:
     # Create config with proper render mode for headless
     render_config = RenderConfig(
         render_mode=render_mode,
-        enable_animation=not args.headless and not args.native,
-        enable_debug_overlay=debug_overlay_enabled and not args.native,
+        enable_animation=not args.headless,
+        enable_debug_overlay=debug_overlay_enabled,
     )
     config = EnvironmentConfig(
         custom_map_path=args.map,
@@ -603,7 +580,6 @@ if args.map:
         reachability=ReachabilityConfig(debug=False),
         test_dataset_path=args.test_dataset_path,
         frame_skip=1,
-        use_native_physics=args.native,
         enable_profiling=args.profile_frames is not None,
     )
     env = create_visual_testing_env(config=config)
@@ -619,8 +595,8 @@ else:
     # Create config with proper render mode for headless
     render_config = RenderConfig(
         render_mode=render_mode,
-        enable_animation=not args.headless and not args.native,
-        enable_debug_overlay=debug_overlay_enabled and not args.native,
+        enable_animation=not args.headless,
+        enable_debug_overlay=debug_overlay_enabled,
     )
     config = EnvironmentConfig(
         enable_logging=False,
@@ -631,7 +607,6 @@ else:
         reachability=ReachabilityConfig(debug=False),
         test_dataset_path=args.test_dataset_path,
         frame_skip=1,
-        use_native_physics=args.native,
         enable_profiling=args.profile_frames is not None,
     )
     env = create_visual_testing_env(config=config)
