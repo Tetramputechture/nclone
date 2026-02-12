@@ -160,6 +160,9 @@ class EnvironmentConfig:
     )
     enable_graph_observations: bool = True  # If False, skip graph arrays in observation space (spatial_context sufficient)  # Memory optimization: saves ~21KB per observation when using graph_free architecture
     observation_mode: ObservationMode = ObservationMode.FULL  # Observation space mode
+    # Feature experiment B: when True, zero out path distances (features 0-1) in actor obs;
+    # PBRS still uses raw distances for reward shaping
+    exclude_path_distances_from_actor_obs: bool = False
 
     # Component configurations
     frame_stack: FrameStackConfig = field(default_factory=FrameStackConfig)
@@ -184,6 +187,9 @@ class EnvironmentConfig:
 
     # Frame skip
     frame_skip: int = 4
+
+    # Physics backend: use Rust native simulator for benchmarking
+    use_native_physics: bool = False
 
     def __post_init__(self):
         """Validate environment configuration."""

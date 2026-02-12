@@ -2,7 +2,7 @@
 Path distance calculator with caching support.
 
 Provides CachedPathDistanceCalculator which consolidates:
-- BFS and A* pathfinding algorithms for shortest path calculation
+- A* pathfinding algorithm for shortest path calculation
 - Per-query caching for frequently accessed paths
 - Level-based precomputed caching for goal distances
 - Step-level caching for within-step duplicate calls
@@ -11,19 +11,16 @@ Provides CachedPathDistanceCalculator which consolidates:
 
 import logging
 from typing import Dict, Tuple, Optional, Any, List
-from collections import deque
 import heapq
 
 from ..level_data import LevelData
-from .pathfinding_utils import (
+from .node_lookup import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
     find_ninja_node,
-    _violates_horizontal_rule,
-    _calculate_physics_aware_cost,
 )
 from .path_distance_cache import LevelBasedPathDistanceCache
-from .mine_proximity_cache import MineProximityCostCache, MineSignedDistanceField
+from .mine_proximity_cache import MineProximityCostCache, create_mine_sdf
 from .performance_timer import PerformanceTimer
 
 logger = logging.getLogger(__name__)
@@ -57,7 +54,6 @@ class CachedPathDistanceCalculator:
     def __init__(
         self,
         max_cache_size: int = 50,
-        use_astar: bool = True,
         enable_timing: bool = False,
         shared_level_cache: Optional[Any] = None,
         shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
@@ -70,13 +66,11 @@ class CachedPathDistanceCalculator:
             max_cache_size: Maximum number of cached distance queries
                           (increased to 5000 for physics-optimal path caching;
                           physics paths are deterministic for (start, goal, mine_state) pairs)
-            use_astar: Use A* (True) or BFS (False) for pathfinding
             enable_timing: Enable performance timing instrumentation
             shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
             shared_level_caches_by_stage: Optional dict of stage -> SharedLevelCache for curriculum
             goal_curriculum_manager: Optional IntermediateGoalManager for stage selection
         """
-        self.use_astar = use_astar
         # Per-query cache for physics-optimal paths (start_node, goal_node) → distance
         # Physics costs are deterministic, so aggressive caching is beneficial
         self.cache: Dict[Tuple, float] = {}
@@ -111,9 +105,7 @@ class CachedPathDistanceCalculator:
 
         # Signed Distance Field to mines for O(1) observation space features
         # If shared cache provided, this will be set to a view wrapper
-        self.mine_sdf: MineSignedDistanceField = (
-            None if shared_level_cache is not None else MineSignedDistanceField()
-        )
+        self.mine_sdf = None if shared_level_cache is not None else create_mine_sdf()
 
         # Track current level to avoid redundant cache rebuilds
         self._current_level_id: Optional[str] = None
@@ -150,8 +142,18 @@ class CachedPathDistanceCalculator:
         self._step_cache_hits = 0
         self._step_cache_misses = 0
 
+        # OPTIMIZATION: Step-scoped ninja node cache to avoid redundant find_ninja_node
+        # Key: (rounded_pos, goal_id) -> ninja_node. Cleared each step.
+        # Same ninja position queried 5x/step for observation + reward; cache to 1-2 lookups.
+        self._step_ninja_node_cache: Dict[
+            Tuple[int, int, Optional[str]], Tuple[int, int]
+        ] = {}
+
         # Cached adjacency bounds (min_x, max_x, min_y, max_y) for fast bounds checking
         self._adjacency_bounds: Optional[Tuple[int, int, int, int]] = None
+
+        # Phase 4: Optional Rust level cache for O(1) path lookups (when nclone_native available)
+        self._rust_level_cache: Optional[Any] = None
 
         # Performance timing
         self.timer = PerformanceTimer(enabled=enable_timing)
@@ -307,6 +309,7 @@ class CachedPathDistanceCalculator:
                     active_shared_cache.get_mine_proximity_view()
                 )
                 self.mine_sdf = active_shared_cache.get_sdf_view()
+                self._rust_level_cache = None  # Shared cache has no Rust backend
 
                 # Store level data for consistency checks
                 self.level_data = level_data
@@ -485,6 +488,12 @@ class CachedPathDistanceCalculator:
             # It's only set via set_waypoints() and should persist across cache rebuilds
             # If it gets cleared, that's a bug
 
+            # Phase 4: Build Rust level cache for O(1) path lookups when available
+            if rebuilt and adjacency and graph_data:
+                self._build_rust_level_cache(
+                    level_data, adjacency, graph_data, self.mine_proximity_cache
+                )
+
             # # DIAGNOSTIC: Log cache build details
             # if rebuilt and self.level_cache is not None:
             #     cache_stats = self.level_cache.get_statistics()
@@ -497,172 +506,78 @@ class CachedPathDistanceCalculator:
 
         return rebuilt or mine_cache_rebuilt or sdf_rebuilt
 
+    def _build_rust_level_cache(
+        self,
+        level_data: LevelData,
+        adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+        graph_data: Dict[str, Any],
+        mine_proximity_cache: Any,
+    ) -> None:
+        """Build Rust level cache for O(1) path lookups when nclone_native is available."""
+        try:
+            from .level_data_helpers import extract_goal_positions
+            from .graph_serializer import serialize_adjacency_for_rust
+            import nclone_native
+
+            if not hasattr(nclone_native.LevelCache, "build_from_graph"):
+                self._rust_level_cache = None
+                return
+        except ImportError:
+            self._rust_level_cache = None
+            return
+        physics_cache = graph_data.get("node_physics") if graph_data else None
+        if not physics_cache:
+            return
+        goals = extract_goal_positions(level_data)
+        if not goals:
+            return
+        mine_prox = (
+            mine_proximity_cache.cache
+            if mine_proximity_cache and hasattr(mine_proximity_cache, "cache")
+            else {}
+        )
+        try:
+            serialized = serialize_adjacency_for_rust(
+                adjacency, physics_cache, goals, mine_prox
+            )
+            rust_cache = nclone_native.LevelCache.build_from_graph(
+                node_positions=serialized["node_positions"],
+                edges=serialized["edges"],
+                physics_grounded=serialized["physics_grounded"],
+                goals=serialized["goals"],
+            )
+            self._rust_level_cache = rust_cache
+            logger.debug(
+                f"[RUST_CACHE] Built Rust level cache: "
+                f"{len(serialized['node_positions'])} nodes, "
+                f"{len(serialized['goals'])} goals"
+            )
+        except Exception as e:
+            logger.debug(
+                f"[RUST_CACHE] Failed to build Rust level cache: {e}. "
+                "Falling back to Python cache."
+            )
+            self._rust_level_cache = None
+
     def _calculate_distance(
         self,
         start: Tuple[int, int],
         goal: Tuple[int, int],
         adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
         base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
-        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
-        level_data: Optional[Any] = None,
-        mine_proximity_cache: Optional[Any] = None,
-        mine_sdf: Optional[Any] = None,
-        hazard_cost_multiplier: Optional[float] = None,
-        ninja_velocity: Optional[Tuple[float, float]] = None,
-    ) -> float:
-        """
-        Calculate shortest navigable path distance using BFS or A*.
-
-        Args:
-            start: Starting position (x, y) in pixels
-            goal: Goal position (x, y) in pixels
-            adjacency: Masked graph adjacency structure (for pathfinding)
-            base_adjacency: Base graph adjacency structure (pre-entity-mask, for physics checks)
-            physics_cache: Optional pre-computed physics properties for O(1) lookups
-            level_data: Optional LevelData for mine proximity checks (fallback)
-            mine_proximity_cache: Optional MineProximityCostCache for O(1) mine cost lookup
-            mine_sdf: Optional MineSignedDistanceField for velocity-aware hazard costs
-            hazard_cost_multiplier: Optional curriculum-adaptive mine hazard cost multiplier
-            ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
-
-        Returns:
-            Shortest path distance in pixels, or float('inf') if unreachable
-        """
-        # Quick checks
+        return_path: bool = False,
+    ):
+        """Calculate shortest path distance using geometric A*."""
         if start not in adjacency or goal not in adjacency:
+            if return_path:
+                return float("inf"), []
             return float("inf")
         if start == goal:
+            if return_path:
+                return 0.0, [start]
             return 0.0
 
-        if physics_cache is None or len(physics_cache) == 0:
-            raise ValueError(
-                "Physics cache is required for physics-aware cost calculation"
-            )
-        if level_data is None:
-            raise ValueError(
-                "Level data is required for mine proximity cost calculation"
-            )
-        if mine_proximity_cache is None:
-            raise ValueError(
-                "Mine proximity cache is required for mine proximity cost calculation"
-            )
-
-        # Choose algorithm
-        if self.use_astar:
-            return self._astar_distance(
-                start,
-                goal,
-                adjacency,
-                base_adjacency,
-                physics_cache,
-                level_data,
-                mine_proximity_cache,
-                mine_sdf,
-                hazard_cost_multiplier,
-                ninja_velocity,
-            )
-        else:
-            return self._bfs_distance(
-                start,
-                goal,
-                adjacency,
-                base_adjacency,
-                physics_cache,
-                level_data,
-                mine_proximity_cache,
-                mine_sdf,
-                hazard_cost_multiplier,
-                ninja_velocity,
-            )
-
-    def _bfs_distance(
-        self,
-        start: Tuple[int, int],
-        goal: Tuple[int, int],
-        adjacency: Dict,
-        base_adjacency: Dict,
-        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
-        level_data: Optional[Any] = None,
-        mine_proximity_cache: Optional[Any] = None,
-        mine_sdf: Optional[Any] = None,
-        hazard_cost_multiplier: Optional[float] = None,
-        ninja_velocity: Optional[Tuple[float, float]] = None,
-    ) -> float:
-        """BFS pathfinding - guaranteed shortest path with physics and momentum validation."""
-        queue = deque([(start, 0.0)])
-        visited = {start}
-        parents = {start: None}  # Track parents for momentum inference
-        grandparents = {start: None}  # Track grandparents for momentum inference
-        aerial_chains = {start: 0}  # Track consecutive aerial upward moves
-
-        while queue:
-            current, dist = queue.popleft()
-
-            if current == goal:
-                return dist
-
-            # Get current node's physics properties for chain tracking
-            current_physics = physics_cache[current]
-            current_grounded = current_physics["grounded"]
-            current_chain = aerial_chains.get(current, 0)
-
-            # OPTIMIZATION: Cache parent/grandparent lookups to avoid repeated dict.get()
-            current_parent = parents.get(current)
-            current_grandparent = grandparents.get(current)
-
-            # Explore neighbors from adjacency graph (masked for pathfinding)
-            for neighbor, _ in adjacency.get(current, []):
-                if neighbor not in visited:
-                    # Check horizontal rule before accepting edge (uses base_adjacency + physics_cache)
-                    # OPTIMIZATION: Pass physics_cache for O(1) grounding checks
-                    if _violates_horizontal_rule(
-                        current, neighbor, parents, base_adjacency, physics_cache
-                    ):
-                        continue
-
-                # Determine if this edge is aerial upward (for chain tracking)
-                dy = neighbor[1] - current[1]
-                # CRITICAL: Aerial chains only apply to FREE-FALL upward movement
-                # Wall jumps are a distinct mechanic with their own costs (handled separately)
-                # Reset chain on: ground contact, wall contact, or non-upward movement
-                current_walled = current_physics["walled"]
-                is_aerial_upward = (
-                    not current_grounded and not current_walled and dy < 0
-                )
-
-                # Calculate new chain count: increment for aerial upward, reset otherwise
-                new_chain = current_chain + 1 if is_aerial_upward else 0
-
-                # Calculate physics-aware edge cost with momentum tracking
-                # OPTIMIZATION: Pass cached parent/grandparent
-                # Pass ninja_velocity only for first edges (from start with no parent)
-                edge_ninja_velocity = (
-                    ninja_velocity
-                    if (current == start and current_parent is None)
-                    else None
-                )
-                edge_cost = _calculate_physics_aware_cost(
-                    current,
-                    neighbor,
-                    base_adjacency,
-                    current_parent,
-                    physics_cache,
-                    level_data,
-                    mine_proximity_cache,
-                    current_chain,  # Pass current chain count for cost calculation
-                    current_grandparent,  # Pass cached grandparent
-                    mine_sdf,  # Pass SDF for velocity-aware mine costs
-                    hazard_cost_multiplier,  # Curriculum-adaptive mine costs
-                    edge_ninja_velocity,  # Velocity-aware costs for first edge only
-                )
-
-                visited.add(neighbor)
-                parents[neighbor] = current  # Track parent
-                grandparents[neighbor] = current_parent  # Track cached grandparent
-                aerial_chains[neighbor] = new_chain  # Track chain count
-                queue.append((neighbor, dist + edge_cost))
-
-        return float("inf")
+        return self._astar_distance(start, goal, adjacency, base_adjacency, return_path)
 
     def _astar_distance(
         self,
@@ -670,33 +585,17 @@ class CachedPathDistanceCalculator:
         goal: Tuple[int, int],
         adjacency: Dict,
         base_adjacency: Dict,
-        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
-        level_data: Optional[Any] = None,
-        mine_proximity_cache: Optional[Any] = None,
-        mine_sdf: Optional[Any] = None,
-        hazard_cost_multiplier: Optional[float] = None,
-        ninja_velocity: Optional[Tuple[float, float]] = None,
-        jump_duration_remaining: Optional[float] = None,
-    ) -> float:
-        """
-        A* pathfinding with physics-aware edge costs, momentum tracking, and jump duration validation.
-
-        Args:
-            jump_duration_remaining: Normalized remaining jump frames [0, 1]. Used with ninja_velocity
-                                   for first-edge feasibility. If <= 0, upward airborne edges return inf.
-        """
+        return_path: bool = False,
+    ):
+        """A* pathfinding with geometric (euclidean) edge costs."""
 
         def manhattan_heuristic(pos: Tuple[int, int]) -> float:
-            """Manhattan distance heuristic (admissible)."""
             return abs(pos[0] - goal[0]) + abs(pos[1] - goal[1])
 
-        # Priority queue: (f_score, g_score, position)
         open_set = [(manhattan_heuristic(start), 0.0, start)]
         g_score = {start: 0.0}
         visited = set()
-        parents = {start: None}  # Track parents for momentum inference
-        grandparents = {start: None}  # Track grandparents for momentum inference
-        aerial_chains = {start: 0}  # Track consecutive aerial upward moves
+        parents = {start: None}
 
         while open_set:
             _, current_g, current = heapq.heappop(open_set)
@@ -706,79 +605,59 @@ class CachedPathDistanceCalculator:
             visited.add(current)
 
             if current == goal:
+                if return_path:
+                    path = []
+                    node = current
+                    while node is not None:
+                        path.append(node)
+                        node = parents.get(node)
+                    path.reverse()
+                    return current_g, path
                 return current_g
 
-            # Get current node's physics properties for chain tracking
-            current_physics = physics_cache[current]
-            current_grounded = current_physics["grounded"]
-            current_chain = aerial_chains.get(current, 0)
-
-            # OPTIMIZATION: Cache parent/grandparent lookups to avoid repeated dict.get()
-            current_parent = parents.get(current)
-            current_grandparent = grandparents.get(current)
-
-            # Explore neighbors from adjacency graph (masked for pathfinding)
             for neighbor, _ in adjacency.get(current, []):
                 if neighbor in visited:
                     continue
 
-                # Check horizontal rule before accepting edge (uses base_adjacency + physics_cache)
-                # OPTIMIZATION: Pass physics_cache for O(1) grounding checks
-                if _violates_horizontal_rule(
-                    current, neighbor, parents, base_adjacency, physics_cache
-                ):
-                    continue
-
-                # Determine if this edge is aerial upward (for chain tracking)
+                dx = neighbor[0] - current[0]
                 dy = neighbor[1] - current[1]
-                # CRITICAL: Aerial chains only apply to FREE-FALL upward movement
-                # Wall jumps are a distinct mechanic with their own costs (handled separately)
-                # Reset chain on: ground contact, wall contact, or non-upward movement
-                current_walled = current_physics["walled"]
-                is_aerial_upward = (
-                    not current_grounded and not current_walled and dy < 0
-                )
-
-                # Calculate new chain count: increment for aerial upward, reset otherwise
-                new_chain = current_chain + 1 if is_aerial_upward else 0
-
-                # Calculate physics-aware edge cost with momentum tracking
-                # OPTIMIZATION: Pass cached parent/grandparent
-                # Pass ninja_velocity and jump_duration_remaining only for first edges (from start with no parent)
-                is_first_edge = current == start and current_parent is None
-                edge_ninja_velocity = ninja_velocity if is_first_edge else None
-                edge_jump_duration = jump_duration_remaining if is_first_edge else None
-
-                edge_cost = _calculate_physics_aware_cost(
-                    current,
-                    neighbor,
-                    base_adjacency,
-                    current_parent,
-                    physics_cache,
-                    level_data,
-                    mine_proximity_cache,
-                    current_chain,  # Pass current chain count for cost calculation
-                    current_grandparent,  # Pass cached grandparent
-                    mine_sdf,  # Pass SDF for velocity-aware mine costs
-                    hazard_cost_multiplier,  # Curriculum-adaptive mine costs
-                    edge_ninja_velocity,  # Velocity-aware costs for first edge only
-                    edge_jump_duration,  # Jump duration for first edge feasibility
-                )
-
+                edge_cost = (dx * dx + dy * dy) ** 0.5
                 tentative_g = current_g + edge_cost
 
-                # OPTIMIZATION: Direct comparison instead of .get() with default
                 if neighbor not in g_score or tentative_g < g_score[neighbor]:
                     g_score[neighbor] = tentative_g
-                    parents[neighbor] = current  # Track parent
-                    grandparents[neighbor] = current_parent  # Track cached grandparent
-                    aerial_chains[neighbor] = new_chain  # Track chain count
+                    parents[neighbor] = current
                     f_score = tentative_g + manhattan_heuristic(neighbor)
                     heapq.heappush(open_set, (f_score, tentative_g, neighbor))
 
+        if return_path:
+            return float("inf"), []
         return float("inf")
 
-    def get_distance(
+    def _reconstruct_path_from_next_hop(
+        self,
+        start_node: Tuple[int, int],
+        goal_node: Tuple[int, int],
+        goal_id: str,
+    ) -> List[Tuple[int, int]]:
+        """Reconstruct path from start_node to goal_node using level cache next_hop chain."""
+        if self.level_cache is None:
+            return []
+        path: List[Tuple[int, int]] = []
+        current = start_node
+        seen = set()
+        while current is not None:
+            if current in seen:
+                break
+            seen.add(current)
+            path.append(current)
+            if current == goal_node:
+                break
+            next_hop = self.level_cache.get_next_hop(current, goal_id)
+            current = next_hop
+        return path
+
+    def get_path_cost(
         self,
         start: Tuple[int, int],
         goal: Tuple[int, int],
@@ -789,75 +668,47 @@ class CachedPathDistanceCalculator:
         graph_data: Optional[Dict] = None,
         entity_radius: float = 0.0,
         ninja_radius: float = 10.0,
-        hazard_cost_multiplier: Optional[float] = None,
         goal_id: Optional[str] = None,
-        ninja_velocity: Optional[Tuple[float, float]] = None,
-    ) -> float:
+        return_path: bool = False,
+    ):
         """
-        Get physics-weighted path distance with caching and spatial indexing.
+        Get geometric path cost with caching and spatial indexing.
 
-        The adjacency graph should only contain nodes reachable from the initial
-        player position. This ensures all cached distances are for reachable areas only.
-
-        STRICT VALIDATION: graph_data MUST contain physics_cache for PBRS pathfinding.
+        This is the single unified method for all path cost queries, used by
+        both training (PBRS) and visualization. Uses geometric (euclidean)
+        distances only.
 
         Args:
             start: Start position (world/full map space)
             goal: Goal position (world/full map space)
-            adjacency: Masked graph adjacency (filtered to only reachable nodes, for pathfinding)
-            base_adjacency: Base graph adjacency (pre-entity-mask, for physics checks)
-            cache_key: Optional key for cache invalidation (e.g., entity type)
+            adjacency: Masked graph adjacency
+            base_adjacency: Base graph adjacency (pre-entity-mask)
+            cache_key: Optional key for cache invalidation
             level_data: Optional level data for level-based caching
-            graph_data: Graph data dict with physics_cache (REQUIRED for physics-aware pathfinding)
+            graph_data: Optional graph data for spatial_hash extraction
             entity_radius: Collision radius of the goal entity (default 0.0)
             ninja_radius: Collision radius of the ninja (default 10.0)
             goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
-            ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
+            return_path: If True, returns (cost, path_list) for visualization.
+
         Returns:
-            Shortest physics-weighted path distance
+            float: Path cost (when return_path=False)
+            Tuple[float, List]: (cost, path_node_list) (when return_path=True)
         """
-        # STRICT VALIDATION: Ensure graph_data and physics_cache are available
-        if graph_data is None:
-            raise ValueError(
-                "graph_data is REQUIRED for get_distance(). "
-                "PBRS pathfinding requires physics_cache from graph_data. "
-                "Ensure graph building provides graph_data with physics_cache."
-            )
-
-        physics_cache = graph_data.get("node_physics")
-        if physics_cache is None or len(physics_cache) == 0:
-            raise ValueError(
-                "Physics cache (node_physics) not found in graph_data. "
-                "PBRS pathfinding requires physics_cache for accurate path costs. "
-                "Ensure graph building includes physics cache precomputation."
-            )
         # OPTIMIZATION: Step-level cache check (eliminates duplicate calls within same step)
+        # Skip cache when return_path=True (paths are not cached, only costs)
         step_key = (start, goal, entity_radius)
-        if step_key in self._step_cache:
+        if not return_path and step_key in self._step_cache:
             self._step_cache_hits += 1
-            cached_value = self._step_cache[step_key]
-
-            # # CRITICAL DEBUG: Log cache hits to diagnose stuck distance
-            # if not hasattr(self, "_cache_hit_count"):
-            #     self._cache_hit_count = 0
-            # self._cache_hit_count += 1
-
-            # if self._cache_hit_count % 100 == 0:
-            #     import logging
-
-            #     logger = logging.getLogger(__name__)
-            #     logger.error(
-            #         f"[STEP_CACHE_HIT #{self._cache_hit_count}] "
-            #         f"start={start}, cached_distance={cached_value:.2f}, "
-            #         f"cache_size={len(self._step_cache)}"
-            #     )
-
-            return cached_value
-        self._step_cache_misses += 1
+            return self._step_cache[step_key]
+        if not return_path:
+            self._step_cache_misses += 1
 
         # CRITICAL: Early exit for invalid goal positions
         # Goals at (0, 0) indicate entity loading failure - return inf to avoid cache pollution
         if goal[0] == 0 and goal[1] == 0:
+            if return_path:
+                return float("inf"), []
             return float("inf")
 
         # Extract spatial hash and subcell lookup from graph_data if available
@@ -878,15 +729,17 @@ class CachedPathDistanceCalculator:
         dy = start[1] - goal[1]
         dist_sq = dx * dx + dy * dy
         if dist_sq <= combined_radius * combined_radius:
+            if return_path:
+                return 0.0, []
             return 0.0
 
         # OPTIMIZATION: Early per-query cache check before expensive operations
-        # Snap to grid for cache consistency (24 pixel tiles)
+        # Skip caches when return_path=True (caches only store costs, not paths)
         start_grid = (start[0] // 24, start[1] // 24)
         goal_grid = (goal[0] // 24, goal[1] // 24)
         key = (start_grid, goal_grid, cache_key)
 
-        if key in self.cache:
+        if not return_path and key in self.cache:
             self.hits += 1
             cached_distance = self.cache[key]
             # Adjust for collision radii
@@ -894,6 +747,7 @@ class CachedPathDistanceCalculator:
             return adjusted_dist
 
         # Try level cache first if level_data is provided
+        # When return_path=True, reconstruct path from level cache parents (next_hop chain)
         if level_data is not None and self.level_cache is not None:
             # Only rebuild cache if level actually changed
             # LevelData.__post_init__ always sets level_id, so we can trust it exists
@@ -1007,147 +861,122 @@ class CachedPathDistanceCalculator:
                             # Find ninja node using canonical ninja node selection
                             # FIX: Pass level_cache to use PATH distance instead of Euclidean
                             with self.timer.measure("find_start_node"):
-                                start_node = find_ninja_node(
+                                start_node = self._get_cached_or_find_ninja_node(
                                     start,
                                     adjacency,
-                                    spatial_hash=self._spatial_hash,
+                                    goal_id=goal_id,
+                                    goal_node=goal_node,
                                     subcell_lookup=subcell_lookup,
                                     ninja_radius=ninja_radius,
-                                    goal_node=goal_node,
-                                    level_cache=self.level_cache,
-                                    goal_id=goal_id,
                                 )
 
                             # Try level cache with snapped start position
                             if start_node is not None and start_node in adjacency:
-                                cached_dist = self.level_cache.get_distance(
-                                    start_node, goal_pos, goal_id
-                                )
+                                cached_dist = None
+                                path_dir = None  # (dx, dy) normalized for sub-node
+
+                                # Phase 4: Try Rust cache first when available
+                                if self._rust_level_cache is not None:
+                                    rust_dist = self._rust_level_cache.get_distance(
+                                        start[0], start[1], goal_id
+                                    )
+                                    if rust_dist != float("inf"):
+                                        cached_dist = rust_dist
+                                        nh = self._rust_level_cache.get_next_hop(
+                                            start[0], start[1], goal_id
+                                        )
+                                        if nh is not None:
+                                            path_dir = nh  # Rust returns (dx, dy)
+
+                                # Fallback to Python level cache
+                                if cached_dist is None:
+                                    cached_dist = self.level_cache.get_distance(
+                                        start_node, goal_pos, goal_id
+                                    )
+                                    if cached_dist != float("inf"):
+                                        next_hop = self.level_cache.get_next_hop(
+                                            start_node, goal_id
+                                        )
+                                        if next_hop is not None:
+                                            from .pathfinding_utils import (
+                                                NODE_WORLD_COORD_OFFSET,
+                                            )
+
+                                            start_node_world_x = (
+                                                start_node[0] + NODE_WORLD_COORD_OFFSET
+                                            )
+                                            start_node_world_y = (
+                                                start_node[1] + NODE_WORLD_COORD_OFFSET
+                                            )
+                                            next_hop_world_x = (
+                                                next_hop[0] + NODE_WORLD_COORD_OFFSET
+                                            )
+                                            next_hop_world_y = (
+                                                next_hop[1] + NODE_WORLD_COORD_OFFSET
+                                            )
+                                            path_dx = (
+                                                next_hop_world_x - start_node_world_x
+                                            )
+                                            path_dy = (
+                                                next_hop_world_y - start_node_world_y
+                                            )
+                                            path_len = (
+                                                path_dx * path_dx + path_dy * path_dy
+                                            ) ** 0.5
+                                            if path_len > 0.001:
+                                                path_dir = (
+                                                    path_dx / path_len,
+                                                    path_dy / path_len,
+                                                )
+
                                 if cached_dist != float("inf"):
-                                    # === SUB-NODE PBRS RESOLUTION: Dense Rewards for Micro-Movements ===
-                                    #
-                                    # PROBLEM: Agent moves 0.05-3.33px per step, but graph nodes are
-                                    # spaced 12px apart. Without sub-node resolution, PBRS only changes
-                                    # when crossing node boundaries (every 3-240 steps), making rewards
-                                    # too sparse for effective learning.
-                                    #
-                                    # SOLUTION: Project agent's actual position onto optimal path direction
-                                    # to get continuous distance estimates between grid nodes.
-                                    #
-                                    # APPROACH: Next-Hop Directional Projection
-                                    #
-                                    # 1. Find agent's closest grid node (start_node)
-                                    # 2. Get next_hop = next node along optimal path from level cache
-                                    # 3. Compute direction vector: start_node → next_hop
-                                    # 4. Project agent's position offset onto this direction
-                                    # 5. Adjust distance: node_distance - projection
-                                    #
-                                    # MATHEMATICS:
-                                    # - path_dir = normalize(next_hop - start_node)  [unit vector]
-                                    # - player_offset = player_pos - start_node       [offset vector]
-                                    # - projection = dot(player_offset, path_dir)     [scalar, in pixels]
-                                    # - adjusted_distance = node_distance - projection
-                                    #
-                                    # INTUITION:
-                                    # - projection > 0: Agent ahead of node (toward next_hop) → closer
-                                    # - projection < 0: Agent behind node (away from next_hop) → further
-                                    # - projection = ±0.1px: Distance changes by ±0.1px (DENSE!)
-                                    #
-                                    # PATH-AWARE PROPERTY (Critical for Complex Levels):
-                                    # Uses next_hop direction (from level cache optimal path), NOT
-                                    # Euclidean direction to goal. This correctly handles levels where
-                                    # the optimal path goes AWAY from goal first (obstacles, momentum).
-                                    #
-                                    # Example: Goal at (800, 400), agent must go LEFT first for momentum
-                                    # - Euclidean says: move RIGHT toward goal (WRONG)
-                                    # - Next-hop says: move LEFT toward next_hop (CORRECT)
-                                    # - Agent moves LEFT 0.1px: projection = +0.1, distance -= 0.1px ✓
-                                    # - Agent moves RIGHT 0.1px: projection = -0.1, distance += 0.1px ✓
-                                    #
-                                    # PERFORMANCE: O(1) after level cache warmup (no pathfinding needed)
+                                    # === SUB-NODE PBRS RESOLUTION ===
                                     from .pathfinding_utils import (
                                         NODE_WORLD_COORD_OFFSET,
                                     )
 
-                                    # Get next hop toward goal
-                                    next_hop = self.level_cache.get_next_hop(
-                                        start_node, goal_id
+                                    start_node_world_x = (
+                                        start_node[0] + NODE_WORLD_COORD_OFFSET
                                     )
-
-                                    if next_hop is not None:
-                                        # Convert positions to world coordinates
-                                        start_node_world_x = (
-                                            start_node[0] + NODE_WORLD_COORD_OFFSET
+                                    start_node_world_y = (
+                                        start_node[1] + NODE_WORLD_COORD_OFFSET
+                                    )
+                                    if path_dir is not None:
+                                        path_dir_x, path_dir_y = path_dir
+                                        player_dx = start[0] - start_node_world_x
+                                        player_dy = start[1] - start_node_world_y
+                                        projection = (
+                                            player_dx * path_dir_x
+                                            + player_dy * path_dir_y
                                         )
-                                        start_node_world_y = (
-                                            start_node[1] + NODE_WORLD_COORD_OFFSET
+                                        total_dist = max(
+                                            0.0,
+                                            cached_dist
+                                            - projection
+                                            - (ninja_radius + entity_radius),
                                         )
-                                        next_hop_world_x = (
-                                            next_hop[0] + NODE_WORLD_COORD_OFFSET
-                                        )
-                                        next_hop_world_y = (
-                                            next_hop[1] + NODE_WORLD_COORD_OFFSET
-                                        )
-
-                                        # Vector from start_node to next_hop (optimal direction)
-                                        path_dx = next_hop_world_x - start_node_world_x
-                                        path_dy = next_hop_world_y - start_node_world_y
-                                        path_len = (
-                                            path_dx * path_dx + path_dy * path_dy
-                                        ) ** 0.5
-
-                                        if path_len > 0.001:
-                                            # Normalize path direction
-                                            path_dir_x = path_dx / path_len
-                                            path_dir_y = path_dy / path_len
-
-                                            # Vector from start_node to player
-                                            player_dx = start[0] - start_node_world_x
-                                            player_dy = start[1] - start_node_world_y
-
-                                            # Project player offset onto path direction
-                                            # Positive = player ahead (toward next_hop) = closer
-                                            # Negative = player behind = further
-                                            projection = (
-                                                player_dx * path_dir_x
-                                                + player_dy * path_dir_y
+                                        self._step_cache[step_key] = total_dist
+                                        if return_path:
+                                            path = self._reconstruct_path_from_next_hop(
+                                                start_node, goal_node, goal_id
                                             )
+                                            return total_dist, path
+                                        return total_dist
 
-                                            # Subtract projection from cached distance
-                                            # (positive projection = closer to goal)
-                                            total_dist = max(
-                                                0.0,
-                                                cached_dist
-                                                - projection
-                                                - (ninja_radius + entity_radius),
-                                            )
-
-                                            # DIAGNOSTIC: Log sub-node projection values (debug level)
-                                            # This helps verify that small movements produce proportional
-                                            # distance changes for dense PBRS feedback
-                                            logger.debug(
-                                                f"[SUB_NODE_FAST] projection={projection:.3f}px, "
-                                                f"cached_dist={cached_dist:.1f}px, "
-                                                f"adjusted_dist={total_dist:.1f}px, "
-                                                f"player_offset=({player_dx:.2f}, {player_dy:.2f}), "
-                                                f"path_dir=({path_dir_x:.3f}, {path_dir_y:.3f}), "
-                                                f"goal_id={goal_id}"
-                                            )
-
-                                            # Store in step cache
-                                            self._step_cache[step_key] = total_dist
-                                            return total_dist
-
-                                    # Fallback: no next_hop (at goal) or path too short
                                     result = max(
                                         0.0,
                                         cached_dist - (ninja_radius + entity_radius),
                                     )
-                                    # Store in step cache
                                     self._step_cache[step_key] = result
+                                    if return_path:
+                                        path = self._reconstruct_path_from_next_hop(
+                                            start_node, goal_node, goal_id
+                                        )
+                                        return result, path
                                     return result
-            else:
-                raise RuntimeError("Goal node not found in level cache path")
+                            # Level cache couldn't be used (start_node None or not in
+                            # adjacency). Fall through to cache miss - compute path.
+            # Goal node not found or level cache unusable - fall through to compute
 
         # Cache miss - compute
         # First snap positions to nodes before calculating distance using smart selection
@@ -1157,10 +986,9 @@ class CachedPathDistanceCalculator:
 
         # Find start node (temp_start_node) for goal selection
         # Use standard radius first, then fallback to extended radius
-        temp_start_node = find_ninja_node(
+        temp_start_node = self._get_cached_or_find_ninja_node(
             start,
             adjacency,
-            spatial_hash=self._spatial_hash,
             subcell_lookup=subcell_lookup,
             ninja_radius=ninja_radius,
         )
@@ -1168,10 +996,9 @@ class CachedPathDistanceCalculator:
         # Fallback: If default radius (10px) fails for start, try with progressively larger radii
         # This handles cases where the start position (e.g., switch) is far from any graph node
         if temp_start_node is None:
-            temp_start_node = find_ninja_node(
+            temp_start_node = self._get_cached_or_find_ninja_node(
                 start,
                 adjacency,
-                spatial_hash=self._spatial_hash,
                 subcell_lookup=subcell_lookup,
                 ninja_radius=ninja_radius,
                 search_radius_override=48.0,
@@ -1184,10 +1011,9 @@ class CachedPathDistanceCalculator:
 
         # Last resort: Try with very large radius (150px)
         if temp_start_node is None:
-            temp_start_node = find_ninja_node(
+            temp_start_node = self._get_cached_or_find_ninja_node(
                 start,
                 adjacency,
-                spatial_hash=self._spatial_hash,
                 subcell_lookup=subcell_lookup,
                 ninja_radius=ninja_radius,
                 search_radius_override=150.0,
@@ -1306,37 +1132,35 @@ class CachedPathDistanceCalculator:
                     )
 
         # Now find the optimal start node with goal_node known
-        start_node = find_ninja_node(
+        start_node = self._get_cached_or_find_ninja_node(
             start,
             adjacency,
-            spatial_hash=self._spatial_hash,
+            goal_id=goal_id,
+            goal_node=goal_node,
             subcell_lookup=subcell_lookup,
             ninja_radius=ninja_radius,
-            goal_node=goal_node,
-            level_cache=self.level_cache,
-            goal_id=goal_id,
         )
 
         # Fallback: If default radius fails for final start_node, try with progressively larger radii
         if start_node is None:
-            start_node = find_ninja_node(
+            start_node = self._get_cached_or_find_ninja_node(
                 start,
                 adjacency,
-                spatial_hash=self._spatial_hash,
+                goal_id=goal_id,
+                goal_node=goal_node,
                 subcell_lookup=subcell_lookup,
                 ninja_radius=ninja_radius,
-                goal_node=goal_node,
                 search_radius_override=48.0,
             )
 
         if start_node is None:
-            start_node = find_ninja_node(
+            start_node = self._get_cached_or_find_ninja_node(
                 start,
                 adjacency,
-                spatial_hash=self._spatial_hash,
+                goal_id=goal_id,
+                goal_node=goal_node,
                 subcell_lookup=subcell_lookup,
                 ninja_radius=ninja_radius,
-                goal_node=goal_node,
                 search_radius_override=150.0,
             )
 
@@ -1368,37 +1192,26 @@ class CachedPathDistanceCalculator:
                 f"temp_start_node={temp_start_node}, start_node={start_node}, "
                 f"goal_node={goal_node}, adjacency_size={len(adjacency) if adjacency else 0}"
             )
+            if return_path:
+                return float("inf"), []
             return float("inf")
-
-        # PERFORMANCE OPTIMIZATION: Extract pre-computed physics cache from graph_data
-        # Ensure we raise clear error if graph_data or physics cache is missing
-        if graph_data is None:
-            raise ValueError(
-                "graph_data is required for physics cache extraction. "
-                "Ensure graph building includes physics cache precomputation."
-            )
-
-        physics_cache = graph_data.get("node_physics")
-        if physics_cache is None:
-            raise ValueError(
-                "Physics cache (node_physics) not found in graph_data. "
-                "Ensure graph building includes physics cache precomputation."
-            )
 
         self.misses += 1
         with self.timer.measure("pathfinding_compute"):
-            distance = self._calculate_distance(
+            result = self._calculate_distance(
                 start_node,
                 goal_node,
                 adjacency,
                 base_adjacency,
-                physics_cache,
-                level_data,
-                self.mine_proximity_cache,
-                self.mine_sdf,
-                hazard_cost_multiplier,
-                ninja_velocity,
+                return_path=return_path,
             )
+
+        if return_path:
+            distance, path = result
+            total_dist = max(0.0, distance - (ninja_radius + entity_radius))
+            return total_dist, path
+
+        distance = result
 
         # Cache raw node-to-node distance (before adjustment)
         if len(self.cache) >= self.max_cache_size:
@@ -1417,115 +1230,6 @@ class CachedPathDistanceCalculator:
         # by checking minimum distance among nearby nodes.
         total_dist = max(0.0, distance - (ninja_radius + entity_radius))
         return total_dist
-
-    def get_physics_cost(
-        self,
-        start: Tuple[int, int],
-        goal: Tuple[int, int],
-        adjacency: Dict,
-        base_adjacency: Dict,
-        level_data: Any,
-        graph_data: Optional[Dict],
-        entity_radius: float,
-        ninja_radius: float,
-        ninja_velocity: Tuple[float, float],
-        jump_duration_remaining: Optional[float] = None,
-        goal_id: Optional[str] = None,
-    ) -> float:
-        """
-        Get physics-weighted path cost from start to goal.
-
-        Unlike get_geometric_distance(), this uses full physics costs including:
-        - Velocity-aware first-edge costs (critical for trajectory feasibility)
-        - Jump duration remaining checks (prevents exhausted jump frames)
-        - Aerial chain tracking
-        - Momentum preservation/reversal costs
-        - Mine proximity costs
-
-        This should be used for PBRS potential computation where trajectory
-        feasibility matters. Returns inf for impossible trajectories.
-
-        Args:
-            start: Start position (x, y) in world coordinates
-            goal: Goal position (x, y) in world coordinates
-            adjacency: Masked graph adjacency structure
-            base_adjacency: Base graph adjacency (pre-entity-mask)
-            level_data: LevelData instance
-            graph_data: Graph data dict with node_physics, spatial_hash
-            entity_radius: Goal entity collision radius
-            ninja_radius: Ninja collision radius
-            ninja_velocity: Current ninja velocity (vx, vy) - REQUIRED
-            jump_duration_remaining: Normalized remaining jump frames [0, 1], optional.
-                                    If provided and <= 0, airborne upward edges return inf.
-            goal_id: Optional goal identifier for caching
-
-        Returns:
-            Physics-weighted path cost, or float('inf') if unreachable
-        """
-        # Extract required data
-        physics_cache = graph_data.get("node_physics") if graph_data else None
-        spatial_hash = graph_data.get("spatial_hash") if graph_data else None
-        subcell_lookup = graph_data.get("subcell_lookup") if graph_data else None
-
-        if physics_cache is None:
-            raise ValueError("Physics cache required for physics cost calculation")
-
-        # CRITICAL: Early exit for invalid goal positions
-        if goal[0] == 0 and goal[1] == 0:
-            return float("inf")
-
-        # Find start and goal nodes
-        start_node = find_ninja_node(
-            start,
-            adjacency,
-            spatial_hash=spatial_hash,
-            subcell_lookup=subcell_lookup,
-            ninja_radius=ninja_radius,
-        )
-
-        goal_node = find_closest_node_to_position(
-            goal,
-            adjacency,
-            threshold=entity_radius + ninja_radius,
-            spatial_hash=spatial_hash,
-            subcell_lookup=subcell_lookup,
-        )
-
-        if start_node is None or goal_node is None:
-            return float("inf")
-
-        if start_node == goal_node:
-            return 0.0
-
-        # Check step cache with velocity bucketing
-        # Bucket velocities to 0.5 px/frame increments for better cache hits
-        vel_bucket = (int(ninja_velocity[0] * 2), int(ninja_velocity[1] * 2))
-        cache_key = (start_node, goal_node, vel_bucket, "physics")
-
-        if cache_key in self._step_cache:
-            self._step_cache_hits += 1
-            return self._step_cache[cache_key]
-
-        self._step_cache_misses += 1
-
-        # Compute A* with physics costs and velocity
-        cost = self._astar_distance(
-            start_node,
-            goal_node,
-            adjacency,
-            base_adjacency,
-            physics_cache,
-            level_data,
-            self.mine_proximity_cache,
-            self.mine_sdf,
-            hazard_cost_multiplier=None,
-            ninja_velocity=ninja_velocity,  # Critical: pass actual velocity
-            jump_duration_remaining=jump_duration_remaining,  # Critical: pass jump frames
-        )
-
-        # Cache result
-        self._step_cache[cache_key] = cost
-        return cost
 
     def compute_baseline_physics_costs(
         self,
@@ -1562,35 +1266,28 @@ class CachedPathDistanceCalculator:
             NINJA_RADIUS,
         )
 
-        zero_velocity = (0.0, 0.0)
-        full_jump_duration = 1.0  # Neutral baseline: full jump frames available
-
-        # Compute spawn→switch physics cost
-        spawn_to_switch = self.get_physics_cost(
+        # Compute spawn→switch geometric cost
+        spawn_to_switch = self.get_path_cost(
             spawn_pos,
             switch_pos,
             adjacency,
             base_adjacency,
-            level_data,
-            graph_data,
+            level_data=level_data,
+            graph_data=graph_data,
             entity_radius=EXIT_SWITCH_RADIUS,
             ninja_radius=NINJA_RADIUS,
-            ninja_velocity=zero_velocity,
-            jump_duration_remaining=full_jump_duration,
         )
 
-        # Compute switch→exit physics cost
-        switch_to_exit = self.get_physics_cost(
+        # Compute switch→exit geometric cost
+        switch_to_exit = self.get_path_cost(
             switch_pos,
             exit_pos,
             adjacency,
             base_adjacency,
-            level_data,
-            graph_data,
+            level_data=level_data,
+            graph_data=graph_data,
             entity_radius=EXIT_DOOR_RADIUS,
             ninja_radius=NINJA_RADIUS,
-            ninja_velocity=zero_velocity,
-            jump_duration_remaining=full_jump_duration,
         )
 
         # Handle infinite costs (unreachable)
@@ -1632,487 +1329,67 @@ class CachedPathDistanceCalculator:
         goal_id: Optional[str] = None,
         ninja_velocity: Optional[Tuple[float, float]] = None,
     ) -> float:
-        """
-        Get GEOMETRIC path distance (actual pixels) along physics-optimal path.
-
-        OPTIMIZATION: Uses pre-computed node-to-node distances from level cache,
-        then applies sub-node position offset. This eliminates expensive BFS calls.
-
-        This returns the actual path length in pixels along the physics-optimal path.
-        Physics costs are used during pathfinding to find the optimal route, but the
-        returned value is the geometric distance (pixels) of that route.
-
-        For example, an 800px horizontal path returns ~800px (not ~36 with physics costs).
-
-        STRICT VALIDATION: graph_data MUST contain physics_cache for physics-optimal pathfinding.
-
-        Args:
-            start: Start position (world/full map space)
-            goal: Goal position (world/full map space)
-            adjacency: Masked graph adjacency (filtered to only reachable nodes, for pathfinding)
-            base_adjacency: Base graph adjacency (pre-entity-mask, for physics checks)
-            level_data: Optional level data for level-based caching
-            graph_data: Graph data dict with physics_cache (REQUIRED for physics-aware pathfinding)
-            entity_radius: Collision radius of the goal entity (default 0.0)
-            ninja_radius: Collision radius of the ninja (default 10.0)
-            goal_id: Optional goal identifier for level_cache lookup (e.g., "switch" or "exit")
-            ninja_velocity: Optional (xspeed, yspeed) tuple for first-edge velocity-aware costs
-        Returns:
-            Geometric path distance in pixels, or float('inf') if unreachable
-        """
-        # STRICT VALIDATION: Ensure graph_data and physics_cache are available
-        if graph_data is None:
-            raise ValueError(
-                "graph_data is REQUIRED for get_geometric_distance(). "
-                "This function uses physics-optimal pathfinding to measure pixel distances. "
-                "Ensure graph building provides graph_data with physics_cache."
-            )
-
-        # Validate physics_cache is in graph_data (will be checked again in pathfinding)
-        if graph_data.get("node_physics") is None:
-            raise ValueError(
-                "Physics cache (node_physics) not found in graph_data. "
-                "get_geometric_distance() requires physics_cache for optimal route finding. "
-                "Ensure graph building includes physics cache precomputation."
-            )
-        # Import needed for ninja node finding
-        from .pathfinding_utils import find_ninja_node
-        import logging
-
-        logger = logging.getLogger(__name__)
-        # OPTIMIZATION: Step-level cache check (eliminates duplicate calls within same step)
-        step_key = (start, goal, entity_radius)
-        if step_key in self._step_cache_geo:
-            self._step_cache_hits += 1
-            return self._step_cache_geo[step_key]
-        self._step_cache_misses += 1
-
-        # CRITICAL: Early exit for invalid goal positions
-        # Goals at (0, 0) indicate entity loading failure - return inf to avoid cache pollution
-        if goal[0] == 0 and goal[1] == 0:
-            return float("inf")
-
-        # Extract spatial hash and subcell lookup from graph_data if available
-        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
-            graph_data
-        )
-
-        # Store spatial_hash for later use if available
-        if spatial_hash is not None:
-            self._spatial_hash = spatial_hash
-
-        # EARLY EXIT: If start and goal are within combined collision radii,
-        # the ninja is already touching/overlapping the goal - distance is 0.
-        combined_radius = ninja_radius + entity_radius
-        dx = start[0] - goal[0]
-        dy = start[1] - goal[1]
-        dist_sq = dx * dx + dy * dy
-        if dist_sq <= combined_radius * combined_radius:
-            return 0.0
-
-        # FAST PATH: Use level cache with position offset (eliminates BFS calls)
-        if level_data is not None and self.level_cache is not None:
-            # Only rebuild cache if level actually changed
-            level_id = level_data.level_id
-
-            if level_id != self._current_level_id:
-                self.build_level_cache(
-                    level_data, adjacency, base_adjacency, graph_data
-                )
-                self._current_level_id = level_id
-
-            # Find goal node using spatial hash for O(1) lookup
-            goal_node = find_closest_node_to_position(
-                goal,
-                adjacency,
-                threshold=None,  # Will be calculated from radii
-                entity_radius=entity_radius,
-                ninja_radius=ninja_radius,
-                spatial_hash=self._spatial_hash,
-                subcell_lookup=subcell_lookup,
-            )
-
-            # Only proceed if we found a valid goal node within threshold
-            if goal_node is not None:
-                if goal_id is None:
-                    # ROBUST GOAL_ID INFERENCE: Use cached entity positions (O(1) per level)
-                    # Avoids repeated entity queries in hot path (2000+ calls per profile)
-
-                    # DIAGNOSTIC: Log waypoint cache state
-                    logger.debug(
-                        f"[GOAL_ID_INFERENCE] Checking goal {goal} against "
-                        f"{len(self._cached_waypoint_positions)} cached waypoints"
-                    )
-
-                    # Check if goal matches a cached switch position (within 24px tolerance)
-                    for switch_pos in self._cached_switch_positions:
-                        if (
-                            abs(switch_pos[0] - goal[0]) < 24
-                            and abs(switch_pos[1] - goal[1]) < 24
-                        ):
-                            goal_id = "switch"  # Use generic alias
-                            break
-
-                    # Check if goal matches a cached exit position (within 24px tolerance)
-                    if goal_id is None:
-                        for exit_pos in self._cached_exit_positions:
-                            if (
-                                abs(exit_pos[0] - goal[0]) < 24
-                                and abs(exit_pos[1] - goal[1]) < 24
-                            ):
-                                goal_id = "exit"  # Use generic alias
-                                break
-
-                    # Check if goal matches a cached waypoint position (within 24px tolerance)
-                    if goal_id is None:
-                        for i, waypoint_pos in enumerate(
-                            self._cached_waypoint_positions
-                        ):
-                            if (
-                                abs(waypoint_pos[0] - goal[0]) < 24
-                                and abs(waypoint_pos[1] - goal[1]) < 24
-                            ):
-                                goal_id = f"waypoint_{i}"
-                                break
-
-                if goal_id is None:
-                    # logger.warning(
-                    #     f"[GOAL_ID_INFERENCE] Goal ID not found for goal: {goal}. "
-                    #     f"Cached waypoints: {len(self._cached_waypoint_positions)} "
-                    #     f"(list id: {id(self._cached_waypoint_positions)})"
-                    # )
-                    # Reduced verbosity - remove duplicate prints
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(
-                            f"cached_exit_positions: {self._cached_exit_positions}"
-                        )
-                        logger.debug(
-                            f"cached_switch_positions: {self._cached_switch_positions}"
-                        )
-                        logger.debug(
-                            f"cached_waypoint_positions: {self._cached_waypoint_positions}"
-                        )
-
-                if goal_id is not None:
-                    # Get goal_pos for validation
-                    goal_pos = self.level_cache.get_goal_pos_from_id(goal_id)
-
-                    if goal_pos is not None:
-                        # Validate that cached goal_pos matches input goal (within tolerance)
-                        dx_check = abs(goal_pos[0] - goal[0])
-                        dy_check = abs(goal_pos[1] - goal[1])
-
-                        # DIAGNOSTIC: Log validation failures with curriculum context
-                        if dx_check > 12 or dy_check > 12:
-                            if not hasattr(self, "_validation_fail_count"):
-                                self._validation_fail_count = 0
-                            self._validation_fail_count += 1
-
-                            # Get curriculum stage for diagnostics
-                            current_stage = (
-                                self.goal_curriculum_manager.state.unified_stage
-                                if self.goal_curriculum_manager
-                                else "N/A"
-                            )
-
-                            if self._validation_fail_count <= 5:
-                                logger.warning(
-                                    f"[VALIDATION_FAIL #{self._validation_fail_count}] goal_id={goal_id}, "
-                                    f"goal={goal} (from observation), goal_pos={goal_pos} (from cache), "
-                                    f"dx={dx_check:.1f}, dy={dy_check:.1f}, threshold=12, "
-                                    f"stage={current_stage}. "
-                                    f"Cache has wrong stage's positions! Forcing BFS fallback."
-                                )
-
-                            # Skip using this mismatched cache entry - force BFS fallback
-                            # This prevents using stage 1 cache when entities are at stage 0
-                            goal_id = None
-
-                        if dx_check <= 12 and dy_check <= 12:
-                            # Find ninja node using canonical selection
-                            start_node = find_ninja_node(
-                                start,
-                                adjacency,
-                                spatial_hash=self._spatial_hash,
-                                subcell_lookup=subcell_lookup,
-                                ninja_radius=ninja_radius,
-                                goal_node=goal_node,
-                                level_cache=self.level_cache,
-                                goal_id=goal_id,
-                            )
-
-                            # FAST PATH: Use cached node-to-node distance + position offset
-                            if start_node is not None and start_node in adjacency:
-                                # OPTIMIZATION: Check per-query cache first (node pair cache)
-                                cache_key = (start_node, goal_node)
-                                if cache_key in self._geometric_distance_cache:
-                                    cached_dist = self._geometric_distance_cache[
-                                        cache_key
-                                    ]
-                                    # LRU: Move to end to mark as recently used
-                                    self._geometric_distance_cache.move_to_end(
-                                        cache_key
-                                    )
-                                    # Apply sub-node position offset using next_hop projection
-                                    # (already implemented below, reuse that logic)
-                                else:
-                                    # Get GEOMETRIC distance from level cache (node-to-node)
-                                    cached_dist = (
-                                        self.level_cache.get_geometric_distance(
-                                            start_node, goal_pos, goal_id
-                                        )
-                                    )
-                                    if cached_dist != float("inf"):
-                                        # Store in per-query cache with LRU eviction
-                                        self._geometric_distance_cache[cache_key] = (
-                                            cached_dist
-                                        )
-                                        self._geometric_distance_cache.move_to_end(
-                                            cache_key
-                                        )
-
-                                        # LRU eviction: Remove oldest if exceeds max size
-                                        if (
-                                            len(self._geometric_distance_cache)
-                                            > self._geometric_cache_max_size
-                                        ):
-                                            self._geometric_distance_cache.popitem(
-                                                last=False
-                                            )
-
-                                if cached_dist != float("inf"):
-                                    # === SUB-NODE PBRS RESOLUTION: Dense Rewards for Micro-Movements ===
-                                    #
-                                    # PROBLEM: Agent moves 0.05-3.33px per step, but graph nodes are
-                                    # spaced 12px apart. Without sub-node resolution, PBRS would only
-                                    # change when crossing node boundaries (~3-240 steps), causing:
-                                    # - Sparse reward signal (agent blind to small progress)
-                                    # - Oscillation within node (no gradient to guide micro-corrections)
-                                    # - Poor sample efficiency (can't learn from incremental progress)
-                                    #
-                                    # SOLUTION: Project agent's actual world position onto the optimal
-                                    # path direction to interpolate distance between grid nodes. This
-                                    # provides continuous feedback for every frame of movement.
-                                    #
-                                    # APPROACH: Next-Hop Directional Projection
-                                    #
-                                    # The next_hop is the neighbor node that's one step closer to the
-                                    # goal along the optimal physics-aware path (from level cache BFS).
-                                    # The vector from start_node → next_hop represents the locally
-                                    # optimal movement direction, respecting:
-                                    # - Level geometry (walls, corridors, platforms)
-                                    # - Physics costs (grounded routes preferred over aerial)
-                                    # - Obstacles requiring detours away from goal
-                                    #
-                                    # KEY INSIGHT: This is PATH-AWARE, not Euclidean
-                                    # Example level with vertical wall blocking direct path:
-                                    #   Goal at (800, 400) [upper-right]
-                                    #   Agent at (400, 400) [same height, left of goal]
-                                    #   Wall blocks direct rightward movement
-                                    #   Optimal path: go DOWN to (400, 500), then RIGHT
-                                    #
-                                    #   At (400, 400): next_hop points DOWN (toward detour), not RIGHT
-                                    #   - Moving DOWN 0.1px: projection = +0.1, distance -= 0.1 ✓ REWARD
-                                    #   - Moving RIGHT 0.1px: projection = -0.1, distance += 0.1 ✓ PENALTY
-                                    #
-                                    #   This guides agent along optimal path, not toward unreachable goal!
-                                    #
-                                    # MATHEMATICAL PROPERTIES:
-                                    # - Linear interpolation: 1px movement = 1px distance change
-                                    # - Continuous: No discontinuities between nodes
-                                    # - Consistent: Same projection for all movements in same direction
-                                    # - Bounded: Projection capped by node spacing (±12px typical)
-                                    #
-                                    # PERFORMANCE: O(1) lookup after level cache warmup
-                                    # - Level cache precomputes next_hop for all nodes (one-time cost)
-                                    # - Each query: 2 cache lookups + vector math (no pathfinding!)
-                                    #
-                                    # Get next hop toward goal for optimal path direction
-                                    from .pathfinding_utils import (
-                                        NODE_WORLD_COORD_OFFSET,
-                                    )
-
-                                    next_hop = self.level_cache.get_next_hop(
-                                        start_node, goal_id
-                                    )
-
-                                    if next_hop is not None:
-                                        # Convert positions to world coordinates for projection
-                                        # (Nodes are in tile data space, need +24px offset)
-                                        start_node_world_x = (
-                                            start_node[0] + NODE_WORLD_COORD_OFFSET
-                                        )
-                                        start_node_world_y = (
-                                            start_node[1] + NODE_WORLD_COORD_OFFSET
-                                        )
-                                        next_hop_world_x = (
-                                            next_hop[0] + NODE_WORLD_COORD_OFFSET
-                                        )
-                                        next_hop_world_y = (
-                                            next_hop[1] + NODE_WORLD_COORD_OFFSET
-                                        )
-
-                                        # Compute optimal path direction (start_node → next_hop)
-                                        path_dx = next_hop_world_x - start_node_world_x
-                                        path_dy = next_hop_world_y - start_node_world_y
-                                        path_len = (
-                                            path_dx * path_dx + path_dy * path_dy
-                                        ) ** 0.5
-
-                                        if path_len > 0.001:
-                                            # Normalize to unit vector (length = 1.0)
-                                            path_dir_x = path_dx / path_len
-                                            path_dir_y = path_dy / path_len
-
-                                            # Compute agent's offset from start_node
-                                            player_dx = start[0] - start_node_world_x
-                                            player_dy = start[1] - start_node_world_y
-
-                                            # Project offset onto path direction (dot product)
-                                            # Result: Scalar distance along path direction
-                                            # - Positive: Agent ahead of node (toward next_hop)
-                                            # - Negative: Agent behind node (away from next_hop)
-                                            # - Zero: Agent exactly at start_node center
-                                            projection = (
-                                                player_dx * path_dir_x
-                                                + player_dy * path_dir_y
-                                            )
-
-                                            # Adjust cached distance by projection
-                                            # cached_dist = distance from start_node to goal
-                                            # projection = how far agent is ahead (+) or behind (-)
-                                            # total_dist = cached_dist - projection
-                                            #
-                                            # Example: cached_dist = 100px, projection = +5px
-                                            # → total_dist = 95px (agent is 5px closer than node)
-                                            total_dist = max(
-                                                0.0,
-                                                cached_dist
-                                                - projection
-                                                - (ninja_radius + entity_radius),
-                                            )
-
-                                            # DIAGNOSTIC: Log sub-node projection for geometric distance
-                                            # This tracks the PBRS potential calculation path specifically
-                                            logger.debug(
-                                                f"[SUB_NODE_GEO_FAST] projection={projection:.3f}px, "
-                                                f"cached_dist={cached_dist:.1f}px, "
-                                                f"adjusted_dist={total_dist:.1f}px, "
-                                                f"player_offset=({player_dx:.2f}, {player_dy:.2f}), "
-                                                f"path_dir=({path_dir_x:.3f}, {path_dir_y:.3f}), "
-                                                f"goal_id={goal_id}"
-                                            )
-
-                                            # OPTIMIZATION: Store for PBRS reuse
-                                            self._last_start_node = start_node
-                                            self._last_goal_id = goal_id
-                                            self._last_geometric_distance = cached_dist
-                                            self._last_next_hop = next_hop
-
-                                            # Store in step cache
-                                            self._step_cache_geo[step_key] = total_dist
-
-                                            return total_dist
-
-                                    # Fallback: no next_hop (at goal) or path too short
-                                    result = max(
-                                        0.0,
-                                        cached_dist - (ninja_radius + entity_radius),
-                                    )
-                                    # Store in step cache
-                                    self._step_cache_geo[step_key] = result
-                                    return result
-
-        # SLOW PATH: Cache miss - compute directly using BFS with geometric costs
-        # This should be rare after level cache warm-up
-        # LOG cache miss for diagnostic purposes (helps identify cache issues)
-        if self.level_cache is not None and level_data is not None:
-            # Detailed diagnostic: why did cache miss?
-            start_node = None
-            goal_node = None
-            goal_id = None
-
-            # Try to find nodes for diagnostic
-            subcell_lookup = graph_data.get("subcell_lookup") if graph_data else None
-            if adjacency:
-                start_node = find_ninja_node(
-                    start,
-                    adjacency,
-                    spatial_hash=self._spatial_hash,
-                    subcell_lookup=subcell_lookup,
-                    ninja_radius=ninja_radius,
-                )
-
-            # Check goal inference
-            if start[0] == 0 and start[1] == 0:
-                goal_id = "invalid_zero_goal"
-            else:
-                # Check switch positions
-                for switch_pos in self._cached_switch_positions:
-                    if (
-                        abs(switch_pos[0] - goal[0]) < 24
-                        and abs(switch_pos[1] - goal[1]) < 24
-                    ):
-                        goal_id = "switch"
-                        break
-                # Check exit positions
-                if goal_id is None:
-                    for exit_pos in self._cached_exit_positions:
-                        if (
-                            abs(exit_pos[0] - goal[0]) < 24
-                            and abs(exit_pos[1] - goal[1]) < 24
-                        ):
-                            goal_id = "exit"
-                            break
-
-            # cache_key_would_be = (
-            #     (start_node, goal_id) if start_node and goal_id else None
-            # )
-            # in_cache = (
-            #     cache_key_would_be in self.level_cache.geometric_cache
-            #     if cache_key_would_be
-            #     else False
-            # )
-
-            # logger.warning(
-            #     f"[CACHE_MISS] get_geometric_distance fallback to BFS: "
-            #     f"start={start}, goal={goal}, level={self._current_level_id}, "
-            #     f"start_node={start_node}, goal_id={goal_id}, "
-            #     f"would_be_in_cache={in_cache}, "
-            #     f"cache_size={len(self.level_cache.geometric_cache) if self.level_cache else 0}"
-            # )
-
-        from .pathfinding_utils import calculate_geometric_path_distance
-
-        physics_cache = graph_data.get("node_physics") if graph_data else None
-
-        # CRITICAL: Pass mine cache and level data for mine avoidance in cache miss path
-        # This fallback BFS must use same costs as cached paths
-        result = calculate_geometric_path_distance(
-            start,
-            goal,
-            adjacency,
-            base_adjacency,
-            physics_cache=physics_cache,
-            spatial_hash=self._spatial_hash,
-            subcell_lookup=subcell_lookup,
+        """DEPRECATED: Use get_path_cost instead (all distances are geometric). Kept for backward compatibility."""
+        return self.get_path_cost(
+            start, goal, adjacency, base_adjacency,
+            level_data=level_data,
+            graph_data=graph_data,
             entity_radius=entity_radius,
             ninja_radius=ninja_radius,
-            level_data=level_data,  # Pass for mine proximity calculations
-            mine_proximity_cache=self.mine_proximity_cache,  # Pass for mine avoidance
-            mine_sdf=self.mine_sdf,  # Pass for velocity-aware mine costs
-            ninja_velocity=ninja_velocity,  # Pass for first-edge velocity-aware costs
-            allow_high_cost_edges=True,  # PBRS: Always provide gradient even in difficult positions
+            goal_id=goal_id,
         )
 
-        # Store in step cache even for BFS fallback (avoid duplicate BFS within same step)
-        self._step_cache_geo[step_key] = result
-        return result
+
+    def _get_cached_or_find_ninja_node(
+        self,
+        start: Tuple[float, float],
+        adjacency: Dict,
+        goal_id: Optional[str] = None,
+        goal_node: Optional[Tuple[int, int]] = None,
+        subcell_lookup: Optional[Any] = None,
+        ninja_radius: float = 10.0,
+        search_radius_override: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Optional[Tuple[int, int]]:
+        """Get ninja node with step-scoped caching to avoid redundant find_ninja_node.
+
+        Same ninja position is typically queried 5+ times per step across
+        observation and reward. Caching reduces to 1 lookup per step.
+        Also checks position-only key (x, y, None) so callers with different
+        goal_ids share the same result (ninja node is independent of goal).
+        """
+        pos = (int(start[0]), int(start[1]))
+        cache_key = (pos[0], pos[1], goal_id)
+        if cache_key in self._step_ninja_node_cache:
+            return self._step_ninja_node_cache[cache_key]
+        # Position-only fallback: ninja node is same regardless of goal_id
+        pos_only_key = (pos[0], pos[1], None)
+        if pos_only_key in self._step_ninja_node_cache:
+            node = self._step_ninja_node_cache[pos_only_key]
+            self._step_ninja_node_cache[cache_key] = node
+            return node
+        node = find_ninja_node(
+            start,
+            adjacency,
+            spatial_hash=self._spatial_hash,
+            subcell_lookup=subcell_lookup,
+            ninja_radius=ninja_radius,
+            goal_node=goal_node,
+            level_cache=self.level_cache,
+            goal_id=goal_id,
+            search_radius_override=search_radius_override,
+            **kwargs,
+        )
+        if node is not None:
+            self._step_ninja_node_cache[cache_key] = node
+            self._step_ninja_node_cache[pos_only_key] = node
+        return node
 
     def clear_step_cache(self):
         """Clear step-level cache (call between environment steps)."""
         self._step_cache.clear()
         self._step_cache_geo.clear()
+        self._step_ninja_node_cache.clear()
 
     def clear_cache(self):
         """Clear cache (call on level change)."""
@@ -2208,16 +1485,3 @@ class CachedPathDistanceCalculator:
             stats["timing"] = self.timer.get_stats()
 
         return stats
-
-    def get_timing_summary(self):
-        """Print timing summary for debugging."""
-        if self.enable_timing:
-            self.timer.print_summary(recent_only=True)
-        else:
-            print("Timing not enabled for this calculator")
-
-    def get_level_cache_statistics(self) -> Optional[Dict[str, Any]]:
-        """Get level cache statistics."""
-        if self.level_cache is not None:
-            return self.level_cache.get_statistics()
-        return None

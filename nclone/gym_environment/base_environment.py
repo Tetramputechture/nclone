@@ -15,6 +15,7 @@ from typing import Tuple, Optional, Dict, Any, List
 # Core nclone imports
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..nplay_headless import NPlayHeadless
+from ..native_headless import NativePlayHeadless
 
 # Graph and level data imports
 from ..graph.level_data import LevelData, extract_start_position_from_map_data
@@ -93,6 +94,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             str
         ] = None,  # Directory with precomputed value functions
         use_precomputed_pbrs: bool = False,  # Use precomputed value function for PBRS
+        use_native_physics: bool = False,  # Use Rust native physics for benchmarking
     ):
         """
         Initialize the base N++ environment.
@@ -139,14 +141,24 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Initialize core game interface
         # Note: Grayscale rendering is automatic in headless mode (grayscale_array)
         # Skip rendering entirely if visual observations disabled for maximum performance
-        self.nplay_headless = NPlayHeadless(
-            render_mode=render_mode,
-            enable_animation=enable_animation,
-            enable_logging=enable_logging,
-            enable_debug_overlay=enable_debug_overlay,
-            seed=seed,
-            enable_rendering=enable_visual_observations,
-        )
+        if use_native_physics:
+            self.nplay_headless = NativePlayHeadless(
+                render_mode=render_mode,
+                enable_animation=enable_animation,
+                enable_logging=enable_logging,
+                enable_debug_overlay=enable_debug_overlay,
+                seed=seed,
+                enable_rendering=enable_visual_observations,
+            )
+        else:
+            self.nplay_headless = NPlayHeadless(
+                render_mode=render_mode,
+                enable_animation=enable_animation,
+                enable_logging=enable_logging,
+                enable_debug_overlay=enable_debug_overlay,
+                seed=seed,
+                enable_rendering=enable_visual_observations,
+            )
 
         # Set environment reference in simulator for cache invalidation
         # This allows entity collision methods to invalidate caches when switch states change
@@ -290,6 +302,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             shared_level_cache=shared_level_cache,
             shared_level_caches_by_stage=shared_level_caches_by_stage,
             goal_curriculum_manager=self.goal_curriculum_manager,
+        )
+
+        # Initialize primitive-level reward calculator for FiGAR-PPO per-frame PBRS
+        from .reward_calculation.primitive_reward_calculator import PrimitiveRewardCalculator
+        self.primitive_reward_calculator = PrimitiveRewardCalculator(
+            gamma=pbrs_gamma,
         )
 
         # Initialize truncation checker
@@ -507,8 +525,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         """
         logger = logging.getLogger(__name__)
 
-        # Profile entire step method
-        # t_step = self._profile_start("step_total")
+        # Granular step timing (when profile_enabled)
+        t_step = self._profile_start("step_total")
 
         # OPTIMIZATION: Clear step-level cache to dedupe within-step distance queries
         # Path calculator caches distance computations within a single step to avoid
@@ -548,34 +566,29 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # OPTIMIZATION: Check profiling state once before loop
             _profile = getattr(self, "profile_enabled", False)
 
+            # Per-frame primitive rewards for FiGAR-PPO primitive-level GAE
+            primitive_rewards = []
+            prev_switch_activated = headless.exit_switch_activated()
+
+            # Get Phi grid cache for primitive reward computation
+            _phi_grid_cache, _rust_phi_cache = self._get_phi_grid_cache()
+
+            t_physics = self._profile_start("physics_total")
             for i in range(self.frame_skip):
-                # Execute physics tick (inline profiling check to avoid function call overhead)
-                if _profile:
-                    # t_physics = self._profile_start("physics_tick")
-                    headless.tick(action_hoz, action_jump)
-                    # self._profile_end("physics_tick", t_physics)
-                else:
-                    headless.tick(action_hoz, action_jump)
+                headless.tick(action_hoz, action_jump)
 
                 frames_executed = i + 1
 
                 # Track switch activation frame precisely (cheap check, ~1μs)
-                # Must happen inside loop to capture exact frame, not end-of-skip frame
+                current_switch_activated = headless.exit_switch_activated()
                 if (
                     self._switch_activation_frame is None
-                    and headless.exit_switch_activated()
+                    and current_switch_activated
                 ):
                     self._switch_activation_frame = headless.sim.frame
 
-                    # DIAGNOSTIC: Log when switch is activated for debugging immediate activation
-                    # ninja_pos = headless.ninja_position()
                     switch_pos = headless.exit_switch_position()
-                    # distance = (
-                    #     (ninja_pos[0] - switch_pos[0]) ** 2
-                    #     + (ninja_pos[1] - switch_pos[1]) ** 2
-                    # ) ** 0.5
 
-                    # Get curriculum info
                     curriculum_stage = "N/A"
                     expected_switch_pos = "N/A"
                     if self.goal_curriculum_manager is not None:
@@ -584,24 +597,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         )
                         expected_switch_pos = self.goal_curriculum_manager.get_curriculum_switch_position()
 
-                    # print(
-                    #     f"\n{'!' * 60}\n"
-                    #     f"[SWITCH_ACTIVATED] Frame {self._switch_activation_frame}\n"
-                    #     f"  Curriculum stage: {curriculum_stage}\n"
-                    #     f"  Ninja pos: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})\n"
-                    #     f"  Switch pos (from sim): ({switch_pos[0]:.1f}, {switch_pos[1]:.1f})\n"
-                    #     f"  Expected switch pos: {expected_switch_pos}\n"
-                    #     f"  Distance ninja→switch: {distance:.1f}px\n"
-                    #     f"{'!' * 60}\n"
-                    # )
-
-                    # CRITICAL CHECK: If activated in first 10 frames at stage > 0, something is WRONG
                     if (
                         self._switch_activation_frame <= 10
                         and curriculum_stage != "N/A"
                         and curriculum_stage > 0
                     ):
-                        # Check if switch is at wrong position
                         if expected_switch_pos != "N/A":
                             pos_error = (
                                 (switch_pos[0] - expected_switch_pos[0]) ** 2
@@ -616,13 +616,33 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                                     f"  This explains immediate activation - switch never moved!"
                                 )
 
-                # OPTIMIZATION: Only check death/win per frame (cheap attribute lookup)
-                # Skip truncation check in intermediate frames (it's time-based, won't change in 4 frames)
+                # Check death/win per frame
                 player_won = headless.ninja_has_won()
                 player_dead = headless.ninja_has_died()
+
+                # === PRIMITIVE-LEVEL PBRS REWARD ===
+                # Compute per-frame reward using Phi grids + reward machine
+                if _phi_grid_cache is not None:
+                    ninja_pos = headless.ninja_position()
+                    frame_reward = self.primitive_reward_calculator.calculate_frame_reward(
+                        player_x=ninja_pos[0],
+                        player_y=ninja_pos[1],
+                        player_dead=player_dead,
+                        player_won=player_won,
+                        switch_activated=current_switch_activated,
+                        prev_switch_activated=prev_switch_activated,
+                        phi_grid_cache=_phi_grid_cache,
+                        rust_phi_cache=_rust_phi_cache,
+                        is_truncated=False,  # Truncation checked after loop
+                    )
+                    primitive_rewards.append(frame_reward)
+                    prev_switch_activated = current_switch_activated
+
                 if player_won or player_dead:
                     terminated = True
                     break
+
+            self._profile_end("physics_total", t_physics)
 
             # Check truncation only once after all frames (expensive curriculum-aware check)
             if not terminated:
@@ -639,9 +659,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._post_action_hook()
 
             # Get final observation - OBSERVATION GENERATION
-            # t_obs = self._profile_start("observation_get")
+            t_obs = self._profile_start("observation_get")
             final_obs = self._get_observation()
-            # self._profile_end("observation_get", t_obs)
+            self._profile_end("observation_get", t_obs)
 
             # Cache observation for reward calculation in next step
             self._prev_obs_cache = final_obs
@@ -656,7 +676,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._pre_reward_hook(final_obs, player_won)
 
             # Calculate reward using initial→final transition with frame count scaling
-            # t_reward = self._profile_start("reward_calc")
+            t_reward = self._profile_start("reward_calc")
             reward = self.reward_calculator.calculate_reward(
                 final_obs,
                 initial_obs,
@@ -664,7 +684,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 frames_executed=frames_executed,
                 curriculum_manager=self.goal_curriculum_manager,
             )
-            # self._profile_end("reward_calc", t_reward)
+            self._profile_end("reward_calc", t_reward)
 
             # Update dynamic truncation limit if PBRS surface area is now available
             self._update_dynamic_truncation_if_needed()
@@ -692,14 +712,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self.current_ep_reward += reward
 
             # Process observation for training
-            # t_proc = self._profile_start("observation_process")
+            t_proc = self._profile_start("observation_process")
             processed_obs = self._process_observation(final_obs)
-            # self._profile_end("observation_process", t_proc)
+            self._profile_end("observation_process", t_proc)
 
             # Build episode info
-            # t_info = self._profile_start("info_build")
+            t_info = self._profile_start("info_build")
             info = self._build_episode_info(player_won, terminated, truncated)
-            # self._profile_end("info_build", t_info)
+            self._profile_end("info_build", t_info)
 
             # DIAGNOSTIC: Store reward breakdown in info for route visualization
             # This allows seeing reward components without needing logging enabled
@@ -753,11 +773,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 "frames_executed": frames_executed,
             }
 
+            # Expose per-frame primitive rewards for FiGAR-PPO primitive-level GAE
+            info["primitive_rewards"] = primitive_rewards
+
             # Hook: Add additional info fields
             self._extend_info_hook(info)
 
             # End step profiling
-            # self._profile_end("step_total", t_step)
+            self._profile_end("step_total", t_step)
 
             return processed_obs, reward, terminated, truncated, info
 
@@ -769,6 +792,30 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             )
             # Re-raise to maintain normal error handling
             raise
+
+    def _get_phi_grid_cache(self):
+        """Get Phi grid cache and optional Rust cache for primitive PBRS.
+
+        Navigates the reward calculator's internal path calculator to find
+        the level cache that contains precomputed Phi grids. When Rust
+        LevelCache is available, returns it for O(1) get_phi lookups.
+
+        Returns:
+            Tuple of (phi_cache, rust_cache):
+            - phi_cache: LevelBasedPathDistanceCache with Phi grids, or None
+            - rust_cache: Rust LevelCache with get_phi, or None
+        """
+        try:
+            path_calc = self.reward_calculator.pbrs_calculator.path_calculator
+            level_cache = getattr(path_calc, "level_cache", None)
+            rust_cache = getattr(path_calc, "_rust_level_cache", None)
+            if level_cache is not None and getattr(
+                level_cache, "_phi_grids_built", False
+            ):
+                return (level_cache, rust_cache)
+        except AttributeError:
+            pass
+        return (None, None)
 
     def get_observation(self) -> Dict[str, Any]:
         """Public accessor for current observation (for frame skip wrapper).
@@ -838,6 +885,83 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 f"Action: {action}"
             )
             raise
+
+    def step_n_frames(
+        self,
+        action: int,
+        n_frames: int,
+        gamma: float = 0.99,
+    ) -> Tuple[Dict[str, Any], float, bool, bool, Dict[str, Any]]:
+        """Execute action for n_frames, accumulating discounted rewards.
+
+        This method is designed for FiGAR-PPO temporal abstraction where the agent
+        selects (action, duration) pairs. The action is held for the specified
+        duration, and rewards are accumulated with proper discounting.
+
+        The accumulated reward is: R = Σ_{t=0}^{k-1} γ^t * r_t
+        The effective discount to the next state is: γ^k
+
+        Args:
+            action: Action to execute (0-5 for N++)
+            n_frames: Number of environment steps to execute (each step is frame_skip frames)
+            gamma: Discount factor for reward accumulation (should match PPO gamma)
+
+        Returns:
+            Tuple of:
+                - observation: Final observation after n_frames
+                - accumulated_reward: Discounted sum of rewards over n_frames
+                - terminated: Whether episode ended (death or win)
+                - truncated: Whether episode was truncated (time limit)
+                - info: Info dict with additional fields:
+                    - 'frames_executed': Actual frames executed (may be < n_frames if done)
+                    - 'gamma_power': γ^k for SMDP discounting
+                    - 'frame_rewards': List of per-frame rewards (for debugging)
+        """
+        logger = logging.getLogger(__name__)
+
+        accumulated_reward = 0.0
+        gamma_power = 1.0
+        frames_executed = 0
+        frame_rewards = []
+        terminated = False
+        truncated = False
+        info = {}
+
+        for frame in range(n_frames):
+            # Execute one step (with frame_skip built in)
+            obs, reward, frame_terminated, frame_truncated, step_info = self.step(action)
+
+            # Accumulate discounted reward
+            accumulated_reward += gamma_power * reward
+            gamma_power *= gamma
+            frames_executed += 1
+            frame_rewards.append(reward)
+
+            # Check termination
+            if frame_terminated:
+                terminated = True
+                info.update(step_info)  # Preserve terminal info
+                break
+            if frame_truncated:
+                truncated = True
+                info.update(step_info)  # Preserve truncation info
+                break
+
+        # Build info dict
+        info['frames_executed'] = frames_executed
+        info['gamma_power'] = gamma_power
+        info['frame_rewards'] = frame_rewards
+        info['planned_duration'] = n_frames
+        info['actual_duration'] = frames_executed
+
+        # Log if episode ended early
+        if frames_executed < n_frames:
+            logger.debug(
+                f"step_n_frames: Early termination at frame {frames_executed}/{n_frames}. "
+                f"terminated={terminated}, truncated={truncated}"
+            )
+
+        return obs, accumulated_reward, terminated, truncated, info
 
     def calculate_reward_transition(
         self,
@@ -1626,6 +1750,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Reset reward calculator
         self.reward_calculator.reset()
+
+        # Reset primitive reward calculator
+        self.primitive_reward_calculator.reset()
 
         # Reset truncation checker
         self.truncation_checker.reset()
@@ -3091,7 +3218,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             STRAIGHT_PATH_DOWNWARD_THRESHOLD,
             STRAIGHT_PATH_MIN_DISTANCE,
         )
-        from nclone.graph.reachability.pathfinding_utils import find_ninja_node
+        from nclone.graph.reachability.pathfinding_utils import (
+            extract_spatial_lookups_from_graph_data,
+        )
 
         try:
             # Get path calculator from reward calculator's PBRS calculator
@@ -3146,14 +3275,16 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if adjacency is None:
                 return None
 
-            # Find current ninja node in graph using EXACT SAME LOGIC as debug visualization
-            # (which colors the node light blue) - do NOT convert position to int
-            ninja_node = find_ninja_node(
-                ninja_pos,  # Use float position directly, don't convert to int
+            # Use path calculator's step-scoped ninja node cache (avoids redundant lookup)
+            _, subcell_lookup = extract_spatial_lookups_from_graph_data(
+                self.current_graph_data
+            )
+            ninja_node = path_calculator._get_cached_or_find_ninja_node(
+                ninja_pos,
                 adjacency,
-                spatial_hash=getattr(self, "_spatial_hash", None),
-                subcell_lookup=getattr(self, "_subcell_lookup", None),
-                ninja_radius=10.0,  # Match debug viz: use 10.0 not 10
+                goal_id=goal_id,
+                subcell_lookup=subcell_lookup,
+                ninja_radius=10.0,
             )
 
             if ninja_node is None:
@@ -3251,6 +3382,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     def _reset_reward_calculator(self):
         """Reset the reward calculator."""
         self.reward_calculator.reset()
+        self.primitive_reward_calculator.reset()
 
     def _get_switch_states_from_env(self) -> Dict[str, bool]:
         """
@@ -3558,7 +3690,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             switch_distance = None
             if not switch_activated:
                 try:
-                    switch_distance = path_calculator.get_geometric_distance(
+                    switch_distance = path_calculator.get_path_cost(
                         (int(agent_pos[0]), int(agent_pos[1])),
                         (int(switch_pos[0]), int(switch_pos[1])),
                         adjacency,
@@ -3578,7 +3710,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Calculate distance to exit
             exit_distance = None
             try:
-                exit_distance = path_calculator.get_geometric_distance(
+                exit_distance = path_calculator.get_path_cost(
                     (int(agent_pos[0]), int(agent_pos[1])),
                     (int(exit_pos[0]), int(exit_pos[1])),
                     adjacency,
@@ -3745,15 +3877,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 f"({'SAME' if len(adjacency) == len(base_adjacency) else 'DIFFERENT - entity masking active'})"
             )
 
-            # STRICT VALIDATION: Physics cache must be available for PBRS visualization
-            physics_cache = self.current_graph_data.get("node_physics")
-            if physics_cache is None:
-                raise RuntimeError(
-                    "Physics cache (node_physics) not found in graph_data. "
-                    "PBRS path visualization requires physics-optimal pathfinding. "
-                    "This indicates incomplete graph initialization."
-                )
-
             # STRICT VALIDATION: Mine proximity cache must be available
             if not hasattr(path_calculator, "mine_proximity_cache"):
                 raise RuntimeError(
@@ -3917,18 +4040,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 f"start_node={start_node}, goal_id={goal_id}, "
                 f"first_hops={sample_hops}"
             )
-
-            # Verify path uses physics cache by checking if graph has node_physics
-            if physics_cache:
-                logger.warning(
-                    f"[PBRS_PATH_EXTRACT] Path extracted with physics cache available "
-                    f"({len(physics_cache)} nodes with physics properties)"
-                )
-            else:
-                logger.error(
-                    "[PBRS_PATH_EXTRACT] Path extracted WITHOUT physics cache! "
-                    "This should never happen - paths will not use physics costs."
-                )
 
             return path
 

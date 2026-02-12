@@ -128,7 +128,7 @@ class ReplayExecutor:
         # Initialize graph builder and path calculator for reachability features
         self.graph_builder = GraphBuilder()
         self.path_calculator = CachedPathDistanceCalculator(
-            max_cache_size=200, use_astar=True
+            max_cache_size=200
         )
 
         # Entity extractor for level data extraction
@@ -182,7 +182,7 @@ class ReplayExecutor:
         base_adjacency = (
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
-        distance = self.path_calculator.get_distance(
+        distance = self.path_calculator.get_path_cost(
             start_pos,
             goal_pos,
             adjacency,

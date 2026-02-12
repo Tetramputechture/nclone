@@ -381,16 +381,12 @@ class GraphMixin:
 
         _logger = logging.getLogger(__name__)
 
-        # STRICT VALIDATION: Ensure physics-critical data is present for PBRS pathfinding
+        # Validation: Ensure base_adjacency is present (node_physics deprecated - geometric costs only)
         if self.current_graph_data:
             has_base_adj = "base_adjacency" in self.current_graph_data
-            has_physics = "node_physics" in self.current_graph_data
-
-            if not has_base_adj or not has_physics:
+            if not has_base_adj:
                 raise RuntimeError(
-                    f"Graph data missing physics components required for PBRS! "
-                    f"base_adjacency={has_base_adj}, node_physics={has_physics}. "
-                    f"This will cause incorrect pathfinding without mine avoidance."
+                    f"Graph data missing base_adjacency required for pathfinding."
                 )
 
             # # Log successful validation with warning level for visibility

@@ -7,6 +7,7 @@ This module provides graph-based feature computation that uses:
 - Precomputed level cache for distances (no pathfinding needed)
 """
 
+import time
 import numpy as np
 from typing import Dict, Tuple, Any, Optional
 from collections import OrderedDict
@@ -35,6 +36,42 @@ from .path_distance_calculator import CachedPathDistanceCalculator
 ENABLE_FEATURE_PROFILING = False
 _feature_timings = {}
 
+
+def _profile_section(name: str):
+    """Context manager for profiling feature computation sections."""
+    if not ENABLE_FEATURE_PROFILING:
+        return _NullContext()
+    return _ProfileContext(name)
+
+
+class _NullContext:
+    """No-op context manager when profiling disabled."""
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *args):
+        return False
+
+
+class _ProfileContext:
+    """Records elapsed time for a named section."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.start = 0.0
+
+    def __enter__(self):
+        self.start = time.perf_counter()
+        return self
+
+    def __exit__(self, *args):
+        elapsed_ms = (time.perf_counter() - self.start) * 1000.0
+        if self.name not in _feature_timings:
+            _feature_timings[self.name] = []
+        _feature_timings[self.name].append(elapsed_ms)
+        return False
+
 # Cache for exit path features (features 25-28) - static per level
 # Stores numpy array [next_hop_x, next_hop_y, multi_hop_x, multi_hop_y]
 _exit_path_features_cache: OrderedDict[str, np.ndarray] = OrderedDict()
@@ -47,6 +84,8 @@ _directional_connectivity_cache: OrderedDict[Tuple[int, int, str], np.ndarray] =
     OrderedDict()
 )
 MAX_DIRECTIONAL_CACHE_SIZE = 500  # High cache size for cell-based caching
+_directional_connectivity_hits = 0
+_directional_connectivity_misses = 0
 
 
 def get_cached_directional_connectivity(
@@ -76,14 +115,18 @@ def get_cached_directional_connectivity(
     Returns:
         numpy array [E, NE, N, NW, W, SW, S, SE] platform distances (8 dims)
     """
+    global _directional_connectivity_hits, _directional_connectivity_misses
+
     # Check cache first
     cache_key = (ninja_cell_x, ninja_cell_y, level_id)
     if cache_key in _directional_connectivity_cache:
+        _directional_connectivity_hits += 1
         cached_features = _directional_connectivity_cache[cache_key]
         # Move to end to maintain LRU ordering
         _directional_connectivity_cache.move_to_end(cache_key)
         return cached_features.copy()  # Return copy to prevent external modification
 
+    _directional_connectivity_misses += 1
     # Compute features
     directional_distances = compute_directional_platform_distances(
         ninja_tile_pos,
@@ -203,25 +246,25 @@ def compute_reachability_features_from_graph(
     goal_positions: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, float, float]:
     """
-    Compute 11-dimensional streamlined reachability features.
+    Compute 7-dimensional streamlined reachability features.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     Removes redundant and misleading features from v1 (22 dims).
 
-    Features (11 dims):
+    Features (7 dims):
         0. Path distance to switch (normalized 0-1) - A* path length
         1. Path distance to exit (normalized 0-1) - A* path length
         2. Switch activated flag (0-1) - Markov property: which objective to pursue
         3. Next hop direction X (-1 to 1) - A* optimal path direction
         4. Next hop direction Y (-1 to 1)
-        5. Path requires detour (0-1) - flag when A* opposes Euclidean direction
-        6. Mine clearance direction X (-1 to 1) - SDF gradient (safe direction)
-        7. Mine clearance direction Y (-1 to 1)
-        8. Exit reachable flag (0-1) - can reach exit door
-        9. Platform ahead (0-1) - platform distance in next_hop direction
-        10. Platform below (0-1) - platform distance directly below (for drops)
+        5. Platform ahead (0-1) - platform distance in next_hop direction
+        6. Platform below (0-1) - platform distance directly below (for drops)
 
-    REMOVED from v1 (22 dims → 11 dims):
+    REMOVED: mine_clearance_dir - duplicate of escape_gradient in mine_sdf_features
+    REMOVED: exit_reachable - near-constant, derivable from path distance
+    REMOVED (Feature Experiment A): path_requires_detour - redundant with next_hop_dir
+
+    REMOVED from v1 (22 dims → 7 dims):
         - reachable_area_ratio: global statistic, low information density
         - dist_to_next_objective_inv, dist_to_exit_inv: redundant inverses
         - direction_to_switch (x,y), direction_to_exit (x,y): MISLEADING Euclidean directions
@@ -240,7 +283,7 @@ def compute_reachability_features_from_graph(
 
     Returns:
         Tuple of:
-        - 11-dimensional numpy array with normalized features
+        - 7-dimensional numpy array with normalized features
         - switch_distance_raw (for PBRS caching)
         - exit_distance_raw (for PBRS caching)
 
@@ -252,10 +295,13 @@ def compute_reachability_features_from_graph(
     if graph_data is None:
         raise RuntimeError("graph_data is None")
 
-    spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
+    with _profile_section("extract_spatial_lookups"):
+        spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+            graph_data
+        )
 
-    # Initialize 11-dimensional feature array
-    features = np.zeros(11, dtype=np.float32)
+    # Initialize 7-dimensional feature array
+    features = np.zeros(7, dtype=np.float32)
 
     # Track raw distances for PBRS caching and goal positions
     switch_distance_raw = float("inf")
@@ -265,29 +311,24 @@ def compute_reachability_features_from_graph(
 
     # Compute reachable area scale for distance normalization
     # Use cached surface area calculation to avoid recomputation
-    area_scale = LEVEL_DIAGONAL  # Fallback
-    try:
-        start_position = getattr(level_data, "start_position", None)
-        if start_position is not None:
-            # Generate cache key using LevelData utility method for consistency
-            cache_key = level_data.get_cache_key_for_reachability(
-                include_switch_states=True
-            )
-
-            # Convert start position to world space
-            start_pos = (
-                int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
-                int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
-            )
-
-            # Use cached version to avoid recomputation for same level
-            surface_area = get_cached_surface_area(
-                cache_key, start_pos, adjacency, graph_data
-            )
-            area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
-    except Exception:
-        # Fallback to LEVEL_DIAGONAL if computation fails
-        pass
+    with _profile_section("surface_area"):
+        area_scale = LEVEL_DIAGONAL  # Fallback
+        try:
+            start_position = getattr(level_data, "start_position", None)
+            if start_position is not None:
+                cache_key = level_data.get_cache_key_for_reachability(
+                    include_switch_states=True
+                )
+                start_pos = (
+                    int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
+                    int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
+                )
+                surface_area = get_cached_surface_area(
+                    cache_key, start_pos, adjacency, graph_data
+                )
+                area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
+        except Exception:
+            pass
 
     # OPTIMIZATION: Use pre-computed goal positions if provided (O(1) instead of O(n))
     # This eliminates entity iteration bottleneck by using nplay_headless helper methods
@@ -353,41 +394,40 @@ def compute_reachability_features_from_graph(
     )
 
     # Compute distances to switch and exit for features 0-1
-    # First priority: Exit switch (if not collected)
-    for switch in exit_switches:
-        switch_active = getattr(switch, "active", True)
-        if switch_active:  # Not collected yet
-            switch_pos = get_entity_position(switch)
-            distance = path_calculator.get_distance(
+    with _profile_section("path_distances"):
+        for switch in exit_switches:
+            switch_active = getattr(switch, "active", True)
+            if switch_active:  # Not collected yet
+                switch_pos = get_entity_position(switch)
+                distance = path_calculator.get_path_cost(
+                    ninja_pos,
+                    switch_pos,
+                    adjacency,
+                    base_adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    entity_radius=EXIT_SWITCH_RADIUS,
+                    ninja_radius=NINJA_RADIUS,
+                )
+                if distance != float("inf") and distance < switch_distance_raw:
+                    switch_distance_raw = distance
+                    switch_pos_for_computation = switch_pos
+
+        for exit_entity in exits:
+            exit_pos = get_entity_position(exit_entity)
+            distance = path_calculator.get_path_cost(
                 ninja_pos,
-                switch_pos,
+                exit_pos,
                 adjacency,
                 base_adjacency,
                 level_data=level_data,
                 graph_data=graph_data,
-                entity_radius=EXIT_SWITCH_RADIUS,
+                entity_radius=EXIT_DOOR_RADIUS,
                 ninja_radius=NINJA_RADIUS,
             )
-            if distance != float("inf") and distance < switch_distance_raw:
-                switch_distance_raw = distance
-                switch_pos_for_computation = switch_pos
-
-    # Compute distance to exit
-    for exit_entity in exits:
-        exit_pos = get_entity_position(exit_entity)
-        distance = path_calculator.get_distance(
-            ninja_pos,
-            exit_pos,
-            adjacency,
-            base_adjacency,
-            level_data=level_data,
-            graph_data=graph_data,
-            entity_radius=EXIT_DOOR_RADIUS,
-            ninja_radius=NINJA_RADIUS,
-        )
-        if distance != float("inf") and distance < exit_distance_raw:
-            exit_distance_raw = distance
-            exit_pos_for_computation = exit_pos
+            if distance != float("inf") and distance < exit_distance_raw:
+                exit_distance_raw = distance
+                exit_pos_for_computation = exit_pos
 
     # Features 0-1: Path distances (normalized 0-1, non-inverted)
     # Direct path lengths provide clear learning signal without redundant inverses
@@ -427,24 +467,29 @@ def compute_reachability_features_from_graph(
 
     ninja_x, ninja_y = ninja_pos
 
-    # Find ninja node for path computation
-    ninja_node = None
-    if (
-        hasattr(path_calculator, "level_cache")
-        and path_calculator.level_cache is not None
-    ):
-        from .pathfinding_utils import find_ninja_node
-
-        if current_goal_pos is not None:
-            ninja_node = find_ninja_node(
-                ninja_pos,
-                adjacency,
-                spatial_hash=spatial_hash,
-                subcell_lookup=subcell_lookup,
-                ninja_radius=NINJA_RADIUS,
-                level_cache=path_calculator.level_cache,
-                goal_id=current_goal_id,
-            )
+    # Find ninja node for path computation (use path calculator cache when available)
+    with _profile_section("ninja_node_and_path_direction"):
+        ninja_node = None
+        if (
+            hasattr(path_calculator, "level_cache")
+            and path_calculator.level_cache is not None
+        ):
+            if current_goal_pos is not None:
+                goal_node = find_closest_node_to_position(
+                    current_goal_pos,
+                    adjacency,
+                    threshold=50.0,
+                    spatial_hash=spatial_hash,
+                    subcell_lookup=subcell_lookup,
+                )
+                ninja_node = path_calculator._get_cached_or_find_ninja_node(
+                    ninja_pos,
+                    adjacency,
+                    goal_id=current_goal_id,
+                    goal_node=goal_node,
+                    subcell_lookup=subcell_lookup,
+                    ninja_radius=NINJA_RADIUS,
+                )
 
     # Features 3-4: Next hop direction (A* optimal path direction)
     # Uses level_cache.get_next_hop() to get direction along optimal path
@@ -470,118 +515,53 @@ def compute_reachability_features_from_graph(
                 features[3] = next_hop_dir_x  # X component
                 features[4] = next_hop_dir_y  # Y component
 
-    # Feature 5: Path requires detour flag
-    # Indicates when optimal path points away from goal (e.g., must go LEFT when goal is RIGHT)
-    # Computed by comparing next_hop direction with Euclidean goal direction
-    if (
-        next_hop_dir_x != 0.0 or next_hop_dir_y != 0.0
-    ) and current_goal_pos is not None:
-        # Euclidean direction to goal
-        goal_dx = current_goal_pos[0] - ninja_x
-        goal_dy = current_goal_pos[1] - ninja_y
-        goal_dist = np.sqrt(goal_dx * goal_dx + goal_dy * goal_dy)
-
-        if goal_dist > 0.001:
-            goal_dir_x = goal_dx / goal_dist
-            goal_dir_y = goal_dy / goal_dist
-
-            # Dot product: positive = aligned, negative = opposing
-            alignment = next_hop_dir_x * goal_dir_x + next_hop_dir_y * goal_dir_y
-
-            # Flag if next_hop points away from goal (< 0.5 = >60°)
-            # Indicates detour required (e.g., go around wall)
-            if alignment < 0.5:
-                features[5] = 1.0  # Detour required
-
-    # Features 6-7: Mine clearance direction (safe direction from SDF gradient)
-    # Uses mine SDF to compute direction pointing away from nearest deadly mine
-    # Provides continuous safety guidance complementing discrete mine avoidance
-    if (
-        hasattr(path_calculator, "level_cache")
-        and path_calculator.level_cache is not None
-    ):
-        mine_sdf = getattr(path_calculator.level_cache, "mine_sdf", None)
-
-        if mine_sdf is not None:
-            # Get gradient at current position (points away from nearest mine)
-            grad_x, grad_y = mine_sdf.get_gradient_at_position(ninja_x, ninja_y)
-
-            # Check if near a mine (gradient magnitude > 0.01)
-            grad_mag = np.sqrt(grad_x * grad_x + grad_y * grad_y)
-            if grad_mag > 0.01:
-                # Normalize gradient (direction away from mine)
-                features[6] = grad_x / grad_mag
-                features[7] = grad_y / grad_mag
-
     # ========================================================================
-    # Features 8-10: Exit Reachability and Critical Platform Distances
-    # Reduced from 8 directional connectivity features to 2 most relevant
-    # ========================================================================
+    # Features 5-6: Critical Platform Distances
+    with _profile_section("exit_reachable_and_platform"):
+        # Features 5-6: Platform distances in critical directions
+        # Use get_cached_directional_connectivity for cell-based LRU caching
+        physics_cache = graph_data.get("node_physics") if graph_data else None
+        if physics_cache is not None and (
+            next_hop_dir_x != 0.0 or next_hop_dir_y != 0.0
+        ):
+            ninja_tile_x = ninja_x - NODE_WORLD_COORD_OFFSET
+            ninja_tile_y = ninja_y - NODE_WORLD_COORD_OFFSET
+            ninja_tile_pos = (int(ninja_tile_x), int(ninja_tile_y))
+            level_id = getattr(level_data, "level_id", "unknown")
+            ninja_cell_x = int(ninja_x // 24)
+            ninja_cell_y = int(ninja_y // 24)
 
-    # Feature 8: Exit reachable flag
-    # Checks if the exit door is reachable (simplified from full completion path)
-    exit_reachable = False
-    for exit_entity in exits:
-        exit_pos = get_entity_position(exit_entity)
-        exit_node = find_closest_node_to_position(
-            exit_pos,
-            adjacency,
-            threshold=50.0,
-            spatial_hash=spatial_hash,
-            subcell_lookup=subcell_lookup,
-        )
-        if exit_node is not None and exit_node in adjacency:
-            exit_reachable = True
-            break
-    features[8] = 1.0 if exit_reachable else 0.0
+            directional_distances = get_cached_directional_connectivity(
+                ninja_cell_x,
+                ninja_cell_y,
+                level_id,
+                ninja_tile_pos,
+                adjacency,
+                physics_cache,
+                spatial_hash,
+            )
 
-    # Features 9-10: Platform distances in critical directions
-    # Reduced from 8 directions to 2 most relevant: ahead (in next_hop direction) and below
-    # These solve blind jump problem with minimal feature overhead
-    physics_cache = graph_data.get("node_physics") if graph_data else None
-    if physics_cache is not None and (next_hop_dir_x != 0.0 or next_hop_dir_y != 0.0):
-        # Convert ninja_pos from world space to tile data space
-        ninja_tile_x = ninja_x - NODE_WORLD_COORD_OFFSET
-        ninja_tile_y = ninja_y - NODE_WORLD_COORD_OFFSET
-        ninja_tile_pos = (int(ninja_tile_x), int(ninja_tile_y))
+            directions = [
+                (1.0, 0.0),
+                (0.707, -0.707),
+                (0.0, -1.0),
+                (-0.707, -0.707),
+                (-1.0, 0.0),
+                (-0.707, 0.707),
+                (0.0, 1.0),
+                (0.707, 0.707),
+            ]
 
-        # Import platform distance computation
-        from .directional_connectivity import compute_directional_platform_distances
+            best_alignment = -2.0
+            best_idx = 0
+            for idx, (dir_x, dir_y) in enumerate(directions):
+                alignment = next_hop_dir_x * dir_x + next_hop_dir_y * dir_y
+                if alignment > best_alignment:
+                    best_alignment = alignment
+                    best_idx = idx
 
-        # Compute platform distance in next_hop direction (feature 9)
-        # This tells agent if there's a platform ahead in the direction they should move
-        directional_distances = compute_directional_platform_distances(
-            ninja_tile_pos,
-            adjacency,
-            physics_cache,
-            spatial_hash=spatial_hash,
-            max_distance=500.0,
-        )
-
-        # Find the direction index closest to next_hop direction
-        # Directions: [E, NE, N, NW, W, SW, S, SE]
-        directions = [
-            (1.0, 0.0),  # E
-            (0.707, -0.707),  # NE
-            (0.0, -1.0),  # N
-            (-0.707, -0.707),  # NW
-            (-1.0, 0.0),  # W
-            (-0.707, 0.707),  # SW
-            (0.0, 1.0),  # S
-            (0.707, 0.707),  # SE
-        ]
-
-        # Find closest direction to next_hop
-        best_alignment = -2.0
-        best_idx = 0
-        for idx, (dir_x, dir_y) in enumerate(directions):
-            alignment = next_hop_dir_x * dir_x + next_hop_dir_y * dir_y
-            if alignment > best_alignment:
-                best_alignment = alignment
-                best_idx = idx
-
-        features[9] = directional_distances[best_idx]  # Platform ahead
-        features[10] = directional_distances[6]  # Platform below (S direction, index 6)
+            features[5] = directional_distances[best_idx]
+            features[6] = directional_distances[6]
 
     # Return features and raw distances for PBRS caching optimization
     # This avoids duplicate distance computations in reward calculation
@@ -618,3 +598,21 @@ def reset_feature_profiling():
     """Reset profiling data."""
     global _feature_timings
     _feature_timings = {}
+
+
+def get_directional_connectivity_cache_stats() -> dict:
+    """Get hit/miss stats for directional connectivity cache (for auditing)."""
+    total = _directional_connectivity_hits + _directional_connectivity_misses
+    hit_rate = (
+        _directional_connectivity_hits / total
+        if total > 0
+        else 0.0
+    )
+    return {
+        "hits": _directional_connectivity_hits,
+        "misses": _directional_connectivity_misses,
+        "total": total,
+        "hit_rate": hit_rate,
+        "cache_size": len(_directional_connectivity_cache),
+        "max_size": MAX_DIRECTIONAL_CACHE_SIZE,
+    }

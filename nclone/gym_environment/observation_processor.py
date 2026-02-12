@@ -503,8 +503,8 @@ def compute_minimal_observation(
     Args:
         ninja: Ninja object with physics state
         reachability_features: 22-dim reachability features array
-        mine_overlay: Mine overlay from spatial_context (48 dims: 8 mines × 6 features)
-            Features per mine: [relative_x, relative_y, state, radius, velocity_dot, distance_rate]
+        mine_overlay: Mine overlay from spatial_context (20 dims: 5 mines × 4 features)
+            Features per mine: [relative_x, relative_y, state, velocity_dot_direction]
 
     Returns:
         30-dim float32 array: [physics(12) + path(4) + mines(12) + buffers(2)]
@@ -527,23 +527,21 @@ def compute_minimal_observation(
     obs[10] = ninja.floor_normalized_x
     obs[11] = ninja.floor_normalized_y
 
-    # Path guidance (4 dims): from reachability_features (LSTM features removed)
-    obs[12:14] = reachability_features[13:15]  # next_hop_dir x,y
-    obs[14:16] = reachability_features[8:10]  # exit_dir x,y
+    # Path guidance (4 dims): from reachability_features (7 dims: next_hop at 3-4, platform at 5-6)
+    obs[12:14] = reachability_features[3:5]  # next_hop_dir x,y
+    obs[14:16] = reachability_features[5:7]  # platform_ahead, platform_below
 
     # Mine context (12 dims): 3 nearest mines × 4 features
-    # Extract from mine_overlay (48 dims: 8 mines × 6 features)
-    # Take first 3 mines and use features: relative_x, relative_y, state, distance_rate
+    # Extract from mine_overlay (20 dims: 5 mines × 4 features)
+    # Features per mine: relative_x, relative_y, state, velocity_dot_direction
     for i in range(3):
-        mine_offset = i * 6  # Each mine has 6 features in mine_overlay
+        mine_offset = i * 4  # Each mine has 4 features in mine_overlay
         obs_offset = 16 + i * 4  # Each mine gets 4 features in minimal obs
 
         obs[obs_offset + 0] = mine_overlay[mine_offset + 0]  # relative_x
         obs[obs_offset + 1] = mine_overlay[mine_offset + 1]  # relative_y
         obs[obs_offset + 2] = mine_overlay[mine_offset + 2]  # state
-        obs[obs_offset + 3] = mine_overlay[
-            mine_offset + 5
-        ]  # distance_rate (how fast approaching)
+        obs[obs_offset + 3] = mine_overlay[mine_offset + 3]  # velocity_dot (approach rate)
 
     # Buffers (2 dims): normalized to [-1, 1] (keeping only most important)
     obs[28] = ninja.jump_buffer / 5.0 if ninja.jump_buffer >= 0 else -1.0

@@ -53,7 +53,6 @@ class ReachabilityMixin:
 
         self._path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200,
-            use_astar=True,
             shared_level_cache=shared_cache,
             shared_level_caches_by_stage=shared_caches_by_stage,
             goal_curriculum_manager=curriculum_manager,
@@ -214,6 +213,17 @@ class ReachabilityMixin:
         # Store in instance variable to be added to observation in _get_observation
         self._cached_switch_distance = switch_distance_raw
         self._cached_exit_distance = exit_distance_raw
+
+        # Feature experiment B: optionally exclude path distances from actor obs
+        # (PBRS still uses raw distances; actor learns from reward gradient alone)
+        if getattr(
+            getattr(self, "config", None),
+            "exclude_path_distances_from_actor_obs",
+            False,
+        ):
+            features = features.copy()
+            features[0] = 0.0  # path_dist_to_switch_norm
+            features[1] = 0.0  # path_dist_to_exit_norm
 
         # OPTIMIZATION: Cache features for next call if ninja is still in same cell
         self._last_reachability_key = cache_key

@@ -498,3 +498,74 @@ class MineSignedDistanceField:
         self.gradient_grid = None
         self._cached_level_data = None
         self._cached_mine_signature = None
+
+
+def create_mine_sdf(use_rust: bool = True) -> MineSignedDistanceField:
+    """
+    Create MineSignedDistanceField, using Rust implementation when available.
+
+    Args:
+        use_rust: If True and nclone_native.MineSDF is available, returns
+                  a Rust-backed wrapper for faster lookups.
+
+    Returns:
+        MineSignedDistanceField-compatible instance.
+    """
+    if use_rust:
+        try:
+            import nclone_native
+            if hasattr(nclone_native, "MineSDF"):
+                return _RustMineSDFWrapper()
+        except ImportError:
+            pass
+    return MineSignedDistanceField()
+
+
+class _RustMineSDFWrapper(MineSignedDistanceField):
+    """
+    MineSignedDistanceField implementation backed by Rust MineSDF.
+    Uses nclone_native.MineSDF for O(1) lookups when available.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._rust_sdf = None
+
+    def build_sdf(self, level_data: LevelData) -> bool:
+        """Build SDF using Rust when available."""
+        try:
+            import nclone_native
+            from ...gym_environment.reward_calculation.reward_constants import (
+                MINE_PENALIZE_DEADLY_ONLY,
+            )
+
+            mines = level_data.get_all_toggle_mines()
+            positions = []
+            for mine in mines:
+                if MINE_PENALIZE_DEADLY_ONLY and mine.get("state", 0) != 0:
+                    continue
+                x, y = mine.get("x", 0), mine.get("y", 0)
+                positions.append((float(x), float(y)))
+
+            if self._rust_sdf is None:
+                self._rust_sdf = nclone_native.MineSDF()
+            self._rust_sdf.build_from_mines(positions)
+            self._cached_level_data = level_data
+            self._cached_mine_signature = get_mine_state_signature(level_data)
+            return True
+        except (ImportError, AttributeError):
+            self._rust_sdf = None
+            return super().build_sdf(level_data)
+
+    def get_sdf_at_position(self, x: float, y: float) -> float:
+        """Get SDF value from Rust when available."""
+        if self._rust_sdf is not None:
+            return self._rust_sdf.get_sdf_value(x, y)
+        return super().get_sdf_at_position(x, y)
+
+    def get_gradient_at_position(self, x: float, y: float) -> Tuple[float, float]:
+        """Get gradient from Rust when available."""
+        if self._rust_sdf is not None:
+            gx, gy = self._rust_sdf.get_gradient(x, y)
+            return (gx, gy)
+        return super().get_gradient_at_position(x, y)

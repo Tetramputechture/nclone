@@ -15,10 +15,11 @@ from .config import (
 
 # Factory functions for easy environment creation
 from .environment_factory import (
-    create_training_env,
     create_evaluation_env,
-    make_vectorizable_env,
+    create_native_vecenv,
+    create_training_env,
     create_vectorized_training_envs,
+    make_vectorizable_env,
 )
 
 
@@ -35,6 +36,7 @@ __all__ = [
     # Factory functions
     "create_training_env",
     "create_evaluation_env",
+    "create_native_vecenv",
     "make_vectorizable_env",
     "create_vectorized_training_envs",
 ]

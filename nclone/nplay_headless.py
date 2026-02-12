@@ -736,11 +736,11 @@ class NPlayHeadless:
     def get_ninja_state(self):
         """Get ninja state as a list of floats with fixed length, all normalized between -1 and 1.
 
-        Returns 26 features (time_remaining is appended separately in base_environment.py):
+        Returns 24 features (time_remaining is appended separately in base_environment.py):
             - Velocity (2): velocity_x, velocity_y
             - Movement state categories (4): ground, air, wall, special
             - Airborne status (1)
-            - Input and buffers (6): horizontal_input, jump_input, buffers (3), jump_duration_remaining
+            - Buffers (4): jump_buffer, floor_buffer, wall_buffer, jump_duration_remaining
             - Surface contact (3): floor, wall, ceiling
             - Surface normals (3): floor_normal_x, floor_normal_y, wall_normal
             - Physics parameters (3): applied_gravity, applied_drag, applied_friction
@@ -782,23 +782,15 @@ class NPlayHeadless:
         airborne_status = 1.0 if ninja.airborn else -1.0
         state.append(airborne_status)
 
-        # === Input and Buffer State (6 features) ===
-        # 7. Current horizontal input (normalized to [-1, 1])
-        horizontal_input = float(ninja.hor_input)  # Already -1, 0, or 1
-        state.append(horizontal_input)
-
-        # 8. Current jump input
-        jump_input = 1.0 if ninja.jump_input else -1.0
-        state.append(jump_input)
-
-        # 9-11. Buffer states (normalized to [-1, 1])
+        # === Buffer State (4 features) ===
+        # 7-9. Buffer states (normalized to [-1, 1])
         buffer_window_size = 5.0
         jump_buffer_norm = (max(ninja.jump_buffer, 0) / buffer_window_size) * 2 - 1
         floor_buffer_norm = (max(ninja.floor_buffer, 0) / buffer_window_size) * 2 - 1
         wall_buffer_norm = (max(ninja.wall_buffer, 0) / buffer_window_size) * 2 - 1
         state.extend([jump_buffer_norm, floor_buffer_norm, wall_buffer_norm])
 
-        # 12. Jump duration remaining (NEW - MDP critical)
+        # 10. Jump duration remaining (MDP critical)
         # When jumping (state 3), track remaining frames until forced fall
         # Normalized to [0, 1]: 1.0 = full jump available, 0.0 = jump ending
         if ninja.state == 3:  # Jumping state
@@ -810,14 +802,14 @@ class NPlayHeadless:
         state.append(jump_duration_remaining)
 
         # === Surface Contact Information (3 features) ===
-        # 13-15. Contact states (binary)
+        # 11-13. Contact states (binary)
         floor_contact = (min(ninja.floor_count, 1) * 2) - 1  # Convert 0,1 to -1,1
         wall_contact = (min(ninja.wall_count, 1) * 2) - 1
         ceiling_contact = (min(ninja.ceiling_count, 1) * 2) - 1
         state.extend([floor_contact, wall_contact, ceiling_contact])
 
         # === Surface Normals (3 features) ===
-        # 16-17. Floor normal (full vector, already [-1, 1])
+        # 14-15. Floor normal (full vector, already [-1, 1])
         floor_normal_x = ninja.floor_normalized_x
         floor_normal_y = ninja.floor_normalized_y
         state.extend([floor_normal_x, floor_normal_y])
@@ -869,7 +861,7 @@ class NPlayHeadless:
         position_y = ninja.ypos / LEVEL_HEIGHT
         state.extend([position_x, position_y])
 
-        # Note: time_remaining (26th feature) is appended in base_environment.py
-        # to create the final 26-dimensional game state vector
+        # Note: time_remaining (25th feature) is appended in base_environment.py
+        # to create the final 24-dimensional game state vector
 
         return state

@@ -200,72 +200,12 @@ class SubcellNodeLookupLoader:
         with gzip.open(data_path, "rb") as f:
             self._lookup_table = pickle.load(f)
 
-    def _is_node_grounded(
-        self,
-        node_pos: Tuple[int, int],
-        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
-        base_adjacency: Optional[Dict[Tuple[int, int], list]] = None,
-    ) -> bool:
-        """
-        Check if a node is grounded (has solid surface directly below).
-
-        IMPORTANT: Uses physics_cache or base_adjacency (tile geometry only)
-        to ensure grounding is determined by level tiles, NOT entity positions.
-
-        Args:
-            node_pos: Node position (x, y) in pixels
-            physics_cache: Optional pre-computed physics properties for O(1) lookup
-            base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
-
-        Returns:
-            True if node is grounded, False otherwise
-
-        Raises:
-            ValueError: If neither physics_cache nor base_adjacency is provided
-        """
-        # Prefer physics_cache for O(1) lookup
-        if physics_cache is not None and node_pos in physics_cache:
-            return physics_cache[node_pos]["grounded"]
-
-        # Fallback to base_adjacency traversal
-        if base_adjacency is not None:
-            x, y = node_pos
-            below_pos = (x, y + 12)  # 12px down
-
-            # If node directly below doesn't exist, this node is on solid surface
-            if below_pos not in base_adjacency:
-                return True
-
-            # Check if there's a direct downward edge
-            if node_pos in base_adjacency:
-                neighbors = base_adjacency[node_pos]
-                for neighbor_info in neighbors:
-                    # Handle both tuple format (neighbor_pos, cost) and just neighbor_pos
-                    if isinstance(neighbor_info, tuple) and len(neighbor_info) >= 2:
-                        neighbor_pos = neighbor_info[0]
-                    else:
-                        neighbor_pos = neighbor_info
-
-                    if neighbor_pos == below_pos:
-                        return False  # Can fall down, not grounded
-
-            return True  # No downward edge, grounded
-
-        # Error: neither source provided
-        raise ValueError(
-            "_is_node_grounded requires either physics_cache or base_adjacency. "
-            "This ensures grounding is determined by tile geometry only, not mines/doors."
-        )
-
     def find_closest_node_position(
         self,
         query_x: float,
         query_y: float,
         adjacency: Dict[Tuple[int, int], list],
         max_radius: float = 12.0,
-        prefer_grounded: bool = False,
-        physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
-        base_adjacency: Optional[Dict[Tuple[int, int], list]] = None,
     ) -> Optional[Tuple[int, int]]:
         """
         Find closest node position using precomputed lookup table.
@@ -274,17 +214,11 @@ class SubcellNodeLookupLoader:
         Checks neighboring subcells if primary candidate doesn't exist.
         Handles out-of-bounds queries by clamping to extended lookup table bounds.
 
-        IMPORTANT: When prefer_grounded=True, uses physics_cache or base_adjacency
-        to ensure grounding is determined by tile geometry only, not entity positions.
-
         Args:
             query_x: Query X coordinate in pixels (tile data space)
             query_y: Query Y coordinate in pixels (tile data space)
             adjacency: Graph adjacency structure (keys are node positions, for candidate filtering)
             max_radius: Maximum search radius in pixels (default 12px for entity radius)
-            prefer_grounded: If True, prioritize grounded nodes over air nodes
-            physics_cache: Optional pre-computed physics properties for grounding checks
-            base_adjacency: Optional base adjacency (pre-entity-mask) for grounding checks
 
         Returns:
             Closest node position (x, y) if found, None otherwise
@@ -302,9 +236,6 @@ class SubcellNodeLookupLoader:
         subcell_x = max(0, min(subcell_x, self._lookup_table.shape[0] - 1))
         subcell_y = max(0, min(subcell_y, self._lookup_table.shape[1] - 1))
 
-        # Collect candidates for grounded filtering
-        candidates = []
-
         # Get primary candidate from lookup table
         candidate_x = int(self._lookup_table[subcell_x, subcell_y, 0])
         candidate_y = int(self._lookup_table[subcell_x, subcell_y, 1])
@@ -313,9 +244,7 @@ class SubcellNodeLookupLoader:
         if candidate_x >= 0 and candidate_y >= 0:
             candidate = (candidate_x, candidate_y)
             if candidate in adjacency:
-                if not prefer_grounded:
-                    return candidate  # Return immediately if not preferring grounded
-                candidates.append(candidate)
+                return candidate
 
         # Check neighbors (up to max_radius away)
         # Convert max_radius to subcells: ceil(max_radius / 12)
@@ -353,37 +282,7 @@ class SubcellNodeLookupLoader:
                                 candidate_y - query_y
                             ) ** 2
                             if dist_sq <= max_radius * max_radius:
-                                if not prefer_grounded:
-                                    return candidate  # Return first found if not preferring
-                                candidates.append(candidate)
-
-        # If preferring grounded, filter candidates
-        if prefer_grounded and candidates:
-            # Separate grounded and air candidates
-            grounded = []
-            air_nodes = []
-
-            for candidate in candidates:
-                if self._is_node_grounded(candidate, physics_cache, base_adjacency):
-                    grounded.append(candidate)
-                else:
-                    air_nodes.append(candidate)
-
-            # Prefer grounded, fall back to air
-            if grounded:
-                # Return closest grounded node
-                best = min(
-                    grounded,
-                    key=lambda c: (c[0] - query_x) ** 2 + (c[1] - query_y) ** 2,
-                )
-                return best
-            elif air_nodes:
-                # Return closest air node
-                best = min(
-                    air_nodes,
-                    key=lambda c: (c[0] - query_x) ** 2 + (c[1] - query_y) ** 2,
-                )
-                return best
+                                return candidate
 
         # No candidates found
         return None  # No node found within search radius

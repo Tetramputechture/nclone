@@ -89,6 +89,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 self.config, "shared_level_caches_by_stage", None
             ),
             goal_curriculum_config=self.config.goal_curriculum_config,
+            use_native_physics=getattr(self.config, "use_native_physics", False),
         )
 
         # Initialize mixin systems using config
@@ -177,7 +178,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         base_adjacency = (
             graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
         )
-        distance = self._path_calculator.get_distance(
+        distance = self._path_calculator.get_path_cost(
             start_pos,
             goal_pos,
             adjacency,
@@ -1375,10 +1376,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # These provide GLOBAL mine danger signal from ALL mines (not just 8 nearest)
         obs["mine_sdf_features"] = self._compute_mine_sdf_features(obs)
 
-        # Add privileged features for asymmetric critic (if enabled)
-        # These provide oracle information to the critic (not actor) for better value estimation
-        obs["privileged_features"] = self._compute_privileged_features(obs)
-
         # Add metadata for cached graph extraction (hybrid_cached_graph architecture)
         # These are not trainable features, just identifiers for cache lookup
         obs["level_id"] = self.map_loader.current_map_name
@@ -1425,293 +1422,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             mine_sdf_features[2] = grad_y
 
         return mine_sdf_features
-
-    def _compute_privileged_features(self, obs: Dict[str, Any]) -> np.ndarray:
-        """Compute privileged features for asymmetric critic.
-
-        DESIGN RATIONALE:
-        For graph_free architecture, actor sees:
-        - game_state (41 dims): ninja physics state
-        - reachability_features (22 dims): path distances, directions, mine context
-        - spatial_context (112 dims): LOCAL 8x8 tiles + 8 nearest mines
-        - mine_sdf_features (3 dims): GLOBAL SDF value + escape gradient
-
-        Critic needs ADDITIONAL information actor cannot access. Features must be:
-        1. O(1) lookups from pre-computed data (zero overhead)
-        2. Genuinely unavailable to actor (not just reformatted)
-        3. Predictive of future returns (helps value estimation)
-
-        PRIVILEGED FEATURES (18 dimensions):
-
-        Path Topology Features (6 dims) - future path structure:
-        0. Combined remaining distance - total journey length
-        1. Inflection point distance - next major direction change
-        2. Path segments remaining - count of turns ahead
-        3. Upcoming segment difficulty - look-ahead to next segment
-        4. Alternative paths exist - multiple viable routes?
-        5. Dead-end proximity - distance to nearest branch termination
-
-        A* Pathfinding Internals (4 dims) - values actor cannot access:
-        6. Current node g-cost - cost from start
-        7. Current node f-cost - g + heuristic estimate
-        8. Path optimality ratio - current/optimal cost
-        9. Backtrack penalty - deviation from optimal
-
-        Expert Demonstration Oracle (3 dims) - from replay data:
-        10. Expert action - from nearest demo state
-        11. Expert Q-estimate - interpolated from demos
-        12. Demo distance - proximity to demonstrated states
-
-        Global Level Context (3 dims) - level-wide metrics:
-        13. Level difficulty score - precomputed complexity
-        14. Progress fraction - traveled/total distance
-        15. Estimated remaining steps - from path calculator
-
-        Refined Physics Context (2 dims):
-        16. Mine proximity cost - A* cost multipliers
-        17. Graph connectivity - movement options
-
-        All features use O(1) lookups from structures already computed for PBRS.
-
-        Returns:
-            np.ndarray: Privileged features [18]
-        """
-        # 18 dimensions: rich privileged information for critic
-        privileged_features = np.zeros(18, dtype=np.float32)
-
-        try:
-            # Get ninja position and common data for lookups
-            ninja_x = obs.get("player_x", 0.0)
-            ninja_y = obs.get("player_y", 0.0)
-            ninja_pos = (int(ninja_x), int(ninja_y))
-            switch_activated = obs.get("switch_activated", 0.0)
-
-            pbrs_calculator = self.reward_calculator.pbrs_calculator
-            path_calculator = None
-            if pbrs_calculator is not None:
-                path_calculator = pbrs_calculator.path_calculator
-
-            # === PATH TOPOLOGY FEATURES (0-5) ===
-            if path_calculator is not None:
-                level_data = obs.get("level_data")
-
-                # Feature 0: Combined remaining distance
-                # Total journey: distance to switch + distance to exit
-                try:
-                    if switch_activated < 0.5:
-                        # Phase 1: Need to reach switch then exit
-                        switch_dist = path_calculator.get_distance_to_switch(ninja_pos)
-                        exit_dist_from_switch = (
-                            path_calculator.get_distance_switch_to_exit()
-                        )
-                        combined_dist = switch_dist + exit_dist_from_switch
-                    else:
-                        # Phase 2: Just need to reach exit
-                        combined_dist = path_calculator.get_distance_to_exit(ninja_pos)
-
-                    # Normalize by level diagonal (~1200px)
-                    from .constants import LEVEL_DIAGONAL
-
-                    privileged_features[0] = min(
-                        1.0, combined_dist / (LEVEL_DIAGONAL * 2.0)
-                    )
-                except Exception:
-                    pass
-
-                # Feature 1: Inflection point distance
-                # Distance to next major direction change (>45°)
-                try:
-                    current_goal = "exit" if switch_activated > 0.5 else "switch"
-                    path = path_calculator.get_full_path(ninja_pos, current_goal)
-                    if path and len(path) > 2:
-                        # Find first inflection point
-                        for i in range(len(path) - 2):
-                            dx1 = path[i + 1][0] - path[i][0]
-                            dy1 = path[i + 1][1] - path[i][1]
-                            dx2 = path[i + 2][0] - path[i + 1][0]
-                            dy2 = path[i + 2][1] - path[i + 1][1]
-
-                            # Compute angle change
-                            mag1 = max(1.0, np.sqrt(dx1**2 + dy1**2))
-                            mag2 = max(1.0, np.sqrt(dx2**2 + dy2**2))
-                            dot = (dx1 * dx2 + dy1 * dy2) / (mag1 * mag2)
-                            dot = np.clip(dot, -1.0, 1.0)
-
-                            if np.arccos(dot) > np.pi / 4:  # >45° change
-                                # Compute distance to this inflection
-                                dist_to_inflection = sum(
-                                    np.sqrt(
-                                        (path[j + 1][0] - path[j][0]) ** 2
-                                        + (path[j + 1][1] - path[j][1]) ** 2
-                                    )
-                                    for j in range(i + 1)
-                                )
-                                privileged_features[1] = min(
-                                    1.0, dist_to_inflection / 500.0
-                                )
-                                break
-                except Exception:
-                    pass
-
-                # Feature 2: Path segments remaining
-                # Count of major direction changes ahead
-                try:
-                    current_goal = "exit" if switch_activated > 0.5 else "switch"
-                    path = path_calculator.get_full_path(ninja_pos, current_goal)
-                    if path and len(path) > 2:
-                        segment_count = 0
-                        for i in range(len(path) - 2):
-                            dx1 = path[i + 1][0] - path[i][0]
-                            dy1 = path[i + 1][1] - path[i][1]
-                            dx2 = path[i + 2][0] - path[i + 1][0]
-                            dy2 = path[i + 2][1] - path[i + 1][1]
-
-                            mag1 = max(1.0, np.sqrt(dx1**2 + dy1**2))
-                            mag2 = max(1.0, np.sqrt(dx2**2 + dy2**2))
-                            dot = (dx1 * dx2 + dy1 * dy2) / (mag1 * mag2)
-                            dot = np.clip(dot, -1.0, 1.0)
-
-                            if np.arccos(dot) > np.pi / 4:
-                                segment_count += 1
-
-                        # Normalize by max expected (10 segments)
-                        privileged_features[2] = min(1.0, segment_count / 10.0)
-                except Exception:
-                    pass
-
-            # Features 3-5: Advanced path features (placeholder for future implementation)
-            # These require more complex path analysis
-            # Feature 3: Upcoming segment difficulty - would need segment-wise cost analysis
-            # Feature 4: Alternative paths - would need multi-path A*
-            # Feature 5: Dead-end proximity - would need branch detection
-
-            # === A* PATHFINDING INTERNALS (6-9) ===
-            # Features 6-9: Pathfinding cost metrics (placeholder for future implementation)
-            # These would require storing g-cost, f-cost during pathfinding
-            # Currently path_calculator provides distances but not A* internals
-
-            # === EXPERT DEMONSTRATION ORACLE (10-12) ===
-            # Features 10-12: Demo-based guidance (placeholder for future implementation)
-            # Would require nearest-neighbor search in demonstration dataset
-            # Integration with Go-Explore archive could provide this
-
-            # === GLOBAL LEVEL CONTEXT (13-15) ===
-            if path_calculator is not None:
-                # Feature 13: Level difficulty score
-                # Based on path length and mine count
-                try:
-                    level_data = obs.get("level_data")
-                    if level_data and hasattr(level_data, "entities"):
-                        mine_count = sum(
-                            1
-                            for e in level_data.entities
-                            if hasattr(e, "entity_type")
-                            and "TOGGLE_MINE" in str(e.entity_type).upper()
-                        )
-
-                        # Get total path length
-                        spawn_pos = getattr(level_data, "start_position", (0, 0))
-                        switch_dist = path_calculator.get_distance_to_switch(spawn_pos)
-                        exit_dist = path_calculator.get_distance_switch_to_exit()
-                        total_path = switch_dist + exit_dist
-
-                        # Difficulty = (path_length/1000 + mine_count/10) / 2
-                        path_difficulty = min(1.0, total_path / 2000.0)
-                        mine_difficulty = min(1.0, mine_count / 20.0)
-                        privileged_features[13] = (
-                            path_difficulty + mine_difficulty
-                        ) / 2.0
-                except Exception:
-                    pass
-
-                # Feature 14: Progress fraction
-                # How far along the optimal path?
-                try:
-                    level_data = obs.get("level_data")
-                    if level_data and hasattr(level_data, "start_position"):
-                        spawn_pos = getattr(level_data, "start_position", ninja_pos)
-
-                        # Total optimal path length
-                        switch_dist_from_spawn = path_calculator.get_distance_to_switch(
-                            spawn_pos
-                        )
-                        exit_dist = path_calculator.get_distance_switch_to_exit()
-                        total_optimal = switch_dist_from_spawn + exit_dist
-
-                        # Remaining distance
-                        if switch_activated < 0.5:
-                            remaining = (
-                                path_calculator.get_distance_to_switch(ninja_pos)
-                                + exit_dist
-                            )
-                        else:
-                            remaining = path_calculator.get_distance_to_exit(ninja_pos)
-
-                        # Progress = (total - remaining) / total
-                        if total_optimal > 0:
-                            progress = max(
-                                0.0, (total_optimal - remaining) / total_optimal
-                            )
-                            privileged_features[14] = min(1.0, progress)
-                except Exception:
-                    pass
-
-                # Feature 15: Estimated remaining steps
-                # Convert distance to frame estimates
-                try:
-                    if switch_activated < 0.5:
-                        remaining_dist = path_calculator.get_distance_to_switch(
-                            ninja_pos
-                        )
-                        remaining_dist += path_calculator.get_distance_switch_to_exit()
-                    else:
-                        remaining_dist = path_calculator.get_distance_to_exit(ninja_pos)
-
-                    # Estimate: distance / (average_speed * frame_skip)
-                    # Average speed ~3-4 px/frame, frame_skip=4
-                    avg_speed_per_action = 12.0  # 3px/frame * 4 frames
-                    estimated_actions = remaining_dist / avg_speed_per_action
-
-                    # Normalize by max expected (1000 actions)
-                    privileged_features[15] = min(1.0, estimated_actions / 1000.0)
-                except Exception:
-                    pass
-
-            # === REFINED PHYSICS CONTEXT (16-17) ===
-            # Feature 16: Mine proximity cost
-            if pbrs_calculator is not None and path_calculator is not None:
-                mine_cache = path_calculator.mine_proximity_cache
-                if mine_cache is not None:
-                    try:
-                        cost_multiplier = mine_cache.get_cost_multiplier(ninja_pos)
-                        from .reward_calculation.reward_constants import (
-                            MINE_HAZARD_COST_MULTIPLIER,
-                        )
-
-                        if MINE_HAZARD_COST_MULTIPLIER > 1.0:
-                            normalized_cost = (cost_multiplier - 1.0) / (
-                                MINE_HAZARD_COST_MULTIPLIER - 1.0
-                            )
-                            privileged_features[16] = min(1.0, normalized_cost)
-                    except Exception:
-                        pass
-
-            # Feature 17: Graph connectivity
-            adjacency = obs.get("_adjacency_graph")
-            if adjacency:
-                try:
-                    num_nodes = len(adjacency)
-                    num_edges = sum(len(neighbors) for neighbors in adjacency.values())
-                    avg_edges = num_edges / max(num_nodes, 1)
-                    privileged_features[17] = min(1.0, avg_edges / 6.0)
-                except Exception:
-                    pass
-
-        except Exception as e:
-            logger.debug(f"Failed to compute privileged features: {e}")
-            # Return safe zeros on failure - critic will learn with partial info
-
-        return privileged_features
 
     def _get_adjacency_for_rewards(self) -> Optional[Dict]:
         """Get adjacency graph for reward calculation.
@@ -2265,16 +1975,15 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     def _compute_spatial_context(self) -> np.ndarray:
         """Compute spatial context features (graph-free local geometry).
 
-        Returns 112-dimensional array:
+        Returns 84-dimensional array:
         - 64 dims: 8×8 local tile grid (simplified tile categories)
-        - 48 dims: 8 nearest mines (6 features each):
-          - relative_pos (2), state (1), radius (1)
-          - velocity_dot_direction (1), distance_rate (1)
+        - 20 dims: 5 nearest mines (4 features each):
+          - relative_pos (2), state (1), velocity_dot_direction (1)
 
         Markov Property: All features depend only on current state (position, velocity).
 
         Returns:
-            np.ndarray: 112-dimensional spatial context features
+            np.ndarray: 84-dimensional spatial context features
         """
         from .spatial_context import (
             compute_local_tile_grid,
@@ -2311,29 +2020,42 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         Returns node position in tile data space (not world space).
         Used by hybrid_cached_graph architecture for O(1) k-hop extraction.
 
+        Uses path_calculator step cache when available to avoid redundant find_ninja_node
+        (Optimization 6: route direct find_ninja_node through step cache).
+
         Returns:
             Tuple of (x, y) in tile data space, or (0, 0) if node not found
         """
-        from nclone.graph.reachability.pathfinding_utils import find_ninja_node
-
         ninja_pos = self.nplay_headless.ninja_position()  # World space
 
         if not hasattr(self, "current_graph_data") or self.current_graph_data is None:
             return (0, 0)  # Fallback
 
         adjacency = self.current_graph_data.get("adjacency")
-        spatial_hash = self.current_graph_data.get("spatial_hash")
-
         if adjacency is None:
             return (0, 0)
 
+        # Use path_calculator step cache when available (avoids ~501 redundant find_ninja_node/step)
+        if hasattr(self, "_path_calculator") and self._path_calculator is not None:
+            ninja_node = self._path_calculator._get_cached_or_find_ninja_node(
+                (int(ninja_pos[0]), int(ninja_pos[1])),
+                adjacency,
+                goal_id=None,  # Position-only lookup; shares cache with PBRS/reachability
+                subcell_lookup=None,  # path_calculator uses _spatial_hash from build_level_cache
+                ninja_radius=10.0,
+            )
+            return ninja_node if ninja_node is not None else (0, 0)
+
+        # Fallback when path_calculator unavailable (e.g. before first _compute_reachability)
+        from nclone.graph.reachability.pathfinding_utils import find_ninja_node
+
+        spatial_hash = self.current_graph_data.get("spatial_hash")
         ninja_node = find_ninja_node(
             ninja_pos,
             adjacency,
             spatial_hash=spatial_hash,
             ninja_radius=10.0,
         )
-
         return ninja_node if ninja_node is not None else (0, 0)
 
     def set_feature_extractor_callback(self, callback):

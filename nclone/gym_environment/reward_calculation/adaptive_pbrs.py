@@ -558,7 +558,6 @@ def create_adaptive_multipath_pbrs(config: Dict[str, Any]) -> AdaptiveMultiPathP
     # Create path calculator
     path_calculator = CachedPathDistanceCalculator(
         max_cache_size=config.get("path_cache_size", 200),
-        use_astar=config.get("use_astar", True),
     )
 
     return AdaptiveMultiPathPBRS(

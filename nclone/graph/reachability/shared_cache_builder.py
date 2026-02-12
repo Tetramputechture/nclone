@@ -233,11 +233,6 @@ def build_shared_level_cache(
     # Extract spatial lookups for performance
     spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
 
-    # Get physics cache from graph data
-    physics_cache = graph_data.get("node_physics")
-    if physics_cache is None:
-        raise ValueError("Physics cache not found in graph_data")
-
     # Track which aliases we've already processed to avoid duplicates
     processed_aliases = set()
 
@@ -281,14 +276,8 @@ def build_shared_level_cache(
             None,
             adjacency,
             base_adjacency,
-            None,
-            physics_cache,  # Still needed for horizontal rule validation
-            level_data,
-            None,  # NO mine_proximity_cache (not used with geometric costs)
+            max_distance=None,
             return_parents=True,
-            use_geometric_costs=True,  # GEOMETRIC ONLY (direction-independent)
-            track_geometric_distances=False,  # Not needed
-            mine_sdf=None,  # Not used with geometric costs
         )
 
         logger.warning(
@@ -573,7 +562,6 @@ def build_multi_stage_shared_cache(
     # Step 3: Compute optimal paths using ORIGINAL positions
     logger.info("  [3/7] Computing optimal paths...")
     spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
-    physics_cache = graph_data.get("node_physics")
 
     # Build mine cache for pathfinding (same for all stages)
     mine_proximity_cache = MineProximityCostCache()
@@ -622,15 +610,12 @@ def build_multi_stage_shared_cache(
             f"Could not find nodes: spawn={spawn_node}, switch={switch_node}, exit={exit_node}"
         )
 
-    # Compute paths
+    # Compute paths (geometric costs only)
     spawn_to_switch_path, _ = find_shortest_path(
         spawn_node,
         switch_node,
         adjacency,
         base_adjacency,
-        physics_cache,
-        level_data,
-        mine_proximity_cache,
     )
 
     switch_to_exit_path, _ = find_shortest_path(
@@ -638,9 +623,6 @@ def build_multi_stage_shared_cache(
         exit_node,
         adjacency,
         base_adjacency,
-        physics_cache,
-        level_data,
-        mine_proximity_cache,
     )
 
     if not spawn_to_switch_path or not switch_to_exit_path:
@@ -879,14 +861,8 @@ def build_multi_stage_shared_cache(
                 None,
                 adjacency,
                 base_adjacency,
-                None,
-                physics_cache,
-                level_data_stage,
-                None,
+                max_distance=None,
                 return_parents=True,
-                use_geometric_costs=True,
-                track_geometric_distances=False,
-                mine_sdf=None,
             )
 
             # Compute multi-hop direction helper

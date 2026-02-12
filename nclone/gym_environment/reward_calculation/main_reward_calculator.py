@@ -120,7 +120,6 @@ class RewardCalculator:
         # Create path calculator for PBRS (with optional shared cache(s))
         path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200,
-            use_astar=True,
             shared_level_cache=shared_level_cache,
             shared_level_caches_by_stage=shared_level_caches_by_stage,
             goal_curriculum_manager=goal_curriculum_manager,
@@ -249,11 +248,9 @@ class RewardCalculator:
         """
         self.steps_taken += frames_executed
 
-        # OPTIMIZATION: Clear step-level cache at start of each step
-        # This cache avoids duplicate distance calculations within the same step
-        # (e.g., switch distance computed for PBRS is reused for diagnostics)
-        if hasattr(self.pbrs_calculator, "path_calculator"):
-            self.pbrs_calculator.path_calculator.clear_step_cache()
+        # NOTE: Step cache is cleared at start of base_environment.step().
+        # We do NOT clear here - final_obs was just computed and populated the cache.
+        # PBRS can reuse ninja node and path results from observation (Optimization 7).
 
         # Track spawn position for displacement gate (first step only)
         # CRITICAL: Use prev_obs (position before action) not obs (position after action)
@@ -624,7 +621,7 @@ class RewardCalculator:
             base_adjacency = (
                 graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
             )
-            distance_to_goal = self.pbrs_calculator.path_calculator.get_distance(
+            distance_to_goal = self.pbrs_calculator.path_calculator.get_path_cost(
                 player_pos,
                 goal_pos,
                 adjacency,
@@ -841,7 +838,7 @@ class RewardCalculator:
             )
 
             # Check spawn→switch path
-            switch_dist = self.pbrs_calculator.path_calculator.get_distance(
+            switch_dist = self.pbrs_calculator.path_calculator.get_path_cost(
                 player_pos,
                 switch_pos,
                 adjacency,
@@ -854,7 +851,7 @@ class RewardCalculator:
             )
 
             # Check switch→exit path
-            exit_dist = self.pbrs_calculator.path_calculator.get_distance(
+            exit_dist = self.pbrs_calculator.path_calculator.get_path_cost(
                 switch_pos,
                 exit_pos,
                 adjacency,
@@ -1068,15 +1065,14 @@ class RewardCalculator:
             # Extract graph components
             adjacency = graph_data.get("adjacency")
             base_adjacency = graph_data.get("base_adjacency", adjacency)
-            physics_cache = graph_data.get("node_physics")
             spatial_hash = graph_data.get("spatial_hash")
             subcell_lookup = graph_data.get("subcell_lookup")
 
-            if not adjacency or not physics_cache:
+            if not adjacency:
                 logger.warning("Cannot compute paths: missing graph data")
                 return [], []
 
-            # Build mine proximity cache for physics-aware pathfinding
+            # Build mine proximity cache (for entity masking; cost multipliers deprecated)
             mine_proximity_cache = MineProximityCostCache()
             mine_proximity_cache.build_cache(level_data, adjacency)
 
@@ -1136,30 +1132,24 @@ class RewardCalculator:
                 logger.warning(f"Cannot find exit node at {exit_pos}")
                 return [], []
 
-            # Calculate spawn→switch path
+            # Calculate spawn→switch path (geometric costs only)
             spawn_to_switch_path, spawn_to_switch_dist = find_shortest_path(
                 spawn_node,
                 switch_node,
                 adjacency,
                 base_adjacency,
-                physics_cache,
-                level_data=level_data,
-                mine_proximity_cache=mine_proximity_cache,
             )
 
             if spawn_to_switch_path is None:
                 logger.warning("No path from spawn to switch")
                 return [], []
 
-            # Calculate switch→exit path
+            # Calculate switch→exit path (geometric costs only)
             switch_to_exit_path, switch_to_exit_dist = find_shortest_path(
                 switch_node,
                 exit_node,
                 adjacency,
                 base_adjacency,
-                physics_cache,
-                level_data=level_data,
-                mine_proximity_cache=mine_proximity_cache,
             )
 
             if switch_to_exit_path is None:
@@ -1227,15 +1217,14 @@ class RewardCalculator:
             # Extract graph components
             adjacency = graph_data.get("adjacency")
             base_adjacency = graph_data.get("base_adjacency", adjacency)
-            physics_cache = graph_data.get("node_physics")
             spatial_hash = graph_data.get("spatial_hash")
             subcell_lookup = graph_data.get("subcell_lookup")
 
-            if not adjacency or not physics_cache:
+            if not adjacency:
                 logger.warning("Cannot compute curriculum paths: missing graph data")
                 return [], []
 
-            # Build mine proximity cache for physics-aware pathfinding
+            # Build mine proximity cache (for entity masking; cost multipliers deprecated)
             mine_proximity_cache = MineProximityCostCache()
             mine_proximity_cache.build_cache(level_data, adjacency)
 
@@ -1287,30 +1276,24 @@ class RewardCalculator:
                 )
                 return [], []
 
-            # Calculate spawn→curriculum_switch path
+            # Calculate spawn→curriculum_switch path (geometric costs only)
             spawn_to_curriculum_switch, spawn_switch_dist = find_shortest_path(
                 spawn_node,
                 curriculum_switch_node,
                 adjacency,
                 base_adjacency,
-                physics_cache,
-                level_data=level_data,
-                mine_proximity_cache=mine_proximity_cache,
             )
 
             if spawn_to_curriculum_switch is None:
                 logger.warning("No path from spawn to curriculum switch")
                 return [], []
 
-            # Calculate curriculum_switch→curriculum_exit path
+            # Calculate curriculum_switch→curriculum_exit path (geometric costs only)
             curriculum_switch_to_exit, switch_exit_dist = find_shortest_path(
                 curriculum_switch_node,
                 curriculum_exit_node,
                 adjacency,
                 base_adjacency,
-                physics_cache,
-                level_data=level_data,
-                mine_proximity_cache=mine_proximity_cache,
             )
 
             if curriculum_switch_to_exit is None:

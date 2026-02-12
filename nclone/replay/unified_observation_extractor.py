@@ -60,7 +60,7 @@ class UnifiedObservationExtractor:
         # Initialize graph-based reachability system
         self._graph_builder = GraphBuilder()
         self._path_calculator = CachedPathDistanceCalculator(
-            max_cache_size=200, use_astar=True
+            max_cache_size=200
         )
         self._reachability_cache = {}
         self._graph_cache = {}  # Cache graph data per level
@@ -248,8 +248,8 @@ class UnifiedObservationExtractor:
             if hasattr(nplay_wrapper, "get_goal_positions_for_features"):
                 goal_positions = nplay_wrapper.get_goal_positions_for_features()
 
-            # Compute base reachability features (8 dims)
-            # Note: function now returns (features, switch_distance, exit_distance) for PBRS optimization
+            # Compute base reachability features (7 dims from graph)
+            # Note: function returns (features, switch_distance, exit_distance) for PBRS optimization
             base_features, _, _ = compute_reachability_features_from_graph(
                 adjacency,
                 graph_data,
@@ -408,12 +408,13 @@ class UnifiedObservationExtractor:
         # This ensures replay observations match live environment observations
         time_remaining = (truncation_limit - sim.frame) / truncation_limit
 
-        # Extract ninja state using the standardized method
+        # Extract ninja state (23 dims) and append time_remaining for 24-dim game_state
         ninja_state = nplay_wrapper.get_ninja_state()
+        game_state = np.append(ninja_state, time_remaining).astype(np.float32)
 
         # Build raw observation dictionary matching NppEnvironment._get_observation()
         obs = {
-            "game_state": ninja_state,
+            "game_state": game_state,
             "player_dead": nplay_wrapper.ninja_has_died(),
             "player_won": nplay_wrapper.ninja_has_won(),
             "player_x": nplay_wrapper.ninja_position()[0],
@@ -493,12 +494,14 @@ class UnifiedObservationExtractor:
         # Extract raw observation using unified system
         raw_obs = self.extract_raw_observation(sim, frame_number)
 
-        # Extract ninja state from the processed game state (first 26 features after redundancy removal)
+        # Extract game state (24 dims: 23 ninja + time_remaining)
         ninja_state = (
-            raw_obs["game_state"][:26]
-            if len(raw_obs["game_state"]) >= 26
+            raw_obs["game_state"][:24]
+            if len(raw_obs["game_state"]) >= 24
             else raw_obs["game_state"]
         )
+        if not isinstance(ninja_state, np.ndarray):
+            ninja_state = np.array(ninja_state, dtype=np.float32)
 
         # Build legacy ninja state dictionary for backward compatibility
         ninja = sim.ninja
@@ -531,7 +534,7 @@ class UnifiedObservationExtractor:
                 "wall": int(ninja.wall_count),
                 "ceiling": int(ninja.ceiling_count),
             },
-            "game_state": ninja_state.tolist(),  # 26-feature array for npp-rl compatibility
+            "game_state": ninja_state.tolist(),  # 24-feature array for npp-rl compatibility
         }
 
         # Extract entity data using existing logic (could be enhanced later)

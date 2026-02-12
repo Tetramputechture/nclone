@@ -33,9 +33,13 @@ class DebugOverlayRenderer:
         from nclone.graph.reachability.mine_proximity_cache import (
             MineProximityCostCache,
         )
+        from nclone.graph.reachability.path_distance_calculator import (
+            CachedPathDistanceCalculator,
+        )
 
         self._path_visualization_cache = PathVisualizationCache()
         self._mine_proximity_cache = MineProximityCostCache()
+        self._path_calculator = CachedPathDistanceCalculator(max_cache_size=200)
 
         self.frame_throttle_interval = 5
         self.last_mine_predictor_frame = -999
@@ -617,24 +621,15 @@ class DebugOverlayRenderer:
 
         # Import shared utilities from pathfinding modules
         from nclone.graph.reachability.pathfinding_utils import (
-            bfs_distance_from_start,
-            find_shortest_path_with_fallback,
             extract_spatial_lookups_from_graph_data,
             find_goal_node_closest_to_start,
             find_ninja_node,
-            classify_edge_type,
-            get_edge_type_color,
-            get_edge_type_label,
-            get_edge_type_cost_multiplier,
         )
 
         # Extract spatial hash and subcell lookup from graph_data if available
         spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
             graph_data
         )
-
-        # PERFORMANCE OPTIMIZATION: Extract pre-computed physics cache from graph_data
-        physics_cache = graph_data.get("node_physics")
 
         show_adjacency = path_aware_info.get("show_adjacency", False)
         show_distances = path_aware_info.get("show_distances", False)
@@ -649,7 +644,7 @@ class DebugOverlayRenderer:
         SWITCH_NODE_COLOR = (100, 255, 100, 255)  # Bright green for switches
         EXIT_NODE_COLOR = (255, 200, 100, 255)  # Orange for exits
         TEXT_COLOR = (255, 255, 255, 255)  # White text
-        # Note: Path edge colors are now determined dynamically by edge type classification
+        PATH_EDGE_COLOR = (0, 255, 255, 255)  # Bright cyan for geometric path
 
         # Compute reachable set dynamically from current ninja position
         def compute_reachability_from_position(start_pos, adjacency):
@@ -700,7 +695,6 @@ class DebugOverlayRenderer:
         if show_blocked and graph_data.get("blocked_edges"):
             blocked_edges = graph_data["blocked_edges"]
 
-        used_edge_types = set()  # Track edge types used in paths for legend
 
         # Draw adjacency graph edges first (so they appear behind nodes)
         if show_adjacency:
@@ -869,6 +863,14 @@ class DebugOverlayRenderer:
                     "[PATH_VIZ] Mine proximity cache empty (no deadly mines or avoidance disabled)"
                 )
 
+            # Sync mine cache with path calculator for unified pathfinding
+            self._path_calculator.mine_proximity_cache = self._mine_proximity_cache
+            # Build level cache if needed (for path cost computation)
+            if level_data is not None:
+                self._path_calculator.build_level_cache(
+                    level_data, adjacency, base_adjacency, graph_data
+                )
+
             # Try to get cached paths
             # IMPORTANT: If mine cache was rebuilt, invalidate path cache to ensure
             # paths are recomputed with new mine avoidance costs
@@ -899,15 +901,7 @@ class DebugOverlayRenderer:
                 # So we always recompute paths from current position (not using cached_reward_paths)
                 # print("[PATH_VIZ] Computing paths from current ninja position...")
 
-                # STRICT VALIDATION: Require physics_cache for physics-aware pathfinding
-                if physics_cache is None:
-                    raise RuntimeError(
-                        "physics_cache is None when computing paths for visualization. "
-                        "Physics cache is REQUIRED for physics-aware pathfinding with mine avoidance. "
-                        "Ensure graph building includes physics cache precomputation."
-                    )
-
-                # STRICT VALIDATION: Require base_adjacency for physics edge classification
+                # STRICT VALIDATION: Require base_adjacency for pathfinding
                 if base_adjacency is None:
                     raise RuntimeError(
                         "base_adjacency is None when computing paths for visualization. "
@@ -955,38 +949,24 @@ class DebugOverlayRenderer:
                             )
 
                             if switch_node:
-                                # DIAGNOSTIC: Validate mine proximity cache is populated
-                                mine_cache_size = len(self._mine_proximity_cache.cache)
-                                # logger.warning(
-                                #     f"[PATH_COMPUTE] Finding path to switch: closest={closest_node}, "
-                                #     f"switch_node={switch_node}, mine_cache_size={mine_cache_size}"
-                                # )
-
-                                # Compute path with mine avoidance costs and fallback for unstable positions
-                                # Pass ninja velocity for velocity-aware first edge costs
-                                ninja_velocity = path_aware_info.get("ninja_velocity")
-                                path, path_cost = find_shortest_path_with_fallback(
-                                    closest_node,
-                                    switch_node,
+                                # Compute path using unified get_path_cost (same as training PBRS)
+                                path_cost, path = self._path_calculator.get_path_cost(
+                                    ninja_pos,
+                                    switch_pos,
                                     adjacency,
                                     base_adjacency,
-                                    physics_cache,
-                                    level_data,
-                                    self._mine_proximity_cache,
-                                    ninja_velocity,
-                                    debug=True,  # Enable diagnostic logging
-                                    allow_high_cost_edges=True,  # Allow risky paths for visualization
+                                    level_data=level_data,
+                                    graph_data=graph_data,
+                                    entity_radius=6.0,
+                                    ninja_radius=10.0,
+                                    return_path=True,
                                 )
                                 if path:
-                                    # logger.warning(
-                                    #     f"[PATH_COMPUTE] Switch path found: {len(path)} nodes, "
-                                    #     f"cost={path_cost:.2f}, mine_cache_used={mine_cache_size > 0}"
-                                    # )
                                     switch_path = path
                                     break  # Only draw path to nearest switch
                                 else:
                                     logger.warning(
-                                        f"[PATH_COMPUTE] No path to switch node {switch_node} from {closest_node}"
+                                        f"[PATH_COMPUTE] No path to switch from {ninja_pos}"
                                     )
 
                     # Draw path to nearest exit ONLY if switch has been activated
@@ -1008,38 +988,24 @@ class DebugOverlayRenderer:
                             )
 
                             if exit_node:
-                                # DIAGNOSTIC: Validate mine proximity cache is populated
-                                mine_cache_size = len(self._mine_proximity_cache.cache)
-                                # logger.warning(
-                                #     f"[PATH_COMPUTE] Finding path to exit: closest={closest_node}, "
-                                #     f"exit_node={exit_node}, mine_cache_size={mine_cache_size}"
-                                # )
-
-                                # Compute path with mine avoidance costs and fallback for unstable positions
-                                # Pass ninja velocity for velocity-aware first edge costs
-                                ninja_velocity = path_aware_info.get("ninja_velocity")
-                                path, path_cost = find_shortest_path_with_fallback(
-                                    closest_node,
-                                    exit_node,
+                                # Compute path using unified get_path_cost (same as training PBRS)
+                                path_cost, path = self._path_calculator.get_path_cost(
+                                    ninja_pos,
+                                    exit_pos,
                                     adjacency,
                                     base_adjacency,
-                                    physics_cache,
-                                    level_data,
-                                    self._mine_proximity_cache,
-                                    ninja_velocity,
-                                    debug=True,  # Enable diagnostic logging
-                                    allow_high_cost_edges=True,  # Allow risky paths for visualization
+                                    level_data=level_data,
+                                    graph_data=graph_data,
+                                    entity_radius=12.0,
+                                    ninja_radius=10.0,
+                                    return_path=True,
                                 )
                                 if path:
-                                    # logger.warning(
-                                    #     f"[PATH_COMPUTE] Exit path found: {len(path)} nodes, "
-                                    #     f"cost={path_cost:.2f}, mine_cache_used={mine_cache_size > 0}"
-                                    # )
                                     exit_path = path
                                     break  # Only draw path to nearest exit
                                 else:
                                     logger.warning(
-                                        f"[PATH_COMPUTE] No path to exit node {exit_node} from {closest_node}"
+                                        f"[PATH_COMPUTE] No path to exit from {ninja_pos}"
                                     )
 
                 # Cache the computed paths
@@ -1109,11 +1075,7 @@ class DebugOverlayRenderer:
                         is_adjacent = any(n[0] == node2 for n in neighbors)
 
                         if is_adjacent:
-                            # Classify edge type and get color (uses base_adjacency for physics)
-                            edge_type = classify_edge_type(node1, node2, base_adjacency)
-                            edge_color = get_edge_type_color(edge_type)
-                            used_edge_types.add(edge_type)
-
+                            # Single-color geometric path (physics edge types deprecated)
                             x1, y1 = node1
                             x2, y2 = node2
                             # Add +24 offset to match node visualization (accounts for tile padding)
@@ -1123,7 +1085,7 @@ class DebugOverlayRenderer:
                             screen_y2 = int(y2 * self.adjust + self.tile_y_offset) + 24
                             pygame.draw.line(
                                 surface,
-                                edge_color,
+                                PATH_EDGE_COLOR,
                                 (screen_x1, screen_y1),
                                 (screen_x2, screen_y2),
                                 4,  # Thicker for better visibility
@@ -1443,73 +1405,36 @@ class DebugOverlayRenderer:
             )
 
             if closest_node:
-                # Calculate distance to nearest switch using shared utilities
+                # Calculate distances using unified get_path_cost (same as training PBRS)
                 switch_dist = float("inf")
                 for switch_pos in switch_positions:
-                    # Find goal node using same logic as pathfinding
-                    switch_node = find_goal_node_closest_to_start(
+                    dist = self._path_calculator.get_path_cost(
+                        ninja_pos,
                         switch_pos,
-                        closest_node,
                         adjacency,
-                        entity_radius=6.0,  # Exit switch radius
+                        base_adjacency,
+                        level_data=level_data,
+                        graph_data=graph_data,
+                        entity_radius=6.0,
                         ninja_radius=10.0,
-                        spatial_hash=spatial_hash,
-                        subcell_lookup=subcell_lookup,
                     )
+                    if dist < switch_dist:
+                        switch_dist = dist
 
-                    if switch_node is not None:
-                        # BFS from ninja to switch using shared utility
-                        # Use mine proximity cache for consistent path distances with training
-                        # Pass ninja velocity for velocity-aware first edge costs
-                        ninja_velocity = path_aware_info.get("ninja_velocity")
-                        distances, target_dist, _, _ = bfs_distance_from_start(
-                            closest_node,
-                            switch_node,
-                            adjacency,
-                            base_adjacency,
-                            None,  # max_distance
-                            physics_cache,
-                            level_data,
-                            self._mine_proximity_cache,
-                            ninja_velocity=ninja_velocity,
-                        )
-
-                        if target_dist is not None:
-                            switch_dist = min(switch_dist, target_dist)
-
-                # Calculate distance to nearest exit using shared utilities
                 exit_dist = float("inf")
                 for exit_pos in exit_positions:
-                    # Find goal node using same logic as pathfinding
-                    exit_node = find_goal_node_closest_to_start(
+                    dist = self._path_calculator.get_path_cost(
+                        ninja_pos,
                         exit_pos,
-                        closest_node,
                         adjacency,
-                        entity_radius=12.0,  # Exit door radius
+                        base_adjacency,
+                        level_data=level_data,
+                        graph_data=graph_data,
+                        entity_radius=12.0,
                         ninja_radius=10.0,
-                        spatial_hash=spatial_hash,
-                        subcell_lookup=subcell_lookup,
                     )
-
-                    if exit_node is not None:
-                        # BFS from ninja to exit using shared utility
-                        # Use mine proximity cache for consistent path distances with training
-                        # Pass ninja velocity for velocity-aware first edge costs
-                        ninja_velocity = path_aware_info.get("ninja_velocity")
-                        distances, target_dist, _, _ = bfs_distance_from_start(
-                            closest_node,
-                            exit_node,
-                            adjacency,
-                            base_adjacency,
-                            None,  # max_distance
-                            physics_cache,
-                            level_data,
-                            self._mine_proximity_cache,
-                            ninja_velocity=ninja_velocity,
-                        )
-
-                        if target_dist is not None:
-                            exit_dist = min(exit_dist, target_dist)
+                    if dist < exit_dist:
+                        exit_dist = dist
 
                 # Draw info box with switch/exit distances
                 try:

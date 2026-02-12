@@ -200,17 +200,16 @@ class IntermediateGoalManager:
             # Extract graph components
             adjacency = graph_data.get("adjacency")
             base_adjacency = graph_data.get("base_adjacency", adjacency)
-            physics_cache = graph_data.get("node_physics")
 
-            if not adjacency or not physics_cache:
-                logger.warning("Cannot build paths: missing adjacency or physics_cache")
+            if not adjacency:
+                logger.warning("Cannot build paths: missing adjacency")
                 return
 
             spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
                 graph_data
             )
 
-            # Build mine proximity cache for physics-aware pathfinding
+            # Build mine proximity cache (for entity masking; cost multipliers deprecated)
             mine_cache = MineProximityCostCache()
             mine_cache.build_cache(level_data, adjacency)
 
@@ -244,15 +243,12 @@ class IntermediateGoalManager:
                 )
                 return
 
-            # Calculate spawn → switch path
+            # Calculate spawn → switch path (geometric costs only)
             spawn_to_switch_path, spawn_to_switch_cost = find_shortest_path(
                 spawn_node,
                 switch_node,
                 adjacency,
                 base_adjacency,
-                physics_cache,
-                level_data,
-                mine_cache,
             )
 
             if spawn_to_switch_path is None:
@@ -276,15 +272,12 @@ class IntermediateGoalManager:
                 logger.warning(f"Cannot find exit node at {self._original_exit_pos}")
                 return
 
-            # Calculate switch → exit path
+            # Calculate switch → exit path (geometric costs only)
             switch_to_exit_path, switch_to_exit_cost = find_shortest_path(
                 switch_node,
                 exit_node,
                 adjacency,
                 base_adjacency,
-                physics_cache,
-                level_data,
-                mine_cache,
             )
 
             if switch_to_exit_path is None:

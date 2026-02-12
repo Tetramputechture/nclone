@@ -3,10 +3,15 @@ Level-based path distance cache for precomputed shortest path distances.
 
 Uses flood fill (BFS) from goal positions to precompute all node-to-goal distances.
 Cache invalidates when level or mine states change.
+
+Includes precomputed Phi grids for O(1) PBRS potential lookup at runtime.
 """
 
 import logging
 from typing import Dict, Tuple, List, Optional, Any
+
+import numpy as np
+
 from ..level_data import LevelData
 from .pathfinding_utils import (
     find_closest_node_to_position,
@@ -16,6 +21,14 @@ from .pathfinding_utils import (
 from .level_data_helpers import extract_goal_positions, get_mine_state_signature
 
 logger = logging.getLogger(__name__)
+
+# Phi grid constants
+# Level is 1056x600 pixels. Nodes spaced at 12px (SUB_NODE_SIZE).
+# Node positions are in tile data space; world = node + NODE_WORLD_COORD_OFFSET (24).
+PHI_GRID_RESOLUTION = 12  # pixels per grid cell
+PHI_GRID_WIDTH = 88  # 1056 / 12
+PHI_GRID_HEIGHT = 50  # 600 / 12
+NODE_WORLD_COORD_OFFSET = 24  # tile data space -> world coordinate offset
 
 
 class LevelBasedPathDistanceCache:
@@ -66,6 +79,149 @@ class LevelBasedPathDistanceCache:
         self.level_cache_misses = 0
         self.geometric_cache_hits = 0
         self.geometric_cache_misses = 0
+
+        # Precomputed Phi grids for O(1) PBRS potential lookup
+        # Phi values are in [-1, 0]: -1 = farthest, 0 = at goal
+        # Initialized to -1.0 (worst case / unreachable)
+        self.phi_grid_switch: np.ndarray = np.full(
+            (PHI_GRID_WIDTH, PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+        )
+        self.phi_grid_exit: np.ndarray = np.full(
+            (PHI_GRID_WIDTH, PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+        )
+        # Max distances for denormalization (stored for diagnostics)
+        self.max_dist_switch: float = 1.0
+        self.max_dist_exit: float = 1.0
+        self._phi_grids_built: bool = False
+
+    def build_phi_grids(self) -> None:
+        """Build precomputed Phi grids from cached geometric distances.
+
+        Call AFTER build_cache() has populated geometric_cache.
+        Creates two 2D grids (switch and exit) at 12px resolution.
+        Each cell stores the normalized potential Phi = -d / max_d in [-1, 0].
+        Unreachable cells remain at -1.0.
+
+        The grids enable O(1) potential lookup via get_phi() with
+        bilinear interpolation for sub-cell positions.
+        """
+        if not self.geometric_cache:
+            logger.warning(
+                "[PHI_GRID] Cannot build Phi grids: geometric_cache is empty"
+            )
+            return
+
+        # Reset grids to -1.0 (unreachable default)
+        self.phi_grid_switch.fill(-1.0)
+        self.phi_grid_exit.fill(-1.0)
+
+        # Collect distances per goal type
+        switch_distances: Dict[Tuple[int, int], float] = {}
+        exit_distances: Dict[Tuple[int, int], float] = {}
+
+        for (node_pos, goal_id), dist in self.geometric_cache.items():
+            if dist == float("inf"):
+                continue
+            if goal_id == "switch" or goal_id.startswith("exit_switch_"):
+                # Prefer the generic "switch" alias to avoid duplicates
+                if goal_id == "switch" or node_pos not in switch_distances:
+                    switch_distances[node_pos] = dist
+            elif goal_id == "exit" or goal_id.startswith("exit_door_"):
+                if goal_id == "exit" or node_pos not in exit_distances:
+                    exit_distances[node_pos] = dist
+
+        # Compute max distances for normalization
+        self.max_dist_switch = max(switch_distances.values()) if switch_distances else 1.0
+        self.max_dist_exit = max(exit_distances.values()) if exit_distances else 1.0
+
+        # Avoid division by zero
+        if self.max_dist_switch < 1.0:
+            self.max_dist_switch = 1.0
+        if self.max_dist_exit < 1.0:
+            self.max_dist_exit = 1.0
+
+        # Fill switch grid
+        for node_pos, dist in switch_distances.items():
+            # Convert node (tile data space) to world coordinates
+            wx = node_pos[0] + NODE_WORLD_COORD_OFFSET
+            wy = node_pos[1] + NODE_WORLD_COORD_OFFSET
+            # Convert world coordinates to grid cell
+            ix = wx // PHI_GRID_RESOLUTION
+            iy = wy // PHI_GRID_RESOLUTION
+            if 0 <= ix < PHI_GRID_WIDTH and 0 <= iy < PHI_GRID_HEIGHT:
+                phi = -dist / self.max_dist_switch  # [-1, 0]
+                self.phi_grid_switch[ix, iy] = phi
+
+        # Fill exit grid
+        for node_pos, dist in exit_distances.items():
+            wx = node_pos[0] + NODE_WORLD_COORD_OFFSET
+            wy = node_pos[1] + NODE_WORLD_COORD_OFFSET
+            ix = wx // PHI_GRID_RESOLUTION
+            iy = wy // PHI_GRID_RESOLUTION
+            if 0 <= ix < PHI_GRID_WIDTH and 0 <= iy < PHI_GRID_HEIGHT:
+                phi = -dist / self.max_dist_exit  # [-1, 0]
+                self.phi_grid_exit[ix, iy] = phi
+
+        self._phi_grids_built = True
+        logger.info(
+            f"[PHI_GRID] Built Phi grids: "
+            f"switch nodes={len(switch_distances)}, max_dist={self.max_dist_switch:.1f}px, "
+            f"exit nodes={len(exit_distances)}, max_dist={self.max_dist_exit:.1f}px"
+        )
+
+    def get_phi(self, x: float, y: float, rm_state: int) -> float:
+        """O(1) potential lookup from precomputed Phi grids with bilinear interpolation.
+
+        Args:
+            x: Player world x coordinate (pixels)
+            y: Player world y coordinate (pixels)
+            rm_state: Reward machine state (0 = seeking switch, 1 = seeking exit, 2 = terminal)
+
+        Returns:
+            Potential value in [-1, 0]. Returns 0.0 for terminal states (rm_state=2).
+            Returns -1.0 for positions outside the grid or unreachable.
+        """
+        # Terminal states MUST have Phi = 0 (PBRS invariant)
+        if rm_state == 2:
+            return 0.0
+
+        # Select the appropriate grid
+        grid = self.phi_grid_switch if rm_state == 0 else self.phi_grid_exit
+
+        # Convert world position to continuous grid coordinates
+        gx = x / PHI_GRID_RESOLUTION
+        gy = y / PHI_GRID_RESOLUTION
+
+        # Clamp to grid bounds (leave 1 cell margin for interpolation)
+        max_gx = PHI_GRID_WIDTH - 1
+        max_gy = PHI_GRID_HEIGHT - 1
+        gx = max(0.0, min(float(max_gx), gx))
+        gy = max(0.0, min(float(max_gy), gy))
+
+        # Integer grid coordinates for corners of interpolation cell
+        ix0 = int(gx)
+        iy0 = int(gy)
+        ix1 = min(ix0 + 1, max_gx)
+        iy1 = min(iy0 + 1, max_gy)
+
+        # Fractional part for interpolation weights
+        fx = gx - ix0
+        fy = gy - iy0
+
+        # Bilinear interpolation of 4 surrounding grid cells
+        v00 = grid[ix0, iy0]
+        v10 = grid[ix1, iy0]
+        v01 = grid[ix0, iy1]
+        v11 = grid[ix1, iy1]
+
+        phi = (
+            v00 * (1 - fx) * (1 - fy)
+            + v10 * fx * (1 - fy)
+            + v01 * (1 - fx) * fy
+            + v11 * fx * fy
+        )
+
+        return float(phi)
 
     def get_distance(
         self, node_pos: Tuple[int, int], goal_pos: Tuple[int, int], goal_id: str
@@ -291,20 +447,7 @@ class LevelBasedPathDistanceCache:
             graph_data
         )
 
-        # PERFORMANCE OPTIMIZATION: Extract pre-computed physics cache from graph_data
-        physics_cache = (
-            graph_data.get("node_physics") if graph_data is not None else None
-        )
-
-        # Validate physics cache is available (required for physics-aware pathfinding)
-        if physics_cache is None:
-            raise ValueError(
-                "Physics cache (node_physics) not found in graph_data. "
-                "Level cache building requires physics cache for accurate path distances. "
-                "Ensure graph building includes physics cache precomputation."
-            )
-
-        # DIAGNOSTIC: Log physics cache validation success
+        # physics_cache deprecated - BFS uses geometric costs only
         # logger.warning(
         #     f"[LEVEL_CACHE_BUILD] Physics cache validated: {len(physics_cache)} nodes with physics properties"
         # )
@@ -316,13 +459,8 @@ class LevelBasedPathDistanceCache:
         #     #     f"[LEVEL_CACHE_BUILD] Sample node {sample_node} physics: {sample_props}"
         #     # )
 
-        # STRICT VALIDATION: Mine proximity cache must be provided for mine avoidance
-        if mine_proximity_cache is None:
-            raise ValueError(
-                "mine_proximity_cache is None in _precompute_distances_from_goals. "
-                "Cannot build level cache without mine avoidance costs. "
-                "Paths will ignore mines, leading to dangerous/incorrect behavior."
-            )
+        # mine_proximity_cache deprecated - geometric BFS does not use mine costs
+        # Mine blocking is handled by entity masking in adjacency
 
         # CRITICAL DIAGNOSTIC: Check mine cache population
         # mine_cache_size = (
@@ -460,18 +598,12 @@ class LevelBasedPathDistanceCache:
 
             # Run BFS with GEOMETRIC costs only (direction-independent, cache-safe)
             geometric_distances, _, parents, _ = bfs_distance_from_start(
-                goal_node,  # From goal (OK for geometric, efficient for caching)
+                goal_node,
                 None,
                 adjacency,
                 base_adjacency,
-                None,
-                physics_cache,  # Still needed for horizontal rule validation
-                level_data,
-                None,  # NO mine_proximity_cache (not used with geometric costs)
+                max_distance=None,
                 return_parents=True,
-                use_geometric_costs=True,  # GEOMETRIC ONLY (direction-independent)
-                track_geometric_distances=False,  # Not needed
-                mine_sdf=None,  # Not used with geometric costs
             )
 
             # # DIAGNOSTIC: Log BFS results
@@ -617,6 +749,9 @@ class LevelBasedPathDistanceCache:
                 mine_sdf,
             )
 
+            # Build Phi grids for O(1) PBRS potential lookup
+            self.build_phi_grids()
+
             # Update cached state
             self._cached_level_data = level_data
             self._cached_mine_signature = mine_signature
@@ -643,6 +778,12 @@ class LevelBasedPathDistanceCache:
         self.level_cache_misses = 0
         self.geometric_cache_hits = 0
         self.geometric_cache_misses = 0
+        # Reset Phi grids
+        self.phi_grid_switch.fill(-1.0)
+        self.phi_grid_exit.fill(-1.0)
+        self.max_dist_switch = 1.0
+        self.max_dist_exit = 1.0
+        self._phi_grids_built = False
 
     def get_goal_id_from_node(self, goal_node: Tuple[int, int]) -> Optional[str]:
         """

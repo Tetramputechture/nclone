@@ -870,83 +870,57 @@ class DemonstrationBuffer:
             obs: Full observation dict (contains game_state for velocity)
 
         Returns:
-            Upgraded 112-dim spatial_context with computed velocity features
+            Upgraded 84-dim spatial_context with computed velocity features
         """
         # Extract components
         tile_grid = old_spatial[:64]  # Unchanged
-        old_mine_overlay = old_spatial[64:]  # 32 dims (8 mines × 4 features)
+        old_mine_overlay = old_spatial[64:]  # Old: 32 dims (8 mines × 4) or 48 (8×6)
 
         # Extract ninja velocity from game_state
+        from nclone.constants.physics_constants import (
+            MAX_HOR_SPEED,
+            LEVEL_WIDTH_PX,
+            LEVEL_HEIGHT_PX,
+        )
+
         ninja_vx, ninja_vy = 0.0, 0.0
         if "game_state" in obs:
             game_state = obs["game_state"]
-            # game_state format: [vel_mag, vel_dir_x, vel_dir_y, ...]
-            if len(game_state) >= 3:
-                vel_mag = float(game_state[0])  # Normalized magnitude [0, 1]
-                vel_dir_x = float(game_state[1])  # Unit vector [-1, 1]
-                vel_dir_y = float(game_state[2])  # Unit vector [-1, 1]
+            if len(game_state) >= 2:
+                ninja_vx = float(game_state[0]) * MAX_HOR_SPEED
+                ninja_vy = float(game_state[1]) * MAX_HOR_SPEED
 
-                # Reconstruct actual velocity in px/frame
-                # Velocity is stored normalized, so multiply by MAX_HOR_SPEED
-                from nclone.constants.physics_constants import MAX_HOR_SPEED
+        # New format: 5 mines × 4 features (relative_x, relative_y, state, velocity_dot)
+        new_mine_overlay = np.zeros(20, dtype=np.float32)
+        old_features_per_mine = 4 if len(old_mine_overlay) == 32 else 6
 
-                ninja_vx = vel_mag * vel_dir_x * MAX_HOR_SPEED
-                ninja_vy = vel_mag * vel_dir_y * MAX_HOR_SPEED
+        for i in range(5):  # 5 nearest mines
+            old_base = i * old_features_per_mine
+            new_base = i * 4
 
-        # Expand mine overlay from 4 to 6 features with computed velocity terms
-        new_mine_overlay = np.zeros(48, dtype=np.float32)
-
-        for i in range(8):  # 8 nearest mines
-            old_base = i * 4
-            new_base = i * 6
-
-            # Copy old 4 features: relative_x, relative_y, state, radius
-            relative_x = old_mine_overlay[old_base + 0]  # [-1, 1]
-            relative_y = old_mine_overlay[old_base + 1]  # [-1, 1]
+            relative_x = old_mine_overlay[old_base + 0]
+            relative_y = old_mine_overlay[old_base + 1]
             state = old_mine_overlay[old_base + 2]
-            radius = old_mine_overlay[old_base + 3]
 
             new_mine_overlay[new_base + 0] = relative_x
             new_mine_overlay[new_base + 1] = relative_y
             new_mine_overlay[new_base + 2] = state
-            new_mine_overlay[new_base + 3] = radius
 
-            # Calculate velocity features
-            # relative_x and relative_y are already normalized to [-1, 1]
-            # Denormalize to pixels for distance calculation
-            from nclone.constants.physics_constants import (
-                LEVEL_WIDTH_PX,
-                LEVEL_HEIGHT_PX,
-            )
+            # Compute velocity_dot from velocity and relative position
 
             dx_px = relative_x * LEVEL_WIDTH_PX
             dy_px = relative_y * LEVEL_HEIGHT_PX
             distance = np.sqrt(dx_px**2 + dy_px**2)
 
             if distance > 1e-6:
-                # Normalized direction from ninja to mine
                 dir_x = dx_px / distance
                 dir_y = dy_px / distance
-
-                # Velocity dot direction: ninja_velocity · direction_to_mine
-                # Positive = approaching, negative = moving away
-                # Normalized by MAX_HOR_SPEED for consistent scale [-1, 1]
-                from nclone.constants.physics_constants import MAX_HOR_SPEED
-
                 velocity_dot = (ninja_vx * dir_x + ninja_vy * dir_y) / MAX_HOR_SPEED
-
-                # Distance rate: velocity component toward mine
-                # Negative = getting closer (collision risk)
-                distance_rate = -velocity_dot
-
-                new_mine_overlay[new_base + 4] = np.clip(velocity_dot, -1.0, 1.0)
-                new_mine_overlay[new_base + 5] = np.clip(distance_rate, -1.0, 1.0)
+                new_mine_overlay[new_base + 3] = np.clip(velocity_dot, -1.0, 1.0)
             else:
-                # At mine position - velocity doesn't matter
-                new_mine_overlay[new_base + 4] = 0.0
-                new_mine_overlay[new_base + 5] = 0.0
+                new_mine_overlay[new_base + 3] = 0.0
 
-        # Combine into new 112-dim format
+        # Combine into new 84-dim format
         return np.concatenate([tile_grid, new_mine_overlay])
 
     def sample_transitions(self, batch_size: int) -> List[DemonstrationTransition]:

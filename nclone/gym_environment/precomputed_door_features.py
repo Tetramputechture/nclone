@@ -199,7 +199,7 @@ class PrecomputedDoorFeatureCache:
 
             # Switch path distance
             switch_pos = (int(switch_x), int(switch_y))
-            switch_path_dist = path_calculator.get_distance(
+            switch_path_dist = path_calculator.get_path_cost(
                 ninja_pos,
                 switch_pos,
                 adjacency,
@@ -226,7 +226,7 @@ class PrecomputedDoorFeatureCache:
 
             # Door path distance
             door_pos = (int(door_x), int(door_y))
-            door_path_dist = path_calculator.get_distance(
+            door_path_dist = path_calculator.get_path_cost(
                 ninja_pos,
                 door_pos,
                 adjacency,

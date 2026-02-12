@@ -16,10 +16,16 @@ class ProfilingMixin:
             profile_enabled: Enable detailed profiling (adds ~5% overhead)
         """
         self.profile_enabled = profile_enabled
-        
+
+        if profile_enabled:
+            # Enable feature-level profiling in reachability feature computation
+            import nclone.graph.reachability.feature_computation as fc
+
+            fc.ENABLE_FEATURE_PROFILING = True
+
         if not profile_enabled:
             return
-        
+
         # Timing storage (rolling window of last 1000 samples)
         self._timing_data = defaultdict(lambda: deque(maxlen=1000))
         self._timing_counts = defaultdict(int)
@@ -86,7 +92,9 @@ class ProfilingMixin:
         # Hierarchical component structure
         components = [
             ("step_total", "TOTAL STEP", 0),
-            ("physics_tick", "  └─ Physics tick", 1),
+            ("physics_total", "  └─ Physics (tick+sync)", 1),
+            ("sync_get_state", "       ├─ sync: get_state FFI", 2),
+            ("sync_build_tile", "       └─ sync: build_tile_dic (cached)", 2),
             ("observation_get", "  └─ Get observation", 1),
             ("obs_base", "       ├─ Base observation", 2),
             ("obs_reachability", "       ├─ Reachability features", 2),
@@ -127,8 +135,39 @@ class ProfilingMixin:
         if graph_checks > 0:
             update_rate = (graph_builds / graph_checks) * 100
             print(f"\nGraph updates: {graph_builds}/{graph_checks} checks ({update_rate:.1f}% rebuild rate)")
-        
-        print("="*80 + "\n")
+
+        # Feature-level breakdown (reachability computation sections)
+        try:
+            from nclone.graph.reachability.feature_computation import (
+                get_feature_profiling_stats,
+                get_directional_connectivity_cache_stats,
+            )
+
+            feature_stats = get_feature_profiling_stats()
+            if feature_stats:
+                print("\nFeature computation breakdown (avg ms | std | count):")
+                print("-" * 60)
+                for name, s in sorted(feature_stats.items()):
+                    if s["count"] > 0:
+                        print(
+                            f"  {name:<35} {s['avg_ms']:>6.2f} | "
+                            f"std={s['std_ms']:.2f} | n={s['count']}"
+                        )
+                print("-" * 60)
+
+            # Platform distance cache audit (directional connectivity)
+            dc_stats = get_directional_connectivity_cache_stats()
+            if dc_stats["total"] > 0:
+                print("\nDirectional connectivity cache (platform distances):")
+                print(
+                    f"  hits={dc_stats['hits']}, misses={dc_stats['misses']}, "
+                    f"hit_rate={dc_stats['hit_rate']:.1%}, "
+                    f"size={dc_stats['cache_size']}/{dc_stats['max_size']}"
+                )
+        except ImportError:
+            pass
+
+        print("=" * 80 + "\n")
     
     def get_profiling_summary(self) -> Optional[Dict[str, float]]:
         """Get profiling summary as dict.

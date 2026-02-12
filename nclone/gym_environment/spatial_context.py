@@ -7,16 +7,13 @@ geometry understanding for platforming decisions.
 
 Features:
 1. 8×8 local tile grid (64 dims) - simplified tile categories
-2. 8 nearest mines (48 dims) - 6 features per mine:
+2. 5 nearest mines (20 dims) - 4 features per mine:
    - relative_x, relative_y: position relative to ninja
    - state: mine state (-1=deadly, 0=transitioning, 1=safe)
-   - radius: normalized collision radius
    - velocity_dot_direction: dot(velocity, mine_direction) / max_speed
      > 0 = approaching mine, < 0 = moving away (Markov: current state only)
-   - distance_rate: velocity projected toward mine / max_speed
-     Negative = getting closer (Markov: current state only)
 
-Total: 112 dimensions (~0.5 KB vs ~162 KB for full graph)
+Total: 84 dimensions (~0.34 KB vs ~162 KB for full graph)
 """
 
 import numpy as np
@@ -31,13 +28,13 @@ LOCAL_GRID_DIM = LOCAL_GRID_SIZE * LOCAL_GRID_SIZE  # 64 features
 CELL_SIZE = TILE_PIXEL_SIZE  # 24 pixels
 
 # Mine overlay constants
-MAX_NEAREST_MINES = 8
-# Extended features: relative_x, relative_y, state, radius, velocity_dot, distance_rate
-MINE_FEATURES_PER = 6
-MINE_OVERLAY_DIM = MAX_NEAREST_MINES * MINE_FEATURES_PER  # 48 features
+MAX_NEAREST_MINES = 5
+# Features: relative_x, relative_y, state, velocity_dot_direction (removed radius, distance_rate)
+MINE_FEATURES_PER = 4
+MINE_OVERLAY_DIM = MAX_NEAREST_MINES * MINE_FEATURES_PER  # 20 features
 
 # Total spatial context dimension
-SPATIAL_CONTEXT_DIM = LOCAL_GRID_DIM + MINE_OVERLAY_DIM  # 112 features
+SPATIAL_CONTEXT_DIM = LOCAL_GRID_DIM + MINE_OVERLAY_DIM  # 84 features
 
 # Tile category mapping (38 tile types -> 5 simplified categories)
 # Category 0: Empty (fully traversable)
@@ -186,15 +183,12 @@ def compute_mine_overlay(
     """
     Compute overlay of 8 nearest mines with position, state, and velocity-hazard features.
 
-    Each mine contributes 6 features (all Markovian - depend only on current state):
+    Each mine contributes 4 features (all Markovian - depend only on current state):
     - relative_x: (mine_x - ninja_x) / level_width, normalized to [-1, 1]
     - relative_y: (mine_y - ninja_y) / level_height, normalized to [-1, 1]
     - state: -1.0 (deadly), 0.0 (transitioning), 1.0 (safe)
-    - radius: normalized collision radius [0, 1]
     - velocity_dot_direction: dot(velocity, mine_direction) / max_speed
       > 0 = approaching mine, < 0 = moving away
-    - distance_rate: velocity component toward mine / max_speed
-      Negative = getting closer (collision risk)
 
     Markov Property: All features are computed from current state only.
     No history dependence - fully Markovian.
@@ -207,7 +201,7 @@ def compute_mine_overlay(
         level_height: Level height for normalization
 
     Returns:
-        48-dimensional numpy array (8 mines × 6 features)
+        20-dimensional numpy array (5 mines × 4 features)
     """
     overlay = np.zeros(MINE_OVERLAY_DIM, dtype=np.float32)
 
@@ -243,39 +237,21 @@ def compute_mine_overlay(
         else:
             state = entity.get("state", 1)  # Default: untoggled (safe) = state 1
 
-        # Map state to encoded value and radius
-        # Per EntityToggleMine:
-        #   State 0: Toggled (deadly)
-        #   State 1: Untoggled (safe)
-        #   State 2: Toggling (transitioning)
+        # Map state to encoded value
         if state == 1:  # Untoggled (safe)
             state_encoded = MINE_STATE_SAFE
-            radius_encoded = MINE_RADIUS_SAFE
         elif state == 2:  # Toggling (transitioning)
             state_encoded = MINE_STATE_TRANSITIONING
-            radius_encoded = MINE_RADIUS_TRANSITIONING
         else:  # 0: Toggled (deadly)
             state_encoded = MINE_STATE_DEADLY
-            radius_encoded = MINE_RADIUS_DEADLY
 
-        # Compute velocity-hazard features (Markovian: uses current velocity only)
+        # Compute velocity-hazard feature (Markovian: uses current velocity only)
         if distance > 1e-6:
-            # Normalized direction from ninja to mine
             dir_x = dx / distance
             dir_y = dy / distance
-
-            # Velocity dot direction: positive = approaching, negative = moving away
-            # Normalized by MAX_HOR_SPEED for consistent scale
             velocity_dot = (ninja_vx * dir_x + ninja_vy * dir_y) / MAX_HOR_SPEED
-
-            # Distance rate: velocity component toward mine (negative = getting closer)
-            # This is the same as velocity_dot but with explicit sign for "approaching"
-            # Positive velocity_dot means approaching, so distance_rate = -velocity_dot
-            distance_rate = -velocity_dot
         else:
-            # At mine position - velocity doesn't matter much
             velocity_dot = 0.0
-            distance_rate = 0.0
 
         mines_with_distance.append(
             {
@@ -283,25 +259,21 @@ def compute_mine_overlay(
                 "dx": dx,
                 "dy": dy,
                 "state": state_encoded,
-                "radius": radius_encoded,
                 "velocity_dot": np.clip(velocity_dot, -1.0, 1.0),
-                "distance_rate": np.clip(distance_rate, -1.0, 1.0),
             }
         )
 
-    # Sort by distance and take nearest 8
+    # Sort by distance and take nearest 5
     mines_with_distance.sort(key=lambda m: m["distance"])
     nearest_mines = mines_with_distance[:MAX_NEAREST_MINES]
 
-    # Fill overlay with mine features
+    # Fill overlay with mine features (4 per mine)
     for i, mine in enumerate(nearest_mines):
         base_idx = i * MINE_FEATURES_PER
         overlay[base_idx + 0] = np.clip(mine["dx"] / level_width, -1.0, 1.0)
         overlay[base_idx + 1] = np.clip(mine["dy"] / level_height, -1.0, 1.0)
         overlay[base_idx + 2] = mine["state"]
-        overlay[base_idx + 3] = mine["radius"]
-        overlay[base_idx + 4] = mine["velocity_dot"]
-        overlay[base_idx + 5] = mine["distance_rate"]
+        overlay[base_idx + 3] = mine["velocity_dot"]
 
     return overlay
 
@@ -337,7 +309,7 @@ def compute_mine_overlay_from_entities(
         level_height: Level height for normalization
 
     Returns:
-        48-dimensional numpy array (8 mines × 6 features)
+        20-dimensional numpy array (5 mines × 4 features)
     """
     global _mine_overlay_cache
 
@@ -390,7 +362,7 @@ def _compute_mine_overlay_impl(
         level_height: Level height for normalization
 
     Returns:
-        48-dimensional numpy array (8 mines × 6 features)
+        20-dimensional numpy array (5 mines × 4 features)
     """
     overlay = np.zeros(MINE_OVERLAY_DIM, dtype=np.float32)
 
@@ -412,26 +384,21 @@ def _compute_mine_overlay_impl(
         dy = mine_y - ninja_y
         distance = (dx * dx + dy * dy) ** 0.5
 
-        # Map state to encoded value and radius
+        # Map state to encoded value
         if state == 1:  # Untoggled (safe)
             state_encoded = MINE_STATE_SAFE
-            radius_encoded = MINE_RADIUS_SAFE
         elif state == 2:  # Toggling (transitioning)
             state_encoded = MINE_STATE_TRANSITIONING
-            radius_encoded = MINE_RADIUS_TRANSITIONING
         else:  # 0: Toggled (deadly)
             state_encoded = MINE_STATE_DEADLY
-            radius_encoded = MINE_RADIUS_DEADLY
 
-        # Compute velocity-hazard features
+        # Compute velocity-hazard feature
         if distance > 1e-6:
             dir_x = dx / distance
             dir_y = dy / distance
             velocity_dot = (ninja_vx * dir_x + ninja_vy * dir_y) / MAX_HOR_SPEED
-            distance_rate = -velocity_dot
         else:
             velocity_dot = 0.0
-            distance_rate = 0.0
 
         mines_with_distance.append(
             {
@@ -439,9 +406,7 @@ def _compute_mine_overlay_impl(
                 "dx": dx,
                 "dy": dy,
                 "state": state_encoded,
-                "radius": radius_encoded,
                 "velocity_dot": np.clip(velocity_dot, -1.0, 1.0),
-                "distance_rate": np.clip(distance_rate, -1.0, 1.0),
             }
         )
 
@@ -458,26 +423,21 @@ def _compute_mine_overlay_impl(
         dy = mine_y - ninja_y
         distance = (dx * dx + dy * dy) ** 0.5
 
-        # Map state to encoded value and radius
+        # Map state to encoded value
         if state == 1:  # Untoggled (safe)
             state_encoded = MINE_STATE_SAFE
-            radius_encoded = MINE_RADIUS_SAFE
         elif state == 2:  # Toggling (transitioning)
             state_encoded = MINE_STATE_TRANSITIONING
-            radius_encoded = MINE_RADIUS_TRANSITIONING
         else:  # 0: Toggled (deadly)
             state_encoded = MINE_STATE_DEADLY
-            radius_encoded = MINE_RADIUS_DEADLY
 
-        # Compute velocity-hazard features
+        # Compute velocity-hazard feature
         if distance > 1e-6:
             dir_x = dx / distance
             dir_y = dy / distance
             velocity_dot = (ninja_vx * dir_x + ninja_vy * dir_y) / MAX_HOR_SPEED
-            distance_rate = -velocity_dot
         else:
             velocity_dot = 0.0
-            distance_rate = 0.0
 
         mines_with_distance.append(
             {
@@ -485,25 +445,21 @@ def _compute_mine_overlay_impl(
                 "dx": dx,
                 "dy": dy,
                 "state": state_encoded,
-                "radius": radius_encoded,
                 "velocity_dot": np.clip(velocity_dot, -1.0, 1.0),
-                "distance_rate": np.clip(distance_rate, -1.0, 1.0),
             }
         )
 
-    # Sort by distance and take nearest 8
+    # Sort by distance and take nearest 5
     mines_with_distance.sort(key=lambda m: m["distance"])
     nearest_mines = mines_with_distance[:MAX_NEAREST_MINES]
 
-    # Fill overlay with mine features
+    # Fill overlay with mine features (4 per mine)
     for i, mine in enumerate(nearest_mines):
         base_idx = i * MINE_FEATURES_PER
         overlay[base_idx + 0] = np.clip(mine["dx"] / level_width, -1.0, 1.0)
         overlay[base_idx + 1] = np.clip(mine["dy"] / level_height, -1.0, 1.0)
         overlay[base_idx + 2] = mine["state"]
-        overlay[base_idx + 3] = mine["radius"]
-        overlay[base_idx + 4] = mine["velocity_dot"]
-        overlay[base_idx + 5] = mine["distance_rate"]
+        overlay[base_idx + 3] = mine["velocity_dot"]
 
     return overlay
 
@@ -532,9 +488,9 @@ def compute_spatial_context(
 
     Combines:
     1. 8×8 local tile grid (64 dims)
-    2. 8 nearest mines overlay (48 dims) with velocity-hazard alignment
+    2. 5 nearest mines overlay (20 dims) with velocity-hazard alignment
 
-    Total: 112 dimensions
+    Total: 84 dimensions
 
     Markov Property: All features depend only on current state (position, velocity).
     No history dependence.
