@@ -93,6 +93,7 @@ class RewardCalculator:
         shared_level_cache: Optional[Any] = None,
         shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
         goal_curriculum_manager: Optional[Any] = None,
+        simulation_phi_dir: Optional[str] = None,
     ):
         """Initialize simplified reward calculator.
 
@@ -102,6 +103,7 @@ class RewardCalculator:
             shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
             shared_level_caches_by_stage: Optional multi-stage caches for goal curriculum
             goal_curriculum_manager: Optional IntermediateGoalManager for stage-aware cache selection
+            simulation_phi_dir: Optional directory with precomputed simulation-based phi grids
         """
         # Single config object manages all curriculum logic
         self.config = reward_config or RewardConfig()
@@ -123,6 +125,7 @@ class RewardCalculator:
             shared_level_cache=shared_level_cache,
             shared_level_caches_by_stage=shared_level_caches_by_stage,
             goal_curriculum_manager=goal_curriculum_manager,
+            simulation_phi_dir=simulation_phi_dir,
         )
         # Pass reward_config to PBRS calculator for curriculum-adaptive weights (Phase 1.2)
         self.pbrs_calculator = PBRSCalculator(

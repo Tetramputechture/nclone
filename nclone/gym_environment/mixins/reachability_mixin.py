@@ -51,11 +51,14 @@ class ReachabilityMixin:
         shared_caches_by_stage = getattr(self, "shared_level_caches_by_stage", None)
         curriculum_manager = getattr(self, "goal_curriculum_manager", None)
 
+        simulation_phi_dir = getattr(self, "simulation_phi_dir", None)
+
         self._path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200,
             shared_level_cache=shared_cache,
             shared_level_caches_by_stage=shared_caches_by_stage,
             goal_curriculum_manager=curriculum_manager,
+            simulation_phi_dir=simulation_phi_dir,
         )
 
         # Initialize logging if debug is enabled

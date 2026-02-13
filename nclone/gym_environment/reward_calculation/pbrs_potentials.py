@@ -261,20 +261,31 @@ class PBRSPotentials:
         )
 
         # === GEOMETRIC PBRS: Use path cost (geometric distance) ===
-        try:
-            path_cost = path_calculator.get_path_cost(
-                player_pos,
-                goal_pos,
-                adjacency,
-                base_adjacency,
-                level_data=level_data,
-                graph_data=graph_data,
-                entity_radius=entity_radius,
-                ninja_radius=NINJA_RADIUS,
-                goal_id=goal_id,
-            )
-        except Exception as e:
-            raise RuntimeError(f"PBRS path cost calculation failed: {e}") from e
+        # OPTIMIZATION: Reuse observation-computed distances when available (obs↔reward sharing).
+        # Observation computes switch and exit distances; use them to avoid get_path_cost call.
+        cached_dist = None
+        if goal_id == "switch":
+            cached_dist = state.get("_cached_switch_distance")
+        elif goal_id == "exit":
+            cached_dist = state.get("_cached_exit_distance")
+
+        if cached_dist is not None:
+            path_cost = cached_dist
+        else:
+            try:
+                path_cost = path_calculator.get_path_cost(
+                    player_pos,
+                    goal_pos,
+                    adjacency,
+                    base_adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    entity_radius=entity_radius,
+                    ninja_radius=NINJA_RADIUS,
+                    goal_id=goal_id,
+                )
+            except Exception as e:
+                raise RuntimeError(f"PBRS path cost calculation failed: {e}") from e
 
         state["_pbrs_physics_cost"] = path_cost
         state["_pbrs_last_distance_to_goal"] = path_cost  # For compatibility

@@ -16,8 +16,9 @@ from .reward_calculation.reward_config import RewardConfig
 
 class ObservationMode(Enum):
     """Observation space mode selection."""
-    FULL = "full"           # Current: 41 game_state + 38 reach + 96 spatial + 3 sdf
-    MINIMAL = "minimal"     # New: 40 dims total (physics + path + mines + buffers)
+
+    FULL = "full"  # Current: 41 game_state + 38 reach + 96 spatial + 3 sdf
+    MINIMAL = "minimal"  # New: 40 dims total (physics + path + mines + buffers)
 
 
 @dataclass

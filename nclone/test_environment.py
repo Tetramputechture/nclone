@@ -1983,7 +1983,11 @@ while running:
 profiler.disable()
 
 # Print granular step timing report when profiling was enabled
-if args.profile_frames is not None and hasattr(env, "profile_enabled") and env.profile_enabled:
+if (
+    args.profile_frames is not None
+    and hasattr(env, "profile_enabled")
+    and env.profile_enabled
+):
     env._print_profiling_report()
 
 # Print cache statistics

@@ -93,6 +93,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             str
         ] = None,  # Directory with precomputed value functions
         use_precomputed_pbrs: bool = False,  # Use precomputed value function for PBRS
+        simulation_phi_dir: Optional[
+            str
+        ] = None,  # Directory with precomputed simulation-based phi grids
     ):
         """
         Initialize the base N++ environment.
@@ -190,6 +193,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Precomputed value function support
         self.value_function_dir = value_function_dir
         self.use_precomputed_pbrs = use_precomputed_pbrs
+
+        # Simulation-based phi grid support
+        self.simulation_phi_dir = simulation_phi_dir
         self._current_precomputed_pbrs = None  # Loaded per level
 
         if use_precomputed_pbrs and value_function_dir:
@@ -290,6 +296,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             shared_level_cache=shared_level_cache,
             shared_level_caches_by_stage=shared_level_caches_by_stage,
             goal_curriculum_manager=self.goal_curriculum_manager,
+            simulation_phi_dir=simulation_phi_dir,
         )
 
         # Initialize primitive-level reward calculator for FiGAR-PPO per-frame PBRS
@@ -516,11 +523,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Granular step timing (when profile_enabled)
         t_step = self._profile_start("step_total")
 
-        # OPTIMIZATION: Clear step-level cache to dedupe within-step distance queries
-        # Path calculator caches distance computations within a single step to avoid
-        # redundant pathfinding when multiple components request the same distance
-        if hasattr(self, "_path_calculator") and self._path_calculator is not None:
-            self._path_calculator.clear_step_cache()
+        # OPTIMIZATION: Do NOT clear step cache here. Cache is cleared at step END.
+        # This allows obs↔reward sharing: observation populates cache for final state,
+        # reward reuses it for Φ(final). Φ(initial) reuses cache from prev step's final
+        # (initial = prev step's final). See PERFORMANCE_PROFILE.md Optimization 7.
 
         try:
             # Get initial observation for frame skip reward calculation
@@ -766,6 +772,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
             # Hook: Add additional info fields
             self._extend_info_hook(info)
+
+            # OPTIMIZATION: Clear step-level cache at end (not start) for obs↔reward sharing.
+            # Observation populated cache for final state; reward reused it. Next step's
+            # initial = this step's final, so we clear now to avoid stale cache across steps.
+            if hasattr(self, "_path_calculator") and self._path_calculator is not None:
+                self._path_calculator.clear_step_cache()
 
             # End step profiling
             self._profile_end("step_total", t_step)
@@ -3174,162 +3186,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         masking_mode = self.reward_calculator.config.action_masking_mode
         self.nplay_headless.sim._action_masking_mode = masking_mode
 
-        # Detect if path is straight (horizontal or downward) and pass to Ninja for deterministic masking
-        # Note: Path straightness only used when masking_mode == "hard"
-        straight_path_direction = self._detect_straight_path_direction()
-        self.nplay_headless.sim._path_straightness_direction = straight_path_direction
-
         return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
-
-    def _detect_straight_path_direction(self) -> Optional[str]:
-        """Detect if the path to the current goal is straight (horizontal or downward).
-
-        Uses multi-hop direction (8 hops ahead, ~96-192px lookahead) to verify path
-        straightness. This enables deterministic action masking on trivial scenarios,
-        ensuring 100% success by masking provably suboptimal actions.
-
-        Detection criteria:
-        1. Horizontal straight: |dx| > 0.8, |dy| < 0.1 → returns "left" or "right"
-        2. Downward: dy > 0.3 (positive = down in screen coords) → returns "down"
-
-        Algorithm:
-        1. Find current ninja node in graph
-        2. Get multi-hop direction from level cache (pre-computed, O(1) lookup)
-        3. Check path characteristics and return appropriate direction
-
-        Returns:
-            "left", "right", "down", or None
-        """
-        from nclone.constants.physics_constants import (
-            STRAIGHT_PATH_HORIZONTAL_THRESHOLD,
-            STRAIGHT_PATH_VERTICAL_THRESHOLD,
-            STRAIGHT_PATH_DOWNWARD_THRESHOLD,
-            STRAIGHT_PATH_MIN_DISTANCE,
-        )
-        from nclone.graph.reachability.pathfinding_utils import (
-            extract_spatial_lookups_from_graph_data,
-        )
-
-        try:
-            # Get path calculator from reward calculator's PBRS calculator
-            if not hasattr(self.reward_calculator, "pbrs_calculator"):
-                return None
-
-            pbrs_calc = self.reward_calculator.pbrs_calculator
-            if not hasattr(pbrs_calc, "path_calculator"):
-                return None
-
-            path_calculator = pbrs_calc.path_calculator
-
-            # Get level cache
-            if not hasattr(path_calculator, "level_cache"):
-                return None
-            level_cache = path_calculator.level_cache
-            if level_cache is None:
-                return None
-
-            # Get current ninja position
-            ninja_pos = self.nplay_headless.ninja_position()
-
-            # Determine current goal based on switch activation status
-            switch_activated = self.nplay_headless.exit_switch_activated()
-            if switch_activated:
-                goal_pos = self.nplay_headless.exit_door_position()
-                goal_id = "exit"
-            else:
-                goal_pos = self.nplay_headless.exit_switch_position()
-                goal_id = "switch"
-
-            # Check minimum distance threshold (only mask for goals >12px away)
-            dx_goal = goal_pos[0] - ninja_pos[0]
-            dy_goal = goal_pos[1] - ninja_pos[1]
-            distance_to_goal = (dx_goal * dx_goal + dy_goal * dy_goal) ** 0.5
-
-            if distance_to_goal < STRAIGHT_PATH_MIN_DISTANCE:
-                # Too close for path-based masking, but provide basic direction hint
-                # This helps with curriculum stages where goals are very close
-                # Just use direct line-of-sight direction
-                if abs(dx_goal) > abs(dy_goal) * 2:  # Primarily horizontal
-                    if dx_goal < 0:
-                        return "left"
-                    else:
-                        return "right"
-                return None  # Too ambiguous, no masking
-
-            # Get graph adjacency
-            if not hasattr(self, "current_graph_data"):
-                return None
-            adjacency = self.current_graph_data.get("adjacency")
-            if adjacency is None:
-                return None
-
-            # Use path calculator's step-scoped ninja node cache (avoids redundant lookup)
-            _, subcell_lookup = extract_spatial_lookups_from_graph_data(
-                self.current_graph_data
-            )
-            ninja_node = path_calculator._get_cached_or_find_ninja_node(
-                ninja_pos,
-                adjacency,
-                goal_id=goal_id,
-                subcell_lookup=subcell_lookup,
-                ninja_radius=10.0,
-            )
-
-            if ninja_node is None:
-                return None
-
-            # Get multi-hop direction from level cache (O(1) lookup, pre-computed)
-            if not hasattr(level_cache, "get_multi_hop_direction"):
-                return None
-
-            multi_hop_direction = level_cache.get_multi_hop_direction(
-                ninja_node, goal_id
-            )
-
-            if multi_hop_direction is None:
-                return None  # At goal or no path available
-
-            dx, dy = multi_hop_direction
-
-            # Check if path is nearly horizontal with strong directional component
-            is_horizontal = (
-                abs(dy) < STRAIGHT_PATH_VERTICAL_THRESHOLD
-                and abs(dx) > STRAIGHT_PATH_HORIZONTAL_THRESHOLD
-            )
-
-            # Check if path is going downward (positive dy = down in screen coordinates)
-            is_downward = dy > STRAIGHT_PATH_DOWNWARD_THRESHOLD
-
-            if is_horizontal:
-                # Very straight horizontal path
-                # Track masking application for TensorBoard monitoring
-                self._deterministic_mask_applied_count += 1
-                if dx < 0:
-                    return "left"
-                else:
-                    return "right"
-            elif is_downward:
-                # Downward path
-                # Track masking application for TensorBoard monitoring
-                self._deterministic_mask_applied_count += 1
-                return "down"
-            else:
-                # Path is not straight enough for strict deterministic masking
-                # But we should still return None to allow normal action selection
-                # (Jan 15 behavior: only mask on very clear straight paths)
-                return None
-
-        except Exception as e:
-            # Silently fail on any error to avoid breaking training
-            import traceback
-
-            traceback.print_exc()
-            # Deterministic masking is an optimization, not critical
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Path straightness detection failed: {e}")
-            return None
 
     def _check_termination(self) -> Tuple[bool, bool, bool]:
         """

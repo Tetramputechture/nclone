@@ -5,9 +5,13 @@ Uses flood fill (BFS) from goal positions to precompute all node-to-goal distanc
 Cache invalidates when level or mine states change.
 
 Includes precomputed Phi grids for O(1) PBRS potential lookup at runtime.
+Supports both BFS-based (12px) and simulation-based (6px) phi grids.
+When simulation phi grids are available, they are used for higher-quality
+physics-aware potentials; otherwise falls back to BFS-based grids.
 """
 
 import logging
+import os
 from typing import Dict, Tuple, List, Optional, Any
 
 import numpy as np
@@ -22,12 +26,23 @@ from .level_data_helpers import extract_goal_positions, get_mine_state_signature
 
 logger = logging.getLogger(__name__)
 
-# Phi grid constants
-# Level is 1056x600 pixels. Nodes spaced at 12px (SUB_NODE_SIZE).
-# Node positions are in tile data space; world = node + NODE_WORLD_COORD_OFFSET (24).
-PHI_GRID_RESOLUTION = 12  # pixels per grid cell
-PHI_GRID_WIDTH = 88  # 1056 / 12
-PHI_GRID_HEIGHT = 50  # 600 / 12
+# --- Phi grid resolution constants ---
+# BFS-based (legacy): 12px resolution, 88x50 grid
+BFS_PHI_GRID_RESOLUTION = 12
+BFS_PHI_GRID_WIDTH = 88   # 1056 / 12
+BFS_PHI_GRID_HEIGHT = 50  # 600 / 12
+
+# Simulation-based: 6px resolution, 176x100 grid
+SIM_PHI_GRID_RESOLUTION = 6
+SIM_PHI_GRID_WIDTH = 176   # 1056 / 6
+SIM_PHI_GRID_HEIGHT = 100  # 600 / 6
+
+# Active resolution (set dynamically based on available phi source)
+# Defaults to BFS-based, updated when simulation grids are loaded
+PHI_GRID_RESOLUTION = BFS_PHI_GRID_RESOLUTION
+PHI_GRID_WIDTH = BFS_PHI_GRID_WIDTH
+PHI_GRID_HEIGHT = BFS_PHI_GRID_HEIGHT
+
 NODE_WORLD_COORD_OFFSET = 24  # tile data space -> world coordinate offset
 
 
@@ -49,8 +64,15 @@ class LevelBasedPathDistanceCache:
     current position TO goal (not cached, computed fresh each time).
     """
 
-    def __init__(self):
-        """Initialize level-based path distance cache."""
+    def __init__(self, simulation_phi_dir: Optional[str] = None):
+        """Initialize level-based path distance cache.
+
+        Args:
+            simulation_phi_dir: Optional directory containing precomputed
+                simulation-based phi grids (.npz files). When provided and
+                grids are found for the current level, uses 6px resolution
+                simulation phi instead of 12px BFS-based phi.
+        """
         # Cache mapping (node_position, goal_id) -> physics-weighted distance
         self.cache: Dict[Tuple[Tuple[int, int], str], float] = {}
         # Cache mapping (node_position, goal_id) -> geometric distance (pixels)
@@ -80,46 +102,159 @@ class LevelBasedPathDistanceCache:
         self.geometric_cache_hits = 0
         self.geometric_cache_misses = 0
 
+        # Simulation phi grid directory
+        self._simulation_phi_dir = simulation_phi_dir
+
+        # Active phi grid resolution (instance-level, may change per level)
+        # Defaults to BFS-based, upgraded to SIM when simulation grids are loaded
+        self._phi_resolution = BFS_PHI_GRID_RESOLUTION
+        self._phi_width = BFS_PHI_GRID_WIDTH
+        self._phi_height = BFS_PHI_GRID_HEIGHT
+        self._using_simulation_phi = False
+
         # Precomputed Phi grids for O(1) PBRS potential lookup
         # Phi values are in [-1, 0]: -1 = farthest, 0 = at goal
         # Initialized to -1.0 (worst case / unreachable)
         self.phi_grid_switch: np.ndarray = np.full(
-            (PHI_GRID_WIDTH, PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+            (BFS_PHI_GRID_WIDTH, BFS_PHI_GRID_HEIGHT), -1.0, dtype=np.float32
         )
         self.phi_grid_exit: np.ndarray = np.full(
-            (PHI_GRID_WIDTH, PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+            (BFS_PHI_GRID_WIDTH, BFS_PHI_GRID_HEIGHT), -1.0, dtype=np.float32
         )
         # Max distances for denormalization (stored for diagnostics)
         self.max_dist_switch: float = 1.0
         self.max_dist_exit: float = 1.0
         self._phi_grids_built: bool = False
 
-    def build_phi_grids(self) -> None:
-        """Build precomputed Phi grids from cached geometric distances.
+    def load_simulation_phi_grids(
+        self,
+        tile_dic: Dict[Tuple[int, int], int],
+        switch_pos: Tuple[float, float],
+        exit_pos: Tuple[float, float],
+    ) -> bool:
+        """Try to load precomputed simulation-based phi grids from disk.
 
-        Call AFTER build_cache() has populated geometric_cache.
+        Looks for cached phi grids in self._simulation_phi_dir that match
+        the level geometry and goal positions. If found, replaces the phi
+        grids with the higher-resolution simulation-based versions.
+
+        Args:
+            tile_dic: Simulator tile dictionary {(col, row): tile_type}.
+            switch_pos: Exit switch pixel position (x, y).
+            exit_pos: Exit door pixel position (x, y).
+
+        Returns:
+            True if simulation phi grids were loaded, False otherwise.
+        """
+        if not self._simulation_phi_dir:
+            return False
+
+        if not os.path.isdir(self._simulation_phi_dir):
+            logger.debug(
+                f"[SIM_PHI] Directory not found: {self._simulation_phi_dir}"
+            )
+            return False
+
+        try:
+            from ...simulation_pbrs.phi_grid_builder import (
+                SimulationPhiGridBuilder,
+                _compute_cache_key,
+            )
+            from ...simulation_pbrs.grid_classifier import (
+                GRID_WIDTH as SIM_WIDTH,
+                GRID_HEIGHT as SIM_HEIGHT,
+                GRID_RESOLUTION as SIM_RESOLUTION,
+            )
+
+            cache_key = _compute_cache_key(tile_dic, switch_pos, exit_pos)
+            cache_path = os.path.join(
+                self._simulation_phi_dir, f"sim_phi_{cache_key}.npz"
+            )
+
+            if not os.path.exists(cache_path):
+                logger.debug(
+                    f"[SIM_PHI] No cached grids found at {cache_path}"
+                )
+                return False
+
+            data = np.load(cache_path)
+            phi_switch = data["phi_switch"]
+            phi_exit = data["phi_exit"]
+
+            # Validate shapes
+            if phi_switch.shape != (SIM_WIDTH, SIM_HEIGHT):
+                logger.warning(
+                    f"[SIM_PHI] Shape mismatch: {phi_switch.shape} != "
+                    f"({SIM_WIDTH}, {SIM_HEIGHT})"
+                )
+                return False
+
+            # Install simulation phi grids
+            self.phi_grid_switch = phi_switch.astype(np.float32)
+            self.phi_grid_exit = phi_exit.astype(np.float32)
+            self._phi_resolution = SIM_RESOLUTION
+            self._phi_width = SIM_WIDTH
+            self._phi_height = SIM_HEIGHT
+            self._using_simulation_phi = True
+            self._phi_grids_built = True
+
+            logger.info(
+                f"[SIM_PHI] Loaded simulation phi grids from {cache_path} "
+                f"({SIM_WIDTH}x{SIM_HEIGHT} @ {SIM_RESOLUTION}px)"
+            )
+            return True
+
+        except Exception as e:
+            logger.warning(f"[SIM_PHI] Failed to load simulation phi: {e}")
+            return False
+
+    def build_phi_grids(self) -> None:
+        """Build precomputed Phi grids from BFS cached distances (fallback).
+
+        Call AFTER build_cache() has populated cache.
+        Uses physics-weighted costs when available, else geometric.
         Creates two 2D grids (switch and exit) at 12px resolution.
         Each cell stores the normalized potential Phi = -d / max_d in [-1, 0].
         Unreachable cells remain at -1.0.
 
+        NOTE: If simulation-based phi grids have already been loaded via
+        load_simulation_phi_grids(), this method is skipped (simulation
+        grids are higher quality).
+
         The grids enable O(1) potential lookup via get_phi() with
         bilinear interpolation for sub-cell positions.
         """
-        if not self.geometric_cache:
-            logger.warning(
-                "[PHI_GRID] Cannot build Phi grids: geometric_cache is empty"
+        # Skip if simulation phi grids are already loaded
+        if self._using_simulation_phi:
+            logger.info(
+                "[PHI_GRID] Skipping BFS phi build: simulation phi grids active"
             )
             return
 
-        # Reset grids to -1.0 (unreachable default)
-        self.phi_grid_switch.fill(-1.0)
-        self.phi_grid_exit.fill(-1.0)
+        if not self.cache:
+            logger.warning(
+                "[PHI_GRID] Cannot build Phi grids: cache is empty"
+            )
+            return
 
-        # Collect distances per goal type
+        # Set resolution to BFS defaults
+        self._phi_resolution = BFS_PHI_GRID_RESOLUTION
+        self._phi_width = BFS_PHI_GRID_WIDTH
+        self._phi_height = BFS_PHI_GRID_HEIGHT
+
+        # Reset grids to -1.0 (unreachable default)
+        self.phi_grid_switch = np.full(
+            (BFS_PHI_GRID_WIDTH, BFS_PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+        )
+        self.phi_grid_exit = np.full(
+            (BFS_PHI_GRID_WIDTH, BFS_PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+        )
+
+        # Collect distances per goal type (use cache = physics or geometric)
         switch_distances: Dict[Tuple[int, int], float] = {}
         exit_distances: Dict[Tuple[int, int], float] = {}
 
-        for (node_pos, goal_id), dist in self.geometric_cache.items():
+        for (node_pos, goal_id), dist in self.cache.items():
             if dist == float("inf"):
                 continue
             if goal_id == "switch" or goal_id.startswith("exit_switch_"):
@@ -146,9 +281,9 @@ class LevelBasedPathDistanceCache:
             wx = node_pos[0] + NODE_WORLD_COORD_OFFSET
             wy = node_pos[1] + NODE_WORLD_COORD_OFFSET
             # Convert world coordinates to grid cell
-            ix = wx // PHI_GRID_RESOLUTION
-            iy = wy // PHI_GRID_RESOLUTION
-            if 0 <= ix < PHI_GRID_WIDTH and 0 <= iy < PHI_GRID_HEIGHT:
+            ix = wx // BFS_PHI_GRID_RESOLUTION
+            iy = wy // BFS_PHI_GRID_RESOLUTION
+            if 0 <= ix < BFS_PHI_GRID_WIDTH and 0 <= iy < BFS_PHI_GRID_HEIGHT:
                 phi = -dist / self.max_dist_switch  # [-1, 0]
                 self.phi_grid_switch[ix, iy] = phi
 
@@ -156,21 +291,24 @@ class LevelBasedPathDistanceCache:
         for node_pos, dist in exit_distances.items():
             wx = node_pos[0] + NODE_WORLD_COORD_OFFSET
             wy = node_pos[1] + NODE_WORLD_COORD_OFFSET
-            ix = wx // PHI_GRID_RESOLUTION
-            iy = wy // PHI_GRID_RESOLUTION
-            if 0 <= ix < PHI_GRID_WIDTH and 0 <= iy < PHI_GRID_HEIGHT:
+            ix = wx // BFS_PHI_GRID_RESOLUTION
+            iy = wy // BFS_PHI_GRID_RESOLUTION
+            if 0 <= ix < BFS_PHI_GRID_WIDTH and 0 <= iy < BFS_PHI_GRID_HEIGHT:
                 phi = -dist / self.max_dist_exit  # [-1, 0]
                 self.phi_grid_exit[ix, iy] = phi
 
         self._phi_grids_built = True
         logger.info(
-            f"[PHI_GRID] Built Phi grids: "
+            f"[PHI_GRID] Built BFS Phi grids: "
             f"switch nodes={len(switch_distances)}, max_dist={self.max_dist_switch:.1f}px, "
             f"exit nodes={len(exit_distances)}, max_dist={self.max_dist_exit:.1f}px"
         )
 
     def get_phi(self, x: float, y: float, rm_state: int) -> float:
         """O(1) potential lookup from precomputed Phi grids with bilinear interpolation.
+
+        Automatically uses the correct resolution (6px for simulation-based,
+        12px for BFS-based) based on which phi source was loaded.
 
         Args:
             x: Player world x coordinate (pixels)
@@ -188,13 +326,18 @@ class LevelBasedPathDistanceCache:
         # Select the appropriate grid
         grid = self.phi_grid_switch if rm_state == 0 else self.phi_grid_exit
 
+        # Use instance-level resolution for coordinate conversion
+        resolution = self._phi_resolution
+        width = self._phi_width
+        height = self._phi_height
+
         # Convert world position to continuous grid coordinates
-        gx = x / PHI_GRID_RESOLUTION
-        gy = y / PHI_GRID_RESOLUTION
+        gx = x / resolution
+        gy = y / resolution
 
         # Clamp to grid bounds (leave 1 cell margin for interpolation)
-        max_gx = PHI_GRID_WIDTH - 1
-        max_gy = PHI_GRID_HEIGHT - 1
+        max_gx = width - 1
+        max_gy = height - 1
         gx = max(0.0, min(float(max_gx), gx))
         gy = max(0.0, min(float(max_gy), gy))
 
@@ -577,49 +720,56 @@ class LevelBasedPathDistanceCache:
             #     f"adjacency_size={len(adjacency)}"
             # )
 
-            # ARCHITECTURE: Cache only GEOMETRIC distances, compute physics on-demand
-            #
-            # Physics costs are DIRECTIONAL (momentum, gravity, grounded state):
-            # - Cannot be cached from flood-fill (costs depend on approach direction)
-            # - MUST be computed via find_shortest_path from actual start position
-            #
-            # Level cache stores:
-            # ✓ Geometric distances (pixels, direction-independent) - FROM GOAL for efficiency
-            # ✓ Next-hop navigation (topology, not physics costs)
-            #
-            # For physics-optimal paths (visualization, PBRS):
-            # ✓ Use find_shortest_path FROM current position TO goal (correct directionality)
-
-            # logger.warning(
-            #     f"[LEVEL_CACHE_BFS] Computing GEOMETRIC distances from goal '{goal_id}' at {goal_pos}: "
-            #     f"goal_node={goal_node}, adjacency_size={len(adjacency)}. "
-            #     f"(Physics costs computed on-demand for correct directionality)"
-            # )
-
-            # Run BFS with GEOMETRIC costs only (direction-independent, cache-safe)
-            geometric_distances, _, parents, _ = bfs_distance_from_start(
-                goal_node,
-                None,
-                adjacency,
-                base_adjacency,
-                max_distance=None,
-                return_parents=True,
+            # Use physics-aware costs when graph_data provides node_physics cache.
+            # Physics costs make PBRS prefer grounded horizontal movement, falling over jumping, etc.
+            physics_cache = (
+                graph_data.get("node_physics") if graph_data else None
+            )
+            use_physics = (
+                physics_cache is not None
+                and level_data is not None
+                and mine_proximity_cache is not None
             )
 
-            # # DIAGNOSTIC: Log BFS results
-            # logger.warning(
-            #     f"[LEVEL_CACHE_BFS] Computed {len(geometric_distances)} geometric distances for goal '{goal_id}'"
-            # )
-
-            # Store geometric distances and next_hop for all computed nodes
-            # NOTE: We do NOT store physics costs - those are direction-dependent
-            # and must be computed via find_shortest_path from actual start position
-            for node_pos, distance in geometric_distances.items():
-                # Store geometric distance in BOTH caches for compatibility
-                self.cache[(node_pos, goal_id)] = (
-                    distance  # Legacy physics cache (now geometric)
+            if use_physics:
+                # Run BFS with physics-aware costs; track geometric distances for normalization
+                distances, _, parents, geometric_distances = bfs_distance_from_start(
+                    goal_node,
+                    None,
+                    adjacency,
+                    base_adjacency,
+                    max_distance=None,
+                    return_parents=True,
+                    physics_cache=physics_cache,
+                    level_data=level_data,
+                    mine_proximity_cache=mine_proximity_cache,
+                    use_geometric_costs=False,
+                    track_geometric_distances=True,
                 )
-                self.geometric_cache[(node_pos, goal_id)] = distance
+                # Use geometric distances for cache (pixel length of physics-optimal path)
+                # when available; otherwise fall back to physics costs
+                geometric_distances = geometric_distances or distances
+            else:
+                # Fallback: geometric costs when physics cache not available
+                distances, _, parents, _ = bfs_distance_from_start(
+                    goal_node,
+                    None,
+                    adjacency,
+                    base_adjacency,
+                    max_distance=None,
+                    return_parents=True,
+                    use_geometric_costs=True,
+                )
+                geometric_distances = distances
+
+            # Store distances and next_hop for all computed nodes
+            # cache: physics-weighted cost (for Phi potential when use_physics) or geometric
+            # geometric_cache: geometric distance in pixels (for normalization, diagnostics)
+            for node_pos in geometric_distances.keys():
+                phys_dist = distances.get(node_pos, float("inf"))
+                geo_dist = geometric_distances.get(node_pos, phys_dist)
+                self.cache[(node_pos, goal_id)] = phys_dist
+                self.geometric_cache[(node_pos, goal_id)] = geo_dist
 
                 # Parent in BFS from goal = next hop toward goal
                 # (since we flooded outward from goal, parent is closer to goal)
@@ -638,17 +788,14 @@ class LevelBasedPathDistanceCache:
 
             # CRITICAL FIX: Also populate cache entries for generic aliases ("switch", "exit")
             # This ensures lookups using generic goal_ids hit the cache
-            # Use the flags we determined earlier to avoid race condition with mapping updates
             if needs_switch_alias:
-                # Populate cache entries for "switch" alias (same geometric distances)
-                for node_pos, distance in geometric_distances.items():
-                    self.cache[(node_pos, "switch")] = (
-                        distance  # Geometric (not physics)
-                    )
-                    self.geometric_cache[(node_pos, "switch")] = distance
+                for node_pos in geometric_distances.keys():
+                    phys_dist = distances.get(node_pos, float("inf"))
+                    geo_dist = geometric_distances.get(node_pos, phys_dist)
+                    self.cache[(node_pos, "switch")] = phys_dist
+                    self.geometric_cache[(node_pos, "switch")] = geo_dist
                     next_hop = parents.get(node_pos) if parents else None
                     self.next_hop_cache[(node_pos, "switch")] = next_hop
-                    # Also compute multi-hop direction for alias (8 hops for inflection points)
                     multi_hop_direction = self._compute_multi_hop_direction(
                         node_pos, parents, max_hops=4
                     )
@@ -656,13 +803,13 @@ class LevelBasedPathDistanceCache:
                         multi_hop_direction
                     )
             elif needs_exit_alias:
-                # Populate cache entries for "exit" alias (same geometric distances)
-                for node_pos, distance in geometric_distances.items():
-                    self.cache[(node_pos, "exit")] = distance  # Geometric (not physics)
-                    self.geometric_cache[(node_pos, "exit")] = distance
+                for node_pos in geometric_distances.keys():
+                    phys_dist = distances.get(node_pos, float("inf"))
+                    geo_dist = geometric_distances.get(node_pos, phys_dist)
+                    self.cache[(node_pos, "exit")] = phys_dist
+                    self.geometric_cache[(node_pos, "exit")] = geo_dist
                     next_hop = parents.get(node_pos) if parents else None
                     self.next_hop_cache[(node_pos, "exit")] = next_hop
-                    # Also compute multi-hop direction for alias (8 hops for inflection points)
                     multi_hop_direction = self._compute_multi_hop_direction(
                         node_pos, parents, max_hops=4
                     )
@@ -778,9 +925,17 @@ class LevelBasedPathDistanceCache:
         self.level_cache_misses = 0
         self.geometric_cache_hits = 0
         self.geometric_cache_misses = 0
-        # Reset Phi grids
-        self.phi_grid_switch.fill(-1.0)
-        self.phi_grid_exit.fill(-1.0)
+        # Reset Phi grids to BFS defaults
+        self._phi_resolution = BFS_PHI_GRID_RESOLUTION
+        self._phi_width = BFS_PHI_GRID_WIDTH
+        self._phi_height = BFS_PHI_GRID_HEIGHT
+        self._using_simulation_phi = False
+        self.phi_grid_switch = np.full(
+            (BFS_PHI_GRID_WIDTH, BFS_PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+        )
+        self.phi_grid_exit = np.full(
+            (BFS_PHI_GRID_WIDTH, BFS_PHI_GRID_HEIGHT), -1.0, dtype=np.float32
+        )
         self.max_dist_switch = 1.0
         self.max_dist_exit = 1.0
         self._phi_grids_built = False

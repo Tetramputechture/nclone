@@ -58,6 +58,7 @@ class CachedPathDistanceCalculator:
         shared_level_cache: Optional[Any] = None,
         shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
         goal_curriculum_manager: Optional[Any] = None,
+        simulation_phi_dir: Optional[str] = None,
     ):
         """
         Initialize cached path distance calculator.
@@ -70,6 +71,10 @@ class CachedPathDistanceCalculator:
             shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
             shared_level_caches_by_stage: Optional dict of stage -> SharedLevelCache for curriculum
             goal_curriculum_manager: Optional IntermediateGoalManager for stage selection
+            simulation_phi_dir: Optional directory containing precomputed
+                simulation-based phi grids (.npz files). When provided,
+                the path calculator will try to load simulation phi grids
+                for higher-quality PBRS potentials.
         """
         # Per-query cache for physics-optimal paths (start_node, goal_node) → distance
         # Physics costs are deterministic, so aggressive caching is beneficial
@@ -84,6 +89,7 @@ class CachedPathDistanceCalculator:
         self._shared_level_cache = shared_level_cache
         self._shared_level_caches_by_stage = shared_level_caches_by_stage
         self.goal_curriculum_manager = goal_curriculum_manager
+        self._simulation_phi_dir = simulation_phi_dir
 
         # Determine which shared cache to use
         has_shared_cache = (
@@ -93,7 +99,11 @@ class CachedPathDistanceCalculator:
         # Level-based cache for precomputed distances
         # If shared cache provided, this will be set to a view wrapper
         self.level_cache: Optional[LevelBasedPathDistanceCache] = (
-            None if has_shared_cache else LevelBasedPathDistanceCache()
+            None
+            if has_shared_cache
+            else LevelBasedPathDistanceCache(
+                simulation_phi_dir=simulation_phi_dir
+            )
         )
         self.level_data: Optional[LevelData] = None
 
@@ -1255,14 +1265,16 @@ class CachedPathDistanceCalculator:
     ) -> float:
         """DEPRECATED: Use get_path_cost instead (all distances are geometric). Kept for backward compatibility."""
         return self.get_path_cost(
-            start, goal, adjacency, base_adjacency,
+            start,
+            goal,
+            adjacency,
+            base_adjacency,
             level_data=level_data,
             graph_data=graph_data,
             entity_radius=entity_radius,
             ninja_radius=ninja_radius,
             goal_id=goal_id,
         )
-
 
     def _get_cached_or_find_ninja_node(
         self,

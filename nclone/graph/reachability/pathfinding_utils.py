@@ -8,6 +8,9 @@ from .cost_functions import (
     NODE_WORLD_COORD_OFFSET,
     SUB_NODE_SIZE,
     _is_node_grounded_util,
+    _get_aerial_chain_multiplier,
+    _calculate_mine_proximity_cost,
+    _calculate_physics_aware_cost,
 )
 from .node_lookup import (
     _get_subcell_lookup_loader,
@@ -35,6 +38,9 @@ __all__ = [
     "NODE_WORLD_COORD_OFFSET",
     "SUB_NODE_SIZE",
     "_is_node_grounded_util",
+    "_get_aerial_chain_multiplier",
+    "_calculate_mine_proximity_cost",
+    "_calculate_physics_aware_cost",
     "_get_subcell_lookup_loader",
     "extract_spatial_lookups_from_graph_data",
     "find_closest_node_to_position",

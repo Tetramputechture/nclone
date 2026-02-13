@@ -1,27 +1,25 @@
 """
-Pathfinding algorithms for geometric graph traversal.
+Pathfinding algorithms for graph traversal.
 
 Provides Dijkstra's algorithm (find_shortest_path), BFS distance calculation,
-and fallback pathfinding for unstable positions.
-All paths use geometric (euclidean pixel) edge costs over the adjacency graph.
+and fallback pathfinding for unstable positions. Supports both geometric
+(euclidean pixel) and physics-aware edge costs.
 """
 
 import logging
 import heapq
-from typing import Dict, Tuple, List, Optional, Any, Set
+from typing import Dict, Tuple, List, Optional, Any
 from collections import deque
 
 from .cost_functions import (
     NODE_WORLD_COORD_OFFSET,
     SUB_NODE_SIZE,
     _is_node_grounded_util,
+    _calculate_physics_aware_cost,
 )
 from .node_lookup import (
     find_closest_node_to_position,
-    extract_spatial_lookups_from_graph_data,
     find_ninja_node,
-    find_goal_node_closest_to_start,
-    _is_node_grounded,
 )
 
 _logger = logging.getLogger(__name__)
@@ -30,14 +28,52 @@ _logger = logging.getLogger(__name__)
 _SUB_NODE_SIZE = 12
 
 
+def _violates_horizontal_rule(
+    current: Tuple[int, int],
+    neighbor: Tuple[int, int],
+    parents: Dict[Tuple[int, int], Optional[Tuple[int, int]]],
+    base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+) -> bool:
+    """
+    Check if edge violates consecutive horizontal non-grounded rule.
+
+    Rule: Allow one horizontal non-grounded edge for corrections, but if the
+    previous edge was also horizontal, the current horizontal edge must be grounded.
+    """
+    curr_x, curr_y = current
+    neigh_x, neigh_y = neighbor
+
+    if curr_y != neigh_y or curr_x == neigh_x:
+        return False
+
+    if physics_cache is None:
+        return False
+
+    current_physics = physics_cache.get(current, {"grounded": True, "walled": False})
+    neighbor_physics = physics_cache.get(neighbor, {"grounded": True, "walled": False})
+    current_grounded = current_physics["grounded"]
+    neighbor_grounded = neighbor_physics["grounded"]
+
+    if current_grounded and neighbor_grounded:
+        return False
+
+    parent = parents.get(current)
+    if parent is None:
+        return False
+
+    par_x, par_y = parent
+    return par_y == curr_y and par_x != curr_x
+
+
 def _is_node_walled(
     node_pos: Tuple[int, int],
     base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
 ) -> bool:
     """Check if node has wall (left or right neighbor unreachable)."""
     x, y = node_pos
-    left_pos = (x - _SUB_NODE_SIZE, y)
-    right_pos = (x + _SUB_NODE_SIZE, y)
+    left_pos = (x - SUB_NODE_SIZE, y)
+    right_pos = (x + SUB_NODE_SIZE, y)
     return left_pos not in base_adjacency or right_pos not in base_adjacency
 
 
@@ -48,6 +84,11 @@ def bfs_distance_from_start(
     base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
     max_distance: Optional[float] = None,
     return_parents: bool = False,
+    physics_cache: Optional[Dict[Tuple[int, int], Dict[str, bool]]] = None,
+    level_data: Optional[Any] = None,
+    mine_proximity_cache: Optional[Any] = None,
+    use_geometric_costs: bool = True,
+    track_geometric_distances: bool = False,
 ) -> Tuple[
     Dict[Tuple[int, int], float],
     Optional[float],
@@ -55,42 +96,52 @@ def bfs_distance_from_start(
     Optional[Dict[Tuple[int, int], float]],
 ]:
     """
-    Calculate distances from start node using Dijkstra's algorithm with geometric costs.
+    Calculate distances from start node using Dijkstra's algorithm.
 
-    Uses pure geometric (euclidean pixel) edge costs. The adjacency graph already
-    respects level geometry and hazards via entity masking.
+    Supports two cost modes:
+    - use_geometric_costs=True (default): Euclidean pixel costs (faster, no cache needed)
+    - use_geometric_costs=False: Physics-aware costs (requires physics_cache, level_data,
+      mine_proximity_cache). Uses N++ movement physics for path preference.
+
+    When using physics costs, track_geometric_distances=True returns geometric distances
+    along the physics-optimal path (for PBRS normalization).
 
     Args:
         start_node: Starting node position
         target_node: Optional target node to find distance to (early termination)
         adjacency: Masked graph adjacency structure (for pathfinding)
-        base_adjacency: Base graph adjacency structure (pre-entity-mask, for compatibility)
+        base_adjacency: Base graph adjacency structure (pre-entity-mask)
         max_distance: Optional maximum distance to compute (for early termination)
         return_parents: If True, return the parents dict for path reconstruction
+        physics_cache: Pre-computed physics properties (grounded, walled) for physics costs
+        level_data: LevelData for mine proximity (required when use_geometric_costs=False)
+        mine_proximity_cache: MineProximityCostCache for O(1) mine cost (required when use_geometric_costs=False)
+        use_geometric_costs: If True, use Euclidean costs; if False, use physics-aware costs
+        track_geometric_distances: If True and use_geometric_costs=False, also track pixel distances
 
     Returns:
-        Tuple of (distances_dict, target_distance, parents_dict, geometric_distances_dict):
-        - distances_dict: Map of node -> geometric distance from start
-        - target_distance: Distance to target_node if found, None otherwise
-        - parents_dict: Map of node -> parent node (only if return_parents=True, else None)
-        - geometric_distances_dict: None (distances are already geometric)
+        Tuple of (distances_dict, target_distance, parents_dict, geometric_distances_dict)
     """
-    # Priority queue: (distance, node)
+    use_physics = not use_geometric_costs and physics_cache is not None
+    if use_physics and (level_data is None or mine_proximity_cache is None):
+        use_physics = False
+        use_geometric_costs = True
+
     pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
     parents = {start_node: None}
     visited = set()
+    grandparents = {start_node: None} if use_physics else {}
+    aerial_chains = {start_node: 0} if use_physics else {}
+    geometric_distances: Optional[Dict[Tuple[int, int], float]] = (
+        {start_node: 0.0} if (track_geometric_distances and use_physics) else None
+    )
 
-    # OPTIMIZATION: Early termination heuristic for unreachable cases
-    # Calculate Euclidean distance to target for bounding search
     euclidean_to_target = None
     if target_node is not None:
         dx_target = target_node[0] - start_node[0]
         dy_target = target_node[1] - start_node[1]
         euclidean_to_target = (dx_target * dx_target + dy_target * dy_target) ** 0.5
-        # FIXED: Use much higher multiplier to allow for winding paths and aerial chain penalties
-        # Goals can be very far away and require complex paths (up to 10x euclidean for difficult terrain)
-        # Previously 2x was too aggressive and terminated before finding valid paths
         early_termination_distance = euclidean_to_target * 10.0
 
     while pq:
@@ -100,22 +151,24 @@ def bfs_distance_from_start(
             continue
         visited.add(current)
 
-        # Early termination if we found target and it's requested
         if target_node is not None and current == target_node:
             parents_result = parents if return_parents else None
-            return distances, current_dist, parents_result, None
+            return distances, current_dist, parents_result, geometric_distances
 
-        # Early termination if we've exceeded max distance
         if max_distance is not None and current_dist > max_distance:
             continue
 
-        # Early termination: if we've found target and explored far enough, stop
         if (
             euclidean_to_target is not None
             and current_dist > early_termination_distance
             and target_node in distances
         ):
             break
+
+        current_physics = physics_cache.get(current, {}) if use_physics else {}
+        current_grounded = current_physics.get("grounded", True)
+        current_walled = current_physics.get("walled", False)
+        current_chain = aerial_chains.get(current, 0) if use_physics else 0
 
         neighbors = adjacency.get(current, [])
 
@@ -125,20 +178,55 @@ def bfs_distance_from_start(
             if neighbor_pos in visited:
                 continue
 
-            dx = neighbor_pos[0] - current[0]
-            dy = neighbor_pos[1] - current[1]
-            cost = (dx * dx + dy * dy) ** 0.5
+            if use_physics:
+                if _violates_horizontal_rule(
+                    current, neighbor_pos, parents, base_adjacency, physics_cache
+                ):
+                    continue
+
+                dy = neighbor_pos[1] - current[1]
+                # Track ALL airborne moves (not just upward) so chain is correct for
+                # upward/diagonal after horizontal air, and for horizontal-after-horizontal
+                is_aerial = not current_grounded
+                new_chain = current_chain + 1 if is_aerial else 0
+
+                cost = _calculate_physics_aware_cost(
+                    current,
+                    neighbor_pos,
+                    base_adjacency,
+                    parents.get(current),
+                    physics_cache,
+                    level_data,
+                    mine_proximity_cache,
+                    current_chain,
+                    grandparents.get(current),
+                )
+            else:
+                dx = neighbor_pos[0] - current[0]
+                dy = neighbor_pos[1] - current[1]
+                cost = (dx * dx + dy * dy) ** 0.5
 
             new_dist = current_dist + cost
 
             if neighbor_pos not in distances or new_dist < distances[neighbor_pos]:
                 distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current
+                if use_physics:
+                    grandparents[neighbor_pos] = parents.get(current)
+                    aerial_chains[neighbor_pos] = new_chain
                 heapq.heappush(pq, (new_dist, neighbor_pos))
+
+                if geometric_distances is not None:
+                    gdx = neighbor_pos[0] - current[0]
+                    gdy = neighbor_pos[1] - current[1]
+                    geo_edge = (gdx * gdx + gdy * gdy) ** 0.5
+                    geometric_distances[neighbor_pos] = (
+                        geometric_distances.get(current, 0.0) + geo_edge
+                    )
 
     target_distance = distances.get(target_node) if target_node else None
     parents_result = parents if return_parents else None
-    return distances, target_distance, parents_result, None
+    return distances, target_distance, parents_result, geometric_distances
 
 
 def calculate_geometric_path_distance(
@@ -291,19 +379,27 @@ def find_shortest_path(
     allow_high_cost_edges: bool = False,
 ) -> Tuple[Optional[List[Tuple[int, int]]], float]:
     """
-    Find shortest path from start to end node using Dijkstra with geometric costs.
+    Find shortest path from start to end node using Dijkstra.
 
-    Returns both the path (list of nodes) and the geometric distance.
-    physics_cache, level_data, mine_proximity_cache, ninja_velocity, allow_high_cost_edges
-    are deprecated and ignored.
+    Uses physics-aware costs when physics_cache, level_data, and mine_proximity_cache
+    are all provided; otherwise uses geometric (Euclidean) costs.
+    ninja_velocity and allow_high_cost_edges are reserved for future use.
     """
     if start_node == end_node:
         return [start_node], 0.0
+
+    use_physics = (
+        physics_cache is not None
+        and level_data is not None
+        and mine_proximity_cache is not None
+    )
 
     pq = [(0.0, start_node)]
     distances = {start_node: 0.0}
     parents = {start_node: None}
     visited = set()
+    grandparents = {start_node: None} if use_physics else {}
+    aerial_chains = {start_node: 0} if use_physics else {}
 
     while pq:
         current_dist, current = heapq.heappop(pq)
@@ -321,6 +417,11 @@ def find_shortest_path(
             path.reverse()
             return path, distances[end_node]
 
+        current_physics = physics_cache.get(current, {}) if use_physics else {}
+        current_grounded = current_physics.get("grounded", True)
+        current_walled = current_physics.get("walled", False)
+        current_chain = aerial_chains.get(current, 0) if use_physics else 0
+
         neighbors = adjacency.get(current, [])
         for neighbor_info in neighbors:
             neighbor_pos, _ = neighbor_info
@@ -328,14 +429,42 @@ def find_shortest_path(
             if neighbor_pos in visited:
                 continue
 
-            dx = neighbor_pos[0] - current[0]
-            dy = neighbor_pos[1] - current[1]
-            cost = (dx * dx + dy * dy) ** 0.5
+            if use_physics:
+                if _violates_horizontal_rule(
+                    current, neighbor_pos, parents, base_adjacency, physics_cache
+                ):
+                    continue
+
+                dy = neighbor_pos[1] - current[1]
+                # Track ALL airborne moves (not just upward) so chain is correct for
+                # upward/diagonal after horizontal air, and for horizontal-after-horizontal
+                is_aerial = not current_grounded
+                new_chain = current_chain + 1 if is_aerial else 0
+
+                cost = _calculate_physics_aware_cost(
+                    current,
+                    neighbor_pos,
+                    base_adjacency,
+                    parents.get(current),
+                    physics_cache,
+                    level_data,
+                    mine_proximity_cache,
+                    current_chain,
+                    grandparents.get(current),
+                )
+            else:
+                dx = neighbor_pos[0] - current[0]
+                dy = neighbor_pos[1] - current[1]
+                cost = (dx * dx + dy * dy) ** 0.5
+
             new_dist = current_dist + cost
 
             if neighbor_pos not in distances or new_dist < distances[neighbor_pos]:
                 distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current
+                if use_physics:
+                    grandparents[neighbor_pos] = parents.get(current)
+                    aerial_chains[neighbor_pos] = new_chain
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 
     return None, float("inf")
@@ -511,6 +640,9 @@ def find_shortest_path_with_fallback(
         end_node,
         adjacency,
         base_adjacency,
+        physics_cache=physics_cache,
+        level_data=level_data,
+        mine_proximity_cache=mine_proximity_cache,
     )
 
     if path is not None:
@@ -568,6 +700,9 @@ def find_shortest_path_with_fallback(
         stable_node,
         base_adjacency,  # Use unmasked graph to allow escape from dangerous positions
         base_adjacency,
+        physics_cache=physics_cache,
+        level_data=level_data,
+        mine_proximity_cache=mine_proximity_cache,
     )
 
     if path_to_stable is None:
@@ -620,6 +755,9 @@ def find_shortest_path_with_fallback(
         end_node,
         base_adjacency if use_unmasked_for_escape else adjacency,
         base_adjacency,
+        physics_cache=physics_cache,
+        level_data=level_data,
+        mine_proximity_cache=mine_proximity_cache,
     )
 
     if path_from_stable is None:

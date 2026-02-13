@@ -50,6 +50,7 @@ def _make_base_config(
         GraphConfig,
         ReachabilityConfig,
     )
+
     return EnvironmentConfig(
         custom_map_path=map_path,
         enable_logging=False,
@@ -205,7 +206,9 @@ def print_results(results: Dict[str, Any]) -> None:
     print("\n" + "=" * 60)
     print("BENCHMARK RESULTS")
     print("=" * 60)
-    print(f"Map: {cfg['map']}  |  Steps: {cfg['steps']}  |  Frame skip: {cfg['frame_skip']}")
+    print(
+        f"Map: {cfg['map']}  |  Steps: {cfg['steps']}  |  Frame skip: {cfg['frame_skip']}"
+    )
     print("=" * 60)
 
     def fmt_row(name: str, data: Optional[Dict], unit: str = "ms") -> str:

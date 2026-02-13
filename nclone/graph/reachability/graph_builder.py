@@ -880,6 +880,9 @@ class GraphBuilder:
         spatial_hash = SpatialHash(cell_size=CELL_SIZE)
         spatial_hash.build(list(adjacency.keys()))
 
+        # Pre-compute node physics properties (grounded, walled) for physics-aware pathfinding
+        node_physics_cache = self._compute_node_physics_cache(base_graph["adjacency"])
+
         result = {
             "adjacency": adjacency,  # Masked adjacency (for pathfinding)
             "base_adjacency": base_graph[
@@ -890,6 +893,7 @@ class GraphBuilder:
             "base_graph_cached": level_id in self._level_graph_cache,
             "spatial_hash": spatial_hash,  # For fast node lookup
             "reachable_node_count": len(adjacency),  # For adaptive caching strategy
+            "node_physics": node_physics_cache,  # Pre-computed physics properties (grounded, walled)
         }
 
         # If ninja position provided, compute reachable set for that position
@@ -901,7 +905,7 @@ class GraphBuilder:
                 ninja_pos,
                 adjacency,
                 spatial_hash,
-                physics_cache=None,
+                physics_cache=node_physics_cache,
                 base_adjacency=base_graph["adjacency"],
             )
             result["reachable"] = reachable
@@ -910,6 +914,54 @@ class GraphBuilder:
         self.build_times.append(elapsed_ms)
 
         return result
+
+    def _compute_node_physics_cache(
+        self,
+        base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
+    ) -> Dict[Tuple[int, int], Dict[str, bool]]:
+        """
+        Pre-compute physics properties for all nodes to optimize pathfinding.
+
+        Caches grounded and walled status for each node, eliminating expensive
+        per-edge checks during A* pathfinding. This is a one-time O(nodes) cost
+        that enables O(1) lookups during physics-aware cost calculations.
+
+        Args:
+            base_adjacency: Base graph adjacency (pre-entity-mask) for physics checks
+
+        Returns:
+            Dict mapping node positions to {"grounded": bool, "walled": bool}
+        """
+        physics_cache = {}
+
+        for node_pos in base_adjacency.keys():
+            x, y = node_pos
+
+            # Check if node is grounded (has solid surface below)
+            below_pos = (x, y + SUB_NODE_SIZE)
+            is_grounded = True
+
+            if below_pos in base_adjacency:
+                # If there's a neighbor below, node is airborne
+                neighbors = base_adjacency[node_pos]
+                for neighbor_pos, _ in neighbors:
+                    if neighbor_pos == below_pos:
+                        is_grounded = False
+                        break
+
+            # Check if node has a wall (left or right neighbor unreachable)
+            left_pos = (x - SUB_NODE_SIZE, y)
+            right_pos = (x + SUB_NODE_SIZE, y)
+            is_walled = (
+                left_pos not in base_adjacency or right_pos not in base_adjacency
+            )
+
+            physics_cache[node_pos] = {
+                "grounded": is_grounded,
+                "walled": is_walled,
+            }
+
+        return physics_cache
 
     def _apply_geometric_edge_weights(
         self,

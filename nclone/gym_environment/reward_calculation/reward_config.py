@@ -546,38 +546,6 @@ class RewardConfig:
         return 0.02  # Advanced: converge on optimal momentum patterns
 
     @property
-    def safety_critic_weight(self) -> float:
-        """Curriculum-adaptive safety critic contribution weight.
-
-        Modulates both auxiliary training loss and inference logit penalties
-        based on agent competence. During early training (<5% success), reduces
-        safety constraints to enable riskier exploration and discovery.
-
-        Strategy:
-        - Discovery (<5%): 0.1x weight - minimal safety constraints for exploration
-        - Early learning (5-20%): 0.5x weight - gradual safety introduction
-        - Mid learning (20-40%): 0.75x weight - balanced risk/safety
-        - Advanced (>40%): 1.0x weight - full safety critic influence
-
-        Applied to:
-        1. Training: Auxiliary loss weight (base 0.1 * this multiplier)
-        2. Inference: Logit penalty strength (-20/-10/-5 * this multiplier)
-
-        Returns:
-            0.1 (<5% success): Minimal safety - enable risky exploration
-            0.5 (5-20% success): Moderate safety - learning fundamentals
-            0.75 (20-40% success): Strong safety - refinement
-            1.0 (>40% success): Full safety - optimization
-        """
-        if self.recent_success_rate < 0.05:  # Discovery phase
-            return 0.1  # Very low - enable risky exploration
-        elif self.recent_success_rate < 0.20:  # Early learning
-            return 0.5  # Moderate increase as competence grows
-        elif self.recent_success_rate < 0.40:  # Mid learning
-            return 0.75  # Further increase for refinement
-        return 1.0  # Full strength for advanced optimization
-
-    @property
     def action_masking_mode(self) -> str:
         """Curriculum-aware action masking mode for annealed guidance.
 
@@ -689,7 +657,6 @@ class RewardConfig:
             "time_penalty_per_step": self.time_penalty_per_step,
             "completion_approach_bonus_weight": self.completion_approach_bonus_weight,
             "entropy_coefficient": self.entropy_coefficient,  # NEW: Adaptive entropy
-            "safety_critic_weight": self.safety_critic_weight,  # NEW: Adaptive safety
             "exploration_bonus": self.exploration_bonus,
             "revisit_penalty_weight": self.revisit_penalty_weight,
             "pbrs_normalization_scale": self.pbrs_normalization_scale,
