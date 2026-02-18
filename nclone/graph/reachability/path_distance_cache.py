@@ -131,17 +131,21 @@ class LevelBasedPathDistanceCache:
         tile_dic: Dict[Tuple[int, int], int],
         switch_pos: Tuple[float, float],
         exit_pos: Tuple[float, float],
+        spawn_pos: Tuple[float, float],
     ) -> bool:
         """Try to load precomputed simulation-based phi grids from disk.
 
         Looks for cached phi grids in self._simulation_phi_dir that match
-        the level geometry and goal positions. If found, replaces the phi
-        grids with the higher-resolution simulation-based versions.
+        the level geometry, goal positions, and spawn position. If found,
+        replaces the phi grids with the higher-resolution simulation-based
+        versions.
 
         Args:
             tile_dic: Simulator tile dictionary {(col, row): tile_type}.
             switch_pos: Exit switch pixel position (x, y).
             exit_pos: Exit door pixel position (x, y).
+            spawn_pos: Ninja spawn pixel position (x, y). Cache key includes
+                spawn since reachable set depends on it.
 
         Returns:
             True if simulation phi grids were loaded, False otherwise.
@@ -156,17 +160,16 @@ class LevelBasedPathDistanceCache:
             return False
 
         try:
-            from ...simulation_pbrs.phi_grid_builder import (
-                SimulationPhiGridBuilder,
-                _compute_cache_key,
-            )
+            from ...simulation_pbrs.phi_grid_builder import _compute_cache_key
             from ...simulation_pbrs.grid_classifier import (
                 GRID_WIDTH as SIM_WIDTH,
                 GRID_HEIGHT as SIM_HEIGHT,
                 GRID_RESOLUTION as SIM_RESOLUTION,
             )
 
-            cache_key = _compute_cache_key(tile_dic, switch_pos, exit_pos)
+            cache_key = _compute_cache_key(
+                tile_dic, switch_pos, exit_pos, spawn_pos
+            )
             cache_path = os.path.join(
                 self._simulation_phi_dir, f"sim_phi_{cache_key}.npz"
             )

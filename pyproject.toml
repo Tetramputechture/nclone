@@ -31,6 +31,8 @@ dependencies = [
     "opencv-python>=4.12.0",
     "albumentations>=2.0.8",
     "pillow>=10.0.0",
+    "torch>=2.0.0",
+    "h5py>=3.7.0",
 ]
 dynamic = ["version"]
 
@@ -49,6 +51,9 @@ dev = [
     "flake8>=4.0.0",
     "mypy>=0.950",
     "ruff>=0.13.0",
+]
+offline_rl = [
+    "tensorboard>=2.12.0",
 ]
 docs = [
     "sphinx>=4.0.0",

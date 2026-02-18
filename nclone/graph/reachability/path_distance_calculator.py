@@ -101,9 +101,7 @@ class CachedPathDistanceCalculator:
         self.level_cache: Optional[LevelBasedPathDistanceCache] = (
             None
             if has_shared_cache
-            else LevelBasedPathDistanceCache(
-                simulation_phi_dir=simulation_phi_dir
-            )
+            else LevelBasedPathDistanceCache(simulation_phi_dir=simulation_phi_dir)
         )
         self.level_data: Optional[LevelData] = None
 
@@ -351,7 +349,9 @@ class CachedPathDistanceCalculator:
 
         # Standard path: build caches locally
         if self.level_cache is None:
-            self.level_cache = LevelBasedPathDistanceCache()
+            self.level_cache = LevelBasedPathDistanceCache(
+                simulation_phi_dir=self._simulation_phi_dir
+            )
 
         # Build mine proximity cache FIRST (needed for level cache building)
         # CRITICAL: This MUST be done before level cache building to ensure

@@ -37,43 +37,19 @@ def get_cached_sqrt(n):
 
 
 def gather_segments_from_region(sim, x1, y1, x2, y2):
-    """Return active collidable segments from tiles overlapped by a rectangle.
+    """Return all active collidable segments from cells overlapped by a rectangle.
 
-    This is a grid cell-based query (24x24 px cells). It iterates over the cells
-    overlapped by the axis-aligned rectangle defined by (x1, y1) and (x2, y2),
-    and concatenates the segments listed in ``sim.segment_dic[(xcell, ycell)]``.
-
-    Notes:
-    - Accurate and fast for our fixed 44x25 map size and small query regions.
-    - Avoids the overhead/complexity of a quadtree; tiles are static per map.
+    Iterates over cells covered by the query rectangle and returns all active
+    segments registered in those cells via ``sim.segment_dic``. No additional
+    bounding-box filtering is applied -- callers perform exact collision tests.
     """
-    # Use optimized spatial index if available
-    if hasattr(sim, "spatial_segment_index") and sim.spatial_segment_index is not None:
-        return sim.spatial_segment_index.query_region(x1, y1, x2, y2)
-    else:
-        print("No spatial segment index available")
-
-    # Fallback to original implementation
-    # Compute bounds and cell ranges (optimization - precompute once)
-    min_x = min(x1, x2)
-    min_y = min(y1, y2)
-    max_x = max(x1, x2)
-    max_y = max(y1, y2)
-
-    # Convert bounds to inclusive cell index ranges and clamp to map grid
-    min_cell_x = clamp(math.floor(min_x / 24), 0, 43)
-    max_cell_x = clamp(math.floor(max_x / 24), 0, 43)
-    min_cell_y = clamp(math.floor(min_y / 24), 0, 24)
-    max_cell_y = clamp(math.floor(max_y / 24), 0, 24)
-
-    segments = []
-    segment_dic = sim.segment_dic
-    for xcell in range(min_cell_x, max_cell_x + 1):
-        for ycell in range(min_cell_y, max_cell_y + 1):
-            cell_key = (xcell, ycell)
-            if cell_key in segment_dic:
-                segments.extend(seg for seg in segment_dic[cell_key] if seg.active)
-    return segments
+    cx1, cy1 = clamp_cell(math.floor(x1 / 24), math.floor(y1 / 24))
+    cx2, cy2 = clamp_cell(math.floor(x2 / 24), math.floor(y2 / 24))
+    cells = product(range(cx1, cx2 + 1), range(cy1, cy2 + 1))
+    segment_list = []
+    for cell in cells:
+        segment_list += [segment for segment in sim.segment_dic[cell] if segment.active]
+    return segment_list
 
 
 def gather_entities_from_neighbourhood(sim, xpos, ypos):
@@ -130,47 +106,19 @@ def sweep_circle_vs_tiles(sim, xpos_old, ypos_old, dx, dy, radius):
 
 def get_single_closest_point(sim, xpos, ypos, radius, segments=None):
     """Find the closest point belonging to a collidable segment from the given position.
-
-    Args:
-        sim: Simulator instance
-        xpos: X position to check from
-        ypos: Y position to check from
-        radius: Radius to search within
-        segments: Optional pre-gathered segments list (optimization to avoid re-gathering)
+    Return result and position of the closest point. The result is 0 if no closest point
+    found, 1 if belongs to outside edge, -1 if belongs from inside edge.
     """
     if segments is None:
         segments = gather_segments_from_region(
             sim, xpos - radius, ypos - radius, xpos + radius, ypos + radius
         )
-    shortest_distance = float("inf")
+    shortest_distance = 9999999
     result = 0
     closest_point = None
-
-    # Pre-compute query bounds for AABB rejection test
-    query_min_x = xpos - radius
-    query_min_y = ypos - radius
-    query_max_x = xpos + radius
-    query_max_y = ypos + radius
-
     for segment in segments:
-        # Fast AABB rejection test - skip segments that can't possibly be closest
-        seg_bounds = segment.get_bounds()
-        seg_min_x, seg_min_y, seg_max_x, seg_max_y = seg_bounds
-
-        # Check if segment bounds overlap query bounds
-        if (
-            seg_max_x < query_min_x
-            or seg_min_x > query_max_x
-            or seg_max_y < query_min_y
-            or seg_min_y > query_max_y
-        ):
-            continue  # Skip segment - no overlap possible
-
-        # Expensive closest point calculation (only if AABB test passes)
         is_back_facing, a, b = segment.get_closest_point(xpos, ypos)
         distance_sq = (xpos - a) ** 2 + (ypos - b) ** 2
-
-        # This is to prioritize correct side collisions when multiple close segments
         if not is_back_facing:
             distance_sq -= 0.1
         if distance_sq < shortest_distance:
@@ -208,30 +156,34 @@ def overlap_circle_vs_circle(xpos1, ypos1, radius1, xpos2, ypos2, radius2):
 
 
 def is_empty_row(sim, xcoord1, xcoord2, ycoord, dir):
-    """Return true if the cell has no solid horizontal edge in the specified direction."""
+    """Return true if the row of half cells have no solid horizontal edge in the specified direction.
+    Checks both tile and door grid edge dictionaries (matching original)."""
     xcoords = range(xcoord1, xcoord2 + 1)
     if dir == 1:
-        return not any(
-            sim.hor_grid_edge_dic[clamp_half_cell(xcoord, ycoord + 1)]
-            for xcoord in xcoords
+        return not (
+            any(sim.hor_grid_edge_dic[clamp_half_cell(xcoord, ycoord + 1)] for xcoord in xcoords) or
+            any(sim.door_hor_grid_edge_dic[clamp_half_cell(xcoord, ycoord + 1)] for xcoord in xcoords)
         )
     if dir == -1:
-        return not any(
-            sim.hor_grid_edge_dic[clamp_half_cell(xcoord, ycoord)] for xcoord in xcoords
+        return not (
+            any(sim.hor_grid_edge_dic[clamp_half_cell(xcoord, ycoord)] for xcoord in xcoords) or
+            any(sim.door_hor_grid_edge_dic[clamp_half_cell(xcoord, ycoord)] for xcoord in xcoords)
         )
 
 
 def is_empty_column(sim, xcoord, ycoord1, ycoord2, dir):
-    """Return true if the cell has no solid vertical edge in the specified direction."""
+    """Return true if the column of half cells have no solid vertical edge in the specified direction.
+    Checks both tile and door grid edge dictionaries (matching original)."""
     ycoords = range(ycoord1, ycoord2 + 1)
     if dir == 1:
-        return not any(
-            sim.ver_grid_edge_dic[clamp_half_cell(xcoord + 1, ycoord)]
-            for ycoord in ycoords
+        return not (
+            any(sim.ver_grid_edge_dic[clamp_half_cell(xcoord + 1, ycoord)] for ycoord in ycoords) or
+            any(sim.door_ver_grid_edge_dic[clamp_half_cell(xcoord + 1, ycoord)] for ycoord in ycoords)
         )
     if dir == -1:
-        return not any(
-            sim.ver_grid_edge_dic[clamp_half_cell(xcoord, ycoord)] for ycoord in ycoords
+        return not (
+            any(sim.ver_grid_edge_dic[clamp_half_cell(xcoord, ycoord)] for ycoord in ycoords) or
+            any(sim.door_ver_grid_edge_dic[clamp_half_cell(xcoord, ycoord)] for ycoord in ycoords)
         )
 
 

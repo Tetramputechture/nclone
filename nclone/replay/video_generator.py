@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 
+from ..gym_environment.config import EnvironmentConfig, RenderConfig
 from ..gym_environment.npp_environment import NppEnvironment
 from .binary_replay_parser import BinaryReplayParser
 from .npp_attract_decoder import NppAttractDecoder
@@ -227,12 +228,17 @@ class VideoGenerator:
     def _get_env(self, custom_map_path: Optional[str] = None) -> NppEnvironment:
         """Get or create environment instance for rendering."""
         if self.env is None:
-            self.env = NppEnvironment(
-                render_mode="grayscale_array",
-                enable_animation=True,
-                enable_debug_overlay=False,
+            config = EnvironmentConfig(
+                render=RenderConfig(
+                    render_mode="rgb_array",
+                    enable_animation=True,
+                    enable_debug_overlay=False,
+                ),
                 custom_map_path=custom_map_path,
+                enable_visual_observations=True,
+                frame_skip=1,
             )
+            self.env = NppEnvironment(config)
         return self.env
 
     def generate_video_from_jsonl(

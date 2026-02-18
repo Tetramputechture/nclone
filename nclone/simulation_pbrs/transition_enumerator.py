@@ -208,7 +208,7 @@ class TransitionEnumerator:
 
                 try:
                     # Inject starting state
-                    self._inject_state(ninja, px, py, vx0, vy0)
+                    self._inject_state(sim, ninja, px, py, vx0, vy0)
 
                     # Track the last recorded destination to avoid duplicate
                     # edges at the same destination for consecutive frames
@@ -250,6 +250,7 @@ class TransitionEnumerator:
 
     def _inject_state(
         self,
+        sim,
         ninja,
         x: float,
         y: float,
@@ -258,14 +259,19 @@ class TransitionEnumerator:
     ) -> None:
         """Inject position and velocity state into ninja.
 
-        Mirrors PhysicsStepWrapper._inject_state() but simplified for
-        zero-jump-duration initialization (we always start fresh).
+        Uses native sim's batch inject when available (faster). Otherwise
+        sets Python ninja properties directly.
 
         Args:
-            ninja: Ninja object to inject state into
+            sim: Simulator instance (Python or NativeSimAdapter)
+            ninja: Ninja object (or proxy)
             x, y: Position in pixels
             vx, vy: Velocity in pixels/frame
         """
+        if hasattr(sim, "inject_ninja_for_enumeration"):
+            sim.inject_ninja_for_enumeration(x, y, vx, vy)
+            return
+
         from ..constants.physics_constants import GRAVITY_FALL
 
         ninja.xpos = x

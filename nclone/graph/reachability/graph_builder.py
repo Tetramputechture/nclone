@@ -17,10 +17,14 @@ import numpy as np
 from typing import Dict, Set, Tuple, List, Any, Optional
 from collections import OrderedDict
 
+import math
+
 from .tile_connectivity_loader import TileConnectivityLoader
 from .entity_mask import EntityMask
 from .spatial_hash import SpatialHash
 from .surface_area import flood_fill_reachable_nodes
+from nclone.tile_definitions import TILE_SEGMENT_DIAG_MAP
+
 logger = logging.getLogger(__name__)
 
 # Hardcoded cell size as per N++ constants
@@ -41,6 +45,49 @@ _SLOPE_TILES = frozenset(
 )
 _DIAGONAL_DIRECTIONS = frozenset({"NE", "SE", "SW", "NW"})
 _CARDINAL_DIRECTIONS = frozenset({"N", "S", "E", "W"})
+
+
+# ---------------------------------------------------------------------------
+# Diagonal tile normal cache  (computed once from TILE_SEGMENT_DIAG_MAP)
+# ---------------------------------------------------------------------------
+_DIAG_TILE_NORMALS: Dict[int, Tuple[float, float]] = {}
+
+
+def _diag_tile_normal(tile_type: int) -> Tuple[float, float]:
+    """Return the outward floor-facing unit normal for a diagonal tile.
+
+    Uses the same formula as ``surface_extraction._compute_linear_normal``:
+    normal = (-py, px) / length  where (px, py) is the segment direction.
+
+    Only tiles whose resulting normal has ``ny < -0.3`` (upward-facing
+    in screen coords) are considered floor surfaces.  Other diagonal
+    tiles return the flat-floor default ``(0, -1)``.
+    """
+    if tile_type in _DIAG_TILE_NORMALS:
+        return _DIAG_TILE_NORMALS[tile_type]
+
+    seg = TILE_SEGMENT_DIAG_MAP.get(tile_type)
+    if seg is None:
+        _DIAG_TILE_NORMALS[tile_type] = (0.0, -1.0)
+        return (0.0, -1.0)
+
+    (x1, y1), (x2, y2) = seg
+    px, py = x2 - x1, y2 - y1
+    length = math.sqrt(px * px + py * py)
+    if length < 1e-12:
+        _DIAG_TILE_NORMALS[tile_type] = (0.0, -1.0)
+        return (0.0, -1.0)
+
+    nx, ny = -py / length, px / length
+
+    # Only use diagonal normal if it faces upward (floor surface)
+    if ny < -0.3:
+        result = (nx, ny)
+    else:
+        result = (0.0, -1.0)
+
+    _DIAG_TILE_NORMALS[tile_type] = result
+    return result
 
 
 def _check_subnode_validity_simple(tile_type: int, pixel_x: int, pixel_y: int) -> bool:
@@ -880,8 +927,11 @@ class GraphBuilder:
         spatial_hash = SpatialHash(cell_size=CELL_SIZE)
         spatial_hash.build(list(adjacency.keys()))
 
-        # Pre-compute node physics properties (grounded, walled) for physics-aware pathfinding
-        node_physics_cache = self._compute_node_physics_cache(base_graph["adjacency"])
+        # Pre-compute node physics properties (grounded, walled, floor_normal)
+        node_physics_cache = self._compute_node_physics_cache(
+            base_graph["adjacency"],
+            base_graph.get("tiles"),
+        )
 
         result = {
             "adjacency": adjacency,  # Masked adjacency (for pathfinding)
@@ -918,21 +968,27 @@ class GraphBuilder:
     def _compute_node_physics_cache(
         self,
         base_adjacency: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]],
-    ) -> Dict[Tuple[int, int], Dict[str, bool]]:
-        """
-        Pre-compute physics properties for all nodes to optimize pathfinding.
+        tiles: Optional[np.ndarray] = None,
+    ) -> Dict[Tuple[int, int], Dict]:
+        """Pre-compute physics properties for all nodes.
 
-        Caches grounded and walled status for each node, eliminating expensive
-        per-edge checks during A* pathfinding. This is a one-time O(nodes) cost
-        that enables O(1) lookups during physics-aware cost calculations.
+        Caches grounded/walled status and floor normal for each node,
+        eliminating expensive per-edge checks during pathfinding and
+        providing surface classification for hull-based jump edges.
 
         Args:
-            base_adjacency: Base graph adjacency (pre-entity-mask) for physics checks
+            base_adjacency: Base graph adjacency (pre-entity-mask) for physics checks.
+            tiles: Optional 2D tile-type array.  When provided, grounded nodes
+                get a ``floor_normal`` entry ``(nx, ny)`` derived from the
+                diagonal tile geometry.
 
         Returns:
-            Dict mapping node positions to {"grounded": bool, "walled": bool}
+            Dict mapping node positions to
+            ``{"grounded": bool, "walled": bool, "floor_normal": (nx, ny)}``.
+            ``floor_normal`` is ``(0.0, -1.0)`` for flat surfaces and absent
+            for non-grounded nodes.
         """
-        physics_cache = {}
+        physics_cache: Dict[Tuple[int, int], Dict] = {}
 
         for node_pos in base_adjacency.keys():
             x, y = node_pos
@@ -956,12 +1012,50 @@ class GraphBuilder:
                 left_pos not in base_adjacency or right_pos not in base_adjacency
             )
 
-            physics_cache[node_pos] = {
+            entry: Dict = {
                 "grounded": is_grounded,
                 "walled": is_walled,
             }
 
+            # Compute floor normal for grounded nodes when tile data available
+            if is_grounded and tiles is not None:
+                entry["floor_normal"] = self._floor_normal_at(x, y, tiles)
+
+            physics_cache[node_pos] = entry
+
         return physics_cache
+
+    @staticmethod
+    def _floor_normal_at(
+        x: int,
+        y: int,
+        tiles: np.ndarray,
+    ) -> Tuple[float, float]:
+        """Derive the floor normal for a grounded node at pixel ``(x, y)``.
+
+        Strategy:
+        1. Check the tile the node sits in -- if it's a diagonal tile,
+           use that tile's normal (the ninja is standing ON the slope).
+        2. Otherwise check the tile directly below -- if diagonal, use it.
+        3. Default to flat ``(0, -1)``.
+        """
+        height, width = tiles.shape
+
+        # Tile the node is in
+        tx, ty = x // CELL_SIZE, y // CELL_SIZE
+        if 0 <= ty < height and 0 <= tx < width:
+            tt = int(tiles[ty, tx])
+            if tt in TILE_SEGMENT_DIAG_MAP:
+                return _diag_tile_normal(tt)
+
+        # Tile below
+        ty_below = (y + SUB_NODE_SIZE) // CELL_SIZE
+        if 0 <= ty_below < height and 0 <= tx < width:
+            tt_below = int(tiles[ty_below, tx])
+            if tt_below in TILE_SEGMENT_DIAG_MAP:
+                return _diag_tile_normal(tt_below)
+
+        return (0.0, -1.0)
 
     def _apply_geometric_edge_weights(
         self,
@@ -1011,7 +1105,7 @@ class GraphBuilder:
         # Apply geometric edge weights (cardinal=1.0, diagonal=sqrt(2))
         self._apply_geometric_edge_weights(adjacency)
 
-        return {"adjacency": adjacency}
+        return {"adjacency": adjacency, "tiles": tiles}
 
     def _find_player_spawn(
         self, level_data: Dict[str, Any], tiles: np.ndarray

@@ -278,7 +278,6 @@ class Ninja:
         self.ypos = self.ypos_old + time * dy
 
         # Gather segments once for the entire depenetration loop
-        # The ninja moves very little during depenetration, so segments rarely change
         rad = NINJA_RADIUS
         segments = gather_segments_from_region(
             self.sim, self.xpos - rad, self.ypos - rad, self.xpos + rad, self.ypos + rad
@@ -317,28 +316,26 @@ class Ninja:
                 if xpos == 49.153536108584795:
                     dx = 2**-47
 
-            # Compute distance squared first for early exit optimization
-            dx_sq = dx * dx
-            dy_sq = dy * dy
-            dist_sq = dx_sq + dy_sq
-
-            # Early exit before expensive sqrt if distance is too small
-            if dist_sq < 1e-16:  # Equivalent to dist < 1e-8
-                break
-
-            dist = math.sqrt(dist_sq)
+            dist = math.sqrt(dx**2 + dy**2)
             depen_len = NINJA_RADIUS - dist * result
-            if depen_len < 0.0000001:
-                break
-
-            # Compute normalized direction once and reuse
-            inv_dist = 1.0 / dist
-            norm_dx = dx * inv_dist
-            norm_dy = dy * inv_dist
-
-            # Apply depenetration using precomputed normalized direction
-            depen_x = norm_dx * depen_len
-            depen_y = norm_dy * depen_len
+            if dist == 0 or depen_len < 0.0000001:
+                # Write back before returning, matching original's direct self.* updates
+                self.xpos = xpos
+                self.ypos = ypos
+                self.xspeed = xspeed
+                self.yspeed = yspeed
+                self.x_crush = x_crush
+                self.y_crush = y_crush
+                self.crush_len = crush_len
+                self.ceiling_count = ceiling_count
+                self.ceiling_normal_x = ceiling_normal_x
+                self.ceiling_normal_y = ceiling_normal_y
+                self.floor_count = floor_count
+                self.floor_normal_x = floor_normal_x
+                self.floor_normal_y = floor_normal_y
+                return
+            depen_x = dx / dist * depen_len
+            depen_y = dy / dist * depen_len
             xpos += depen_x
             ypos += depen_y
             x_crush += depen_x
@@ -348,20 +345,20 @@ class Ninja:
             # Project velocity onto surface only if moving towards surface
             dot_product = xspeed * dx + yspeed * dy
             if dot_product < 0:
-                cross_product = xspeed * dy - yspeed * dx
-                inv_dist_sq = inv_dist * inv_dist
-                xspeed = cross_product * inv_dist_sq * dy
-                yspeed = cross_product * inv_dist_sq * (-dx)
+                xspeed_new = (xspeed * dy - yspeed * dx) / dist**2 * dy
+                yspeed_new = (xspeed * dy - yspeed * dx) / dist**2 * (-dx)
+                xspeed = xspeed_new
+                yspeed = yspeed_new
 
-            # Adjust ceiling/floor variables using precomputed normalized direction
+            # Adjust ceiling/floor variables
             if dy >= -0.0001:
                 ceiling_count += 1
-                ceiling_normal_x += norm_dx
-                ceiling_normal_y += norm_dy
+                ceiling_normal_x += dx / dist
+                ceiling_normal_y += dy / dist
             else:
                 floor_count += 1
-                floor_normal_x += norm_dx
-                floor_normal_y += norm_dy
+                floor_normal_x += dx / dist
+                floor_normal_y += dy / dist
 
         # Write back cached variables to instance
         self.xpos = xpos
@@ -1477,7 +1474,8 @@ class Ninja:
             setattr(self, key, value)
 
     def has_won(self):
-        return self.state == 8
+        """Return True if ninja has won (celebrating state, level completed)."""
+        return self.state == 8  # Celebrating
 
     def has_died(self):
         return self.state == 6 or self.state == 7

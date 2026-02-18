@@ -14,7 +14,8 @@ import hashlib
 import logging
 import os
 import time
-from typing import Dict, Optional, Tuple
+from collections import deque
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -24,11 +25,37 @@ from .backward_dijkstra import backward_dijkstra
 
 logger = logging.getLogger(__name__)
 
+# Type alias for adjacency from TransitionEnumerator
+AdjacencyDict = Dict[Tuple[int, int], List[Tuple[Tuple[int, int], int]]]
+
+
+def _flood_fill_from_spawn(
+    spawn_cell: Tuple[int, int],
+    adjacency: AdjacencyDict,
+) -> Set[Tuple[int, int]]:
+    """BFS from spawn cell through forward adjacency to find all reachable cells.
+
+    Mirrors the logic in flood_fill_reachable_nodes() but operates on the 6px-grid
+    adjacency format from TransitionEnumerator.
+    """
+    reachable: Set[Tuple[int, int]] = set()
+    queue: deque = deque([spawn_cell])
+    visited: Set[Tuple[int, int]] = {spawn_cell}
+    while queue:
+        current = queue.popleft()
+        reachable.add(current)
+        for dest, _cost in adjacency.get(current, []):
+            if dest not in visited:
+                visited.add(dest)
+                queue.append(dest)
+    return reachable
+
 
 def _compute_cache_key(
     tile_dic: Dict[Tuple[int, int], int],
     switch_pos: Tuple[float, float],
     exit_pos: Tuple[float, float],
+    spawn_pos: Tuple[float, float],
 ) -> str:
     """Compute a deterministic cache key from level data and goal positions.
 
@@ -36,15 +63,18 @@ def _compute_cache_key(
         tile_dic: Simulator tile dictionary {(col, row): tile_type}.
         switch_pos: Exit switch pixel position (x, y).
         exit_pos: Exit door pixel position (x, y).
+        spawn_pos: Ninja spawn pixel position (x, y). Reachable set depends on spawn.
 
     Returns:
         A hex string suitable for use as a filename.
     """
     # Deterministic serialization of tile data
     tile_bytes = str(sorted(tile_dic.items())).encode("utf-8")
-    goal_bytes = f"{switch_pos[0]:.1f},{switch_pos[1]:.1f},{exit_pos[0]:.1f},{exit_pos[1]:.1f}".encode(
-        "utf-8"
-    )
+    goal_bytes = (
+        f"{switch_pos[0]:.1f},{switch_pos[1]:.1f},"
+        f"{exit_pos[0]:.1f},{exit_pos[1]:.1f},"
+        f"{spawn_pos[0]:.1f},{spawn_pos[1]:.1f}"
+    ).encode("utf-8")
     combined = tile_bytes + goal_bytes
     return hashlib.sha256(combined).hexdigest()[:16]
 
@@ -122,7 +152,10 @@ class SimulationPhiGridBuilder:
             Tuple of (phi_switch, phi_exit), each a float32 numpy array
             of shape (GRID_WIDTH, GRID_HEIGHT) with values in [-1, 0].
         """
-        cache_key = _compute_cache_key(sim.tile_dic, switch_pos, exit_pos)
+        spawn_pos = (sim.ninja.xpos, sim.ninja.ypos)
+        cache_key = _compute_cache_key(
+            sim.tile_dic, switch_pos, exit_pos, spawn_pos
+        )
 
         # Try loading from cache
         if not force_recompute and self.cache_dir:
@@ -143,12 +176,42 @@ class SimulationPhiGridBuilder:
         logger.info("Step 2/4: Enumerating transitions...")
         adjacency = self.enumerator.enumerate(sim, valid_mask)
 
+        # Step 2.5: Flood fill from spawn to filter to reachable cells only
+        spawn_cell = GridClassifier.pixel_to_cell(spawn_pos[0], spawn_pos[1])
+        reachable_cells = _flood_fill_from_spawn(spawn_cell, adjacency)
+        reachable_count = len(reachable_cells)
+        logger.info(
+            f"  Flood fill from spawn: {reachable_count}/{valid_count} cells "
+            f"reachable from spawn"
+        )
+
+        # Filter adjacency to only reachable cells
+        filtered_adjacency: AdjacencyDict = {}
+        for src, neighbors in adjacency.items():
+            if src not in reachable_cells:
+                continue
+            filtered_neighbors = [
+                (dest, cost) for dest, cost in neighbors if dest in reachable_cells
+            ]
+            if filtered_neighbors:
+                filtered_adjacency[src] = filtered_neighbors
+
+        # Build reachable_mask for backward_dijkstra goal cell search
+        reachable_mask = np.zeros((GRID_WIDTH, GRID_HEIGHT), dtype=bool)
+        for ix, iy in reachable_cells:
+            if 0 <= ix < GRID_WIDTH and 0 <= iy < GRID_HEIGHT:
+                reachable_mask[ix, iy] = True
+
         # Step 3: Backward Dijkstra from each goal
         logger.info("Step 3/4: Running backward Dijkstra from switch...")
-        d_switch = backward_dijkstra(adjacency, switch_pos, valid_mask)
+        d_switch = backward_dijkstra(
+            filtered_adjacency, switch_pos, reachable_mask
+        )
 
         logger.info("Step 3/4: Running backward Dijkstra from exit...")
-        d_exit = backward_dijkstra(adjacency, exit_pos, valid_mask)
+        d_exit = backward_dijkstra(
+            filtered_adjacency, exit_pos, reachable_mask
+        )
 
         # Step 4: Normalize to phi
         logger.info("Step 4/4: Normalizing to phi grids...")
@@ -160,7 +223,9 @@ class SimulationPhiGridBuilder:
 
         # Cache to disk
         if self.cache_dir:
-            self._save_to_cache(cache_key, phi_switch, phi_exit, d_switch, d_exit)
+            self._save_to_cache(
+                cache_key, phi_switch, phi_exit, d_switch, d_exit, reachable_mask
+            )
 
         return phi_switch, phi_exit
 
@@ -214,10 +279,11 @@ class SimulationPhiGridBuilder:
         phi_exit: np.ndarray,
         d_switch: np.ndarray,
         d_exit: np.ndarray,
+        reachable_mask: np.ndarray,
     ) -> None:
         """Save phi grids to disk cache.
 
-        Also saves raw distance grids for debugging/visualization.
+        Also saves raw distance grids and reachable mask for debugging/visualization.
 
         Args:
             cache_key: Cache key string.
@@ -225,6 +291,7 @@ class SimulationPhiGridBuilder:
             phi_exit: Normalized phi grid for exit goal.
             d_switch: Raw frame-count distance grid for switch.
             d_exit: Raw frame-count distance grid for exit.
+            reachable_mask: Boolean mask of cells reachable from spawn.
         """
         if not self.cache_dir:
             return
@@ -239,6 +306,7 @@ class SimulationPhiGridBuilder:
                 phi_exit=phi_exit,
                 d_switch=d_switch,
                 d_exit=d_exit,
+                reachable_mask=reachable_mask,
             )
             logger.info(f"Saved phi grids to {cache_path}")
         except Exception as e:

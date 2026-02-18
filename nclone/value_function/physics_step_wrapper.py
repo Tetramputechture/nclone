@@ -1,236 +1,243 @@
-"""Physics step wrapper for stateless value iteration.
+"""Physics step wrapper for stateless simulation queries.
 
-This module provides PhysicsStepWrapper, which wraps the existing
-Ninja and Simulator physics code to provide a stateless interface
-suitable for value iteration. The wrapper uses save_state() and
-restore_state() to enable querying physics outcomes from arbitrary
-states without side effects.
+This module provides PhysicsStepWrapper, which wraps the nclone_native Rust
+simulator to provide a stateless interface suitable for value precomputation
+and runtime PBRS evaluation.
+
+Uses save_ninja_state/restore_ninja_state and inject_ninja_for_value_iteration
+for 5D state injection (position, velocity, jump_duration).
 
 Key design principles:
-- NO physics code duplication - reuses ninja.py entirely
-- Exact behavior match - uses identical collision, gravity, etc.
-- Easy maintenance - physics fixes automatically propagate
+- Uses native Rust physics for performance
+- Exact behavior match with game physics
+- Provides tile_dic and entity_dic for level inspection and goal extraction
+- Exposes contact-state queries for surface-graph PBRS
 """
 
-from typing import Tuple, Optional
-from ..nsim import Simulator
-from ..constants.physics_constants import (
-    GRAVITY_FALL,
-    GRAVITY_JUMP,
-    MAX_JUMP_DURATION,
-)
-
+from typing import Dict, Tuple, Optional, List, Any
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Entity type constants (match nclone-native types.rs)
+_ENTITY_EXIT_DOOR = 3
+_ENTITY_EXIT_SWITCH = 4
+
+
+def _build_entity_dic_from_rust(entities) -> dict:
+    """Build entity_dic from Rust EntitySnapshot list for position validity.
+    Matches Python entity_dic layout: entity_dic[1], entity_dic[21] for toggle mines.
+    """
+    entity_dic = {1: [], 3: [], 4: [], 6: [], 7: [], 21: []}
+
+    class _EntityProxy:
+        """Minimal proxy for position_validity overlap check."""
+
+        def __init__(self, x: float, y: float, state: int):
+            self.xpos = x
+            self.ypos = y
+            self.state = state
+
+    for e in entities:
+        t = e.entity_type
+        if t == 1:  # ToggleMine (untoggled)
+            entity_dic[1].append(_EntityProxy(e.x, e.y, e.state))
+        elif t == 21:  # ToggleMineToggled
+            entity_dic[21].append(_EntityProxy(e.x, e.y, e.state))
+
+    return entity_dic
+
 
 class PhysicsStepWrapper:
-    """Stateless physics step interface for value iteration.
-    
-    This class wraps the existing Simulator and Ninja physics code to
-    provide a stateless query interface. Given any state and action,
-    it returns the resulting next state without modifying the actual
+    """Stateless physics step interface for value iteration using native Rust simulator.
+
+    Wraps nclone_native.Simulator to provide stateless queries. Given any state
+    and action, returns the resulting next state without modifying the actual
     simulator state.
-    
-    Uses Ninja.save_state() / restore_state() and Simulator.tick_physics_only()
-    to execute physics from arbitrary states without side effects.
-    
-    IMPORTANT: By default, simulates multiple physics frames per "step" to ensure
-    meaningful state transitions. With grid resolution of 12px and max speed ~3px/frame,
-    we need ~4 frames for the ninja to cross a cell boundary.
-    
+
+    Uses save_ninja_state/restore_ninja_state and inject_ninja_for_value_iteration
+    for 5D state injection (position, velocity, jump_duration).
+
     Attributes:
-        sim: Reference to the Simulator instance
-        frames_per_step: Number of physics frames to simulate per step (default 5)
+        sim: Reference to nclone_native.Simulator
+        frames_per_step: Number of physics frames per step (default 5)
+        tile_dic: {(col, row): tile_type} for position validity / compatibility
+        entity_dic: {entity_type: [entities]} for position validity / compatibility
     """
-    
-    def __init__(self, simulator: Simulator, frames_per_step: int = 5):
+
+    def __init__(
+        self,
+        simulator=None,
+        map_data: Optional[List[int]] = None,
+        map_path: Optional[str] = None,
+        frames_per_step: int = 5,
+    ):
         """Initialize physics step wrapper.
-        
+
         Args:
-            simulator: Simulator instance with loaded level
-            frames_per_step: Number of physics frames per step (default 5).
-                            With 12px grid and ~3px/frame max speed, need ~4 frames
-                            to cross a cell boundary. 5 provides some margin.
+            simulator: nclone_native.Simulator instance (optional)
+            map_data: Raw map bytes as list of ints (optional)
+            map_path: Path to .map file (optional)
+            frames_per_step: Number of physics frames per step (default 5)
+
+        Exactly one of simulator, map_data, or map_path must be provided.
         """
-        self.sim = simulator
+        from nclone_native import Simulator as NativeSimulator
+
+        # Value function precomputation always uses native Rust physics (no Python fallback)
+        if simulator is not None:
+            self._sim = simulator
+        elif map_data is not None:
+            self._sim = NativeSimulator.load(map_data)
+        elif map_path is not None:
+            with open(map_path, "rb") as f:
+                map_data = [int(b) for b in f.read()]
+            self._sim = NativeSimulator.load(map_data)
+        else:
+            raise ValueError("Must provide one of: simulator, map_data, or map_path")
+
+        self.sim = self._sim  # Alias for compatibility
         self.frames_per_step = frames_per_step
-        
-        # Validate simulator has a ninja
-        if self.sim.ninja is None:
-            raise ValueError("Simulator must have a ninja (call sim.reset() first)")
-    
-    def step(self, state: Tuple[float, float, float, float, int], 
-             action: Tuple[int, int]) -> Tuple[Tuple[float, float, float, float, int], bool]:
+
+        # Verify we're using native Rust (has inject_ninja_for_value_iteration, get_ninja_velocity)
+        if not hasattr(self._sim, "inject_ninja_for_value_iteration") or not hasattr(
+            self._sim, "get_ninja_velocity"
+        ):
+            raise RuntimeError(
+                "PhysicsStepWrapper requires nclone_native Rust simulator "
+                "(must have inject_ninja_for_value_iteration, get_ninja_velocity)"
+            )
+
+        # Build tile_dic and entity_dic for position validity / goal extraction
+        self.tile_dic = dict(self._sim.get_tile_dict())
+        state = self._sim.get_state()
+        self.entity_dic = _build_entity_dic_from_rust(state.entities)
+
+    def get_goal_position(self, goal_type: str) -> Tuple[float, float]:
+        """Extract goal position from level entities.
+
+        Args:
+            goal_type: "switch" or "exit"
+
+        Returns:
+            Goal position (x, y) in pixels
+        """
+        state = self._sim.get_state()
+        for e in state.entities:
+            if goal_type == "switch" and e.entity_type == _ENTITY_EXIT_SWITCH:
+                return (e.x, e.y)
+            if goal_type == "exit" and e.entity_type == _ENTITY_EXIT_DOOR:
+                return (e.x, e.y)
+        raise ValueError(f"Goal {goal_type} not found in level")
+
+    def step(
+        self,
+        state: Tuple[float, float, float, float, int],
+        action: Tuple[int, int],
+    ) -> Tuple[Tuple[float, float, float, float, int], bool]:
         """Execute multiple physics frames from given state with constant action.
-        
-        This method simulates `frames_per_step` physics frames to ensure meaningful
-        state transitions. With grid resolution of 12px and max speed ~3px/frame,
-        we need multiple frames for the ninja to cross cell boundaries.
-        
-        This method:
-        1. Saves current ninja state
-        2. Injects requested state into ninja
-        3. Executes physics for `frames_per_step` frames
-        4. Extracts result state
-        5. Restores original ninja state
-        
+
         Args:
             state: (x, y, vx, vy, jump_duration) in pixels/frames
-                x, y: Position in pixels
-                vx, vy: Velocity in pixels/frame
-                jump_duration: Frames since jump started (0 if not jumping)
             action: (h_input, jump_input)
-                h_input: Horizontal input in {-1, 0, 1}
-                jump_input: Jump input in {0, 1}
-        
+
         Returns:
-            Tuple of (next_state, is_death):
-                next_state: Same format as input state
-                is_death: True if ninja died during any frame, False otherwise
+            Tuple of (next_state, is_death)
         """
-        # Save current state
-        snapshot = self.sim.ninja.save_state()
-        
-        # Inject requested state into ninja
+        snapshot = self._sim.save_ninja_state()
+
         x, y, vx, vy, jump_dur = state
-        self._inject_state(x, y, vx, vy, jump_dur)
-        
-        # Execute multiple physics frames with same action
+        self._sim.inject_ninja_for_value_iteration(x, y, vx, vy, jump_dur)
+
         h_input, jump_input = action
         is_death = False
-        
+
         try:
-            for frame in range(self.frames_per_step):
-                self.sim.tick_physics_only(h_input, jump_input)
-                
-                # Check for death after each frame
-                if self.sim.ninja.state in (6, 7):
+            for _ in range(self.frames_per_step):
+                self._sim.tick_physics_only(h_input, jump_input)
+                if self._sim.get_ninja_state_code() in (6, 7):
                     is_death = True
                     break
         except Exception as e:
-            # If physics fails, restore and re-raise
-            self.sim.ninja.restore_state(snapshot)
+            self._sim.restore_ninja_state(snapshot)
             raise RuntimeError(f"Physics step failed: {e}") from e
-        
-        # Extract result
+
         next_state = (
-            self.sim.ninja.xpos,
-            self.sim.ninja.ypos,
-            self.sim.ninja.xspeed,
-            self.sim.ninja.yspeed,
-            self.sim.ninja.jump_duration,
+            self._sim.get_ninja_pos()[0],
+            self._sim.get_ninja_pos()[1],
+            self._sim.get_ninja_velocity()[0],
+            self._sim.get_ninja_velocity()[1],
+            self._sim.get_ninja_jump_duration(),
         )
-        
-        # Restore original state
-        self.sim.ninja.restore_state(snapshot)
-        
+
+        self._sim.restore_ninja_state(snapshot)
         return next_state, is_death
-    
-    def _inject_state(self, x: float, y: float, vx: float, vy: float, 
-                      jump_dur: int):
-        """Inject state into ninja for physics query.
-        
-        This method sets the ninja's position, velocity, and jump state
-        to match the requested query state. It also sets derived state
-        (airborn, applied_gravity, etc.) to be consistent with the
-        core state.
-        
-        IMPORTANT: We default to airborn=True because we cannot know from
-        the 5D state alone whether the ninja is on the ground. The physics
-        tick will correctly determine ground contact via collide_vs_tiles().
-        Setting airborn=False incorrectly would skip airborne physics logic
-        and could cause wrong behavior at jump apex or during horizontal flight.
-        
-        Args:
-            x, y: Position in pixels
-            vx, vy: Velocity in pixels/frame
-            jump_dur: Frames since jump started (0 if not jumping)
-        """
-        ninja = self.sim.ninja
-        
-        # Set core state
-        ninja.xpos = x
-        ninja.ypos = y
-        ninja.xspeed = vx
-        ninja.yspeed = vy
-        ninja.jump_duration = jump_dur
-        
-        # Set previous position/velocity (affects collision detection)
-        # For query purposes, assume previous state was slightly behind current
-        ninja.xpos_old = x - vx
-        ninja.ypos_old = y - vy
-        ninja.xspeed_old = vx
-        ninja.yspeed_old = vy
-        
-        # Set derived state based on jump_duration
-        # States: 0=Immobile, 1=Running, 2=Ground sliding, 3=Jumping, 4=Falling, 5=Wall sliding
-        if jump_dur > 0 and jump_dur < MAX_JUMP_DURATION:
-            # Currently in active jump (reduced gravity)
-            ninja.state = 3  # Jumping state
-            ninja.applied_gravity = GRAVITY_JUMP
-            ninja.airborn = True
-        else:
-            # Not actively jumping - use Falling state as safe default
-            # The physics tick will detect ground contact and adjust state
-            # We use state=4 (Falling) because:
-            # - It's the correct state if ninja is airborne
-            # - If ninja is actually grounded, collide_vs_tiles() will set
-            #   floor_count > 0 and think() will transition to correct state
-            ninja.state = 4  # Falling state (safe default)
-            ninja.applied_gravity = GRAVITY_FALL
-            ninja.airborn = True  # Let physics determine actual ground contact
-        
-        # Reset collision state (will be recomputed by collide_vs_tiles)
-        ninja.floor_count = 0
-        ninja.wall_count = 0
-        ninja.ceiling_count = 0
-        ninja.walled = False
-        ninja.wall_normal = 0
-        
-        # Reset buffers (not relevant for stateless queries)
-        ninja.jump_buffer = -1
-        ninja.floor_buffer = -1
-        ninja.wall_buffer = -1
-        ninja.launch_pad_buffer = -1
-        
-        # Reset crush state
-        ninja.is_crushable = False
-        ninja.x_crush = 0
-        ninja.y_crush = 0
-        ninja.crush_len = 0
-        
-        # Reset death tracking
-        ninja.terminal_impact = False
-        ninja.death_cause = None
-    
+
     def is_state_valid(self, state: Tuple[float, float, float, float, int]) -> bool:
-        """Check if a state is within valid bounds.
-        
-        This method checks if position and velocity are within reasonable
-        bounds for the level. Used to filter out obviously invalid states
-        during value iteration.
-        
-        Args:
-            state: (x, y, vx, vy, jump_duration)
-        
-        Returns:
-            True if state is within valid bounds, False otherwise
-        """
+        """Check if a state is within valid bounds."""
+        from ..constants.physics_constants import (
+            MAX_JUMP_DURATION,
+            MAX_HOR_SPEED,
+            TERMINAL_VELOCITY,
+        )
+
         x, y, vx, vy, jump_dur = state
-        
-        # Position bounds (level dimensions)
+
         if x < 0 or x > 1056 or y < 0 or y > 600:
             return False
-        
-        # Velocity bounds (physics limits)
-        from ..constants.physics_constants import MAX_HOR_SPEED, TERMINAL_VELOCITY
         if abs(vx) > MAX_HOR_SPEED * 1.5 or abs(vy) > TERMINAL_VELOCITY * 1.5:
             return False
-        
-        # Jump duration bounds
         if jump_dur < 0 or jump_dur > MAX_JUMP_DURATION:
             return False
-        
+
         return True
+
+    # ------------------------------------------------------------------
+    # Contact-state queries for surface-graph PBRS
+    # ------------------------------------------------------------------
+    def get_state_code(self) -> int:
+        """Return the ninja's current state code.
+
+        Common codes: 0=grounded, 1=jumping, 2=falling,
+        5=wall_sliding, 6=dead, 7=awaiting_death.
+        """
+        return self._sim.get_ninja_state_code()
+
+    def get_contact_info(self) -> Dict[str, Any]:
+        """Read contact information from the NinjaSnapshot.
+
+        Returns a dict with keys:
+            airborn (bool), walled (bool), wall_normal (float),
+            floor_count (int), wall_count (int),
+            floor_normal_x (float), floor_normal_y (float),
+            state_code (int).
+        """
+        state = self._sim.get_state()
+        n = state.ninja
+        return {
+            "airborn": n.airborn,
+            "walled": n.walled,
+            "wall_normal": n.wall_normal,
+            "floor_count": n.floor_count,
+            "wall_count": n.wall_count,
+            "floor_normal_x": n.floor_normalized_x,
+            "floor_normal_y": n.floor_normalized_y,
+            "state_code": n.state,
+        }
+
+    @staticmethod
+    def derive_contact_state(state_code: int) -> int:
+        """Map a ninja state code to a PBRS contact-state constant.
+
+        Python ninja states: 0=Immobile, 1=Running, 2=Ground sliding (all floor),
+        3=Jumping, 4=Falling (airborne), 5=Wall sliding (wall).
+        Native sim uses same codes.
+
+        Returns:
+            0 = CONTACT_FLOOR, 1 = CONTACT_WALL, 2 = CONTACT_AIRBORNE.
+        """
+        if state_code in (0, 1, 2):  # Immobile, Running, Ground sliding
+            return 0
+        if state_code == 5:  # wall sliding
+            return 1
+        return 2  # jumping / falling / dead / other

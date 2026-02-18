@@ -1,57 +1,79 @@
-"""Value function precomputation for optimal PBRS.
+"""Surface-graph PBRS: exact cost-to-go via physics-based surface graphs.
 
-This module implements precomputed optimal value functions V*(s) for
-Potential-Based Reward Shaping (PBRS). Instead of using heuristic
-edge costs on a position-only graph, we compute the true optimal
-value function over the full state space (position, velocity, jump_frames)
-via backward dynamic programming.
+This module precomputes optimal cost-to-go from every walkable surface
+state to level goals (switch and exit door) using a velocity-augmented
+surface graph and Dijkstra's algorithm.  The result is used as a
+Potential-Based Reward Shaping (PBRS) signal during RL training.
+
+Architecture overview:
+  1. **Surface extraction** -- classify tile collision segments as floor /
+     wall, merge into runs, sample SurfacePoint positions.
+  2. **Surface graph** -- build velocity-augmented nodes (position x
+     discretised velocity), connect via physics-simulated edges.
+  3. **Dijkstra** -- backward shortest-path from goal nodes gives exact
+     frame-count cost-to-go d*[node].
+  4. **Arc cache** -- spatial hash mapping airborne states to precomputed
+     cost estimates for O(1) runtime lookup.
+  5. **Runtime PBRS** -- per-frame potential Phi(s) = -d*/d_max queried
+     by the reward calculator in the gym environment.
 
 Key components:
-- PhysicsStepWrapper: Stateless interface to ninja physics
-- StateDiscretization: Conversion between continuous and discrete states
-- ValueIteration: Bellman updates for computing V*
-- PrecomputedPBRS: Runtime lookup of precomputed potentials
-- TwoPhaseValuePBRS: Two-goal support (switch + exit)
+  - PhysicsStepWrapper: Stateless interface to the Rust physics engine.
+  - SurfaceGraphPBRS / PrecomputedValuePBRS: Runtime potential lookup.
+  - TwoPhaseValuePBRS / create_two_phase_pbrs: Two-goal (switch + exit) support.
+  - extract_surfaces, build_graph, enumerate_edges: Precomputation pipeline.
+  - ArcCache, AirborneEvaluator: Airborne state cost estimation.
 """
 
 from .physics_step_wrapper import PhysicsStepWrapper
-from .state_discretization import StateDiscretizer, GridConfig
-from .value_iteration import ValueIterator, save_value_function, load_value_function
-from .interpolation import ValueInterpolator
-from .precomputed_pbrs import PrecomputedValuePBRS
-from .two_phase_pbrs import TwoPhaseValuePBRS, create_two_phase_pbrs
-from .transition_table import TransitionTable, value_iteration_with_table
-from .continuous_transition_table import (
-    ContinuousTransitionTable,
-    sl_value_iteration_with_table,
+from .precomputed_pbrs import SurfaceGraphPBRS, PrecomputedValuePBRS
+from .two_phase_pbrs import TwoPhaseValuePBRS, create_two_phase_pbrs, create_neural_pbrs
+from .surface_extraction import (
+    SurfacePoint,
+    extract_surfaces,
+    SURFACE_FLOOR,
+    SURFACE_WALL,
 )
-from .position_validity import compute_position_validity_mask
-from .gpu_value_iteration import (
-    is_gpu_available,
-    get_gpu_info,
-    sl_value_iteration_gpu,
-    benchmark_gpu_vs_cpu,
+from .surface_graph import (
+    SurfaceGraph,
+    build_graph,
+    compute_cost_to_go,
+    find_nearest_point,
+    find_nearest_node,
+    lookup_cost_interpolated,
 )
+from .edge_enumeration import (
+    enumerate_edges,
+    populate_graph_edges,
+)
+from .arc_cache import ArcCache
+from .airborne_evaluator import AirborneEvaluator
 
 __all__ = [
-    'PhysicsStepWrapper',
-    'StateDiscretizer',
-    'GridConfig',
-    'ValueIterator',
-    'ValueInterpolator',
-    'PrecomputedValuePBRS',
-    'TwoPhaseValuePBRS',
-    'TransitionTable',
-    'ContinuousTransitionTable',
-    'save_value_function',
-    'load_value_function',
-    'create_two_phase_pbrs',
-    'value_iteration_with_table',
-    'sl_value_iteration_with_table',
-    'compute_position_validity_mask',
-    # GPU acceleration
-    'is_gpu_available',
-    'get_gpu_info',
-    'sl_value_iteration_gpu',
-    'benchmark_gpu_vs_cpu',
+    # Physics interface
+    "PhysicsStepWrapper",
+    # Runtime PBRS
+    "SurfaceGraphPBRS",
+    "PrecomputedValuePBRS",
+    "TwoPhaseValuePBRS",
+    "create_two_phase_pbrs",
+    "create_neural_pbrs",
+    # Surface extraction
+    "SurfacePoint",
+    "extract_surfaces",
+    "SURFACE_FLOOR",
+    "SURFACE_WALL",
+    # Surface graph
+    "SurfaceGraph",
+    "build_graph",
+    "compute_cost_to_go",
+    "find_nearest_point",
+    "find_nearest_node",
+    "lookup_cost_interpolated",
+    # Edge enumeration
+    "enumerate_edges",
+    "populate_graph_edges",
+    # Arc cache & airborne
+    "ArcCache",
+    "AirborneEvaluator",
 ]

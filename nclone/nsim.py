@@ -27,6 +27,8 @@ class Simulator:
         self.entity_dic = {}
         self.hor_grid_edge_dic = {}
         self.ver_grid_edge_dic = {}
+        self.door_hor_grid_edge_dic = {}
+        self.door_ver_grid_edge_dic = {}
         self.hor_segment_dic = {}
         self.ver_segment_dic = {}
         self.map_data = None
@@ -171,17 +173,17 @@ class Simulator:
                                 segments_list.remove(segment)
                                 break
 
-                        # Reset grid edges that this door was using
+                        # Reset door grid edges that this door was using
                         for grid_edge in grid_edges:
                             if is_vertical:
-                                if grid_edge in self.ver_grid_edge_dic:
-                                    self.ver_grid_edge_dic[grid_edge] = max(
-                                        0, self.ver_grid_edge_dic[grid_edge] - 1
+                                if grid_edge in self.door_ver_grid_edge_dic:
+                                    self.door_ver_grid_edge_dic[grid_edge] = max(
+                                        0, self.door_ver_grid_edge_dic[grid_edge] - 1
                                     )
                             else:
-                                if grid_edge in self.hor_grid_edge_dic:
-                                    self.hor_grid_edge_dic[grid_edge] = max(
-                                        0, self.hor_grid_edge_dic[grid_edge] - 1
+                                if grid_edge in self.door_hor_grid_edge_dic:
+                                    self.door_hor_grid_edge_dic[grid_edge] = max(
+                                        0, self.door_hor_grid_edge_dic[grid_edge] - 1
                                     )
 
         # Now clear entity data structures
@@ -193,30 +195,61 @@ class Simulator:
 
     def reset_map_tile_data(self):
         """Reset the map cell data. This is used when a new map is loaded."""
-        # Use dict comprehension for segment_dic initialization (44x25 = 1,100 entries)
-        self.segment_dic = {(x, y): [] for x in range(44) for y in range(25)}
+        # Segment dictionary: 45x26 to match original (allows cells (0..44, 0..25))
+        self.segment_dic = {(x, y): [] for x in range(45) for y in range(26)}
 
-        self.tile_dic = {}  # Clear tile_dic as well
+        # Initialize tile_dic with full tiles (type 1), matching original.
+        # Interior tiles (1..42, 1..23) get overwritten from map data in load_map_tiles.
+        # Border tiles remain as type 1 (solid walls at map edges).
+        self.tile_dic = {(x, y): 1 for x in range(44) for y in range(25)}
 
         # Reset collision optimization structures (will be rebuilt after segments are populated)
         self.collision_data = None
         self.spatial_segment_index = None
         self.level_hash = None
 
-        # Initialize grid edge dictionaries with dict comprehensions (89x51 = 4,539 entries each)
-        # Horizontal grid edges: outer edges (y=0, y=50) set to 1 (solid)
+        # Tile grid edge dictionaries: borders are solid (1), interior starts at 0.
+        # Matches original tile_hor_grid_edge_dic / tile_ver_grid_edge_dic.
         self.hor_grid_edge_dic = {
-            (x, y): 1 if y in (0, 50) else 0 for x in range(89) for y in range(51)
+            (x, y): (1 if y in (0, 50) else 0)
+            for x in range(88) for y in range(51)
         }
-
-        # Vertical grid edges: outer edges (x=0, x=88) set to 1 (solid)
         self.ver_grid_edge_dic = {
-            (x, y): 1 if x in (0, 88) else 0 for x in range(89) for y in range(51)
+            (x, y): (1 if x in (0, 88) else 0)
+            for x in range(89) for y in range(50)
         }
 
-        # Initialize segment dictionaries (89x51 = 4,539 entries each)
-        self.hor_segment_dic = {(x, y): 0 for x in range(89) for y in range(51)}
-        self.ver_segment_dic = {(x, y): 0 for x in range(89) for y in range(51)}
+        # Separate door grid edge dictionaries (dynamic, modified when doors open/close)
+        self.door_hor_grid_edge_dic = {
+            (x, y): 0 for x in range(88) for y in range(51)
+        }
+        self.door_ver_grid_edge_dic = {
+            (x, y): 0 for x in range(89) for y in range(50)
+        }
+
+        # Segment accumulator dictionaries: border values pre-initialized.
+        # hor_segment_dic: y=0 → 1 (top border, segment pointing down),
+        #                  y=50 → -1 (bottom border, segment pointing up)
+        # ver_segment_dic: x=0 → 1 (left border, segment pointing right),
+        #                  x=88 → -1 (right border, segment pointing left)
+        self.hor_segment_dic = {}
+        for x in range(88):
+            for y in range(51):
+                value = 0
+                if y == 0:
+                    value = 1
+                if y == 50:
+                    value = -1
+                self.hor_segment_dic[(x, y)] = value
+        self.ver_segment_dic = {}
+        for x in range(89):
+            for y in range(50):
+                value = 0
+                if x == 0:
+                    value = 1
+                if x == 88:
+                    value = -1
+                self.ver_segment_dic[(x, y)] = value
 
     def tick(self, hor_input, jump_input):
         """Gets called every frame to update the whole physics simulation."""

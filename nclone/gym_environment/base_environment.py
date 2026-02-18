@@ -96,6 +96,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         simulation_phi_dir: Optional[
             str
         ] = None,  # Directory with precomputed simulation-based phi grids
+        use_reachability_pbrs: bool = False,  # Use analytical reachability for PBRS
     ):
         """
         Initialize the base N++ environment.
@@ -197,6 +198,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Simulation-based phi grid support
         self.simulation_phi_dir = simulation_phi_dir
         self._current_precomputed_pbrs = None  # Loaded per level
+
+        # Analytical reachability PBRS support
+        self.use_reachability_pbrs = use_reachability_pbrs
+        self._current_reachability_pbrs = None  # Built per level
+
+        if use_reachability_pbrs:
+            _logger.info("Analytical reachability PBRS enabled")
 
         if use_precomputed_pbrs and value_function_dir:
             _logger.info(
@@ -615,9 +623,30 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 player_dead = headless.ninja_has_died()
 
                 # === PRIMITIVE-LEVEL PBRS REWARD ===
-                # Compute per-frame reward using Phi grids + reward machine
-                if _phi_grid_cache is not None:
+                # Compute per-frame reward using Phi grids or 5D value function + reward machine
+                _precomputed_pbrs = getattr(self, "_current_precomputed_pbrs", None)
+                if _phi_grid_cache is not None or _precomputed_pbrs is not None:
                     ninja_pos = headless.ninja_position()
+                    ninja_vel = headless.ninja_velocity() if hasattr(headless, "ninja_velocity") else (0.0, 0.0)
+                    jdr = 0.0
+                    _contact_state = None
+                    try:
+                        ninja = getattr(getattr(headless, "sim", None), "ninja", None)
+                        if ninja is not None:
+                            ninja_sc = getattr(ninja, "state", 4)
+                            if ninja_sc == 3:  # jumping state
+                                from ..constants.physics_constants import MAX_JUMP_DURATION
+                                jdr = max(0, MAX_JUMP_DURATION - getattr(ninja, "jump_duration", 0)) / MAX_JUMP_DURATION
+                            # Derive contact state for surface-graph PBRS
+                            if _precomputed_pbrs is not None:
+                                if ninja_sc == 0:       # grounded
+                                    _contact_state = 0  # CONTACT_FLOOR
+                                elif ninja_sc == 5:     # wall sliding
+                                    _contact_state = 1  # CONTACT_WALL
+                                else:
+                                    _contact_state = 2  # CONTACT_AIRBORNE
+                    except (AttributeError, TypeError):
+                        pass
                     frame_reward = self.primitive_reward_calculator.calculate_frame_reward(
                         player_x=ninja_pos[0],
                         player_y=ninja_pos[1],
@@ -627,7 +656,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         prev_switch_activated=prev_switch_activated,
                         phi_grid_cache=_phi_grid_cache,
                         rust_phi_cache=_rust_phi_cache,
-                        is_truncated=False,  # Truncation checked after loop
+                        is_truncated=False,
+                        precomputed_pbrs=_precomputed_pbrs,
+                        player_xspeed=ninja_vel[0],
+                        player_yspeed=ninja_vel[1],
+                        jump_duration_remaining=jdr,
+                        contact_state=_contact_state,
                     )
                     primitive_rewards.append(frame_reward)
                     prev_switch_activated = current_switch_activated
@@ -816,6 +850,172 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         except AttributeError:
             pass
         return (None, None)
+
+    def _try_load_value_function_pbrs(self) -> None:
+        """Try to load value function PBRS for the current level.
+
+        Priority order:
+            1. Neural IQL V(s) checkpoint (if iql_checkpoint_path is set)
+            2. Surface graph .npz (existing TwoPhaseValuePBRS)
+            3. Fall through to phi grid / path-based fallback
+
+        Sets _current_precomputed_pbrs when a value function is loaded.
+        Clears it when no files are found.
+        """
+        if not getattr(self, "use_precomputed_pbrs", False):
+            self._current_precomputed_pbrs = None
+            return
+
+        level_id = getattr(self.map_loader, "current_map_name", None)
+        if not level_id:
+            self._current_precomputed_pbrs = None
+            return
+
+        # Priority 1: Neural IQL V(s) checkpoint
+        iql_path = getattr(self, "iql_checkpoint_path", None)
+        if iql_path:
+            try:
+                from nclone.value_function.two_phase_pbrs import create_neural_pbrs
+
+                iql_device = getattr(self, "iql_device", "cpu")
+                adapter = create_neural_pbrs(
+                    checkpoint_path=iql_path,
+                    device=iql_device,
+                )
+
+                # Set level data from current headless simulator
+                headless = getattr(self, "headless", None)
+                if headless is not None:
+                    self._setup_neural_pbrs_level(adapter, headless)
+
+                self._current_precomputed_pbrs = adapter
+                logger.info(
+                    "Loaded neural IQL PBRS for level %s from %s",
+                    level_id, iql_path,
+                )
+                return
+            except (FileNotFoundError, ImportError) as e:
+                logger.warning(
+                    "Failed to load neural IQL PBRS: %s, falling back", e
+                )
+
+        # Priority 2: Surface graph .npz
+        vf_dir = getattr(self, "value_function_dir", None)
+        if not vf_dir:
+            self._current_precomputed_pbrs = None
+            return
+
+        try:
+            from nclone.value_function import create_two_phase_pbrs
+
+            self._current_precomputed_pbrs = create_two_phase_pbrs(
+                level_id,
+                value_function_dir=vf_dir,
+                interpolation_method="linear",
+                blend_mode="continuous",
+            )
+            logger.info(
+                f"Loaded 5D value function PBRS for level {level_id}"
+            )
+        except FileNotFoundError:
+            self._current_precomputed_pbrs = None
+
+    def _setup_neural_pbrs_level(self, adapter: Any, headless: Any) -> None:
+        """Configure neural PBRS adapter with current level data from headless.
+
+        Extracts tile grid, entity positions, and mine data from the headless
+        simulator to set up the NeuralValuePBRS adapter for the current level.
+
+        Args:
+            adapter: NeuralValuePBRS instance.
+            headless: NativePlayHeadless or NPlayHeadless instance.
+        """
+        import numpy as np
+
+        try:
+            sim = headless.sim if hasattr(headless, "sim") else headless
+            sim_state = sim.get_state()
+
+            # Extract tile grid (42x23)
+            tile_data = sim.get_tile_grid()
+            tile_grid = np.array(tile_data, dtype=np.int8).reshape(23, 42).T
+
+            # Find switch and exit positions from entities
+            switch_pos = (0.0, 0.0)
+            exit_pos = (0.0, 0.0)
+            mine_positions = []
+
+            for ent in sim_state.entities:
+                if ent.entity_type == 4:  # exit switch
+                    switch_pos = (ent.x, ent.y)
+                elif ent.entity_type == 3:  # exit door
+                    exit_pos = (ent.x, ent.y)
+                elif ent.entity_type in (1, 21):  # toggle mines
+                    mine_positions.append((ent.x, ent.y, ent.entity_type))
+
+            adapter.set_level(
+                tile_grid=tile_grid,
+                switch_pos=switch_pos,
+                exit_pos=exit_pos,
+                mine_positions=mine_positions,
+                headless=headless,
+            )
+        except Exception as e:
+            logger.warning("Failed to set up neural PBRS level data: %s", e)
+
+    def _try_build_reachability_pbrs(self) -> None:
+        """Build analytical reachability PBRS from current graph data.
+
+        Requires self.current_graph_data to be populated (by graph mixin).
+        Sets self._current_precomputed_pbrs so the reward calculator picks
+        it up via the existing precomputed_pbrs code path (same interface).
+        """
+        if not getattr(self, "use_reachability_pbrs", False):
+            return
+
+        graph_data = getattr(self, "current_graph_data", None)
+        if not graph_data:
+            return
+
+        try:
+            from nclone.analytical_physics.reachability_builder import (
+                build_reachability_pbrs,
+                should_rebuild,
+            )
+
+            # Get level data
+            try:
+                level_data = self.level_data
+            except Exception:
+                return
+
+            # Check if rebuild is needed (mine state may have changed)
+            existing = self._current_reachability_pbrs
+            if existing is not None and not should_rebuild(existing, level_data):
+                # No mine state change, reuse existing PBRS
+                self._current_precomputed_pbrs = existing
+                return
+
+            switch_pos = self.nplay_headless.exit_switch_position()
+            exit_pos = self.nplay_headless.exit_door_position()
+
+            if switch_pos is None or exit_pos is None:
+                return
+
+            pbrs = build_reachability_pbrs(
+                graph_data=graph_data,
+                level_data=level_data,
+                switch_pos=switch_pos,
+                exit_pos=exit_pos,
+            )
+
+            self._current_reachability_pbrs = pbrs
+            # Use the same slot as precomputed PBRS (same interface)
+            self._current_precomputed_pbrs = pbrs
+
+        except Exception as e:
+            logger.warning(f"Failed to build reachability PBRS: {e}")
+            self._current_reachability_pbrs = None
 
     def get_observation(self) -> Dict[str, Any]:
         """Public accessor for current observation (for frame skip wrapper).

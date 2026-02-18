@@ -285,21 +285,11 @@ def _calculate_physics_aware_cost(
         if src_grounded and dst_grounded:
             multiplier = 0.15
         elif x_direction_change and not src_grounded and not src_walled:
-            # Direction change in air - expensive; apply chain if sustained airborne
-            if aerial_chain > 0:
-                multiplier = _get_aerial_chain_multiplier(aerial_chain) * 1.3
-            else:
-                multiplier = 1.5
+            # Flat penalty for direction change in air (N++ limited air control)
+            multiplier = 1.5
         elif not src_grounded and not src_walled:
-            # Horizontal airborne: apply chain multiplier when parent was airborne
-            # (sustained horizontal air drift becomes progressively expensive)
-            if aerial_chain > 0:
-                multiplier = _get_aerial_chain_multiplier(aerial_chain)
-            else:
-                multiplier = 0.5
-        elif not src_grounded and aerial_chain > 0:
-            # Walled horizontal air when parent was airborne (e.g. slide along wall)
-            multiplier = _get_aerial_chain_multiplier(aerial_chain)
+            # Flat cost for horizontal air drift
+            multiplier = 0.5
         else:
             multiplier = 1.0
 

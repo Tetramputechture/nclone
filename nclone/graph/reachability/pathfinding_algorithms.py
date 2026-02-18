@@ -167,8 +167,9 @@ def bfs_distance_from_start(
 
         current_physics = physics_cache.get(current, {}) if use_physics else {}
         current_grounded = current_physics.get("grounded", True)
-        current_walled = current_physics.get("walled", False)
         current_chain = aerial_chains.get(current, 0) if use_physics else 0
+        current_parent = parents.get(current) if use_physics else None
+        current_grandparent = grandparents.get(current) if use_physics else None
 
         neighbors = adjacency.get(current, [])
 
@@ -194,12 +195,12 @@ def bfs_distance_from_start(
                     current,
                     neighbor_pos,
                     base_adjacency,
-                    parents.get(current),
+                    current_parent,
                     physics_cache,
                     level_data,
                     mine_proximity_cache,
-                    current_chain,
-                    grandparents.get(current),
+                    new_chain,
+                    current_grandparent,
                 )
             else:
                 dx = neighbor_pos[0] - current[0]
@@ -212,7 +213,7 @@ def bfs_distance_from_start(
                 distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current
                 if use_physics:
-                    grandparents[neighbor_pos] = parents.get(current)
+                    grandparents[neighbor_pos] = current_parent
                     aerial_chains[neighbor_pos] = new_chain
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 
@@ -419,8 +420,9 @@ def find_shortest_path(
 
         current_physics = physics_cache.get(current, {}) if use_physics else {}
         current_grounded = current_physics.get("grounded", True)
-        current_walled = current_physics.get("walled", False)
         current_chain = aerial_chains.get(current, 0) if use_physics else 0
+        current_parent = parents.get(current) if use_physics else None
+        current_grandparent = grandparents.get(current) if use_physics else None
 
         neighbors = adjacency.get(current, [])
         for neighbor_info in neighbors:
@@ -445,12 +447,12 @@ def find_shortest_path(
                     current,
                     neighbor_pos,
                     base_adjacency,
-                    parents.get(current),
+                    current_parent,
                     physics_cache,
                     level_data,
                     mine_proximity_cache,
-                    current_chain,
-                    grandparents.get(current),
+                    new_chain,
+                    current_grandparent,
                 )
             else:
                 dx = neighbor_pos[0] - current[0]
@@ -463,7 +465,7 @@ def find_shortest_path(
                 distances[neighbor_pos] = new_dist
                 parents[neighbor_pos] = current
                 if use_physics:
-                    grandparents[neighbor_pos] = parents.get(current)
+                    grandparents[neighbor_pos] = current_parent
                     aerial_chains[neighbor_pos] = new_chain
                 heapq.heappush(pq, (new_dist, neighbor_pos))
 

@@ -44,22 +44,37 @@ def _setup_logging(verbose: bool = False):
     )
 
 
-def _create_headless_sim(map_path: str):
-    """Create a headless simulator loaded with the given map.
+def _create_sim_and_goals(map_path: str, use_native: bool = True):
+    """Create simulator and extract switch/exit positions.
+
+    When use_native=True, tries nclone_native first; falls back to Python if
+    not installed. When use_native=False, uses NPlayHeadless.
 
     Args:
         map_path: Path to .map file.
+        use_native: If True, prefer Rust simulator.
 
     Returns:
-        Tuple of (NPlayHeadless instance, switch_pos, exit_pos).
+        Tuple of (sim, switch_pos, exit_pos) where sim has .ninja, .tile_dic,
+        .tick_physics_only() for SimulationPhiGridBuilder.
     """
-    # Import here to avoid circular imports and heavy module loading
+    if use_native:
+        try:
+            from .native_sim_adapter import create_native_sim_from_map_path
+
+            sim, switch_pos, exit_pos = create_native_sim_from_map_path(map_path)
+            logger.debug(f"Using native Rust simulator for {map_path}")
+            return sim, switch_pos, exit_pos
+        except ImportError as e:
+            logger.warning(
+                f"nclone_native not available ({e}), falling back to Python simulator"
+            )
+
+    # Python fallback
     from ..nplay_headless import NPlayHeadless
 
     nplay = NPlayHeadless(enable_rendering=False)
     nplay.load_map(map_path)
-
-    # Get goal positions
     switch_pos = nplay.exit_switch_position()
     exit_pos = nplay.exit_door_position()
 
@@ -68,7 +83,7 @@ def _create_headless_sim(map_path: str):
     if exit_pos == (0, 0):
         logger.warning(f"Exit position is (0,0) for {map_path} - entities may not be loaded")
 
-    return nplay, switch_pos, exit_pos
+    return nplay.sim, switch_pos, exit_pos
 
 
 def precompute_single_map(
@@ -76,6 +91,7 @@ def precompute_single_map(
     output_dir: str,
     max_frames: int = 50,
     force_recompute: bool = False,
+    use_native: bool = True,
 ) -> bool:
     """Precompute phi grids for a single map.
 
@@ -92,7 +108,7 @@ def precompute_single_map(
     logger.info(f"Processing: {map_name} ({map_path})")
 
     try:
-        nplay, switch_pos, exit_pos = _create_headless_sim(map_path)
+        sim, switch_pos, exit_pos = _create_sim_and_goals(map_path, use_native=use_native)
 
         builder = SimulationPhiGridBuilder(
             cache_dir=output_dir,
@@ -101,7 +117,7 @@ def precompute_single_map(
 
         start_time = time.perf_counter()
         phi_switch, phi_exit = builder.build(
-            nplay.sim,
+            sim,
             switch_pos,
             exit_pos,
             force_recompute=force_recompute,
@@ -153,12 +169,24 @@ def main():
         help="Force recomputation even if cached",
     )
     parser.add_argument(
+        "--native",
+        action="store_true",
+        default=True,
+        help="Use native Rust physics simulator (default: True)",
+    )
+    parser.add_argument(
+        "--no-native",
+        action="store_true",
+        help="Use Python simulator instead of native",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
     )
 
     args = parser.parse_args()
+    use_native = args.native and not args.no_native
     _setup_logging(args.verbose)
 
     # Collect map files
@@ -189,7 +217,7 @@ def main():
     for i, map_path in enumerate(map_files, 1):
         logger.info(f"\n=== Map {i}/{len(map_files)} ===")
         if precompute_single_map(
-            map_path, args.output_dir, args.max_frames, args.force
+            map_path, args.output_dir, args.max_frames, args.force, use_native
         ):
             success_count += 1
         else:

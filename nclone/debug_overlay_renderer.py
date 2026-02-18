@@ -695,7 +695,6 @@ class DebugOverlayRenderer:
         if show_blocked and graph_data.get("blocked_edges"):
             blocked_edges = graph_data["blocked_edges"]
 
-
         # Draw adjacency graph edges first (so they appear behind nodes)
         if show_adjacency:
             for pos, neighbors in adjacency.items():
@@ -1755,6 +1754,296 @@ class DebugOverlayRenderer:
 
         return surface
 
+    def _draw_reachability_overlay(
+        self, reachability_info: dict
+    ) -> Optional[pygame.Surface]:
+        """Draw hull-based reachability overlay as a shaded area.
+
+        Two layers:
+        - Dim blue: full physics hull (everywhere the ninja CAN go)
+        - Bright green: level-masked reachable subset (geometry + mines)
+
+        Args:
+            reachability_info: Dictionary containing:
+                - hull_cells: list of (abs_x, abs_y, min_frames)
+                - masked_cells: list of (abs_x, abs_y, min_frames)
+                - ninja_position: (x, y)
+                - ninja_velocity: (vx, vy)
+                - state: int
+                - contact_type: str
+                - surface_type: int
+
+        Returns:
+            pygame.Surface with hull area overlay
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        hull_cells = reachability_info.get("hull_cells", [])
+        masked_cells = reachability_info.get("masked_cells", [])
+        ninja_vel = reachability_info.get("ninja_velocity", (0, 0))
+        contact_type = reachability_info.get("contact_type", "floor")
+        surface_type = reachability_info.get("surface_type", 0)
+        walled = reachability_info.get("walled", False)
+        wall_normal = reachability_info.get("wall_normal")
+        jump_type = reachability_info.get("jump_type", "floor")
+        airborn = reachability_info.get("airborn", False)
+
+        # Cell size in screen pixels (12 world px * scale factor)
+        cell_screen = max(1, int(12 * self.adjust))
+        half_cell = cell_screen // 2
+
+        # 1. Draw full physics hull (dim blue rectangles)
+        for abs_x, abs_y, min_frames in hull_cells:
+            sx = int(abs_x * self.adjust) + self.tile_x_offset
+            sy = int(abs_y * self.adjust) + self.tile_y_offset
+            rect = pygame.Rect(
+                sx - half_cell,
+                sy - half_cell,
+                cell_screen,
+                cell_screen,
+            )
+            pygame.draw.rect(surface, (60, 80, 180, 40), rect)
+
+        # 2. Draw level-masked reachable subset (bright green rectangles)
+        for abs_x, abs_y, min_frames in masked_cells:
+            sx = int(abs_x * self.adjust) + self.tile_x_offset
+            sy = int(abs_y * self.adjust) + self.tile_y_offset
+            rect = pygame.Rect(
+                sx - half_cell,
+                sy - half_cell,
+                cell_screen,
+                cell_screen,
+            )
+            # Alpha varies by min_frames: closer cells are brighter
+            alpha = max(40, 120 - min_frames)
+            pygame.draw.rect(surface, (50, 220, 80, alpha), rect)
+
+        # 3. Draw info panel
+        try:
+            title_font = pygame.font.Font(None, 18)
+            info_font = pygame.font.Font(None, 16)
+        except pygame.error:
+            title_font = pygame.font.SysFont("monospace", 14, bold=True)
+            info_font = pygame.font.SysFont("monospace", 12)
+
+        panel_width = 210
+        panel_height = 145
+        panel_x = 10
+        panel_y = self.screen.get_height() - panel_height - 10
+
+        pygame.draw.rect(
+            surface,
+            (0, 0, 0, 210),
+            (panel_x, panel_y, panel_width, panel_height),
+            border_radius=5,
+        )
+        pygame.draw.rect(
+            surface,
+            (100, 200, 255, 255),
+            (panel_x, panel_y, panel_width, panel_height),
+            2,
+            border_radius=5,
+        )
+
+        title_surf = title_font.render("Hull Reachability", True, (200, 220, 255))
+        surface.blit(title_surf, (panel_x + 10, panel_y + 6))
+
+        vx, vy = ninja_vel
+        surface_names = {
+            0: "flat",
+            1: "mild-L",
+            2: "mild-R",
+            3: "45-L",
+            4: "45-R",
+            5: "steep-L",
+            6: "steep-R",
+        }
+        if surface_type >= 0:
+            sname = surface_names.get(surface_type, "?")
+            contact_label = f"Contact: {contact_type}  ({sname})"
+        else:
+            contact_label = f"Contact: {contact_type}"
+        jump_state_lines = [
+            (f"walled={walled}  jump={jump_type}  airborn={airborn}", (255, 220, 150)),
+        ]
+        if walled and wall_normal is not None:
+            jump_state_lines.append(
+                (f"wall_normal={wall_normal:.2f}", (255, 220, 150))
+            )
+        lines = [
+            (contact_label, (200, 200, 255)),
+            *jump_state_lines,
+            (f"vx={vx:.2f}  vy={vy:.2f}", (180, 255, 180)),
+            (f"Hull cells: {len(hull_cells)}", (100, 150, 255)),
+            (f"Masked (reachable): {len(masked_cells)}", (100, 255, 100)),
+        ]
+
+        y_off = 26
+        for text, color in lines:
+            surf = info_font.render(text, True, color)
+            surface.blit(surf, (panel_x + 10, panel_y + y_off))
+            y_off += 16
+
+        return surface
+
+    def _draw_value_function(
+        self, value_function_info: dict
+    ) -> Optional[pygame.Surface]:
+        """Draw value function (PBRS cost-to-go) overlay.
+
+        Shows real-time cost-to-go and potential to help understand how
+        PBRS shapes rewards during training. Displays:
+        - Current potential (Phi) and cost-to-go (frames)
+        - Phase (switch vs exit goal)
+        - Contact state (floor/wall/airborne)
+        - Optional: gradient arrow toward lower cost
+
+        Args:
+            value_function_info: Dictionary containing:
+                - potential: float - current PBRS potential
+                - cost_frames: float - estimated frames to goal
+                - phase: str - "switch" or "exit"
+                - contact_state: int - 0=floor, 1=wall, 2=airborne
+                - ninja_position: (x, y)
+                - show_heatmap: bool - if True, show surface point heatmap
+
+        Returns:
+            pygame.Surface with value function overlay
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        potential = value_function_info.get("potential")
+        if potential is None:
+            return surface
+
+        cost_frames = value_function_info.get("cost_frames")
+        phase = value_function_info.get("phase", "switch")
+        contact_state = value_function_info.get("contact_state", 2)
+        ninja_pos = value_function_info.get("ninja_position", (0, 0))
+        show_heatmap = value_function_info.get("show_heatmap", False)
+
+        # Build info panel
+        try:
+            title_font = pygame.font.Font(None, 18)
+            box_font = pygame.font.Font(None, 16)
+        except pygame.error:
+            title_font = pygame.font.SysFont("monospace", 14, bold=True)
+            box_font = pygame.font.SysFont("monospace", 12)
+
+        ninja_x, ninja_y = ninja_pos
+        ninja_screen_x = int(ninja_x * self.adjust) + self.tile_x_offset
+        ninja_screen_y = int(ninja_y * self.adjust) + self.tile_y_offset
+
+        box_width = 220
+        box_height = 110
+        box_x = ninja_screen_x + 25
+        box_y = ninja_screen_y - 55
+
+        if box_x + box_width > self.screen.get_width():
+            box_x = ninja_screen_x - box_width - 25
+        if box_y < 0:
+            box_y = ninja_screen_y + 25
+        if box_y + box_height > self.screen.get_height():
+            box_y = self.screen.get_height() - box_height - 10
+
+        pygame.draw.rect(
+            surface,
+            (0, 0, 0, 220),
+            (box_x, box_y, box_width, box_height),
+            border_radius=5,
+        )
+        pygame.draw.rect(
+            surface,
+            (80, 180, 255, 255),
+            (box_x, box_y, box_width, box_height),
+            2,
+            border_radius=5,
+        )
+
+        title_text = "Value Function (PBRS)"
+        title_surf = title_font.render(title_text, True, (200, 220, 255))
+        surface.blit(title_surf, (box_x + 10, box_y + 6))
+
+        potential_str = f"Φ = {potential:.3f}"
+        cost_str = (
+            f"Cost: {cost_frames:.0f} frames"
+            if cost_frames is not None and cost_frames < 1e6
+            else "Cost: ∞"
+        )
+        phase_str = f"Phase: {phase}"
+        contact_names = ("floor", "wall", "airborne")
+        contact_str = f"Contact: {contact_names[min(2, max(0, contact_state))]}"
+
+        y_off = 28
+        for text, color in [
+            (potential_str, (150, 255, 150)),
+            (cost_str, (255, 220, 100)),
+            (phase_str, (255, 180, 100)),
+            (contact_str, (200, 200, 255)),
+        ]:
+            surf = box_font.render(text, True, color)
+            surface.blit(surf, (box_x + 10, box_y + y_off))
+            y_off += 18
+
+        # Draw gradient arrow if available (points toward higher potential / lower cost)
+        gradient = value_function_info.get("gradient")
+        if gradient is not None:
+            dx, dy = gradient
+            length = (dx * dx + dy * dy) ** 0.5
+            if length > 0.01:
+                norm = 1.0 / length
+                self._draw_arrow(
+                    surface,
+                    (ninja_screen_x, ninja_screen_y),
+                    (dx * norm, dy * norm),
+                    50,
+                    (100, 255, 150, 200),
+                    width=2,
+                    head_size=8,
+                )
+
+        # Optional: surface point heatmap (sparse, for performance)
+        if show_heatmap and "surface_points" in value_function_info:
+            self._draw_value_function_heatmap(
+                surface, value_function_info["surface_points"]
+            )
+
+        return surface
+
+    def _draw_value_function_heatmap(
+        self, surface: pygame.Surface, points_data: dict
+    ) -> None:
+        """Draw sparse heatmap of surface points colored by cost-to-go."""
+        xs = points_data.get("x")
+        ys = points_data.get("y")
+        costs = points_data.get("cost")
+        if xs is None or ys is None or costs is None or len(xs) == 0:
+            return
+
+        cost_max = max(c for c in costs if c < 1e6) if costs else 1.0
+        if cost_max <= 0:
+            cost_max = 1.0
+
+        cell_size = max(6, 12 * self.adjust)
+        for i in range(min(len(xs), 2000)):  # Limit for performance
+            x, y = float(xs[i]), float(ys[i])
+            c = float(costs[i])
+            if c >= cost_max * 0.99:
+                continue
+            t = c / cost_max
+            r = int(255 * (1 - t))
+            g = int(100 + 155 * (1 - t))
+            b = 50
+            screen_x = int(x * self.adjust) + self.tile_x_offset
+            screen_y = int(y * self.adjust) + self.tile_y_offset
+            rect = pygame.Rect(
+                screen_x - cell_size // 2,
+                screen_y - cell_size // 2,
+                cell_size,
+                cell_size,
+            )
+            pygame.draw.rect(surface, (r, g, b, 80), rect)
+
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -1803,6 +2092,320 @@ class DebugOverlayRenderer:
             )
             if demo_checkpoint_surface:
                 surface.blit(demo_checkpoint_surface, (0, 0))
+
+        # Draw analytical reachability overlay if provided
+        if debug_info and "reachability_overlay" in debug_info:
+            reachability_surface = self._draw_reachability_overlay(
+                debug_info["reachability_overlay"]
+            )
+            if reachability_surface:
+                surface.blit(reachability_surface, (0, 0))
+
+        # Draw value function (PBRS cost-to-go) overlay if provided
+        if debug_info and "value_function" in debug_info:
+            value_fn_surface = self._draw_value_function(debug_info["value_function"])
+            if value_fn_surface:
+                surface.blit(value_fn_surface, (0, 0))
+
+        # Draw PBRS path overlay if provided
+        if debug_info and "pbrs_path_overlay" in debug_info:
+            pbrs_path_surface = self._draw_pbrs_path_overlay(
+                debug_info["pbrs_path_overlay"]
+            )
+            if pbrs_path_surface:
+                surface.blit(pbrs_path_surface, (0, 0))
+
+        # Draw step-on-input sequence overlay if provided
+        if debug_info and "input_sequence" in debug_info:
+            input_seq_surface = self._draw_input_sequence_overlay(
+                debug_info["input_sequence"]
+            )
+            if input_seq_surface:
+                surface.blit(input_seq_surface, (0, 0))
+
+        return surface
+
+    def _draw_input_sequence_overlay(
+        self, input_seq_info: dict
+    ) -> Optional[pygame.Surface]:
+        """Draw step-on-input sequence overlay.
+
+        Shows the frame-perfect input sequence as human-readable labels
+        (LT, RT, JP, JL, JR, NO) in a compact panel. Displays last N
+        actions with most recent on the right, plus step count. Panel
+        is positioned in the quadrant opposite the player.
+
+        Args:
+            input_seq_info: Dictionary with "sequence" (list of action indices),
+                "step_count" (int), and "ninja_position" (x, y in game coords).
+
+        Returns:
+            pygame.Surface with the overlay.
+        """
+        ACTION_LABELS = {
+            0: "NO",
+            1: "LT",
+            2: "RT",
+            3: "JP",
+            4: "JL",
+            5: "JR",
+        }
+        # Key hints for overlay (Z/X = Jump+Left/Right, . = NOOP)
+        KEY_HINTS = "←→↑ | Z=JL X=JR .=NO"
+        MAX_DISPLAY = 50  # Show last N actions (wrapped, so we can show more)
+        MARGIN = 10
+        CONTENT_PADDING = 10
+        LINE_HEIGHT = 16
+        MAX_PANEL_HEIGHT = 150  # Cap height so panel stays on screen
+
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        sequence = input_seq_info.get("sequence", [])
+        step_count = input_seq_info.get("step_count", len(sequence))
+
+        try:
+            title_font = pygame.font.Font(None, 18)
+            label_font = pygame.font.Font(None, 16)
+        except pygame.error:
+            title_font = pygame.font.SysFont("monospace", 14, bold=True)
+            label_font = pygame.font.SysFont("monospace", 12)
+
+        panel_width = 280
+        content_width = panel_width - 2 * CONTENT_PADDING
+        screen_w = self.screen.get_width()
+        screen_h = self.screen.get_height()
+
+        # Wrap sequence labels to fit within panel width
+        display_seq = (
+            sequence[-MAX_DISPLAY:] if len(sequence) > MAX_DISPLAY else sequence
+        )
+        labels = [ACTION_LABELS.get(a, "?") for a in display_seq]
+        label_strs = labels if labels else ["(waiting for input)"]
+
+        wrapped_lines = []
+        current_line = []
+        current_width = 0
+        space_width = label_font.size(" ")[0]
+        for i, lbl in enumerate(label_strs):
+            lbl_width = label_font.size(lbl)[0]
+            need_space = len(current_line) > 0
+            add_width = (space_width + lbl_width) if need_space else lbl_width
+            if current_width + add_width <= content_width or not current_line:
+                current_line.append(lbl)
+                current_width += add_width
+            else:
+                wrapped_lines.append(" ".join(current_line))
+                current_line = [lbl]
+                current_width = lbl_width
+        if current_line:
+            wrapped_lines.append(" ".join(current_line))
+
+        # Panel height: title + hints + wrapped lines + padding (capped)
+        HINTS_ROW_HEIGHT = 16
+        n_lines = len(wrapped_lines)
+        header_height = 24 + HINTS_ROW_HEIGHT
+        max_lines = (MAX_PANEL_HEIGHT - header_height - CONTENT_PADDING) // LINE_HEIGHT
+        if n_lines > max_lines:
+            wrapped_lines = wrapped_lines[-max_lines:]
+            n_lines = max_lines
+        panel_height = header_height + n_lines * LINE_HEIGHT + CONTENT_PADDING
+
+        # Position panel opposite from player quadrant
+        ninja_pos = input_seq_info.get("ninja_position")
+        if ninja_pos:
+            # Convert game coords to screen coords
+            px = int(ninja_pos[0] * self.adjust) + self.tile_x_offset
+            py = int(ninja_pos[1] * self.adjust) + self.tile_y_offset
+            mid_w, mid_h = screen_w / 2, screen_h / 2
+            # Player in top-left -> panel bottom-right; top-right -> bottom-left; etc.
+            if px < mid_w and py < mid_h:
+                panel_x, panel_y = (
+                    screen_w - panel_width - MARGIN,
+                    screen_h - panel_height - MARGIN,
+                )
+            elif px >= mid_w and py < mid_h:
+                panel_x, panel_y = MARGIN, screen_h - panel_height - MARGIN
+            elif px < mid_w and py >= mid_h:
+                panel_x, panel_y = screen_w - panel_width - MARGIN, MARGIN
+            else:
+                panel_x, panel_y = MARGIN, MARGIN
+        else:
+            panel_x, panel_y = MARGIN, MARGIN
+
+        pygame.draw.rect(
+            surface,
+            (0, 0, 0, 210),
+            (panel_x, panel_y, panel_width, panel_height),
+            border_radius=5,
+        )
+        pygame.draw.rect(
+            surface,
+            (100, 180, 255, 255),
+            (panel_x, panel_y, panel_width, panel_height),
+            2,
+            border_radius=5,
+        )
+
+        title_surf = title_font.render("Step-on-Input", True, (150, 200, 255))
+        surface.blit(title_surf, (panel_x + CONTENT_PADDING, panel_y + 6))
+
+        steps_text = f"Steps: {step_count}"
+        steps_surf = label_font.render(steps_text, True, (200, 220, 255))
+        surface.blit(
+            steps_surf,
+            (
+                panel_x + panel_width - steps_surf.get_width() - CONTENT_PADDING,
+                panel_y + 6,
+            ),
+        )
+
+        hints_surf = label_font.render(KEY_HINTS, True, (160, 180, 200))
+        surface.blit(hints_surf, (panel_x + CONTENT_PADDING, panel_y + 24))
+
+        # Draw wrapped sequence lines
+        seq_start_y = 24 + HINTS_ROW_HEIGHT
+        for i, line_text in enumerate(wrapped_lines):
+            seq_surf = label_font.render(line_text, True, (255, 255, 255))
+            surface.blit(
+                seq_surf,
+                (panel_x + CONTENT_PADDING, panel_y + seq_start_y + i * LINE_HEIGHT),
+            )
+
+        return surface
+
+    def _draw_pbrs_path_overlay(self, pbrs_info: dict) -> Optional[pygame.Surface]:
+        """Draw PBRS shortest-path overlay.
+
+        Visualizes:
+        1. Shortest path edges: cyan lines for walk, orange arcs for jumps
+        2. Goal marker
+        3. Info panel with potential, phase, and graph stats
+
+        Args:
+            pbrs_info: Dictionary from _get_pbrs_path_overlay_data().
+
+        Returns:
+            pygame.Surface with the overlay.
+        """
+        import math as _math
+
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        path_edges = pbrs_info.get("path_edges", [])
+        goal_pos = pbrs_info.get("goal_position", (0, 0))
+        phase = pbrs_info.get("phase", "switch")
+        potential = pbrs_info.get("potential", 0.0)
+        d_max = pbrs_info.get("d_max", 1.0)
+        n_surface_points = pbrs_info.get("n_surface_points", 0)
+        n_edges = pbrs_info.get("n_edges", 0)
+
+        # Graph node positions are in inner-grid pixel space (excludes 1-tile
+        # border padding).  Add TILE_PIXEL_SIZE (24 px) to align with the
+        # full-map rendering coordinate system used by the entity/tile renderers.
+        border_offset = TILE_PIXEL_SIZE
+
+        # 1. Draw shortest path edges
+        for edge in path_edges:
+            src_x, src_y = edge["src_point"]
+            dst_x, dst_y = edge["dst_point"]
+            edge_type = edge["edge_type"]
+
+            sx1 = int(src_x * self.adjust + self.tile_x_offset) + border_offset
+            sy1 = int(src_y * self.adjust + self.tile_y_offset) + border_offset
+            sx2 = int(dst_x * self.adjust + self.tile_x_offset) + border_offset
+            sy2 = int(dst_y * self.adjust + self.tile_y_offset) + border_offset
+
+            if edge_type == "walk":
+                # Walk edges: bright cyan, thin
+                color = (60, 220, 255, 220)
+                width = max(1, int(2 * self.adjust))
+                pygame.draw.line(surface, color, (sx1, sy1), (sx2, sy2), width)
+            else:
+                # Jump edges: bright orange, thicker, with arrowhead
+                color = (255, 160, 40, 240)
+                width = max(2, int(3 * self.adjust))
+                pygame.draw.line(surface, color, (sx1, sy1), (sx2, sy2), width)
+
+                # Arrowhead at destination
+                dx = sx2 - sx1
+                dy = sy2 - sy1
+                length = _math.sqrt(dx * dx + dy * dy)
+                if length > 0:
+                    ux, uy = dx / length, dy / length
+                    arrow_size = max(4, int(6 * self.adjust))
+                    # Two points for the arrowhead
+                    ax1 = int(sx2 - arrow_size * (ux + uy * 0.5))
+                    ay1 = int(sy2 - arrow_size * (uy - ux * 0.5))
+                    ax2 = int(sx2 - arrow_size * (ux - uy * 0.5))
+                    ay2 = int(sy2 - arrow_size * (uy + ux * 0.5))
+                    pygame.draw.polygon(
+                        surface, color, [(sx2, sy2), (ax1, ay1), (ax2, ay2)]
+                    )
+
+            # Draw small circles at edge endpoints
+            pygame.draw.circle(surface, (255, 255, 255, 200), (sx1, sy1), 2)
+            pygame.draw.circle(surface, (255, 255, 255, 200), (sx2, sy2), 2)
+
+        # 2. Draw goal marker (goal_pos is in full-map coordinates, no border offset needed)
+        if goal_pos:
+            gx = int(goal_pos[0] * self.adjust) + self.tile_x_offset
+            gy = int(goal_pos[1] * self.adjust) + self.tile_y_offset
+            goal_color = (
+                (255, 255, 50, 220) if phase == "switch" else (50, 255, 50, 220)
+            )
+            pygame.draw.circle(
+                surface, goal_color, (gx, gy), max(6, int(8 * self.adjust)), 2
+            )
+            pygame.draw.circle(
+                surface, goal_color, (gx, gy), max(3, int(4 * self.adjust))
+            )
+
+        # 3. Draw info panel
+        try:
+            title_font = pygame.font.Font(None, 18)
+            info_font = pygame.font.Font(None, 16)
+        except pygame.error:
+            title_font = pygame.font.SysFont("monospace", 14, bold=True)
+            info_font = pygame.font.SysFont("monospace", 12)
+
+        panel_width = 230
+        panel_height = 130
+        panel_x = self.screen.get_width() - panel_width - 10
+        panel_y = self.screen.get_height() - panel_height - 10
+
+        pygame.draw.rect(
+            surface,
+            (0, 0, 0, 210),
+            (panel_x, panel_y, panel_width, panel_height),
+            border_radius=5,
+        )
+        pygame.draw.rect(
+            surface,
+            (255, 180, 50, 255),
+            (panel_x, panel_y, panel_width, panel_height),
+            2,
+            border_radius=5,
+        )
+
+        title_surf = title_font.render("PBRS Path", True, (255, 200, 100))
+        surface.blit(title_surf, (panel_x + 10, panel_y + 6))
+
+        walk_count = sum(1 for e in path_edges if e["edge_type"] == "walk")
+        jump_count = sum(1 for e in path_edges if e["edge_type"] == "jump")
+
+        lines = [
+            (f"Phase: {phase}", (200, 200, 255)),
+            (f"Potential: {potential:.4f}", (180, 255, 180)),
+            (f"Path: {walk_count} walk + {jump_count} jump", (255, 220, 100)),
+            (f"d_max: {d_max:.0f} frames", (200, 200, 200)),
+            (f"Surface pts: {n_surface_points}", (200, 200, 200)),
+            (f"Graph edges: {n_edges}", (200, 200, 200)),
+        ]
+
+        y_off = 26
+        for text, color in lines:
+            text_surf = info_font.render(text, True, color)
+            surface.blit(text_surf, (panel_x + 10, panel_y + y_off))
+            y_off += 16
 
         return surface
 

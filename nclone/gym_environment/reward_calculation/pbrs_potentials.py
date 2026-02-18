@@ -755,6 +755,8 @@ class PBRSCalculator:
         reward_config: Optional[Any] = None,
         precomputed_pbrs: Optional[Any] = None,
         use_precomputed: bool = False,
+        iql_alpha: float = 0.5,
+        iql_alpha_anneal_steps: int = 0,
     ):
         """Initialize PBRS calculator with optional momentum waypoint support.
 
@@ -764,6 +766,12 @@ class PBRSCalculator:
             reward_config: Optional RewardConfig instance for curriculum-adaptive weights
             precomputed_pbrs: Optional PrecomputedValuePBRS or TwoPhaseValuePBRS instance
             use_precomputed: If True, use precomputed value function instead of path-based
+            iql_alpha: Initial weight for neural IQL PBRS (0-1, default 0.5).
+                When using NeuralValuePBRS, the final shaped reward is:
+                    r_shaped = r_env + alpha * F(s,s')
+                where F is the PBRS difference from the neural V(s).
+            iql_alpha_anneal_steps: Steps over which to linearly anneal alpha to 0.
+                0 = no annealing (constant alpha). Positive = linear decay.
         """
         # Initialize path distance calculator for path-aware reward shaping
         self.path_calculator = path_calculator
@@ -777,6 +785,12 @@ class PBRSCalculator:
         # Precomputed value function for optimal PBRS (optional)
         self.precomputed_pbrs = precomputed_pbrs
         self.use_precomputed = use_precomputed
+
+        # Neural IQL PBRS alpha weight and annealing
+        self._iql_alpha_initial = iql_alpha
+        self._iql_alpha = iql_alpha
+        self._iql_alpha_anneal_steps = iql_alpha_anneal_steps
+        self._iql_total_steps = 0
 
         if use_precomputed and precomputed_pbrs is None:
             logger.warning(
@@ -1030,7 +1044,9 @@ class PBRSCalculator:
                 ninja_radius=NINJA_RADIUS,
             )
 
-            spawn_to_switch_physics = spawn_to_switch_geo  # Same as geo (geometric only)
+            spawn_to_switch_physics = (
+                spawn_to_switch_geo  # Same as geo (geometric only)
+            )
 
         except Exception as e:
             # #region agent log
@@ -1326,9 +1342,7 @@ class PBRSCalculator:
                 extract_spatial_lookups_from_graph_data,
             )
 
-            _, subcell_lookup = extract_spatial_lookups_from_graph_data(
-                graph_data
-            )
+            _, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
 
             # Use path calculator's step-scoped ninja node cache
             start_node = self.path_calculator._get_cached_or_find_ninja_node(
@@ -1347,10 +1361,8 @@ class PBRSCalculator:
                     goal_id
                 )
                 if goal_pos is not None:
-                    cached_dist = (
-                        self.path_calculator.level_cache.get_distance(
-                            start_node, goal_pos, goal_id
-                        )
+                    cached_dist = self.path_calculator.level_cache.get_distance(
+                        start_node, goal_pos, goal_id
                     )
                     if cached_dist != float("inf"):
                         self._cached_distance = cached_dist
@@ -1593,31 +1605,58 @@ class PBRSCalculator:
                     PBRS_EXIT_DISTANCE_SCALE * objective_pot * scaled_objective_weight
                 )
 
+            # Apply IQL alpha weight with annealing for neural PBRS
+            alpha = self._get_current_iql_alpha()
+            if alpha < 1.0:
+                potential *= alpha
+            state["_pbrs_iql_alpha"] = alpha
+
             return potential
 
-        # === PATH-BASED PBRS (LEGACY) ===
-        # Use waypoint-aware potential if waypoints available
-        if self.momentum_waypoints:
-            objective_pot = self._get_cached_or_compute_potential_with_waypoints(
-                current_pos=current_pos,
-                goal_id=current_goal_id,
-                state_with_metrics=state_with_metrics,
-                adjacency=adjacency,
-                level_data=level_data,
-                graph_data=graph_data,
-                scale_factor=scale_factor,
-            )
-        # Fall back to momentum-aware geometric pathfinding
+        # === PHI GRID LOOKUP (O(1) when simulation or BFS phi grids loaded) ===
+        # When phi grids are built, use direct lookup instead of per-step pathfinding.
+        # Works for both simulation-based (6px) and BFS-based (12px) phi grids.
+        lc = (
+            self.path_calculator.level_cache
+            if self.path_calculator is not None
+            else None
+        )
+        if (
+            lc is not None
+            and getattr(lc, "_phi_grids_built", False)
+            and not self.momentum_waypoints
+        ):
+            rm_state = 0 if current_goal_id == "switch" else 1
+            phi_raw = lc.get_phi(current_pos[0], current_pos[1], rm_state)
+            # Phi grid stores [-1, 0]; objective_pot expects [0, 1]
+            objective_pot = max(0.0, min(1.0, 1.0 + phi_raw))
+            state_with_metrics["_pbrs_using_phi_grid"] = True
         else:
-            objective_pot = self._get_cached_or_compute_potential(
-                current_pos=current_pos,
-                goal_id=current_goal_id,
-                state_with_metrics=state_with_metrics,
-                adjacency=adjacency,
-                level_data=level_data,
-                graph_data=graph_data,
-                scale_factor=scale_factor,
-            )
+            objective_pot = None
+
+        # === PATH-BASED PBRS (LEGACY) ===
+        # Use when phi grid not available or waypoints required
+        if objective_pot is None:
+            if self.momentum_waypoints:
+                objective_pot = self._get_cached_or_compute_potential_with_waypoints(
+                    current_pos=current_pos,
+                    goal_id=current_goal_id,
+                    state_with_metrics=state_with_metrics,
+                    adjacency=adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    scale_factor=scale_factor,
+                )
+            else:
+                objective_pot = self._get_cached_or_compute_potential(
+                    current_pos=current_pos,
+                    goal_id=current_goal_id,
+                    state_with_metrics=state_with_metrics,
+                    adjacency=adjacency,
+                    level_data=level_data,
+                    graph_data=graph_data,
+                    scale_factor=scale_factor,
+                )
 
         # Copy diagnostic values back to original state for logging
         # These are set by objective_distance_potential() in state_with_metrics
@@ -1689,6 +1728,34 @@ class PBRSCalculator:
         # PBRS purely position-based (Ng et al. 1999) - no velocity components
         return potential
 
+    def _get_current_iql_alpha(self) -> float:
+        """Get current IQL alpha weight with annealing applied.
+
+        Returns:
+            Current alpha value in [0, iql_alpha_initial].
+        """
+        if self._iql_alpha_anneal_steps <= 0:
+            return self._iql_alpha_initial
+
+        progress = min(1.0, self._iql_total_steps / self._iql_alpha_anneal_steps)
+        return self._iql_alpha_initial * (1.0 - progress)
+
+    def step_iql_alpha(self) -> None:
+        """Advance the IQL alpha annealing schedule by one step.
+
+        Call once per environment step during training to decay alpha
+        when annealing is enabled. Has no effect if annealing is disabled
+        (iql_alpha_anneal_steps=0).
+        """
+        if self._iql_alpha_anneal_steps > 0:
+            self._iql_total_steps += 1
+            self._iql_alpha = self._get_current_iql_alpha()
+
+    @property
+    def iql_alpha(self) -> float:
+        """Current IQL alpha weight (read-only)."""
+        return self._iql_alpha
+
     def reset(self) -> None:
         """Reset calculator state for new episode.
 
@@ -1698,6 +1765,8 @@ class PBRSCalculator:
 
         Momentum waypoints are NOT reset here - they are level-specific and
         should persist across episodes on the same level.
+
+        IQL alpha annealing is NOT reset -- it tracks global training progress.
         """
         # Clear position-based cache for fresh potential calculations
         # CRITICAL: Must reset when episode restarts (including same level reload)
@@ -1711,6 +1780,7 @@ class PBRSCalculator:
         # Keep combined path distance cache - it's per level, not per episode
         # Keep momentum waypoints - they're per level, not per episode
         # These will be invalidated when level_data or switch_states change
+        # IQL alpha annealing is global, not per-episode
 
     def get_last_distance_to_goal(self, goal_id: str) -> Optional[float]:
         """Get last computed path distance to goal (from most recent potential calculation).

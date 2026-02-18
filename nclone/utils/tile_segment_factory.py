@@ -181,10 +181,6 @@ class TileSegmentFactory:
             hor_segment_dic: Horizontal segment accumulator
             ver_segment_dic: Vertical segment accumulator
         """
-        # Skip glitched/unused tiles (34-37) - treat as empty (no collision)
-        if tile_id >= 34:
-            return
-
         coord = (xcoord, ycoord)
 
         # Process orthogonal segments (grid edges and linear segments)
@@ -266,8 +262,9 @@ class TileSegmentFactory:
         """
         Process a single tile for both grid edges and segments - consolidates MapLoader logic.
 
-        This method combines the grid edge processing from MapLoader._populate_segment_dictionaries
-        with the segment processing logic, eliminating code duplication.
+        Uses the original's toggle logic for grid edges: if current value is 0, set to
+        new value; if current is non-zero, reset to 0. This correctly cancels shared
+        edges between adjacent tiles.
 
         Args:
             tile_id: Tile type ID
@@ -275,31 +272,29 @@ class TileSegmentFactory:
             ycoord: Tile y coordinate
             simulator: Simulator object with all required dictionaries
         """
-        # Skip glitched/unused tiles (34-37) - treat as empty (no collision)
-        if tile_id >= 34:
-            return
-
-        # Process grid edges (for MapLoader compatibility)
+        # Process grid edges using the original's toggle logic
         if tile_id in TILE_GRID_EDGE_MAP:
             grid_edge_list = TILE_GRID_EDGE_MAP[tile_id]
 
-            # Process horizontal grid edges - matches MapLoader exactly
+            # Process horizontal grid edges
             for y_loop_idx in range(3):
                 for x_loop_idx in range(2):
                     key = (2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)
+                    new_val = grid_edge_list[2 * y_loop_idx + x_loop_idx]
+                    # Original toggle: set to new if current==0, else clear to 0
                     simulator.hor_grid_edge_dic[key] = (
-                        simulator.hor_grid_edge_dic[key]
-                        + grid_edge_list[2 * y_loop_idx + x_loop_idx]
-                    ) % 2
+                        new_val if simulator.hor_grid_edge_dic[key] == 0 else 0
+                    )
 
-            # Process vertical grid edges - matches MapLoader exactly
+            # Process vertical grid edges
             for x_loop_idx in range(3):
                 for y_loop_idx in range(2):
                     key = (2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx)
+                    new_val = grid_edge_list[2 * x_loop_idx + y_loop_idx + 6]
+                    # Original toggle: set to new if current==0, else clear to 0
                     simulator.ver_grid_edge_dic[key] = (
-                        simulator.ver_grid_edge_dic[key]
-                        + grid_edge_list[2 * x_loop_idx + y_loop_idx + 6]
-                    ) % 2
+                        new_val if simulator.ver_grid_edge_dic[key] == 0 else 0
+                    )
 
         # Process segments using existing logic
         TileSegmentFactory._process_single_tile(
@@ -316,6 +311,10 @@ class TileSegmentFactory:
         """
         Create segments directly in a simulator object (for MapLoader compatibility).
 
+        When process_grid_edges=True, ALL tiles (including empty tile_id=0) are processed
+        to match the original's grid edge cancellation behavior where empty tiles clear
+        previously set edges.
+
         Args:
             simulator: Simulator object with segment_dic, hor_segment_dic, ver_segment_dic
             tiles: Tile data dictionary {(x, y): tile_id}
@@ -323,20 +322,20 @@ class TileSegmentFactory:
         """
         # Process each tile using the centralized logic
         for (xcoord, ycoord), tile_id in tiles.items():
-            if tile_id != 0:
-                if process_grid_edges:
-                    TileSegmentFactory._process_tile_with_grid_edges(
-                        tile_id, xcoord, ycoord, simulator
-                    )
-                else:
-                    TileSegmentFactory._process_single_tile(
-                        tile_id,
-                        xcoord,
-                        ycoord,
-                        simulator.segment_dic,
-                        simulator.hor_segment_dic,
-                        simulator.ver_segment_dic,
-                    )
+            if process_grid_edges:
+                # Process ALL tiles (including empty) for grid edge cancellation
+                TileSegmentFactory._process_tile_with_grid_edges(
+                    tile_id, xcoord, ycoord, simulator
+                )
+            elif tile_id != 0:
+                TileSegmentFactory._process_single_tile(
+                    tile_id,
+                    xcoord,
+                    ycoord,
+                    simulator.segment_dic,
+                    simulator.hor_segment_dic,
+                    simulator.ver_segment_dic,
+                )
 
         # Convert orthogonal segments to actual segments
         TileSegmentFactory._process_orthogonal_segments(

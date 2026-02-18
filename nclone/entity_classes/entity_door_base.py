@@ -76,7 +76,7 @@ class EntityDoorBase(Entity):
             self.grid_edges.append((door_half_xcell, door_half_ycell - 2))
             self.grid_edges.append((door_half_xcell, door_half_ycell - 1))
             for grid_edge in self.grid_edges:
-                sim.ver_grid_edge_dic[grid_edge] += 1
+                sim.door_ver_grid_edge_dic[grid_edge] += 1
         else:
             self.segment = GridSegmentLinear(
                 (self.xpos - self.DOOR_RADIUS, self.ypos),
@@ -86,7 +86,7 @@ class EntityDoorBase(Entity):
             self.grid_edges.append((door_half_xcell - 2, door_half_ycell))
             self.grid_edges.append((door_half_xcell - 1, door_half_ycell))
             for grid_edge in self.grid_edges:
-                sim.hor_grid_edge_dic[grid_edge] += 1
+                sim.door_hor_grid_edge_dic[grid_edge] += 1
 
         # Add segment to segment_dic (MUST be outside if/else to work for both vertical and horizontal!)
         sim.segment_dic[door_cell].append(self.segment)
@@ -103,9 +103,9 @@ class EntityDoorBase(Entity):
         self.log_collision(0 if closed else 1)
         for grid_edge in self.grid_edges:
             if self.is_vertical:
-                self.sim.ver_grid_edge_dic[grid_edge] += 1 if closed else -1
+                self.sim.door_ver_grid_edge_dic[grid_edge] += 1 if closed else -1
             else:
-                self.sim.hor_grid_edge_dic[grid_edge] += 1 if closed else -1
+                self.sim.door_hor_grid_edge_dic[grid_edge] += 1 if closed else -1
 
     def get_state(self):
         state = super().get_state()

@@ -112,48 +112,30 @@ class SpatialSegmentIndex:
     def query_region(self, x1: float, y1: float, x2: float, y2: float) -> List:
         """Query segments in a rectangular region.
 
-        Optimized version of gather_segments_from_region that uses
-        spatial indexing and bounding box filtering.
+        Returns all active segments from cells overlapping the query rectangle,
+        matching the original gather_segments_from_region behavior exactly.
+        Segments belong to the cell of their parent tile but may geometrically
+        extend to the cell boundary or beyond, so no per-segment bounding box
+        filtering is applied here -- the caller performs exact collision tests.
 
         Args:
             x1, y1, x2, y2: Query rectangle bounds
 
         Returns:
-            List of active segments intersecting the query region
+            List of active segments from overlapping cells
         """
-        # Compute bounds and cell ranges
-        min_x = min(x1, x2)
-        min_y = min(y1, y2)
-        max_x = max(x1, x2)
-        max_y = max(y1, y2)
-
         # Convert bounds to cell index ranges and clamp to map grid (44x25)
-        min_cell_x = max(0, min(43, math.floor(min_x / 24)))
-        max_cell_x = max(0, min(43, math.floor(max_x / 24)))
-        min_cell_y = max(0, min(24, math.floor(min_y / 24)))
-        max_cell_y = max(0, min(24, math.floor(max_y / 24)))
+        min_cell_x = max(0, min(43, math.floor(min(x1, x2) / 24)))
+        max_cell_x = max(0, min(43, math.floor(max(x1, x2) / 24)))
+        min_cell_y = max(0, min(24, math.floor(min(y1, y2) / 24)))
+        max_cell_y = max(0, min(24, math.floor(max(y1, y2) / 24)))
 
-        # Collect segments from relevant cells with bounding box filtering
         segments = []
-        query_bounds = (min_x, min_y, max_x, max_y)
-
         for xcell in range(min_cell_x, max_cell_x + 1):
             for ycell in range(min_cell_y, max_cell_y + 1):
                 cell_key = (xcell, ycell)
-
-                if cell_key not in self.cell_data:
-                    continue
-
-                cell_info = self.cell_data[cell_key]
-
-                # Fast rejection: check if cell bounds intersect query bounds
-                cell_bounds = cell_info["bounds"]
-                if not self._bounds_intersect(query_bounds, cell_bounds):
-                    continue
-
-                # Add all segments from this cell
-                # (fine-grained filtering happens in collision detection)
-                segments.extend(cell_info["segments"])
+                if cell_key in self.cell_data:
+                    segments.extend(self.cell_data[cell_key]["segments"])
 
         return segments
 

@@ -1,192 +1,149 @@
 """Two-phase PBRS for levels with switch and exit goals.
 
-This module extends the precomputed value function approach to handle
-levels with two sequential objectives:
-1. Reach switch to activate exit door
-2. Reach exit door to complete level
+This module provides the ``TwoPhaseValuePBRS`` class and
+``create_two_phase_pbrs`` factory.  With the surface-graph approach both
+phases (switch and exit d* arrays) live in a single ``.npz`` file, so
+``TwoPhaseValuePBRS`` is a thin wrapper around ``SurfaceGraphPBRS``.
 
-Two value functions are maintained:
-- V_switch*(s): Optimal cost-to-go to switch
-- V_exit*(s): Optimal cost-to-go to exit
-
-The potential blends both based on switch activation state, maintaining
-continuity for temporal credit assignment in LSTM-based policies.
+The ``create_two_phase_pbrs`` factory is the entry point used by
+``base_environment._try_load_value_function_pbrs``.
 """
 
-import numpy as np
-from typing import Dict, Any, Tuple, Optional
+from __future__ import annotations
+
 import logging
 import os
+from typing import Any, Dict, List, Optional, Tuple
 
-from .precomputed_pbrs import PrecomputedValuePBRS
-from .state_discretization import StateDiscretizer
-from .interpolation import ValueInterpolator
+from .precomputed_pbrs import SurfaceGraphPBRS
 
 logger = logging.getLogger(__name__)
 
 
 class TwoPhaseValuePBRS:
-    """Two-phase PBRS using separate value functions for switch and exit.
+    """Two-phase PBRS using a precomputed surface graph.
 
-    This class manages two precomputed value functions:
-    - V_switch: Cost-to-go to switch (phase 1)
-    - V_exit: Cost-to-go to exit (phase 2)
+    Wraps :class:`SurfaceGraphPBRS` which already handles phase selection
+    via the ``switch_activated`` key in the state dictionary.
 
-    The combined potential maintains continuity across switch activation
-    to preserve temporal credit assignment for LSTM policies.
-
-    Potential composition:
-        Φ_total(s) = Φ_switch(s) × (1 - flag) + Φ_exit(s) × flag
-
-    where flag = switch_activated (0 or 1)
-
-    This is still policy-invariant because:
-    - Both Φ_switch and Φ_exit are individually policy-invariant
-    - Linear combination preserves policy invariance
-    - F(s,s') = γ × Φ_total(s') - Φ_total(s) remains valid PBRS
-
-    Attributes:
-        pbrs_switch: PrecomputedValuePBRS for switch goal
-        pbrs_exit: PrecomputedValuePBRS for exit goal
-        blend_mode: How to blend potentials ('continuous', 'discrete')
+    This class exists for backward compatibility with the environment
+    integration that expects a ``TwoPhaseValuePBRS`` type.
     """
 
-    def __init__(
-        self,
-        switch_value_path: str,
-        exit_value_path: str,
-        interpolation_method: str = "linear",
-        blend_mode: str = "continuous",
-    ):
-        """Load precomputed value functions for both phases.
+    def __init__(self, data_path: str) -> None:
+        """Load precomputed surface graph PBRS data.
 
         Args:
-            switch_value_path: Path to switch value function .npz
-            exit_value_path: Path to exit value function .npz
-            interpolation_method: Interpolation method for both
-            blend_mode: Blending strategy ('continuous' or 'discrete')
-                - 'continuous': Smooth blend Φ_switch(1-flag) + Φ_exit(flag)
-                - 'discrete': Hard switch between Φ_switch and Φ_exit
+            data_path: Path to ``{level}_surface_pbrs.npz``.
         """
-        self.pbrs_switch = PrecomputedValuePBRS(switch_value_path, interpolation_method)
-        self.pbrs_exit = PrecomputedValuePBRS(exit_value_path, interpolation_method)
-        self.blend_mode = blend_mode
-
-        if blend_mode not in ("continuous", "discrete"):
-            raise ValueError(f"Unknown blend_mode: {blend_mode}")
-
-        logger.info(f"Two-phase PBRS initialized (blend_mode={blend_mode})")
-        logger.info(f"  Switch goal: {self.pbrs_switch.goal_pos}")
-        logger.info(f"  Exit goal: {self.pbrs_exit.goal_pos}")
+        self._inner = SurfaceGraphPBRS(data_path)
 
     def get_potential(self, state: Dict[str, Any]) -> float:
-        """Get combined potential for two-phase navigation.
+        """Get PBRS potential for the current game state.
+
+        Dispatches to switch or exit phase based on
+        ``state["switch_activated"]``.
 
         Args:
-            state: Game state dictionary with switch_activated flag
+            state: Game state dict (same keys as
+                   :meth:`SurfaceGraphPBRS.get_potential`).
 
         Returns:
-            Combined potential in [0, 1]
+            Potential value (approx. range [-1, C_PHASE]).
         """
-        switch_activated = state.get("switch_activated", False)
-
-        if self.blend_mode == "discrete":
-            # Hard switch between phases
-            if not switch_activated:
-                # Phase 1: Navigate to switch
-                potential_switch = self.pbrs_switch.get_potential(state)
-                # Scale to [0, 0.5] for phase 1
-                return 0.5 * potential_switch
-            else:
-                # Phase 2: Navigate to exit
-                potential_exit = self.pbrs_exit.get_potential(state)
-                # Scale to [0.5, 1.0] for phase 2
-                return 0.5 + 0.5 * potential_exit
-
-        else:  # continuous blend
-            # Compute both potentials
-            potential_switch = self.pbrs_switch.get_potential(state)
-            potential_exit = self.pbrs_exit.get_potential(state)
-
-            # Blend: weight by switch activation state
-            # Before switch: mostly Φ_switch, slightly Φ_exit (anticipatory)
-            # After switch: mostly Φ_exit, slightly Φ_switch (memory)
-            flag = 1.0 if switch_activated else 0.0
-
-            # Smooth blend with scaling to maintain [0, 1] range
-            # Phase 1 (flag=0): 0.5 * Φ_switch + 0.0 * Φ_exit ∈ [0, 0.5]
-            # Phase 2 (flag=1): 0.0 * Φ_switch + 0.5 * Φ_exit + 0.5 ∈ [0.5, 1.0]
-            potential = (
-                0.5 * potential_switch * (1 - flag)
-                + (0.5 + 0.5 * potential_exit) * flag
-            )
-
-            return float(np.clip(potential, 0.0, 1.0))
+        return self._inner.get_potential(state)
 
     def get_gradient(
-        self, state: Dict[str, Any], epsilon: float = 1.0
+        self, state: Dict[str, Any], epsilon: float = 6.0,
     ) -> Tuple[float, float]:
-        """Estimate potential gradient (direction toward goal).
-
-        Args:
-            state: Game state dictionary
-            epsilon: Finite difference step size
-
-        Returns:
-            (grad_x, grad_y): Gradient of combined potential
-        """
-        # Use the active PBRS (switch or exit)
-        switch_activated = state.get("switch_activated", False)
-
-        if not switch_activated:
-            return self.pbrs_switch.get_gradient(state, epsilon)
-        else:
-            return self.pbrs_exit.get_gradient(state, epsilon)
+        """Estimate potential gradient at state."""
+        return self._inner.get_gradient(state, epsilon)
 
     def get_statistics(self) -> Dict[str, Any]:
-        """Get combined statistics for both value functions.
-
-        Returns:
-            Dictionary with statistics for both phases
-        """
-        return {
-            "switch_phase": self.pbrs_switch.get_statistics(),
-            "exit_phase": self.pbrs_exit.get_statistics(),
-            "blend_mode": self.blend_mode,
-        }
+        """Return statistics for logging."""
+        return self._inner.get_statistics()
 
 
 def create_two_phase_pbrs(
     level_id: str,
     value_function_dir: str = "value_functions",
-    interpolation_method: str = "linear",
-    blend_mode: str = "discrete",
+    **kwargs,
 ) -> TwoPhaseValuePBRS:
-    """Factory function to create two-phase PBRS from level ID.
+    """Factory function to create two-phase PBRS from a level ID.
+
+    Looks for ``{level_id}_surface_pbrs.npz`` in *value_function_dir*.
+    Falls back to the legacy naming ``{level_id}_switch.npz`` /
+    ``{level_id}_exit.npz`` pattern -- if those files exist the caller
+    should use the old code path (not this function).
 
     Args:
-        level_id: Level identifier (e.g., "006", "train_simple_100011")
-        value_function_dir: Directory containing value function files
-        interpolation_method: Interpolation method
-        blend_mode: Blending strategy
+        level_id: Level identifier (e.g. ``"006"``, ``"rampjump"``).
+        value_function_dir: Directory containing precomputed files.
+        **kwargs: Ignored (for backward compatibility with old call-sites
+                  that passed ``interpolation_method``/``blend_mode``).
 
     Returns:
-        TwoPhaseValuePBRS instance
+        ``TwoPhaseValuePBRS`` instance.
 
     Raises:
-        FileNotFoundError: If value function files don't exist
+        FileNotFoundError: If the precomputed file does not exist.
     """
-    switch_path = os.path.join(value_function_dir, f"{level_id}_switch.npz")
-    exit_path = os.path.join(value_function_dir, f"{level_id}_exit.npz")
+    data_path = os.path.join(
+        value_function_dir, f"{level_id}_surface_pbrs.npz")
 
-    if not os.path.exists(switch_path):
-        raise FileNotFoundError(f"Switch value function not found: {switch_path}")
-    if not os.path.exists(exit_path):
-        raise FileNotFoundError(f"Exit value function not found: {exit_path}")
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(
+            f"Surface graph PBRS file not found: {data_path}")
 
-    return TwoPhaseValuePBRS(
-        switch_path,
-        exit_path,
-        interpolation_method=interpolation_method,
-        blend_mode=blend_mode,
-    )
+    return TwoPhaseValuePBRS(data_path)
+
+
+def create_neural_pbrs(
+    checkpoint_path: str,
+    tile_grid: Optional[Any] = None,
+    switch_pos: Optional[Tuple[float, float]] = None,
+    exit_pos: Optional[Tuple[float, float]] = None,
+    mine_positions: Optional[List[Tuple[float, float, int]]] = None,
+    headless: Optional[Any] = None,
+    device: str = "cpu",
+) -> "NeuralValuePBRS":
+    """Factory function to create neural IQL V(s) PBRS adapter.
+
+    Creates a ``NeuralValuePBRS`` instance from a frozen IQL V-network
+    checkpoint and optionally initializes it with level data.
+
+    Args:
+        checkpoint_path: Path to exported V-network file (.pt).
+        tile_grid: Optional (42, 23) tile grid for immediate level setup.
+        switch_pos: Optional (x, y) switch position for immediate level setup.
+        exit_pos: Optional (x, y) exit position for immediate level setup.
+        mine_positions: Optional list of (x, y, entity_type) for mines.
+        headless: Optional reference to headless simulator.
+        device: Torch device for inference.
+
+    Returns:
+        ``NeuralValuePBRS`` instance.
+
+    Raises:
+        FileNotFoundError: If the checkpoint file does not exist.
+    """
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(
+            f"IQL V-network checkpoint not found: {checkpoint_path}"
+        )
+
+    from .neural_value_pbrs import NeuralValuePBRS
+
+    adapter = NeuralValuePBRS(checkpoint_path, device=device)
+
+    # Set level data if provided
+    if tile_grid is not None and switch_pos is not None and exit_pos is not None:
+        adapter.set_level(
+            tile_grid=tile_grid,
+            switch_pos=switch_pos,
+            exit_pos=exit_pos,
+            mine_positions=mine_positions or [],
+            headless=headless,
+        )
+
+    return adapter

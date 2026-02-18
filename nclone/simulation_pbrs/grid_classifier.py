@@ -12,16 +12,11 @@ fine-grained gradients for PBRS potential fields.
 import numpy as np
 from typing import Dict, Tuple
 
-from ..constants.physics_constants import (
-    FULL_MAP_WIDTH_PX,
-    FULL_MAP_HEIGHT_PX,
-    FULL_MAP_WIDTH,
-    FULL_MAP_HEIGHT,
-)
+from ..constants.physics_constants import FULL_MAP_WIDTH_PX, FULL_MAP_HEIGHT_PX
 
 # Grid resolution and dimensions
 GRID_RESOLUTION = 6  # pixels per cell
-GRID_WIDTH = FULL_MAP_WIDTH_PX // GRID_RESOLUTION   # 1056 // 6 = 176
+GRID_WIDTH = FULL_MAP_WIDTH_PX // GRID_RESOLUTION  # 1056 // 6 = 176
 GRID_HEIGHT = FULL_MAP_HEIGHT_PX // GRID_RESOLUTION  # 600 // 6 = 100
 
 # Tile size in pixels

@@ -108,6 +108,11 @@ class PrimitiveRewardCalculator:
         phi_grid_cache: Any,
         rust_phi_cache: Optional[Any] = None,
         is_truncated: bool = False,
+        precomputed_pbrs: Optional[Any] = None,
+        player_xspeed: Optional[float] = None,
+        player_yspeed: Optional[float] = None,
+        jump_duration_remaining: Optional[float] = None,
+        contact_state: Optional[int] = None,
     ) -> float:
         """Calculate reward for a single physics frame.
 
@@ -124,6 +129,10 @@ class PrimitiveRewardCalculator:
             phi_grid_cache: LevelBasedPathDistanceCache with built Phi grids
             rust_phi_cache: Optional Rust LevelCache for O(1) get_phi (faster)
             is_truncated: Whether episode was truncated (timeout)
+            precomputed_pbrs: Optional TwoPhaseValuePBRS for 5D velocity-aware potentials
+            player_xspeed: Optional velocity x (for precomputed_pbrs)
+            player_yspeed: Optional velocity y (for precomputed_pbrs)
+            jump_duration_remaining: Optional normalized [0,1] jump remaining (for precomputed_pbrs)
 
         Returns:
             Total reward for this frame (scaled by global_reward_scale)
@@ -144,19 +153,38 @@ class PrimitiveRewardCalculator:
         # Determine terminal state
         is_terminal = player_dead or player_won or is_truncated
 
-        # Get position-based potential from Phi grid (prefer Rust when available)
+        # Get potential: prefer 5D precomputed value function when available
         rm_state = self.reward_machine.state
-        if rust_phi_cache is not None:
+        if precomputed_pbrs is not None:
+            state_dict = {
+                "player_x": player_x,
+                "player_y": player_y,
+                "player_xspeed": player_xspeed if player_xspeed is not None else 0.0,
+                "player_yspeed": player_yspeed if player_yspeed is not None else 0.0,
+                "jump_duration_remaining": (
+                    jump_duration_remaining if jump_duration_remaining is not None else 0.0
+                ),
+                "switch_activated": switch_activated,
+            }
+            if contact_state is not None:
+                state_dict["contact_state"] = contact_state
+            phi_state = precomputed_pbrs.get_potential(state_dict)
+        elif rust_phi_cache is not None:
             phi_state = rust_phi_cache.get_phi(
                 player_x, player_y, rm_state
             )
         else:
             phi_state = phi_grid_cache.get_phi(player_x, player_y, rm_state)
 
-        # Compute total potential: Phi(s, u) = Phi_state + Phi_phase
-        current_potential = self.reward_machine.get_total_potential(
-            phi_state, is_terminal=is_terminal
-        )
+        # Compute total potential
+        # When using precomputed_pbrs, phi_state is already the full 5D potential [0,1]
+        # Otherwise: Phi(s, u) = Phi_state + Phi_phase from reward machine
+        if precomputed_pbrs is not None:
+            current_potential = 0.0 if is_terminal else phi_state
+        else:
+            current_potential = self.reward_machine.get_total_potential(
+                phi_state, is_terminal=is_terminal
+            )
 
         # Compute PBRS shaping reward: F_t = gamma * Phi(s') - Phi(s)
         pbrs_reward = 0.0

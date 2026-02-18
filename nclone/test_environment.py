@@ -4,6 +4,9 @@ N++ Environment Test with Graph Visualization
 This script provides a comprehensive testing environment for the N++ simulator
 with integrated graph visualization capabilities.
 
+Modes (command-line):
+  --step-on-input - Simulation only ticks when input pressed (frame-perfect testing)
+
 Interactive Controls (during runtime):
 -------------------------------------
 
@@ -16,6 +19,9 @@ D - Toggle mine death probability debug overlay
 W - Toggle action mask debug overlay
 U - Toggle reachable walls debug overlay
 Q - Toggle demo checkpoint heatmap (requires --demo-replays)
+F - Toggle value function (PBRS cost-to-go) overlay
+Y - Toggle analytical reachability overlay (floor + wall jump hulls)
+P - Toggle PBRS path overlay (shortest path to goal + cost-to-go heatmap)
 R - Reset environment
 
 Examples:
@@ -399,6 +405,11 @@ parser.add_argument(
     action="store_true",
     help="Enable discrete action mode - single action per keypress instead of continuous actions while held",
 )
+parser.add_argument(
+    "--step-on-input",
+    action="store_true",
+    help="Enable step-on-input mode - simulation only ticks when an input is pressed (frame-perfect input sequences)",
+)
 
 args = parser.parse_args()
 
@@ -413,6 +424,25 @@ if args.discrete_actions:
     print("Keys must be released and pressed again for each action")
     print("Holding keys will NOT repeat actions")
     print("=" * 60 + "\n")
+
+# Display step-on-input mode info (implies discrete actions)
+if args.step_on_input:
+    if args.headless:
+        print(
+            "Warning: --step-on-input requires visual display; ignoring in headless mode."
+        )
+        args.step_on_input = False
+    else:
+        args.discrete_actions = True  # Step-on-input implies discrete actions
+        print("\n" + "=" * 60)
+        print("STEP-ON-INPUT MODE ENABLED (Frame-Perfect)")
+        print("=" * 60)
+        print("Simulation advances ONLY when an input is pressed")
+        print("Tap (<200ms) = single step; hold (200ms+) = repeated steps")
+        print("Arrows: Left/Right/Jump | Z=Jump+Left | X=Jump+Right | .=NOOP")
+        print("No tick when no input - test frame-perfect input sequences")
+        print("Input sequence overlay shown when active")
+        print("=" * 60 + "\n")
 
 # Display help information for generator testing
 if args.test_generators:
@@ -509,9 +539,7 @@ if (
     print("\nRuntime Controls:")
     print("  A - Toggle adjacency graph visualization")
     print("  B - Toggle blocked entity highlighting")
-    print("  P - Toggle path to goals visualization (with edge-type colored segments)")
-    print("      • Edge type legend shown top-right when paths are visible")
-    print("      • Thicker line = current segment")
+    print("  P - Toggle PBRS path overlay (shortest path to goal + cost-to-go heatmap)")
     print("  M - Toggle Mine SDF (Signed Distance Field) heatmap")
     print("      • Red=danger zone | Yellow=boundary | Green=safe")
     print("  T - Run pathfinding benchmark at current position")
@@ -955,6 +983,10 @@ path_aware_system = None
 adjacency_graph_debug_enabled = False
 blocked_entities_debug_enabled = False
 show_paths_to_goals = False
+value_function_debug_enabled = False
+value_function_pbrs_cache = {}  # level_name -> pbrs instance
+reachability_overlay_enabled = False
+pbrs_path_overlay_enabled = False
 
 if (
     args.test_path_aware
@@ -1129,6 +1161,12 @@ keys_just_pressed = (
 )  # Track which keys were pressed this frame (for discrete mode)
 keys_held = set()  # Track which keys are currently held (to prevent repeat on hold)
 
+# Step-on-input mode: track input sequence for overlay
+input_sequence = []
+HOLD_REPEAT_DELAY_MS = 200  # ms before held keys repeat (enables single-frame taps)
+hold_start_time = None  # when current key hold started
+hold_action = 0  # action being held (for repeat delay)
+
 manual_reset(env)
 # Main game loop
 # Wrap the game loop with profiler.enable() and profiler.disable()
@@ -1159,6 +1197,8 @@ while running:
                         keys_held.add(event.key)
 
                 if event.key == pygame.K_r:
+                    if args.step_on_input:
+                        input_sequence.clear()
                     # Check if episode was successful before reset (for recorder)
                     if recorder is not None and recorder.is_recording:
                         # Determine if episode was successful
@@ -1218,6 +1258,8 @@ while running:
                 if event.key == pygame.K_b and recorder is not None:
                     # Start recording
                     if not recorder.is_recording:
+                        if args.step_on_input:
+                            input_sequence.clear()
                         # CRITICAL: Reset environment to spawn position on SAME map
                         # Save current map data before resetting
                         current_map_data = list(env.nplay_headless.current_map_data)
@@ -1252,6 +1294,8 @@ while running:
                 if event.key == pygame.K_n:
                     # Test suite navigation or recording control
                     if test_suite_loader is not None and test_suite_level_ids:
+                        if args.step_on_input:
+                            input_sequence.clear()
                         # Load next level in test suite
                         current_level_idx = (current_level_idx + 1) % len(
                             test_suite_level_ids
@@ -1275,6 +1319,8 @@ while running:
                     and test_suite_level_ids
                 ):
                     # Load previous level in test suite
+                    if args.step_on_input:
+                        input_sequence.clear()
                     current_level_idx = (current_level_idx - 1) % len(
                         test_suite_level_ids
                     )
@@ -1544,39 +1590,123 @@ while running:
                             f"Blocked entities display: {'ON' if blocked_entities_debug_enabled else 'OFF'}"
                         )
 
-                    if event.key == pygame.K_p:
-                        # Toggle path to goals visualization
-                        show_paths_to_goals = not show_paths_to_goals
-                        print(
-                            f"Path to goals visualization: {'ON' if show_paths_to_goals else 'OFF'}"
-                        )
-
-                    if event.key == pygame.K_x and not (event.mod & pygame.KMOD_CTRL):
-                        # Export path analysis screenshot
+                # Value function (PBRS cost-to-go) overlay
+                if event.key == pygame.K_f:
+                    value_function_debug_enabled = not value_function_debug_enabled
+                    if value_function_debug_enabled:
                         try:
-                            timestamp = int(time.time())
-                            filename = f"path_analysis_export_{timestamp}.png"
-                            # Get current frame
-                            frame = env.render()
-                            # handle pygame surface
-                            if isinstance(frame, pygame.Surface):
-                                # save pygame surface to file and quit
-                                pygame.image.save(frame, filename)
-                                print(
-                                    f"✅ Path analysis screenshot saved to {filename}"
+                            level_name = getattr(
+                                env.map_loader, "current_map_name", None
+                            )
+                            if level_name is None and args.map:
+                                from pathlib import Path
+
+                                level_name = Path(args.map).stem
+                            if level_name:
+                                if level_name not in value_function_pbrs_cache:
+                                    from nclone.value_function.two_phase_pbrs import (
+                                        create_two_phase_pbrs,
+                                    )
+
+                                    pbrs = create_two_phase_pbrs(level_name)
+                                    value_function_pbrs_cache[level_name] = pbrs
+                                env.set_value_function_pbrs(
+                                    value_function_pbrs_cache[level_name]
                                 )
-                            elif frame is not None and isinstance(frame, np.ndarray):
-                                image = Image.fromarray(
-                                    frame.astype(np.uint8), mode="RGB"
-                                )
-                                image.save(filename)
                                 print(
-                                    f"✅ Path analysis screenshot saved to {filename}"
+                                    f"Value function overlay: ON (level={level_name})"
                                 )
                             else:
-                                print("❌ Failed to export path analysis screenshot")
+                                print("Cannot determine level name for value function")
+                                value_function_debug_enabled = False
+                        except FileNotFoundError as e:
+                            print(
+                                f"Value function data not found: {e}. "
+                                "Run: python -m nclone.value_function.precompute_cli "
+                                "--map-path <level.map>"
+                            )
+                            value_function_debug_enabled = False
                         except Exception as e:
-                            print(f"Could not export path analysis screenshot: {e}")
+                            print(f"Failed to load value function: {e}")
+                            import traceback
+
+                            traceback.print_exc()
+                            value_function_debug_enabled = False
+                    else:
+                        env.set_value_function_pbrs(None)
+                        print("Value function overlay: OFF")
+                    env.set_value_function_debug_enabled(value_function_debug_enabled)
+
+                # Analytical reachability overlay
+                if event.key == pygame.K_y:
+                    reachability_overlay_enabled = not reachability_overlay_enabled
+                    try:
+                        env.set_reachability_overlay_enabled(
+                            reachability_overlay_enabled
+                        )
+                        print(
+                            f"Reachability overlay: {'ON' if reachability_overlay_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Failed to toggle reachability overlay: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                        reachability_overlay_enabled = False
+
+                # PBRS path overlay (analytical reachability shortest path)
+                if event.key == pygame.K_p:
+                    pbrs_path_overlay_enabled = not pbrs_path_overlay_enabled
+                    try:
+                        # Build reachability PBRS if not yet built
+                        if pbrs_path_overlay_enabled:
+                            pbrs = getattr(env, "_current_reachability_pbrs", None)
+                            if pbrs is None:
+                                # Ensure graph is built (e.g. after reset)
+                                if hasattr(env, "_update_graph_from_env_state"):
+                                    env._update_graph_from_env_state()
+                                graph_data = getattr(env, "current_graph_data", None)
+                                if graph_data:
+                                    print(
+                                        "Building reachability PBRS for path overlay..."
+                                    )
+                                    from nclone.analytical_physics.reachability_builder import (
+                                        build_reachability_pbrs,
+                                    )
+
+                                    level_data = env.level_data
+                                    switch_pos = (
+                                        env.nplay_headless.exit_switch_position()
+                                    )
+                                    exit_pos = env.nplay_headless.exit_door_position()
+                                    pbrs = build_reachability_pbrs(
+                                        graph_data=graph_data,
+                                        level_data=level_data,
+                                        switch_pos=switch_pos,
+                                        exit_pos=exit_pos,
+                                    )
+                                    env._current_reachability_pbrs = pbrs
+                                    print(
+                                        f"Built reachability PBRS: "
+                                        f"{pbrs.graph.n_points} pts, "
+                                        f"{len(pbrs.graph.edges_src)} edges"
+                                    )
+                                else:
+                                    print(
+                                        "No graph data available. Reset the env or press R first."
+                                    )
+                                    pbrs_path_overlay_enabled = False
+
+                        env.set_pbrs_path_overlay_enabled(pbrs_path_overlay_enabled)
+                        print(
+                            f"PBRS path overlay: {'ON' if pbrs_path_overlay_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Failed to toggle PBRS path overlay: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                        pbrs_path_overlay_enabled = False
 
                 # Demo checkpoint visualization controls
                 if demo_checkpoint_system is not None:
@@ -1685,7 +1815,29 @@ while running:
     # Map keyboard inputs to environment actions (arrow keys only)
     action = 0  # Default to NOOP
     if not args.headless:  # Only process keyboard inputs if not in headless mode
-        if args.discrete_actions:
+        if args.step_on_input:
+            # Step-on-input: use keys held (holding = repeated steps, release = stop)
+            # Z/X = dedicated Jump+Left / Jump+Right | Period = dedicated NOOP
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_z]:
+                action = 4  # Jump + Left (Z)
+            elif keys[pygame.K_x]:
+                action = 5  # Jump + Right (X)
+            elif keys[pygame.K_PERIOD]:
+                action = 0  # NOOP (.) - explicit advance with no input
+            elif keys[pygame.K_UP]:
+                if keys[pygame.K_LEFT]:
+                    action = 4  # Jump + Left
+                elif keys[pygame.K_RIGHT]:
+                    action = 5  # Jump + Right
+                else:
+                    action = 3  # Jump only
+            else:
+                if keys[pygame.K_LEFT]:
+                    action = 1  # Left
+                elif keys[pygame.K_RIGHT]:
+                    action = 2  # Right
+        elif args.discrete_actions:
             # Discrete action mode: only register actions on key press (not hold)
             if pygame.K_UP in keys_just_pressed:
                 if pygame.K_LEFT in keys_just_pressed:
@@ -1720,9 +1872,22 @@ while running:
         # actions are desired in headless testing.
         action = 0
 
-    # Record action if recording is active
+    explicit_noop = (
+        args.step_on_input
+        and not args.headless
+        and pygame.key.get_pressed()[pygame.K_PERIOD]
+    )
+
+    # Record action if recording is active (only when we actually step)
     if recorder is not None and recorder.is_recording:
-        recorder.record_action(action)
+        if not args.step_on_input or action != 0 or explicit_noop:
+            recorder.record_action(action)
+
+    # Pass input sequence overlay data to env (step-on-input mode)
+    if args.step_on_input and not args.headless:
+        env.set_input_sequence_overlay(input_sequence, enabled=True)
+    elif hasattr(env, "set_input_sequence_overlay"):
+        env.set_input_sequence_overlay([], enabled=False)
 
     # Update path-aware visualization if enabled
     if path_aware_system is not None:
@@ -1863,6 +2028,57 @@ while running:
         env.set_blocked_entities_debug_enabled(False)
         env.set_show_paths_to_goals(False)
 
+    # Update value function overlay if enabled
+    env.set_value_function_debug_enabled(value_function_debug_enabled)
+    if value_function_debug_enabled:
+        level_name = getattr(env.map_loader, "current_map_name", None)
+        if level_name is None and args.map:
+            from pathlib import Path
+
+            level_name = Path(args.map).stem
+        if level_name and level_name in value_function_pbrs_cache:
+            env.set_value_function_pbrs(value_function_pbrs_cache[level_name])
+        elif level_name and level_name not in value_function_pbrs_cache:
+            try:
+                from nclone.value_function.two_phase_pbrs import (
+                    create_two_phase_pbrs,
+                )
+
+                pbrs = create_two_phase_pbrs(level_name)
+                value_function_pbrs_cache[level_name] = pbrs
+                env.set_value_function_pbrs(pbrs)
+            except FileNotFoundError:
+                env.set_value_function_pbrs(None)
+            except Exception:
+                env.set_value_function_pbrs(None)
+        else:
+            env.set_value_function_pbrs(None)
+    else:
+        env.set_value_function_pbrs(None)
+
+    # Rebuild PBRS path overlay if enabled (graph changes on level change)
+    if pbrs_path_overlay_enabled:
+        try:
+            from nclone.analytical_physics.reachability_builder import (
+                build_reachability_pbrs,
+            )
+
+            graph_data = getattr(env, "current_graph_data", None)
+            if graph_data:
+                level_data = env.level_data
+                switch_pos = env.nplay_headless.exit_switch_position()
+                exit_pos = env.nplay_headless.exit_door_position()
+                pbrs = build_reachability_pbrs(
+                    graph_data=graph_data,
+                    level_data=level_data,
+                    switch_pos=switch_pos,
+                    exit_pos=exit_pos,
+                )
+                env._current_reachability_pbrs = pbrs
+        except Exception:
+            pass
+    env.set_pbrs_path_overlay_enabled(pbrs_path_overlay_enabled)
+
     # Update demo checkpoint visualization if enabled
     if demo_checkpoint_system is not None:
         env.set_demo_checkpoints_debug_enabled(demo_checkpoints_debug_enabled)
@@ -1883,17 +2099,50 @@ while running:
                 env.set_demo_checkpoints_data(checkpoints)
 
     # Step the environment
-    observation, reward, terminated, truncated, info = env.step(action)
+    if args.step_on_input:
+        if action == 0 and not explicit_noop:
+            # No input: render current state without stepping
+            hold_start_time = None
+            hold_action = 0
+            env.render()
+            did_step = False
+        else:
+            # Keys held: 200ms delay before repeat (enables single-frame taps)
+            now_ms = time.perf_counter() * 1000
+            if hold_start_time is None or hold_action != action:
+                # New press or key combo change: step immediately
+                hold_start_time = now_ms
+                hold_action = action
+                observation, reward, terminated, truncated, info = env.step(action)
+                input_sequence.append(action)
+                did_step = True
+            elif (now_ms - hold_start_time) >= HOLD_REPEAT_DELAY_MS:
+                # Past delay: repeat every frame
+                observation, reward, terminated, truncated, info = env.step(action)
+                input_sequence.append(action)
+                did_step = True
+            else:
+                # Within 200ms of initial press: no repeat (single-frame tap)
+                env.render()
+                did_step = False
+    else:
+        observation, reward, terminated, truncated, info = env.step(action)
+        if args.step_on_input:
+            input_sequence.append(action)
+        did_step = True
 
-    # Memory profiling snapshot
+    # Memory profiling snapshot (only when we stepped)
     if (
-        memory_profiler is not None
+        did_step
+        and memory_profiler is not None
         and frame_counter % memory_profiler.snapshot_interval == 0
     ):
         memory_profiler.take_snapshot(frame_counter, obs=observation)
 
-    # Reset if episode is done
-    if terminated or truncated:
+    # Reset if episode is done (only when we stepped)
+    if did_step and (terminated or truncated):
+        if args.step_on_input:
+            input_sequence.clear()
         # Stop recording if active (episode naturally ended)
         if recorder is not None and recorder.is_recording:
             # Determine if episode was successful

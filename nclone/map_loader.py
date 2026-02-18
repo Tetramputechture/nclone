@@ -21,20 +21,12 @@ class MapLoader:
         # extract tile data from map data
         tile_data = self.sim.map_data[184:1150]
 
-        # map each tile to its cell
+        # map each tile to its cell (interior tiles only, matching original)
         for x_coord_tile in range(42):
             for y_coord_tile in range(23):
                 self.sim.tile_dic[(x_coord_tile + 1, y_coord_tile + 1)] = tile_data[
                     x_coord_tile + y_coord_tile * 42
                 ]
-
-        # Set our outer edges to tile type 1 (full tile)
-        for x_coord_tile in range(44):
-            self.sim.tile_dic[(x_coord_tile, 0)] = 1
-            self.sim.tile_dic[(x_coord_tile, 24)] = 1
-        for y_coord_tile in range(25):
-            self.sim.tile_dic[(0, y_coord_tile)] = 1
-            self.sim.tile_dic[(43, y_coord_tile)] = 1
 
         # Use centralized tile segment factory to create all segments
         # This ensures consistency with PreciseCollision and eliminates code duplication
@@ -119,26 +111,10 @@ class MapLoader:
                 self.sim.entity_dic[entity_type].append(entity)
                 self.sim.grid_entity[entity.cell].append(entity)
 
-            # Entity types 6 (locked door) and 8 (trap door) have variable size
-            # Old format: 9 bytes [type, x, y, orientation, mode, switch_x, switch_y, 0, 0]
-            # New format: 10 bytes [type, x, y, orientation, mode, switch_x, switch_y, extra, 0, 0]
-            # Try to detect which format by checking if byte at index+7 is typically 0 or non-zero
-            if entity_type in (6, 8):
-                # Check if this might be the 10-byte format (has extra byte before the zeros)
-                if index + 9 < len(self.sim.map_data):
-                    # If byte at index+7 is non-zero and bytes at index+8 and index+9 are zero, it's 10-byte format
-                    if (
-                        self.sim.map_data[index + 7] != 0
-                        and self.sim.map_data[index + 8] == 0
-                        and self.sim.map_data[index + 9] == 0
-                    ):
-                        index += 10
-                    else:
-                        index += 9
-                else:
-                    index += 9
-            else:
-                index += 5
+            # All entity entries are exactly 5 bytes: [type, x, y, orientation, mode]
+            # Door types (6, 8) read their switch coordinates from subsequent
+            # entity slots (index+6, index+7) but still advance by 5 per entry.
+            index += 5
 
         for entity_list in self.sim.entity_dic.values():
             for entity_instance in entity_list:

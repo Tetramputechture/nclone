@@ -51,7 +51,7 @@ TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggli
 BOUNCE_BLOCK_SEMI_SIDE = 4.5  # Bounce block semi-side size in pixels (9x9 pixel square)
 
 # Movement speeds (exact values from sim_mechanics_doc.md)
-MAX_HOR_SPEED = 3.333  # Maximum horizontal speed: 3.333 pixels/frame
+MAX_HOR_SPEED = 3.333333333333333  # Maximum horizontal speed (10/3)
 MAX_VER_SPEED = 12.0  # Maximum vertical speed (upward) of the ninja (player)
 MIN_HORIZONTAL_VELOCITY = 0.1  # Minimum horizontal velocity for calculations
 
@@ -196,6 +196,7 @@ GROUND_STATES = {0, 1, 2}  # Immobile, Running, Ground Sliding
 AIR_STATES = {3, 4}  # Jumping, Falling
 WALL_STATES = {5}  # Wall Sliding
 INACTIVE_STATES = {6, 7, 8, 9}  # Inactive movement states
+NINJA_STATE_CELEBRATING = 8  # Celebrating (level completed, indicates win)
 
 # === PROXIMITY AND DETECTION CONSTANTS ===
 # Entity proximity
