@@ -623,9 +623,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 player_dead = headless.ninja_has_died()
 
                 # === PRIMITIVE-LEVEL PBRS REWARD ===
-                # Compute per-frame reward using Phi grids or 5D value function + reward machine
+                # Only compute when explicitly using precomputed PBRS. For HWM pipeline
+                # (use_precomputed_pbrs=False), leave primitive_rewards empty so FiGAR
+                # uses the main reward (HWM) instead of Phi-based PBRS.
                 _precomputed_pbrs = getattr(self, "_current_precomputed_pbrs", None)
-                if _phi_grid_cache is not None or _precomputed_pbrs is not None:
+                if getattr(self, "use_precomputed_pbrs", False) and (
+                    _phi_grid_cache is not None or _precomputed_pbrs is not None
+                ):
                     ninja_pos = headless.ninja_position()
                     ninja_vel = headless.ninja_velocity() if hasattr(headless, "ninja_velocity") else (0.0, 0.0)
                     jdr = 0.0
@@ -720,22 +724,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Hook: Modify reward if needed
             reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
 
-            # === TRUNCATION HANDLING (SIMPLIFIED 2025-12-25) ===
-            # No additional penalty for truncation - let core components handle it naturally:
-            # - PBRS rewards distance reduction (low progress = low/negative PBRS)
-            # - Time penalty discourages long episodes (accumulates over time)
-            # - Terminal rewards encourage completion (much larger than time penalty)
-            #
-            # This creates natural hierarchy without arbitrary threshold checks:
-            # - Complete: +15 PBRS + 110 terminal - 0.25 time = +124.75 (best)
-            # - Timeout at 97%: +14.55 PBRS - 0.25 time = +14.30 (good, keep trying)
-            # - Timeout at 15%: +2.25 PBRS - 0.25 time = +2.00 (poor but not penalized)
-            # - Death at 50%: +7.5 PBRS - 15 death - 0.125 time = -7.6 (worst)
-            #
-            # REMOVED: Stagnation penalty (was -20 for progress <15% or negative PBRS)
-            # Rationale: Created confusing signals (97% progress gets penalized for
-            # inefficient path), redundant with time penalty, and violated design goal
-            # of simple reward structure focused on distance reduction and completion.
+            # === TRUNCATION HANDLING ===
+            # No additional penalty for truncation. HWM pipeline:
+            # - HWM shaping rewards progress toward objectives (zero when no progress)
+            # - Sparse terminal rewards (R_SWITCH, R_EXIT, R_DEATH) define task hierarchy
+            # - Truncation yields 0 reward; agent learns from HWM accumulated during episode
 
             self.current_ep_reward += reward
 

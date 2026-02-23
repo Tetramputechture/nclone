@@ -45,7 +45,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
     Features:
     - Multiple observation profiles (minimal/rich)
-    - Potential-based reward shaping (PBRS)
+    - HWM A* distance shaping (or Phi-based PBRS when use_precomputed_pbrs)
     - Frame stacking support
     - Graph-based planning and visualization
     - Episode truncation based on progress
@@ -365,6 +365,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         info["player_xspeed"] = ninja_vel[0]
         info["player_yspeed"] = ninja_vel[1]
         info["airborne"] = self.nplay_headless.sim.ninja.airborn
+        info["ninja_state"] = self.nplay_headless.sim.ninja.state
 
         # Graph size info for level-size-aware optimizations
         # Used by Go-Explore to scale checkpoint thresholds for larger levels
