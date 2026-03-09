@@ -108,6 +108,31 @@ PBRS_MIN_PHYSICS_SCALE = 50.0  # DEPRECATED
 SUB_GOAL_REWARD_PROGRESS = 30.0  # DEPRECATED
 SUB_GOAL_SPACING = 48.0  # DEPRECATED
 
+# =============================================================================
+# DENSE REWARD DEFAULTS (SAC DenseRewardCalculator)
+# =============================================================================
+# These defaults mirror DenseRewardConfig to serve as a central reference.
+# Override via DenseRewardConfig fields in SACConfig.
+
+# Progress shaping weight: F = alpha_pbrs * max(0, dist_before_macro - dist_after_macro)
+# Applied ONCE per macro-action (not per frame) — see DenseRewardCalculator.compute_macro_pbrs().
+DENSE_ALPHA_PBRS = 0.5
+# Discount used in PBRS formula (should match SACConfig.gamma = 0.99)
+DENSE_PBRS_GAMMA = 0.99
+
+# Per-frame velocity-alignment reward = beta * max(0, dot(v_unit, hop_dir))
+# Reduced from 0.0005: see DenseRewardConfig.beta_vel for rationale.
+DENSE_BETA_VEL = 0.0001
+
+# Distance milestone: bonus per interval crossed for the first time per episode
+# Reduced from 0.2 to 0.1: see DenseRewardConfig.milestone_interval for rationale.
+DENSE_MILESTONE_INTERVAL = 0.1   # 10% distance reduction per milestone
+DENSE_MILESTONE_BONUS = 0.1      # flat reward per milestone
+
+# Mine hazard avoidance: delta * max(0, sdf_curr - sdf_prev) inside danger zone
+DENSE_DELTA_HAZARD = 0.0001
+DENSE_HAZARD_SDF_THRESHOLD = 0.3  # SDF below this activates hazard shaping
+
 INEFFECTIVE_ACTION_THRESHOLD = 0.35  # DEPRECATED
 INEFFECTIVE_ACTION_PENALTY = -0.05  # DEPRECATED
 OSCILLATION_WINDOW = 10  # DEPRECATED

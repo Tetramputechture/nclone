@@ -535,6 +535,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # Reset tracking variables from BaseNppEnvironment
             # ============================================================
             self._switch_activation_frame = None
+            self._switch_activation_step = None
             self.current_route = []
             self._warned_about_position = False
 
@@ -634,6 +635,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
             # Reset switch activation tracking (BaseNppEnvironment.reset line 1519)
             self._switch_activation_frame = None
+            self._switch_activation_step = None
 
             # Reset position tracking for route visualization (BaseNppEnvironment.reset line 1515-1516)
             self.current_route = []
@@ -1886,45 +1888,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         Note: Graph is still built internally for PBRS reward calculation regardless.
         """
         # Check if we're in minimal observation mode
-        from .config import ObservationMode
-
-        if self.config.observation_mode == ObservationMode.MINIMAL:
-            # Convert full observation to minimal observation
-            from .observation_processor import compute_minimal_observation
-
-            # Get spatial context for mine features
-            spatial_context = self._compute_spatial_context()
-
-            # Extract ninja state from nplay_headless
-            ninja = self.nplay_headless.sim.ninja
-
-            minimal_obs = compute_minimal_observation(
-                ninja=ninja,
-                reachability_features=obs["reachability_features"],
-                mine_overlay=spatial_context[
-                    64:
-                ],  # Skip 64 tile dims, use 48 mine dims
-            )
-
-            # Return minimal observation without unpicklable objects
-            return {
-                "minimal_observation": minimal_obs,
-                "action_mask": obs["action_mask"],
-                # Basic metadata (primitive types only, safe to pickle)
-                "player_x": obs["player_x"],
-                "player_y": obs["player_y"],
-                "player_won": obs["player_won"],
-                "player_dead": obs["player_dead"],
-                "death_cause": obs.get("death_cause", 0),
-                "switch_activated": obs["switch_activated"],
-                "switch_x": obs["switch_x"],
-                "switch_y": obs["switch_y"],
-                "exit_door_x": obs["exit_door_x"],
-                "exit_door_y": obs["exit_door_y"],
-                "_cached_switch_distance": obs.get("_cached_switch_distance"),
-                "_cached_exit_distance": obs.get("_cached_exit_distance"),
-            }
-
         processed_obs = super()._process_observation(obs)
 
         # Add reachability features if not already added (always present in raw obs)

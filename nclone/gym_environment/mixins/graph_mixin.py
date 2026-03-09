@@ -452,21 +452,6 @@ class GraphMixin:
                                         f"Built reward calculator's path cache for level {level_id}"
                                     )
 
-                # Try to load simulation-based phi grids (higher quality than BFS)
-                # This upgrades the phi grids in-place if precomputed simulation
-                # phi files are available for the current level.
-                self._try_load_simulation_phi()
-
-                # Try to load 5D value function PBRS (velocity + jump aware)
-                # When available, primitive rewards use precomputed_pbrs instead of phi grids
-                if hasattr(self, "_try_load_value_function_pbrs"):
-                    self._try_load_value_function_pbrs()
-
-                # Try to build analytical reachability PBRS
-                # Uses current graph_data to compute jump edges + Dijkstra cost-to-go
-                if hasattr(self, "_try_build_reachability_pbrs"):
-                    self._try_build_reachability_pbrs()
-
         # Update switch and mine state tracking
         self.last_switch_states = self._get_switch_states_from_env()
         self.last_mine_states = self._get_mine_states_from_env()
@@ -477,57 +462,6 @@ class GraphMixin:
             if self.current_graph_data
             else {}
         )
-
-    def _try_load_simulation_phi(self) -> None:
-        """Try to load simulation-based phi grids for all path calculators.
-
-        Checks both _path_calculator and reward_calculator's path_calculator
-        level caches. For each, if the level cache supports simulation phi
-        and has the simulation_phi_dir configured, tries to load precomputed
-        simulation-based phi grids.
-
-        Requires access to self.nplay for tile_dic and goal positions.
-        """
-        if not hasattr(self, "nplay") or self.nplay is None:
-            return
-
-        tile_dic = self.nplay.sim.tile_dic
-        switch_pos = self.nplay.exit_switch_position()
-        exit_pos = self.nplay.exit_door_position()
-
-        # Skip if goal positions are invalid
-        if switch_pos == (0, 0) and exit_pos == (0, 0):
-            return
-
-        # Get spawn position for cache key (reachable set depends on spawn)
-        level_data = self._get_level_data_from_env()
-        if level_data is None or level_data.start_position is None:
-            spawn_pos = (
-                self.nplay.sim.ninja.xpos,
-                self.nplay.sim.ninja.ypos,
-            )
-        else:
-            spawn_pos = tuple(level_data.start_position)
-
-        # Try loading for _path_calculator's level cache
-        if hasattr(self, "_path_calculator") and self._path_calculator is not None:
-            lc = self._path_calculator.level_cache
-            if lc is not None and hasattr(lc, "load_simulation_phi_grids"):
-                lc.load_simulation_phi_grids(tile_dic, switch_pos, exit_pos, spawn_pos)
-
-        # Try loading for reward calculator's path calculator's level cache
-        if hasattr(self, "reward_calculator"):
-            if hasattr(self.reward_calculator, "pbrs_calculator"):
-                pbrs_calc = self.reward_calculator.pbrs_calculator
-                if (
-                    hasattr(pbrs_calc, "path_calculator")
-                    and pbrs_calc.path_calculator is not None
-                ):
-                    rlc = pbrs_calc.path_calculator.level_cache
-                    if rlc is not None and hasattr(rlc, "load_simulation_phi_grids"):
-                        rlc.load_simulation_phi_grids(
-                            tile_dic, switch_pos, exit_pos, spawn_pos
-                        )
 
     def _get_level_data_from_env(self) -> Optional[LevelData]:
         """Extract level data from environment for graph building."""

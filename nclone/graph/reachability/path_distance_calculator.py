@@ -129,15 +129,6 @@ class CachedPathDistanceCalculator:
         self._cached_switch_positions: List[Tuple[int, int]] = []
         self._cached_exit_positions: List[Tuple[int, int]] = []
 
-        # OPTIMIZATION: Cache waypoint positions per level for waypoint_id inference
-        # Similar to goal caching, avoids repeated waypoint lookups in hot path
-        self._cached_waypoint_positions: List[Tuple[int, int]] = []
-
-        # Cache graph data for waypoint-triggered cache rebuilds
-        self._last_adjacency: Optional[Dict] = None
-        self._last_base_adjacency: Optional[Dict] = None
-        self._last_graph_data: Optional[Dict] = None
-
         # OPTIMIZATION: Step-level cache for within-step duplicate calls
         # Key: (start, goal, entity_radius) -> distance
         # Cleared at each new step to avoid stale data
@@ -427,18 +418,6 @@ class CachedPathDistanceCalculator:
             self.mine_sdf.build_sdf(level_data) if self.mine_sdf is not None else False
         )
 
-        # Cache graph data for potential waypoint-triggered rebuilds
-        # This allows set_waypoints() to rebuild cache if waypoints change mid-episode
-        self._last_adjacency = adjacency
-        self._last_base_adjacency = base_adjacency
-        self._last_graph_data = graph_data
-
-        # DIAGNOSTIC: Log waypoint state before passing to level cache
-        # logger.info(
-        #     f"[BUILD_LEVEL_CACHE] About to build with {len(self._cached_waypoint_positions)} waypoints: "
-        #     f"{self._cached_waypoint_positions[:3] if len(self._cached_waypoint_positions) > 3 else self._cached_waypoint_positions}"
-        # )
-
         # Then build level cache (uses mine proximity cache and SDF during BFS)
         rebuilt = self.level_cache.build_cache(
             level_data,
@@ -446,8 +425,6 @@ class CachedPathDistanceCalculator:
             base_adjacency,
             graph_data,
             self.mine_proximity_cache,
-            self.mine_sdf,
-            waypoints=self._cached_waypoint_positions,
         )
 
         if rebuilt or mine_cache_rebuilt or sdf_rebuilt:
@@ -489,20 +466,6 @@ class CachedPathDistanceCalculator:
                 (entity.get("x", 0), entity.get("y", 0))
                 for entity in level_data.get_entities_by_type(EntityType.EXIT_DOOR)
             ]
-
-            # NOTE: _cached_waypoint_positions is NOT repopulated here
-            # It's only set via set_waypoints() and should persist across cache rebuilds
-            # If it gets cleared, that's a bug
-
-            # # DIAGNOSTIC: Log cache build details
-            # if rebuilt and self.level_cache is not None:
-            #     cache_stats = self.level_cache.get_statistics()
-            #     print(
-            #         f"[CACHE_BUILD] Level cache built for level_id={self._current_level_id}: "
-            #         f"geometric_entries={cache_stats.get('geometric_cache_size', 0)}, "
-            #         f"switch_positions={self._cached_switch_positions}, "
-            #         f"exit_positions={self._cached_exit_positions}"
-            #     )
 
         return rebuilt or mine_cache_rebuilt or sdf_rebuilt
 
@@ -958,12 +921,34 @@ class CachedPathDistanceCalculator:
                     f"start={start}, node={temp_start_node}"
                 )
 
-        # Ultimate fallback: Find ANY closest node in the entire adjacency graph
+        # Ultimate fallback: Find ANY closest node in the entire adjacency graph.
+        # Guard: if the start position is far outside the adjacency bounding box
+        # (e.g. ninja fell below the map due to OOB spawn), skip the O(N) scan
+        # and return inf immediately so we don't compute meaningless distances.
         if temp_start_node is None and adjacency:
             from .pathfinding_utils import NODE_WORLD_COORD_OFFSET
 
             start_tile_x = start[0] - NODE_WORLD_COORD_OFFSET
             start_tile_y = start[1] - NODE_WORLD_COORD_OFFSET
+
+            _OOB_MARGIN = 200  # px beyond graph bounding box
+            if self._adjacency_bounds is not None:
+                _bmin_x, _bmax_x, _bmin_y, _bmax_y = self._adjacency_bounds
+                if (
+                    start_tile_x < _bmin_x - _OOB_MARGIN
+                    or start_tile_x > _bmax_x + _OOB_MARGIN
+                    or start_tile_y < _bmin_y - _OOB_MARGIN
+                    or start_tile_y > _bmax_y + _OOB_MARGIN
+                ):
+                    logger.warning(
+                        f"Start position {start} is far outside graph bounds "
+                        f"(tile_xy=({start_tile_x:.0f},{start_tile_y:.0f}), "
+                        f"bounds=[{_bmin_x},{_bmax_x}]x[{_bmin_y},{_bmax_y}]); "
+                        f"returning inf to avoid meaningless distance computation."
+                    )
+                    if return_path:
+                        return float("inf"), []
+                    return float("inf")
 
             min_dist_sq = float("inf")
             closest_node = None
@@ -1357,9 +1342,6 @@ class CachedPathDistanceCalculator:
         # Clear cached entity positions
         self._cached_switch_positions.clear()
         self._cached_exit_positions.clear()
-
-        # Clear cached waypoint positions
-        self._cached_waypoint_positions.clear()
 
         # Clear cached graph data
         self._last_adjacency = None

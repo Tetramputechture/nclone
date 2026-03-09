@@ -38,15 +38,16 @@ LOCKED_DOOR_FEATURES_DIM = 8  # [switch_x, switch_y, switch_collected, switch_pa
 LOCKED_DOOR_ARRAY_SIZE = MAX_LOCKED_DOORS_ATTENTION * LOCKED_DOOR_FEATURES_DIM  # 128
 
 # Reachability features dimension (streamlined, no misleading features)
-# Version 2.1 (Feb 2026): Reduced from 10 to 7 dims
-# 7 features:
+# Version 2.1 (Feb 2026): Reduced from 10 to 7 dims; added path_dist_to_current_goal (8 dims)
+# 8 features:
 #   Path distances (2): [path_dist_to_switch_norm, path_dist_to_exit_norm]
 #   Phase (1): [switch_activated] - critical for Markov property
 #   A* guidance (2): [next_hop_dir_x, next_hop_dir_y] - optimal path direction
 #   Platform distances (2): [platform_ahead, platform_below] - critical for blind jumps
+#   Path distance to current goal (1): [path_dist_to_current_goal] - phase-aware distance
 # REMOVED: mine_clearance_dir (duplicate of escape_gradient in mine_sdf_features)
 # REMOVED: exit_reachable (near-constant, derivable from path distance)
-REACHABILITY_FEATURES_DIM = 7
+REACHABILITY_FEATURES_DIM = 8
 
 # Mine SDF features dimension (for actor safety awareness)
 # 3 features from global Mine Signed Distance Field:
@@ -72,7 +73,7 @@ SPATIAL_CONTEXT_DIM = 84
 MINIMAL_OBSERVATION_DIM = 30
 
 # Total observation space (for graph_free architecture, Version 2.1)
-# 24 (game_state) + 7 (reachability) + 84 (spatial_context) + 3 (mine_sdf) = 118 dims
+# 24 (game_state) + 8 (reachability) + 84 (spatial_context) + 3 (mine_sdf) = 119 dims
 # Version 2.1 (Feb 2026): Streamlined from 151 dims (removed redundancies)
 
 LEVEL_WIDTH = 1056.0

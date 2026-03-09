@@ -7,6 +7,7 @@ This module provides graph-based feature computation that uses:
 - Precomputed level cache for distances (no pathfinding needed)
 """
 
+import logging
 import time
 import numpy as np
 from typing import Dict, Tuple, Any, Optional
@@ -32,9 +33,42 @@ from ...gym_environment.constants import LEVEL_DIAGONAL
 from .subcell_node_lookup import SUB_NODE_SIZE
 from .path_distance_calculator import CachedPathDistanceCalculator
 
+logger = logging.getLogger(__name__)
+
 # Global profiling data for reachability features (optional, disabled by default)
 ENABLE_FEATURE_PROFILING = False
 _feature_timings = {}
+
+# ---------------------------------------------------------------------------
+# Module-level reachability diagnostics
+# Updated on every call to compute_reachability_features_from_graph.
+# Read by the SAC trainer and written to TensorBoard for easy inspection.
+# ---------------------------------------------------------------------------
+_reach_diagnostics: Dict[str, Any] = {
+    "area_scale": 0.0,        # sqrt(surface_area) * SUB_NODE_SIZE (normalization denominator)
+    "surface_area": 0.0,      # number of reachable graph nodes
+    "switch_distance_raw": float("inf"),  # last A* path distance to switch (px)
+    "exit_distance_raw": float("inf"),    # last A* path distance to exit (px)
+    "switch_pos": (0, 0),     # last switch world position (0,0 = entity not loaded)
+    "exit_pos": (0, 0),       # last exit world position
+    "inf_count": 0,           # cumulative calls where current-goal dist was inf
+    "finite_count": 0,        # cumulative calls where current-goal dist was finite
+}
+
+
+def get_reachability_diagnostics() -> Dict[str, Any]:
+    """Return a snapshot of the module-level reachability diagnostics dict.
+
+    Values are updated on every call to compute_reachability_features_from_graph.
+    Safe to call from any thread; returns a shallow copy.
+    """
+    return dict(_reach_diagnostics)
+
+
+def reset_reachability_diagnostics() -> None:
+    """Reset the cumulative inf/finite counters (call between training runs)."""
+    _reach_diagnostics["inf_count"] = 0
+    _reach_diagnostics["finite_count"] = 0
 
 
 def _profile_section(name: str):
@@ -246,12 +280,12 @@ def compute_reachability_features_from_graph(
     goal_positions: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, float, float]:
     """
-    Compute 7-dimensional streamlined reachability features.
+    Compute 8-dimensional streamlined reachability features.
 
     Uses efficient O(1) lookups for node finding and precomputed level cache for distances.
     Removes redundant and misleading features from v1 (22 dims).
 
-    Features (7 dims):
+    Features (8 dims):
         0. Path distance to switch (normalized 0-1) - A* path length
         1. Path distance to exit (normalized 0-1) - A* path length
         2. Switch activated flag (0-1) - Markov property: which objective to pursue
@@ -259,6 +293,7 @@ def compute_reachability_features_from_graph(
         4. Next hop direction Y (-1 to 1)
         5. Platform ahead (0-1) - platform distance in next_hop direction
         6. Platform below (0-1) - platform distance directly below (for drops)
+        7. Path distance to current goal (0-1) - phase-aware: switch if pre-activation, exit if post
 
     REMOVED: mine_clearance_dir - duplicate of escape_gradient in mine_sdf_features
     REMOVED: exit_reachable - near-constant, derivable from path distance
@@ -283,7 +318,7 @@ def compute_reachability_features_from_graph(
 
     Returns:
         Tuple of:
-        - 7-dimensional numpy array with normalized features
+        - 8-dimensional numpy array with normalized features
         - switch_distance_raw (for PBRS caching)
         - exit_distance_raw (for PBRS caching)
 
@@ -295,13 +330,26 @@ def compute_reachability_features_from_graph(
     if graph_data is None:
         raise RuntimeError("graph_data is None")
 
+    # Guard against severely out-of-bounds ninja positions (e.g. ninja fell below the
+    # map after an OOB spawn). Such positions produce meaningless distances and corrupt
+    # PBRS gradients.  Return zero features and inf distances so the caller can handle
+    # or discard the step gracefully without touching the pathfinding hot path.
+    _nx, _ny = ninja_pos
+    if _nx < 0 or _nx > 1056 or _ny < 0 or _ny > 600:
+        logger.warning(
+            "compute_reachability_features_from_graph: ninja_pos (%.1f, %.1f) is "
+            "outside valid level bounds [0,1056]x[0,600]; returning zero features.",
+            _nx, _ny,
+        )
+        return np.zeros(8, dtype=np.float32), float("inf"), float("inf")
+
     with _profile_section("extract_spatial_lookups"):
         spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
             graph_data
         )
 
-    # Initialize 7-dimensional feature array
-    features = np.zeros(7, dtype=np.float32)
+    # Initialize 8-dimensional feature array
+    features = np.zeros(8, dtype=np.float32)
 
     # Track raw distances for PBRS caching and goal positions
     switch_distance_raw = float("inf")
@@ -309,10 +357,14 @@ def compute_reachability_features_from_graph(
     switch_pos_for_computation = None
     exit_pos_for_computation = None
 
-    # Compute reachable area scale for distance normalization
-    # Use cached surface area calculation to avoid recomputation
+    # Compute reachable area scale for distance normalization.
+    # NOTE: area_scale is tracked in diagnostics but is NO LONGER used to normalize
+    # path distance features 0, 1, 7 (they use LEVEL_DIAGONAL instead).  Retaining
+    # the computation keeps the diagnostic value accurate and avoids breaking any
+    # future callers that might rely on it.
     with _profile_section("surface_area"):
         area_scale = LEVEL_DIAGONAL  # Fallback
+        _diag_surface_area = 0.0
         try:
             start_position = getattr(level_data, "start_position", None)
             if start_position is not None:
@@ -326,9 +378,13 @@ def compute_reachability_features_from_graph(
                 surface_area = get_cached_surface_area(
                     cache_key, start_pos, adjacency, graph_data
                 )
+                _diag_surface_area = float(surface_area)
                 area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
         except Exception:
             pass
+    # Update normalization diagnostics (area_scale is now only used for diagnostics).
+    _reach_diagnostics["area_scale"] = float(area_scale)
+    _reach_diagnostics["surface_area"] = _diag_surface_area
 
     # OPTIMIZATION: Use pre-computed goal positions if provided (O(1) instead of O(n))
     # This eliminates entity iteration bottleneck by using nplay_headless helper methods
@@ -396,7 +452,7 @@ def compute_reachability_features_from_graph(
     # Compute distances to switch and exit for features 0-1
     with _profile_section("path_distances"):
         for switch in exit_switches:
-            switch_active = getattr(switch, "active", True)
+            switch_active = switch.get("active", True) if isinstance(switch, dict) else getattr(switch, "active", True)
             if switch_active:  # Not collected yet
                 switch_pos = get_entity_position(switch)
                 distance = path_calculator.get_path_cost(
@@ -429,15 +485,32 @@ def compute_reachability_features_from_graph(
                 exit_distance_raw = distance
                 exit_pos_for_computation = exit_pos
 
-    # Features 0-1: Path distances (normalized 0-1, non-inverted)
-    # Direct path lengths provide clear learning signal without redundant inverses
+    # Update raw-distance and goal-position diagnostics.
+    _reach_diagnostics["switch_distance_raw"] = float(switch_distance_raw)
+    _reach_diagnostics["exit_distance_raw"] = float(exit_distance_raw)
+    _reach_diagnostics["switch_pos"] = (
+        switch_pos_for_computation if switch_pos_for_computation is not None else (0, 0)
+    )
+    _reach_diagnostics["exit_pos"] = (
+        exit_pos_for_computation if exit_pos_for_computation is not None else (0, 0)
+    )
+    if switch_distance_raw == float("inf") or exit_distance_raw == float("inf"):
+        _reach_diagnostics["inf_count"] += 1
+    else:
+        _reach_diagnostics["finite_count"] += 1
+
+    # Features 0-1: Path distances normalized to [0, 1] using LEVEL_DIAGONAL.
+    # LEVEL_DIAGONAL (~1215 px) is the maximum possible straight-line distance in the
+    # level.  Using area_scale (sqrt(nodes)*12, typically ~200 px for a standard level)
+    # caused almost all real distances to be clipped to 1.0 by np.clip, making the
+    # feature useless as a learning signal.
     if switch_distance_raw != float("inf"):
-        features[0] = np.clip(switch_distance_raw / area_scale, 0.0, 1.0)
+        features[0] = np.clip(switch_distance_raw / LEVEL_DIAGONAL, 0.0, 1.0)
     else:
         features[0] = 1.0  # Max distance if unreachable
 
     if exit_distance_raw != float("inf"):
-        features[1] = np.clip(exit_distance_raw / area_scale, 0.0, 1.0)
+        features[1] = np.clip(exit_distance_raw / LEVEL_DIAGONAL, 0.0, 1.0)
     else:
         features[1] = 1.0  # Max distance if unreachable
 
@@ -446,7 +519,7 @@ def compute_reachability_features_from_graph(
     # For exit switches: active=True means not collected, active=False means activated
     switch_activated = False
     for switch in exit_switches:
-        switch_active = getattr(switch, "active", True)
+        switch_active = switch.get("active", True) if isinstance(switch, dict) else getattr(switch, "active", True)
         if not switch_active:  # Switch has been activated
             switch_activated = True
             break
@@ -562,6 +635,18 @@ def compute_reachability_features_from_graph(
 
             features[5] = directional_distances[best_idx]
             features[6] = directional_distances[6]
+
+    # Feature 7: Path distance to current goal (phase-aware, normalized 0-1).
+    # Uses LEVEL_DIAGONAL (same as features 0-1) so the value meaningfully tracks
+    # the agent's progress; area_scale was too small and clipped everything to 1.0.
+    if switch_activated:
+        current_goal_dist = exit_distance_raw
+    else:
+        current_goal_dist = switch_distance_raw
+    if current_goal_dist != float("inf"):
+        features[7] = np.clip(current_goal_dist / LEVEL_DIAGONAL, 0.0, 1.0)
+    else:
+        features[7] = 1.0
 
     # Return features and raw distances for PBRS caching optimization
     # This avoids duplicate distance computations in reward calculation

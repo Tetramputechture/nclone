@@ -1,9 +1,13 @@
+import logging
+
 from .sim_config import SimConfig
 from .map_loader import MapLoader
 from .physics import clear_caches
 import os
 
 CACHE_CLEAR_INTERVAL = 100
+
+logger = logging.getLogger(__name__)
 
 os.environ["SDL_AUDIODRIVER"] = "dsp"
 
@@ -50,6 +54,9 @@ class Simulator:
         self._action_masking_mode = "hard"
         self._path_direction_data = None  # Dict with dx, dy, distance
 
+        # OOB debug: suppress repeated warnings per episode; reset in fast_reset()
+        self._oob_logged = False
+
     def load(self, map_data):
         """From the given map data, initiate the level geometry, the entities and the ninja."""
         self.map_data = map_data
@@ -74,6 +81,8 @@ class Simulator:
         self._next_cache_clear = CACHE_CLEAR_INTERVAL
         # Reset action masking attributes
         self._path_direction_data = None
+        # Reset OOB debug flag
+        self._oob_logged = False
         self.reset_map_entity_data()
         self.map_loader.load_map_entities()
 
@@ -108,6 +117,9 @@ class Simulator:
 
         # Reset action masking attributes
         self._path_direction_data = None
+
+        # Reset OOB debug flag so the first OOB in each episode is logged
+        self._oob_logged = False
 
         # Reset ninja state in-place (no new Ninja object)
         if self.ninja is not None:
@@ -300,6 +312,29 @@ class Simulator:
                     ninja_to_update.collide_vs_tiles()
 
                 ninja_to_update.post_collision()  # Do post collision calculations.
+
+            # OOB debug: log once per episode when ninja crosses level boundary.
+            if not self._oob_logged and self.ninja.state < 6 and self.ninja.ypos > 600:
+                from .physics import gather_segments_from_region
+                rad = 10
+                segs = gather_segments_from_region(
+                    self,
+                    self.ninja.xpos - rad, self.ninja.ypos - rad,
+                    self.ninja.xpos + rad, self.ninja.ypos + rad,
+                )
+                logger.warning(
+                    "OOB in tick: frame=%d pos=(%.2f,%.2f) old=(%.2f,%.2f) "
+                    "vel=(%.4f,%.4f) state=%d floor_count=%d segments_nearby=%d",
+                    self.frame,
+                    self.ninja.xpos, self.ninja.ypos,
+                    self.ninja.xpos_old, self.ninja.ypos_old,
+                    self.ninja.xspeed, self.ninja.yspeed,
+                    self.ninja.state,
+                    self.ninja.floor_count,
+                    len(segs),
+                )
+                self._oob_logged = True
+
             self.ninja.think()  # Make ninja think
             if self._enable_anim:
                 self.ninja.update_graphics()  # Update limbs of ninja
@@ -376,6 +411,28 @@ class Simulator:
                     ninja_to_update.collide_vs_tiles()
 
                 ninja_to_update.post_collision()  # Death checks, state transitions
+
+            # OOB debug: log once per episode when ninja crosses level boundary.
+            if not self._oob_logged and self.ninja.state < 6 and self.ninja.ypos > 600:
+                from .physics import gather_segments_from_region
+                rad = 10
+                segs = gather_segments_from_region(
+                    self,
+                    self.ninja.xpos - rad, self.ninja.ypos - rad,
+                    self.ninja.xpos + rad, self.ninja.ypos + rad,
+                )
+                logger.warning(
+                    "OOB in tick_physics_only: frame=%d pos=(%.2f,%.2f) old=(%.2f,%.2f) "
+                    "vel=(%.4f,%.4f) state=%d floor_count=%d segments_nearby=%d",
+                    self.frame,
+                    self.ninja.xpos, self.ninja.ypos,
+                    self.ninja.xpos_old, self.ninja.ypos_old,
+                    self.ninja.xspeed, self.ninja.yspeed,
+                    self.ninja.state,
+                    self.ninja.floor_count,
+                    len(segs),
+                )
+                self._oob_logged = True
 
             # Ninja think (handles jump logic, state machine)
             self.ninja.think()
