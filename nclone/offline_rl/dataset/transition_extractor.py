@@ -8,7 +8,7 @@ and nearest-8-mine features.
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 
@@ -254,6 +254,7 @@ class TransitionExtractor:
         current_state = _extract_ninja_state(sim_state)
         ninja_x, ninja_y = sim_state.ninja.xpos, sim_state.ninja.ypos
         current_mine_feat = _extract_mine_features(sim_state.entities, ninja_x, ninja_y)
+        prev_switch_collected = _is_switch_collected(sim_state.entities)
 
         actual_frames = 0
         episode_ended_in_win = False
@@ -276,8 +277,21 @@ class TransitionExtractor:
             died = sim.has_died()
             done = won or died
 
-            # Reward: -1 per frame, 0 at terminal win
-            rewards[frame_idx] = 0.0 if won else -1.0
+            # Reward: sparse two-stage rewards for PBRS potential training.
+            # +1 when switch is collected (first frame switch_collected transitions True),
+            # +1 when exit is reached (terminal win), -1 every other frame.
+            # This creates informative intermediate signal for the V-network to learn
+            # the two-phase structure (switch-phase vs. exit-phase) of each level.
+            cur_switch_collected = _is_switch_collected(sim_state.entities)
+            switch_just_collected = cur_switch_collected and not prev_switch_collected
+            if won:
+                reward = 1.0
+            elif switch_just_collected:
+                reward = 1.0
+            else:
+                reward = -1.0
+            rewards[frame_idx] = reward
+            prev_switch_collected = cur_switch_collected
 
             # Extract next state
             next_s = _extract_ninja_state(sim_state)

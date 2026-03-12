@@ -34,6 +34,9 @@ def train(
     log_every: int = 100,
     prefetch: bool = False,
     resume_from: str = "",
+    val_dataset_path: str = "",
+    val_every: int = 10,
+    val_batches: int = 100,
 ):
     """Run IQL training loop.
 
@@ -48,6 +51,10 @@ def train(
         log_every: Log metrics every N steps.
         prefetch: If True, use background-thread batch prefetching for GPU.
         resume_from: Path to checkpoint to resume training from.
+        val_dataset_path: Optional path to held-out validation HDF5 dataset.
+            When provided, validation V-loss is computed every val_every epochs.
+        val_every: Run validation every N epochs (default 10).
+        val_batches: Number of batches to average over for validation (default 100).
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -68,6 +75,15 @@ def train(
     logger.info(
         "Dataset: %d transitions, %d levels", dataset.n_transitions, dataset.n_levels
     )
+
+    # Optional held-out validation dataset for overfitting detection
+    val_dataset = None
+    if val_dataset_path:
+        val_dataset = OfflineRLDataset(val_dataset_path, device=device)
+        logger.info(
+            "Validation dataset: %d transitions, %d levels",
+            val_dataset.n_transitions, val_dataset.n_levels,
+        )
 
     # Initialize trainer
     trainer = IQLTrainer(config, device=device)
@@ -199,7 +215,40 @@ def train(
             torch.save(trainer.state_dict(), ckpt_path)
             logger.info("Saved checkpoint: %s", ckpt_path)
 
-        # Track best model
+        # Held-out validation: compute V-loss on unseen transitions to detect overfitting
+        if val_dataset is not None and (epoch % val_every == 0 or epoch == epochs):
+            val_v_total = 0.0
+            val_q_total = 0.0
+            trainer.networks.eval()
+            with torch.no_grad():
+                for _ in range(val_batches):
+                    vbatch = val_dataset.sample_batch(config.batch_size)
+                    vbatch = {k: v.to(torch.device(device)) for k, v in vbatch.items()}
+                    v_pred = trainer.networks.value(vbatch).squeeze(1)
+                    q_target_all = trainer.target_networks.q_values(vbatch)
+                    q_taken = q_target_all.gather(
+                        1, vbatch["action"].unsqueeze(1)
+                    ).squeeze(1)
+                    diff = q_taken - v_pred
+                    weight = torch.where(
+                        diff > 0,
+                        torch.full_like(diff, config.expectile_tau),
+                        torch.full_like(diff, 1 - config.expectile_tau),
+                    )
+                    val_v_total += (weight * diff.pow(2)).mean().item()
+                    val_q_total += q_taken.mean().item()
+            trainer.networks.train()
+            val_v_avg = val_v_total / val_batches
+            val_q_avg = val_q_total / val_batches
+            logger.info(
+                "  [Val] Epoch %d: V_loss=%.4f mean_Q=%.3f",
+                epoch, val_v_avg, val_q_avg,
+            )
+            if writer:
+                writer.add_scalar("val/v_loss", val_v_avg, epoch)
+                writer.add_scalar("val/mean_q", val_q_avg, epoch)
+
+        # Track best model (by training V-loss)
         if avg_v < best_v_loss:
             best_v_loss = avg_v
             best_path = os.path.join(output_dir, "iql_best.pt")
@@ -266,6 +315,24 @@ def main():
         help="Path to checkpoint to resume training from",
     )
     parser.add_argument(
+        "--val-dataset",
+        type=str,
+        default="",
+        help="Optional held-out validation HDF5 dataset for overfitting detection",
+    )
+    parser.add_argument(
+        "--val-every",
+        type=int,
+        default=10,
+        help="Run validation every N epochs (default: 10)",
+    )
+    parser.add_argument(
+        "--val-batches",
+        type=int,
+        default=100,
+        help="Number of batches to average for validation V-loss (default: 100)",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
@@ -304,6 +371,9 @@ def main():
         device=args.device,
         prefetch=args.prefetch,
         resume_from=args.resume,
+        val_dataset_path=args.val_dataset,
+        val_every=args.val_every,
+        val_batches=args.val_batches,
     )
 
 

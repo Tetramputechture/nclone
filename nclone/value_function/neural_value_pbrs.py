@@ -202,26 +202,29 @@ class NeuralValuePBRS:
             state,
         )
 
-        # Build batch dict for network
         state_tensor = torch.from_numpy(ninja_state).unsqueeze(0).to(self.device)
         mine_tensor = torch.from_numpy(mine_features).unsqueeze(0).to(self.device)
 
-        batch = {
-            "state": state_tensor,
-            "mine_features": mine_tensor,
-        }
-
-        # Add level encoding
-        if self._networks.use_tile_encoder:
-            if self._cached_level_repr is not None:
-                # Use cached CNN output directly (skip CNN forward pass)
-                batch["tile_grid"] = self._cached_tile_grid
-                batch["switch_overlay"] = self._cached_switch_overlay
-                batch["exit_overlay"] = self._cached_exit_overlay
-
-        # Forward pass (only MLP + V-head when level repr is cached)
         with torch.no_grad():
-            v_value = self._networks.value(batch)
+            if self._networks.use_tile_encoder and self._cached_level_repr is not None:
+                # Fast path: bypass CNN entirely using the cached level representation.
+                # Only the agent-state MLP + combiner + V-head are evaluated per step,
+                # avoiding the full Conv2d forward pass on the 42×23 tile grid.
+                agent_repr = self._networks.agent_encoder(state_tensor, mine_tensor)
+                combined = torch.cat([agent_repr, self._cached_level_repr], dim=-1)
+                h = self._networks.combiner(combined)
+                v_value = self._networks.v_head(h)
+            else:
+                # Slow path: no cache (set_level not called or tile encoder disabled)
+                batch = {
+                    "state": state_tensor,
+                    "mine_features": mine_tensor,
+                }
+                if self._networks.use_tile_encoder and self._cached_tile_grid is not None:
+                    batch["tile_grid"] = self._cached_tile_grid
+                    batch["switch_overlay"] = self._cached_switch_overlay
+                    batch["exit_overlay"] = self._cached_exit_overlay
+                v_value = self._networks.value(batch)
 
         return float(v_value.item())
 

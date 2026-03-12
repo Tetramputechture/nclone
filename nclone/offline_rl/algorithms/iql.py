@@ -31,7 +31,10 @@ class IQLConfig:
     beta: float = 3.0  # AWR temperature
     target_update_tau: float = 0.005
     learning_rate: float = 3e-4
-    batch_size: int = 1024
+    # 256 (not 1024) for cross-level generalization: smaller batches see more diverse
+    # levels per gradient step, reducing the risk of the Q/V networks fitting a
+    # single-level distribution and failing to generalize to held-out levels.
+    batch_size: int = 256
     hidden_dim: int = 512
     use_tile_encoder: bool = True
     max_grad_norm: float = 1.0

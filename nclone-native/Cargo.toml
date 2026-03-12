@@ -1,0 +1,21 @@
+[package]
+name = "nclone-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust physics engine for nclone N++ simulator"
+license = "MIT"
+
+[lib]
+name = "nclone_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+rayon = "1.10"
+
+[dev-dependencies]
+approx = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
