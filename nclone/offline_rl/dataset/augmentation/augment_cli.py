@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 # Registered augmentation names.
 _AUGMENTATION_REGISTRY = {
     "horizontal_mirror": "HorizontalMirror",
+    "tile_rand": "UnreachableTileRandomizer",
+    "translate": "ReachableAreaTranslator",
 }
 
 
@@ -63,8 +65,14 @@ def _augment_one(args: Tuple[str, str, list, bool]) -> Tuple[str, int, str]:
     try:
         from .attract_augmentor import AttractAugmentor
         from .horizontal_mirror import HorizontalMirror
+        from .unreachable_tile_randomizer import UnreachableTileRandomizer
+        from .reachable_area_translator import ReachableAreaTranslator
 
-        name_to_aug = {"horizontal_mirror": HorizontalMirror()}
+        name_to_aug = {
+            "horizontal_mirror": HorizontalMirror(),
+            "tile_rand": UnreachableTileRandomizer(),
+            "translate": ReachableAreaTranslator(),
+        }
         augmentations = [name_to_aug[n] for n in aug_names]
 
         augmentor = AttractAugmentor(augmentations)
