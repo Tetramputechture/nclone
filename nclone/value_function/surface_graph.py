@@ -9,7 +9,7 @@ suitable for PBRS potential evaluation.
 import heapq
 import math
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Set, Tuple, Optional
 
 import numpy as np
 
@@ -18,6 +18,7 @@ from ..constants.physics_constants import (
     NINJA_RADIUS,
     EXIT_SWITCH_RADIUS,
     EXIT_DOOR_RADIUS,
+    TOGGLE_MINE_RADIUS_TOGGLED,
 )
 from .surface_extraction import SurfacePoint, SURFACE_FLOOR, SURFACE_WALL
 
@@ -346,16 +347,26 @@ def find_goal_nodes(
 def dijkstra_backward(
     graph: SurfaceGraph,
     goal_nodes: List[int],
+    blocked_nodes: Optional[Set[int]] = None,
 ) -> np.ndarray:
     """Run backward Dijkstra from goal nodes on the reversed edge set.
+
+    Args:
+        graph: Surface graph with populated edge arrays.
+        goal_nodes: Node ids initialised at cost 0 (the goal).
+        blocked_nodes: Optional set of node ids that are impassable (e.g. surface
+            positions occupied by deadly toggle mines in the relevant phase).
+            Blocked nodes are never assigned a finite d* value and are skipped
+            as transit nodes, so no path can route through them.
 
     Returns:
         d_star: float32 array of length ``graph.n_nodes``.
                 d_star[node] = minimum frame-count from node to any goal node.
-                Unreachable nodes receive ``inf``.
+                Unreachable and blocked nodes receive ``inf``.
     """
     n = graph.n_nodes
     d_star = np.full(n, np.inf, dtype=np.float32)
+    _blocked = blocked_nodes or set()
 
     # Build reversed adjacency list from edge arrays
     # rev_adj[dst] -> list of (src, weight)   (in the reversed graph, dst is the start)
@@ -371,11 +382,11 @@ def dijkstra_backward(
     # Initialize priority queue with goal nodes at cost 0
     heap: List[Tuple[float, int]] = []
     for gn in goal_nodes:
-        if 0 <= gn < n:
+        if 0 <= gn < n and gn not in _blocked:
             d_star[gn] = 0.0
             heapq.heappush(heap, (0.0, gn))
 
-    # Standard Dijkstra
+    # Standard Dijkstra — skip blocked nodes so no path routes through them
     while heap:
         dist_u, u = heapq.heappop(heap)
         if dist_u > d_star[u]:
@@ -384,6 +395,8 @@ def dijkstra_backward(
         if neighbors is None:
             continue
         for v, w in neighbors:
+            if v in _blocked:
+                continue
             new_dist = dist_u + w
             if new_dist < d_star[v]:
                 d_star[v] = new_dist
@@ -392,16 +405,63 @@ def dijkstra_backward(
     return d_star
 
 
+def find_mine_blocked_nodes(
+    graph: SurfaceGraph,
+    mine_positions: List[Tuple[float, float]],
+    kill_radius: float = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED,
+) -> Set[int]:
+    """Find all graph nodes whose surface position falls within mine kill range.
+
+    Surface points store the ninja CENTER (offset NINJA_RADIUS from contact
+    surface), so the kill condition is simply distance(ninja_center, mine) <
+    kill_radius.  All velocity bins for a blocked surface point are blocked.
+
+    Args:
+        graph: The surface graph.
+        mine_positions: List of (x, y) mine center positions in pixels.
+        kill_radius: Distance threshold for death (default: NINJA_RADIUS +
+            TOGGLE_MINE_RADIUS_TOGGLED = 14.0 px).
+
+    Returns:
+        Set of graph node ids that are impassable due to mine proximity.
+    """
+    if not mine_positions:
+        return set()
+
+    kill_sq = kill_radius * kill_radius
+    blocked: Set[int] = set()
+
+    for pt_idx, sp in enumerate(graph.surface_points):
+        for mx, my in mine_positions:
+            dx = sp.x - mx
+            dy = sp.y - my
+            if dx * dx + dy * dy <= kill_sq:
+                n_bins = num_velocity_bins(sp.surface_type)
+                for vb in range(n_bins):
+                    blocked.add(node_id(pt_idx, vb, graph.max_vel_bins))
+                break  # one mine match is enough to block this point
+
+    return blocked
+
+
 def compute_cost_to_go(
     graph: SurfaceGraph,
     goal_x: float,
     goal_y: float,
     goal_type: str,
+    blocked_nodes: Optional[Set[int]] = None,
 ) -> np.ndarray:
     """Compute cost-to-go from every graph node to the specified goal.
 
     Identifies goal nodes, runs backward Dijkstra, and fills unreachable
     nodes with ``d_max`` (the maximum finite cost).
+
+    Args:
+        graph: Surface graph with populated edge arrays.
+        goal_x, goal_y: Goal entity position (pixels).
+        goal_type: ``"switch"`` or ``"exit"``.
+        blocked_nodes: Optional set of impassable node ids (e.g. nodes near
+            deadly toggle mines for this phase).  These nodes receive d* = inf.
 
     Returns:
         d_star array (float32, length n_nodes).
@@ -413,7 +473,7 @@ def compute_cost_to_go(
             f"at ({goal_x:.1f}, {goal_y:.1f}).  Check surface extraction."
         )
 
-    d_star = dijkstra_backward(graph, goal_nodes)
+    d_star = dijkstra_backward(graph, goal_nodes, blocked_nodes=blocked_nodes)
 
     # Replace inf with d_max for unreachable nodes
     finite_mask = np.isfinite(d_star)

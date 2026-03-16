@@ -25,6 +25,7 @@ from .constants import (
     SWITCH_STATES_DIM,
     MAX_LOCKED_DOORS_ATTENTION,
     SPATIAL_CONTEXT_DIM,
+    NUM_TILE_TYPES,
 )
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
@@ -72,6 +73,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             seed=self.config.seed,
             eval_mode=self.config.eval_mode,
             pbrs_gamma=self.config.pbrs.pbrs_gamma,
+            use_precomputed_pbrs=self.config.pbrs.use_precomputed_pbrs,
+            value_function_dir=self.config.pbrs.value_function_dir,
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
             enable_augmentation=self.config.augmentation.enable_augmentation,
@@ -111,6 +114,17 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # When False, graph arrays are excluded from observation space (memory optimization)
         # Graph is still built internally for PBRS reward calculation
         self.enable_graph_observations = self.config.enable_graph_observations
+
+        # Store level context observation flag for level-context CNN encoding
+        # When True, tile_grid (42x23 int8) and level_id (int32) are included in obs
+        self.enable_level_context_observations = (
+            self.config.enable_level_context_observations
+        )
+
+        # Cached tile grid for the current level (computed once per level load, reused each step)
+        self._cached_tile_grid: Optional[np.ndarray] = None
+        # Stable integer level ID derived from map name hash (for cache keying in the encoder)
+        self._cached_level_id_int: Optional[np.ndarray] = None
 
         # Extend observation space with graph, reachability features
         self.observation_space = self._build_extended_observation_space()
@@ -295,6 +309,23 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             shape=(MINE_SDF_FEATURES_DIM,),
             dtype=np.float32,
         )
+
+        # Level context observations (tile grid + level ID for per-level CNN encoding)
+        # Only included when enable_level_context_observations=True; otherwise excluded
+        # to avoid ~1KB overhead per observation step when level context is not needed.
+        if self.enable_level_context_observations:
+            obs_spaces["tile_grid"] = box.Box(
+                low=0,
+                high=NUM_TILE_TYPES - 1,
+                shape=(MAP_TILE_WIDTH, MAP_TILE_HEIGHT),  # (42, 23)
+                dtype=np.int8,
+            )
+            obs_spaces["level_id"] = box.Box(
+                low=0,
+                high=2**31 - 1,
+                shape=(1,),
+                dtype=np.int32,
+            )
 
         return SpacesDict(obs_spaces)
 
@@ -539,8 +570,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.current_route = []
             self._warned_about_position = False
 
-            # Reset reward calculator
-            self.reward_calculator.reset()
+            # Reset reward calculators (both main and primitive)
+            self._reset_reward_calculator()
+
+            # Reset primitive reward tracking
+            self._prev_switch_activated = False
 
             # Reset truncation checker
             self.truncation_checker.reset()
@@ -641,8 +675,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.current_route = []
             self._warned_about_position = False
 
-            # Reset reward calculator
-            self.reward_calculator.reset()
+            # Reset reward calculators (both main and primitive)
+            self._reset_reward_calculator()
+
+            # Reset primitive reward tracking
+            self._prev_switch_activated = False
 
             # Reset truncation checker
             self.truncation_checker.reset()
@@ -1312,6 +1349,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     f"stage={stage}, switch={actual_switch}, exit={actual_exit}"
                 )
 
+        # Load surface-graph PBRS for the current level (no-op if not configured)
+        self._try_load_value_function_pbrs()
+
         # NOW get initial observation (with valid graph data)
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
@@ -1921,6 +1961,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32),
             )
 
+        # Add level context observations (tile grid + stable integer level ID)
+        # tile_grid is static per level: cache it at level load and reuse every step
+        if self.enable_level_context_observations:
+            processed_obs["tile_grid"] = self._get_cached_tile_grid()
+            processed_obs["level_id"] = self._get_cached_level_id()
+
         # MEMORY OPTIMIZATION: Remove internal-only observations that are not needed for training
         # These are only used during environment step for PBRS reward computation
         # Removing them prevents storing ~30-40% extra data in rollout buffer
@@ -1934,6 +1980,47 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             processed_obs.pop(key, None)
 
         return processed_obs
+
+    def _get_cached_tile_grid(self) -> np.ndarray:
+        """Return the tile grid for the current level, computing it once per level load.
+
+        The tile grid is static for the lifetime of a level episode, so we cache it
+        on first access and invalidate whenever the map name changes.
+
+        Returns:
+            np.ndarray: (42, 23) int8 tile type IDs, values in [0, 37]
+        """
+        current_map_name = getattr(self.map_loader, "current_map_name", None)
+        # Invalidate cache when level changes (compare against stored name)
+        if self._cached_tile_grid is None or current_map_name != getattr(
+            self, "_tile_grid_map_name", None
+        ):
+            tile_data = self.nplay_headless.sim.get_tile_grid()
+            self._cached_tile_grid = (
+                np.array(tile_data, dtype=np.int8).reshape(23, MAP_TILE_WIDTH).T
+            )  # -> (42, 23)
+            self._tile_grid_map_name = current_map_name
+            # Recompute stable integer level ID when tile grid changes
+            self._cached_level_id_int = None
+
+        return self._cached_tile_grid
+
+    def _get_cached_level_id(self) -> np.ndarray:
+        """Return a stable integer level ID for the current level.
+
+        Uses a truncated hash of the map name so the level-context encoder can use it
+        as a dictionary key for per-level caching without string comparisons on-device.
+
+        Returns:
+            np.ndarray: shape (1,) int32 with a non-negative level ID
+        """
+        if self._cached_level_id_int is None:
+            map_name = getattr(self.map_loader, "current_map_name", "") or ""
+            # Use Python's built-in hash truncated to non-negative int32 range
+            level_hash = hash(map_name) & 0x7FFFFFFF
+            self._cached_level_id_int = np.array([level_hash], dtype=np.int32)
+
+        return self._cached_level_id_int
 
     def _compute_spatial_context(self) -> np.ndarray:
         """Compute spatial context features (graph-free local geometry).

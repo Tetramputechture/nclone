@@ -19,7 +19,9 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from ..constants.physics_constants import MAX_JUMP_DURATION
+from ..constants.physics_constants import (
+    MAX_JUMP_DURATION, GROUND_STATES, AIR_STATES, WALL_STATES,
+)
 from .surface_graph import (
     SurfaceGraph,
     find_nearest_point,
@@ -29,16 +31,13 @@ from .surface_graph import (
 from .surface_extraction import SURFACE_FLOOR, SURFACE_WALL
 from .arc_cache import ArcCache
 
-# Ninja state codes
-_STATE_GROUNDED = 0
-_STATE_JUMPING = 1
-_STATE_FALLING = 2
+# Ninja state codes (0=Immobile, 1=Running, 2=GroundSlide, 3=Jumping, 4=Falling, 5=WallSlide, 6=Dead, 7=AwaitingDeath)
 _STATE_WALL_SLIDING = 5
 _STATE_DEAD = 6
 _STATE_AWAITING_DEATH = 7
 
 _DEATH_STATES = {_STATE_DEAD, _STATE_AWAITING_DEATH}
-_SURFACE_STATES = {_STATE_GROUNDED, _STATE_WALL_SLIDING}
+_SURFACE_STATES = GROUND_STATES | WALL_STATES  # {0, 1, 2, 5}
 
 # Max frames for forward simulation
 _MAX_SIM_FRAMES = 300

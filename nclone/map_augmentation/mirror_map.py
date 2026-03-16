@@ -41,16 +41,16 @@ def mirror_map_horizontally(original_map: Map) -> Map:
                 mirrored_tile = {6: 7, 7: 6, 8: 9, 9: 8}[original_tile]
             elif original_tile in (10, 11, 12, 13):  # Quarter moons
                 mirrored_tile = {10: 11, 11: 10, 12: 13, 13: 12}[original_tile]
-            elif original_tile in (14, 15, 16, 17):  # Quarter pipes
-                mirrored_tile = {14: 16, 15: 17, 16: 14, 17: 15}[original_tile]
+            elif original_tile in (14, 15, 16, 17):  # Quarter moons (concave)
+                mirrored_tile = {14: 15, 15: 14, 16: 17, 17: 16}[original_tile]
             elif original_tile in (18, 19, 20, 21):  # Short mild slopes
                 mirrored_tile = {18: 19, 19: 18, 20: 21, 21: 20}[original_tile]
             elif original_tile in (22, 23, 24, 25):  # Raised mild slopes
                 mirrored_tile = {22: 23, 23: 22, 24: 25, 25: 24}[original_tile]
             elif original_tile in (26, 27, 28, 29):  # Short steep slopes
-                mirrored_tile = {26: 28, 27: 29, 28: 26, 29: 27}[original_tile]
+                mirrored_tile = {26: 27, 27: 26, 28: 29, 29: 28}[original_tile]
             elif original_tile in (30, 31, 32, 33):  # Raised steep slopes
-                mirrored_tile = {30: 32, 31: 33, 32: 30, 33: 31}[original_tile]
+                mirrored_tile = {30: 31, 31: 30, 32: 33, 33: 32}[original_tile]
 
             mirrored.set_tile(mirrored_x, y, mirrored_tile)
 

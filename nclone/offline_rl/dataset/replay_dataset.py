@@ -1,8 +1,10 @@
 """HDF5-backed PyTorch Dataset for offline RL training.
 
-Stores transitions in HDF5 files. On load, all arrays are read into RAM
-(~3GB for 9M transitions) to avoid gzip-decompression overhead during
-random-access batch sampling. Supports single-level and cross-level (UVFA) modes.
+Stores transitions in HDF5 files. On load, all arrays are read into RAM to
+avoid gzip-decompression overhead during random-access batch sampling.
+Float arrays (states, mine_features) are stored as float16 (~7 GB for 41M
+transitions) and cast to float32 at batch-sample time. Supports single-level
+and cross-level (UVFA) modes.
 """
 
 import logging
@@ -44,6 +46,10 @@ class OfflineRLDataset(Dataset):
         Reads all arrays into contiguous numpy arrays at init time so that
         sample_batch uses fast numpy indexing instead of HDF5 random I/O.
 
+        Large float arrays (states, mine_features) are stored as float16 to
+        halve RAM usage (~7 GB vs ~14 GB for 41M transitions).  They are cast
+        back to float32 inside sample_batch, which adds negligible overhead.
+
         Args:
             h5_path: Path to the HDF5 dataset file.
             device: Device for returned tensors ('cpu' or 'cuda').
@@ -57,16 +63,18 @@ class OfflineRLDataset(Dataset):
         logger.info("Loading dataset into RAM from %s ...", h5_path)
 
         with h5py.File(h5_path, "r") as f:
-            self._states = f["states"][:].astype(np.float32)
-            self._next_states = f["next_states"][:].astype(np.float32)
+            # float16 storage: halves memory for the two largest arrays
+            self._states = f["states"][:].astype(np.float16)
+            self._next_states = f["next_states"][:].astype(np.float16)
             self._actions = f["actions"][:].astype(np.int64)
             self._rewards = f["rewards"][:].astype(np.float32)
             self._dones = f["dones"][:].astype(np.float32)
             self._level_ids = f["level_ids"][:].astype(np.int64)
-            self._mine_features = f["mine_features"][:].astype(np.float32)
-            self._next_mine_features = f["next_mine_features"][:].astype(np.float32)
+            self._mine_features = f["mine_features"][:].astype(np.float16)
+            self._next_mine_features = f["next_mine_features"][:].astype(np.float16)
 
-            self._tile_grids = f["tile_grids"][:].astype(np.int64)
+            # tile_grids values are 0–37; int8 is sufficient and saves 7x vs int64
+            self._tile_grids = f["tile_grids"][:].astype(np.int8)
             self._switch_overlays = f["switch_overlays"][:].astype(np.float32)
             self._exit_overlays = f["exit_overlays"][:].astype(np.float32)
 
@@ -96,14 +104,14 @@ class OfflineRLDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         level_id = int(self._level_ids[idx])
         return {
-            "state": torch.from_numpy(self._states[idx].copy()),
-            "next_state": torch.from_numpy(self._next_states[idx].copy()),
+            "state": torch.from_numpy(self._states[idx].astype(np.float32)),
+            "next_state": torch.from_numpy(self._next_states[idx].astype(np.float32)),
             "action": torch.tensor(self._actions[idx], dtype=torch.long),
             "reward": torch.tensor(self._rewards[idx], dtype=torch.float32),
             "done": torch.tensor(self._dones[idx], dtype=torch.float32),
-            "mine_features": torch.from_numpy(self._mine_features[idx].copy()),
-            "next_mine_features": torch.from_numpy(self._next_mine_features[idx].copy()),
-            "tile_grid": torch.from_numpy(self._tile_grids[level_id].copy()),
+            "mine_features": torch.from_numpy(self._mine_features[idx].astype(np.float32)),
+            "next_mine_features": torch.from_numpy(self._next_mine_features[idx].astype(np.float32)),
+            "tile_grid": torch.from_numpy(self._tile_grids[level_id].astype(np.int64)),
             "switch_overlay": torch.from_numpy(self._switch_overlays[level_id].copy()),
             "exit_overlay": torch.from_numpy(self._exit_overlays[level_id].copy()),
         }
@@ -128,15 +136,16 @@ class OfflineRLDataset(Dataset):
 
         level_ids = self._level_ids[idx]
 
+        # float16 → float32 cast at sample time; negligible overhead vs GPU compute
         batch = {
-            "state": torch.from_numpy(self._states[idx].copy()),
-            "next_state": torch.from_numpy(self._next_states[idx].copy()),
+            "state": torch.from_numpy(self._states[idx].astype(np.float32)),
+            "next_state": torch.from_numpy(self._next_states[idx].astype(np.float32)),
             "action": torch.from_numpy(self._actions[idx].copy()),
             "reward": torch.from_numpy(self._rewards[idx].copy()),
             "done": torch.from_numpy(self._dones[idx].copy()),
-            "mine_features": torch.from_numpy(self._mine_features[idx].copy()),
-            "next_mine_features": torch.from_numpy(self._next_mine_features[idx].copy()),
-            "tile_grid": torch.from_numpy(self._tile_grids[level_ids].copy()),
+            "mine_features": torch.from_numpy(self._mine_features[idx].astype(np.float32)),
+            "next_mine_features": torch.from_numpy(self._next_mine_features[idx].astype(np.float32)),
+            "tile_grid": torch.from_numpy(self._tile_grids[level_ids].astype(np.int64)),
             "switch_overlay": torch.from_numpy(self._switch_overlays[level_ids].copy()),
             "exit_overlay": torch.from_numpy(self._exit_overlays[level_ids].copy()),
         }

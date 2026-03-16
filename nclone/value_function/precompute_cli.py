@@ -33,6 +33,7 @@ from nclone.value_function.surface_graph import (
     SurfaceGraph,
     build_graph,
     compute_cost_to_go,
+    find_mine_blocked_nodes,
 )
 from nclone.value_function.edge_enumeration import (
     enumerate_edges,
@@ -181,6 +182,19 @@ def precompute_surface_pbrs(
     exit_pos = physics.get_goal_position("exit")
     print(f"  Switch: ({switch_pos[0]:.1f}, {switch_pos[1]:.1f})")
     print(f"  Exit:   ({exit_pos[0]:.1f}, {exit_pos[1]:.1f})")
+
+    # Toggle mine positions — used for phase-aware Dijkstra blocking.
+    # Type-21 mines (TOGGLE_MINE_TOGGLED) are deadly before the switch is hit
+    # (phase 0).  Type-1 mines (TOGGLE_MINE) start safe but become deadly in
+    # phase 1 (after switch activation).
+    mines_phase0_deadly = [
+        (e.xpos, e.ypos) for e in physics.entity_dic.get(21, [])
+    ]
+    mines_phase1_deadly = [
+        (e.xpos, e.ypos) for e in physics.entity_dic.get(1, [])
+    ]
+    print(f"  Toggle mines (deadly in phase 0): {len(mines_phase0_deadly)}")
+    print(f"  Toggle mines (deadly in phase 1): {len(mines_phase1_deadly)}")
     print(f"  Elapsed: {_format_time(time.time() - start_time)}")
 
     # ------------------------------------------------------------------
@@ -228,15 +242,25 @@ def precompute_surface_pbrs(
     _section("Step 5: Computing Cost-to-Go (Dijkstra)")
     t0 = time.time()
 
+    # Build phase-specific blocked node sets from toggle mine positions.
+    blocked_phase0 = find_mine_blocked_nodes(graph, mines_phase0_deadly)
+    blocked_phase1 = find_mine_blocked_nodes(graph, mines_phase1_deadly)
+    if blocked_phase0:
+        print(f"  Blocked nodes (phase 0, type-21 mines): {len(blocked_phase0):,}")
+    if blocked_phase1:
+        print(f"  Blocked nodes (phase 1, type-1 mines):  {len(blocked_phase1):,}")
+
     d_star_switch = compute_cost_to_go(
-        graph, switch_pos[0], switch_pos[1], "switch")
+        graph, switch_pos[0], switch_pos[1], "switch",
+        blocked_nodes=blocked_phase0)
     d_max_sw = _safe_max(d_star_switch)
     n_reachable_sw = int(np.sum(d_star_switch < d_max_sw * 0.999))
     print(f"  Switch: d_max={d_max_sw:.1f} frames, "
           f"reachable={n_reachable_sw:,}/{graph.n_nodes:,}")
 
     d_star_exit = compute_cost_to_go(
-        graph, exit_pos[0], exit_pos[1], "exit")
+        graph, exit_pos[0], exit_pos[1], "exit",
+        blocked_nodes=blocked_phase1)
     d_max_ex = _safe_max(d_star_exit)
     n_reachable_ex = int(np.sum(d_star_exit < d_max_ex * 0.999))
     print(f"  Exit:   d_max={d_max_ex:.1f} frames, "

@@ -1,8 +1,9 @@
 """Filter npp_attract files by entity criteria and symlink qualifying files.
 
-Reads only the entity section (~500 bytes) from each binary attract file,
-applies entity-type filtering, and symlinks qualifying files to an output
-directory. Uses multiprocessing for I/O parallelism across 250K+ files.
+Reads the full entity section from each binary attract file (bounded by the
+map_data_length field in the 8-byte outer header), applies entity-type filtering,
+and symlinks qualifying files to an output directory.  Uses multiprocessing for
+I/O parallelism across 250K+ files.
 
 Usage:
     python -m nclone.offline_rl.dataset.filter_attracts \
@@ -14,6 +15,7 @@ Usage:
 import argparse
 import logging
 import os
+import struct
 import time
 from collections import Counter
 from multiprocessing import Pool
@@ -35,7 +37,15 @@ ALLOWED_ENTITY_TYPES = frozenset(
 )
 
 ENTITY_SECTION_OFFSET = 1235
-ENTITY_READ_SIZE = 500
+
+# Attract-file outer header layout:
+#   bytes 0-3: map_data_length (little-endian uint32)
+#   bytes 4-7: demo_data_length (little-endian uint32)
+# Map data occupies bytes 8 .. 8+map_data_length.
+# The entity section starts at ENTITY_SECTION_OFFSET and ends at 8+map_data_length,
+# so we must derive the read size from the file header rather than using a fixed cap.
+_OUTER_HEADER_SIZE = 8
+_MAP_DATA_OFFSET = 8
 
 
 def _parse_entity_types_from_bytes(chunk: bytes) -> List[int]:
@@ -58,17 +68,37 @@ def _parse_entity_types_from_bytes(chunk: bytes) -> List[int]:
 def check_file(path: str) -> Tuple[str, bool, str]:
     """Check whether a single attract file meets the entity criteria.
 
+    Reads the map_data_length from the 8-byte outer header to determine how many
+    bytes to read for the full entity section, avoiding the truncation that occurs
+    with a fixed-size read on maps with many entities.
+
     Returns:
         (filename, passed, rejection_reason)
     """
     name = os.path.basename(path)
     try:
         with open(path, "rb") as f:
+            outer_header = f.read(_OUTER_HEADER_SIZE)
+            if len(outer_header) < _OUTER_HEADER_SIZE:
+                return (name, False, "too_short")
+
+            map_data_length = struct.unpack("<I", outer_header[0:4])[0]
+            entity_section_end = _MAP_DATA_OFFSET + map_data_length
+            read_size = entity_section_end - ENTITY_SECTION_OFFSET
+            if read_size <= 0:
+                return (name, False, "entity_section_empty")
+
             f.seek(ENTITY_SECTION_OFFSET)
-            chunk = f.read(ENTITY_READ_SIZE)
+            chunk = f.read(read_size)
 
         if len(chunk) < 5:
             return (name, False, "too_short")
+
+        # Co-op levels store a second NINJA (type 0) entity at the very start of
+        # the entity section (offset 1235), before the real entities begin at 1240.
+        # The simulator only supports single-player, so reject these files.
+        if chunk[0] == EntityType.NINJA:
+            return (name, False, "coop_format")
 
         entity_types = _parse_entity_types_from_bytes(chunk)
 

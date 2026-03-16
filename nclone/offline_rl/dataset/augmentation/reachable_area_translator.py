@@ -116,7 +116,9 @@ class ReachableAreaTranslator(BaseAugmentation):
         if dx == 0 and dy == 0:
             return self._copy_unchanged(data)
 
-        new_tiles = self._translate_tiles(tiles, min_col, min_row, max_col, max_row, dx, dy)
+        new_tiles = self._translate_tiles(
+            tiles, min_col, min_row, max_col, max_row, dx, dy
+        )
         new_entities = self._translate_entities(data["entities"], dx, dy)
         new_spawn = self._translate_spawn(data["ninja_spawn"], dx, dy)
 
@@ -167,7 +169,7 @@ class ReachableAreaTranslator(BaseAugmentation):
         after shifting is silently dropped (this should not occur when dx/dy
         respect the translation limits, but is guarded for robustness).
         """
-        new_tiles = [self._rng.choice(_VALID_TILE_TYPES)] * _TILE_COUNT
+        new_tiles = [self._rng.choice(_VALID_TILE_TYPES) for _ in range(_TILE_COUNT)]
 
         for row in range(min_row, max_row + 1):
             for col in range(min_col, max_col + 1):
@@ -180,9 +182,7 @@ class ReachableAreaTranslator(BaseAugmentation):
 
         return new_tiles
 
-    def _translate_entities(
-        self, entities: List[dict], dx: int, dy: int
-    ) -> List[dict]:
+    def _translate_entities(self, entities: List[dict], dx: int, dy: int) -> List[dict]:
         """Shift entity x/y coordinates by (dx, dy) tiles in map-data units.
 
         1 tile = 4 map-data units, so:
@@ -197,7 +197,10 @@ class ReachableAreaTranslator(BaseAugmentation):
             new_ent["x"] = ent["x"] + x_shift
             new_ent["y"] = ent["y"] + y_shift
             # Guard: drop entities that land outside the full map bounds.
-            if 0 <= new_ent["x"] <= _FULL_MAP_WIDTH_UNITS and 0 <= new_ent["y"] <= _FULL_MAP_HEIGHT_UNITS:
+            if (
+                0 <= new_ent["x"] <= _FULL_MAP_WIDTH_UNITS
+                and 0 <= new_ent["y"] <= _FULL_MAP_HEIGHT_UNITS
+            ):
                 translated.append(new_ent)
         return translated
 

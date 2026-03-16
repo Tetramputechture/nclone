@@ -47,16 +47,19 @@ _TILE_MIRROR: Dict[int, int] = {
     7: 6,
     8: 9,
     9: 8,
-    # Quarter-moon (concave curves)
+    # Convex quarter-pipes (tiles 10-13): arc in one quadrant, solid outside.
+    # 10↔11 (bottom-right ↔ bottom-left) and 12↔13 (upper-left ↔ upper-right).
     10: 11,
     11: 10,
     12: 13,
     13: 12,
-    # Quarter-pipes (convex curves)
-    14: 16,
-    16: 14,
-    15: 17,
-    17: 15,
+    # Concave quarter-moons (tiles 14-17): arc in one quadrant, solid inside.
+    # 14↔15 (upper-left ↔ upper-right, center at bottom) and 16↔17 (lower-right ↔ lower-left, center at top).
+    # NOT 14↔16 — same reason as steep slopes: the solid-side direction flips under reflection.
+    14: 15,
+    15: 14,
+    16: 17,
+    17: 16,
     # Short mild slopes
     18: 19,
     19: 18,
@@ -68,15 +71,17 @@ _TILE_MIRROR: Dict[int, int] = {
     24: 25,
     25: 24,
     # Short steep slopes
-    26: 28,
-    28: 26,
-    27: 29,
-    29: 27,
-    # Raised steep slopes
-    30: 32,
-    32: 30,
-    31: 33,
-    33: 31,
+    # Note: 26↔27 and 28↔29 (NOT 26↔28) — the correct mirror pairs preserve
+    # the collision solid-side direction under horizontal reflection.
+    26: 27,
+    27: 26,
+    28: 29,
+    29: 28,
+    # Raised steep slopes (same pairing logic)
+    30: 31,
+    31: 30,
+    32: 33,
+    33: 32,
 }
 
 # Input byte mirror: swap bit1 (right=0x02) and bit2 (left=0x04).

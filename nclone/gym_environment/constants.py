@@ -79,3 +79,9 @@ MINIMAL_OBSERVATION_DIM = 30
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0
 LEVEL_DIAGONAL = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
+
+# Level context encoding constants
+# Tile type IDs run 0–37 (38 distinct types) in the N++ tile system
+NUM_TILE_TYPES = 38
+# CNN output dimension for the level context encoder (tile grid -> 64D vector)
+LEVEL_CONTEXT_DIM = 64

@@ -253,11 +253,12 @@ def _build_map_data(data: AttractData) -> Optional[bytes]:
             elif et == 21:  # TOGGLE_MINE_TOGGLED counts as type-1
                 counts[1] += 1
 
-        entity_section[_REL_COUNT_MINE] = counts[1]
-        entity_section[_REL_COUNT_EXIT] = counts[3]
-        entity_section[_REL_COUNT_GOLD] = counts[2]
-        entity_section[_REL_COUNT_ESWITCH] = counts[4]
-        entity_section[_REL_UNKNOWN] = 1
+        # Each count slot is a 2-byte little-endian uint16 (levels can have >255 mines).
+        struct.pack_into("<H", entity_section, _REL_COUNT_MINE, counts[1])
+        struct.pack_into("<H", entity_section, _REL_COUNT_EXIT, counts[3])
+        struct.pack_into("<H", entity_section, _REL_COUNT_GOLD, counts[2])
+        struct.pack_into("<H", entity_section, _REL_COUNT_ESWITCH, counts[4])
+        struct.pack_into("<H", entity_section, _REL_UNKNOWN, 1)
 
         # Ninja spawn (relative offsets 81, 82).
         rel_spawn_x = _SPAWN_X_OFFSET - _ENTITY_SECTION_OFFSET  # 81

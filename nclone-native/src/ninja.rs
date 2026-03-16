@@ -289,7 +289,7 @@ impl Ninja {
             let mut dx = xpos - closest_a;
             let dy = ypos - closest_b;
 
-            // Reproduce Python corner cases
+            // Reproduce Python corner cases (left-border positions)
             if dx.abs() <= 0.0000001 {
                 dx = 0.0;
                 if xpos == 50.51197510492316 || xpos == 49.23232124849253 {
@@ -297,6 +297,13 @@ impl Ninja {
                 }
                 if xpos == 49.153536108584795 {
                     dx = f64::from_bits(0x3D10000000000000u64); // 2^-47
+                }
+                // Mirror-symmetric counterparts (right-border positions, for horizontally-mirrored levels)
+                if xpos == 1005.4880248950768 || xpos == 1006.7676787515074 {
+                    dx = f64::from_bits(0x3D10000000000000u64); // +(2^-47)
+                }
+                if xpos == 1006.8464638914152 {
+                    dx = -f64::from_bits(0x3D10000000000000u64); // -(2^-47)
                 }
             }
 

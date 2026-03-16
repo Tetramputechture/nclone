@@ -112,6 +112,8 @@ class PBRSConfig:
     """
 
     pbrs_gamma: float = 1.0  # Changed from 0.995 to eliminate systematic negative bias
+    use_precomputed_pbrs: bool = False  # Use precomputed surface-graph PBRS (.npz) for per-frame rewards
+    value_function_dir: Optional[str] = None  # Directory containing {level_id}_surface_pbrs.npz files
 
     def __post_init__(self):
         """Validate PBRS configuration."""
@@ -160,6 +162,7 @@ class EnvironmentConfig:
         False  # If False, skip rendering entirely (graph+state+reachability sufficient)
     )
     enable_graph_observations: bool = True  # If False, skip graph arrays in observation space (spatial_context sufficient)  # Memory optimization: saves ~21KB per observation when using graph_free architecture
+    enable_level_context_observations: bool = False  # If True, include tile_grid (42x23) and level_id in observation for level-context CNN encoding
     observation_mode: ObservationMode = ObservationMode.FULL  # Observation space mode
     # Feature experiment B: when True, zero out path distances (features 0-1) in actor obs;
     # PBRS still uses raw distances for reward shaping

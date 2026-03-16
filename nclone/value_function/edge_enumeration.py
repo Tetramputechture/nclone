@@ -14,7 +14,9 @@ from typing import List, Tuple, Optional, Dict
 
 import numpy as np
 
-from ..constants.physics_constants import MAX_JUMP_DURATION
+from ..constants.physics_constants import (
+    MAX_JUMP_DURATION, GROUND_STATES, AIR_STATES, WALL_STATES,
+)
 from .surface_extraction import SurfacePoint, SURFACE_FLOOR, SURFACE_WALL
 from .surface_graph import (
     SurfaceGraph, node_id, velocity_bin_centers,
@@ -31,12 +33,13 @@ POST_RELEASE_INPUTS = [-1, 0, 1]
 MAX_ARC_FRAMES = 500
 ARC_WAYPOINT_INTERVAL = 5
 
-# Ninja state codes
-_STATE_GROUNDED, _STATE_JUMPING, _STATE_FALLING = 0, 1, 2
-_STATE_WALL_SLIDING, _STATE_DEAD, _STATE_AWAITING_DEATH = 5, 6, 7
+# Ninja state codes (0=Immobile, 1=Running, 2=GroundSlide, 3=Jumping, 4=Falling, 5=WallSlide, 6=Dead, 7=AwaitingDeath)
+_STATE_WALL_SLIDING = 5
+_STATE_DEAD = 6
+_STATE_AWAITING_DEATH = 7
 _DEATH_STATES = {_STATE_DEAD, _STATE_AWAITING_DEATH}
-_AIRBORNE_STATES = {_STATE_JUMPING, _STATE_FALLING}
-_SURFACE_STATES = {_STATE_GROUNDED, _STATE_WALL_SLIDING}
+_AIRBORNE_STATES = AIR_STATES                  # {3, 4}
+_SURFACE_STATES = GROUND_STATES | WALL_STATES  # {0, 1, 2, 5}
 
 
 @dataclass

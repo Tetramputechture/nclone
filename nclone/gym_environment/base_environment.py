@@ -92,7 +92,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         value_function_dir: Optional[
             str
         ] = None,  # Directory with precomputed value functions
-        use_precomputed_pbrs: bool = False,  # Use precomputed value function for PBRS
+        use_precomputed_pbrs: bool = True,  # Use precomputed value function for PBRS
         simulation_phi_dir: Optional[
             str
         ] = None,  # Directory with precomputed simulation-based phi grids
@@ -194,6 +194,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Track curriculum stage that was active at EPISODE START (not current stage)
         # This is captured at reset() and used in _build_episode_info() for correct visualization
         self._episode_start_curriculum_stage: Optional[int] = None
+
+        # Per-episode PBRS diagnostics tracking (also reset in reset())
+        self._phi_at_spawn: Optional[float] = None
+        self._phi_at_switch_collection: Optional[float] = None
+        self._phi_at_terminal: Optional[float] = None
+        self._contact_floor_frames: int = 0
+        self._contact_wall_frames: int = 0
+        self._contact_airborne_frames: int = 0
+        self._first_frame_of_episode: bool = True
 
         # Frame skip for temporal abstraction (always enabled)
         self.frame_skip = max(1, frame_skip)  # Ensure at least 1
@@ -575,6 +584,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Per-frame primitive rewards for FiGAR-PPO primitive-level GAE
             primitive_rewards = []
 
+            # Track switch activation state across frames for per-frame PBRS delta detection
+            prev_switch_activated = getattr(self, "_prev_switch_activated", False)
+
             for i in range(self.frame_skip):
                 headless.tick(action_hoz, action_jump)
 
@@ -592,9 +604,55 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 player_won = headless.ninja_has_won()
                 player_dead = headless.ninja_has_died()
 
+                # Per-frame PBRS reward for FiGAR-PPO primitive-level GAE.
+                # Only computed when a precomputed surface-graph PBRS is loaded.
+                if self._current_precomputed_pbrs is not None:
+                    pos = headless.ninja_position()
+                    vel = headless.ninja_velocity()
+                    # Map Rust ninja state codes to PBRS contact categories:
+                    # 0-2 (Immobile/Running/GroundSlide) → floor, 5 (WallSlide) → wall, else → airborne
+                    ninja_sc = headless.sim.ninja.state
+                    contact = (
+                        0 if ninja_sc in (0, 1, 2) else (1 if ninja_sc == 5 else 2)
+                    )
+                    frame_r = self.primitive_reward_calculator.calculate_frame_reward(
+                        player_x=float(pos[0]),
+                        player_y=float(pos[1]),
+                        player_dead=player_dead,
+                        player_won=player_won,
+                        switch_activated=current_switch_activated,
+                        prev_switch_activated=prev_switch_activated,
+                        phi_grid_cache=None,
+                        precomputed_pbrs=self._current_precomputed_pbrs,
+                        player_xspeed=float(vel[0]),
+                        player_yspeed=float(vel[1]),
+                        contact_state=contact,
+                    )
+                    primitive_rewards.append(frame_r)
+
+                    # Diagnostic tracking: contact distribution and phi at key moments
+                    comps = self.primitive_reward_calculator.last_components
+                    if contact == 0:
+                        self._contact_floor_frames += 1
+                    elif contact == 1:
+                        self._contact_wall_frames += 1
+                    else:
+                        self._contact_airborne_frames += 1
+                    if self._first_frame_of_episode:
+                        self._phi_at_spawn = comps.get("prev_potential")
+                        self._first_frame_of_episode = False
+                    if current_switch_activated and not prev_switch_activated:
+                        self._phi_at_switch_collection = comps.get("phi_state")
+                    self._phi_at_terminal = comps.get("phi_state")
+
+                    prev_switch_activated = current_switch_activated
+
                 if player_won or player_dead:
                     terminated = True
                     break
+
+            # Persist switch activation state for the next step's first-frame delta
+            self._prev_switch_activated = current_switch_activated
 
             # Check truncation only once after all frames (expensive curriculum-aware check)
             if not terminated:
@@ -634,7 +692,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 self._update_dynamic_truncation_if_needed()
 
                 # Hook: Modify reward if needed
-                reward = self._modify_reward_hook(reward, final_obs, player_won, terminated)
+                reward = self._modify_reward_hook(
+                    reward, final_obs, player_won, terminated
+                )
 
                 # === TRUNCATION HANDLING ===
                 # No additional penalty for truncation. HWM pipeline:
@@ -787,18 +847,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._current_precomputed_pbrs = None
             return
 
-        try:
-            from nclone.value_function import create_two_phase_pbrs
+        from nclone.value_function import create_two_phase_pbrs
 
-            self._current_precomputed_pbrs = create_two_phase_pbrs(
-                level_id,
-                value_function_dir=vf_dir,
-                interpolation_method="linear",
-                blend_mode="continuous",
-            )
-            logger.info(f"Loaded 5D value function PBRS for level {level_id}")
-        except FileNotFoundError:
-            self._current_precomputed_pbrs = None
+        self._current_precomputed_pbrs = create_two_phase_pbrs(
+            level_id,
+            value_function_dir=vf_dir,
+            interpolation_method="linear",
+            blend_mode="continuous",
+        )
+        logger.info(f"Loaded 5D value function PBRS for level {level_id}")
 
     def _setup_neural_pbrs_level(self, adapter: Any, headless: Any) -> None:
         """Configure neural PBRS adapter with current level data from headless.
@@ -1648,6 +1705,30 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             info["curriculum_stage"] = "custom_map"
             info["curriculum_generator"] = "custom"
 
+        # Episode-end reward metrics (only populated when the episode is actually done)
+        if terminated or truncated:
+            # HWM metrics — activates existing PBRSLoggingCallback / EnhancedTensorBoardCallback
+            # logic that was already guarded behind `if "episode_pbrs_metrics" in info:`
+            if hasattr(self.reward_calculator, "get_episode_reward_metrics"):
+                info["episode_pbrs_metrics"] = (
+                    self.reward_calculator.get_episode_reward_metrics()
+                )
+
+            # Surface-graph precomputed PBRS diagnostics
+            if self._current_precomputed_pbrs is not None:
+                sg = self.primitive_reward_calculator.get_episode_stats()
+                sg["phi_at_spawn"] = self._phi_at_spawn
+                sg["phi_at_switch_collection"] = self._phi_at_switch_collection
+                sg["phi_at_terminal"] = self._phi_at_terminal
+                sg["contact_floor_frames"] = self._contact_floor_frames
+                sg["contact_wall_frames"] = self._contact_wall_frames
+                sg["contact_airborne_frames"] = self._contact_airborne_frames
+                sg["vf_stats"] = self._current_precomputed_pbrs.get_statistics()
+                info["episode_precomputed_pbrs_metrics"] = sg
+                info["precomputed_pbrs_active"] = True
+            else:
+                info["precomputed_pbrs_active"] = False
+
         return info
 
     def _is_same_level_reset(self, options: Optional[Dict] = None) -> bool:
@@ -1720,6 +1801,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset primitive reward calculator
         self.primitive_reward_calculator.reset()
 
+        # Reset per-episode tracking for precomputed PBRS diagnostics
+        self._phi_at_spawn: Optional[float] = None
+        self._phi_at_switch_collection: Optional[float] = None
+        self._phi_at_terminal: Optional[float] = None
+        self._contact_floor_frames: int = 0
+        self._contact_wall_frames: int = 0
+        self._contact_airborne_frames: int = 0
+        self._first_frame_of_episode: bool = True
+
         # Reset truncation checker
         self.truncation_checker.reset()
 
@@ -1766,6 +1856,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset switch activation tracking
         self._switch_activation_frame = None
         self._switch_activation_step = None
+
+        # Reset per-frame switch state tracker for surface-graph PBRS delta computation
+        self._prev_switch_activated = False
 
         # Capture curriculum stage at EPISODE START for correct visualization
         # This is the stage that determines entity positions for THIS episode

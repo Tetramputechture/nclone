@@ -315,6 +315,11 @@ class Ninja:
                     dx = -(2**-47)
                 if xpos == 49.153536108584795:
                     dx = 2**-47
+                # Mirror-symmetric counterparts of the above (for horizontally-mirrored levels)
+                if xpos in (1005.4880248950768, 1006.7676787515074):
+                    dx = 2**-47
+                if xpos == 1006.8464638914152:
+                    dx = -(2**-47)
 
             dist = math.sqrt(dx**2 + dy**2)
             depen_len = NINJA_RADIUS - dist * result

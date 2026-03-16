@@ -30,6 +30,10 @@ SURFACE_WALL = 1
 _FLOOR_NORMAL_Y_THRESHOLD = -0.3
 # Wall normals are predominantly horizontal.
 _WALL_NORMAL_X_THRESHOLD = 0.7
+# Wall normals must not point significantly downward (ny < 0 means upward in
+# screen coords). The underside of a slope tile has ny > 0 (facing down) and
+# must be excluded — the ninja cannot wall-slide on a ceiling or overhang.
+_WALL_NORMAL_Y_MAX = 0.05
 
 # ---------------------------------------------------------------------------
 # Sampling parameters (pixels)
@@ -117,8 +121,10 @@ def _classify_linear_segment(seg) -> Optional[_ClassifiedSegment]:
             seg.x1, seg.y1, seg.x2, seg.y2, nx, ny, SURFACE_FLOOR, length
         )
 
-    # Wall: normal is predominantly horizontal
-    if abs(nx) > _WALL_NORMAL_X_THRESHOLD:
+    # Wall: normal is predominantly horizontal AND does not point downward.
+    # ny >= _WALL_NORMAL_Y_MAX would mean the surface faces downward (overhang /
+    # slope underside) where the ninja cannot wall-slide, so those are discarded.
+    if abs(nx) > _WALL_NORMAL_X_THRESHOLD and ny < _WALL_NORMAL_Y_MAX:
         return _ClassifiedSegment(
             seg.x1, seg.y1, seg.x2, seg.y2, nx, ny, SURFACE_WALL, length
         )

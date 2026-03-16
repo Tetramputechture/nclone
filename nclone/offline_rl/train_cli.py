@@ -115,6 +115,7 @@ def train(
     # Training loop
     global_step = trainer.step
     best_v_loss = float("inf")
+    best_val_v_loss = float("inf")
     t0 = time.time()
 
     progress_interval = max(1, steps_per_epoch // 10)  # Log ~10x per epoch
@@ -248,6 +249,19 @@ def train(
                 writer.add_scalar("val/v_loss", val_v_avg, epoch)
                 writer.add_scalar("val/mean_q", val_q_avg, epoch)
 
+            # Save best-by-val checkpoint (used for export in T2.3).
+            # Skip the first 50 epochs: V-loss is artificially small before value
+            # magnitudes converge, causing epoch 10 to be selected as "best" even
+            # though the V-network has barely learned anything meaningful.
+            if epoch >= 50 and val_v_avg < best_val_v_loss:
+                best_val_v_loss = val_v_avg
+                best_val_path = os.path.join(output_dir, "iql_best_val.pt")
+                torch.save(trainer.state_dict(), best_val_path)
+                logger.info(
+                    "  [Val] New best val V-loss=%.4f → saved %s",
+                    val_v_avg, best_val_path,
+                )
+
         # Track best model (by training V-loss)
         if avg_v < best_v_loss:
             best_v_loss = avg_v
@@ -283,7 +297,7 @@ def main():
     parser.add_argument(
         "--save-every", type=int, default=10, help="Save checkpoint every N epochs"
     )
-    parser.add_argument("--batch-size", type=int, default=1024, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=256, help="Batch size")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument(
         "--expectile-tau", type=float, default=0.9, help="IQL expectile parameter"
