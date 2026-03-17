@@ -123,12 +123,21 @@ class SurfaceGraphPBRS:
         self.d_star_switch = data["d_star_switch"].astype(np.float32)
         self.d_star_exit = data["d_star_exit"].astype(np.float32)
 
-        # Load normalization constants
+        # Load normalization constants.
+        # d_star arrays now keep inf for unreachable nodes (no substitution),
+        # so _robust_d_max correctly computes the 99th percentile of truly
+        # reachable costs only — yielding a d_max that spans phi over [-1, 0].
+        # _d_max_*_raw tracks the actual maximum finite cost (mine-inflated
+        # outliers included) purely for diagnostic / TensorBoard logging.
         meta = data["metadata"].item() if "metadata" in data else {}
-        self.d_max_switch = float(meta.get(
-            "d_max_switch", _safe_max(self.d_star_switch)))
-        self.d_max_exit = float(meta.get(
-            "d_max_exit", _safe_max(self.d_star_exit)))
+        # "d_max_switch_raw" stores the raw max from precompute; fall back to
+        # computing it live if loading an older .npz without that key.
+        self._d_max_switch_raw = float(meta.get(
+            "d_max_switch_raw", _safe_max(self.d_star_switch)))
+        self._d_max_exit_raw = float(meta.get(
+            "d_max_exit_raw", _safe_max(self.d_star_exit)))
+        self.d_max_switch = _robust_d_max(self.d_star_switch)
+        self.d_max_exit = _robust_d_max(self.d_star_exit)
 
         # Load arc caches
         if "arc_cache_keys_switch" in data and len(data["arc_cache_keys_switch"]) > 0:
@@ -190,12 +199,28 @@ class SurfaceGraphPBRS:
         self._n_points = n
         self._n_nodes = self.graph.n_nodes
 
+        # Fallback counters: track how often get_potential() falls back to the
+        # pessimistic surface-below estimate vs. a direct graph lookup.
+        # Reset by the caller (e.g. at episode start) or via reset_fallback_stats().
+        self._lookup_calls: int = 0
+        self._fallback_calls: int = 0
+
+        inflation_ratio = (
+            self._d_max_switch_raw / self.d_max_switch
+            if self.d_max_switch > 0 else float("inf")
+        )
         logger.info(f"Loaded surface graph PBRS from {data_path}")
         logger.info(f"  Surface points: {n:,}")
         logger.info(f"  Graph nodes: {self._n_nodes:,}")
         logger.info(f"  Edges: {len(self.graph.edges_src):,}")
-        logger.info(f"  d_max_switch: {self.d_max_switch:.1f} frames")
-        logger.info(f"  d_max_exit: {self.d_max_exit:.1f} frames")
+        logger.info(
+            f"  d_max_switch: {self.d_max_switch:.1f} frames "
+            f"(raw: {self._d_max_switch_raw:.1f}, inflation ratio: {inflation_ratio:.1f}×)"
+        )
+        logger.info(
+            f"  d_max_exit: {self.d_max_exit:.1f} frames "
+            f"(raw: {self._d_max_exit_raw:.1f})"
+        )
         logger.info(f"  Arc cache switch: {self.arc_cache_switch.n_entries:,} cells")
         logger.info(f"  Arc cache exit: {self.arc_cache_exit.n_entries:,} cells")
         logger.info(
@@ -236,6 +261,8 @@ class SurfaceGraphPBRS:
         vx = state.get("player_xspeed", 0.0) or 0.0
         vy = state.get("player_yspeed", 0.0) or 0.0
         switch_activated = state.get("switch_activated", False)
+
+        self._lookup_calls += 1
 
         # Select phase-appropriate d* and normalization
         if switch_activated:
@@ -282,6 +309,7 @@ class SurfaceGraphPBRS:
             cost = lookup_cost_interpolated(
                 self.graph, d_star, eff_x, eff_y, vx, SURFACE_FLOOR)
             if not np.isfinite(cost):
+                self._fallback_calls += 1
                 cost = self._pessimistic_fallback(d_star, x, y)
             phi_state = -cost / d_max
             return max(phi_state, -1.0) + phi_phase
@@ -290,6 +318,7 @@ class SurfaceGraphPBRS:
             cost = lookup_cost_interpolated(
                 self.graph, d_star, eff_x, eff_y, vy, SURFACE_WALL)
             if not np.isfinite(cost):
+                self._fallback_calls += 1
                 cost = self._pessimistic_fallback(d_star, x, y)
             phi_state = -cost / d_max
             return max(phi_state, -1.0) + phi_phase
@@ -302,6 +331,7 @@ class SurfaceGraphPBRS:
             return max(phi_state, -1.0) + phi_phase
 
         # 2. Pessimistic fallback (nearest surface below)
+        self._fallback_calls += 1
         cost = self._pessimistic_fallback(d_star, x, y)
         phi_state = -cost / d_max
         return max(phi_state, -1.0) + phi_phase
@@ -327,15 +357,32 @@ class SurfaceGraphPBRS:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Return summary statistics for logging."""
+        fallback_fraction = (
+            self._fallback_calls / self._lookup_calls
+            if self._lookup_calls > 0 else 0.0
+        )
         return {
             "n_surface_points": self._n_points,
             "n_graph_nodes": self._n_nodes,
             "n_edges": len(self.graph.edges_src),
             "d_max_switch": self.d_max_switch,
             "d_max_exit": self.d_max_exit,
+            "d_max_switch_raw": self._d_max_switch_raw,
+            "d_max_exit_raw": self._d_max_exit_raw,
             "arc_cache_switch_entries": self.arc_cache_switch.n_entries,
             "arc_cache_exit_entries": self.arc_cache_exit.n_entries,
+            "fallback_fraction": fallback_fraction,
+            "lookup_calls": self._lookup_calls,
         }
+
+    def reset_fallback_stats(self) -> None:
+        """Reset per-episode fallback counters.
+
+        Call at the start of each episode so that ``get_statistics()`` returns
+        per-episode rates rather than a cumulative lifetime fraction.
+        """
+        self._lookup_calls = 0
+        self._fallback_calls = 0
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -534,3 +581,26 @@ def _safe_max(arr: np.ndarray) -> float:
     """Max of finite values in an array, or 1.0 if none."""
     finite = arr[np.isfinite(arr)]
     return float(np.max(finite)) if len(finite) > 0 else 1.0
+
+
+def _robust_d_max(arr: np.ndarray, percentile: float = 99.0) -> float:
+    """Robust normalization constant using a high percentile of finite costs.
+
+    The raw maximum of the d* array can be inflated by many orders of magnitude
+    when mine-proximity edge penalties push a small number of graph nodes to
+    very large costs.  Using the 99th percentile removes those outliers while
+    still covering all normal traversal paths.  Nodes whose true cost exceeds
+    this value will have their phi clamped to -1.0, which is the correct
+    worst-case potential.
+
+    Args:
+        arr: d* cost array (may contain inf for unreachable nodes).
+        percentile: Which percentile of finite values to use (default 99).
+
+    Returns:
+        99th-percentile finite cost, or 1.0 if no finite values exist.
+    """
+    finite = arr[np.isfinite(arr)]
+    if len(finite) == 0:
+        return 1.0
+    return float(np.percentile(finite, percentile))

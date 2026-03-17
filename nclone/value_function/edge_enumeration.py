@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 # Mine arc cost inflation constants
 _MINE_KILL_RADIUS = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED  # 14.0 px
 _MINE_INFLATION_BETA_DEFAULT = 50.0
+# Cap on the penalty multiplier to prevent mine-adjacent edges from producing
+# astronomically large costs (e.g. beta=50, clearance=0.01 px → 500,000×).
+# Without this cap those inflated costs propagate through Dijkstra and set
+# d_max to ~10M frames, which collapses the PBRS phi normalization range to
+# [-0.0001, 0] everywhere a normal agent can reach.
+# With this cap the worst inflated cost is w_base * (1 + 500) ≈ 10,000 frames,
+# keeping d_max within a physically meaningful range.
+_MINE_INFLATION_MAX_FACTOR = 500.0
 
 # Simulation parameter sweeps
 RUN_DURATIONS = [1, 2, 3, 5, 8, 12, 18, 24, 36, 48, 60]
@@ -109,8 +117,8 @@ def _inflate_arc_cost(
             Arcs with clearance <= 0 return inf and are pruned from the graph.
 
     Returns:
-        Inflated weight ``w_base * (1 + beta / clearance^2)``, or ``inf`` if
-        the arc enters the kill zone.
+        Inflated weight ``w_base * (1 + min(beta / clearance^2, MAX_FACTOR))``,
+        or ``inf`` if the arc enters the kill zone.
     """
     if len(mine_positions) == 0 or not arc_wps:
         return w_base
@@ -121,7 +129,9 @@ def _inflate_arc_cost(
     clearance = float(dists.min()) - kill_radius
     if clearance <= 0:
         return float('inf')
-    penalty = beta / (clearance ** 2)
+    # Cap the penalty to prevent near-zero clearance from producing costs in the
+    # millions of frames that would blow up d_max and collapse phi normalization.
+    penalty = min(beta / (clearance ** 2), _MINE_INFLATION_MAX_FACTOR)
     return w_base * (1.0 + penalty)
 
 

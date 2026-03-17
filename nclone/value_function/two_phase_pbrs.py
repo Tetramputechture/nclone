@@ -63,6 +63,10 @@ class TwoPhaseValuePBRS:
         """Return statistics for logging."""
         return self._inner.get_statistics()
 
+    def reset_fallback_stats(self) -> None:
+        """Reset per-episode fallback counters on the inner SurfaceGraphPBRS."""
+        self._inner.reset_fallback_stats()
+
 
 def create_two_phase_pbrs(
     level_id: str,

@@ -453,8 +453,14 @@ def compute_cost_to_go(
 ) -> np.ndarray:
     """Compute cost-to-go from every graph node to the specified goal.
 
-    Identifies goal nodes, runs backward Dijkstra, and fills unreachable
-    nodes with ``d_max`` (the maximum finite cost).
+    Identifies goal nodes, runs backward Dijkstra and returns the raw result.
+    Unreachable nodes (unused velocity bins, isolated nodes, blocked nodes)
+    keep ``inf`` so that ``_robust_d_max`` / ``_safe_max`` can compute
+    percentile-based normalization constants from truly reachable costs only.
+
+    All downstream consumers (``lookup_cost_interpolated``, ``arc_cache.build``,
+    ``_pessimistic_fallback``) already guard with ``np.isfinite``, so keeping
+    ``inf`` is safe.
 
     Args:
         graph: Surface graph with populated edge arrays.
@@ -464,7 +470,7 @@ def compute_cost_to_go(
             deadly toggle mines for this phase).  These nodes receive d* = inf.
 
     Returns:
-        d_star array (float32, length n_nodes).
+        d_star array (float32, length n_nodes).  Unreachable nodes have inf.
     """
     goal_nodes = find_goal_nodes(graph, goal_x, goal_y, goal_type)
     if not goal_nodes:
@@ -473,14 +479,4 @@ def compute_cost_to_go(
             f"at ({goal_x:.1f}, {goal_y:.1f}).  Check surface extraction."
         )
 
-    d_star = dijkstra_backward(graph, goal_nodes, blocked_nodes=blocked_nodes)
-
-    # Replace inf with d_max for unreachable nodes
-    finite_mask = np.isfinite(d_star)
-    if finite_mask.any():
-        d_max = float(np.max(d_star[finite_mask]))
-    else:
-        d_max = 1.0
-
-    d_star[~finite_mask] = d_max
-    return d_star
+    return dijkstra_backward(graph, goal_nodes, blocked_nodes=blocked_nodes)

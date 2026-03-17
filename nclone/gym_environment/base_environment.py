@@ -1815,6 +1815,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._contact_airborne_frames: int = 0
         self._first_frame_of_episode: bool = True
 
+        # Reset per-episode fallback counters so vf_stats reports per-episode
+        # rates rather than lifetime cumulative fractions.
+        if self._current_precomputed_pbrs is not None and hasattr(
+            self._current_precomputed_pbrs, "reset_fallback_stats"
+        ):
+            self._current_precomputed_pbrs.reset_fallback_stats()
+
         # Reset truncation checker
         self.truncation_checker.reset()
 

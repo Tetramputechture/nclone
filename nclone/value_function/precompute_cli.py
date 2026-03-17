@@ -82,6 +82,21 @@ def _safe_max(arr: np.ndarray) -> float:
     return float(np.max(finite)) if len(finite) > 0 else 1.0
 
 
+def _robust_d_max(arr: np.ndarray, percentile: float = 99.0) -> float:
+    """99th-percentile of finite d* values, for mine-inflation-resistant normalization.
+
+    Mine-proximity penalties can inflate a small number of graph nodes to
+    costs in the millions of frames.  Using the raw max as the normalization
+    constant collapses all normal phi values to [-0.0001, 0], destroying the
+    PBRS gradient.  The 99th percentile removes those outliers while correctly
+    assigning phi = -1 (clamped) to paths that are truly very costly.
+    """
+    finite = arr[np.isfinite(arr)]
+    if len(finite) == 0:
+        return 1.0
+    return float(np.percentile(finite, percentile))
+
+
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------
@@ -105,16 +120,22 @@ def _save_surface_pbrs(
     ac_keys_sw, ac_vals_sw = arc_cache_switch.to_arrays()
     ac_keys_ex, ac_vals_ex = arc_cache_exit.to_arrays()
 
-    d_max_switch = _safe_max(d_star_switch)
-    d_max_exit = _safe_max(d_star_exit)
+    d_max_switch_raw = _safe_max(d_star_switch)
+    d_max_exit_raw = _safe_max(d_star_exit)
+    d_max_switch = _robust_d_max(d_star_switch)
+    d_max_exit = _robust_d_max(d_star_exit)
 
     metadata = {
         "n_surface_points": n,
         "n_graph_nodes": graph.n_nodes,
         "n_edges": len(graph.edges_src),
         "max_vel_bins": graph.max_vel_bins,
+        # Robust (99th-percentile) normalization constant used at runtime.
         "d_max_switch": d_max_switch,
         "d_max_exit": d_max_exit,
+        # Raw maximum kept for audit; typically >>d_max due to mine inflation.
+        "d_max_switch_raw": d_max_switch_raw,
+        "d_max_exit_raw": d_max_exit_raw,
     }
 
     np.savez_compressed(
@@ -335,15 +356,21 @@ def precompute_surface_pbrs(
     # Runtime mine masking in SurfaceGraphPBRS.get_potential() provides an
     # additional safety net for the agent's live position.
     d_star_switch = compute_cost_to_go(graph, switch_pos[0], switch_pos[1], "switch")
-    d_max_sw = _safe_max(d_star_switch)
-    n_reachable_sw = int(np.sum(d_star_switch < d_max_sw * 0.999))
-    print(f"  Switch: d_max={d_max_sw:.1f} frames, "
+    d_max_sw_raw = _safe_max(d_star_switch)
+    d_max_sw = _robust_d_max(d_star_switch)
+    n_reachable_sw = int(np.sum(np.isfinite(d_star_switch)))
+    print(f"  Switch: d_max(p99)={d_max_sw:.1f} frames, "
+          f"d_max(raw)={d_max_sw_raw:.1f} frames, "
+          f"inflation={d_max_sw_raw / max(d_max_sw, 1):.1f}x, "
           f"reachable={n_reachable_sw:,}/{graph.n_nodes:,}")
 
     d_star_exit = compute_cost_to_go(graph, exit_pos[0], exit_pos[1], "exit")
-    d_max_ex = _safe_max(d_star_exit)
-    n_reachable_ex = int(np.sum(d_star_exit < d_max_ex * 0.999))
-    print(f"  Exit:   d_max={d_max_ex:.1f} frames, "
+    d_max_ex_raw = _safe_max(d_star_exit)
+    d_max_ex = _robust_d_max(d_star_exit)
+    n_reachable_ex = int(np.sum(np.isfinite(d_star_exit)))
+    print(f"  Exit:   d_max(p99)={d_max_ex:.1f} frames, "
+          f"d_max(raw)={d_max_ex_raw:.1f} frames, "
+          f"inflation={d_max_ex_raw / max(d_max_ex, 1):.1f}x, "
           f"reachable={n_reachable_ex:,}/{graph.n_nodes:,}")
     print(f"  Dijkstra time: {_format_time(time.time() - t0)}")
 

@@ -570,10 +570,22 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # ============================================================
             # Reset tracking variables from BaseNppEnvironment
             # ============================================================
+            # Mirror the base reset path for per-episode state so fast resets
+            # don't retain step-by-step history across the whole training run.
+            self.last_action = None
+            self._action_sequence = []
+            self._checkpoint_replay_in_progress = False
+            self._checkpoint_route = []
+            self._from_checkpoint = False
+            self._checkpoint_base_reward = 0.0
+            self._checkpoint_source_frame_skip = self.frame_skip
+            self._checkpoint_replay_frame_count = 0
             self._switch_activation_frame = None
             self._switch_activation_step = None
             self.current_route = []
             self._warned_about_position = False
+            self._deterministic_mask_applied_count = 0
+            self._total_steps_count = 0
 
             # Reset reward calculators (both main and primitive)
             self._reset_reward_calculator()
