@@ -47,6 +47,15 @@ impl PySimulator {
         self.inner.tick_physics_only(hor_input, jump_input);
     }
 
+    /// Execute one physics frame with tile collisions only — no entity interactions.
+    ///
+    /// Use this for edge enumeration and arc simulation so that exit switches, exit
+    /// doors, and toggle mines cannot mutate simulator entity state across arc runs.
+    /// Geometrically equivalent to tick_physics_only for pure-tile geometry.
+    fn tick_tiles_only(&mut self, hor_input: i32, jump_input: i32) {
+        self.inner.tick_tiles_only(hor_input, jump_input);
+    }
+
     /// Fast reset for same-level training.
     fn fast_reset(&mut self) {
         self.inner.fast_reset();

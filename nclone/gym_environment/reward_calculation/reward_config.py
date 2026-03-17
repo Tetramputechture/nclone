@@ -46,6 +46,7 @@ class RewardConfig:
     _mine_hazard_cost_multiplier_override: Optional[float] = None
     _revisit_penalty_weight_override: Optional[float] = None
     _entropy_coefficient_override: Optional[float] = None
+    _hwm_alpha_override: Optional[float] = None
 
     @property
     def training_phase(self) -> str:
@@ -83,7 +84,9 @@ class RewardConfig:
 
     @property
     def hwm_alpha(self) -> float:
-        """HWM shaping weight (constant)."""
+        """HWM shaping weight. Zero when HWM is disabled (e.g. value-function-only mode)."""
+        if self._hwm_alpha_override is not None:
+            return self._hwm_alpha_override
         return HWM_ALPHA
 
     @property

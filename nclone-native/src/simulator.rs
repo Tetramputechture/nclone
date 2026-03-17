@@ -168,6 +168,39 @@ impl Simulator {
         }
     }
 
+    /// Execute one physics frame with tile collisions only — no entity interactions.
+    ///
+    /// Used for surface-graph edge enumeration so that exit switches, exit doors, and
+    /// toggle mines cannot corrupt simulator state across multiple simulated arcs.
+    /// `save_ninja_state` / `restore_ninja_state` only snapshot ninja state, not entity
+    /// state, so any entity mutation (switch deactivation, door activation, mine kill)
+    /// would persist across arc simulations and break graph connectivity.
+    ///
+    /// This tick variant is geometrically identical to `tick_physics_only` for levels
+    /// that contain only tile geometry — no entity depenetration, no win/death from
+    /// entities.  Impact death from tile collisions is still applied.
+    pub fn tick_tiles_only(&mut self, hor_input: i32, jump_input: i32) {
+        self.frame += 1;
+        self.ninja.hor_input = hor_input;
+        self.ninja.jump_input = jump_input;
+        self.ninja.record_action_start_position();
+
+        if self.ninja.state != 9 {
+            if self.ninja.state != 6 {
+                self.ninja.integrate();
+                self.ninja.pre_collision(&self.entity_grid);
+
+                for _ in 0..4 {
+                    // Skip collide_vs_objects — no entity depenetration or bounce blocks
+                    self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                }
+
+                self.post_collision_tiles_only();
+            }
+            self.ninja.think();
+        }
+    }
+
     /// Handle post-collision entity interactions.
     fn post_collision_with_entities(&mut self) {
         // Gather entity indices from neighbourhood
@@ -373,6 +406,131 @@ impl Simulator {
                 < crate::constants::MIN_SURVIVABLE_CRUSHING
             {
                 self.ninja.kill(2, self.ninja.xpos, self.ninja.ypos, 0.0, 0.0, None);
+            }
+        }
+    }
+
+    /// Post-collision handling using tile geometry only — no entity interactions.
+    ///
+    /// Computes wall normal from tile segments, updates airborne/walled flags, normalises
+    /// floor and ceiling normals, and applies terminal-impact death — identical to the
+    /// tile-related portion of `post_collision_with_entities` but without the entity
+    /// logical-collision loop (mines, switch, door).
+    fn post_collision_tiles_only(&mut self) {
+        // Wall normal from tile segments only
+        let mut wall_normal = 0.0f64;
+        let rad = crate::constants::NINJA_RADIUS + 0.1;
+        let seg_indices = crate::collision::spatial::gather_segments_from_region(
+            &self.segment_grid,
+            &self.segments,
+            self.ninja.xpos - rad,
+            self.ninja.ypos - rad,
+            self.ninja.xpos + rad,
+            self.ninja.ypos + rad,
+        );
+        for seg_idx in seg_indices {
+            let seg = &self.segments[seg_idx];
+            let (_, a, b) = seg.get_closest_point(self.ninja.xpos, self.ninja.ypos);
+            let dx = self.ninja.xpos - a;
+            let dy = self.ninja.ypos - b;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dy.abs() < 0.00001 && dist > 0.0 && dist <= rad {
+                wall_normal += dx / dist;
+            }
+        }
+
+        // Update airborne/walled state
+        self.ninja.airborn_old = self.ninja.airborn;
+        self.ninja.airborn = true;
+        self.ninja.walled = false;
+        if wall_normal != 0.0 {
+            self.ninja.walled = true;
+            self.ninja.wall_normal = if wall_normal > 0.0 { 1.0 } else { -1.0 };
+        }
+
+        // Floor normal computation and impact check
+        if self.ninja.floor_count > 0 {
+            self.ninja.airborn = false;
+            let floor_scalar = (self.ninja.floor_normal_x * self.ninja.floor_normal_x
+                + self.ninja.floor_normal_y * self.ninja.floor_normal_y)
+                .sqrt();
+            if floor_scalar == 0.0 {
+                self.ninja.floor_normalized_x = 0.0;
+                self.ninja.floor_normalized_y = -1.0;
+            } else {
+                self.ninja.floor_normalized_x = self.ninja.floor_normal_x / floor_scalar;
+                self.ninja.floor_normalized_y = self.ninja.floor_normal_y / floor_scalar;
+            }
+            if self.ninja.state != 8 && self.ninja.airborn_old {
+                let impact_vel = -(self.ninja.floor_normalized_x * self.ninja.xspeed_old
+                    + self.ninja.floor_normalized_y * self.ninja.yspeed_old);
+                if impact_vel
+                    > crate::constants::MAX_SURVIVABLE_IMPACT
+                        - 4.0 / 3.0 * self.ninja.floor_normalized_y.abs()
+                {
+                    self.ninja.xspeed = self.ninja.xspeed_old;
+                    self.ninja.yspeed = self.ninja.yspeed_old;
+                    self.ninja.kill(
+                        1,
+                        self.ninja.xpos,
+                        self.ninja.ypos,
+                        self.ninja.xspeed * 0.5,
+                        self.ninja.yspeed * 0.5,
+                        Some("terminal_impact"),
+                    );
+                    self.ninja.terminal_impact = true;
+                }
+            }
+        }
+
+        // Temporal tracking
+        if self.ninja.airborn {
+            self.ninja.frames_airborne += 1;
+        } else {
+            self.ninja.frames_airborne = 0;
+        }
+        if !self.ninja.airborn {
+            self.ninja.consecutive_floor_frames += 1;
+        } else {
+            self.ninja.consecutive_floor_frames = 0;
+        }
+        if self.ninja.walled {
+            self.ninja.consecutive_wall_frames += 1;
+        } else {
+            self.ninja.consecutive_wall_frames = 0;
+        }
+
+        // Ceiling normal and impact check
+        if self.ninja.ceiling_count > 0 {
+            let ceiling_scalar = (self.ninja.ceiling_normal_x * self.ninja.ceiling_normal_x
+                + self.ninja.ceiling_normal_y * self.ninja.ceiling_normal_y)
+                .sqrt();
+            if ceiling_scalar == 0.0 {
+                self.ninja.ceiling_normalized_x = 0.0;
+                self.ninja.ceiling_normalized_y = 1.0;
+            } else {
+                self.ninja.ceiling_normalized_x = self.ninja.ceiling_normal_x / ceiling_scalar;
+                self.ninja.ceiling_normalized_y = self.ninja.ceiling_normal_y / ceiling_scalar;
+            }
+            if self.ninja.state != 8 {
+                let impact_vel = -(self.ninja.ceiling_normalized_x * self.ninja.xspeed_old
+                    + self.ninja.ceiling_normalized_y * self.ninja.yspeed_old);
+                if impact_vel
+                    > crate::constants::MAX_SURVIVABLE_IMPACT
+                        - 4.0 / 3.0 * self.ninja.ceiling_normalized_y.abs()
+                {
+                    self.ninja.xspeed = self.ninja.xspeed_old;
+                    self.ninja.yspeed = self.ninja.yspeed_old;
+                    self.ninja.kill(
+                        1,
+                        self.ninja.xpos,
+                        self.ninja.ypos,
+                        self.ninja.xspeed * 0.5,
+                        self.ninja.yspeed * 0.5,
+                        Some("terminal_impact"),
+                    );
+                    self.ninja.terminal_impact = true;
+                }
             }
         }
     }

@@ -59,6 +59,7 @@ class PrimitiveRewardCalculator:
         alpha: float = DEFAULT_SHAPING_ALPHA,
         r_switch: float = DEFAULT_R_SWITCH,
         r_exit: float = DEFAULT_R_EXIT,
+        r_death: float = 0.0,
         c_phase: float = DEFAULT_C_PHASE,
         global_reward_scale: float = GLOBAL_REWARD_SCALE,
     ):
@@ -69,11 +70,13 @@ class PrimitiveRewardCalculator:
             alpha: Shaping scale multiplier for F_t
             r_switch: Sparse reward for switch collection
             r_exit: Sparse reward for exit reached
+            r_death: Sparse penalty applied on the death frame (typically negative)
             c_phase: Phase potential bonus for switch-collected state
             global_reward_scale: Scale applied to all rewards for value stability
         """
         self.gamma = gamma
         self.alpha = alpha
+        self.r_death = r_death
         self.global_reward_scale = global_reward_scale
 
         # Reward machine for task phase tracking
@@ -149,6 +152,10 @@ class PrimitiveRewardCalculator:
 
         # Step reward machine and get sparse reward
         sparse_reward = self.reward_machine.step(events)
+
+        # Explicit death penalty (sparse, applied on the terminal death frame)
+        if player_dead:
+            sparse_reward += self.r_death
 
         # Determine terminal state
         is_terminal = player_dead or player_won or is_truncated

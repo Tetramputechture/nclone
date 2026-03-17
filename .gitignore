@@ -70,3 +70,5 @@ test-single-level/
 
 # Rust native build artifacts
 nclone-native/target/
+
+*.npz

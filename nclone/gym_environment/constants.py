@@ -78,6 +78,14 @@ MINIMAL_OBSERVATION_DIM = 30
 
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0
+
+# Index of the agent position features within the game_state vector.
+# Layout: velocity(2)+movement_state(4)+airborne(1)+buffers(3)+
+#         jump_duration_remaining(1)+contacts(3)+normals(3)+walled(1)+physics(3)
+#         = 21 features before position.
+# game_state[:, GAME_STATE_POSITION_START : GAME_STATE_POSITION_START + 2]
+# gives [pos_x, pos_y], both normalized to [0, 1] by LEVEL_WIDTH / LEVEL_HEIGHT.
+GAME_STATE_POSITION_START = 21
 LEVEL_DIAGONAL = np.sqrt(LEVEL_WIDTH**2 + LEVEL_HEIGHT**2)
 
 # Level context encoding constants

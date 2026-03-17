@@ -3,6 +3,17 @@
 For every graph node (surface_point, velocity_bin), simulates physically
 realisable transitions to discover which other nodes are reachable and at
 what frame cost.  Supports multiprocessing for parallelism.
+
+Mine-aware arc cost inflation
+------------------------------
+When mine positions are supplied, edge weights are inflated by a smooth
+inverse-square penalty based on the minimum clearance to any mine along the
+arc trajectory.  Arcs that literally enter the kill zone (clearance <= 0)
+are pruned as before; arcs that pass nearby receive a cost multiplier
+``1 + beta / clearance^2`` that decays to ~1 far from mines.  This replaces
+the old binary "discard or keep" approach with a continuous potential that
+steers Dijkstra — and the resulting Φ gradient — smoothly away from mine
+danger zones rather than hugging the pruning boundary.
 """
 
 from __future__ import annotations
@@ -16,6 +27,7 @@ import numpy as np
 
 from ..constants.physics_constants import (
     MAX_JUMP_DURATION, GROUND_STATES, AIR_STATES, WALL_STATES,
+    NINJA_RADIUS, TOGGLE_MINE_RADIUS_TOGGLED,
 )
 from .surface_extraction import SurfacePoint, SURFACE_FLOOR, SURFACE_WALL
 from .surface_graph import (
@@ -25,13 +37,21 @@ from .surface_graph import (
 
 logger = logging.getLogger(__name__)
 
+# Mine arc cost inflation constants
+_MINE_KILL_RADIUS = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED  # 14.0 px
+_MINE_INFLATION_BETA_DEFAULT = 50.0
+
 # Simulation parameter sweeps
 RUN_DURATIONS = [1, 2, 3, 5, 8, 12, 18, 24, 36, 48, 60]
 JUMP_HOLD_DURATIONS = [1, 3, 5, 8, 12, 16, 20, 25, 30, 35, 40, 45]
 H_INPUTS = [-1, 0, 1]
 POST_RELEASE_INPUTS = [-1, 0, 1]
 MAX_ARC_FRAMES = 500
-ARC_WAYPOINT_INTERVAL = 5
+# Collect a waypoint at every frame so the arc cache has dense (x,y,vx,vy) coverage.
+# With the 12-px position bin size and 0.5-px/frame velocity bin, frame-level sampling
+# gives ~10× more cache cells than the old every-5-frames sampling, reducing arc-cache
+# misses for airborne states the agent actually visits during training.
+ARC_WAYPOINT_INTERVAL = 1
 
 # Ninja state codes (0=Immobile, 1=Running, 2=GroundSlide, 3=Jumping, 4=Falling, 5=WallSlide, 6=Dead, 7=AwaitingDeath)
 _STATE_WALL_SLIDING = 5
@@ -47,7 +67,7 @@ class EdgeResult:
     """A discovered directed edge in the surface graph."""
     src_node: int
     dst_node: int
-    weight: int
+    weight: float  # frames (may include mine-proximity penalty)
 
 
 @dataclass
@@ -60,7 +80,49 @@ class ArcWaypoint:
     vy: float
     src_node: int
     dst_node: int
-    total_frames: int
+    total_frames: float  # frames including any mine-proximity penalty
+
+
+def _inflate_arc_cost(
+    w_base: float,
+    arc_wps: List[Tuple[int, float, float, float, float]],
+    mine_positions: np.ndarray,
+    beta: float,
+    kill_radius: float,
+) -> float:
+    """Inflate edge weight based on minimum clearance to any mine along the arc.
+
+    Replaces the old binary arc-rejection approach with continuous cost
+    inflation.  Arcs that enter the kill zone are still pruned (returns inf);
+    arcs that pass nearby receive a smooth inverse-square penalty that decays
+    naturally to zero far from mines.  This produces a Φ gradient that guides
+    the agent away from mines without sharp discontinuities at a pruning
+    boundary.
+
+    Args:
+        w_base: Original frame-count edge weight.
+        arc_wps: Waypoints as ``(frame, x, y, vx, vy)`` tuples.
+        mine_positions: Array of shape ``(N, 2)`` with mine centre coordinates.
+        beta: Inflation strength.  Higher values create stronger avoidance.
+            Recommended sweep: 10 (mild), 50 (strong), 200 (near-hard).
+        kill_radius: Lethal contact distance (NINJA_RADIUS + mine_radius).
+            Arcs with clearance <= 0 return inf and are pruned from the graph.
+
+    Returns:
+        Inflated weight ``w_base * (1 + beta / clearance^2)``, or ``inf`` if
+        the arc enters the kill zone.
+    """
+    if len(mine_positions) == 0 or not arc_wps:
+        return w_base
+    pts = np.array([(wx, wy) for (_, wx, wy, _, _) in arc_wps], dtype=np.float32)
+    # Broadcast: (W, 1, 2) − (1, N, 2) → (W, N, 2) → (W, N) distances
+    diffs = pts[:, None, :] - mine_positions[None, :, :]
+    dists = np.sqrt((diffs * diffs).sum(axis=-1))
+    clearance = float(dists.min()) - kill_radius
+    if clearance <= 0:
+        return float('inf')
+    penalty = beta / (clearance ** 2)
+    return w_base * (1.0 + penalty)
 
 
 def _simulate_arc(sim, h_input, jump_input, max_frames, collect_waypoints=True):
@@ -72,7 +134,7 @@ def _simulate_arc(sim, h_input, jump_input, max_frames, collect_waypoints=True):
     was_airborne = False
 
     for frame in range(1, max_frames + 1):
-        sim.tick_physics_only(h_input, jump_input)
+        sim.tick_tiles_only(h_input, jump_input)
         state_code = sim.get_ninja_state_code()
 
         if state_code in _DEATH_STATES:
@@ -107,7 +169,7 @@ def _simulate_jump_arc(sim, h_input_during, hold_duration, h_input_after,
     # Phase 1: jump hold
     for _ in range(hold_duration):
         total_frame += 1
-        sim.tick_physics_only(h_input_during, 1)  # jump held
+        sim.tick_tiles_only(h_input_during, 1)  # jump held
         state_code = sim.get_ninja_state_code()
 
         if state_code in _DEATH_STATES:
@@ -121,7 +183,7 @@ def _simulate_jump_arc(sim, h_input_during, hold_duration, h_input_after,
     # Phase 2: post-release fall
     for _ in range(max(0, MAX_ARC_FRAMES - total_frame)):
         total_frame += 1
-        sim.tick_physics_only(h_input_after, 0)  # jump released
+        sim.tick_tiles_only(h_input_after, 0)  # jump released
         state_code = sim.get_ninja_state_code()
 
         if state_code in _DEATH_STATES:
@@ -163,8 +225,33 @@ def _landing_to_node(graph, landing):
     return node_id(pt_idx, vel_bin, graph.max_vel_bins)
 
 
-def _enumerate_node_edges(sim, graph, pt_idx, vel_bin, collect_waypoints=True):
-    """Enumerate all edges from a single graph node."""
+def _enumerate_node_edges(
+    sim,
+    graph,
+    pt_idx: int,
+    vel_bin: int,
+    collect_waypoints: bool = True,
+    mine_positions: Optional[np.ndarray] = None,
+    mine_kill_radius: float = _MINE_KILL_RADIUS,
+    mine_inflation_beta: float = _MINE_INFLATION_BETA_DEFAULT,
+):
+    """Enumerate all edges from a single graph node.
+
+    Args:
+        sim: Native simulator instance.
+        graph: Surface graph.
+        pt_idx: Surface point index.
+        vel_bin: Velocity bin index.
+        collect_waypoints: Whether to collect arc waypoints for the arc cache.
+        mine_positions: Array of shape ``(N, 2)`` with mine centre coordinates,
+            or ``None`` / empty array when there are no mines.  Arcs whose
+            waypoints enter the kill zone are pruned; arcs that pass nearby
+            receive an inflated weight via ``_inflate_arc_cost()``.
+        mine_kill_radius: Lethal contact distance in pixels.  Default 14 px =
+            ``NINJA_RADIUS(10) + TOGGLE_MINE_RADIUS_TOGGLED(4)``.
+        mine_inflation_beta: Inflation strength β for the inverse-square
+            proximity penalty.  Default 50.0.
+    """
     sp = graph.surface_points[pt_idx]
     src = node_id(pt_idx, vel_bin, graph.max_vel_bins)
     centers = velocity_bin_centers(sp.surface_type)
@@ -181,6 +268,8 @@ def _enumerate_node_edges(sim, graph, pt_idx, vel_bin, collect_waypoints=True):
         vx0 = 0.0
         vy0 = vel
 
+    _mine_positions = mine_positions if (mine_positions is not None and len(mine_positions) > 0) else None
+
     edges: List[EdgeResult] = []
     waypoints: List[ArcWaypoint] = []
 
@@ -191,12 +280,20 @@ def _enumerate_node_edges(sim, graph, pt_idx, vel_bin, collect_waypoints=True):
         dst = _landing_to_node(graph, landing)
         if dst is None or dst == src:
             return
-        edges.append(EdgeResult(src, dst, frames))
+        effective_weight = float(frames)
+        if _mine_positions is not None:
+            effective_weight = _inflate_arc_cost(
+                effective_weight, arc_wps, _mine_positions,
+                mine_inflation_beta, mine_kill_radius,
+            )
+            if not np.isfinite(effective_weight):
+                return  # Lethal arc — prune from graph
+        edges.append(EdgeResult(src, dst, effective_weight))
         if collect_waypoints:
             for (f, wx, wy, wvx, wvy) in arc_wps:
                 waypoints.append(ArcWaypoint(
                     frame_offset=f, x=wx, y=wy, vx=wvx, vy=wvy,
-                    src_node=src, dst_node=dst, total_frames=frames,
+                    src_node=src, dst_node=dst, total_frames=effective_weight,
                 ))
 
     snapshot = sim.save_ninja_state()
@@ -220,7 +317,7 @@ def _enumerate_node_edges(sim, graph, pt_idx, vel_bin, collect_waypoints=True):
                     sim.inject_ninja_for_value_iteration(
                         sp.x, sp.y, vx0, vy0, 0)
                     # First frame: initiate jump
-                    sim.tick_physics_only(h_during, 1)
+                    sim.tick_tiles_only(h_during, 1)
                     sc = sim.get_ninja_state_code()
                     if sc in _DEATH_STATES:
                         continue
@@ -253,7 +350,7 @@ def _enumerate_node_edges(sim, graph, pt_idx, vel_bin, collect_waypoints=True):
                     sim.inject_ninja_for_value_iteration(
                         sp.x, sp.y, vx0, vy0, 0)
                     # Initiate wall jump
-                    sim.tick_physics_only(h_input, 1)
+                    sim.tick_tiles_only(h_input, 1)
                     sc = sim.get_ninja_state_code()
                     if sc in _DEATH_STATES:
                         continue
@@ -300,12 +397,14 @@ def _worker_enumerate(args):
 
     Args:
         args: (map_data, surface_points_data, graph_params, node_indices,
-               collect_waypoints)
+               collect_waypoints, mine_positions, mine_kill_radius,
+               mine_inflation_beta)
 
     Returns:
         (edges_list, waypoints_list)
     """
-    (map_data, sp_data, graph_params, node_indices, collect_waypoints) = args
+    (map_data, sp_data, graph_params, node_indices, collect_waypoints,
+     mine_positions, mine_kill_radius, mine_inflation_beta) = args
 
     # Reconstruct graph in worker process
     from nclone_native import Simulator as NativeSimulator
@@ -319,7 +418,11 @@ def _worker_enumerate(args):
 
     for pt_idx, vel_bin in node_indices:
         edges, waypoints = _enumerate_node_edges(
-            sim, graph, pt_idx, vel_bin, collect_waypoints)
+            sim, graph, pt_idx, vel_bin, collect_waypoints,
+            mine_positions=mine_positions,
+            mine_kill_radius=mine_kill_radius,
+            mine_inflation_beta=mine_inflation_beta,
+        )
         all_edges.extend(edges)
         all_waypoints.extend(waypoints)
 
@@ -374,6 +477,9 @@ def enumerate_edges(
     num_workers: int = 4,
     collect_waypoints: bool = True,
     verbose: bool = False,
+    mine_positions: Optional[np.ndarray] = None,
+    mine_kill_radius: float = _MINE_KILL_RADIUS,
+    mine_inflation_beta: float = _MINE_INFLATION_BETA_DEFAULT,
 ) -> Tuple[List[EdgeResult], List[ArcWaypoint]]:
     """Enumerate all edges in the surface graph via physics simulation.
 
@@ -387,10 +493,24 @@ def enumerate_edges(
         num_workers: Number of parallel worker processes.
         collect_waypoints: Whether to collect arc waypoints for cache.
         verbose: Print progress info.
+        mine_positions: Array of shape ``(N, 2)`` with mine centre (x, y)
+            coordinates for mine-aware arc cost inflation.  Pass ``None`` or
+            an empty array when there are no mines.  Arcs that enter the kill
+            zone are pruned; arcs that pass nearby receive an inflated weight.
+        mine_kill_radius: Lethal contact distance in pixels.  Default 14 px =
+            ``NINJA_RADIUS(10) + TOGGLE_MINE_RADIUS_TOGGLED(4)``.
+        mine_inflation_beta: Inflation strength β for the inverse-square
+            proximity penalty (default 50.0).  Sweep [10, 50, 200] to tune.
 
     Returns:
         (all_edges, all_waypoints) after pruning dominated edges.
     """
+    # Normalise mine_positions to a consistent array (may be empty)
+    if mine_positions is None or len(mine_positions) == 0:
+        _mine_pos: Optional[np.ndarray] = None
+    else:
+        _mine_pos = np.asarray(mine_positions, dtype=np.float32)
+
     # Build list of all (pt_idx, vel_bin) pairs to enumerate
     node_indices: List[Tuple[int, int]] = []
     for pt_idx, sp in enumerate(graph.surface_points):
@@ -414,7 +534,11 @@ def enumerate_edges(
         all_waypoints: List[ArcWaypoint] = []
         for i, (pt_idx, vel_bin) in enumerate(node_indices):
             e, w = _enumerate_node_edges(
-                sim, graph, pt_idx, vel_bin, collect_waypoints)
+                sim, graph, pt_idx, vel_bin, collect_waypoints,
+                mine_positions=_mine_pos,
+                mine_kill_radius=mine_kill_radius,
+                mine_inflation_beta=mine_inflation_beta,
+            )
             all_edges.extend(e)
             all_waypoints.extend(w)
             if verbose and (i + 1) % 1000 == 0:
@@ -428,7 +552,8 @@ def enumerate_edges(
             for i in range(0, total_nodes, chunk_size)
         ]
         worker_args = [
-            (map_data, sp_data, graph_params, chunk, collect_waypoints)
+            (map_data, sp_data, graph_params, chunk, collect_waypoints,
+             _mine_pos, mine_kill_radius, mine_inflation_beta)
             for chunk in chunks
         ]
 

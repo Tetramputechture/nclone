@@ -36,9 +36,18 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["heatmap", "edges", "dashboard", "neural"],
+        choices=["heatmap", "edges", "dashboard", "neural",
+                 "arc_heatmap", "combined", "mine_masking"],
         default="heatmap",
-        help="Visualization mode (default: heatmap)",
+        help=(
+            "Visualization mode (default: heatmap). "
+            "arc_heatmap: two-panel arc cache min-cost + coverage density. "
+            "combined: single panel showing both surface d* and arc cache potential "
+            "on the same normalised scale. "
+            "mine_masking: overlay mine kill-radius circles and highlight "
+            "blocked nodes/edges so you can verify that mine-proximity masking "
+            "correctly removes dangerous routes."
+        ),
     )
     # Surface-graph options
     parser.add_argument("--data", default=None, help="Path to *_surface_pbrs.npz")
@@ -88,6 +97,12 @@ def _run_surface(args: argparse.Namespace) -> int:
         viz.visualize_edges(max_edges=args.max_edges, output_path=args.output)
     elif args.mode == "dashboard":
         viz.visualize_dashboard(output_path=args.output)
+    elif args.mode == "arc_heatmap":
+        viz.visualize_arc_heatmap(phase=args.phase, output_path=args.output)
+    elif args.mode == "combined":
+        viz.visualize_combined_potential(phase=args.phase, output_path=args.output)
+    elif args.mode == "mine_masking":
+        viz.visualize_mine_masking(phase=args.phase, output_path=args.output)
     return 0
 
 

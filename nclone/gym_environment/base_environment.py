@@ -327,9 +327,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         from .reward_calculation.primitive_reward_calculator import (
             PrimitiveRewardCalculator,
         )
+        from .reward_calculation.reward_constants import R_SWITCH, R_EXIT, R_DEATH
 
         self.primitive_reward_calculator = PrimitiveRewardCalculator(
             gamma=pbrs_gamma,
+            alpha=2.0,          # PBRS total ≈ 3.0 across full episode (matches HWM_ALPHA spec)
+            r_switch=R_SWITCH,  # 1.0
+            r_exit=R_EXIT,      # 5.0
+            r_death=R_DEATH,    # -0.5
         )
 
         # Initialize truncation checker

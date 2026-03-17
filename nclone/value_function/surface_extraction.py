@@ -13,7 +13,9 @@ import math
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 
-from ..constants.physics_constants import NINJA_RADIUS
+import numpy as np
+
+from ..constants.physics_constants import NINJA_RADIUS, TOGGLE_MINE_RADIUS_TOGGLED
 from ..entities import GridSegmentLinear
 from ..utils.tile_segment_factory import TileSegmentFactory
 
@@ -41,6 +43,14 @@ _WALL_NORMAL_Y_MAX = 0.05
 SAMPLE_RESOLUTION = 6.0
 EDGE_SAMPLE_RESOLUTION = 3.0
 EDGE_PROXIMITY = 12.0
+
+# ---------------------------------------------------------------------------
+# Mine exclusion zone radii (pixels)
+# ---------------------------------------------------------------------------
+# Radius used to split surface segments at mine locations. Conservative (4 px
+# buffer beyond kill radius) so the agent has room to initiate a jump before
+# reaching the lethal zone.
+MINE_SURFACE_EXCLUSION_RADIUS = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED + 4.0  # 18 px
 
 # ---------------------------------------------------------------------------
 # Merging / deduplication tolerances (pixels)
@@ -376,22 +386,268 @@ def _deduplicate_points(points: List[SurfacePoint]) -> List[SurfacePoint]:
 
 
 # ---------------------------------------------------------------------------
+# Mine exclusion zone splitting
+# ---------------------------------------------------------------------------
+def _find_segment_exclusion_params(
+    seg: _ClassifiedSegment,
+    mine_x: float,
+    mine_y: float,
+    excl_radius: float,
+) -> Optional[Tuple[float, float]]:
+    """Find where a segment's ninja-center trajectory enters a mine exclusion zone.
+
+    Solves the line-circle intersection between the ninja center path along the
+    segment and a circle of radius ``excl_radius`` centred on the mine.  The
+    ninja center is offset from the tile contact line by NINJA_RADIUS along the
+    surface normal.
+
+    Args:
+        seg: Classified tile segment.
+        mine_x, mine_y: Mine centre coordinates.
+        excl_radius: Exclusion zone radius.
+
+    Returns:
+        ``(t_enter, t_exit)`` parameter values in ``[0, 1]`` along the segment,
+        or ``None`` if the circle does not intersect the segment.
+    """
+    # Ninja center at t=0 and t=1
+    nx0 = seg.x1 + seg.normal_x * NINJA_RADIUS
+    ny0 = seg.y1 + seg.normal_y * NINJA_RADIUS
+    nx1 = seg.x2 + seg.normal_x * NINJA_RADIUS
+    ny1 = seg.y2 + seg.normal_y * NINJA_RADIUS
+
+    # Parametric direction
+    dx = nx1 - nx0
+    dy = ny1 - ny0
+
+    # Quadratic: |P(t) - mine|² = excl_radius²
+    #   a·t² + b·t + c = 0
+    fx = nx0 - mine_x
+    fy = ny0 - mine_y
+    a = dx * dx + dy * dy
+    if a < 1e-12:
+        return None  # Degenerate (zero-length) segment
+
+    b = 2.0 * (fx * dx + fy * dy)
+    c = fx * fx + fy * fy - excl_radius * excl_radius
+
+    discriminant = b * b - 4.0 * a * c
+    if discriminant <= 0.0:
+        return None  # No real intersection
+
+    sqrt_d = math.sqrt(discriminant)
+    t_enter = max(0.0, (-b - sqrt_d) / (2.0 * a))
+    t_exit = min(1.0, (-b + sqrt_d) / (2.0 * a))
+
+    if t_enter >= t_exit:
+        return None  # Intersection entirely outside segment range
+
+    return (t_enter, t_exit)
+
+
+def _split_one_segment(
+    seg: _ClassifiedSegment,
+    mine_positions: List[Tuple[float, float]],
+    excl_radius: float,
+) -> List[_ClassifiedSegment]:
+    """Split a single segment at all mine exclusion zones.
+
+    Collects all ``[t_enter, t_exit]`` intervals where the ninja center
+    trajectory enters an exclusion zone, merges overlapping intervals, then
+    returns the surviving pieces of the segment as new ``_ClassifiedSegment``
+    objects.  Pieces shorter than ``_MIN_SEGMENT_LENGTH`` are dropped.
+
+    Args:
+        seg: The segment to split.
+        mine_positions: List of ``(mine_x, mine_y)`` tuples.
+        excl_radius: Exclusion zone radius.
+
+    Returns:
+        List of surviving segment pieces (may be empty if the entire segment
+        is inside one or more exclusion zones).
+    """
+    # Collect and sort exclusion intervals along the segment's t-axis
+    intervals: List[Tuple[float, float]] = []
+    for mx, my in mine_positions:
+        result = _find_segment_exclusion_params(seg, mx, my, excl_radius)
+        if result is not None:
+            intervals.append(result)
+
+    if not intervals:
+        return [seg]
+
+    # Merge overlapping intervals
+    intervals.sort(key=lambda iv: iv[0])
+    merged: List[Tuple[float, float]] = [intervals[0]]
+    for t_in, t_out in intervals[1:]:
+        if t_in <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], t_out))
+        else:
+            merged.append((t_in, t_out))
+
+    # Build surviving t-ranges: gaps between exclusion intervals
+    surviving: List[Tuple[float, float]] = []
+    prev_end = 0.0
+    for t_in, t_out in merged:
+        if t_in > prev_end:
+            surviving.append((prev_end, t_in))
+        prev_end = t_out
+    if prev_end < 1.0:
+        surviving.append((prev_end, 1.0))
+
+    # Convert t-ranges back to _ClassifiedSegment objects
+    full_dx = seg.x2 - seg.x1
+    full_dy = seg.y2 - seg.y1
+    pieces: List[_ClassifiedSegment] = []
+    for t_start, t_end in surviving:
+        px1 = seg.x1 + t_start * full_dx
+        py1 = seg.y1 + t_start * full_dy
+        px2 = seg.x1 + t_end * full_dx
+        py2 = seg.y1 + t_end * full_dy
+        length = math.sqrt((px2 - px1) ** 2 + (py2 - py1) ** 2)
+        if length < _MIN_SEGMENT_LENGTH:
+            continue
+        pieces.append(_ClassifiedSegment(
+            x1=px1, y1=py1, x2=px2, y2=py2,
+            normal_x=seg.normal_x, normal_y=seg.normal_y,
+            surface_type=seg.surface_type,
+            length=length,
+        ))
+    return pieces
+
+
+def _split_segments_at_mines(
+    segments: List[_ClassifiedSegment],
+    mine_positions: List[Tuple[float, float]],
+    excl_radius: float,
+) -> List[_ClassifiedSegment]:
+    """Apply mine exclusion splitting to all segments.
+
+    Args:
+        segments: All classified segments.
+        mine_positions: List of ``(mine_x, mine_y)`` tuples.
+        excl_radius: Exclusion zone radius.
+
+    Returns:
+        Expanded list of segments with mine danger zones removed.
+    """
+    result: List[_ClassifiedSegment] = []
+    for seg in segments:
+        result.extend(_split_one_segment(seg, mine_positions, excl_radius))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Mine boundary node precomputation
+# ---------------------------------------------------------------------------
+def compute_mine_boundary_nodes(
+    surface_points: List[SurfacePoint],
+    mine_positions_list: List[Tuple[float, float]],
+    excl_radius: float = MINE_SURFACE_EXCLUSION_RADIUS,
+) -> np.ndarray:
+    """For each mine, find the closest is_edge=True surface nodes on each side.
+
+    After segment splitting, the mine exclusion boundary produces open platform
+    endpoints that are densely sampled with ``is_edge=True`` nodes.  This
+    function locates the two closest such nodes on opposite sides of each mine
+    (left/right for floor mines; top/bottom for wall mines).  At runtime these
+    boundary node positions are used to pin the PBRS nearest-node lookup when
+    the agent is inside an exclusion zone, preventing spurious rewards from
+    snapping to the post-mine boundary node.
+
+    Args:
+        surface_points: All sampled surface points (ninja-center positions).
+        mine_positions_list: List of (mine_x, mine_y) tuples — must cover
+            only the mines for which boundary pinning should be active (e.g.
+            always-deadly mines only).
+        excl_radius: Mine surface exclusion radius (default
+            ``MINE_SURFACE_EXCLUSION_RADIUS``).
+
+    Returns:
+        int32 array of shape ``(num_mines, 2)``.  For each mine:
+          - ``[i, 0]``: index of the closest ``is_edge=True`` boundary node on
+            the negative-axis side (x < mine_x for floor; y < mine_y for wall).
+          - ``[i, 1]``: index on the positive-axis side.
+          - ``-1`` if no candidate found on that side.
+    """
+    num_mines = len(mine_positions_list)
+    if num_mines == 0 or not surface_points:
+        return np.empty((0, 2), dtype=np.int32)
+
+    # Boundary nodes are at ~excl_radius from the mine center (ninja-center
+    # coordinates).  Dense edge samples extend EDGE_PROXIMITY inward from the
+    # boundary endpoint, so the furthest reachable is_edge node is at
+    # excl_radius + EDGE_PROXIMITY from the mine.  A search radius of
+    # excl_radius + EDGE_PROXIMITY catches all candidates reliably.
+    search_radius_sq = (excl_radius + EDGE_PROXIMITY) ** 2
+
+    result = np.full((num_mines, 2), -1, dtype=np.int32)
+
+    for mine_idx, (mx, my) in enumerate(mine_positions_list):
+        # Collect all is_edge=True nodes within the search radius, recording
+        # their squared distance and surface type for axis selection.
+        nearby: List[Tuple[float, int, int]] = []  # (dist_sq, node_idx, surface_type)
+        for i, sp in enumerate(surface_points):
+            if not sp.is_edge:
+                continue
+            dx = sp.x - mx
+            dy = sp.y - my
+            d2 = dx * dx + dy * dy
+            if d2 <= search_radius_sq:
+                nearby.append((d2, i, sp.surface_type))
+
+        if not nearby:
+            continue
+
+        # Choose split axis: use y (top/bottom) when wall nodes dominate,
+        # otherwise use x (left/right) for floor mines.
+        n_wall = sum(1 for _, _, st in nearby if st == SURFACE_WALL)
+        use_y_split = n_wall > len(nearby) / 2
+
+        neg_best_d2 = float("inf")
+        pos_best_d2 = float("inf")
+
+        for d2, node_idx, _ in nearby:
+            sp = surface_points[node_idx]
+            coord = sp.y if use_y_split else sp.x
+            mine_coord = my if use_y_split else mx
+            if coord < mine_coord:
+                if d2 < neg_best_d2:
+                    neg_best_d2 = d2
+                    result[mine_idx, 0] = node_idx
+            else:
+                if d2 < pos_best_d2:
+                    pos_best_d2 = d2
+                    result[mine_idx, 1] = node_idx
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def extract_surfaces(
     tile_dict: Dict[Tuple[int, int], int],
+    mine_positions: Optional[List[Tuple[float, float]]] = None,
 ) -> List[SurfacePoint]:
     """Extract walkable surface points from level tile data.
 
     Pipeline:
       1. Build collision segments from tile geometry via TileSegmentFactory.
       2. Classify each linear segment as floor, wall, or neither (discarded).
+      2b. Split segments at mine exclusion zones (virtual gap approach) so that
+          no SurfacePoints are placed inside mine danger areas.  The split
+          endpoints become open platform edges and receive 3 px dense sampling.
       3. Merge connected same-type segments into continuous surface runs.
       4. Sample SurfacePoint positions at 6 px intervals (3 px near edges).
       5. Deduplicate nearby points.
 
     Args:
         tile_dict: ``{(col, row): tile_type}`` from ``simulator.get_tile_dict()``.
+        mine_positions: Optional list of ``(mine_x, mine_y)`` tuples.  When
+            supplied, surface segments are split at each mine's exclusion zone
+            (radius ``MINE_SURFACE_EXCLUSION_RADIUS``) so that no graph nodes
+            are placed in the traversability-blocked region around the mine.
 
     Returns:
         List of SurfacePoint instances with ninja-center positions on walkable
@@ -407,6 +663,15 @@ def extract_surfaces(
             cls_seg = _classify_linear_segment(seg)
             if cls_seg is not None:
                 classified.append(cls_seg)
+
+    # 2b. Split segments at mine exclusion zones (virtual gap approach).
+    # Each mine creates a gap in the surface — the split endpoints become
+    # open platform edges and automatically receive 3 px dense sampling in
+    # step 4, giving the agent fine-resolution nodes for jump initiation.
+    if mine_positions:
+        classified = _split_segments_at_mines(
+            classified, mine_positions, MINE_SURFACE_EXCLUSION_RADIUS
+        )
 
     # 3. Merge into surface runs
     runs = _merge_segments(classified)

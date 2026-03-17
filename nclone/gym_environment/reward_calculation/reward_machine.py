@@ -27,9 +27,9 @@ RM_STATE_START = 0          # Seeking switch
 RM_STATE_SWITCH_COLLECTED = 1  # Switch collected, seeking exit
 RM_STATE_EXIT_REACHED = 2     # Terminal success
 
-# Default sparse rewards for transitions
-DEFAULT_R_SWITCH = 100.0   # Reward for collecting switch
-DEFAULT_R_EXIT = 200.0     # Reward for reaching exit
+# Default sparse rewards for transitions — match R_SWITCH / R_EXIT from reward_constants
+DEFAULT_R_SWITCH = 1.0     # Reward for collecting switch
+DEFAULT_R_EXIT = 5.0       # Reward for reaching exit
 
 # Phase bonus for PBRS: Phi_phase(u=1) = C_PHASE
 # This bonus rewards having collected the switch, providing

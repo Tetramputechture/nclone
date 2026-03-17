@@ -13,12 +13,15 @@ Bin sizes (from spec):
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from .edge_enumeration import ArcWaypoint
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Bin configuration
@@ -95,6 +98,90 @@ class ArcCache:
             existing = self._data.get(key)
             if existing is None or cost < existing:
                 self._data[key] = cost
+
+    # ---- expert demo ingestion -------------------------------------------
+    def ingest_demonstration(
+        self,
+        frames: List[Tuple[float, float, float, float, int]],
+        d_star: np.ndarray,
+        graph,
+    ) -> int:
+        """Ingest airborne states from an expert demonstration into the cache.
+
+        Traces the demo through all airborne segments.  For each contiguous
+        run of airborne frames (state_code in {3, 4}), the first subsequent
+        surface frame is the landing.  The landing is mapped to the nearest
+        graph node and d*[landing_node] gives the cost to go from there.
+
+        For each airborne frame at offset ``k`` from the start of the arc:
+            cost = (arc_length - k) + d_star[landing_node]
+
+        Inserts into the spatial hash, keeping the minimum per cell.
+
+        Args:
+            frames: Per-frame states as [(x, y, vx, vy, state_code), ...].
+                    state_code 3 = jumping, 4 = falling, 0/1/2 = surface,
+                    5 = wall-sliding, 6/7 = dead.
+            d_star: Cost-to-go array (float32, length graph.n_nodes).
+            graph: SurfaceGraph — used to map landing positions to node ids.
+
+        Returns:
+            Number of new cells populated (including cells where a lower cost
+            replaced a previously cached value).
+        """
+        from .edge_enumeration import _landing_to_node, _AIRBORNE_STATES, _SURFACE_STATES
+
+        n_inserted = 0
+        n = len(frames)
+        i = 0
+
+        while i < n:
+            x, y, vx, vy, sc = frames[i]
+            if sc not in _AIRBORNE_STATES:
+                i += 1
+                continue
+
+            # Found start of an airborne segment — scan forward for landing
+            arc_start = i
+            landing_node = None
+            arc_end = i  # exclusive
+
+            for j in range(i, n):
+                xj, yj, vxj, vyj, scj = frames[j]
+                if scj not in _AIRBORNE_STATES:
+                    # This frame is the landing
+                    landing = (xj, yj, vxj, vyj, scj)
+                    landing_node = _landing_to_node(graph, landing)
+                    arc_end = j
+                    break
+                arc_end = j + 1  # still airborne — extend arc
+
+            if landing_node is None or landing_node >= len(d_star):
+                # No landing found (died / end of demo) — skip segment
+                i = arc_end
+                continue
+
+            d_landing = float(d_star[landing_node])
+            if not np.isfinite(d_landing):
+                i = arc_end
+                continue
+
+            arc_length = arc_end - arc_start  # frames until landing
+
+            # Insert each airborne frame of this arc
+            for k, idx in enumerate(range(arc_start, arc_end)):
+                xi, yi, vxi, vyi, _ = frames[idx]
+                frames_to_land = arc_length - k
+                cost = frames_to_land + d_landing
+                key = _bin_key(xi, yi, vxi, vyi)
+                existing = self._data.get(key)
+                if existing is None or cost < existing:
+                    self._data[key] = cost
+                    n_inserted += 1
+
+            i = arc_end
+
+        return n_inserted
 
     # ---- lookup ----------------------------------------------------------
     def lookup(

@@ -398,6 +398,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         info["airborne"] = self.nplay_headless.sim.ninja.airborn
         info["ninja_state"] = self.nplay_headless.sim.ninja.state
 
+        # Mine approach distance for FiGAR macro-action safety interrupts
+        info["nearest_approaching_deadly_mine_distance"] = (
+            self._compute_nearest_approaching_deadly_mine_distance()
+        )
+
         # Graph size info for level-size-aware optimizations
         # Used by Go-Explore to scale checkpoint thresholds for larger levels
         if hasattr(self, "current_graph") and self.current_graph is not None:
@@ -1464,6 +1469,38 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             mine_sdf_features[2] = grad_y
 
         return mine_sdf_features
+
+    def _compute_nearest_approaching_deadly_mine_distance(self) -> float:
+        """Distance in pixels to the nearest deadly mine the ninja is approaching.
+
+        Uses dot(velocity, mine_direction) > 0 as the approach filter — identical
+        to the velocity_dot_direction feature in spatial_context.py. Only mines in
+        STATE_TOGGLED (state == 0) are considered deadly.
+
+        Returns:
+            Euclidean distance to the nearest approaching deadly mine, or
+            float('inf') if no deadly mine is currently being approached.
+        """
+        ninja = self.nplay_headless.sim.ninja
+        ninja_x, ninja_y = ninja.xpos, ninja.ypos
+        vx, vy = self.nplay_headless.ninja_velocity()
+        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
+
+        min_dist = float("inf")
+        for mine in (*toggle_mines, *toggled_mines):
+            if getattr(mine, "state", 1) != 0:  # STATE_TOGGLED = 0, deadly
+                continue
+            dx = mine.xpos - ninja_x
+            dy = mine.ypos - ninja_y
+            dist_sq = dx * dx + dy * dy
+            if dist_sq < 1e-12:
+                continue
+            # Positive dot product means velocity has a component toward the mine
+            if (vx * dx + vy * dy) > 0:
+                dist = dist_sq**0.5
+                if dist < min_dist:
+                    min_dist = dist
+        return min_dist
 
     def _get_adjacency_for_rewards(self) -> Optional[Dict]:
         """Get adjacency graph for reward calculation.
