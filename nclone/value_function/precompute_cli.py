@@ -112,6 +112,7 @@ def _save_surface_pbrs(
     mine_types: np.ndarray,
     mine_initial_states: np.ndarray,
     mine_boundary_nodes: np.ndarray,
+    mine_inflation_beta: float = 200.0,
 ) -> None:
     """Save all precomputed data to a single .npz file."""
     sp = graph.surface_points
@@ -136,6 +137,8 @@ def _save_surface_pbrs(
         # Raw maximum kept for audit; typically >>d_max due to mine inflation.
         "d_max_switch_raw": d_max_switch_raw,
         "d_max_exit_raw": d_max_exit_raw,
+        # Mine proximity inflation strength used at precompute time (for auditing).
+        "mine_inflation_beta": mine_inflation_beta,
     }
 
     np.savez_compressed(
@@ -187,7 +190,7 @@ def precompute_surface_pbrs(
     num_workers: int = 4,
     verbose: bool = False,
     demo_dir: str | None = None,
-    mine_inflation_beta: float = 50.0,
+    mine_inflation_beta: float = 200.0,
 ) -> str:
     """Run the full surface-graph PBRS precomputation pipeline.
 
@@ -200,7 +203,7 @@ def precompute_surface_pbrs(
             for this level.  If provided, airborne states from the demos are
             ingested into the arc caches after the edge-enumeration build,
             extending coverage to trajectories not captured by graph arcs.
-        mine_inflation_beta: Mine proximity inflation strength β (default 50.0).
+        mine_inflation_beta: Mine proximity inflation strength β (default 200.0).
             Higher values produce stronger avoidance of mine danger zones.
             Recommended sweep: 10 (mild), 50 (strong), 200 (near-hard).
 
@@ -263,8 +266,12 @@ def precompute_surface_pbrs(
         mine_types_arr = np.empty(0, dtype=np.uint8)
         mine_initial_states_arr = np.empty(0, dtype=np.uint8)
 
-    n_deadly = int(np.sum(mine_initial_states_arr == 0)) if len(mine_initial_states_arr) else 0
-    n_safe = int(np.sum(mine_initial_states_arr == 1)) if len(mine_initial_states_arr) else 0
+    n_deadly = (
+        int(np.sum(mine_initial_states_arr == 0)) if len(mine_initial_states_arr) else 0
+    )
+    n_safe = (
+        int(np.sum(mine_initial_states_arr == 1)) if len(mine_initial_states_arr) else 0
+    )
     print(f"  Toggle mines (initially deadly, state=0): {n_deadly}")
     print(f"  Toggle mines (initially safe,   state=1): {n_safe}")
 
@@ -281,9 +288,12 @@ def precompute_surface_pbrs(
 
     if len(mine_positions_list) > 0:
         from nclone.value_function.edge_enumeration import _MINE_KILL_RADIUS
-        print(f"  Mine handling: continuous cost inflation "
-              f"(beta={mine_inflation_beta:.1f}, kill_radius={_MINE_KILL_RADIUS:.1f} px, "
-              f"surface exclusion radius={MINE_SURFACE_EXCLUSION_RADIUS:.1f} px)")
+
+        print(
+            f"  Mine handling: continuous cost inflation "
+            f"(beta={mine_inflation_beta:.1f}, kill_radius={_MINE_KILL_RADIUS:.1f} px, "
+            f"surface exclusion radius={MINE_SURFACE_EXCLUSION_RADIUS:.1f} px)"
+        )
     else:
         print("  Mine handling: no mines in level")
     print(f"  Elapsed: {_format_time(time.time() - start_time)}")
@@ -314,8 +324,10 @@ def precompute_surface_pbrs(
         surface_points, always_deadly_positions
     )
     n_pinned = int(np.sum(mine_boundary_nodes >= 0))
-    print(f"  Mine boundary nodes: {mine_boundary_nodes.shape[0]} mines, "
-          f"{n_pinned} boundary node slots populated")
+    print(
+        f"  Mine boundary nodes: {mine_boundary_nodes.shape[0]} mines, "
+        f"{n_pinned} boundary node slots populated"
+    )
 
     # ------------------------------------------------------------------
     # Step 3: Build graph nodes
@@ -359,19 +371,23 @@ def precompute_surface_pbrs(
     d_max_sw_raw = _safe_max(d_star_switch)
     d_max_sw = _robust_d_max(d_star_switch)
     n_reachable_sw = int(np.sum(np.isfinite(d_star_switch)))
-    print(f"  Switch: d_max(p99)={d_max_sw:.1f} frames, "
-          f"d_max(raw)={d_max_sw_raw:.1f} frames, "
-          f"inflation={d_max_sw_raw / max(d_max_sw, 1):.1f}x, "
-          f"reachable={n_reachable_sw:,}/{graph.n_nodes:,}")
+    print(
+        f"  Switch: d_max(p99)={d_max_sw:.1f} frames, "
+        f"d_max(raw)={d_max_sw_raw:.1f} frames, "
+        f"inflation={d_max_sw_raw / max(d_max_sw, 1):.1f}x, "
+        f"reachable={n_reachable_sw:,}/{graph.n_nodes:,}"
+    )
 
     d_star_exit = compute_cost_to_go(graph, exit_pos[0], exit_pos[1], "exit")
     d_max_ex_raw = _safe_max(d_star_exit)
     d_max_ex = _robust_d_max(d_star_exit)
     n_reachable_ex = int(np.sum(np.isfinite(d_star_exit)))
-    print(f"  Exit:   d_max(p99)={d_max_ex:.1f} frames, "
-          f"d_max(raw)={d_max_ex_raw:.1f} frames, "
-          f"inflation={d_max_ex_raw / max(d_max_ex, 1):.1f}x, "
-          f"reachable={n_reachable_ex:,}/{graph.n_nodes:,}")
+    print(
+        f"  Exit:   d_max(p99)={d_max_ex:.1f} frames, "
+        f"d_max(raw)={d_max_ex_raw:.1f} frames, "
+        f"inflation={d_max_ex_raw / max(d_max_ex, 1):.1f}x, "
+        f"reachable={n_reachable_ex:,}/{graph.n_nodes:,}"
+    )
     print(f"  Dijkstra time: {_format_time(time.time() - t0)}")
 
     # ------------------------------------------------------------------
@@ -430,14 +446,18 @@ def precompute_surface_pbrs(
     os.makedirs(output_dir, exist_ok=True)
     t0 = time.time()
     _save_surface_pbrs(
-        output_path, graph,
-        d_star_switch, d_star_exit,
-        arc_cache_switch, arc_cache_exit,
+        output_path,
+        graph,
+        d_star_switch,
+        d_star_exit,
+        arc_cache_switch,
+        arc_cache_exit,
         mine_xs=mine_xs,
         mine_ys=mine_ys,
         mine_types=mine_types_arr,
         mine_initial_states=mine_initial_states_arr,
         mine_boundary_nodes=mine_boundary_nodes,
+        mine_inflation_beta=mine_inflation_beta,
     )
     file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f"  Saved to: {output_path}")
@@ -469,19 +489,24 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--map-path", required=True,
+        "--map-path",
+        required=True,
         help="Path to .map file",
     )
     parser.add_argument(
-        "--output-dir", default="value_functions",
+        "--output-dir",
+        default="value_functions",
         help="Output directory (default: value_functions/)",
     )
     parser.add_argument(
-        "--num-workers", type=int, default=4,
+        "--num-workers",
+        type=int,
+        default=4,
         help="Worker processes for edge enumeration (default: 4)",
     )
     parser.add_argument(
-        "--demo-dir", default=None,
+        "--demo-dir",
+        default=None,
         help=(
             "Optional directory containing .replay expert demo files for this "
             "level.  Airborne states from the demos are ingested into the arc "
@@ -489,16 +514,21 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--mine-inflation-beta", type=float, default=50.0,
+        "--mine-inflation-beta",
+        type=float,
+        default=200.0,
         help=(
-            "Mine proximity inflation strength β (default: 50.0). "
+            "Mine proximity inflation strength β (default: 200.0). "
+            "Penalty = β/clearance (inverse-linear). "
             "Higher values create stronger avoidance of mine danger zones. "
-            "Recommended sweep: 10 (mild), 50 (strong), 200 (near-hard). "
+            "Recommended sweep: 10 (mild), 50 (moderate), 200 (strong). "
             "Set to 0 to disable inflation (falls back to kill-zone-only pruning)."
         ),
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true",
+        "-v",
+        "--verbose",
+        action="store_true",
         help="Enable verbose logging",
     )
     args = parser.parse_args()

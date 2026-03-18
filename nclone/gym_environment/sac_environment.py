@@ -1,7 +1,7 @@
 """SAC-Discrete compatible environment wrapper.
 
 Wraps NppEnvironment to provide:
-- Flat 119-dim observation (game_state|reachability|spatial_context|mine_sdf)
+- Flat observation (game_state|reachability|spatial_context|mine_sdf)
 - Flat Discrete(48) action space (6 base actions x 8 frame durations)
 - Macro-action execution with gamma-discounting and contact-state interrupts
 - Sparse rewards (R_SWITCH, R_EXIT, R_DEATH, R_STEP) optionally augmented
@@ -21,6 +21,12 @@ import numpy as np
 import gymnasium
 from gymnasium.spaces import Box, Discrete
 
+from .constants import (
+    GAME_STATE_CHANNELS,
+    REACHABILITY_FEATURES_DIM,
+    SPATIAL_CONTEXT_DIM,
+    MINE_SDF_FEATURES_DIM,
+)
 from .npp_environment import NppEnvironment
 from .config import EnvironmentConfig
 from .reward_calculation.sparse_reward_calculator import SparseRewardCalculator
@@ -31,7 +37,12 @@ from .reward_calculation.dense_reward_calculator import (
 
 logger = logging.getLogger(__name__)
 
-OBS_DIM = 119
+OBS_DIM = (
+    GAME_STATE_CHANNELS
+    + REACHABILITY_FEATURES_DIM
+    + SPATIAL_CONTEXT_DIM
+    + MINE_SDF_FEATURES_DIM
+)
 N_BASE_ACTIONS = 6
 N_DURATIONS = 8
 N_ACTIONS = N_BASE_ACTIONS * N_DURATIONS
@@ -110,7 +121,7 @@ class SACEnvironment(gymnasium.Wrapper):
     """SAC-Discrete wrapper around NppEnvironment.
 
     Key changes vs NppEnvironment:
-    - Flat Box(119) observation instead of dict
+    - Flat Box observation instead of dict
     - Flat Discrete(48) action space for macro-actions
     - Sparse rewards; HWM/PBRS rewards from inner env are discarded
     - Optional dense reward shaping via DenseRewardCalculator
@@ -283,7 +294,8 @@ class SACEnvironment(gymnasium.Wrapper):
         if self._dense_reward_calc is not None and prev_dict_obs is not None:
             reach = np.asarray(
                 prev_dict_obs.get(
-                    "reachability_features", np.zeros(8, dtype=np.float32)
+                    "reachability_features",
+                    np.zeros(REACHABILITY_FEATURES_DIM, dtype=np.float32),
                 ),
                 dtype=np.float32,
             )
@@ -396,7 +408,8 @@ class SACEnvironment(gymnasium.Wrapper):
         ):
             reach_after = np.asarray(
                 final_dict_obs.get(
-                    "reachability_features", np.zeros(8, dtype=np.float32)
+                    "reachability_features",
+                    np.zeros(REACHABILITY_FEATURES_DIM, dtype=np.float32),
                 ),
                 dtype=np.float32,
             )
@@ -798,22 +811,30 @@ class SACEnvironment(gymnasium.Wrapper):
             return None
 
     def _flatten(self, dict_obs: Dict[str, Any]) -> np.ndarray:
-        """Flatten dict obs to 119-dim float32 array."""
+        """Flatten dict obs to flat float32 array."""
         parts = [
             np.asarray(
-                dict_obs.get("game_state", np.zeros(24, dtype=np.float32)),
+                dict_obs.get("game_state", np.zeros(GAME_STATE_CHANNELS, dtype=np.float32)),
                 dtype=np.float32,
             ),
             np.asarray(
-                dict_obs.get("reachability_features", np.zeros(8, dtype=np.float32)),
+                dict_obs.get(
+                    "reachability_features",
+                    np.zeros(REACHABILITY_FEATURES_DIM, dtype=np.float32),
+                ),
                 dtype=np.float32,
             ),
             np.asarray(
-                dict_obs.get("spatial_context", np.zeros(84, dtype=np.float32)),
+                dict_obs.get(
+                    "spatial_context", np.zeros(SPATIAL_CONTEXT_DIM, dtype=np.float32)
+                ),
                 dtype=np.float32,
             ),
             np.asarray(
-                dict_obs.get("mine_sdf_features", np.zeros(3, dtype=np.float32)),
+                dict_obs.get(
+                    "mine_sdf_features",
+                    np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32),
+                ),
                 dtype=np.float32,
             ),
         ]

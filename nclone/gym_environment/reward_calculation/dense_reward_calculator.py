@@ -39,6 +39,8 @@ from typing import Dict, Optional, Set
 
 import numpy as np
 
+from ..constants import REACHABILITY_FEATURES_DIM
+
 
 # Indices into the 8-dim reachability feature vector
 _REACH_DIST_SWITCH = 0       # path_dist_to_switch_norm
@@ -219,11 +221,17 @@ class DenseRewardCalculator:
             breakdown keys: "velocity_alignment", "milestone", "hazard_avoidance".
         """
         reach_prev = np.asarray(
-            prev_dict_obs.get("reachability_features", np.zeros(8, dtype=np.float32)),
+            prev_dict_obs.get(
+                "reachability_features",
+                np.zeros(REACHABILITY_FEATURES_DIM, dtype=np.float32),
+            ),
             dtype=np.float32,
         )
         reach_curr = np.asarray(
-            curr_dict_obs.get("reachability_features", np.zeros(8, dtype=np.float32)),
+            curr_dict_obs.get(
+                "reachability_features",
+                np.zeros(REACHABILITY_FEATURES_DIM, dtype=np.float32),
+            ),
             dtype=np.float32,
         )
         mine_sdf = np.asarray(

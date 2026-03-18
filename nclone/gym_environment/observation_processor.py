@@ -296,6 +296,7 @@ class ObservationProcessor:
             # Pass through additional keys that don't need processing
             passthrough_keys = [
                 "action_mask",
+                "duration_mask",
                 # Graph observations (GCN-optimized: only what GCN needs)
                 "graph_num_nodes",
                 "graph_num_edges",
@@ -349,6 +350,7 @@ class ObservationProcessor:
         # Pass through additional keys that don't need processing
         passthrough_keys = [
             "action_mask",
+            "duration_mask",
             # Graph observations (GCN-optimized: only what GCN needs)
             "graph_num_nodes",
             "graph_num_edges",

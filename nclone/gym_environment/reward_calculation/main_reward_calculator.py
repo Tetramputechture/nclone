@@ -134,8 +134,17 @@ class RewardCalculator:
         action: Optional[int] = None,
         frames_executed: int = 1,
         curriculum_manager: Optional[Any] = None,
+        truncated: bool = False,
     ) -> float:
         """Calculate extrinsic reward using HWM A* shaping.
+
+        Args:
+            obs: Current observation.
+            prev_obs: Previous observation.
+            action: Action taken (optional).
+            frames_executed: Number of physics frames in this step.
+            curriculum_manager: Optional curriculum manager.
+            truncated: True if episode ended by timeout (adds TRUNCATION_PENALTY).
 
         Returns:
             float: Extrinsic reward (sparse + HWM shaping) * GLOBAL_REWARD_SCALE
@@ -169,6 +178,8 @@ class RewardCalculator:
         # === TERMINAL REWARDS ===
         if obs.get("player_dead", False):
             terminal_reward = self.config.death_penalty
+            if obs.get("death_cause") == "mine":
+                terminal_reward += self.config.mine_death_penalty
             if switch_just_activated:
                 terminal_reward += self.config.switch_activation_reward
             self.episode_terminal_reward = terminal_reward
@@ -281,13 +292,16 @@ class RewardCalculator:
 
         self.potential_history.append(hwm_progress)
 
+        if truncated:
+            reward += self.config.truncation_penalty
+
         scaled = reward * GLOBAL_REWARD_SCALE
         self.last_pbrs_components = {
             "hwm_reward": hwm_reward,
             "hwm_progress": hwm_progress,
             "total_reward": reward,
             "scaled_reward": scaled,
-            "is_terminal": False,
+            "is_terminal": truncated,
             "distance_to_switch": dist_switch,
             "distance_to_exit": dist_exit,
             "watermark_switch": self.hwm_state.watermark_switch,
@@ -295,6 +309,7 @@ class RewardCalculator:
             "current_phase": self.hwm_state.current_phase,
             "closest_distance_episode": self.closest_distance_this_episode,
             "movement_distance": movement,
+            "truncated": truncated,
         }
         return scaled
 

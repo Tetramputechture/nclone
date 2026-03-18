@@ -45,8 +45,8 @@ _MINE_INFLATION_BETA_DEFAULT = 50.0
 # Without this cap those inflated costs propagate through Dijkstra and set
 # d_max to ~10M frames, which collapses the PBRS phi normalization range to
 # [-0.0001, 0] everywhere a normal agent can reach.
-# With this cap the worst inflated cost is w_base * (1 + 500) ≈ 10,000 frames,
-# keeping d_max within a physically meaningful range.
+# Cap prevents near-zero clearance from producing arbitrarily large costs.
+# Worst inflated cost: w_base * (1 + 500) ≈ 10,000 frames.
 _MINE_INFLATION_MAX_FACTOR = 500.0
 
 # Simulation parameter sweeps
@@ -102,22 +102,28 @@ def _inflate_arc_cost(
 
     Replaces the old binary arc-rejection approach with continuous cost
     inflation.  Arcs that enter the kill zone are still pruned (returns inf);
-    arcs that pass nearby receive a smooth inverse-square penalty that decays
+    arcs that pass nearby receive a smooth inverse-linear penalty that decays
     naturally to zero far from mines.  This produces a Φ gradient that guides
     the agent away from mines without sharp discontinuities at a pruning
     boundary.
+
+    Uses ``1/clearance`` (inverse-linear) rather than ``1/clearance²`` so that
+    the repulsion field extends meaningfully to moderate distances (~30-60 px).
+    With 1/r², penalty at 18 px clearance was only ~0.6 even at beta=200,
+    leaving near-mine arcs competitive and creating a gravity well.  1/r gives
+    penalty ≈ 11 at the same clearance — enough to route Dijkstra away.
 
     Args:
         w_base: Original frame-count edge weight.
         arc_wps: Waypoints as ``(frame, x, y, vx, vy)`` tuples.
         mine_positions: Array of shape ``(N, 2)`` with mine centre coordinates.
         beta: Inflation strength.  Higher values create stronger avoidance.
-            Recommended sweep: 10 (mild), 50 (strong), 200 (near-hard).
+            Recommended sweep: 10 (mild), 50 (moderate), 200 (strong).
         kill_radius: Lethal contact distance (NINJA_RADIUS + mine_radius).
             Arcs with clearance <= 0 return inf and are pruned from the graph.
 
     Returns:
-        Inflated weight ``w_base * (1 + min(beta / clearance^2, MAX_FACTOR))``,
+        Inflated weight ``w_base * (1 + min(beta / clearance, MAX_FACTOR))``,
         or ``inf`` if the arc enters the kill zone.
     """
     if len(mine_positions) == 0 or not arc_wps:
@@ -129,9 +135,7 @@ def _inflate_arc_cost(
     clearance = float(dists.min()) - kill_radius
     if clearance <= 0:
         return float('inf')
-    # Cap the penalty to prevent near-zero clearance from producing costs in the
-    # millions of frames that would blow up d_max and collapse phi normalization.
-    penalty = min(beta / (clearance ** 2), _MINE_INFLATION_MAX_FACTOR)
+    penalty = min(beta / clearance, _MINE_INFLATION_MAX_FACTOR)
     return w_base * (1.0 + penalty)
 
 

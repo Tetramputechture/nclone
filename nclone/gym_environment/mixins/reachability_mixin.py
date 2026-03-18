@@ -72,25 +72,36 @@ class ReachabilityMixin:
             self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
-        """Get 38-dimensional reachability features (expanded in Phases 1-5).
+        """Get reachability features (8 base + 2 phi_gradient = 10 dims).
 
-        Features include:
-        - Base (4): reachable_area_ratio, dist_to_switch_inv, dist_to_exit_inv, exit_reachable
-        - Path distances (2): path_dist_to_switch_norm, path_dist_to_exit_norm
-        - Direction vectors (4): dir_to_switch_x/y, dir_to_exit_x/y
-        - Mine context (2): total_mines_norm, deadly_mine_ratio
-        - Phase indicator (1): switch_activated
-        - Path direction (8): next_hop_dir_x/y, waypoint_dir_x/y, waypoint_dist, path_detour_flag, mine_clearance_dir_x/y
-        - Path difficulty (1): path_difficulty_ratio (physics_cost/geometric_distance)
-        - Path curvature (3): multi_hop_dir_x/y, path_curvature (8-hop lookahead and turn indicator)
-        - Exit lookahead (5): exit_next_hop_x/y, exit_multi_hop_x/y, near_switch_indicator
-        - Directional connectivity (8): platform_dist_E, NE, N, NW, W, SW, S, SE
+        Base features: path distances, phase, A* guidance, platform distances.
+        Phi gradient (2): physics-aware cost-to-go direction, breaks state aliasing.
         """
         reachability_features = self._compute_reachability(
             self.nplay_headless.ninja_position()
         )
 
-        return reachability_features
+        # Append phi-gradient (not cell-cached; changes within tile)
+        precomputed = getattr(self, "_current_precomputed_pbrs", None)
+        if precomputed is not None and hasattr(precomputed, "get_gradient"):
+            pos = self.nplay_headless.ninja_position()
+            vel = self.nplay_headless.ninja_velocity()
+            switch = self.nplay_headless.exit_switch_activated()
+            grad = precomputed.get_gradient({
+                "player_x": float(pos[0]),
+                "player_y": float(pos[1]),
+                "player_xspeed": float(vel[0]),
+                "player_yspeed": float(vel[1]),
+                "switch_activated": switch,
+            })
+            phi_gx = float(np.clip(grad[0] * 6.0, -1.0, 1.0))
+            phi_gy = float(np.clip(grad[1] * 6.0, -1.0, 1.0))
+        else:
+            phi_gx, phi_gy = 0.0, 0.0
+
+        return np.concatenate([reachability_features, [phi_gx, phi_gy]]).astype(
+            np.float32
+        )
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """

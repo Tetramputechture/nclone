@@ -89,6 +89,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         goal_curriculum_config: Optional[
             Any
         ] = None,  # GoalCurriculumConfig for intermediate goal curriculum
+        enable_layer3_macro_action_mask: bool = False,
+        layer3_duration_bins: Optional[tuple[int, ...]] = None,
+        layer3_all_masked_fallback: str = "noop",
         value_function_dir: Optional[
             str
         ] = None,  # Directory with precomputed value functions
@@ -206,6 +209,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Frame skip for temporal abstraction (always enabled)
         self.frame_skip = max(1, frame_skip)  # Ensure at least 1
+        self.enable_layer3_macro_action_mask = enable_layer3_macro_action_mask
+        self.layer3_duration_bins = tuple(layer3_duration_bins or ())
+        self.layer3_all_masked_fallback = layer3_all_masked_fallback
+        self._layer3_num_durations = len(self.layer3_duration_bins)
 
         # Precomputed value function support
         self.value_function_dir = value_function_dir
@@ -218,6 +225,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Analytical reachability PBRS support
         self.use_reachability_pbrs = use_reachability_pbrs
         self._current_reachability_pbrs = None  # Built per level
+
+        # Layer 3 episode-level diagnostics (updated by mask builders at decision points)
+        self._layer3_decision_points = 0
+        self._layer3_masked_actions_total = 0
+        self._layer3_masked_candidates_total = 0
+        self._layer3_mask_override_count = 0
+        self._layer3_all_masked_events = 0
 
         if use_reachability_pbrs:
             _logger.info("Analytical reachability PBRS enabled")
@@ -327,7 +341,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         from .reward_calculation.primitive_reward_calculator import (
             PrimitiveRewardCalculator,
         )
-        from .reward_calculation.reward_constants import R_SWITCH, R_EXIT, R_DEATH
+        from .reward_calculation.reward_constants import (
+            R_SWITCH,
+            R_EXIT,
+            R_DEATH,
+            R_DEATH_MINE,
+            TIME_PENALTY_PER_STEP,
+        )
 
         self.primitive_reward_calculator = PrimitiveRewardCalculator(
             gamma=pbrs_gamma,
@@ -335,6 +355,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             r_switch=R_SWITCH,  # 1.0
             r_exit=R_EXIT,      # 5.0
             r_death=R_DEATH,    # -0.5
+            r_death_mine=R_DEATH_MINE,  # -0.5 extra when death_cause=='mine'
+            time_penalty_per_frame=TIME_PENALTY_PER_STEP,
         )
 
         # Initialize truncation checker
@@ -419,6 +441,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             shape=(6,),  # 6 actions in N++
             dtype=np.int8,
         )
+        if self.enable_layer3_macro_action_mask:
+            obs_spaces["duration_mask"] = box.Box(
+                low=0,
+                high=1,
+                shape=(6, self._layer3_num_durations),
+                dtype=np.int8,
+            )
 
         # Note: time_remaining is now included as the 41st feature in game_state
 
@@ -620,6 +649,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     contact = (
                         0 if ninja_sc in (0, 1, 2) else (1 if ninja_sc == 5 else 2)
                     )
+                    death_cause = headless.ninja_death_cause() if player_dead else None
                     frame_r = self.primitive_reward_calculator.calculate_frame_reward(
                         player_x=float(pos[0]),
                         player_y=float(pos[1]),
@@ -632,6 +662,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         player_xspeed=float(vel[0]),
                         player_yspeed=float(vel[1]),
                         contact_state=contact,
+                        death_cause=death_cause,
                     )
                     primitive_rewards.append(frame_r)
 
@@ -691,6 +722,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     action,
                     frames_executed=frames_executed,
                     curriculum_manager=self.goal_curriculum_manager,
+                    truncated=truncated,
                 )
 
                 # Update dynamic truncation limit if PBRS surface area is now available
@@ -774,6 +806,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             }
 
             # Expose per-frame primitive rewards for FiGAR-PPO primitive-level GAE
+            # When truncated, add truncation penalty so FiGAR gets the terminal signal
+            if truncated and primitive_rewards:
+                from .reward_calculation.reward_constants import TRUNCATION_PENALTY
+
+                primitive_rewards = list(primitive_rewards)
+                primitive_rewards.append(TRUNCATION_PENALTY)
             info["primitive_rewards"] = primitive_rewards
 
             # Hook: Add additional info fields
@@ -1548,6 +1586,20 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             }
         )
 
+        # Death and timeout diagnostics for TensorBoard
+        if terminated or truncated:
+            ninja_pos = self.nplay_headless.ninja_position()
+            if ninja_pos is not None and exit_switch_pos is not None:
+                px, py = float(ninja_pos[0]), float(ninja_pos[1])
+                sx, sy = exit_switch_pos[0], exit_switch_pos[1]
+                dist_to_switch = ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5
+                if terminated and not player_won:
+                    info["death_x"] = px
+                    info["death_y"] = py
+                    info["distance_to_switch_at_death"] = dist_to_switch
+                if truncated:
+                    info["distance_to_switch_at_timeout"] = dist_to_switch
+
         # Add episode route for visualization if episode is ending
         if terminated or truncated:
             route_length = len(self.current_route)
@@ -1589,6 +1641,23 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             else:
                 info["deterministic_mask_applied_count"] = 0
                 info["deterministic_mask_rate"] = 0.0
+
+            if self.enable_layer3_macro_action_mask:
+                decisions = max(self._layer3_decision_points, 1)
+                info["layer3_mask_enabled"] = True
+                info["layer3_decision_points"] = self._layer3_decision_points
+                info["layer3_actions_masked_per_decision"] = (
+                    self._layer3_masked_actions_total / decisions
+                )
+                info["layer3_candidates_masked_per_decision"] = (
+                    self._layer3_masked_candidates_total / decisions
+                )
+                info["layer3_mask_overrides_per_episode"] = (
+                    self._layer3_mask_override_count
+                )
+                info["layer3_all_actions_masked_events"] = (
+                    self._layer3_all_masked_events
+                )
 
             # CRITICAL: Capture level data for route visualization BEFORE auto-reset
             # With VecEnv, the environment auto-resets after done=True, so by the time
@@ -1864,6 +1933,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset deterministic masking counters for episode-level tracking
         self._deterministic_mask_applied_count = 0
         self._total_steps_count = 0
+        self._layer3_decision_points = 0
+        self._layer3_masked_actions_total = 0
+        self._layer3_masked_candidates_total = 0
+        self._layer3_mask_override_count = 0
+        self._layer3_all_masked_events = 0
 
         # Reset switch activation tracking
         self._switch_activation_frame = None
@@ -3184,6 +3258,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             float(ninja_state[11]) if len(ninja_state) > 11 else 0.0
         )
 
+        action_mask, duration_mask = self._get_action_and_duration_mask()
+
         obs = {
             "game_state": game_state,
             "player_dead": self.nplay_headless.ninja_has_died(),
@@ -3206,9 +3282,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "entities": entities,  # Entity objects (mines, locked doors, switches)
             "locked_doors": locked_doors,
             "locked_door_switches": locked_door_switches,
-            "action_mask": self._get_action_mask_with_path_update(),
+            "action_mask": action_mask,
             "map_name": map_name,  # For waypoint lookups by filename
         }
+        if duration_mask is not None:
+            obs["duration_mask"] = duration_mask
 
         action_mask = obs["action_mask"]
         if not action_mask.any():
@@ -3221,6 +3299,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             action_mask = action_mask.copy()
             action_mask[0] = 1
             obs["action_mask"] = action_mask
+            if "duration_mask" in obs:
+                duration_mask = obs["duration_mask"].copy()
+                duration_mask[0, 0] = 1
+                obs["duration_mask"] = duration_mask
 
         # Only add screen if visual observations enabled
         # When disabled, graph + state + reachability contain all necessary information
@@ -3259,6 +3341,20 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.nplay_headless.sim._action_masking_mode = masking_mode
 
         return np.array(self.nplay_headless.get_action_mask(), dtype=np.int8)
+
+    def _get_action_and_duration_mask(
+        self,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Return the action mask and optional duration mask for the current state."""
+        action_mask = self._get_action_mask_with_path_update()
+        if not self.enable_layer3_macro_action_mask:
+            return action_mask, None
+        return action_mask, self._build_default_duration_mask(action_mask)
+
+    def _build_default_duration_mask(self, action_mask: np.ndarray) -> np.ndarray:
+        """Broadcast the action mask across all duration bins when Layer 3 is disabled."""
+        mask = np.array(action_mask, dtype=np.int8, copy=True).reshape(6, 1)
+        return np.repeat(mask, self._layer3_num_durations, axis=1)
 
     def _check_termination(self) -> Tuple[bool, bool, bool]:
         """

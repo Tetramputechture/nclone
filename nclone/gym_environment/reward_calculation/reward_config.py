@@ -9,7 +9,15 @@ follow a 3-phase schedule based on training progress.
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
-from .reward_constants import R_SWITCH, R_EXIT, R_DEATH, HWM_ALPHA
+from .reward_constants import (
+    R_SWITCH,
+    R_EXIT,
+    R_DEATH,
+    R_DEATH_MINE,
+    HWM_ALPHA,
+    TIME_PENALTY_PER_STEP,
+    TRUNCATION_PENALTY,
+)
 
 
 @dataclass
@@ -71,6 +79,16 @@ class RewardConfig:
         return R_DEATH
 
     @property
+    def mine_death_penalty(self) -> float:
+        """Extra penalty applied on top of death_penalty when death_cause == 'mine'."""
+        return R_DEATH_MINE
+
+    @property
+    def truncation_penalty(self) -> float:
+        """Terminal penalty when episode ends by timeout (truncation)."""
+        return TRUNCATION_PENALTY
+
+    @property
     def level_completion_reward(self) -> float:
         """Fixed level completion reward per spec."""
         if self._level_completion_reward_override is not None:
@@ -124,13 +142,13 @@ class RewardConfig:
     def time_penalty_per_step(self) -> float:
         """Per-step time penalty to discourage backtracking/aimless wandering.
 
-        Default: -0.0005 per env step. At 2000 steps/episode this costs -1.0 total
-        vs exit reward of +5.0 (R_EXIT). Scaled by frames_executed in the calculator.
+        Uses TIME_PENALTY_PER_STEP from constants (-0.001). At 500 steps this
+        costs -0.5 (same as R_DEATH), making inaction as costly as dying.
         Set via _time_penalty_per_step_override for Optuna/ablation studies.
         """
         if self._time_penalty_per_step_override is not None:
             return self._time_penalty_per_step_override
-        return -0.0005
+        return TIME_PENALTY_PER_STEP
 
     @property
     def exploration_bonus(self) -> float:

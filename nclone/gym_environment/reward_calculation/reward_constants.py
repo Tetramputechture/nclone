@@ -44,21 +44,34 @@ R_SWITCH = 1.0
 R_EXIT = 5.0
 R_DEATH = -0.5
 
+# Extra penalty for mine deaths. Applied when death_cause == 'mine'. Total mine
+# death penalty = R_DEATH + R_DEATH_MINE. Reduced from -2.0 to -0.5 (total -1.0)
+# to make mine-adjacent exploration less catastrophically penalised vs. timing out
+# at the wall. Validation (validate_reward_incentives.py) showed -2.0 caused the
+# agent to rationally prefer timeout over attempting progress through mine terrain.
+R_DEATH_MINE = -0.5
+
 # HWM shaping weight (constant throughout training per spec Section 7)
 HWM_ALPHA = 3.0
 
 # Per-step time penalty (applied in RewardConfig.time_penalty_per_step)
-# -0.001/step: at 500 steps = -0.5 (same as R_DEATH), making inaction as costly as dying.
-# Incentivizes efficient paths while allowing momentum-building backtracking.
-TIME_PENALTY_PER_STEP = -0.001
+# -0.011/step: Validation (validate_reward_incentives.py) requires time_penalty < -0.01
+# so that V(timeout) < V(mine_death_at_t100), making the agent prefer attempting
+# progress over passively timing out at the wall. At 500 steps this costs ~-5.5.
+TIME_PENALTY_PER_STEP = -0.011
 
 # Per-step backtracking penalty applied when the A* distance to the current goal increases.
 # This discourages aimless wandering away from the objective. Run-221-2 showed 80-93%
 # backtracking across all stages despite HWM shaping rewarding forward progress.
 # The HWM reward gives 0 for backtracking (non-negative), but this makes backtracking
-# actively negative. Magnitude -0.0002 is 20% of TIME_PENALTY_PER_STEP -- a nudge
-# not a hard penalty, preserving the agent's ability to backtrack for momentum.
-BACKTRACK_PENALTY = -0.0002
+# actively negative. Magnitude 20% of TIME_PENALTY_PER_STEP -- a nudge.
+BACKTRACK_PENALTY = -0.0022  # ~20% of -0.011
+
+# Terminal penalty when episode ends by truncation (timeout). Applied to discourage
+# the agent from hugging the wall until timeout instead of attempting progress.
+# -1.5 makes timeout comparable to mine death (-2.5) so the agent is incentivized
+# to try navigating around mines rather than passively timing out.
+TRUNCATION_PENALTY = -1.5
 
 # =============================================================================
 # PATHFINDING CONFIGURATION

@@ -1,0 +1,41 @@
+======================================================================
+PBRS Reward Incentives Validation Report
+======================================================================
+
+Constants:
+  gamma = 0.99
+  truncation_frames = 10000
+  TIME_PENALTY_PER_STEP = -0.011
+  time_penalty_per_step (actual) = -0.011
+  TRUNCATION_PENALTY = -1.5
+  R_DEATH = -0.5, R_DEATH_MINE = -0.5
+  R_SWITCH = 1.0, R_EXIT = 5.0
+
+--- Check 1: Discounted Return Comparison ---
+Scenario                          | Discounted Return
+-------------------------------------------------------
+V_timeout                          | -1.1000
+V_mine_early                       | -1.0634
+V_mine_500                         | -1.0993
+V_success                          | -0.9789
+PASS
+
+--- Check 2: time_penalty_per_step Discrepancy ---
+PASS: time_penalty_per_step matches TIME_PENALTY_PER_STEP
+
+--- Check 3: Truncation Terminal Signal ---
+PASS: TRUNCATION_PENALTY = -1.5 (non-zero)
+
+--- Check 4: PBRS Potential Landscape ---
+SKIP: No --data provided
+
+--- Check 5: Reward Signal Sufficient Condition ---
+  Minimum time_penalty for timeout worse than mine death: -0.010000
+To make timeout worse than mine death at t=100: time_penalty_per_step <= -0.010000. Current: -0.011. PASS: timeout is worse than early mine death.
+
+======================================================================
+Total FAILs: 0
+
+Recommendations:
+  - Use RewardConfig._time_penalty_per_step_override for experimentation
+======================================================================

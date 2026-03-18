@@ -109,6 +109,13 @@ class SpatialHash:
 
         return best_node
 
+    def query(
+        self, query_x: float, query_y: float, radius: float
+    ) -> List[Tuple[int, int]]:
+        """Return node positions within radius. Alias for find_all_within_radius positions."""
+        results = self.find_all_within_radius(query_x, query_y, radius)
+        return [pos for pos, _ in results]
+
     def find_all_within_radius(
         self, query_x: float, query_y: float, radius: float
     ) -> List[Tuple[Tuple[int, int], float]]:

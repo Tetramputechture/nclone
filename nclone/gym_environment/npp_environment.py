@@ -29,6 +29,7 @@ from .constants import (
 )
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
+from .layer3_macro_action_mask import Layer3MacroActionMasker
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
 from .config import EnvironmentConfig
 from .precomputed_door_features import PrecomputedDoorFeatureCache
@@ -92,7 +93,19 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 self.config, "shared_level_caches_by_stage", None
             ),
             goal_curriculum_config=self.config.goal_curriculum_config,
+            enable_layer3_macro_action_mask=self.config.enable_layer3_macro_action_mask,
+            layer3_duration_bins=self.config.layer3_duration_bins,
+            layer3_all_masked_fallback=self.config.layer3_all_masked_fallback,
         )
+
+        self.layer3_masker: Optional[Layer3MacroActionMasker]
+        if self.config.enable_layer3_macro_action_mask:
+            self.layer3_masker = Layer3MacroActionMasker(
+                duration_bins=self.config.layer3_duration_bins,
+                fallback_mode=self.config.layer3_all_masked_fallback,
+            )
+        else:
+            self.layer3_masker = None
 
         # Initialize mixin systems using config
         self._init_graph_system(
@@ -242,13 +255,21 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     dtype=np.int8,
                 ),
             }
+            if self.enable_layer3_macro_action_mask:
+                obs_spaces["duration_mask"] = box.Box(
+                    low=0,
+                    high=1,
+                    shape=(6, self._layer3_num_durations),
+                    dtype=np.int8,
+                )
             return SpacesDict(obs_spaces)
 
         obs_spaces = dict(self.observation_space.spaces)
 
         # Full mode: Add reachability features (always available)
+        # low=-1.0: phi_gradient_x/y can be negative
         obs_spaces["reachability_features"] = box.Box(
-            low=0.0, high=1.0, shape=(REACHABILITY_FEATURES_DIM,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(REACHABILITY_FEATURES_DIM,), dtype=np.float32
         )
 
         # Add GCN-optimized minimal graph observation spaces
@@ -1386,12 +1407,15 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Get base observation
         obs = super()._get_observation()
 
-        from .constants import NINJA_STATE_DIM
+        from .constants import NINJA_STATE_DIM, PHYSICS_DERIVED_DIM
 
         # Phase 4: Only keep ninja physics state (40 enhanced dims)
         # All other features (path objectives, mines, progress, etc.) are now in the graph
         base_game_state = obs["game_state"]
         self._game_state_buffer[:NINJA_STATE_DIM] = base_game_state[:NINJA_STATE_DIM]
+
+        # Append physics-derived features: horizontal_range, max_jump_height, time_to_ground
+        self._game_state_buffer[NINJA_STATE_DIM:] = self._compute_physics_derived_features()
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 
@@ -1443,6 +1467,88 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Return full observation - conversion to minimal happens in _process_observation()
         # This ensures reward calculator has access to all metadata
         return obs
+
+    def _compute_physics_derived_features(self) -> np.ndarray:
+        """Compute 3 physics-derived features for value function alignment with Φ.
+
+        Features: horizontal_range_norm, max_jump_height_norm, time_to_ground_norm.
+        Time-to-ground uses geometry-accurate downward raycast via adjacency graph.
+        """
+        import math
+        from .constants import PHYSICS_DERIVED_DIM
+        from ..constants.physics_constants import (
+            DRAG_REGULAR,
+            GRAVITY_FALL,
+            GRAVITY_JUMP,
+            MAX_HOR_SPEED,
+            MAX_JUMP_DURATION,
+        )
+        from ..graph.reachability.directional_connectivity import find_platform_in_direction
+        from ..graph.reachability.path_distance_cache import NODE_WORLD_COORD_OFFSET
+
+        features = np.zeros(PHYSICS_DERIVED_DIM, dtype=np.float32)
+        ninja = self.nplay_headless.sim.ninja
+        vx, vy = ninja.xspeed, ninja.yspeed
+        g = ninja.applied_gravity
+
+        # time_to_ground: geometry-accurate via downward raycast
+        if ninja.floor_count > 0:
+            time_to_ground = 0.0
+        else:
+            graph_data = getattr(self, "current_graph_data", None) or {}
+            spatial_hash = graph_data.get("spatial_hash")
+            physics_cache = graph_data.get("node_physics")
+            base_adjacency = graph_data.get("base_adjacency")
+
+            if spatial_hash is not None and physics_cache is not None and base_adjacency:
+                node_pos = (
+                    int(ninja.xpos) - NODE_WORLD_COORD_OFFSET,
+                    int(ninja.ypos) - NODE_WORLD_COORD_OFFSET,
+                )
+                dy = find_platform_in_direction(
+                    node_pos,
+                    (0, 1),  # South = downward in screen coords
+                    base_adjacency,
+                    physics_cache,
+                    spatial_hash,
+                    max_distance=500.0,
+                    step_size=12,
+                )
+                dy = min(dy, max(0.0, LEVEL_HEIGHT_PX - ninja.ypos))
+            else:
+                dy = max(0.0, LEVEL_HEIGHT_PX - ninja.ypos)
+
+            discriminant = vy * vy + 2.0 * g * dy
+            if g > 1e-9 and discriminant >= 0:
+                time_to_ground = max(0.0, (-vy + math.sqrt(discriminant)) / g)
+            else:
+                time_to_ground = 90.0
+
+        time_to_ground_norm = min(time_to_ground / 90.0, 1.0)
+        features[2] = float(time_to_ground_norm)
+
+        # horizontal_range_norm: 0 when grounded, else abs(vx)*time*drag^(t/2)
+        if ninja.floor_count > 0:
+            horizontal_range_norm = 0.0
+        else:
+            drag_factor = DRAG_REGULAR ** (time_to_ground / 2.0) if time_to_ground > 0 else 1.0
+            horizontal_range = abs(vx) * time_to_ground * drag_factor
+            max_range = MAX_HOR_SPEED * 90.0
+            horizontal_range_norm = min(horizontal_range / max_range, 1.0)
+        features[0] = float(horizontal_range_norm)
+
+        # max_jump_height_norm: remaining upward displacement if in jump state
+        if ninja.state == 3 and ninja.jump_duration < MAX_JUMP_DURATION and vy < 0:
+            frames_left = MAX_JUMP_DURATION - ninja.jump_duration
+            # Discrete: vy (negative) decreases toward 0 by GRAVITY_JUMP each frame.
+            # Approx displacement = avg_|vy| * frames_left
+            remaining_height = abs(vy) * frames_left * 0.5
+            max_jump_height_norm = min(remaining_height / 60.0, 1.0)
+        else:
+            max_jump_height_norm = 0.0
+        features[1] = float(max_jump_height_norm)
+
+        return features
 
     def _compute_mine_sdf_features(self, obs: Dict[str, Any]) -> np.ndarray:
         """Compute mine SDF features for actor safety awareness.
@@ -1513,6 +1619,29 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 if dist < min_dist:
                     min_dist = dist
         return min_dist
+
+    def _get_action_and_duration_mask(
+        self,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Compose the legacy action mask with the Layer 3 mine veto."""
+        action_mask, duration_mask = super()._get_action_and_duration_mask()
+        if not self.enable_layer3_macro_action_mask or self.layer3_masker is None:
+            return action_mask, duration_mask
+
+        layer3_result = self.layer3_masker.compute(
+            headless=self.nplay_headless,
+            base_action_mask=action_mask,
+            actions_to_execute=self._actions_to_execute,
+        )
+
+        self._layer3_decision_points += 1
+        self._layer3_masked_actions_total += layer3_result.masked_actions
+        self._layer3_masked_candidates_total += layer3_result.masked_candidates
+        self._layer3_mask_override_count += layer3_result.mask_overrides
+        if layer3_result.all_masked_event:
+            self._layer3_all_masked_events += 1
+
+        return layer3_result.action_mask, layer3_result.duration_mask
 
     def _get_adjacency_for_rewards(self) -> Optional[Dict]:
         """Get adjacency graph for reward calculation.

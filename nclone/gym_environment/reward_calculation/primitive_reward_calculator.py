@@ -25,7 +25,11 @@ from .reward_machine import (
     DEFAULT_R_EXIT,
     DEFAULT_C_PHASE,
 )
-from .reward_constants import PBRS_GAMMA, GLOBAL_REWARD_SCALE
+from .reward_constants import (
+    PBRS_GAMMA,
+    GLOBAL_REWARD_SCALE,
+    TIME_PENALTY_PER_STEP,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,8 @@ class PrimitiveRewardCalculator:
         r_switch: float = DEFAULT_R_SWITCH,
         r_exit: float = DEFAULT_R_EXIT,
         r_death: float = 0.0,
+        r_death_mine: float = 0.0,
+        time_penalty_per_frame: float = TIME_PENALTY_PER_STEP,
         c_phase: float = DEFAULT_C_PHASE,
         global_reward_scale: float = GLOBAL_REWARD_SCALE,
     ):
@@ -71,12 +77,17 @@ class PrimitiveRewardCalculator:
             r_switch: Sparse reward for switch collection
             r_exit: Sparse reward for exit reached
             r_death: Sparse penalty applied on the death frame (typically negative)
+            r_death_mine: Extra penalty when death_cause == 'mine' (e.g. -2.0)
+            time_penalty_per_frame: Per-frame time penalty (aligns with TIME_PENALTY_PER_STEP
+                so FiGAR-PPO receives same incentive as MainRewardCalculator path)
             c_phase: Phase potential bonus for switch-collected state
             global_reward_scale: Scale applied to all rewards for value stability
         """
         self.gamma = gamma
         self.alpha = alpha
         self.r_death = r_death
+        self.r_death_mine = r_death_mine
+        self.time_penalty_per_frame = time_penalty_per_frame
         self.global_reward_scale = global_reward_scale
 
         # Reward machine for task phase tracking
@@ -116,6 +127,7 @@ class PrimitiveRewardCalculator:
         player_yspeed: Optional[float] = None,
         jump_duration_remaining: Optional[float] = None,
         contact_state: Optional[int] = None,
+        death_cause: Optional[str] = None,
     ) -> float:
         """Calculate reward for a single physics frame.
 
@@ -136,6 +148,7 @@ class PrimitiveRewardCalculator:
             player_xspeed: Optional velocity x (for precomputed_pbrs)
             player_yspeed: Optional velocity y (for precomputed_pbrs)
             jump_duration_remaining: Optional normalized [0,1] jump remaining (for precomputed_pbrs)
+            death_cause: Cause of death when player_dead (e.g. 'mine'); used for R_DEATH_MINE
 
         Returns:
             Total reward for this frame (scaled by global_reward_scale)
@@ -156,6 +169,8 @@ class PrimitiveRewardCalculator:
         # Explicit death penalty (sparse, applied on the terminal death frame)
         if player_dead:
             sparse_reward += self.r_death
+            if death_cause == "mine":
+                sparse_reward += self.r_death_mine
 
         # Determine terminal state
         is_terminal = player_dead or player_won or is_truncated
@@ -214,8 +229,14 @@ class PrimitiveRewardCalculator:
         else:
             self.prev_potential = current_potential
 
-        # Compose total reward
-        total_reward = sparse_reward + self.alpha * pbrs_reward
+        # Compose total reward: sparse + PBRS shaping + per-frame time penalty
+        # Time penalty discourages timeout-at-wall; must match MainRewardCalculator
+        # semantics so FiGAR-PPO gets consistent signal regardless of reward path.
+        total_reward = (
+            sparse_reward
+            + self.alpha * pbrs_reward
+            + self.time_penalty_per_frame
+        )
 
         # Track for diagnostics
         self.episode_pbrs_rewards.append(pbrs_reward)
@@ -230,6 +251,7 @@ class PrimitiveRewardCalculator:
         self.last_components = {
             "sparse_reward": sparse_reward,
             "pbrs_reward": pbrs_reward,
+            "time_penalty": self.time_penalty_per_frame,
             "total_reward": total_reward,
             "scaled_reward": scaled_reward,
             "current_potential": current_potential,

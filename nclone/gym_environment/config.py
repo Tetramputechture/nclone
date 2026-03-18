@@ -192,11 +192,35 @@ class EnvironmentConfig:
     # Frame skip
     frame_skip: int = 4
 
+    # Layer 3 FiGAR macro-action safety masking
+    enable_layer3_macro_action_mask: bool = False
+    layer3_duration_bins: tuple[int, ...] = (
+        1,
+        2,
+        3,
+        4,
+        6,
+        8,
+        12,
+        16,
+        24,
+        32,
+        45,
+        64,
+        90,
+    )
+    layer3_all_masked_fallback: str = "noop"
+
     def __post_init__(self):
         """Validate environment configuration."""
         if self.enable_logging:
             logging.basicConfig(level=logging.DEBUG)
             logging.info("Environment logging enabled")
+
+        if self.layer3_all_masked_fallback not in {"noop"}:
+            raise ValueError(
+                "layer3_all_masked_fallback must currently be 'noop'"
+            )
 
     @classmethod
     def for_training(cls, **kwargs) -> "EnvironmentConfig":
@@ -287,6 +311,10 @@ class EnvironmentConfig:
             "frame_skip": self.frame_skip,
             # Graph observation settings
             "enable_graph_observations": self.enable_graph_observations,
+            # Layer 3 settings
+            "enable_layer3_macro_action_mask": self.enable_layer3_macro_action_mask,
+            "layer3_duration_bins": self.layer3_duration_bins,
+            "layer3_all_masked_fallback": self.layer3_all_masked_fallback,
         }
 
 
