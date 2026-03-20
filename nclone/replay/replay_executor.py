@@ -34,6 +34,8 @@ from ..gym_environment.constants import (
     MAX_LOCKED_DOORS,
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
+    NINJA_STATE_DIM,
+    REACHABILITY_FEATURES_DIM,
 )
 from ..gym_environment.spatial_context import compute_spatial_context
 from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
@@ -526,27 +528,25 @@ class ReplayExecutor:
         exit_door_x, exit_door_y = self._get_exit_door_position()
         switch_activated = self._is_switch_activated()
 
-        # Get ninja state (40D enhanced physics)
+        # Get ninja state (24D streamlined physics)
         ninja_state = self.nplay_headless.get_ninja_state()
         if not isinstance(ninja_state, np.ndarray):
             ninja_state = np.array(ninja_state, dtype=np.float32)
 
-        # Calculate time_remaining (for replay, we use frame progress as approximation)
-        # Note: In replay context, we don't have access to truncation limits,
-        # so we use a simple frame-based approximation
-        current_frame = self.nplay_headless.sim.frame
-        estimated_max_frames = len(getattr(self, "_current_input_sequence", [])) or 2000
-        time_remaining = max(
-            0.0, (estimated_max_frames - current_frame) / estimated_max_frames
-        )
+        # game_state: 24 ninja + 3 physics-derived = 27 (matches NppEnvironment)
+        base_state = ninja_state[:NINJA_STATE_DIM].astype(np.float32)
+        physics_derived = self._compute_physics_derived_features()
+        game_state = np.concatenate([base_state, physics_derived]).astype(np.float32)
 
-        # Create 41D game_state (40D physics + 1D time_remaining) to match environment
-        game_state = np.append(ninja_state[:40], time_remaining).astype(np.float32)
-
-        # Compute reachability features (38-dim, expanded in Phases 1-5)
-        reachability_features = self._compute_reachability_features(
+        # Compute reachability features (8 base + 2 phi_gradient = 10)
+        # Phi gradient is zeros in ReplayExecutor (no precomputed PBRS)
+        reachability_base = self._compute_reachability_features(
             ninja_x, ninja_y, switch_x, switch_y, exit_door_x, exit_door_y
         )
+        phi_gradient = np.zeros(2, dtype=np.float32)  # No precomputed PBRS in replay
+        reachability_features = np.concatenate(
+            [reachability_base, phi_gradient]
+        ).astype(np.float32)
 
         # Get win/death state
         player_won = self.nplay_headless.ninja_has_won()
@@ -996,6 +996,87 @@ class ReplayExecutor:
             self.path_calculator,
             goal_positions=goal_positions,
         )
+
+        return features
+
+    def _compute_physics_derived_features(self) -> np.ndarray:
+        """Compute 3 physics-derived features matching NppEnvironment (27-dim game_state).
+
+        ReplayExecutor has no precomputed PBRS, so phi_gradient is (0,0) in reachability.
+        Uses _cached_graph_data for geometry-accurate time_to_ground when available.
+        """
+        import math
+        from ..gym_environment.constants import PHYSICS_DERIVED_DIM
+        from ..constants.physics_constants import (
+            DRAG_REGULAR,
+            GRAVITY_JUMP,
+            MAX_HOR_SPEED,
+            MAX_JUMP_DURATION,
+        )
+        from ..graph.reachability.directional_connectivity import find_platform_in_direction
+        from ..graph.reachability.path_distance_cache import NODE_WORLD_COORD_OFFSET
+
+        features = np.zeros(PHYSICS_DERIVED_DIM, dtype=np.float32)
+        ninja = self.nplay_headless.sim.ninja
+        vx, vy = ninja.xspeed, ninja.yspeed
+        g = ninja.applied_gravity
+
+        # time_to_ground: geometry-accurate via downward raycast
+        if ninja.floor_count > 0:
+            time_to_ground = 0.0
+        else:
+            graph_data = self._cached_graph_data or {}
+            spatial_hash = graph_data.get("spatial_hash")
+            physics_cache = graph_data.get("node_physics")
+            base_adjacency = graph_data.get("base_adjacency")
+
+            if spatial_hash is not None and physics_cache is not None and base_adjacency:
+                node_pos = (
+                    int(ninja.xpos) - NODE_WORLD_COORD_OFFSET,
+                    int(ninja.ypos) - NODE_WORLD_COORD_OFFSET,
+                )
+                dy = find_platform_in_direction(
+                    node_pos,
+                    (0, 1),
+                    base_adjacency,
+                    physics_cache,
+                    spatial_hash=spatial_hash,
+                    max_distance=500.0,
+                    step_size=12,
+                )
+                dy = min(dy, max(0.0, LEVEL_HEIGHT_PX - ninja.ypos))
+            else:
+                dy = max(0.0, LEVEL_HEIGHT_PX - ninja.ypos)
+
+            discriminant = vy * vy + 2.0 * g * dy
+            if g > 1e-9 and discriminant >= 0:
+                time_to_ground = max(0.0, (-vy + math.sqrt(discriminant)) / g)
+            else:
+                time_to_ground = 90.0
+
+        time_to_ground_norm = min(time_to_ground / 90.0, 1.0)
+        features[2] = float(time_to_ground_norm)
+
+        # horizontal_range_norm
+        if ninja.floor_count > 0:
+            horizontal_range_norm = 0.0
+        else:
+            drag_factor = (
+                DRAG_REGULAR ** (time_to_ground / 2.0) if time_to_ground > 0 else 1.0
+            )
+            horizontal_range = abs(vx) * time_to_ground * drag_factor
+            max_range = MAX_HOR_SPEED * 90.0
+            horizontal_range_norm = min(horizontal_range / max_range, 1.0)
+        features[0] = float(horizontal_range_norm)
+
+        # max_jump_height_norm
+        if ninja.state == 3 and ninja.jump_duration < MAX_JUMP_DURATION and vy < 0:
+            frames_left = MAX_JUMP_DURATION - ninja.jump_duration
+            remaining_height = abs(vy) * frames_left * 0.5
+            max_jump_height_norm = min(remaining_height / 60.0, 1.0)
+        else:
+            max_jump_height_norm = 0.0
+        features[1] = float(max_jump_height_norm)
 
         return features
 

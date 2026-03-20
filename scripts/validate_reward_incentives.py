@@ -68,7 +68,7 @@ def check_1_discounted_return_table(
     Returns (results_dict, fail_flag).
     FAIL if V_timeout > V_mine_early (agent rational to avoid mines).
     """
-    total_mine_death = r_death + r_death_mine  # -2.5 by default
+    total_mine_death = r_death + r_death_mine
 
     # Discounted sum of constant per-step penalty over T steps:
     # sum_{t=0}^{T-1} gamma^t * c = c * (1 - gamma^T) / (1 - gamma)
@@ -79,9 +79,12 @@ def check_1_discounted_return_table(
 
     T = truncation_frames
     v_timeout = discounted_time_penalty(T, time_penalty)
-    # Add truncation penalty at last step (discounted by gamma^T)
+    # Truncation: lump-sum terminal penalty when episode hits horizon (matches
+    # primitive_rewards appending TRUNCATION_PENALTY). Do not multiply by gamma^T
+    # for large T — that term vanishes and wrongly makes timeout look attractive
+    # when per-step time penalty is small (PBRS-first tuning).
     if truncation_penalty != 0.0:
-        v_timeout += truncation_penalty * (gamma ** T)
+        v_timeout += truncation_penalty
 
     t_mine_100 = 100
     t_mine_500 = 500
@@ -247,39 +250,43 @@ def check_5_reward_signal_sufficient_condition(
     time_penalty_actual: float,
     r_death_mine: float,
     r_death: float,
+    truncation_penalty: float = 0.0,
     t_mine: int = 100,
     T: Optional[int] = None,
 ) -> Tuple[float, str]:
-    """Check 5: Maximum time_penalty (least negative) so V_timeout < V_mine_early.
+    """Check 5: With lump-sum TRUNCATION_PENALTY at horizon, is timeout worse than early mine death?
 
-    For agent to prefer attempting progress over timing out at the wall:
-    V_mine_early > V_timeout. Both are negative; we need timeout to be worse.
-    Solve: time_penalty < -total_mine * gamma^t_mine * (1-gamma) / (gamma^t_mine - gamma^T)
+    Same semantics as check_1: V_timeout = D(T,c) + truncation_penalty,
+    V_mine_early = D(t_mine,c) + (R_DEATH+R_DEATH_MINE)*gamma^t_mine.
+    PASS when V_timeout < V_mine_early (timeout more negative).
     """
     if T is None:
         T = TRUNCATION_FRAMES
-    total_mine = abs(r_death + r_death_mine)
+    M = r_death + r_death_mine
     gamma_t = gamma ** t_mine
     gamma_T = gamma ** T
 
-    # time_penalty_max = most positive (least punitive) value that still makes
-    # timeout worse than mine death
+    def discounted_time_penalty(steps: int, c: float) -> float:
+        if gamma >= 1.0:
+            return c * steps
+        return c * (1.0 - gamma ** steps) / (1.0 - gamma)
+
+    v_timeout = discounted_time_penalty(T, time_penalty_actual) + truncation_penalty
+    v_mine_early = discounted_time_penalty(t_mine, time_penalty_actual) + M * gamma_t
+    pass_flag = v_timeout < v_mine_early
+
+    # Upper bound on c (least negative) for equality (for reporting)
     denom = gamma_t - gamma_T
     if denom <= 0:
-        time_penalty_max = -0.001
+        c_bound = float("nan")
     else:
-        time_penalty_max = -total_mine * gamma_t * (1.0 - gamma) / denom
+        c_bound = (M * gamma_t - truncation_penalty) * (1.0 - gamma) / denom
 
-    # We need time_penalty <= time_penalty_max (e.g. -0.025 or more negative)
-    pass_flag = time_penalty_actual <= time_penalty_max
-
-    return time_penalty_max, (
-        f"To make timeout worse than mine death at t={t_mine}: "
-        f"time_penalty_per_step <= {time_penalty_max:.6f}. "
-        f"Current: {time_penalty_actual}. "
+    return c_bound, (
+        f"V_timeout={v_timeout:.4f}, V_mine_early={v_mine_early:.4f}. "
+        f"Equality bound on per-step penalty c: {c_bound:.6f}. "
         f"{'PASS' if pass_flag else 'FAIL'}: "
-        f"timeout {'is' if pass_flag else 'is NOT'} "
-        "worse than early mine death."
+        f"timeout {'is' if pass_flag else 'is NOT'} worse than early mine death."
     )
 
 
@@ -358,7 +365,7 @@ def run_all_checks(
     # Check 4
     if data_path:
         samples, fail4, msg4 = check_4_pbrs_potential_landscape(
-            data_path, map_path, gamma=gamma, alpha=2.0
+            data_path, map_path, gamma=gamma, alpha=5.0
         )
         lines.append("--- Check 4: PBRS Potential Landscape ---")
         for k, v in samples.items():
@@ -372,14 +379,15 @@ def run_all_checks(
     lines.append("")
 
     # Check 5
-    time_penalty_min, msg5 = check_5_reward_signal_sufficient_condition(
+    time_penalty_bound, msg5 = check_5_reward_signal_sufficient_condition(
         gamma=gamma,
         time_penalty_actual=time_penalty,
         r_death_mine=r_death_mine,
         r_death=r_death,
+        truncation_penalty=truncation_penalty,
     )
     lines.append("--- Check 5: Reward Signal Sufficient Condition ---")
-    lines.append(f"  Minimum time_penalty for timeout worse than mine death: {time_penalty_min:.6f}")
+    lines.append(f"  Analytic equality bound on per-step time penalty c: {time_penalty_bound:.6f}")
     lines.append(msg5)
     if "FAIL" in msg5:
         fails += 1

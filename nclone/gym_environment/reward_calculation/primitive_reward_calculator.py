@@ -3,12 +3,13 @@
 Implements the optimal PBRS setup from pbrs-plan.md:
 - Precomputed Phi grids for O(1) potential lookup
 - Explicit 3-state reward machine for task phase tracking
-- Per-frame PBRS: F_t = gamma * Phi(s') - Phi(s)
+- Per-frame PBRS (precomputed VF path): F_t = Phi(s') - Phi(s)  (undiscounted)
 - Total reward: r_total = r_sparse(RM) + alpha * F_t
 
-Key invariants:
-- Phi(terminal) = 0 always (death, timeout, success)
-- Same gamma everywhere (PBRS, GAE, value function)
+Key invariants (precomputed 5D VF):
+- Use actual Phi(s') at terminals; sparse rewards encode death/success/timeout.
+- F_t telescopes to Phi(end)-Phi(start) (no gamma in F_t), so progress dominates
+  over episode length; time_penalty_per_frame provides hurry incentive.
 - Primitive-level F_t computed every physics frame
 - Phase-correct targeting (before switch -> switch; after -> exit)
 
@@ -17,7 +18,7 @@ FiGAR-PPO, where rewards are computed every physics frame.
 """
 
 import logging
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, List
 
 from .reward_machine import (
     RewardMachine,
@@ -44,8 +45,8 @@ class PrimitiveRewardCalculator:
     Computes per-frame rewards suitable for primitive-level GAE:
         r_t = r_sparse(RM transition) + alpha * F_t
 
-    where F_t = gamma * Phi(s_{t+1}, u_{t+1}) - Phi(s_t, u_t)
-    and Phi(s, u) = Phi_state(s, u) + Phi_phase(u)
+    For precomputed_pbrs: F_t = Phi(s') - Phi(s) (full Phi from TwoPhaseValuePBRS).
+    Otherwise: F_t = gamma * Phi(s') - Phi(s) with Phi from reward machine + grid.
 
     Phi_state comes from precomputed grids (O(1) lookup).
     Phi_phase comes from the reward machine state.
@@ -106,6 +107,9 @@ class PrimitiveRewardCalculator:
         self.episode_sparse_rewards: List[float] = []
         self.episode_forward_steps: int = 0
         self.episode_backtrack_steps: int = 0
+        # Raw Φ deltas (pre-alpha) summed when graph progress is forward vs backward
+        self._pbrs_raw_sum_forward: float = 0.0
+        self._pbrs_raw_sum_backtrack: float = 0.0
         self.episode_terminal_reward: float = 0.0
 
         # Step-level components for TensorBoard logging
@@ -199,32 +203,36 @@ class PrimitiveRewardCalculator:
             phi_state = phi_grid_cache.get_phi(player_x, player_y, rm_state)
 
         # Compute total potential
-        # When using precomputed_pbrs, phi_state is already the full 5D potential [0,1]
-        # Otherwise: Phi(s, u) = Phi_state + Phi_phase from reward machine
+        # Precomputed path: phi_state is full Phi from SurfaceGraphPBRS (phase-aware).
+        # Keep Phi at terminals so F_t does not inject a spurious +(-Phi) kick on death.
+        # Grid path: reward machine applies terminal handling for policy invariance.
         if precomputed_pbrs is not None:
-            current_potential = 0.0 if is_terminal else phi_state
+            current_potential = phi_state
         else:
             current_potential = self.reward_machine.get_total_potential(
                 phi_state, is_terminal=is_terminal
             )
 
-        # Compute PBRS shaping reward: F_t = gamma * Phi(s') - Phi(s)
+        prev_for_log = self.prev_potential
+
+        # PBRS: undiscounted delta for precomputed VF (see module docstring).
         pbrs_reward = 0.0
         if self.prev_potential is not None:
-            pbrs_reward = self.gamma * current_potential - self.prev_potential
+            if precomputed_pbrs is not None:
+                pbrs_reward = current_potential - self.prev_potential
+            else:
+                pbrs_reward = self.gamma * current_potential - self.prev_potential
 
-            # Track forward/backtrack for diagnostics
-            potential_change = current_potential - (self.prev_potential / self.gamma
-                                                     if self.gamma != 0 else 0)
             actual_change = current_potential - self.prev_potential
             if actual_change > 0.001:
                 self.episode_forward_steps += 1
+                self._pbrs_raw_sum_forward += pbrs_reward
             elif actual_change < -0.001:
                 self.episode_backtrack_steps += 1
+                self._pbrs_raw_sum_backtrack += pbrs_reward
 
         # Update previous potential for next frame
         if is_terminal:
-            # Reset potential tracking on terminal (next episode starts fresh)
             self.prev_potential = None
         else:
             self.prev_potential = current_potential
@@ -255,7 +263,7 @@ class PrimitiveRewardCalculator:
             "total_reward": total_reward,
             "scaled_reward": scaled_reward,
             "current_potential": current_potential,
-            "prev_potential": self.prev_potential if self.prev_potential else 0.0,
+            "prev_potential": prev_for_log if prev_for_log is not None else 0.0,
             "phi_state": phi_state,
             "phi_phase": self.reward_machine.get_phi_phase(),
             "rm_state": rm_state,
@@ -267,17 +275,7 @@ class PrimitiveRewardCalculator:
         return scaled_reward
 
     def calculate_death_reward(self) -> float:
-        """Calculate reward for death (terminal state).
-
-        Death gets no sparse reward, but PBRS ensures Phi(terminal)=0,
-        which naturally penalizes dying (potential drops to 0 from wherever
-        the agent was).
-
-        Returns:
-            Scaled death reward (typically negative due to PBRS Phi drop to 0)
-        """
-        # The PBRS component already handles this through Phi(terminal)=0
-        # No additional death penalty needed -- the potential drop IS the penalty
+        """Legacy hook; primitive path uses sparse death penalties in calculate_frame_reward."""
         return 0.0
 
     def reset(self) -> None:
@@ -289,6 +287,8 @@ class PrimitiveRewardCalculator:
         self.episode_sparse_rewards = []
         self.episode_forward_steps = 0
         self.episode_backtrack_steps = 0
+        self._pbrs_raw_sum_forward = 0.0
+        self._pbrs_raw_sum_backtrack = 0.0
         self.episode_terminal_reward = 0.0
         self.last_components = {}
 
@@ -300,15 +300,89 @@ class PrimitiveRewardCalculator:
         """
         total_pbrs = sum(self.episode_pbrs_rewards) if self.episode_pbrs_rewards else 0.0
         total_sparse = sum(self.episode_sparse_rewards) if self.episode_sparse_rewards else 0.0
-        total_reward = total_pbrs * self.alpha + total_sparse
+        n = len(self.episode_pbrs_rewards)
+        time_unscaled = n * self.time_penalty_per_frame
+        total_unscaled = total_sparse + self.alpha * total_pbrs + time_unscaled
+        scaled_return = total_unscaled * self.global_reward_scale
 
+        fwd_n = max(self.episode_forward_steps, 1)
+        bck_n = max(self.episode_backtrack_steps, 1)
         return {
             "episode/total_pbrs": total_pbrs,
             "episode/total_sparse": total_sparse,
-            "episode/total_reward": total_reward,
-            "episode/forward_steps": self.episode_forward_steps,
-            "episode/backtrack_steps": self.episode_backtrack_steps,
+            "episode/total_reward": total_unscaled,
+            "episode/scaled_return_from_components": scaled_return,
+            "episode/forward_steps": float(self.episode_forward_steps),
+            "episode/backtrack_steps": float(self.episode_backtrack_steps),
             "episode/terminal_reward": self.episode_terminal_reward,
-            "episode/steps": self.steps_taken,
+            "episode/steps": float(self.steps_taken),
             "episode/pbrs_mean": total_pbrs / max(self.steps_taken, 1),
+            # On-policy VF audit: Φ delta should be positive on forward graph steps
+            "episode/pbrs_mean_raw_on_forward_frames": self._pbrs_raw_sum_forward
+            / fwd_n
+            if self.episode_forward_steps > 0
+            else 0.0,
+            "episode/pbrs_mean_raw_on_backtrack_frames": self._pbrs_raw_sum_backtrack
+            / bck_n
+            if self.episode_backtrack_steps > 0
+            else 0.0,
+        }
+
+    def get_episode_reward_metrics(self) -> Dict[str, Any]:
+        """Episode metrics for PBRSLoggingCallback / EnhancedTensorBoardCallback.
+
+        Keys mirror ``RewardCalculator.get_episode_reward_metrics`` but values
+        come from primitive PBRS (sparse + alpha * F_t + per-frame time penalty),
+        scaled consistently with :meth:`calculate_frame_reward`.
+        """
+        import numpy as np
+
+        pbrs_list = self.episode_pbrs_rewards
+        scale = self.global_reward_scale
+        total_sparse_u = (
+            sum(self.episode_sparse_rewards) if self.episode_sparse_rewards else 0.0
+        )
+        n_frames = len(pbrs_list)
+        time_u = n_frames * self.time_penalty_per_frame
+
+        per_frame_pbrs_scaled = [self.alpha * r * scale for r in pbrs_list] if pbrs_list else []
+        pbrs_total_scaled = float(sum(per_frame_pbrs_scaled))
+        time_penalty_total_scaled = time_u * scale
+        sparse_total_scaled = total_sparse_u * scale
+
+        hwm_mean = float(np.mean(per_frame_pbrs_scaled)) if per_frame_pbrs_scaled else 0.0
+        hwm_std = float(np.std(per_frame_pbrs_scaled)) if per_frame_pbrs_scaled else 0.0
+
+        nav = self.episode_forward_steps + self.episode_backtrack_steps
+        forward_pct = (
+            (self.episode_forward_steps / nav * 100.0) if nav > 0 else 0.0
+        )
+
+        lc = self.last_components or {}
+        ratio = 0.0
+        if abs(time_penalty_total_scaled) > 1e-12:
+            ratio = pbrs_total_scaled / abs(time_penalty_total_scaled)
+
+        return {
+            "pbrs_total": pbrs_total_scaled,
+            "hwm_total": pbrs_total_scaled,
+            "time_penalty_total": time_penalty_total_scaled,
+            "sparse_total_scaled": sparse_total_scaled,
+            "terminal_reward": self.episode_terminal_reward * scale,
+            "pbrs_to_penalty_ratio": ratio,
+            "forward_steps": self.episode_forward_steps,
+            "backtrack_steps": self.episode_backtrack_steps,
+            "pbrs_mean": hwm_mean,
+            "pbrs_std": hwm_std,
+            "hwm_mean": hwm_mean,
+            "hwm_std": hwm_std,
+            "current_potential": lc.get("current_potential"),
+            "prev_potential": lc.get("prev_potential"),
+            "path_optimality": 0.0,
+            "forward_progress_pct": forward_pct,
+            "backtracking_pct": 100.0 - forward_pct if nav > 0 else 0.0,
+            "episode_path_length": 0.0,
+            "optimal_path_length": 0.0,
+            "watermark_switch": 0.0,
+            "watermark_exit": 0.0,
         }

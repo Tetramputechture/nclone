@@ -199,15 +199,17 @@ class EnvironmentConfig:
         2,
         3,
         4,
+        5,
         6,
         8,
+        10,
         12,
         16,
+        20,
         24,
         32,
-        45,
+        48,
         64,
-        90,
     )
     layer3_all_masked_fallback: str = "noop"
 

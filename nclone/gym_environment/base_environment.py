@@ -351,7 +351,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         self.primitive_reward_calculator = PrimitiveRewardCalculator(
             gamma=pbrs_gamma,
-            alpha=2.0,          # PBRS total ≈ 3.0 across full episode (matches HWM_ALPHA spec)
+            alpha=5.0,  # Stronger PBRS vs TIME_PENALTY_PER_STEP for FiGAR primitive rewards
             r_switch=R_SWITCH,  # 1.0
             r_exit=R_EXIT,      # 5.0
             r_death=R_DEATH,    # -0.5
@@ -694,6 +694,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if not terminated:
                 truncated = self._check_curriculum_aware_truncation()
 
+            # Primitive / FiGAR path: append truncation penalty before episode reward + info
+            # so current_ep_reward, info["r"], and info["primitive_rewards"] stay consistent.
+            if self._current_precomputed_pbrs is not None and truncated and primitive_rewards:
+                from .reward_calculation.reward_constants import TRUNCATION_PENALTY
+
+                primitive_rewards = list(primitive_rewards)
+                primitive_rewards.append(TRUNCATION_PENALTY)
+
             self._track_position_after_step()
 
             # Invalidate observation cache since game state changed
@@ -711,35 +719,42 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Get player_won for reward calculation
             player_won = final_obs.get("player_won", False)
 
+            use_primitive_reward_path = self._current_precomputed_pbrs is not None
+
             if not self.skip_reward_calculation:
                 # Hook: After observation, before reward calculation
                 self._pre_reward_hook(final_obs, player_won)
 
-                # Calculate reward using initial→final transition with frame count scaling
-                reward = self.reward_calculator.calculate_reward(
-                    final_obs,
-                    initial_obs,
-                    action,
-                    frames_executed=frames_executed,
-                    curriculum_manager=self.goal_curriculum_manager,
-                    truncated=truncated,
-                )
+                if use_primitive_reward_path:
+                    # FiGAR-PPO: only PrimitiveRewardCalculator runs (precomputed PBRS path).
+                    reward = float(sum(primitive_rewards)) if primitive_rewards else 0.0
+                    self.current_ep_reward += reward
+                else:
+                    # Standard PPO: main HWM / grid reward calculator
+                    reward = self.reward_calculator.calculate_reward(
+                        final_obs,
+                        initial_obs,
+                        action,
+                        frames_executed=frames_executed,
+                        curriculum_manager=self.goal_curriculum_manager,
+                        truncated=truncated,
+                    )
 
-                # Update dynamic truncation limit if PBRS surface area is now available
-                self._update_dynamic_truncation_if_needed()
+                    # Update dynamic truncation limit if PBRS surface area is now available
+                    self._update_dynamic_truncation_if_needed()
 
-                # Hook: Modify reward if needed
-                reward = self._modify_reward_hook(
-                    reward, final_obs, player_won, terminated
-                )
+                    # Hook: Modify reward if needed
+                    reward = self._modify_reward_hook(
+                        reward, final_obs, player_won, terminated
+                    )
 
-                # === TRUNCATION HANDLING ===
-                # No additional penalty for truncation. HWM pipeline:
-                # - HWM shaping rewards progress toward objectives (zero when no progress)
-                # - Sparse terminal rewards (R_SWITCH, R_EXIT, R_DEATH) define task hierarchy
-                # - Truncation yields 0 reward; agent learns from HWM accumulated during episode
+                    # === TRUNCATION HANDLING ===
+                    # No additional penalty for truncation. HWM pipeline:
+                    # - HWM shaping rewards progress toward objectives (zero when no progress)
+                    # - Sparse terminal rewards (R_SWITCH, R_EXIT, R_DEATH) define task hierarchy
+                    # - Truncation yields 0 reward; agent learns from HWM accumulated during episode
 
-                self.current_ep_reward += reward
+                    self.current_ep_reward += reward
             else:
                 reward = 0.0
 
@@ -758,46 +773,83 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if not self.skip_reward_calculation and truncated and not terminated:
                 from .reward_calculation.reward_constants import GLOBAL_REWARD_SCALE
 
-                pbrs_total_unscaled = (
-                    sum(self.reward_calculator.episode_pbrs_rewards)
-                    if hasattr(self.reward_calculator, "episode_pbrs_rewards")
-                    else 0.0
-                )
-                time_total_unscaled = (
-                    sum(self.reward_calculator.episode_time_penalties)
-                    if hasattr(self.reward_calculator, "episode_time_penalties")
-                    else 0.0
-                )
-                pbrs_total_scaled = pbrs_total_unscaled * GLOBAL_REWARD_SCALE
-                time_total_scaled = time_total_unscaled * GLOBAL_REWARD_SCALE
-
-                # Calculate progress metrics for visualization
                 combined_path_distance = final_obs.get(
                     "_pbrs_combined_path_distance", 1000.0
                 )
                 final_distance = final_obs.get("_pbrs_last_distance_to_goal", None)
-                if final_distance is None or final_distance == float("inf"):
-                    final_distance = (
-                        self.reward_calculator.closest_distance_this_episode
+
+                if use_primitive_reward_path:
+                    prc = self.primitive_reward_calculator
+                    sc = prc.global_reward_scale
+                    total_pbrs_u = (
+                        sum(prc.episode_pbrs_rewards)
+                        if prc.episode_pbrs_rewards
+                        else 0.0
                     )
-
-                if combined_path_distance > 0 and final_distance != float("inf"):
-                    progress = 1.0 - (final_distance / combined_path_distance)
-                    progress = max(0.0, min(1.0, progress))
+                    n_fr = len(prc.episode_pbrs_rewards)
+                    pbrs_total_scaled = prc.alpha * total_pbrs_u * sc
+                    time_total_scaled = n_fr * prc.time_penalty_per_frame * sc
+                    # No main PBRS path distance cache in primitive-only mode
+                    if final_distance is None or final_distance == float("inf"):
+                        progress = 0.0
+                    elif combined_path_distance > 0:
+                        progress = 1.0 - (final_distance / combined_path_distance)
+                        progress = max(0.0, min(1.0, progress))
+                    else:
+                        progress = 0.0
+                    info["_timeout_reward_breakdown"] = {
+                        "pbrs_total": pbrs_total_scaled,
+                        "time_total": time_total_scaled,
+                        "final_progress": progress,
+                        "final_distance": final_distance,
+                        "combined_path": combined_path_distance,
+                        "forward_steps": prc.episode_forward_steps,
+                        "backtrack_steps": prc.episode_backtrack_steps,
+                    }
                 else:
-                    progress = 0.0
+                    pbrs_total_unscaled = (
+                        sum(self.reward_calculator.episode_pbrs_rewards)
+                        if hasattr(self.reward_calculator, "episode_pbrs_rewards")
+                        else 0.0
+                    )
+                    time_total_unscaled = (
+                        sum(self.reward_calculator.episode_time_penalties)
+                        if hasattr(self.reward_calculator, "episode_time_penalties")
+                        else 0.0
+                    )
+                    pbrs_total_scaled = pbrs_total_unscaled * GLOBAL_REWARD_SCALE
+                    time_total_scaled = time_total_unscaled * GLOBAL_REWARD_SCALE
 
-                # Store in info for route visualization (visible without logs)
-                # SIMPLIFIED 2025-12-25: Removed stagnation penalty tracking
-                info["_timeout_reward_breakdown"] = {
-                    "pbrs_total": pbrs_total_scaled,
-                    "time_total": time_total_scaled,
-                    "final_progress": progress,
-                    "final_distance": final_distance,
-                    "combined_path": combined_path_distance,
-                    "forward_steps": self.reward_calculator.episode_forward_steps,
-                    "backtrack_steps": self.reward_calculator.episode_backtrack_steps,
-                }
+                    if final_distance is None or final_distance == float("inf"):
+                        final_distance = (
+                            self.reward_calculator.closest_distance_this_episode
+                        )
+
+                    if combined_path_distance > 0 and final_distance != float("inf"):
+                        progress = 1.0 - (final_distance / combined_path_distance)
+                        progress = max(0.0, min(1.0, progress))
+                    else:
+                        progress = 0.0
+
+                    info["_timeout_reward_breakdown"] = {
+                        "pbrs_total": pbrs_total_scaled,
+                        "time_total": time_total_scaled,
+                        "final_progress": progress,
+                        "final_distance": final_distance,
+                        "combined_path": combined_path_distance,
+                        "forward_steps": self.reward_calculator.episode_forward_steps,
+                        "backtrack_steps": self.reward_calculator.episode_backtrack_steps,
+                    }
+
+            # Route viz: full primitive reward breakdown (death, timeout, success)
+            if (
+                not self.skip_reward_calculation
+                and use_primitive_reward_path
+                and (terminated or truncated)
+            ):
+                info["_primitive_reward_breakdown"] = self._build_primitive_reward_breakdown(
+                    final_obs, player_won, terminated, truncated
+                )
 
             # Add frame skip stats to info
             info["frame_skip_stats"] = {
@@ -805,13 +857,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 "frames_executed": frames_executed,
             }
 
-            # Expose per-frame primitive rewards for FiGAR-PPO primitive-level GAE
-            # When truncated, add truncation penalty so FiGAR gets the terminal signal
-            if truncated and primitive_rewards:
-                from .reward_calculation.reward_constants import TRUNCATION_PENALTY
-
-                primitive_rewards = list(primitive_rewards)
-                primitive_rewards.append(TRUNCATION_PENALTY)
+            # Per-frame primitive rewards (truncation already applied above for precomputed path)
             info["primitive_rewards"] = primitive_rewards
 
             # Hook: Add additional info fields
@@ -1486,6 +1532,85 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 )
                 self._warned_about_position = True
 
+    def _build_primitive_reward_breakdown(
+        self,
+        final_obs: Dict[str, Any],
+        player_won: bool,
+        terminated: bool,
+        truncated: bool,
+    ) -> Dict[str, Any]:
+        """Scaled reward components for route visualization (FiGAR / precomputed PBRS).
+
+        ``episode_return`` is ``current_ep_reward`` (sum of ``primitive_rewards`` per
+        step, including truncation penalty when applicable). ``components_sum`` is
+        sparse + α·PBRS + time + truncation in scaled units; ``residual`` catches
+        float drift or inconsistent truncation scaling.
+        """
+        from .reward_calculation.reward_constants import TRUNCATION_PENALTY
+
+        prc = self.primitive_reward_calculator
+        sc = prc.global_reward_scale
+        total_pbrs_u = sum(prc.episode_pbrs_rewards) if prc.episode_pbrs_rewards else 0.0
+        total_sparse_u = (
+            sum(prc.episode_sparse_rewards) if prc.episode_sparse_rewards else 0.0
+        )
+        n = len(prc.episode_pbrs_rewards)
+        pbrs_scaled = prc.alpha * total_pbrs_u * sc
+        sparse_scaled = total_sparse_u * sc
+        time_scaled = n * prc.time_penalty_per_frame * sc
+        trunc_scaled = (TRUNCATION_PENALTY * sc) if truncated else 0.0
+
+        components_sum = pbrs_scaled + sparse_scaled + time_scaled + trunc_scaled
+        ep_ret = float(self.current_ep_reward)
+        residual = ep_ret - components_sum
+
+        if truncated and not terminated:
+            combined_path_distance = final_obs.get("_pbrs_combined_path_distance", 1000.0)
+            final_distance = final_obs.get("_pbrs_last_distance_to_goal", None)
+            if final_distance is None or final_distance == float("inf"):
+                progress = 0.0
+            elif combined_path_distance > 0:
+                progress = 1.0 - (final_distance / combined_path_distance)
+                progress = max(0.0, min(1.0, progress))
+            else:
+                progress = 0.0
+        else:
+            combined_path_distance = None
+            final_distance = None
+            progress = None
+
+        death_cause = None
+        if terminated and not player_won:
+            death_cause = self.nplay_headless.ninja_death_cause()
+
+        if player_won:
+            terminal_label = "win"
+        elif truncated:
+            terminal_label = "timeout"
+        else:
+            terminal_label = "death"
+
+        return {
+            "pbrs_scaled": pbrs_scaled,
+            "sparse_scaled": sparse_scaled,
+            "time_scaled": time_scaled,
+            "truncation_scaled": trunc_scaled,
+            "components_sum": components_sum,
+            "episode_return": ep_ret,
+            "residual": residual,
+            "forward_steps": prc.episode_forward_steps,
+            "backtrack_steps": prc.episode_backtrack_steps,
+            "n_primitive_frames": n,
+            "death_cause": death_cause,
+            "terminal": terminal_label,
+            "alpha": prc.alpha,
+            "gamma": prc.gamma,
+            "global_reward_scale": sc,
+            "final_progress": progress,
+            "final_distance": final_distance,
+            "combined_path_distance": combined_path_distance,
+        }
+
     def _build_episode_info(
         self, player_won: bool, terminated: bool, truncated: bool
     ) -> Dict[str, Any]:
@@ -1781,9 +1906,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Episode-end reward metrics (only populated when the episode is actually done)
         if terminated or truncated:
-            # HWM metrics — activates existing PBRSLoggingCallback / EnhancedTensorBoardCallback
-            # logic that was already guarded behind `if "episode_pbrs_metrics" in info:`
-            if hasattr(self.reward_calculator, "get_episode_reward_metrics"):
+            # FiGAR / precomputed PBRS: TensorBoard + PBRSLoggingCallback use primitive stats only
+            if self._current_precomputed_pbrs is not None:
+                info["episode_pbrs_metrics"] = (
+                    self.primitive_reward_calculator.get_episode_reward_metrics()
+                )
+            elif hasattr(self.reward_calculator, "get_episode_reward_metrics"):
                 info["episode_pbrs_metrics"] = (
                     self.reward_calculator.get_episode_reward_metrics()
                 )
@@ -1798,6 +1926,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 sg["contact_wall_frames"] = self._contact_wall_frames
                 sg["contact_airborne_frames"] = self._contact_airborne_frames
                 sg["vf_stats"] = self._current_precomputed_pbrs.get_statistics()
+                # Full episode return (includes truncation penalty on last step when timed out)
+                sg["scaled_episode_return"] = float(self.current_ep_reward)
                 info["episode_precomputed_pbrs_metrics"] = sg
                 info["precomputed_pbrs_active"] = True
             else:
