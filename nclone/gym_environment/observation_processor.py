@@ -31,7 +31,7 @@ This class should handle returning:
 import logging
 import numpy as np
 import cv2
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .constants import (
     PLAYER_FRAME_WIDTH,
@@ -317,6 +317,9 @@ class ObservationProcessor:
                 "exit_door_x",
                 "exit_door_y",
                 "switch_activated",
+                # Layer 1 structured observations (NPP-9)
+                "tile_grid",
+                "entity_overlays",
             ]
             for key in passthrough_keys:
                 if key in obs:

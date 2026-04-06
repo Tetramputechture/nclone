@@ -21,6 +21,7 @@ from ..graph.level_data import LevelData, extract_start_position_from_map_data
 
 from .constants import (
     GAME_STATE_CHANNELS,
+    NUM_TILE_TYPES,
     PLAYER_FRAME_WIDTH,
     PLAYER_FRAME_HEIGHT,
     RENDERED_VIEW_WIDTH,
@@ -31,6 +32,7 @@ from .constants import (
 )
 from .reward_calculation.main_reward_calculator import RewardCalculator
 from .reward_calculation.reward_config import RewardConfig
+from .entity_overlay_utils import compute_entity_overlays
 from .observation_processor import ObservationProcessor
 from .profiling_mixin import ProfilingMixin
 from .truncation_checker import TruncationChecker
@@ -396,6 +398,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_doors: Optional[list] = None
         self._cached_locked_door_switches: Optional[list] = None
         self._cached_toggle_mines: Optional[list] = None
+        self._cached_tile_grid: Optional[np.ndarray] = None
+        self._cached_bounce_blocks: Optional[list] = None
+        self._cached_thwumps: Optional[list] = None
+        self._cached_launch_pads: Optional[list] = None
 
         # Load the initial map
         self.map_loader.load_map()
@@ -448,6 +454,20 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 shape=(6, self._layer3_num_durations),
                 dtype=np.int8,
             )
+
+        # Layer 1 structured observations (NPP-9): tile indices + entity overlays
+        obs_spaces["tile_grid"] = box.Box(
+            low=0,
+            high=NUM_TILE_TYPES - 1,
+            shape=(MAP_TILE_WIDTH, MAP_TILE_HEIGHT),
+            dtype=np.int8,
+        )
+        obs_spaces["entity_overlays"] = box.Box(
+            low=0.0,
+            high=1.0,
+            shape=(8, MAP_TILE_WIDTH, MAP_TILE_HEIGHT),
+            dtype=np.float32,
+        )
 
         # Note: time_remaining is now included as the 41st feature in game_state
 
@@ -2137,6 +2157,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_doors = None
         self._cached_locked_door_switches = None
         self._cached_toggle_mines = None
+        self._cached_tile_grid = None
+        self._cached_bounce_blocks = None
+        self._cached_thwumps = None
+        self._cached_launch_pads = None
 
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
@@ -3345,6 +3369,16 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 EntityType.TOGGLE_MINE, []
             )
 
+        if self._cached_tile_grid is None:
+            tile_data = self.nplay_headless.sim.get_tile_grid()
+            self._cached_tile_grid = np.array(tile_data, dtype=np.int8).reshape(23, 42).T
+
+        if self._cached_bounce_blocks is None:
+            ed = self.nplay_headless.sim.entity_dic
+            self._cached_bounce_blocks = ed.get(EntityType.BOUNCE_BLOCK, [])
+            self._cached_thwumps = ed.get(EntityType.THWUMP, [])
+            self._cached_launch_pads = ed.get(EntityType.LAUNCH_PAD, [])
+
         # Use cached static values (with fallback to fresh fetch if cache failed)
         switch_pos = self._cached_switch_pos
         if switch_pos is None:
@@ -3420,6 +3454,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     f"Entity repositioning failed or was undone! Switch will be collected immediately!"
                 )
 
+        entity_overlays = compute_entity_overlays(
+            ninja_pos=(float(ninja_pos[0]), float(ninja_pos[1])),
+            switch_pos=switch_pos,
+            switch_activated=switch_activated,
+            exit_pos=exit_pos,
+            deadly_mines=self._cached_toggle_mines or [],
+            safe_mines=toggled_mines,
+            bounce_blocks=self._cached_bounce_blocks or [],
+            thwumps=self._cached_thwumps or [],
+            launch_pads=self._cached_launch_pads or [],
+        )
+
         # Extract jump_duration_remaining from ninja_state (index 11, 0-indexed)
         # This is normalized [0, 1]: 1.0 = full jump available, 0.0 = no jump frames left
         jump_duration_remaining = (
@@ -3452,6 +3498,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "locked_door_switches": locked_door_switches,
             "action_mask": action_mask,
             "map_name": map_name,  # For waypoint lookups by filename
+            "tile_grid": self._cached_tile_grid
+            if self._cached_tile_grid is not None
+            else np.zeros((MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.int8),
+            "entity_overlays": entity_overlays,
         }
         if duration_mask is not None:
             obs["duration_mask"] = duration_mask

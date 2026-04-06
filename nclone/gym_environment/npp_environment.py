@@ -25,7 +25,6 @@ from .constants import (
     SWITCH_STATES_DIM,
     MAX_LOCKED_DOORS_ATTENTION,
     SPATIAL_CONTEXT_DIM,
-    NUM_TILE_TYPES,
 )
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
@@ -331,16 +330,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             dtype=np.float32,
         )
 
-        # Level context observations (tile grid + level ID for per-level CNN encoding)
-        # Only included when enable_level_context_observations=True; otherwise excluded
-        # to avoid ~1KB overhead per observation step when level context is not needed.
+        # Level context: stable level_id only; tile_grid is always in base (NPP-9).
+        # Only level_id is gated to avoid extra rollout fields when unused.
         if self.enable_level_context_observations:
-            obs_spaces["tile_grid"] = box.Box(
-                low=0,
-                high=NUM_TILE_TYPES - 1,
-                shape=(MAP_TILE_WIDTH, MAP_TILE_HEIGHT),  # (42, 23)
-                dtype=np.int8,
-            )
             obs_spaces["level_id"] = box.Box(
                 low=0,
                 high=2**31 - 1,
