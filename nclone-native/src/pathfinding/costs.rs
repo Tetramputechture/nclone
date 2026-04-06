@@ -13,10 +13,10 @@ pub const AERIAL_UPWARD_BASE_MULTIPLIER: f64 = 3.0;
 // Momentum-aware pathfinding cost constants
 pub const MOMENTUM_CONTINUE_MULTIPLIER: f64 = 0.7;
 pub const MOMENTUM_REVERSE_MULTIPLIER: f64 = 2.5;
-pub const MOMENTUM_BUILDING_THRESHOLD: i32 = 12;
+pub const MOMENTUM_BUILDING_THRESHOLD: i32 = 6;
 
 // Sub-node spacing in pixels
-pub const SUB_NODE_SIZE: i32 = 12;
+pub const SUB_NODE_SIZE: i32 = 6;
 
 // Aerial descent chain constants
 pub const AERIAL_DESCENT_MILD_THRESHOLD: i32 = 5;
@@ -61,13 +61,13 @@ pub fn get_aerial_descent_chain_multiplier(chain_count: i32) -> f64 {
 
 /// Compute geometric edge cost between two nodes (pixels).
 ///
-/// Cardinal moves: 12px. Diagonal moves: 12 * sqrt(2) ≈ 16.97px.
+/// Cardinal moves: 6px. Diagonal moves: 6 * sqrt(2) ≈ 8.49px.
 pub fn geometric_edge_cost(from: (i32, i32), to: (i32, i32)) -> f64 {
     let dx = (to.0 - from.0) as f64;
     let dy = (to.1 - from.1) as f64;
     if dx != 0.0 && dy != 0.0 {
         (dx * dx + dy * dy).sqrt()
     } else {
-        12.0 // SUB_NODE_SIZE
+        6.0 // SUB_NODE_SIZE
     }
 }

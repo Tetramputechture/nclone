@@ -11,9 +11,9 @@ use pyo3::prelude::*;
 
 use crate::constants::{MAP_HEIGHT, MAP_WIDTH};
 
-const PHI_GRID_WIDTH: usize = 88;
-const PHI_GRID_HEIGHT: usize = 50;
-const PHI_GRID_RESOLUTION: f64 = 12.0;
+const PHI_GRID_WIDTH: usize = 176;
+const PHI_GRID_HEIGHT: usize = 100;
+const PHI_GRID_RESOLUTION: f64 = 6.0;
 const NODE_WORLD_COORD_OFFSET: i32 = 24;
 
 /// Level cache with precomputed geometric distances from goals.

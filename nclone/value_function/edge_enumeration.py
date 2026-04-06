@@ -76,6 +76,10 @@ class EdgeResult:
     src_node: int
     dst_node: int
     weight: float  # frames (may include mine-proximity penalty)
+    jump_hold_frames: int = 0   # 0 for runs/slides; hold duration for jumps
+    h_input_during: int = 0     # primary horizontal input (-1/0/1)
+    # Note: only the primary (during-hold) air control is stored. Post-release
+    # air control is learned reactively by the agent from spatial context.
 
 
 @dataclass
@@ -287,7 +291,7 @@ def _enumerate_node_edges(
     edges: List[EdgeResult] = []
     waypoints: List[ArcWaypoint] = []
 
-    def _try_edge(landing, frames, arc_wps):
+    def _try_edge(landing, frames, arc_wps, jump_hold_frames: int = 0, h_input_during: int = 0):
         """Process a simulation result into an edge + waypoints."""
         if landing is None:
             return
@@ -302,7 +306,7 @@ def _enumerate_node_edges(
             )
             if not np.isfinite(effective_weight):
                 return  # Lethal arc — prune from graph
-        edges.append(EdgeResult(src, dst, effective_weight))
+        edges.append(EdgeResult(src, dst, effective_weight, jump_hold_frames, h_input_during))
         if collect_waypoints:
             for (f, wx, wy, wvx, wvy) in arc_wps:
                 waypoints.append(ArcWaypoint(
@@ -321,7 +325,8 @@ def _enumerate_node_edges(
                 sim.inject_ninja_for_value_iteration(sp.x, sp.y, vx0, vy0, 0)
                 landing, frames, wps = _simulate_arc(
                     sim, h_input, 0, duration, collect_waypoints)
-                _try_edge(landing, frames, wps)
+                _try_edge(landing, frames, wps,
+                          jump_hold_frames=0, h_input_during=h_input)
 
         # 5.2 Floor jumps
         for h_during in H_INPUTS:
@@ -340,7 +345,8 @@ def _enumerate_node_edges(
                         sim, h_during, min(hold_dur - 1, MAX_JUMP_DURATION - 1),
                         h_after, collect_waypoints)
                     if landing is not None:
-                        _try_edge(landing, frames + 1, wps)
+                        _try_edge(landing, frames + 1, wps,
+                                  jump_hold_frames=hold_dur, h_input_during=h_during)
 
         # 5.4 Edge falls (from is_edge nodes)
         if sp.is_edge:
@@ -349,7 +355,8 @@ def _enumerate_node_edges(
                 sim.inject_ninja_for_value_iteration(sp.x, sp.y, vx0, vy0, 0)
                 landing, frames, wps = _simulate_arc(
                     sim, h_input, 0, MAX_ARC_FRAMES, collect_waypoints)
-                _try_edge(landing, frames, wps)
+                _try_edge(landing, frames, wps,
+                          jump_hold_frames=0, h_input_during=h_input)
 
     # ----- WALL ACTIONS -----
     elif sp.surface_type == SURFACE_WALL:
@@ -375,7 +382,8 @@ def _enumerate_node_edges(
                         min(hold_dur - 1, MAX_JUMP_DURATION - 1),
                         h_after, collect_waypoints)
                     if landing is not None:
-                        _try_edge(landing, frames + 1, wps)
+                        _try_edge(landing, frames + 1, wps,
+                                  jump_hold_frames=hold_dur, h_input_during=h_input)
 
         # Wall slide (fall along wall)
         for h_input in H_INPUTS:
@@ -384,7 +392,8 @@ def _enumerate_node_edges(
                 sim.inject_ninja_for_value_iteration(sp.x, sp.y, vx0, vy0, 0)
                 landing, frames, wps = _simulate_arc(
                     sim, h_input, 0, duration, collect_waypoints)
-                _try_edge(landing, frames, wps)
+                _try_edge(landing, frames, wps,
+                          jump_hold_frames=0, h_input_during=h_input)
 
     sim.restore_ninja_state(snapshot)
     return edges, waypoints
@@ -609,7 +618,12 @@ def populate_graph_edges(
         graph: SurfaceGraph (modified in place).
         edges: List of EdgeResult from ``enumerate_edges``.
     """
-    n = len(edges)
     graph.edges_src = np.array([e.src_node for e in edges], dtype=np.int32)
     graph.edges_dst = np.array([e.dst_node for e in edges], dtype=np.int32)
     graph.edges_weight = np.array([e.weight for e in edges], dtype=np.float32)
+    graph.edges_jump_hold = np.array(
+        [e.jump_hold_frames for e in edges], dtype=np.int8
+    )
+    graph.edges_h_input = np.array(
+        [e.h_input_during for e in edges], dtype=np.int8
+    )

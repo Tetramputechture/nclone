@@ -23,21 +23,22 @@ todos:
   - id: integration-test
     content: Test enhanced masking on diverse level types (horizontal, vertical, hazard-adjacent)
     status: pending
+isProject: false
 ---
 
 # Enhanced Action Masking System
 
 ## Current State
 
-The existing action masking in [`ninja.py`](nclone/nclone/ninja.py) (lines 624-905) provides:
+The existing action masking in `[ninja.py](nclone/nclone/ninja.py)` (lines 624-905) provides:
 
 - **Physics-based masking**: Useless jumps, wall collision avoidance
 - **Path-based masking**: Masks actions opposite to 3-4 hop path direction
 
 Available infrastructure to leverage:
 
-- `MineSignedDistanceField` in [`mine_proximity_cache.py`](nclone/nclone/graph/reachability/mine_proximity_cache.py) - precomputed SDF with escape gradients
-- `multi_hop_direction_cache` in [`path_distance_cache.py`](nclone/nclone/graph/reachability/path_distance_cache.py) - 4-8 hop lookahead
+- `MineSignedDistanceField` in `[mine_proximity_cache.py](nclone/nclone/graph/reachability/mine_proximity_cache.py)` - precomputed SDF with escape gradients
+- `multi_hop_direction_cache` in `[path_distance_cache.py](nclone/nclone/graph/reachability/path_distance_cache.py)` - 4-8 hop lookahead
 - Ninja velocity state: `xspeed`, `yspeed` already tracked
 
 ## Architecture
@@ -70,6 +71,8 @@ flowchart TD
     L1 --> L2 --> L3 --> L4 --> L5 --> L6
     L6 --> FinalMask[Final Action Mask]
 ```
+
+
 
 ## New Masking Layers
 
@@ -188,9 +191,9 @@ VERTICAL_GOAL_THRESHOLD = 0.3  # |dy| threshold for vertical efficiency masking
 
 ## Files to Modify
 
-1. **[`nclone/nclone/ninja.py`](nclone/nclone/ninja.py)** - Add new masking layers to `get_valid_action_mask()`
-2. **[`nclone/nclone/gym_environment/base_environment.py`](nclone/nclone/gym_environment/base_environment.py)** - Add `_build_enhanced_masking_context()` method
-3. **[`nclone/nclone/constants/physics_constants.py`](nclone/nclone/constants/physics_constants.py)** - Add new threshold constants
+1. `**[nclone/nclone/ninja.py](nclone/nclone/ninja.py)**` - Add new masking layers to `get_valid_action_mask()`
+2. `**[nclone/nclone/gym_environment/base_environment.py](nclone/nclone/gym_environment/base_environment.py)**` - Add `_build_enhanced_masking_context()` method
+3. `**[nclone/nclone/constants/physics_constants.py](nclone/nclone/constants/physics_constants.py)**` - Add new threshold constants
 
 ## Performance Considerations
 
@@ -207,3 +210,4 @@ VERTICAL_GOAL_THRESHOLD = 0.3  # |dy| threshold for vertical efficiency masking
   - Vertical ascents (should encourage sustained jumping)
   - Mine-adjacent paths (should avoid actions toward mines)
   - Curved paths (should allow corridor deviation up to 48px)
+

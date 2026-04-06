@@ -146,7 +146,7 @@ A surface is any contiguous run of collision segments where the ninja can mainta
 - Vertical edges of half tiles
 - Steep slope surfaces where the normal is predominantly horizontal
 
-**Slope surfaces.** Floor surfaces with non-trivial normal vectors. The ninja can stand, run, and jump from slopes, but jump impulse and friction mechanics differ from flat ground. If a slope is steep enough that the ninja slides off under gravity, classify it as a wall instead of a floor.
+**Slope surfaces or radial.** Floor surfaces with non-trivial normal vectors. The ninja can stand, run, and jump from slopes, but jump impulse and friction mechanics differ from flat ground. If a slope is steep enough that the ninja slides off under gravity, classify it as a wall instead of a floor.
 
 ### Surface Classification Rule
 

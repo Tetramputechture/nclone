@@ -42,7 +42,7 @@ _WALL_NORMAL_Y_MAX = 0.05
 # ---------------------------------------------------------------------------
 SAMPLE_RESOLUTION = 6.0
 EDGE_SAMPLE_RESOLUTION = 3.0
-EDGE_PROXIMITY = 12.0
+EDGE_PROXIMITY = 6.0
 
 # ---------------------------------------------------------------------------
 # Mine exclusion zone radii (pixels)
@@ -50,7 +50,7 @@ EDGE_PROXIMITY = 12.0
 # Radius used to split surface segments at mine locations. Conservative (4 px
 # buffer beyond kill radius) so the agent has room to initiate a jump before
 # reaching the lethal zone.
-MINE_SURFACE_EXCLUSION_RADIUS = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED + 4.0  # 18 px
+MINE_SURFACE_EXCLUSION_RADIUS = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED + 1.0  # 15 px
 
 # ---------------------------------------------------------------------------
 # Merging / deduplication tolerances (pixels)
@@ -74,6 +74,7 @@ class SurfacePoint:
         segment_id: ID of the merged surface run this point belongs to.
         is_edge: True if within EDGE_PROXIMITY of a platform / wall endpoint.
     """
+
     x: float
     y: float
     normal_x: float
@@ -86,6 +87,7 @@ class SurfacePoint:
 @dataclass
 class _ClassifiedSegment:
     """Internal representation of a classified collision segment."""
+
     x1: float
     y1: float
     x2: float
@@ -211,8 +213,9 @@ def _merge_segments(
                         ddy = ey - jy
                         if ddx * ddx + ddy * ddy <= tol_sq:
                             sj = segments[j]
-                            dot = (seg.normal_x * sj.normal_x
-                                   + seg.normal_y * sj.normal_y)
+                            dot = (
+                                seg.normal_x * sj.normal_x + seg.normal_y * sj.normal_y
+                            )
                             if dot > 0.3:
                                 union(i, j)
 
@@ -283,20 +286,24 @@ def _sample_segment(
         ninja_x = cx + seg.normal_x * NINJA_RADIUS
         ninja_y = cy + seg.normal_y * NINJA_RADIUS
 
-        points.append(SurfacePoint(
-            x=ninja_x, y=ninja_y,
-            normal_x=seg.normal_x, normal_y=seg.normal_y,
-            surface_type=seg.surface_type,
-            segment_id=segment_id,
-            is_edge=is_edge,
-        ))
+        points.append(
+            SurfacePoint(
+                x=ninja_x,
+                y=ninja_y,
+                normal_x=seg.normal_x,
+                normal_y=seg.normal_y,
+                surface_type=seg.surface_type,
+                segment_id=segment_id,
+                is_edge=is_edge,
+            )
+        )
 
     # --- Denser sampling near open endpoints ---
     for epx, epy in open_endpoints:
         for t_end in (0.0, 1.0):
             sx = seg.x1 + t_end * dx
             sy = seg.y1 + t_end * dy
-            if (sx - epx) ** 2 + (sy - epy) ** 2 > _ENDPOINT_TOLERANCE ** 2:
+            if (sx - epx) ** 2 + (sy - epy) ** 2 > _ENDPOINT_TOLERANCE**2:
                 continue
             n_dense = int(math.ceil(EDGE_PROXIMITY / EDGE_SAMPLE_RESOLUTION))
             for j in range(1, n_dense + 1):
@@ -308,13 +315,17 @@ def _sample_segment(
                 cy = seg.y1 + t * dy
                 ninja_x = cx + seg.normal_x * NINJA_RADIUS
                 ninja_y = cy + seg.normal_y * NINJA_RADIUS
-                points.append(SurfacePoint(
-                    x=ninja_x, y=ninja_y,
-                    normal_x=seg.normal_x, normal_y=seg.normal_y,
-                    surface_type=seg.surface_type,
-                    segment_id=segment_id,
-                    is_edge=True,
-                ))
+                points.append(
+                    SurfacePoint(
+                        x=ninja_x,
+                        y=ninja_y,
+                        normal_x=seg.normal_x,
+                        normal_y=seg.normal_y,
+                        surface_type=seg.surface_type,
+                        segment_id=segment_id,
+                        is_edge=True,
+                    )
+                )
 
     return points
 
@@ -507,12 +518,18 @@ def _split_one_segment(
         length = math.sqrt((px2 - px1) ** 2 + (py2 - py1) ** 2)
         if length < _MIN_SEGMENT_LENGTH:
             continue
-        pieces.append(_ClassifiedSegment(
-            x1=px1, y1=py1, x2=px2, y2=py2,
-            normal_x=seg.normal_x, normal_y=seg.normal_y,
-            surface_type=seg.surface_type,
-            length=length,
-        ))
+        pieces.append(
+            _ClassifiedSegment(
+                x1=px1,
+                y1=py1,
+                x2=px2,
+                y2=py2,
+                normal_x=seg.normal_x,
+                normal_y=seg.normal_y,
+                surface_type=seg.surface_type,
+                length=length,
+            )
+        )
     return pieces
 
 

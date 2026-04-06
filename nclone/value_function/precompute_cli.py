@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 import time
+from typing import Optional
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -35,7 +36,7 @@ from nclone.value_function.surface_extraction import (
 from nclone.value_function.surface_graph import (
     SurfaceGraph,
     build_graph,
-    compute_cost_to_go,
+    compute_cost_to_go_with_tree,
 )
 from nclone.value_function.edge_enumeration import (
     enumerate_edges,
@@ -113,6 +114,10 @@ def _save_surface_pbrs(
     mine_initial_states: np.ndarray,
     mine_boundary_nodes: np.ndarray,
     mine_inflation_beta: float = 200.0,
+    predecessor_switch: Optional[np.ndarray] = None,
+    predecessor_exit: Optional[np.ndarray] = None,
+    best_edge_idx_switch: Optional[np.ndarray] = None,
+    best_edge_idx_exit: Optional[np.ndarray] = None,
 ) -> None:
     """Save all precomputed data to a single .npz file."""
     sp = graph.surface_points
@@ -125,6 +130,13 @@ def _save_surface_pbrs(
     d_max_exit_raw = _safe_max(d_star_exit)
     d_max_switch = _robust_d_max(d_star_switch)
     d_max_exit = _robust_d_max(d_star_exit)
+
+    has_route_tree = (
+        predecessor_switch is not None
+        and predecessor_exit is not None
+        and best_edge_idx_switch is not None
+        and best_edge_idx_exit is not None
+    )
 
     metadata = {
         "n_surface_points": n,
@@ -139,10 +151,11 @@ def _save_surface_pbrs(
         "d_max_exit_raw": d_max_exit_raw,
         # Mine proximity inflation strength used at precompute time (for auditing).
         "mine_inflation_beta": mine_inflation_beta,
+        # Route-tree data availability flag (for backward-compat load path).
+        "has_route_tree": int(has_route_tree),
     }
 
-    np.savez_compressed(
-        output_path,
+    save_kwargs = dict(
         # Surface points
         surface_points_x=np.array([p.x for p in sp], dtype=np.float32),
         surface_points_y=np.array([p.y for p in sp], dtype=np.float32),
@@ -154,14 +167,14 @@ def _save_surface_pbrs(
         # Velocity bins
         velocity_bins_floor=graph.velocity_bins_floor,
         velocity_bins_wall=graph.velocity_bins_wall,
-        # Edges
+        # Edges (base)
         edges_src=graph.edges_src,
         edges_dst=graph.edges_dst,
         edges_weight=graph.edges_weight,
         # Dijkstra distance arrays
         d_star_switch=d_star_switch.astype(np.float32),
         d_star_exit=d_star_exit.astype(np.float32),
-        # Arc caches
+        # Arc caches (kept for backward compat with SurfaceGraphPBRS)
         arc_cache_keys_switch=ac_keys_sw,
         arc_cache_values_switch=ac_vals_sw,
         arc_cache_keys_exit=ac_keys_ex,
@@ -179,6 +192,21 @@ def _save_surface_pbrs(
         # Metadata
         metadata=np.array(metadata),
     )
+
+    # Edge action metadata (new; absent in legacy .npz files)
+    if graph.edges_jump_hold is not None:
+        save_kwargs["edges_jump_hold"] = graph.edges_jump_hold
+    if graph.edges_h_input is not None:
+        save_kwargs["edges_h_input"] = graph.edges_h_input
+
+    # Route-tree arrays (new; absent in legacy .npz files)
+    if has_route_tree:
+        save_kwargs["predecessor_switch"] = predecessor_switch.astype(np.int32)
+        save_kwargs["predecessor_exit"] = predecessor_exit.astype(np.int32)
+        save_kwargs["best_edge_idx_switch"] = best_edge_idx_switch.astype(np.int32)
+        save_kwargs["best_edge_idx_exit"] = best_edge_idx_exit.astype(np.int32)
+
+    np.savez_compressed(output_path, **save_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +395,12 @@ def precompute_surface_pbrs(
     # surface nodes in mine zones, jump arcs through mines discarded).
     # Runtime mine masking in SurfaceGraphPBRS.get_potential() provides an
     # additional safety net for the agent's live position.
-    d_star_switch = compute_cost_to_go(graph, switch_pos[0], switch_pos[1], "switch")
+    # dijkstra_backward_with_tree returns d_star + predecessor + best_edge_idx
+    # arrays needed for route extraction.  The predecessor arrays are saved to
+    # the .npz and loaded by RoutePBRS at runtime.
+    d_star_switch, predecessor_switch, best_edge_idx_switch = compute_cost_to_go_with_tree(
+        graph, switch_pos[0], switch_pos[1], "switch"
+    )
     d_max_sw_raw = _safe_max(d_star_switch)
     d_max_sw = _robust_d_max(d_star_switch)
     n_reachable_sw = int(np.sum(np.isfinite(d_star_switch)))
@@ -378,7 +411,9 @@ def precompute_surface_pbrs(
         f"reachable={n_reachable_sw:,}/{graph.n_nodes:,}"
     )
 
-    d_star_exit = compute_cost_to_go(graph, exit_pos[0], exit_pos[1], "exit")
+    d_star_exit, predecessor_exit, best_edge_idx_exit = compute_cost_to_go_with_tree(
+        graph, exit_pos[0], exit_pos[1], "exit"
+    )
     d_max_ex_raw = _safe_max(d_star_exit)
     d_max_ex = _robust_d_max(d_star_exit)
     n_reachable_ex = int(np.sum(np.isfinite(d_star_exit)))
@@ -387,6 +422,12 @@ def precompute_surface_pbrs(
         f"d_max(raw)={d_max_ex_raw:.1f} frames, "
         f"inflation={d_max_ex_raw / max(d_max_ex, 1):.1f}x, "
         f"reachable={n_reachable_ex:,}/{graph.n_nodes:,}"
+    )
+    n_tree_sw = int(np.sum(predecessor_switch >= 0))
+    n_tree_ex = int(np.sum(predecessor_exit >= 0))
+    print(
+        f"  Route tree: {n_tree_sw:,} switch predecessors, "
+        f"{n_tree_ex:,} exit predecessors"
     )
     print(f"  Dijkstra time: {_format_time(time.time() - t0)}")
 
@@ -458,6 +499,10 @@ def precompute_surface_pbrs(
         mine_initial_states=mine_initial_states_arr,
         mine_boundary_nodes=mine_boundary_nodes,
         mine_inflation_beta=mine_inflation_beta,
+        predecessor_switch=predecessor_switch,
+        predecessor_exit=predecessor_exit,
+        best_edge_idx_switch=best_edge_idx_switch,
+        best_edge_idx_exit=best_edge_idx_exit,
     )
     file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f"  Saved to: {output_path}")

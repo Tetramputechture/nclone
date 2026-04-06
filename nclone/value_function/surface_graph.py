@@ -52,7 +52,7 @@ _WALL_BIN_WIDTH = (
 # ---------------------------------------------------------------------------
 # Spatial index cell size for nearest-node lookup (pixels)
 # ---------------------------------------------------------------------------
-_SPATIAL_CELL_SIZE = 12.0
+_SPATIAL_CELL_SIZE = 6.0
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +89,9 @@ class SurfaceGraph:
     edges_src: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
     edges_dst: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
     edges_weight: np.ndarray = field(default_factory=lambda: np.empty(0, np.float32))
+    # Action metadata per edge (optional; None if loaded from legacy .npz)
+    edges_jump_hold: Optional[np.ndarray] = None  # int8: hold duration (0=run/slide)
+    edges_h_input: Optional[np.ndarray] = None    # int8: primary h-input (-1/0/1)
 
     # Cost-to-go arrays (populated by dijkstra)
     d_star_switch: np.ndarray = field(
@@ -403,6 +406,113 @@ def dijkstra_backward(
                 heapq.heappush(heap, (new_dist, v))
 
     return d_star
+
+
+def dijkstra_backward_with_tree(
+    graph: SurfaceGraph,
+    goal_nodes: List[int],
+    blocked_nodes: Optional[Set[int]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run backward Dijkstra and return the shortest-path tree.
+
+    Identical to ``dijkstra_backward`` but also returns predecessor and
+    best-edge-index arrays that encode the shortest-path tree.  These arrays
+    enable forward route extraction: follow ``predecessor[v]`` repeatedly from
+    any start node to trace the optimal path toward the goal.
+
+    Predecessor convention (backward Dijkstra):
+        ``predecessor[v] = u`` means: from node ``v`` the optimal next step
+        toward the goal is to traverse original edge ``v -> u``.  Equivalently,
+        ``d_star[u] + w(v->u) == d_star[v]`` for the chosen best edge.
+
+        Invariant: ``d_star[predecessor[v]] < d_star[v]`` for all non-goal
+        nodes ``v`` with finite d_star.  Goal nodes have
+        ``predecessor[v] = -1``.
+
+    Args:
+        graph: Surface graph with populated edge arrays.
+        goal_nodes: Node ids initialised at cost 0 (the goals).
+        blocked_nodes: Optional set of impassable node ids.
+
+    Returns:
+        (d_star, predecessor, best_edge_idx)
+            d_star: float32 array length ``n_nodes``.
+            predecessor: int32 array; -1 for goals/unreachable.
+            best_edge_idx: int32 array; index into graph.edges_* arrays.
+                ``graph.edges_src[best_edge_idx[v]] == v`` and
+                ``graph.edges_dst[best_edge_idx[v]] == predecessor[v]``
+                for all non-goal nodes with finite d_star.
+                -1 for goals/unreachable.
+    """
+    n = graph.n_nodes
+    d_star = np.full(n, np.inf, dtype=np.float32)
+    predecessor = np.full(n, -1, dtype=np.int32)
+    best_edge_idx = np.full(n, -1, dtype=np.int32)
+    _blocked = blocked_nodes or set()
+
+    # Build reversed adjacency WITH original edge indices for tree reconstruction.
+    # rev_adj[dst] -> list of (src, weight, original_edge_index)
+    # An entry (src, w, i) means original edge i: src -> dst exists.
+    # When we settle dst (u) and relax src (v):
+    #   predecessor[v] = u  (in original graph, v -> u is the next step toward goal)
+    #   best_edge_idx[v] = i  (index of the v -> u edge in graph.edges_*)
+    rev_adj: Dict[int, List[Tuple[int, float, int]]] = {}
+    for i in range(len(graph.edges_src)):
+        src = int(graph.edges_src[i])
+        dst = int(graph.edges_dst[i])
+        w = float(graph.edges_weight[i])
+        if dst not in rev_adj:
+            rev_adj[dst] = []
+        rev_adj[dst].append((src, w, i))
+
+    heap: List[Tuple[float, int]] = []
+    for gn in goal_nodes:
+        if 0 <= gn < n and gn not in _blocked:
+            d_star[gn] = 0.0
+            heapq.heappush(heap, (0.0, gn))
+
+    while heap:
+        dist_u, u = heapq.heappop(heap)
+        if dist_u > d_star[u]:
+            continue
+        neighbors = rev_adj.get(u)
+        if neighbors is None:
+            continue
+        for v, w, edge_i in neighbors:
+            if v in _blocked:
+                continue
+            new_dist = dist_u + w
+            if new_dist < d_star[v]:
+                d_star[v] = new_dist
+                predecessor[v] = u       # original edge v -> u is optimal
+                best_edge_idx[v] = edge_i
+                heapq.heappush(heap, (new_dist, v))
+
+    return d_star, predecessor, best_edge_idx
+
+
+def compute_cost_to_go_with_tree(
+    graph: SurfaceGraph,
+    goal_x: float,
+    goal_y: float,
+    goal_type: str,
+    blocked_nodes: Optional[Set[int]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute cost-to-go and shortest-path tree for the given goal.
+
+    Convenience wrapper around ``dijkstra_backward_with_tree``.
+
+    Returns:
+        (d_star, predecessor, best_edge_idx) — see
+        ``dijkstra_backward_with_tree`` for semantics.
+    """
+    goal_nodes = find_goal_nodes(graph, goal_x, goal_y, goal_type)
+    if not goal_nodes:
+        raise ValueError(
+            f"No graph nodes within contact range of {goal_type} "
+            f"at ({goal_x:.1f}, {goal_y:.1f}).  Check surface extraction."
+        )
+    return dijkstra_backward_with_tree(graph, goal_nodes, blocked_nodes=blocked_nodes)
 
 
 def find_mine_blocked_nodes(

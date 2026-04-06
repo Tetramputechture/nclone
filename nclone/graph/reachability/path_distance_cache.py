@@ -5,7 +5,7 @@ Uses flood fill (BFS) from goal positions to precompute all node-to-goal distanc
 Cache invalidates when level or mine states change.
 
 Includes precomputed Phi grids for O(1) PBRS potential lookup at runtime.
-Supports both BFS-based (12px) and simulation-based (6px) phi grids.
+Supports both BFS-based (6px graph resolution) and simulation-based (6px) phi grids.
 When simulation phi grids are available, they are used for higher-quality
 physics-aware potentials; otherwise falls back to BFS-based grids.
 """
@@ -27,10 +27,10 @@ from .level_data_helpers import extract_goal_positions, get_mine_state_signature
 logger = logging.getLogger(__name__)
 
 # --- Phi grid resolution constants ---
-# BFS-based (legacy): 12px resolution, 88x50 grid
-BFS_PHI_GRID_RESOLUTION = 12
-BFS_PHI_GRID_WIDTH = 88  # 1056 / 12
-BFS_PHI_GRID_HEIGHT = 50  # 600 / 12
+# BFS-based (graph resolution): 6px resolution, 176x100 grid
+BFS_PHI_GRID_RESOLUTION = 6
+BFS_PHI_GRID_WIDTH = 176  # 1056 / 6
+BFS_PHI_GRID_HEIGHT = 100  # 600 / 6
 
 # Simulation-based: 6px resolution, 176x100 grid
 SIM_PHI_GRID_RESOLUTION = 6
@@ -38,7 +38,7 @@ SIM_PHI_GRID_WIDTH = 176  # 1056 / 6
 SIM_PHI_GRID_HEIGHT = 100  # 600 / 6
 
 # Active resolution (set dynamically based on available phi source)
-# Defaults to BFS-based, updated when simulation grids are loaded
+# Both BFS and simulation grids now use 6px resolution
 PHI_GRID_RESOLUTION = BFS_PHI_GRID_RESOLUTION
 PHI_GRID_WIDTH = BFS_PHI_GRID_WIDTH
 PHI_GRID_HEIGHT = BFS_PHI_GRID_HEIGHT

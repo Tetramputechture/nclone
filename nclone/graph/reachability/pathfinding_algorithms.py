@@ -25,7 +25,7 @@ from .node_lookup import (
 _logger = logging.getLogger(__name__)
 
 # Sub-node spacing for geometric distance calculation
-_SUB_NODE_SIZE = 12
+_SUB_NODE_SIZE = 6
 
 
 def _violates_horizontal_rule(

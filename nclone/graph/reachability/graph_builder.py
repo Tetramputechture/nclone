@@ -5,10 +5,10 @@ Combines precomputed tile traversability lookups with dynamic entity masking
 to build level-specific navigation graphs efficiently.
 
 Improved implementation with sub-tile nodes:
-- Each 24px tile divided into 4 sub-nodes (2x2 grid at 12px resolution)
+- Each 24px tile divided into 16 sub-nodes (4x4 grid at 6px resolution)
 - Respects tile types (type 0=empty, type 1=solid)
 - Builds graph only for reachable nodes from player spawn
-- More accurate pathfinding for 10px radius player
+- More accurate pathfinding for 10px radius player, capturing slopes and curves
 """
 
 import logging
@@ -29,14 +29,24 @@ logger = logging.getLogger(__name__)
 
 # Hardcoded cell size as per N++ constants
 CELL_SIZE = 24
-SUB_NODE_SIZE = 12  # Divide each 24px tile into 2x2 grid of 12px nodes
+SUB_NODE_SIZE = 6  # Divide each 24px tile into 4x4 grid of 6px nodes
 PLAYER_RADIUS = 10  # Player collision radius in pixels
 
 # Sub-node offsets within a 24px tile
-# Creates 2x2 grid: (6,6), (18,6), (6,18), (18,18)
-# Maps to (sub_x, sub_y): (0,0), (1,0), (0,1), (1,1)
-SUB_NODE_OFFSETS = [(6, 6), (18, 6), (6, 18), (18, 18)]
-SUB_NODE_COORDS = [(0, 0), (1, 0), (0, 1), (1, 1)]
+# Creates 4x4 grid at 6px resolution: centers at 3, 9, 15, 21 in each axis
+# Maps to (sub_x, sub_y): (0,0)..(3,3)
+SUB_NODE_OFFSETS = [
+    (3, 3), (9, 3), (15, 3), (21, 3),
+    (3, 9), (9, 9), (15, 9), (21, 9),
+    (3, 15), (9, 15), (15, 15), (21, 15),
+    (3, 21), (9, 21), (15, 21), (21, 21),
+]
+SUB_NODE_COORDS = [
+    (0, 0), (1, 0), (2, 0), (3, 0),
+    (0, 1), (1, 1), (2, 1), (3, 1),
+    (0, 2), (1, 2), (2, 2), (3, 2),
+    (0, 3), (1, 3), (2, 3), (3, 3),
+]
 
 # Tile type sets for O(1) membership checks (optimization - avoids creating lists)
 _QUARTER_PIPE_TILES = frozenset({14, 15, 16, 17})
@@ -700,10 +710,10 @@ class GraphBuilder:
         self._current_level_id = None
 
         # Flood fill caching (per level)
-        # Only recompute flood fill when player moves >= 12px from last cached position
-        # 12px matches sub-node spacing - recomputing more frequently adds overhead without
+        # Only recompute flood fill when player moves >= 6px from last cached position
+        # 6px matches sub-node spacing - recomputing more frequently adds overhead without
         # improving PBRS accuracy (sub-node interpolation handles dense rewards within a cell)
-        self._flood_fill_distance_threshold = 12  # 12px - one sub-node spacing
+        self._flood_fill_distance_threshold = 6  # 6px - one sub-node spacing
 
         # Performance tracking
         self.build_times = []
@@ -948,7 +958,7 @@ class GraphBuilder:
 
         # If ninja position provided, compute reachable set for that position
         # Note: This may differ from initial_player_pos if ninja has moved
-        # Optimization: Only recompute flood fill if player moved >= 12px from last cached position
+        # Optimization: Only recompute flood fill if player moved >= 6px from last cached position
         if ninja_pos is not None:
             reachable = self._get_cached_flood_fill(
                 level_id,
@@ -1194,9 +1204,9 @@ class GraphBuilder:
         rel_y = pixel_y - (tile_y * CELL_SIZE)
 
         # Determine which sub-node this position corresponds to
-        # Sub-nodes are at (6,6), (18,6), (6,18), (18,18)
-        sub_x = 0 if rel_x < 12 else 1
-        sub_y = 0 if rel_y < 12 else 1
+        # Sub-nodes are at 3, 9, 15, 21 in each axis (4x4 grid at 6px)
+        sub_x = min(rel_x // SUB_NODE_SIZE, 3)
+        sub_y = min(rel_y // SUB_NODE_SIZE, 3)
 
         # O(1) lookup from precomputed table
         return SUBNODE_VALIDITY_TABLE.get(tile_type, {}).get((sub_x, sub_y), False)
@@ -1279,14 +1289,14 @@ class GraphBuilder:
 
         # Direction mappings for 8-connectivity (cardinal and diagonal directions)
         directions = {
-            "N": (0, -12),
-            "E": (12, 0),
-            "S": (0, 12),
-            "W": (-12, 0),
-            "NE": (12, -12),
-            "SE": (12, 12),
-            "SW": (-12, 12),
-            "NW": (-12, -12),
+            "N": (0, -SUB_NODE_SIZE),
+            "E": (SUB_NODE_SIZE, 0),
+            "S": (0, SUB_NODE_SIZE),
+            "W": (-SUB_NODE_SIZE, 0),
+            "NE": (SUB_NODE_SIZE, -SUB_NODE_SIZE),
+            "SE": (SUB_NODE_SIZE, SUB_NODE_SIZE),
+            "SW": (-SUB_NODE_SIZE, SUB_NODE_SIZE),
+            "NW": (-SUB_NODE_SIZE, -SUB_NODE_SIZE),
         }
 
         # Build adjacency for all nodes
@@ -1416,10 +1426,10 @@ class GraphBuilder:
 
         px, py = pos
 
-        # Fast path: Snap to nearest 12px grid position - O(1)
-        # Sub-nodes are at: ..., -18, -6, 6, 18, 30, 42, ...
-        snap_x = round((px - 6) / 12) * 12 + 6
-        snap_y = round((py - 6) / 12) * 12 + 6
+        # Fast path: Snap to nearest 6px grid position - O(1)
+        # Sub-nodes are at: ..., -9, -3, 3, 9, 15, 21, ...
+        snap_x = round((px - 3) / 6) * 6 + 3
+        snap_y = round((py - 3) / 6) * 6 + 3
 
         # Check if snapped position exists
         if (snap_x, snap_y) in sub_nodes:
@@ -1427,8 +1437,8 @@ class GraphBuilder:
 
         # Collect candidates from 8 neighboring sub-nodes
         candidates = []
-        for dx in [-12, 0, 12]:
-            for dy in [-12, 0, 12]:
+        for dx in [-6, 0, 6]:
+            for dy in [-6, 0, 6]:
                 if dx == 0 and dy == 0:
                     continue  # Already checked above
                 candidate = (snap_x + dx, snap_y + dy)
@@ -1492,14 +1502,14 @@ class GraphBuilder:
         nodes_with_dist = []
 
         # Fast grid-based search: only check sub-nodes in nearby tiles
-        # Player radius is 10px, sub-nodes are 12px apart
-        # So we need to check within ceil(10/12) = 1 tile in each direction
-        snap_x = round((px - 6) / 12) * 12 + 6
-        snap_y = round((py - 6) / 12) * 12 + 6
+        # Player radius is 10px, sub-nodes are 6px apart
+        # So we need to check within ceil(10/6) = 2 sub-nodes in each direction
+        snap_x = round((px - 3) / 6) * 6 + 3
+        snap_y = round((py - 3) / 6) * 6 + 3
 
-        # Check 5x5 grid around snapped position (covers 60x60px area)
-        for dx in [-24, -12, 0, 12, 24]:
-            for dy in [-24, -12, 0, 12, 24]:
+        # Check 5x5 grid around snapped position (covers 30x30px area)
+        for dx in [-12, -6, 0, 6, 12]:
+            for dy in [-12, -6, 0, 6, 12]:
                 candidate = (snap_x + dx, snap_y + dy)
                 if candidate in sub_nodes:
                     nx, ny = candidate
@@ -1583,13 +1593,13 @@ class GraphBuilder:
             # Get sub-node indices for source and destination
             src_rel_x = src_pixel_x - (src_tile_x * CELL_SIZE)
             src_rel_y = src_pixel_y - (src_tile_y * CELL_SIZE)
-            src_sub_x = 0 if src_rel_x < 12 else 1
-            src_sub_y = 0 if src_rel_y < 12 else 1
+            src_sub_x = min(src_rel_x // SUB_NODE_SIZE, 3)
+            src_sub_y = min(src_rel_y // SUB_NODE_SIZE, 3)
 
             dst_rel_x = dst_pixel_x - (dst_tile_x * CELL_SIZE)
             dst_rel_y = dst_pixel_y - (dst_tile_y * CELL_SIZE)
-            dst_sub_x = 0 if dst_rel_x < 12 else 1
-            dst_sub_y = 0 if dst_rel_y < 12 else 1
+            dst_sub_x = min(dst_rel_x // SUB_NODE_SIZE, 3)
+            dst_sub_y = min(dst_rel_y // SUB_NODE_SIZE, 3)
 
             # O(1) lookup in precomputed within-tile connectivity table
             reachable = WITHIN_TILE_CONNECTIVITY.get(src_tile_type, {}).get(
@@ -1613,10 +1623,10 @@ class GraphBuilder:
             self.debug_stats["between_tile_checks"] += 1
 
         # Calculate sub-node indices from pixel positions
-        src_sub_x = 0 if (src_pixel_x % CELL_SIZE) < 12 else 1
-        src_sub_y = 0 if (src_pixel_y % CELL_SIZE) < 12 else 1
-        dst_sub_x = 0 if (dst_pixel_x % CELL_SIZE) < 12 else 1
-        dst_sub_y = 0 if (dst_pixel_y % CELL_SIZE) < 12 else 1
+        src_sub_x = min((src_pixel_x % CELL_SIZE) // SUB_NODE_SIZE, 3)
+        src_sub_y = min((src_pixel_y % CELL_SIZE) // SUB_NODE_SIZE, 3)
+        dst_sub_x = min((dst_pixel_x % CELL_SIZE) // SUB_NODE_SIZE, 3)
+        dst_sub_y = min((dst_pixel_y % CELL_SIZE) // SUB_NODE_SIZE, 3)
 
         # For diagonal movements, check intermediate tiles aren't blocking
         if direction in _DIAGONAL_DIRECTIONS:
@@ -1914,7 +1924,7 @@ class GraphBuilder:
         """
         Get flood fill results with caching based on player position.
 
-        Only recomputes flood fill when player moves >= 12px from last cached position.
+        Only recomputes flood fill when player moves >= 6px from last cached position.
         This optimization avoids expensive BFS operations when player moves small amounts.
 
         Args:

@@ -38,6 +38,8 @@ from .surface_graph import (
     SurfaceGraph,
     build_graph,
     compute_cost_to_go,
+    compute_cost_to_go_with_tree,
+    dijkstra_backward_with_tree,
     find_nearest_point,
     find_nearest_node,
     lookup_cost_interpolated,
@@ -48,6 +50,14 @@ from .edge_enumeration import (
 )
 from .arc_cache import ArcCache
 from .airborne_evaluator import AirborneEvaluator
+from .route_extraction import (
+    ArcTarget,
+    extract_route,
+    extract_and_simplify_route,
+    merge_running_arcs,
+    find_nearest_start_node,
+)
+from .route_pbrs import RoutePBRS, RouteState, create_route_pbrs
 
 __all__ = [
     # Physics interface
@@ -58,6 +68,16 @@ __all__ = [
     "TwoPhaseValuePBRS",
     "create_two_phase_pbrs",
     "create_neural_pbrs",
+    # Route-tracking PBRS (new)
+    "RoutePBRS",
+    "RouteState",
+    "create_route_pbrs",
+    # Route extraction (new)
+    "ArcTarget",
+    "extract_route",
+    "extract_and_simplify_route",
+    "merge_running_arcs",
+    "find_nearest_start_node",
     # Surface extraction
     "SurfacePoint",
     "extract_surfaces",
@@ -67,6 +87,8 @@ __all__ = [
     "SurfaceGraph",
     "build_graph",
     "compute_cost_to_go",
+    "compute_cost_to_go_with_tree",
+    "dijkstra_backward_with_tree",
     "find_nearest_point",
     "find_nearest_node",
     "lookup_cost_interpolated",

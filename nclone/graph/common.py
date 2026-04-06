@@ -19,27 +19,22 @@ from ..constants.physics_constants import (
 )
 
 # Graph configuration constants
-# GraphBuilder uses 2x2 sub-nodes per tile at 12px resolution
-# See graph_builder.py: SUB_NODE_OFFSETS = [(6,6), (18,6), (6,18), (18,18)]
-SUB_NODES_PER_TILE = 4  # 2×2 grid per 24px tile
+# GraphBuilder uses 4x4 sub-nodes per tile at 6px resolution
+# See graph_builder.py: SUB_NODE_OFFSETS with centers at 3, 9, 15, 21 in each axis
+SUB_NODES_PER_TILE = 16  # 4×4 grid per 24px tile
 
 # Map dimensions (from physics_constants.py)
 # MAP_TILE_WIDTH = 42, MAP_TILE_HEIGHT = 23 (playable area)
 # FULL_MAP_WIDTH = 44, FULL_MAP_HEIGHT = 25 (with 1-tile padding)
 FULL_TILES = FULL_MAP_WIDTH * FULL_MAP_HEIGHT  # 1,100 tiles
 
-# Realistic maximum nodes based on actual level analysis:
+# Realistic maximum nodes based on actual level analysis at 6px resolution:
+# - At 6px (4x4 sub-nodes per tile), node count is ~4x the 12px count
 # - Most N++ levels have 40-70% solid tiles (platforms, walls, etc.)
-# - Flood-fill filtering removes isolated/unreachable areas
-# - Typical levels have 300-800 reachable nodes
-# - Very open levels (80-100% type 0 tiles) can have 3000-3500 nodes
-# - Setting 2500 accommodates very open levels while reducing memory ~44%
-#
-# Memory impact (per observation):
-# - Old (4500 nodes): ~295 KB graph data
-# - New (2500 nodes): ~166 KB graph data
-# - Rollout buffer: ~22 GB with 64 envs, 1024 steps (vs ~38 GB before)
-N_MAX_NODES = 2500  # Accommodates very open levels (80-100% traversable)
+# - Typical levels have 1200-3200 reachable nodes at 6px resolution
+# - Very open levels (80-100% type 0 tiles) can have 12000-14000 nodes
+# - Setting 10000 accommodates very open levels at the finer resolution
+N_MAX_NODES = 10000  # Accommodates very open levels at 6px resolution
 
 # GraphBuilder uses 8-connectivity (N, E, S, W, NE, SE, SW, NW - cardinal + diagonal)
 # See graph_builder.py line 936-945 for direction definitions
@@ -48,10 +43,10 @@ MAX_NEIGHBORS_PER_NODE = 8
 E_MAX_EDGES = N_MAX_NODES * MAX_NEIGHBORS_PER_NODE  # 20,000
 
 # Legacy constants for backward compatibility (deprecated)
-SUB_GRID_RESOLUTION = 2  # Matches actual 2x2 sub-nodes
-SUB_CELL_SIZE = TILE_PIXEL_SIZE // SUB_GRID_RESOLUTION  # 12 pixels per sub-cell
-SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 84 sub-cells wide (42*2)
-SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 46 sub-cells tall (23*2)
+SUB_GRID_RESOLUTION = 4  # Matches actual 4x4 sub-nodes
+SUB_CELL_SIZE = TILE_PIXEL_SIZE // SUB_GRID_RESOLUTION  # 6 pixels per sub-cell
+SUB_GRID_WIDTH = MAP_TILE_WIDTH * SUB_GRID_RESOLUTION  # 168 sub-cells wide (42*4)
+SUB_GRID_HEIGHT = MAP_TILE_HEIGHT * SUB_GRID_RESOLUTION  # 92 sub-cells tall (23*4)
 
 # Feature dimensions for observation space
 # GCN-optimized: Reduced from 17 to 6 to 4, then restored spatial for goal-directed navigation

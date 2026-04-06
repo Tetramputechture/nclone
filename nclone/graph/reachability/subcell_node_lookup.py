@@ -1,10 +1,10 @@
 """
 Precomputed subcell-to-node lookup table for O(1) node queries.
 
-Precomputes which node position is closest to each 12px×12px subcell,
+Precomputes which node position is closest to each 6px×6px subcell,
 enabling true O(1) direct array access instead of spatial hash queries.
 
-Since node positions are fixed on a 12px grid (tile*24 + {6, 18}),
+Since node positions are fixed on a 6px grid (tile*24 + {3, 9, 15, 21}),
 we can precompute this once offline and reuse for all levels.
 """
 
@@ -17,7 +17,7 @@ from typing import Dict, Tuple, Optional
 from ...constants.physics_constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 
 # Hardcoded constants matching graph_builder.py
-SUB_NODE_SIZE = 12  # 12px subcells
+SUB_NODE_SIZE = 6  # 6px subcells (4x4 per 24px tile)
 CELL_SIZE = 24  # 24px tiles
 
 # Map dimensions in tile data space (playable area)
@@ -30,31 +30,31 @@ LOOKUP_BORDER_TILES = 2  # 2 tiles = 48px border on all sides
 LOOKUP_BORDER_PX = LOOKUP_BORDER_TILES * CELL_SIZE  # 48 pixels
 
 # Subcell grid dimensions (original, for reference)
-SUBCELL_WIDTH = MAP_WIDTH_PX // SUB_NODE_SIZE  # 1008 / 12 = 84
-SUBCELL_HEIGHT = MAP_HEIGHT_PX // SUB_NODE_SIZE  # 552 / 12 = 46
+SUBCELL_WIDTH = MAP_WIDTH_PX // SUB_NODE_SIZE  # 1008 / 6 = 168
+SUBCELL_HEIGHT = MAP_HEIGHT_PX // SUB_NODE_SIZE  # 552 / 6 = 92
 
 # Extended subcell grid dimensions (including border)
 # Extended bounds: [-48, 1056) x [-48, 600) in pixel coordinates
 EXTENDED_MAP_WIDTH_PX = MAP_WIDTH_PX + 2 * LOOKUP_BORDER_PX  # 1008 + 96 = 1104 pixels
 EXTENDED_MAP_HEIGHT_PX = MAP_HEIGHT_PX + 2 * LOOKUP_BORDER_PX  # 552 + 96 = 648 pixels
-SUBCELL_WIDTH_EXTENDED = EXTENDED_MAP_WIDTH_PX // SUB_NODE_SIZE  # 1104 / 12 = 92
-SUBCELL_HEIGHT_EXTENDED = EXTENDED_MAP_HEIGHT_PX // SUB_NODE_SIZE  # 648 / 12 = 54
+SUBCELL_WIDTH_EXTENDED = EXTENDED_MAP_WIDTH_PX // SUB_NODE_SIZE  # 1104 / 6 = 184
+SUBCELL_HEIGHT_EXTENDED = EXTENDED_MAP_HEIGHT_PX // SUB_NODE_SIZE  # 648 / 6 = 108
 
 # Coordinate offset for converting query positions to extended grid indices
-# Query position (x, y) maps to subcell index: ((x - LOOKUP_X_OFFSET - 6) // 12, (y - LOOKUP_Y_OFFSET - 6) // 12)
+# Query position (x, y) maps to subcell index: ((x - LOOKUP_X_OFFSET - 3) // 6, (y - LOOKUP_Y_OFFSET - 3) // 6)
 LOOKUP_X_OFFSET = -LOOKUP_BORDER_PX  # -48 pixels
 LOOKUP_Y_OFFSET = -LOOKUP_BORDER_PX  # -48 pixels
 
 
 class SubcellNodeLookupPrecomputer:
     """
-    Precompute closest node position for each 12px×12px subcell.
+    Precompute closest node position for each 6px×6px subcell.
 
     Uses the fast grid snapping algorithm from _find_closest_node() to
-    determine which node position (on the fixed 12px grid) is closest
+    determine which node position (on the fixed 6px grid) is closest
     to each subcell center.
 
-    Node positions are fixed at: tile*24 + {6, 18} for each dimension.
+    Node positions are fixed at: tile*24 + {3, 9, 15, 21} for each dimension.
     """
 
     def __init__(self):
@@ -103,13 +103,13 @@ class SubcellNodeLookupPrecomputer:
                 # Convert subcell index to pixel coordinates in extended space
                 # Subcell index i=0 corresponds to x = LOOKUP_X_OFFSET + 6
                 # Subcell center at (6,6) alignment relative to extended grid origin
-                subcell_center_x = self.x_offset + 6 + i * self.subcell_size
-                subcell_center_y = self.y_offset + 6 + j * self.subcell_size
+                subcell_center_x = self.x_offset + 3 + i * self.subcell_size
+                subcell_center_y = self.y_offset + 3 + j * self.subcell_size
 
                 # Use fast grid snapping (same as _find_closest_node in graph_builder.py)
-                # Nodes are at positions: ..., -18, -6, 6, 18, 30, 42, ...
-                snap_x = round((subcell_center_x - 6) / 12) * 12 + 6
-                snap_y = round((subcell_center_y - 6) / 12) * 12 + 6
+                # Nodes are at positions: ..., -9, -3, 3, 9, 15, 21, ...
+                snap_x = round((subcell_center_x - 3) / 6) * 6 + 3
+                snap_y = round((subcell_center_y - 3) / 6) * 6 + 3
 
                 # Store node position
                 lookup[i, j, 0] = snap_x
@@ -205,7 +205,7 @@ class SubcellNodeLookupLoader:
         query_x: float,
         query_y: float,
         adjacency: Dict[Tuple[int, int], list],
-        max_radius: float = 12.0,
+        max_radius: float = 6.0,
     ) -> Optional[Tuple[int, int]]:
         """
         Find closest node position using precomputed lookup table.
@@ -218,7 +218,7 @@ class SubcellNodeLookupLoader:
             query_x: Query X coordinate in pixels (tile data space)
             query_y: Query Y coordinate in pixels (tile data space)
             adjacency: Graph adjacency structure (keys are node positions, for candidate filtering)
-            max_radius: Maximum search radius in pixels (default 12px for entity radius)
+            max_radius: Maximum search radius in pixels (default 6px for entity radius)
 
         Returns:
             Closest node position (x, y) if found, None otherwise
@@ -226,10 +226,10 @@ class SubcellNodeLookupLoader:
         if self._lookup_table is None:
             raise RuntimeError("Lookup table not loaded")
 
-        # Convert to subcell index (accounting for offset and (6,6) center alignment)
-        # Extended grid: subcell index = ((query_x - LOOKUP_X_OFFSET - 6) // 12)
-        subcell_x = int((query_x - LOOKUP_X_OFFSET - 6) // SUB_NODE_SIZE)
-        subcell_y = int((query_y - LOOKUP_Y_OFFSET - 6) // SUB_NODE_SIZE)
+        # Convert to subcell index (accounting for offset and (3,3) center alignment)
+        # Extended grid: subcell index = ((query_x - LOOKUP_X_OFFSET - 3) // 6)
+        subcell_x = int((query_x - LOOKUP_X_OFFSET - 3) // SUB_NODE_SIZE)
+        subcell_y = int((query_y - LOOKUP_Y_OFFSET - 3) // SUB_NODE_SIZE)
 
         # Clamp to valid extended bounds instead of raising exception
         # This handles entities positioned up to ±2 tiles outside normal map bounds
@@ -247,7 +247,7 @@ class SubcellNodeLookupLoader:
                 return candidate
 
         # Check neighbors (up to max_radius away)
-        # Convert max_radius to subcells: ceil(max_radius / 12)
+        # Convert max_radius to subcells: ceil(max_radius / 6)
         max_subcell_radius = int(np.ceil(max_radius / SUB_NODE_SIZE))
 
         # Check all subcells within radius (not just perimeter)

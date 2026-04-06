@@ -31,7 +31,7 @@ _logger = logging.getLogger(__name__)
 NODE_WORLD_COORD_OFFSET = 24
 
 # Constants for horizontal edge validation and physics
-SUB_NODE_SIZE = 12  # Sub-node spacing in pixels
+SUB_NODE_SIZE = 6  # Sub-node spacing in pixels (6px = 4x4 sub-nodes per 24px tile)
 
 # Aerial upward movement cost constants
 # N++ physics: A jump from ground with held jump button can realistically cover
@@ -46,7 +46,7 @@ AERIAL_UPWARD_BASE_MULTIPLIER = 3.0  # Base multiplier for aerial upward (not 1.
 MOMENTUM_CONTINUE_MULTIPLIER = 0.7  # Cheaper to maintain momentum (30% discount)
 MOMENTUM_REVERSE_MULTIPLIER = 2.5  # Expensive to reverse direction (2.5x penalty)
 MOMENTUM_BUILDING_THRESHOLD = (
-    12  # Min horizontal displacement (1 sub-node) to have momentum
+    6  # Min horizontal displacement (1 sub-node) to have momentum
 )
 
 # Velocity-aware first-edge cost constants

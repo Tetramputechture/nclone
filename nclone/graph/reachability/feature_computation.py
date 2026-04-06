@@ -501,7 +501,7 @@ def compute_reachability_features_from_graph(
 
     # Features 0-1: Path distances normalized to [0, 1] using LEVEL_DIAGONAL.
     # LEVEL_DIAGONAL (~1215 px) is the maximum possible straight-line distance in the
-    # level.  Using area_scale (sqrt(nodes)*12, typically ~200 px for a standard level)
+    # level.  Using area_scale (sqrt(nodes)*6, typically ~200 px for a standard level)
     # caused almost all real distances to be clipped to 1.0 by np.clip, making the
     # feature useless as a learning signal.
     if switch_distance_raw != float("inf"):

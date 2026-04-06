@@ -2115,6 +2115,18 @@ class DebugOverlayRenderer:
             if pbrs_path_surface:
                 surface.blit(pbrs_path_surface, (0, 0))
 
+        # Draw route PBRS overlay if provided (surface heatmap + arcs + route)
+        if debug_info and "route_overlay" in debug_info:
+            from nclone.value_function.route_overlay_draw import draw_route_overlay_pygame
+            route_surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            data = dict(debug_info["route_overlay"])
+            data["screen_w"] = self.screen.get_width()
+            data["screen_h"] = self.screen.get_height()
+            draw_route_overlay_pygame(
+                route_surface, data, self.adjust, self.tile_x_offset, self.tile_y_offset
+            )
+            surface.blit(route_surface, (0, 0))
+
         # Draw step-on-input sequence overlay if provided
         if debug_info and "input_sequence" in debug_info:
             input_seq_surface = self._draw_input_sequence_overlay(

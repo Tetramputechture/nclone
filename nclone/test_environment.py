@@ -22,7 +22,7 @@ Q - Toggle demo checkpoint heatmap (requires --demo-replays)
 F - Toggle value function (PBRS cost-to-go) overlay
 Y - Toggle analytical reachability overlay (floor + wall jump hulls)
 P - Toggle PBRS path overlay (shortest path to goal + cost-to-go heatmap)
-R - Reset environment
+O - Toggle route PBRS overlay (surface heatmap + all arcs + optimal route + arc features)
 
 Examples:
 --------
@@ -540,6 +540,7 @@ if (
     print("  A - Toggle adjacency graph visualization")
     print("  B - Toggle blocked entity highlighting")
     print("  P - Toggle PBRS path overlay (shortest path to goal + cost-to-go heatmap)")
+    print("  O - Toggle route PBRS overlay (surface heatmap + arcs + optimal route + arc features)")
     print("  M - Toggle Mine SDF (Signed Distance Field) heatmap")
     print("      • Red=danger zone | Yellow=boundary | Green=safe")
     print("  T - Run pathfinding benchmark at current position")
@@ -987,6 +988,8 @@ value_function_debug_enabled = False
 value_function_pbrs_cache = {}  # level_name -> pbrs instance
 reachability_overlay_enabled = False
 pbrs_path_overlay_enabled = False
+route_overlay_enabled = False
+route_pbrs_instance = None   # RoutePBRS loaded for the 'R' key overlay
 
 if (
     args.test_path_aware
@@ -1708,6 +1711,53 @@ while running:
                         traceback.print_exc()
                         pbrs_path_overlay_enabled = False
 
+                # Route PBRS overlay (surface heatmap + all arcs + planned route)
+                if event.key == pygame.K_o:
+                    route_overlay_enabled = not route_overlay_enabled
+                    if route_overlay_enabled:
+                        try:
+                            level_name = getattr(
+                                env.map_loader, "current_map_name", None
+                            )
+                            if level_name is None and args.map:
+                                from pathlib import Path
+                                level_name = Path(args.map).stem
+                            if level_name:
+                                from nclone.value_function.route_pbrs import (
+                                    create_route_pbrs,
+                                )
+                                route_pbrs_instance = create_route_pbrs(
+                                    level_name, "value_functions"
+                                )
+                                if route_pbrs_instance is None:
+                                    print(
+                                        f"Route PBRS not available for '{level_name}'. "
+                                        "Run precompute_cli.py with --map-path to generate it."
+                                    )
+                                    route_overlay_enabled = False
+                                else:
+                                    ninja_pos = env.nplay_headless.ninja_position()
+                                    ninja_vel = env.nplay_headless.ninja_velocity()
+                                    route_pbrs_instance.reset(
+                                        ninja_pos[0], ninja_pos[1],
+                                        ninja_vel[0], ninja_vel[1],
+                                        contact_state=None,
+                                    )
+                                    env.set_route_pbrs(route_pbrs_instance)
+                                    env.set_route_overlay_enabled(True)
+                                    print(f"Route overlay: ON (level={level_name})")
+                            else:
+                                print("Cannot determine level name for route overlay.")
+                                route_overlay_enabled = False
+                        except Exception as e:
+                            print(f"Failed to load route overlay: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            route_overlay_enabled = False
+                    else:
+                        env.set_route_overlay_enabled(False)
+                        print("Route overlay: OFF")
+
                 # Demo checkpoint visualization controls
                 if demo_checkpoint_system is not None:
                     if event.key == pygame.K_q:
@@ -2078,6 +2128,25 @@ while running:
         except Exception:
             pass
     env.set_pbrs_path_overlay_enabled(pbrs_path_overlay_enabled)
+
+    # Per-frame route PBRS update (arc advancement / replanning)
+    if route_overlay_enabled and route_pbrs_instance is not None:
+        try:
+            ninja_pos = env.nplay_headless.ninja_position()
+            ninja_vel = env.nplay_headless.ninja_velocity()
+            switch_activated = env.nplay_headless.exit_switch_activated()
+            state_dict = {
+                "x": ninja_pos[0],
+                "y": ninja_pos[1],
+                "vx": ninja_vel[0],
+                "vy": ninja_vel[1],
+                "switch_activated": switch_activated,
+                "on_surface": True,
+            }
+            route_pbrs_instance.update(state_dict)
+        except Exception:
+            pass
+    env.set_route_overlay_enabled(route_overlay_enabled)
 
     # Update demo checkpoint visualization if enabled
     if demo_checkpoint_system is not None:

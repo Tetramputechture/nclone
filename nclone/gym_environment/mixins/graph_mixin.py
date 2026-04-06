@@ -631,8 +631,8 @@ class GraphMixin:
         ninja_pos = self.nplay_headless.ninja_position()
         ninja_pos_int = (int(ninja_pos[0]), int(ninja_pos[1]))
         ninja_sub_cell = (
-            int(ninja_pos[1] // 12),
-            int(ninja_pos[0] // 12),
+            int(ninja_pos[1] // 6),
+            int(ninja_pos[0] // 6),
         )  # (sub_row, sub_col)
         cached_ninja_sub_cell = getattr(
             self, "_graph_debug_cached_ninja_sub_cell", None

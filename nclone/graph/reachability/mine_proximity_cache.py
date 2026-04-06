@@ -19,11 +19,11 @@ LEVEL_WIDTH_TILES = 44
 LEVEL_HEIGHT_TILES = 25
 TILE_SIZE = 24  # pixels per tile
 
-# SDF grid resolution (12px = sub-node resolution for higher accuracy)
-# Using 12px instead of 24px reduces max error from 12px to 6px from mine center
-SDF_CELL_SIZE = 12  # pixels per SDF cell
-SDF_WIDTH = 88  # 44 tiles * 2 = 88 cells at 12px resolution
-SDF_HEIGHT = 50  # 25 tiles * 2 = 50 cells at 12px resolution
+# SDF grid resolution (6px = sub-node resolution for higher accuracy)
+# Using 6px provides max error of 3px from mine center
+SDF_CELL_SIZE = 6  # pixels per SDF cell
+SDF_WIDTH = 176  # 44 tiles * 4 = 176 cells at 6px resolution
+SDF_HEIGHT = 100  # 25 tiles * 4 = 100 cells at 6px resolution
 
 
 class MineProximityCostCache:
@@ -282,7 +282,7 @@ class MineSignedDistanceField:
     """
     Precomputed Signed Distance Field (SDF) to mines for O(1) hazard lookups.
 
-    Computes at 12px (sub-node) resolution (88x50 grid) for higher accuracy.
+    Computes at 6px (sub-node) resolution (176x100 grid) for higher accuracy.
     Provides:
     - signed_distance: Distance to nearest deadly mine (negative inside danger zone)
     - gradient: Normalized direction vector away from nearest mine
@@ -290,7 +290,7 @@ class MineSignedDistanceField:
     This is computed ONCE per level load (mines are static per level) and
     used for observation space features without any per-step computation cost.
 
-    Using 12px instead of 24px resolution reduces max position error from 12px to 6px,
+    Using 6px resolution reduces max position error to 3px from mine center,
     ensuring mines on tile edges show correctly as dangerous.
 
     Markov Property: Fully compliant - lookups depend only on current position.
@@ -298,12 +298,12 @@ class MineSignedDistanceField:
 
     def __init__(self):
         """Initialize the SDF cache."""
-        # SDF grid: signed distance to nearest mine at each 12px cell
-        # Shape: [SDF_HEIGHT, SDF_WIDTH] = [50, 88]
+        # SDF grid: signed distance to nearest mine at each 6px cell
+        # Shape: [SDF_HEIGHT, SDF_WIDTH] = [100, 176]
         self.sdf_grid: Optional[np.ndarray] = None
 
-        # Gradient grid: escape direction at each 12px cell (unit vector away from mine)
-        # Shape: [SDF_HEIGHT, SDF_WIDTH, 2] = [50, 88, 2]
+        # Gradient grid: escape direction at each 6px cell (unit vector away from mine)
+        # Shape: [SDF_HEIGHT, SDF_WIDTH, 2] = [100, 176, 2]
         self.gradient_grid: Optional[np.ndarray] = None
 
         # Danger radius (NINJA_RADIUS + max mine radius + safety margin)
@@ -334,7 +334,7 @@ class MineSignedDistanceField:
         ):
             return False  # Cache still valid
 
-        # Initialize grids at 12px resolution for higher accuracy
+        # Initialize grids at 6px resolution for higher accuracy
         self.sdf_grid = np.full(
             (SDF_HEIGHT, SDF_WIDTH),
             fill_value=1.0,  # Max normalized distance (safe)
@@ -370,10 +370,10 @@ class MineSignedDistanceField:
             self._cached_mine_signature = mine_signature
             return True
 
-        # Compute SDF for each 12px cell (higher resolution than tiles)
+        # Compute SDF for each 6px cell (sub-node resolution)
         for row in range(SDF_HEIGHT):
             for col in range(SDF_WIDTH):
-                # Cell center in pixel coordinates (12px resolution)
+                # Cell center in pixel coordinates (6px resolution)
                 cell_center_x = (col + 0.5) * SDF_CELL_SIZE
                 cell_center_y = (row + 0.5) * SDF_CELL_SIZE
 
@@ -433,7 +433,7 @@ class MineSignedDistanceField:
         if self.sdf_grid is None:
             return 1.0  # No SDF computed, assume safe
 
-        # Convert to 12px cell indices
+        # Convert to 6px cell indices
         col = int(x / SDF_CELL_SIZE)
         row = int(y / SDF_CELL_SIZE)
 
@@ -460,7 +460,7 @@ class MineSignedDistanceField:
         if self.gradient_grid is None:
             return (0.0, 0.0)  # No gradient computed
 
-        # Convert to 12px cell indices
+        # Convert to 6px cell indices
         col = int(x / SDF_CELL_SIZE)
         row = int(y / SDF_CELL_SIZE)
 

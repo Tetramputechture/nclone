@@ -752,7 +752,7 @@ class CachedPathDistanceCalculator:
                         dy = abs(goal_pos[1] - goal[1])
 
                         # Log validation failures with curriculum context
-                        if dx > 12 or dy > 12:
+                        if dx > 6 or dy > 6:
                             current_stage = (
                                 self.goal_curriculum_manager.state.unified_stage
                                 if self.goal_curriculum_manager
@@ -761,13 +761,13 @@ class CachedPathDistanceCalculator:
                             logger.warning(
                                 f"[VALIDATION_FAIL] get_distance: goal_id={goal_id}, "
                                 f"goal={goal} (from caller), goal_pos={goal_pos} (from cache), "
-                                f"dx={dx:.1f}, dy={dy:.1f}, threshold=12, stage={current_stage}. "
+                                f"dx={dx:.1f}, dy={dy:.1f}, threshold=6, stage={current_stage}. "
                                 f"Cache/entity position mismatch. Skipping level cache."
                             )
 
                         if (
-                            dx <= 12 and dy <= 12
-                        ):  # Within half tile (matching old validation logic)
+                            dx <= 6 and dy <= 6
+                        ):  # Within one sub-node (matching graph resolution)
                             # Find ninja node using canonical ninja node selection
                             # FIX: Pass level_cache to use PATH distance instead of Euclidean
                             with self.timer.measure("find_start_node"):

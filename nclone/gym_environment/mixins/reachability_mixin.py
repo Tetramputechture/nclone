@@ -72,17 +72,42 @@ class ReachabilityMixin:
             self._path_calculator.clear_cache()
 
     def _get_reachability_features(self) -> np.ndarray:
-        """Get reachability features (8 base + 2 phi_gradient = 10 dims).
+        """Get 10-dim reachability features.
 
-        Base features: path distances, phase, A* guidance, platform distances.
-        Phi gradient (2): physics-aware cost-to-go direction, breaks state aliasing.
+        When a RoutePBRS is active (has get_arc_target_features), returns arc
+        target features that directly encode the current planned arc:
+          [dx_launch, dy_launch, vx_error, dx_land, dy_land,
+           jump_hold_norm, req_speed, progress, switch_activated, spare]
+
+        Fallback (no RoutePBRS or legacy SurfaceGraphPBRS): returns the
+        8-dim graph-path features padded to 10 dims with zeros at indices 8-9
+        (for backward compatibility with non-precomputed training).
         """
+        precomputed = getattr(self, "_current_precomputed_pbrs", None)
+
+        # RoutePBRS path: arc target features replace graph features entirely
+        if precomputed is not None and hasattr(precomputed, "get_arc_target_features"):
+            pos = self.nplay_headless.ninja_position()
+            vel = self.nplay_headless.ninja_velocity()
+            switch = self.nplay_headless.exit_switch_activated()
+            state_dict = {
+                "x": float(pos[0]),
+                "y": float(pos[1]),
+                "vx": float(vel[0]),
+                "vy": float(vel[1]),
+                "switch_activated": switch,
+                "on_surface": self.nplay_headless.ninja_on_surface()
+                    if hasattr(self.nplay_headless, "ninja_on_surface") else True,
+            }
+            features = precomputed.get_arc_target_features(state_dict)
+            return features.astype(np.float32)
+
+        # Legacy path: 8-dim graph features + phi gradient (or zeros)
         reachability_features = self._compute_reachability(
             self.nplay_headless.ninja_position()
         )
 
-        # Append phi-gradient (not cell-cached; changes within tile)
-        precomputed = getattr(self, "_current_precomputed_pbrs", None)
+        # Phi gradient from SurfaceGraphPBRS (indices 8-9)
         if precomputed is not None and hasattr(precomputed, "get_gradient"):
             pos = self.nplay_headless.ninja_position()
             vel = self.nplay_headless.ninja_velocity()

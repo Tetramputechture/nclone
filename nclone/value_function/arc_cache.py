@@ -7,7 +7,7 @@ cell.  At runtime, an airborne state can be looked up in O(1) to get a
 precomputed cost estimate without forward simulation.
 
 Bin sizes (from spec):
-  - Position: 12 px
+  - Position: 6 px
   - Velocity: 0.5 px/frame
 """
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Bin configuration
 # ---------------------------------------------------------------------------
-POSITION_BIN_SIZE = 12.0     # pixels
+POSITION_BIN_SIZE = 6.0      # pixels
 VELOCITY_BIN_SIZE = 0.5      # pixels / frame
 
 _INV_POS_BIN = 1.0 / POSITION_BIN_SIZE

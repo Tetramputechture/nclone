@@ -5,15 +5,15 @@
 
 use pyo3::prelude::*;
 
-const SDF_CELL_SIZE: f64 = 12.0;
-const SDF_WIDTH: usize = 88;
-const SDF_HEIGHT: usize = 50;
+const SDF_CELL_SIZE: f64 = 6.0;
+const SDF_WIDTH: usize = 176;
+const SDF_HEIGHT: usize = 100;
 const DANGER_RADIUS: f64 = 20.0;
 
 /// Signed Distance Field to nearest deadly mine.
 #[pyclass]
 pub struct MineSDF {
-    /// SDF grid: normalized distance [-1, 1] per 12px cell
+    /// SDF grid: normalized distance [-1, 1] per 6px cell
     sdf_grid: Vec<f32>,
     /// Gradient: (dx, dy) escape direction per cell
     gradient_grid: Vec<(f32, f32)>,

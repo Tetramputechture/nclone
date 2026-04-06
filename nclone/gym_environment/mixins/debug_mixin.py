@@ -76,6 +76,11 @@ class DebugMixin:
         self._input_sequence_overlay_enabled: bool = False
         self._input_sequence_overlay_data: list = []
 
+        # Route PBRS overlay state (surface heatmap + arc graph + route)
+        self._route_overlay_enabled: bool = False
+        self._route_pbrs = None  # RoutePBRS instance
+        self._route_overlay_cache: Optional[Dict[str, Any]] = None  # precomputed static arrays
+
     def set_input_sequence_overlay(self, sequence: list, enabled: bool):
         """Set input sequence overlay data for step-on-input mode.
 
@@ -150,7 +155,7 @@ class DebugMixin:
             info["demo_checkpoints"] = {
                 "checkpoints": self._demo_checkpoints_data.get("checkpoints", []),
                 "ninja_position": self.nplay_headless.ninja_position(),
-                "grid_size": 12,  # Match Go-Explore checkpoint discretization
+                "grid_size": 6,  # Match sub-node grid resolution
             }
 
         # Add analytical reachability overlay if enabled
@@ -170,6 +175,12 @@ class DebugMixin:
             pbrs_path_data = self._get_pbrs_path_overlay_data()
             if pbrs_path_data:
                 info["pbrs_path_overlay"] = pbrs_path_data
+
+        # Add route PBRS overlay (surface heatmap + arc edges + planned route)
+        if self._route_overlay_enabled and self._route_pbrs is not None:
+            route_data = self._get_route_overlay_data()
+            if route_data:
+                info["route_overlay"] = route_data
 
         # Add other debug info only if general debug overlay is enabled
         if self._enable_debug_overlay:
@@ -755,6 +766,203 @@ class DebugMixin:
             logging.getLogger(__name__).debug(f"PBRS path overlay error: {e}")
             self._pbrs_path_cached_data = None
             return None
+
+    # ------------------------------------------------------------------
+    # Route PBRS overlay
+    # ------------------------------------------------------------------
+
+    def set_route_overlay_enabled(self, enabled: bool) -> None:
+        """Enable/disable route PBRS overlay (surface heatmap + arcs + route)."""
+        self._route_overlay_enabled = bool(enabled)
+        if not enabled:
+            self._route_overlay_cache = None
+
+    def set_route_pbrs(self, pbrs) -> None:
+        """Set the RoutePBRS instance and precompute static drawing caches.
+
+        Caches the surface-point positions/d_star arrays and edge src/dst arrays
+        once so that _get_route_overlay_data() is cheap per-frame.
+        """
+        self._route_pbrs = pbrs
+        self._route_overlay_cache = None
+        if pbrs is not None:
+            self._route_overlay_cache = self._build_route_overlay_cache(pbrs)
+
+    def _build_route_overlay_cache(self, pbrs) -> Dict[str, Any]:
+        """Precompute static overlay arrays from a RoutePBRS instance."""
+        import numpy as np
+        from ...value_function.surface_graph import node_id, num_velocity_bins
+        from ...value_function.route_overlay_draw import build_edge_data as _build_edge_data
+
+        graph = pbrs._graph
+        n = graph.n_points
+        xy = np.array(
+            [[sp.x, sp.y] for sp in graph.surface_points], dtype=np.float32
+        )
+
+        def _min_dstar(d_star_arr):
+            vals = np.full(n, np.inf, dtype=np.float32)
+            for i, sp in enumerate(graph.surface_points):
+                n_bins = num_velocity_bins(sp.surface_type)
+                for vb in range(n_bins):
+                    nid = node_id(i, vb, graph.max_vel_bins)
+                    if nid < len(d_star_arr):
+                        v = float(d_star_arr[nid])
+                        if v < vals[i]:
+                            vals[i] = v
+            return vals
+
+        return {
+            "surface_points_xy": xy,
+            "d_star_switch_pt": _min_dstar(pbrs._d_star_switch),
+            "d_star_exit_pt": _min_dstar(pbrs._d_star_exit),
+            "edge_data": _build_edge_data(graph),
+        }
+
+    def _get_route_overlay_data(self) -> Optional[Dict[str, Any]]:
+        """Build the route overlay payload for DebugOverlayRenderer."""
+        import numpy as np
+
+        pbrs = self._route_pbrs
+        if pbrs is None or self._route_overlay_cache is None:
+            return None
+
+        cache = self._route_overlay_cache
+        switch_activated = self.nplay_headless.exit_switch_activated()
+        phase = "exit" if switch_activated else "switch"
+
+        d_star_pts = (
+            cache["d_star_exit_pt"] if switch_activated else cache["d_star_switch_pt"]
+        )
+
+        # Current route arcs (include launch_vx and h_input for walk-arc drawing)
+        route_list = [
+            {
+                "route_idx": i,
+                "launch_x": arc.launch_x,
+                "launch_y": arc.launch_y,
+                "landing_x": arc.landing_x,
+                "landing_y": arc.landing_y,
+                "jump_hold": arc.jump_hold_frames,
+                "launch_vx": arc.launch_vx,
+                "h_input": arc.h_input_during,
+                "cumulative_cost": arc.cumulative_cost,
+            }
+            for i, arc in enumerate(pbrs._route)
+        ]
+
+        ninja_pos = self.nplay_headless.ninja_position()
+        ninja_vel = self.nplay_headless.ninja_velocity()
+
+        # Detect airborne from ninja state code
+        state_code = 1  # default: running
+        if hasattr(self.nplay_headless, "sim") and self.nplay_headless.sim:
+            sim = self.nplay_headless.sim
+            if hasattr(sim, "get_ninja_state_code"):
+                state_code = sim.get_ninja_state_code()
+            elif hasattr(sim, "ninja") and hasattr(sim.ninja, "state"):
+                state_code = sim.ninja.state
+
+        is_airborne = state_code in {3, 4}
+
+        # Ballistic trajectory when airborne
+        ballistic_pts = []
+        snapped_sp_xy = None
+        if is_airborne and pbrs._route:
+            try:
+                import math as _math
+                from ...value_function.route_extraction import _predict_ballistic_landing
+                from ...constants.physics_constants import GRAVITY_FALL
+                bx, by = ninja_pos[0], ninja_pos[1]
+                bvx, bvy = ninja_vel[0], ninja_vel[1]
+                for frame in range(90):
+                    bvx_new = bvx
+                    bvy += GRAVITY_FALL
+                    bx += bvx_new
+                    by += bvy
+                    if frame % 3 == 0:
+                        ballistic_pts.append((bx, by))
+                    # Stop near first route arc's launch point
+                    arc0 = pbrs._route[0]
+                    ddx = bx - arc0.launch_x
+                    ddy = by - arc0.launch_y
+                    if _math.sqrt(ddx * ddx + ddy * ddy) < 12.0:
+                        snapped_sp_xy = (arc0.launch_x, arc0.launch_y)
+                        break
+            except Exception:
+                pass
+
+        state_dict = {
+            "player_x": ninja_pos[0],
+            "player_y": ninja_pos[1],
+            "player_xspeed": ninja_vel[0],
+            "player_yspeed": ninja_vel[1],
+            "switch_activated": switch_activated,
+        }
+
+        potential = pbrs.get_potential(state_dict)
+
+        features = np.zeros(10, dtype=np.float32)
+        try:
+            features = pbrs.get_arc_target_features(state_dict)
+        except Exception:
+            pass
+
+        metrics = pbrs.get_route_metrics()
+        screen_size = self.nplay_headless.sim_renderer.screen.get_size() \
+            if hasattr(self.nplay_headless, "sim_renderer") \
+            and hasattr(self.nplay_headless.sim_renderer, "screen") \
+            else (800, 600)
+
+        # Extract per-frame reward breakdown from PrimitiveRewardCalculator
+        reward_components = None
+        try:
+            rc = getattr(self, "reward_calculator", None)
+            if rc is not None:
+                # MainRewardCalculator wraps a pbrs_calculator
+                prim = getattr(rc, "pbrs_calculator", None)
+                # Some configurations expose last_components directly
+                if prim is None and hasattr(rc, "last_components"):
+                    prim = rc
+                if prim is not None:
+                    lc = getattr(prim, "last_components", None)
+                    if lc:
+                        reward_components = dict(lc)
+        except Exception:
+            pass
+
+        return {
+            "show_heatmap": True,
+            "show_arcs": True,
+            "show_route": True,
+            "surface_points_xy": cache["surface_points_xy"],
+            "d_star_per_point": d_star_pts,
+            "edge_data": cache["edge_data"],
+            "route": route_list,
+            "arc_idx": int(pbrs._state.arc_idx),
+            "features": features,
+            "is_airborne": is_airborne,
+            "cursor_xy": ninja_pos,
+            "snap_xy": snapped_sp_xy,
+            "ballistic_pts": ballistic_pts,
+            "reward_components": reward_components,
+            "info": {
+                "phase": phase,
+                "potential": float(potential),
+                "d_star": float(
+                    pbrs._route[pbrs._state.arc_idx].cumulative_cost
+                    if pbrs._route and pbrs._state.arc_idx < len(pbrs._route)
+                    else float("inf")
+                ),
+                "arc_idx": int(pbrs._state.arc_idx),
+                "num_arcs": len(pbrs._route),
+                "replans": int(metrics.get("replans", 0)),
+                "cx": ninja_pos[0],
+                "cy": ninja_pos[1],
+            },
+            "screen_w": screen_size[0],
+            "screen_h": screen_size[1],
+        }
 
     def _get_deadly_mine_positions(self) -> list[tuple[float, float]]:
         """Extract positions of deadly (state=0) mines from level data.

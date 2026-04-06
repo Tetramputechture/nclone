@@ -39,17 +39,31 @@ MAX_LOCKED_DOORS_ATTENTION = 16
 LOCKED_DOOR_FEATURES_DIM = 8  # [switch_x, switch_y, switch_collected, switch_path_dist, door_x, door_y, door_open, door_path_dist]
 LOCKED_DOOR_ARRAY_SIZE = MAX_LOCKED_DOORS_ATTENTION * LOCKED_DOOR_FEATURES_DIM  # 128
 
-# Reachability features dimension (streamlined, no misleading features)
-# Version 2.1 (Feb 2026): Reduced from 10 to 7 dims; added path_dist_to_current_goal (8 dims)
-# 10 features (added phi_gradient_x/y Mar 2026):
-#   Path distances (2): [path_dist_to_switch_norm, path_dist_to_exit_norm]
-#   Phase (1): [switch_activated] - critical for Markov property
-#   A* guidance (2): [next_hop_dir_x, next_hop_dir_y] - optimal path direction
-#   Platform distances (2): [platform_ahead, platform_below] - critical for blind jumps
-#   Path distance to current goal (1): [path_dist_to_current_goal] - phase-aware distance
-#   Phi gradient (2): [phi_gradient_x, phi_gradient_y] - physics-aware cost-to-go direction
-# REMOVED: mine_clearance_dir (duplicate of escape_gradient in mine_sdf_features)
-# REMOVED: exit_reachable (near-constant, derivable from path distance)
+# Reachability features dimension (10 dims, two semantic interpretations):
+#
+# RoutePBRS mode (new, when predecessor arrays present in .npz):
+#   Arc target features — encode the current planned arc from the Dijkstra route:
+#   0: dx_launch          - relative x to arc launch point (~4 tiles, clipped ±1)
+#   1: dy_launch          - relative y to arc launch point (~4 tiles, clipped ±1)
+#   2: vx_error           - (arc.launch_vx - vx) / MAX_HOR_SPEED  ["build speed" signal]
+#   3: dx_land            - relative x to landing point (~8 tiles, clipped ±1)
+#   4: dy_land            - relative y to landing point (~8 tiles, clipped ±1)
+#   5: jump_hold_norm     - arc.jump_hold_frames / MAX_JUMP_DURATION  [0, 1]
+#   6: req_speed          - abs(arc.launch_vx) / MAX_HOR_SPEED  [0, 1]
+#   7: progress           - route completion fraction [0, 1]
+#   8: switch_activated   - 1.0 if switch collected (phase indicator)
+#   9: spare              - 0.0 (reserved)
+#
+# Legacy mode (no route tree, or no precomputed PBRS loaded):
+#   Graph path features (indices 0-7) + phi-gradient or zeros (indices 8-9):
+#   0: path_dist_to_switch_norm
+#   1: path_dist_to_exit_norm
+#   2: switch_activated
+#   3-4: next_hop_dir_x/y
+#   5: platform_ahead
+#   6: platform_below
+#   7: path_dist_to_current_goal
+#   8-9: phi_gradient_x/y (from SurfaceGraphPBRS) or zeros
 REACHABILITY_FEATURES_DIM = 10
 
 # Mine SDF features dimension (for actor safety awareness)

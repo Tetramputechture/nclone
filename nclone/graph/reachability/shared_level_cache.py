@@ -18,8 +18,8 @@ from typing import Dict, Tuple, Optional, List, Any
 logger = logging.getLogger(__name__)
 
 # SDF grid dimensions (from mine_proximity_cache.py)
-SDF_WIDTH = 88  # 44 tiles * 2 at 12px resolution
-SDF_HEIGHT = 50  # 25 tiles * 2 at 12px resolution
+SDF_WIDTH = 176  # 44 tiles * 4 at 6px resolution
+SDF_HEIGHT = 100  # 25 tiles * 4 at 6px resolution
 
 
 class SharedLevelCache:
@@ -513,9 +513,9 @@ class SharedSDFView:
 
     def get_sdf_at_position(self, x: float, y: float) -> float:
         """Get signed distance field value at a pixel position."""
-        # Convert to 12px cell indices
-        col = int(x / 12.0)
-        row = int(y / 12.0)
+        # Convert to 6px cell indices
+        col = int(x / 6.0)
+        row = int(y / 6.0)
 
         # Clamp to valid range
         col = max(0, min(SDF_WIDTH - 1, col))
@@ -525,9 +525,9 @@ class SharedSDFView:
 
     def get_gradient_at_position(self, x: float, y: float) -> Tuple[float, float]:
         """Get escape direction (gradient) at a pixel position."""
-        # Convert to 12px cell indices
-        col = int(x / 12.0)
-        row = int(y / 12.0)
+        # Convert to 6px cell indices
+        col = int(x / 6.0)
+        row = int(y / 6.0)
 
         # Clamp to valid range
         col = max(0, min(SDF_WIDTH - 1, col))

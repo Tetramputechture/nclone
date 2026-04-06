@@ -325,7 +325,7 @@ class AdaptiveMultiPathPBRS(PBRSCalculator):
             state["_pbrs_surface_area"] = surface_area
 
         # Normalize distance similar to standard PBRS
-        area_scale = np.sqrt(surface_area) * 12  # SUB_NODE_SIZE = 12
+        area_scale = np.sqrt(surface_area) * 6  # SUB_NODE_SIZE = 6
         area_scale = area_scale * scale_factor
 
         from ..constants import LEVEL_DIAGONAL

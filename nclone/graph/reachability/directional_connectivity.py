@@ -33,7 +33,7 @@ def find_platform_in_direction(
     physics_cache: Dict[Tuple[int, int], Dict[str, bool]],
     spatial_hash: Optional[Any] = None,
     max_distance: float = 500.0,
-    step_size: int = 12,
+    step_size: int = 6,
 ) -> float:
     """Find distance to nearest grounded platform in specified direction.
 
@@ -47,7 +47,7 @@ def find_platform_in_direction(
         physics_cache: Precomputed physics properties {node_pos: {"grounded": bool, "walled": bool}}
         spatial_hash: Optional spatial hash for O(1) node lookup
         max_distance: Maximum raycast distance in pixels
-        step_size: Step size for raycast (12px = sub-node spacing)
+        step_size: Step size for raycast (6px = sub-node spacing)
 
     Returns:
         Distance to nearest grounded platform in pixels, or max_distance if none found

@@ -1349,6 +1349,134 @@ impl Ninja {
     }
 
     /// Inject full 5D state for value iteration (position, velocity, jump_duration).
+    /// Inject grounded floor state for floor jump enumeration.
+    ///
+    /// Sets state=1 (Running) with active floor contact so that on the very
+    /// next tick with jump_input=1, think() calls floor_jump() with the correct
+    /// floor normal.  This fixes the airborne-injection bug where
+    /// inject_value_iteration_state placed the ninja in state=4 (Falling),
+    /// causing floor_jump() to miss the floor-normal-dependent impulse branches
+    /// (slope jumps) and making running-edge simulation return after 1 frame.
+    ///
+    /// floor_normalized_x/y: outward floor normal (unit vector, away from solid).
+    /// For flat horizontal ground: floor_normalized_x=0, floor_normalized_y=-1.
+    pub fn inject_value_iteration_grounded(
+        &mut self,
+        x: f64,
+        y: f64,
+        vx: f64,
+        vy: f64,
+        floor_normalized_x: f64,
+        floor_normalized_y: f64,
+    ) {
+        self.xpos = x;
+        self.ypos = y;
+        self.xspeed = vx;
+        self.yspeed = vy;
+        self.jump_duration = 0;
+        self.applied_gravity = GRAVITY_FALL;
+        self.applied_drag = DRAG_REGULAR;
+
+        self.xpos_old = x - vx;
+        self.ypos_old = y - vy;
+        self.xspeed_old = vx;
+        self.yspeed_old = vy;
+
+        self.state = 1; // Running
+        self.airborn = false;
+        self.airborn_old = false;
+        self.walled = false;
+        self.wall_normal = 0.0;
+
+        self.floor_count = 1;
+        self.floor_normalized_x = floor_normalized_x;
+        self.floor_normalized_y = floor_normalized_y;
+        self.wall_count = 0;
+        self.ceiling_count = 0;
+        self.floor_normal_x = floor_normalized_x;
+        self.floor_normal_y = floor_normalized_y;
+        self.ceiling_normal_x = 0.0;
+        self.ceiling_normal_y = 0.0;
+
+        // Active floor buffer so jump fires immediately on the first tick with
+        // jump_input=1 (floor_buffer=0 satisfies in_floor_buffer check).
+        self.jump_buffer = -1;
+        self.floor_buffer = 0;
+        self.wall_buffer = -1;
+        self.launch_pad_buffer = -1;
+
+        self.is_crushable = false;
+        self.x_crush = 0.0;
+        self.y_crush = 0.0;
+        self.crush_len = 0.0;
+
+        self.terminal_impact = false;
+        self.death_cause = None;
+    }
+
+    /// Inject wall-slide state for slide-wall-jump enumeration.
+    ///
+    /// Sets state=5 (WallSliding) with wall contact so that on the next tick
+    /// with jump_input=1 and h_input pointing *toward* the wall
+    /// (h_input = -sign(wall_normal)), think() calls wall_jump() and satisfies
+    /// the `hor_input * wall_normal < 0 && state == 5` condition, producing
+    /// the weaker slide impulse (vx = ±0.667, vy = −1.0).
+    ///
+    /// wall_normal: +1 if the wall's outward normal points right (left-hand wall),
+    ///              -1 if it points left (right-hand wall).
+    pub fn inject_value_iteration_wall_slide(
+        &mut self,
+        x: f64,
+        y: f64,
+        vy: f64,
+        wall_normal: f64,
+    ) {
+        self.xpos = x;
+        self.ypos = y;
+        self.xspeed = 0.0;
+        self.yspeed = vy;
+        self.jump_duration = 0;
+        self.applied_gravity = GRAVITY_FALL;
+        self.applied_drag = DRAG_REGULAR;
+
+        self.xpos_old = x;
+        self.ypos_old = y - vy;
+        self.xspeed_old = 0.0;
+        self.yspeed_old = vy;
+
+        self.state = 5; // WallSliding
+        self.airborn = true;
+        self.airborn_old = true;
+        self.walled = true;
+        self.wall_normal = wall_normal;
+
+        self.floor_count = 0;
+        self.floor_normalized_x = 0.0;
+        self.floor_normalized_y = 0.0;
+        self.wall_count = 1;
+        self.ceiling_count = 0;
+        self.floor_normal_x = 0.0;
+        self.floor_normal_y = 0.0;
+        self.ceiling_normal_x = 0.0;
+        self.ceiling_normal_y = 0.0;
+
+        // wall_buffer is reset to 0 in think() because walled=true, making
+        // in_wall_buffer=true so wall_jump() triggers on the very first tick
+        // that sees jump_input=1.
+        self.jump_buffer = -1;
+        self.floor_buffer = -1;
+        self.wall_buffer = -1;
+        self.launch_pad_buffer = -1;
+
+        self.is_crushable = false;
+        self.x_crush = 0.0;
+        self.y_crush = 0.0;
+        self.crush_len = 0.0;
+
+        self.terminal_impact = false;
+        self.death_cause = None;
+    }
+
     /// Unlike inject_enumeration_state, sets jump_duration and gravity based on
     /// whether ninja is actively jumping (reduced gravity) or falling.
     pub fn inject_value_iteration_state(

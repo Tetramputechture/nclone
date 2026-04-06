@@ -930,12 +930,25 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             except (FileNotFoundError, ImportError) as e:
                 logger.warning("Failed to load neural IQL PBRS: %s, falling back", e)
 
-        # Priority 2: Surface graph .npz
+        # Priority 2: Surface graph .npz — prefer RoutePBRS (route-tracking) when
+        # the .npz contains predecessor arrays; fall back to legacy SurfaceGraphPBRS.
         vf_dir = getattr(self, "value_function_dir", None)
         if not vf_dir:
             self._current_precomputed_pbrs = None
             return
 
+        # Try RoutePBRS first (requires predecessor arrays in the .npz)
+        try:
+            from nclone.value_function.route_pbrs import create_route_pbrs
+            route_pbrs = create_route_pbrs(level_id, vf_dir)
+            if route_pbrs is not None:
+                self._current_precomputed_pbrs = route_pbrs
+                logger.info(f"Loaded RoutePBRS (route-tracking) for level {level_id}")
+                return
+        except Exception as e:
+            logger.warning(f"RoutePBRS load failed for {level_id}: {e}, falling back")
+
+        # Fall back to legacy SurfaceGraphPBRS
         from nclone.value_function import create_two_phase_pbrs
 
         self._current_precomputed_pbrs = create_two_phase_pbrs(
@@ -944,7 +957,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             interpolation_method="linear",
             blend_mode="continuous",
         )
-        logger.info(f"Loaded 5D value function PBRS for level {level_id}")
+        logger.info(f"Loaded legacy SurfaceGraphPBRS for level {level_id}")
 
     def _setup_neural_pbrs_level(self, adapter: Any, headless: Any) -> None:
         """Configure neural PBRS adapter with current level data from headless.
@@ -1925,7 +1938,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 sg["contact_floor_frames"] = self._contact_floor_frames
                 sg["contact_wall_frames"] = self._contact_wall_frames
                 sg["contact_airborne_frames"] = self._contact_airborne_frames
-                sg["vf_stats"] = self._current_precomputed_pbrs.get_statistics()
+                if hasattr(self._current_precomputed_pbrs, "get_statistics"):
+                    sg["vf_stats"] = self._current_precomputed_pbrs.get_statistics()
+                else:
+                    sg["vf_stats"] = {}
+                # RoutePBRS route-tracking metrics (absent for SurfaceGraphPBRS)
+                if hasattr(self._current_precomputed_pbrs, "get_route_metrics"):
+                    sg["route_metrics"] = self._current_precomputed_pbrs.get_route_metrics()
                 # Full episode return (includes truncation penalty on last step when timed out)
                 sg["scaled_episode_return"] = float(self.current_ep_reward)
                 info["episode_precomputed_pbrs_metrics"] = sg
@@ -2020,6 +2039,25 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._current_precomputed_pbrs, "reset_fallback_stats"
         ):
             self._current_precomputed_pbrs.reset_fallback_stats()
+
+        # RoutePBRS: extract initial route from spawn position.
+        # Must be called after the level is loaded (headless is ready) so that
+        # ninja_position() returns the actual spawn coordinates.
+        if self._current_precomputed_pbrs is not None and hasattr(
+            self._current_precomputed_pbrs, "reset"
+        ):
+            try:
+                pos = self.nplay_headless.ninja_position()
+                vel = self.nplay_headless.ninja_velocity()
+                sc = getattr(self.nplay_headless.sim.ninja, "state", None)
+                if pos is not None and vel is not None:
+                    self._current_precomputed_pbrs.reset(
+                        float(pos[0]), float(pos[1]),
+                        float(vel[0]), float(vel[1]),
+                        contact_state=sc,
+                    )
+            except Exception as e:
+                logger.debug(f"RoutePBRS.reset failed (non-fatal): {e}")
 
         # Reset truncation checker
         self.truncation_checker.reset()

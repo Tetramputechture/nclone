@@ -58,8 +58,8 @@ from .reward_constants import (
 logger = logging.getLogger(__name__)
 
 # Sub-node size for surface area calculations (from graph builder)
-# The graph builder creates a 2x2 grid of sub-nodes per 24px tile
-SUB_NODE_SIZE = 12  # pixels per sub-node
+# The graph builder creates a 4x4 grid of sub-nodes per 24px tile
+SUB_NODE_SIZE = 6  # pixels per sub-node
 PLAYER_RADIUS = 10  # Player collision radius in pixels (from graph_builder)
 
 # Node coordinate offset for world coordinate conversion (same as pathfinding_utils)

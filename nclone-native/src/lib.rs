@@ -144,6 +144,48 @@ impl PySimulator {
             .inject_value_iteration_state(x, y, vx, vy, jump_duration);
     }
 
+    /// Inject grounded floor state for floor jump enumeration.
+    ///
+    /// Sets state=1 (Running) with active floor contact so that on the next
+    /// tick with jump_input=1, think() fires floor_jump() with the correct
+    /// floor normal (enabling slope-jump impulse branches).  Also fixes the
+    /// ground-running simulation: inject then run tick_tiles_only(h, 0) for k
+    /// frames to get exact k-frame running edges without the airborne artifact.
+    ///
+    /// floor_normalized_x/y: outward floor normal (unit vector, away from solid).
+    fn inject_ninja_for_value_iteration_grounded(
+        &mut self,
+        x: f64,
+        y: f64,
+        vx: f64,
+        vy: f64,
+        floor_normalized_x: f64,
+        floor_normalized_y: f64,
+    ) {
+        self.inner.ninja.inject_value_iteration_grounded(
+            x, y, vx, vy, floor_normalized_x, floor_normalized_y,
+        );
+    }
+
+    /// Inject wall-slide state for slide-wall-jump enumeration.
+    ///
+    /// Sets state=5 (WallSliding) with wall contact.  Call tick_tiles_only with
+    /// jump_input=1 and h_input = -sign(wall_normal) (toward wall) to trigger
+    /// the weak slide-wall-jump impulse (vx=±0.667, vy=−1.0).
+    ///
+    /// wall_normal: +1 if normal points right (left wall), -1 if left (right wall).
+    fn inject_ninja_for_value_iteration_wall_slide(
+        &mut self,
+        x: f64,
+        y: f64,
+        vy: f64,
+        wall_normal: f64,
+    ) {
+        self.inner
+            .ninja
+            .inject_value_iteration_wall_slide(x, y, vy, wall_normal);
+    }
+
     /// Get ninja velocity as (xspeed, yspeed) tuple.
     fn get_ninja_velocity(&self) -> (f64, f64) {
         (self.inner.ninja.xspeed, self.inner.ninja.yspeed)

@@ -163,9 +163,9 @@ class PrimitiveRewardCalculator:
         events = set()
         switch_just_activated = switch_activated and not prev_switch_activated
         if switch_just_activated:
-            events.add('switch_collected')
+            events.add("switch_collected")
         if player_won:
-            events.add('exit_reached')
+            events.add("exit_reached")
 
         # Step reward machine and get sparse reward
         sparse_reward = self.reward_machine.step(events)
@@ -185,20 +185,30 @@ class PrimitiveRewardCalculator:
             state_dict = {
                 "player_x": player_x,
                 "player_y": player_y,
+                "x": player_x,
+                "y": player_y,
                 "player_xspeed": player_xspeed if player_xspeed is not None else 0.0,
                 "player_yspeed": player_yspeed if player_yspeed is not None else 0.0,
+                "vx": player_xspeed if player_xspeed is not None else 0.0,
+                "vy": player_yspeed if player_yspeed is not None else 0.0,
                 "jump_duration_remaining": (
-                    jump_duration_remaining if jump_duration_remaining is not None else 0.0
+                    jump_duration_remaining
+                    if jump_duration_remaining is not None
+                    else 0.0
                 ),
                 "switch_activated": switch_activated,
+                # on_surface: derive from contact_state (0=Immobile,1=Run,2=Slide,5=Wall → surface)
+                "on_surface": contact_state in (0, 1, 2, 5) if contact_state is not None else True,
             }
             if contact_state is not None:
                 state_dict["contact_state"] = contact_state
+            # RoutePBRS: advance frame counter and check for arc advancement / replan.
+            # Guard with hasattr so legacy SurfaceGraphPBRS (no update method) is unaffected.
+            if hasattr(precomputed_pbrs, "update"):
+                precomputed_pbrs.update(state_dict)
             phi_state = precomputed_pbrs.get_potential(state_dict)
         elif rust_phi_cache is not None:
-            phi_state = rust_phi_cache.get_phi(
-                player_x, player_y, rm_state
-            )
+            phi_state = rust_phi_cache.get_phi(player_x, player_y, rm_state)
         else:
             phi_state = phi_grid_cache.get_phi(player_x, player_y, rm_state)
 
@@ -241,9 +251,7 @@ class PrimitiveRewardCalculator:
         # Time penalty discourages timeout-at-wall; must match MainRewardCalculator
         # semantics so FiGAR-PPO gets consistent signal regardless of reward path.
         total_reward = (
-            sparse_reward
-            + self.alpha * pbrs_reward
-            + self.time_penalty_per_frame
+            sparse_reward + self.alpha * pbrs_reward + self.time_penalty_per_frame
         )
 
         # Track for diagnostics
@@ -298,8 +306,12 @@ class PrimitiveRewardCalculator:
         Returns:
             Dictionary of episode statistics
         """
-        total_pbrs = sum(self.episode_pbrs_rewards) if self.episode_pbrs_rewards else 0.0
-        total_sparse = sum(self.episode_sparse_rewards) if self.episode_sparse_rewards else 0.0
+        total_pbrs = (
+            sum(self.episode_pbrs_rewards) if self.episode_pbrs_rewards else 0.0
+        )
+        total_sparse = (
+            sum(self.episode_sparse_rewards) if self.episode_sparse_rewards else 0.0
+        )
         n = len(self.episode_pbrs_rewards)
         time_unscaled = n * self.time_penalty_per_frame
         total_unscaled = total_sparse + self.alpha * total_pbrs + time_unscaled
@@ -345,18 +357,20 @@ class PrimitiveRewardCalculator:
         n_frames = len(pbrs_list)
         time_u = n_frames * self.time_penalty_per_frame
 
-        per_frame_pbrs_scaled = [self.alpha * r * scale for r in pbrs_list] if pbrs_list else []
+        per_frame_pbrs_scaled = (
+            [self.alpha * r * scale for r in pbrs_list] if pbrs_list else []
+        )
         pbrs_total_scaled = float(sum(per_frame_pbrs_scaled))
         time_penalty_total_scaled = time_u * scale
         sparse_total_scaled = total_sparse_u * scale
 
-        hwm_mean = float(np.mean(per_frame_pbrs_scaled)) if per_frame_pbrs_scaled else 0.0
+        hwm_mean = (
+            float(np.mean(per_frame_pbrs_scaled)) if per_frame_pbrs_scaled else 0.0
+        )
         hwm_std = float(np.std(per_frame_pbrs_scaled)) if per_frame_pbrs_scaled else 0.0
 
         nav = self.episode_forward_steps + self.episode_backtrack_steps
-        forward_pct = (
-            (self.episode_forward_steps / nav * 100.0) if nav > 0 else 0.0
-        )
+        forward_pct = (self.episode_forward_steps / nav * 100.0) if nav > 0 else 0.0
 
         lc = self.last_components or {}
         ratio = 0.0
@@ -378,7 +392,6 @@ class PrimitiveRewardCalculator:
             "hwm_std": hwm_std,
             "current_potential": lc.get("current_potential"),
             "prev_potential": lc.get("prev_potential"),
-            "path_optimality": 0.0,
             "forward_progress_pct": forward_pct,
             "backtracking_pct": 100.0 - forward_pct if nav > 0 else 0.0,
             "episode_path_length": 0.0,

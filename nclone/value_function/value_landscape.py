@@ -21,8 +21,8 @@ from .level_renderer import render_tile_grid_to_axis, mark_entities
 # NeuralValueLandscape
 # ---------------------------------------------------------------------------
 
-# Grid sample resolution in game-units (pixels). 12px ≈ half a tile.
-_SWEEP_STEP_PX = 12
+# Grid sample resolution in game-units (pixels). 6px = one sub-node.
+_SWEEP_STEP_PX = 6
 
 # Tile geometry from game constants (physics world = 44×25 tiles including 1-tile border;
 # tile_grid stores only the inner 42×23 tiles: tile_grid[i,j] = game tile (i+1, j+1)).
@@ -439,7 +439,7 @@ class SurfaceGraphVisualizer:
             print(f"No arc cache data for phase '{phase}'.")
             return
 
-        POSITION_BIN_SIZE = 12.0
+        POSITION_BIN_SIZE = 6.0
 
         # Aggregate per (x_bin, y_bin): minimum cost and entry count
         spatial: dict = {}
@@ -532,7 +532,7 @@ class SurfaceGraphVisualizer:
         if d_max <= 0:
             d_max = 1.0
 
-        POSITION_BIN_SIZE = 12.0
+        POSITION_BIN_SIZE = 6.0
         max_bins = self.graph.max_vel_bins
 
         # Surface potential: use velocity bin 0 (zero velocity) per surface point
@@ -768,7 +768,7 @@ class SurfaceGraphVisualizer:
 
     def visualize_dashboard(self, output_path: Optional[str] = None) -> None:
         """Multi-panel dashboard with statistics and arc cache coverage."""
-        POSITION_BIN_SIZE = 12.0
+        POSITION_BIN_SIZE = 6.0
 
         # Precompute arc cache spatial coverage for switch phase
         arc_coverage_xy: dict = {}
