@@ -20,6 +20,9 @@ from .constants import (
     LEVEL_DIAGONAL,
     REACHABILITY_FEATURES_DIM,
     MINE_SDF_FEATURES_DIM,
+    MINE_THREAT_MAP_CHANNELS,
+    MINE_THREAT_MAP_HEIGHT,
+    MINE_THREAT_MAP_WIDTH,
     MAX_LOCKED_DOORS,
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
@@ -32,6 +35,7 @@ from .layer3_macro_action_mask import Layer3MacroActionMasker
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
 from .config import EnvironmentConfig
 from .precomputed_door_features import PrecomputedDoorFeatureCache
+from nclone_native import MineThreatMap
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # When True, tile_grid (42x23 int8) and level_id (int32) are included in obs
         self.enable_level_context_observations = (
             self.config.enable_level_context_observations
+        )
+
+        # Rust mine threat map (3×168×92 @ 6px); incremental recompute on mine state change
+        self._mine_threat_map_rs = MineThreatMap()
+        self._mine_threat_map_cache = np.zeros(
+            (MINE_THREAT_MAP_CHANNELS, MINE_THREAT_MAP_HEIGHT, MINE_THREAT_MAP_WIDTH),
+            dtype=np.float32,
         )
 
         # Cached tile grid for the current level (computed once per level load, reused each step)
@@ -327,6 +338,18 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             low=-1.0,
             high=1.0,
             shape=(MINE_SDF_FEATURES_DIM,),
+            dtype=np.float32,
+        )
+
+        # Mine threat map: deadly SDF, safe SDF, passability (sigmoid of deadly SDF)
+        obs_spaces["mine_threat_map"] = box.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(
+                MINE_THREAT_MAP_CHANNELS,
+                MINE_THREAT_MAP_HEIGHT,
+                MINE_THREAT_MAP_WIDTH,
+            ),
             dtype=np.float32,
         )
 
@@ -1451,6 +1474,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # These provide GLOBAL mine danger signal from ALL mines (not just 8 nearest)
         obs["mine_sdf_features"] = self._compute_mine_sdf_features(obs)
 
+        from .config import ObservationMode
+
+        if self.config.observation_mode != ObservationMode.MINIMAL:
+            obs["mine_threat_map"] = self._compute_mine_threat_map()
+
         # Add metadata for cached graph extraction (hybrid_cached_graph architecture)
         # These are not trainable features, just identifiers for cache lookup
         obs["level_id"] = self.map_loader.current_map_name
@@ -1579,6 +1607,39 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             mine_sdf_features[2] = grad_y
 
         return mine_sdf_features
+
+    def _compute_mine_threat_map(self) -> np.ndarray:
+        """3-channel mine threat map at 6px (168×92): deadly SDF, safe SDF, passability.
+
+        Deadly = toggle mines in STATE_TOGGLED (0); safe = untoggled/toggling (1, 2).
+        Uses Rust R-tree nearest-neighbor; recomputes only when mine positions/states change.
+        """
+        from .config import ObservationMode
+
+        if self.config.observation_mode == ObservationMode.MINIMAL:
+            return self._mine_threat_map_cache
+
+        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
+        deadly: list[tuple[float, float]] = []
+        safe: list[tuple[float, float]] = []
+        for mine in (*toggle_mines, *toggled_mines):
+            pos = (float(mine.xpos), float(mine.ypos))
+            if getattr(mine, "state", 1) == 0:
+                deadly.append(pos)
+            else:
+                safe.append(pos)
+
+        flat = self._mine_threat_map_rs.compute_threat_map_if_changed(deadly, safe)
+        if flat is None:
+            return self._mine_threat_map_cache
+
+        arr = np.asarray(flat, dtype=np.float32).reshape(
+            MINE_THREAT_MAP_CHANNELS,
+            MINE_THREAT_MAP_HEIGHT,
+            MINE_THREAT_MAP_WIDTH,
+        )
+        self._mine_threat_map_cache = arr
+        return arr
 
     def _compute_nearest_approaching_deadly_mine_distance(self) -> float:
         """Distance in pixels to the nearest deadly mine the ninja is approaching.
@@ -2130,6 +2191,22 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 "mine_sdf_features",
                 np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32),
             )
+
+        from .config import ObservationMode
+
+        if self.config.observation_mode != ObservationMode.MINIMAL:
+            if "mine_threat_map" not in processed_obs:
+                processed_obs["mine_threat_map"] = obs.get(
+                    "mine_threat_map",
+                    np.zeros(
+                        (
+                            MINE_THREAT_MAP_CHANNELS,
+                            MINE_THREAT_MAP_HEIGHT,
+                            MINE_THREAT_MAP_WIDTH,
+                        ),
+                        dtype=np.float32,
+                    ),
+                )
 
         # Add level context observations (tile grid + stable integer level ID)
         # tile_grid is static per level: cache it at level load and reuse every step

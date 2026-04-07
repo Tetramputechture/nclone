@@ -333,6 +333,7 @@ fn nclone_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<vecenv::NativeVecEnv>()?;
     m.add_class::<level_cache::LevelCache>()?;
     m.add_class::<mine_sdf::MineSDF>()?;
+    m.add_class::<mine_sdf::MineThreatMap>()?;
     register_constants_module(m)?;
     Ok(())
 }

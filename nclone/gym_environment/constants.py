@@ -73,6 +73,11 @@ REACHABILITY_FEATURES_DIM = 10
 # These are computed from ALL mines, not just 8 nearest in spatial_context
 MINE_SDF_FEATURES_DIM = 3
 
+# High-resolution mine threat map (L1.2 / NPP-10): Rust SDF at 6px, 1008×552 px level
+MINE_THREAT_MAP_CHANNELS = 3
+MINE_THREAT_MAP_WIDTH = 168  # 1008 / 6
+MINE_THREAT_MAP_HEIGHT = 92  # 552 / 6
+
 # Spatial context features dimension (graph-free alternative)
 # 84 features (graph-free local geometry with velocity-hazard alignment):
 #   Local tile grid (64): 8×8 grid of simplified tile categories (0-4) normalized
