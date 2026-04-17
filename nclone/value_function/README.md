@@ -134,15 +134,25 @@ python -m nclone.value_function.visualize_value_function \
 
 ## Performance
 
-### Precomputation Cost (per level)
+### Precomputation Cost (per level, post-B1..B7 hardening, 4 workers)
 
-| Metric | Value |
-|--------|-------|
-| Surface points | ~2,000-4,000 |
-| Graph nodes | ~45,000 |
-| Edges | ~50,000-200,000 |
-| Precomputation time (8 cores) | ~1-5 minutes |
-| File size | ~3-8 MB |
+Measured on the NPP-RL benchmark suite with the memory-hardened pipeline
+(compact NumPy waypoints, shared reversed adjacency, vectorised arc-cache
+build, subprocess-per-level batching).  See `docs/PRECOMPUTE_AUDIT.md` for
+the current per-level audit run.
+
+| Level (representative) | Surf. points | Graph nodes | Edges | Unique wp cells | Peak RSS (1 worker) | Wall (4 workers) |
+|---|---:|---:|---:|---:|---:|---:|
+| `simple-walk`   | 478 | 7,170 | ~46K | ~50K | ~3 GB  | ~80s |
+| `only-jump`     | 438 | 6,570 | ~8K  | ~20K | ~1 GB  | ~55s |
+| `switch-simple` | 2-3K | ~40K  | ~60K | ~50K | ~2 GB  | ~60s |
+| `fall-required` | >3K  | ~50K  | ~80K | ~80K | ~4 GB  | ~120s |
+
+**8 GB budget:** all benchmark levels complete within budget when run under
+`npp-rl/scripts/precompute_all.py` (subprocess-per-level isolation).  On
+very tight budgets pass `--arc-waypoint-interval 2` (halves wp memory
+with minor arc-cache coverage loss) or `--no-waypoints` (graph + Dijkstra
+only, for route-PBRS-only workflows).
 
 ### Runtime Performance
 
@@ -151,6 +161,43 @@ python -m nclone.value_function.visualize_value_function \
 | Surface potential lookup | ~5 μs | O(1) spatial hash + velocity interpolation |
 | Arc cache lookup | ~1 μs | O(1) spatial hash |
 | Airborne fallback | ~10 μs | Pessimistic estimate (no sim needed) |
+
+## Supported Mechanics
+
+The surface graph is built from the tile collision geometry plus toggle
+mine positions; physics-based edges are discovered by running the same
+native simulator used at training time.  The following mechanics are
+**fully supported** by the precompute pipeline:
+
+- Running/walking along floor surfaces (all horizontal inputs, arbitrary
+  durations up to 60 frames per arc).
+- Jumping from floors (12 hold durations × 3 horizontal inputs during
+  hold × 3 post-release inputs).
+- Wall-sliding and wall-jumping (regular + slide variants).
+- Edge falls (3 horizontal inputs from is-edge nodes).
+- Toggle mines (type 21) — proximity inflates edge cost via an inverse-
+  linear penalty (`1 + min(β/clearance, cap)`) and arcs that enter the
+  kill zone are pruned.  Both initially-deadly and initially-safe mines
+  participate because the return trip through a toggled mine is lethal.
+
+The following mechanics are **not yet modeled** in the Dijkstra layer and
+fall back to conservative runtime fallbacks:
+
+- **Locked doors / switches as graph state.**  The current pipeline emits
+  two independent d_stars (`d_star_switch`, `d_star_exit`) and a
+  phase-boundary constant; it does not enumerate the combinatorial state
+  space of which doors are open.  On levels with locked doors the d_star
+  to the exit assumes all doors are already open, so the resulting PBRS
+  may be optimistic until the matching switch is collected.
+- **Drones, thwumps, bounce blocks, launch pads.**  These dynamic
+  hazards/helpers are absent from the graph; the agent is expected to
+  learn them reactively from the observation stream.
+- **Gold pickups.**  Not modeled; only switch and exit goals are
+  precomputed.
+
+For a full gap analysis and the plan to address them, see
+`docs/LINEAR_PLAN_AUDIT.md` (observation/action/reward workstreams) and
+the per-release notes in `docs/PRECOMPUTE_AUDIT.md`.
 
 ## Serialization Format
 

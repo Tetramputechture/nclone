@@ -8,7 +8,7 @@ a d* cost-to-go heatmap.
 Usage (from nclone project root)::
 
     python scripts/visualize_optimal_route.py \
-        --map-path test-single-level/basics \
+        --map-path nclone/test_maps/basics \
         --pbrs value_functions/basics_surface_pbrs.npz \
         --output basics_optimal_route.png
 """
@@ -356,7 +356,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Visualize optimal reward-shaping route through the surface graph"
     )
-    parser.add_argument("--map-path", default="test-single-level/basics",
+    parser.add_argument("--map-path", default="nclone/test_maps/basics",
                         help="Path to level .map file")
     parser.add_argument("--pbrs", default="value_functions/basics_surface_pbrs.npz",
                         help="Path to precomputed PBRS .npz")

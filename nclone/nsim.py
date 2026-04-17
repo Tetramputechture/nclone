@@ -68,6 +68,18 @@ class Simulator:
         """Load a map that was manually constructed using the Map class."""
         self.load(created_map.map_data())
 
+    def get_tile_grid(self):
+        """Return the raw 966-element tile data slice from map_data.
+
+        Map data stores tiles at indices [184:1150] in column-major (Fortran)
+        order: tile_data[x + y * 42] -> grid[x, y]. Callers reshape this to a
+        (42, 23) grid via either `.reshape(42, 23, order='F')` or
+        `np.asarray(...).reshape(23, 42).T`.
+        """
+        if self.map_data is None:
+            return []
+        return self.map_data[184:1150]
+
     def reset(self):
         """Reset the simulation to the initial state. Keeps the current map tiles, and resets the ninja,
         entities and the collision log."""

@@ -24,6 +24,28 @@ from ..utils.tile_segment_factory import TileSegmentFactory
 # ---------------------------------------------------------------------------
 SURFACE_FLOOR = 0
 SURFACE_WALL = 1
+# Wall-slide node: co-located with a wall surface point but tagged explicitly
+# as representing the ninja in a wall-slide state (falling with significant
+# downward velocity).  Using a distinct class lets the enumerator attach
+# slide-to-jump arc templates without polluting the stationary wall bins.
+SURFACE_SLIDE = 2
+# Launch-pad node: synthetic point placed at a launch pad entity.  These nodes
+# are airborne-kick sources — they do not represent a walkable surface.
+SURFACE_LAUNCH_PAD = 3
+
+
+def is_wall_like(surface_type: int) -> bool:
+    """Return ``True`` if the node behaves like a wall (wall or slide)."""
+    return surface_type == SURFACE_WALL or surface_type == SURFACE_SLIDE
+
+
+def is_ground_node(surface_type: int) -> bool:
+    """Return ``True`` if the node lives on a static walkable surface."""
+    return (
+        surface_type == SURFACE_FLOOR
+        or surface_type == SURFACE_WALL
+        or surface_type == SURFACE_SLIDE
+    )
 
 # ---------------------------------------------------------------------------
 # Classification thresholds

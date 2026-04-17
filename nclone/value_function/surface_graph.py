@@ -20,34 +20,116 @@ from ..constants.physics_constants import (
     EXIT_DOOR_RADIUS,
     TOGGLE_MINE_RADIUS_TOGGLED,
 )
-from .surface_extraction import SurfacePoint, SURFACE_FLOOR, SURFACE_WALL
+from .surface_extraction import (
+    SurfacePoint,
+    SURFACE_FLOOR,
+    SURFACE_WALL,
+    SURFACE_SLIDE,
+    SURFACE_LAUNCH_PAD,
+    is_wall_like,
+)
 
 # ---------------------------------------------------------------------------
 # Velocity bin configuration
 # ---------------------------------------------------------------------------
-NUM_VELOCITY_BINS_FLOOR = 15
-NUM_VELOCITY_BINS_WALL = 12
+# Schedule version identifier - persisted into the tile-cache shard headers
+# so that bin-layout changes invalidate stale caches automatically.  Bump
+# this any time ``_FLOOR_BIN_CENTERS`` or ``_WALL_BIN_CENTERS`` or the new
+# slide / launch-pad schedules below change.
+BIN_SCHEDULE_VERSION: int = 3
 
 FLOOR_VEL_MIN = -MAX_HOR_SPEED
 FLOOR_VEL_MAX = MAX_HOR_SPEED
 WALL_VEL_MIN = -2.0   # wall-jump upward impulse with margin
 WALL_VEL_MAX = 5.5     # approaching survivable impact limit
 
-# Pre-compute bin centers
-_FLOOR_BIN_CENTERS = np.linspace(
-    FLOOR_VEL_MIN, FLOOR_VEL_MAX, NUM_VELOCITY_BINS_FLOOR, dtype=np.float32,
+# Hand-tuned non-uniform velocity schedules.
+#
+# The linspace baselines discarded many common ninja velocities to the
+# nearest-bin quantiser: zero (stationary) fell between bins, peak run speed
+# (+/- MAX_HOR_SPEED ~= 3.33 px/f) sat adjacent to the outer bin without being
+# exactly represented, and wall-slide terminal velocity (~5.5 px/f) only
+# occupied one coarse bin at the end of a mostly-empty range.
+#
+# The new schedules are denser around:
+#   * 0 px/f (stationary / on-ramp equilibria)
+#   * +-1 px/f (walk / slow-run)
+#   * +-MAX_HOR_SPEED (sprint, the dominant floor-jump velocity)
+#   * wall downward terminal velocity (~4-5 px/f)
+# and coarser in between to keep the total bin count small.  The total
+# number of bins for each surface is preserved so existing .npz files keep
+# loading; increments to the schedule force a cache rebuild via
+# ``BIN_SCHEDULE_VERSION``.
+_FLOOR_BIN_CENTERS = np.array([
+    -MAX_HOR_SPEED,           # full-speed leftward run
+    -MAX_HOR_SPEED * 0.75,
+    -MAX_HOR_SPEED * 0.5,
+    -MAX_HOR_SPEED * 0.3,
+    -MAX_HOR_SPEED * 0.15,
+    -0.1,
+    0.0,                       # exact stationary bin (was between linspace bins)
+    0.1,
+    MAX_HOR_SPEED * 0.15,
+    MAX_HOR_SPEED * 0.3,
+    MAX_HOR_SPEED * 0.5,
+    MAX_HOR_SPEED * 0.75,
+    MAX_HOR_SPEED * 0.9,
+    MAX_HOR_SPEED * 0.98,
+    MAX_HOR_SPEED,             # full-speed rightward run (saturated)
+], dtype=np.float32)
+NUM_VELOCITY_BINS_FLOOR: int = int(_FLOOR_BIN_CENTERS.shape[0])
+
+_WALL_BIN_CENTERS = np.array([
+    WALL_VEL_MIN,              # wall-jump upward impulse
+    -1.0,
+    -0.4,
+    0.0,
+    0.4,                       # initial slow downward slide
+    1.0,
+    1.8,
+    2.6,
+    3.4,
+    4.2,
+    5.0,
+    WALL_VEL_MAX,              # saturated wall-slide terminal velocity
+], dtype=np.float32)
+NUM_VELOCITY_BINS_WALL: int = int(_WALL_BIN_CENTERS.shape[0])
+# Effective bin widths (mean spacing).  Kept for any legacy callers; code
+# that needs exact per-bin widths should use the ``_FLOOR_BIN_CENTERS``
+# array directly.
+_FLOOR_BIN_WIDTH = float(
+    (_FLOOR_BIN_CENTERS[-1] - _FLOOR_BIN_CENTERS[0])
+    / max(1, NUM_VELOCITY_BINS_FLOOR - 1)
 )
-_WALL_BIN_CENTERS = np.linspace(
-    WALL_VEL_MIN, WALL_VEL_MAX, NUM_VELOCITY_BINS_WALL, dtype=np.float32,
+_WALL_BIN_WIDTH = float(
+    (_WALL_BIN_CENTERS[-1] - _WALL_BIN_CENTERS[0])
+    / max(1, NUM_VELOCITY_BINS_WALL - 1)
 )
-_FLOOR_BIN_WIDTH = (
-    _FLOOR_BIN_CENTERS[1] - _FLOOR_BIN_CENTERS[0]
-    if NUM_VELOCITY_BINS_FLOOR > 1 else 1.0
-)
-_WALL_BIN_WIDTH = (
-    _WALL_BIN_CENTERS[1] - _WALL_BIN_CENTERS[0]
-    if NUM_VELOCITY_BINS_WALL > 1 else 1.0
-)
+
+# ---------------------------------------------------------------------------
+# SURFACE_SLIDE bins — a narrower, downward-dominant subset of the wall
+# schedule.  A slide node represents the ninja already wall-sliding, so the
+# zero / upward bins are dropped; 0.0 is retained so the "just entered
+# slide" state (vy ~= 0) remains expressible.
+_SLIDE_BIN_CENTERS = np.array([
+    0.0,
+    0.4,
+    1.0,
+    1.8,
+    2.6,
+    3.4,
+    4.2,
+    5.0,
+    WALL_VEL_MAX,
+], dtype=np.float32)
+NUM_VELOCITY_BINS_SLIDE: int = int(_SLIDE_BIN_CENTERS.shape[0])
+
+# ---------------------------------------------------------------------------
+# SURFACE_LAUNCH_PAD bins — a launch pad emits a fixed boost velocity, so
+# only one "bin" is ever meaningful.  The physical velocity is carried as
+# edge metadata rather than a bin coordinate.
+_LAUNCH_PAD_BIN_CENTERS = np.array([0.0], dtype=np.float32)
+NUM_VELOCITY_BINS_LAUNCH_PAD: int = 1
 
 # ---------------------------------------------------------------------------
 # Spatial index cell size for nearest-node lookup (pixels)
@@ -113,6 +195,10 @@ def num_velocity_bins(surface_type: int) -> int:
     """Return the number of velocity bins for the given surface type."""
     if surface_type == SURFACE_FLOOR:
         return NUM_VELOCITY_BINS_FLOOR
+    if surface_type == SURFACE_SLIDE:
+        return NUM_VELOCITY_BINS_SLIDE
+    if surface_type == SURFACE_LAUNCH_PAD:
+        return NUM_VELOCITY_BINS_LAUNCH_PAD
     return NUM_VELOCITY_BINS_WALL
 
 
@@ -120,6 +206,10 @@ def velocity_bin_centers(surface_type: int) -> np.ndarray:
     """Return the velocity bin center array for the surface type."""
     if surface_type == SURFACE_FLOOR:
         return _FLOOR_BIN_CENTERS
+    if surface_type == SURFACE_SLIDE:
+        return _SLIDE_BIN_CENTERS
+    if surface_type == SURFACE_LAUNCH_PAD:
+        return _LAUNCH_PAD_BIN_CENTERS
     return _WALL_BIN_CENTERS
 
 
@@ -181,7 +271,12 @@ def build_graph(surface_points: List[SurfacePoint]) -> SurfaceGraph:
         SurfaceGraph with nodes, spatial index, and empty edge arrays.
     """
     n_points = len(surface_points)
-    max_bins = max(NUM_VELOCITY_BINS_FLOOR, NUM_VELOCITY_BINS_WALL)
+    max_bins = max(
+        NUM_VELOCITY_BINS_FLOOR,
+        NUM_VELOCITY_BINS_WALL,
+        NUM_VELOCITY_BINS_SLIDE,
+        NUM_VELOCITY_BINS_LAUNCH_PAD,
+    )
     n_nodes = n_points * max_bins
 
     # Build spatial index
@@ -347,10 +442,41 @@ def find_goal_nodes(
 # ---------------------------------------------------------------------------
 # Backward Dijkstra
 # ---------------------------------------------------------------------------
+def _build_reverse_adjacency(
+    graph: SurfaceGraph,
+) -> Dict[int, List[Tuple[int, float, int]]]:
+    """Build the reversed adjacency list used by every backward-Dijkstra pass.
+
+    rev_adj[dst] is a list of ``(src, weight, original_edge_index)`` tuples
+    representing edges ``src -> dst`` in the original graph.  Backward
+    Dijkstra settles ``u = dst`` and relaxes each ``v = src`` neighbor, so
+    an incoming original edge ``v -> u`` becomes an outgoing edge in the
+    reversed graph.  The third element (``i``) lets the tree-building variant
+    record ``best_edge_idx[v] = i`` without rescanning the edge list.
+
+    Building this once and reusing it across both goals avoids redundant
+    Python loops over every edge (O(|E|) × 2) and roughly halves the time
+    spent on Dijkstra's preparation on large graphs.
+    """
+    rev_adj: Dict[int, List[Tuple[int, float, int]]] = {}
+    src_arr = graph.edges_src
+    dst_arr = graph.edges_dst
+    w_arr = graph.edges_weight
+    for i in range(len(src_arr)):
+        dst = int(dst_arr[i])
+        bucket = rev_adj.get(dst)
+        if bucket is None:
+            bucket = []
+            rev_adj[dst] = bucket
+        bucket.append((int(src_arr[i]), float(w_arr[i]), i))
+    return rev_adj
+
+
 def dijkstra_backward(
     graph: SurfaceGraph,
     goal_nodes: List[int],
     blocked_nodes: Optional[Set[int]] = None,
+    rev_adj: Optional[Dict[int, List[Tuple[int, float, int]]]] = None,
 ) -> np.ndarray:
     """Run backward Dijkstra from goal nodes on the reversed edge set.
 
@@ -361,50 +487,21 @@ def dijkstra_backward(
             positions occupied by deadly toggle mines in the relevant phase).
             Blocked nodes are never assigned a finite d* value and are skipped
             as transit nodes, so no path can route through them.
+        rev_adj: Optional prebuilt reversed adjacency list from
+            ``_build_reverse_adjacency``.  Pass this in when running multiple
+            Dijkstra calls on the same graph to avoid duplicate O(|E|) builds.
 
     Returns:
         d_star: float32 array of length ``graph.n_nodes``.
                 d_star[node] = minimum frame-count from node to any goal node.
                 Unreachable and blocked nodes receive ``inf``.
     """
-    n = graph.n_nodes
-    d_star = np.full(n, np.inf, dtype=np.float32)
-    _blocked = blocked_nodes or set()
-
-    # Build reversed adjacency list from edge arrays
-    # rev_adj[dst] -> list of (src, weight)   (in the reversed graph, dst is the start)
-    rev_adj: Dict[int, List[Tuple[int, float]]] = {}
-    for i in range(len(graph.edges_src)):
-        src = int(graph.edges_src[i])
-        dst = int(graph.edges_dst[i])
-        w = float(graph.edges_weight[i])
-        if dst not in rev_adj:
-            rev_adj[dst] = []
-        rev_adj[dst].append((src, w))
-
-    # Initialize priority queue with goal nodes at cost 0
-    heap: List[Tuple[float, int]] = []
-    for gn in goal_nodes:
-        if 0 <= gn < n and gn not in _blocked:
-            d_star[gn] = 0.0
-            heapq.heappush(heap, (0.0, gn))
-
-    # Standard Dijkstra — skip blocked nodes so no path routes through them
-    while heap:
-        dist_u, u = heapq.heappop(heap)
-        if dist_u > d_star[u]:
-            continue
-        neighbors = rev_adj.get(u)
-        if neighbors is None:
-            continue
-        for v, w in neighbors:
-            if v in _blocked:
-                continue
-            new_dist = dist_u + w
-            if new_dist < d_star[v]:
-                d_star[v] = new_dist
-                heapq.heappush(heap, (new_dist, v))
-
+    # Share the heavy rev_adj build with the tree-building variant.
+    d_star, _pred, _best = dijkstra_backward_with_tree(
+        graph, goal_nodes,
+        blocked_nodes=blocked_nodes,
+        rev_adj=rev_adj,
+    )
     return d_star
 
 
@@ -412,6 +509,7 @@ def dijkstra_backward_with_tree(
     graph: SurfaceGraph,
     goal_nodes: List[int],
     blocked_nodes: Optional[Set[int]] = None,
+    rev_adj: Optional[Dict[int, List[Tuple[int, float, int]]]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run backward Dijkstra and return the shortest-path tree.
 
@@ -450,20 +548,13 @@ def dijkstra_backward_with_tree(
     best_edge_idx = np.full(n, -1, dtype=np.int32)
     _blocked = blocked_nodes or set()
 
-    # Build reversed adjacency WITH original edge indices for tree reconstruction.
     # rev_adj[dst] -> list of (src, weight, original_edge_index)
     # An entry (src, w, i) means original edge i: src -> dst exists.
     # When we settle dst (u) and relax src (v):
     #   predecessor[v] = u  (in original graph, v -> u is the next step toward goal)
     #   best_edge_idx[v] = i  (index of the v -> u edge in graph.edges_*)
-    rev_adj: Dict[int, List[Tuple[int, float, int]]] = {}
-    for i in range(len(graph.edges_src)):
-        src = int(graph.edges_src[i])
-        dst = int(graph.edges_dst[i])
-        w = float(graph.edges_weight[i])
-        if dst not in rev_adj:
-            rev_adj[dst] = []
-        rev_adj[dst].append((src, w, i))
+    if rev_adj is None:
+        rev_adj = _build_reverse_adjacency(graph)
 
     heap: List[Tuple[float, int]] = []
     for gn in goal_nodes:
@@ -497,10 +588,13 @@ def compute_cost_to_go_with_tree(
     goal_y: float,
     goal_type: str,
     blocked_nodes: Optional[Set[int]] = None,
+    rev_adj: Optional[Dict[int, List[Tuple[int, float, int]]]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute cost-to-go and shortest-path tree for the given goal.
 
-    Convenience wrapper around ``dijkstra_backward_with_tree``.
+    Convenience wrapper around ``dijkstra_backward_with_tree``.  Pass
+    ``rev_adj`` (from ``_build_reverse_adjacency``) to share the reversed
+    adjacency list across multiple goals on the same graph.
 
     Returns:
         (d_star, predecessor, best_edge_idx) — see
@@ -512,7 +606,9 @@ def compute_cost_to_go_with_tree(
             f"No graph nodes within contact range of {goal_type} "
             f"at ({goal_x:.1f}, {goal_y:.1f}).  Check surface extraction."
         )
-    return dijkstra_backward_with_tree(graph, goal_nodes, blocked_nodes=blocked_nodes)
+    return dijkstra_backward_with_tree(
+        graph, goal_nodes, blocked_nodes=blocked_nodes, rev_adj=rev_adj,
+    )
 
 
 def find_mine_blocked_nodes(
@@ -560,6 +656,7 @@ def compute_cost_to_go(
     goal_y: float,
     goal_type: str,
     blocked_nodes: Optional[Set[int]] = None,
+    rev_adj: Optional[Dict[int, List[Tuple[int, float, int]]]] = None,
 ) -> np.ndarray:
     """Compute cost-to-go from every graph node to the specified goal.
 
@@ -589,4 +686,6 @@ def compute_cost_to_go(
             f"at ({goal_x:.1f}, {goal_y:.1f}).  Check surface extraction."
         )
 
-    return dijkstra_backward(graph, goal_nodes, blocked_nodes=blocked_nodes)
+    return dijkstra_backward(
+        graph, goal_nodes, blocked_nodes=blocked_nodes, rev_adj=rev_adj,
+    )

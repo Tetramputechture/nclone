@@ -36,7 +36,12 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 
-from ..constants.physics_constants import MAX_HOR_SPEED, MAX_JUMP_DURATION
+from ..constants.physics_constants import (
+    MAX_HOR_SPEED,
+    MAX_JUMP_DURATION,
+    NINJA_RADIUS,
+    TOGGLE_MINE_RADIUS_TOGGLED,
+)
 from .surface_graph import SurfaceGraph, find_nearest_point, node_id
 from .surface_extraction import SURFACE_FLOOR
 from .route_extraction import (
@@ -60,6 +65,39 @@ _TILE_PX = 24.0
 # At the goal, d* and first-arc cumulative_cost are 0 — still need a positive
 # denominator for potential / progress (avoid ZeroDivisionError).
 _MIN_ROUTE_NORMALIZER = 1.0
+
+# Tapered mine-kill mask: same parameters used by ``SurfaceGraphPBRS`` so the
+# two potential functions match behaviour near deadly mines.
+_MINE_KILL_RADIUS: float = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED   # 14 px
+_MINE_KILL_TAPER_PX: float = 8.0
+_MINE_KILL_RADIUS_SQ: float = _MINE_KILL_RADIUS * _MINE_KILL_RADIUS
+_MINE_KILL_TAPER_OUTER_SQ: float = (
+    (_MINE_KILL_RADIUS + _MINE_KILL_TAPER_PX) ** 2
+)
+
+
+def _mine_taper_weight(
+    x: float,
+    y: float,
+    deadly_mines: List[Tuple[float, float]],
+) -> float:
+    """Return the linear taper blend factor ``t in [0, 1]`` (see PBRS doc)."""
+    if not deadly_mines:
+        return 0.0
+    best_d2 = float("inf")
+    for mx, my in deadly_mines:
+        dx = x - mx
+        dy = y - my
+        d2 = dx * dx + dy * dy
+        if d2 < best_d2:
+            best_d2 = d2
+    if best_d2 >= _MINE_KILL_TAPER_OUTER_SQ:
+        return 0.0
+    if best_d2 <= _MINE_KILL_RADIUS_SQ:
+        return 1.0
+    d = math.sqrt(best_d2)
+    taper = (_MINE_KILL_RADIUS + _MINE_KILL_TAPER_PX - d) / _MINE_KILL_TAPER_PX
+    return max(0.0, min(1.0, float(taper)))
 
 
 @dataclass
@@ -97,6 +135,7 @@ class RoutePBRS:
         best_edge_exit: np.ndarray,
         d_max_switch: float,
         d_max_exit: float,
+        deadly_mines: Optional[List[Tuple[float, float]]] = None,
     ):
         self._graph = graph
         self._d_star_switch = d_star_switch
@@ -107,11 +146,22 @@ class RoutePBRS:
         self._best_edge_exit = best_edge_exit
         self._d_max_switch = max(d_max_switch, 1.0)
         self._d_max_exit = max(d_max_exit, 1.0)
+        # Currently deadly mine positions (list is updated by the caller when
+        # a mine is toggled on/off).  Used by the tapered kill mask below.
+        self._deadly_mines: List[Tuple[float, float]] = list(
+            deadly_mines or []
+        )
 
         self._route: List[ArcTarget] = []
         self._state = RouteState()
         self._phase: int = 0
         self._total_route_cost: float = self._d_max_switch
+
+    def set_deadly_mines(
+        self, deadly_mines: List[Tuple[float, float]]
+    ) -> None:
+        """Refresh the cached list of currently-deadly mine positions."""
+        self._deadly_mines = list(deadly_mines)
 
     # ------------------------------------------------------------------
     # Episode lifecycle
@@ -209,9 +259,17 @@ class RoutePBRS:
         total_remaining = frames_remaining + arc.cumulative_cost
         denom = max(self._total_route_cost, _MIN_ROUTE_NORMALIZER)
         phi = -total_remaining / denom
+        # Apply tapered mine kill mask so PBRS smoothly repels from deadly
+        # mines rather than exposing a hard step at the kill radius.
+        x = float(state_dict.get("x", state_dict.get("player_x", 0.0)))
+        y = float(state_dict.get("y", state_dict.get("player_y", 0.0)))
+        taper = _mine_taper_weight(x, y, self._deadly_mines)
+        if taper >= 1.0:
+            phi = -1.0
+        elif taper > 0.0:
+            phi = taper * -1.0 + (1.0 - taper) * max(phi, -1.0)
         if self._phase == 1:
             phi += C_PHASE
-        # Clamp to valid range (small floating-point deviations possible)
         return float(max(-1.0, min(C_PHASE, phi)))
 
     def get_arc_target_features(self, state_dict: Dict[str, Any]) -> np.ndarray:
@@ -405,6 +463,11 @@ class RoutePBRS:
             phi = -float(d_star[start]) / d_max
         else:
             phi = -1.0
+        taper = _mine_taper_weight(x, y, self._deadly_mines)
+        if taper >= 1.0:
+            phi = -1.0
+        elif taper > 0.0:
+            phi = taper * -1.0 + (1.0 - taper) * max(phi, -1.0)
         if self._phase == 1:
             phi += C_PHASE
         return float(max(-1.0, min(C_PHASE, phi)))

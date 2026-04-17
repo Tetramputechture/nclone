@@ -57,6 +57,17 @@ _SURFACE_MATCH_RADIUS = 24.0
 _MINE_KILL_RADIUS = NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED  # 14.0 px
 _MINE_KILL_RADIUS_SQ = _MINE_KILL_RADIUS * _MINE_KILL_RADIUS
 
+# Width of the tapered danger band outside the hard kill radius (pixels).
+# Inside [kill, kill+taper] the potential linearly interpolates between the
+# hard "-1" floor at ``d = kill`` and the underlying d_star-based value at
+# ``d = kill + taper``.  This replaces the step-function mask with a smooth
+# gradient so PBRS does not produce a spurious cliff that the policy
+# gradient can dither along.
+_MINE_KILL_TAPER_PX: float = 8.0
+_MINE_KILL_TAPER_OUTER_SQ: float = (
+    (_MINE_KILL_RADIUS + _MINE_KILL_TAPER_PX) ** 2
+)
+
 # Exclusion zone radius: matches the surface-extraction virtual gap radius.
 # The annular band [_MINE_KILL_RADIUS, _MINE_EXCLUSION_RADIUS) has no surface
 # nodes (virtual gap), so nearest-node lookup can snap to the wrong side.
@@ -283,7 +294,13 @@ class SurfaceGraphPBRS:
         # currently-deadly mine, return the worst possible potential for this
         # phase.  This prevents PBRS from rewarding the agent for occupying a
         # position that would instantly kill it.
-        if self._always_deadly_mines and self._is_near_deadly_mine(x, y):
+        #
+        # Outside the hard kill zone but within an 8 px taper band we
+        # linearly blend between the masked "-1" value and the normal
+        # d_star-derived potential, so the agent sees a smooth repulsion
+        # gradient rather than a step cliff.
+        mine_taper = self._mine_taper_weight(x, y)
+        if mine_taper >= 1.0:
             return -1.0 + phi_phase
 
         # Exclusion-zone pinning: if the agent is inside the virtual gap
@@ -296,13 +313,16 @@ class SurfaceGraphPBRS:
         # Determine contact state
         contact = state.get("contact_state", None)
 
+        def _finish(phi_state: float) -> float:
+            clamped = max(phi_state, -1.0)
+            if mine_taper > 0.0:
+                clamped = mine_taper * -1.0 + (1.0 - mine_taper) * clamped
+            return clamped + phi_phase
+
         if contact is None:
-            # Heuristic: try surface lookup, fall back to airborne
             cost = self._try_surface_lookup(d_star, eff_x, eff_y, vx, vy)
             if cost is not None:
-                phi_state = -cost / d_max
-                return max(phi_state, -1.0) + phi_phase
-            # Treat as airborne
+                return _finish(-cost / d_max)
             contact = CONTACT_AIRBORNE
 
         if contact == CONTACT_FLOOR:
@@ -311,8 +331,7 @@ class SurfaceGraphPBRS:
             if not np.isfinite(cost):
                 self._fallback_calls += 1
                 cost = self._pessimistic_fallback(d_star, x, y)
-            phi_state = -cost / d_max
-            return max(phi_state, -1.0) + phi_phase
+            return _finish(-cost / d_max)
 
         if contact == CONTACT_WALL:
             cost = lookup_cost_interpolated(
@@ -320,21 +339,16 @@ class SurfaceGraphPBRS:
             if not np.isfinite(cost):
                 self._fallback_calls += 1
                 cost = self._pessimistic_fallback(d_star, x, y)
-            phi_state = -cost / d_max
-            return max(phi_state, -1.0) + phi_phase
+            return _finish(-cost / d_max)
 
         # AIRBORNE
-        # 1. Try arc cache
         cached = arc_cache.lookup_neighborhood(x, y, vx, vy)
         if cached is not None:
-            phi_state = -cached / d_max
-            return max(phi_state, -1.0) + phi_phase
+            return _finish(-cached / d_max)
 
-        # 2. Pessimistic fallback (nearest surface below)
         self._fallback_calls += 1
         cost = self._pessimistic_fallback(d_star, x, y)
-        phi_state = -cost / d_max
-        return max(phi_state, -1.0) + phi_phase
+        return _finish(-cost / d_max)
 
     def get_gradient(
         self, state: Dict[str, Any], epsilon: float = 6.0,
@@ -401,6 +415,37 @@ class SurfaceGraphPBRS:
             if dx * dx + dy * dy <= _MINE_KILL_RADIUS_SQ:
                 return True
         return False
+
+    def _mine_taper_weight(self, x: float, y: float) -> float:
+        """Smoothly taper the kill-mask potential near a deadly mine.
+
+        Returns a blend factor ``t in [0, 1]`` describing how close the
+        agent is to the nearest deadly-mine surface:
+
+        * ``t = 1.0`` when inside the hard kill radius (fully masked).
+        * ``t = 0.0`` outside the taper band (no masking applied).
+        * ``t`` interpolates linearly between those states inside the band.
+
+        Callers blend the masked potential with the normally-computed
+        potential via ``phi = t * (-1) + (1 - t) * phi_regular``.
+        """
+        if not self._always_deadly_mines:
+            return 0.0
+        best_d2 = float("inf")
+        for mx, my in self._always_deadly_mines:
+            dx = x - mx
+            dy = y - my
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+        if best_d2 >= _MINE_KILL_TAPER_OUTER_SQ:
+            return 0.0
+        if best_d2 <= _MINE_KILL_RADIUS_SQ:
+            return 1.0
+        # Linear taper in radial distance (square-root of d2).
+        d = math.sqrt(best_d2)
+        taper = (_MINE_KILL_RADIUS + _MINE_KILL_TAPER_PX - d) / _MINE_KILL_TAPER_PX
+        return max(0.0, min(1.0, float(taper)))
 
     def _in_mine_exclusion_zone(self, x: float, y: float) -> Optional[int]:
         """Return the mine index if (x, y) is in the exclusion zone but outside the kill zone.

@@ -13,7 +13,7 @@ Usage::
 
     python -m nclone.value_function.visualize_route_interactive \\
         --data value_functions/basics_surface_pbrs.npz \\
-        --map-path test-single-level/basics
+        --map-path nclone/test_maps/basics
 
 Key bindings
 ------------

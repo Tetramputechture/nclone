@@ -12,12 +12,12 @@ Generates a 6-panel dashboard to validate phi grid correctness:
 Usage:
     # Build and visualize inline (exposes intermediate diagnostics)
     python -m nclone.simulation_pbrs.visualize_phi_grid \\
-        --map-path test-single-level/rampjump \\
+        --map-path nclone/test_maps/rampjump \\
         --save phi_grid_rampjump.png
 
     # Visualize from cached .npz
     python -m nclone.simulation_pbrs.visualize_phi_grid \\
-        --map-path test-single-level/rampjump \\
+        --map-path nclone/test_maps/rampjump \\
         --cache-dir simulation_phi_cache/ \\
         --save phi_grid_rampjump.png
 """

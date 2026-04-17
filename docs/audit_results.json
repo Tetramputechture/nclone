@@ -1,0 +1,259 @@
+{
+  "label": "baseline",
+  "num_workers": 4,
+  "total_wall_seconds": 141.13496775500002,
+  "levels": [
+    {
+      "name": "simple-walk",
+      "map_path": "/home/tetra/projects/nclone/nclone/test_maps/simple-walk",
+      "status": "ok",
+      "error": null,
+      "total_seconds": 83.835479618,
+      "process_peak_rss_mb": 4157.69,
+      "stages": [
+        {
+          "name": "load_map",
+          "seconds": 0.005701117000000977,
+          "rss_before_mb": 32.4375,
+          "rss_after_mb": 33.1875,
+          "rss_peak_mb": 33.1875,
+          "extra": {
+            "map_bytes": 1245,
+            "n_tiles": 1100,
+            "n_mines": 0,
+            "has_switch": true,
+            "has_exit": true
+          }
+        },
+        {
+          "name": "extract_surfaces",
+          "seconds": 0.010500540999998975,
+          "rss_before_mb": 33.1875,
+          "rss_after_mb": 34.125,
+          "rss_peak_mb": 34.125,
+          "extra": {
+            "n_surface_points": 478,
+            "n_floor": 218,
+            "n_wall": 260,
+            "n_edge": 36,
+            "n_mine_boundary_pairs": 0
+          }
+        },
+        {
+          "name": "build_graph",
+          "seconds": 0.00018357200000451712,
+          "rss_before_mb": 34.125,
+          "rss_after_mb": 34.125,
+          "rss_peak_mb": 34.125,
+          "extra": {
+            "n_graph_nodes": 7170,
+            "max_vel_bins": 15,
+            "spatial_cells": 464
+          }
+        },
+        {
+          "name": "enumerate_edges",
+          "seconds": 58.800258838000005,
+          "rss_before_mb": 34.125,
+          "rss_after_mb": 3864.12109375,
+          "rss_peak_mb": 4157.69140625,
+          "extra": {
+            "n_edges": 46470,
+            "n_waypoints": 7385020,
+            "waypoints_per_node": 1029.9888423988843,
+            "n_edges_at_clip_bin": 2858,
+            "pct_edges_at_clip_bin": 6.15
+          }
+        },
+        {
+          "name": "dijkstra_switch",
+          "seconds": 0.043508114000005094,
+          "rss_before_mb": 3864.12109375,
+          "rss_after_mb": 3864.68359375,
+          "rss_peak_mb": 3864.68359375,
+          "extra": {
+            "n_reachable": 1143,
+            "reachable_pct": 15.94,
+            "d_max_raw": 138.0,
+            "d_max_p99": 135.0,
+            "inflation_ratio": 1.02,
+            "n_tree_predecessors": 1068
+          }
+        },
+        {
+          "name": "dijkstra_exit",
+          "seconds": 0.04796730500000024,
+          "rss_before_mb": 3864.68359375,
+          "rss_after_mb": 3864.68359375,
+          "rss_peak_mb": 3864.68359375,
+          "extra": {
+            "n_reachable": 1176,
+            "reachable_pct": 16.4,
+            "d_max_raw": 121.0,
+            "d_max_p99": 116.0,
+            "inflation_ratio": 1.04,
+            "n_tree_predecessors": 987
+          }
+        },
+        {
+          "name": "arc_cache_build",
+          "seconds": 24.899737282000004,
+          "rss_before_mb": 3864.68359375,
+          "rss_after_mb": 3866.74609375,
+          "rss_peak_mb": 3866.74609375,
+          "extra": {
+            "switch_cells": 44942,
+            "exit_cells": 44943,
+            "total_cells": 89885
+          }
+        },
+        {
+          "name": "serialize_estimate",
+          "seconds": 0.02627304399999275,
+          "rss_before_mb": 3866.74609375,
+          "rss_after_mb": 3866.74609375,
+          "rss_peak_mb": 3866.74609375,
+          "extra": {
+            "raw_array_mb": 2.3
+          }
+        }
+      ],
+      "summary": {
+        "n_surface_points": 478,
+        "n_graph_nodes": 7170,
+        "n_edges": 46470,
+        "n_waypoints": 7385020,
+        "arc_cells_switch": 44942,
+        "arc_cells_exit": 44943,
+        "reachable_pct_switch": 15.94,
+        "reachable_pct_exit": 16.4
+      }
+    },
+    {
+      "name": "only-jump",
+      "map_path": "/home/tetra/projects/nclone/nclone/test_maps/only-jump",
+      "status": "ok",
+      "error": null,
+      "total_seconds": 55.277753137000005,
+      "process_peak_rss_mb": 1250.26,
+      "stages": [
+        {
+          "name": "load_map",
+          "seconds": 0.001186438999994266,
+          "rss_before_mb": 102.56640625,
+          "rss_after_mb": 102.56640625,
+          "rss_peak_mb": 102.56640625,
+          "extra": {
+            "map_bytes": 1245,
+            "n_tiles": 1100,
+            "n_mines": 0,
+            "has_switch": true,
+            "has_exit": true
+          }
+        },
+        {
+          "name": "extract_surfaces",
+          "seconds": 0.010056462999997962,
+          "rss_before_mb": 102.56640625,
+          "rss_after_mb": 102.56640625,
+          "rss_peak_mb": 102.56640625,
+          "extra": {
+            "n_surface_points": 438,
+            "n_floor": 186,
+            "n_wall": 252,
+            "n_edge": 36,
+            "n_mine_boundary_pairs": 0
+          }
+        },
+        {
+          "name": "build_graph",
+          "seconds": 0.00019065899999759495,
+          "rss_before_mb": 102.56640625,
+          "rss_after_mb": 102.56640625,
+          "rss_peak_mb": 102.56640625,
+          "extra": {
+            "n_graph_nodes": 6570,
+            "max_vel_bins": 15,
+            "spatial_cells": 424
+          }
+        },
+        {
+          "name": "enumerate_edges",
+          "seconds": 48.099653738,
+          "rss_before_mb": 102.56640625,
+          "rss_after_mb": 1240.91796875,
+          "rss_peak_mb": 1250.26171875,
+          "extra": {
+            "n_edges": 8090,
+            "n_waypoints": 2181040,
+            "waypoints_per_node": 331.9695585996956,
+            "n_edges_at_clip_bin": 64,
+            "pct_edges_at_clip_bin": 0.79
+          }
+        },
+        {
+          "name": "dijkstra_switch",
+          "seconds": 0.007044446000008975,
+          "rss_before_mb": 1240.91796875,
+          "rss_after_mb": 1240.91796875,
+          "rss_peak_mb": 1240.91796875,
+          "extra": {
+            "n_reachable": 567,
+            "reachable_pct": 8.63,
+            "d_max_raw": 50.0,
+            "d_max_p99": 46.34,
+            "inflation_ratio": 1.08,
+            "n_tree_predecessors": 447
+          }
+        },
+        {
+          "name": "dijkstra_exit",
+          "seconds": 0.006124061999997821,
+          "rss_before_mb": 1240.91796875,
+          "rss_after_mb": 1240.91796875,
+          "rss_peak_mb": 1240.91796875,
+          "extra": {
+            "n_reachable": 591,
+            "reachable_pct": 9.0,
+            "d_max_raw": 84.0,
+            "d_max_p99": 80.0,
+            "inflation_ratio": 1.05,
+            "n_tree_predecessors": 423
+          }
+        },
+        {
+          "name": "arc_cache_build",
+          "seconds": 7.1510680740000225,
+          "rss_before_mb": 1240.91796875,
+          "rss_after_mb": 1240.91796875,
+          "rss_peak_mb": 1240.91796875,
+          "extra": {
+            "switch_cells": 2111,
+            "exit_cells": 2111,
+            "total_cells": 4222
+          }
+        },
+        {
+          "name": "serialize_estimate",
+          "seconds": 0.0011823590000119566,
+          "rss_before_mb": 1240.91796875,
+          "rss_after_mb": 1240.91796875,
+          "rss_peak_mb": 1240.91796875,
+          "extra": {
+            "raw_array_mb": 0.22
+          }
+        }
+      ],
+      "summary": {
+        "n_surface_points": 438,
+        "n_graph_nodes": 6570,
+        "n_edges": 8090,
+        "n_waypoints": 2181040,
+        "arc_cells_switch": 2111,
+        "arc_cells_exit": 2111,
+        "reachable_pct_switch": 8.63,
+        "reachable_pct_exit": 9.0
+      }
+    }
+  ]
+}

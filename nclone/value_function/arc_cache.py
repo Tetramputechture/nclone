@@ -1,36 +1,36 @@
 """Spatial hash cache for O(1) airborne state cost-to-go lookup.
 
-During edge enumeration, waypoints are sampled along every simulated arc.
-This module builds a spatial hash that maps discretized (x, y, vx, vy) cells
-to the minimum cost-to-go observed at any arc waypoint passing through that
-cell.  At runtime, an airborne state can be looked up in O(1) to get a
-precomputed cost estimate without forward simulation.
+During edge enumeration, waypoints are sampled along every simulated arc
+and deduplicated per-(cell, destination) into a ``CompactWaypoints`` bundle
+(three compact NumPy arrays).  This module takes those compact waypoints
+and a Dijkstra ``d_star`` vector, then produces a spatial hash that maps
+discretized ``(x, y, vx, vy)`` cells to the minimum cost-to-go observed at
+any arc waypoint passing through that cell.  At runtime, an airborne state
+can be looked up in O(1) to get a precomputed cost estimate without forward
+simulation.
 
-Bin sizes (from spec):
+Bin sizes (see ``edge_enumeration``):
   - Position: 6 px
-  - Velocity: 0.5 px/frame
+  - Velocity: 0.5 px / frame
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from .edge_enumeration import ArcWaypoint
+from .edge_enumeration import (
+    CompactWaypoints,
+    POSITION_BIN_SIZE,
+    VELOCITY_BIN_SIZE,
+    _INV_POS_BIN,
+    _INV_VEL_BIN,
+)
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Bin configuration
-# ---------------------------------------------------------------------------
-POSITION_BIN_SIZE = 6.0      # pixels
-VELOCITY_BIN_SIZE = 0.5      # pixels / frame
-
-_INV_POS_BIN = 1.0 / POSITION_BIN_SIZE
-_INV_VEL_BIN = 1.0 / VELOCITY_BIN_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -52,13 +52,15 @@ def _bin_key(x: float, y: float, vx: float, vy: float) -> Tuple[int, int, int, i
 class ArcCache:
     """Spatial hash mapping airborne (x, y, vx, vy) to minimum cost-to-go.
 
-    The cache stores, for each quantized state cell, the minimum value of
-    ``(total_frames - frame_offset) + d_star[destination_node]`` across all
-    arc waypoints that pass through that cell.
+    After ``build()``, the cache stores, for each quantized state cell, the
+    minimum value of ``frames_to_land + d_star[destination_node]`` across all
+    arc waypoints that pass through that cell.  The build path is fully
+    vectorised in NumPy (``np.unique`` + ``np.minimum.at``); the final dict
+    is only populated with the reduced per-cell min values (typically a few
+    tens of thousands of entries) so the lookup path remains O(1).
 
     Attributes:
         _data: Mapping from bin key to minimum cost (float).
-        _n_entries: Number of populated cells.
     """
 
     def __init__(self) -> None:
@@ -71,33 +73,83 @@ class ArcCache:
     # ---- construction ----------------------------------------------------
     def build(
         self,
-        waypoints: List[ArcWaypoint],
+        waypoints: Union[CompactWaypoints, List],
         d_star: np.ndarray,
     ) -> None:
-        """Populate the cache from arc waypoints and a d_star array.
+        """Populate the cache from compact waypoints and a d_star array.
 
-        For each waypoint, computes the cost-to-go as
-        ``(total_frames - frame_offset) + d_star[dst_node]`` and stores
-        the minimum per spatial cell.
+        For each unique ``(cell_key, dst_node)`` pair present in ``waypoints``,
+        computes the cost-to-go as ``frames_to_land + d_star[dst_node]`` and
+        stores the per-cell minimum in the underlying dict.  Invalid entries
+        (out-of-range dst, non-finite d_star, negative frames_to_land) are
+        filtered before the reduction.
 
         Args:
-            waypoints: Waypoints collected during edge enumeration.
-            d_star: Cost-to-go array from Dijkstra (float32, n_nodes).
+            waypoints: ``CompactWaypoints`` bundle from ``enumerate_edges``.
+                (Legacy list-of-ArcWaypoint input is no longer supported.)
+            d_star: Cost-to-go array from Dijkstra (float, length n_nodes).
         """
         self._data.clear()
-        for wp in waypoints:
-            if wp.dst_node < 0 or wp.total_frames < 0:
-                continue
-            if wp.dst_node >= len(d_star):
-                continue
-            d_dst = float(d_star[wp.dst_node])
-            if not np.isfinite(d_dst):
-                continue
-            cost = (wp.total_frames - wp.frame_offset) + d_dst
-            key = _bin_key(wp.x, wp.y, wp.vx, wp.vy)
-            existing = self._data.get(key)
-            if existing is None or cost < existing:
-                self._data[key] = cost
+
+        if not isinstance(waypoints, CompactWaypoints):
+            raise TypeError(
+                "ArcCache.build() now requires a CompactWaypoints bundle "
+                "from enumerate_edges(); the legacy list-of-ArcWaypoint path "
+                "has been removed."
+            )
+
+        if waypoints.n_entries == 0 or len(d_star) == 0:
+            return
+
+        keys = waypoints.keys   # int32[N, 4]
+        dst = waypoints.dst     # int32[N]
+        ftl = waypoints.ftl     # float32[N]
+
+        # Filter invalid entries vectorised
+        valid = (
+            (dst >= 0)
+            & (dst < len(d_star))
+            & (ftl >= 0.0)
+            & np.isfinite(ftl)
+        )
+        if not np.all(valid):
+            keys = keys[valid]
+            dst = dst[valid]
+            ftl = ftl[valid]
+        if keys.shape[0] == 0:
+            return
+
+        d_dst = np.asarray(d_star, dtype=np.float64)[dst]
+        finite = np.isfinite(d_dst)
+        if not np.all(finite):
+            keys = keys[finite]
+            ftl = ftl[finite]
+            d_dst = d_dst[finite]
+        if keys.shape[0] == 0:
+            return
+
+        costs = ftl.astype(np.float64) + d_dst
+
+        # Group by 4-D cell key and take the min cost per group.
+        # ``np.unique(axis=0)`` returns lexicographically sorted unique rows
+        # plus an inverse map suitable for scatter-min via ``np.minimum.at``.
+        unique_keys, inv = np.unique(keys, axis=0, return_inverse=True)
+        min_costs = np.full(unique_keys.shape[0], np.inf, dtype=np.float64)
+        np.minimum.at(min_costs, inv, costs)
+
+        valid_costs = np.isfinite(min_costs)
+        unique_keys = unique_keys[valid_costs]
+        min_costs = min_costs[valid_costs]
+
+        # Populate dict (small: ~tens of thousands of cells after the min-reduce)
+        for i in range(unique_keys.shape[0]):
+            k = (
+                int(unique_keys[i, 0]),
+                int(unique_keys[i, 1]),
+                int(unique_keys[i, 2]),
+                int(unique_keys[i, 3]),
+            )
+            self._data[k] = float(min_costs[i])
 
     # ---- expert demo ingestion -------------------------------------------
     def ingest_demonstration(
@@ -129,7 +181,7 @@ class ArcCache:
             Number of new cells populated (including cells where a lower cost
             replaced a previously cached value).
         """
-        from .edge_enumeration import _landing_to_node, _AIRBORNE_STATES, _SURFACE_STATES
+        from .edge_enumeration import _landing_to_node, _AIRBORNE_STATES
 
         n_inserted = 0
         n = len(frames)
@@ -141,15 +193,13 @@ class ArcCache:
                 i += 1
                 continue
 
-            # Found start of an airborne segment — scan forward for landing
             arc_start = i
             landing_node = None
-            arc_end = i  # exclusive
+            arc_end = i
 
             for j in range(i, n):
                 xj, yj, vxj, vyj, scj = frames[j]
                 if scj not in _AIRBORNE_STATES:
-                    # This frame is the landing
                     landing = (xj, yj, vxj, vyj, scj)
                     landing_node = _landing_to_node(graph, landing)
                     arc_end = j
@@ -157,7 +207,6 @@ class ArcCache:
                 arc_end = j + 1  # still airborne — extend arc
 
             if landing_node is None or landing_node >= len(d_star):
-                # No landing found (died / end of demo) — skip segment
                 i = arc_end
                 continue
 
@@ -166,9 +215,8 @@ class ArcCache:
                 i = arc_end
                 continue
 
-            arc_length = arc_end - arc_start  # frames until landing
+            arc_length = arc_end - arc_start
 
-            # Insert each airborne frame of this arc
             for k, idx in enumerate(range(arc_start, arc_end)):
                 xi, yi, vxi, vyi, _ = frames[idx]
                 frames_to_land = arc_length - k
@@ -221,18 +269,29 @@ class ArcCache:
     def to_arrays(self) -> Tuple[np.ndarray, np.ndarray]:
         """Serialize to numpy arrays for .npz storage.
 
+        Vectorised conversion from the internal dict.  Previous versions
+        built two Python lists before calling ``np.array`` which copied
+        each entry twice and caused a spike of ~500 B × n_cells overhead.
+
         Returns:
             (keys_array, values_array)
             - keys_array: int32 shape (N, 4)
             - values_array: float32 shape (N,)
         """
-        if not self._data:
+        n = len(self._data)
+        if n == 0:
             return (
                 np.empty((0, 4), dtype=np.int32),
                 np.empty(0, dtype=np.float32),
             )
-        keys = np.array(list(self._data.keys()), dtype=np.int32)
-        values = np.array(list(self._data.values()), dtype=np.float32)
+        keys = np.empty((n, 4), dtype=np.int32)
+        values = np.empty(n, dtype=np.float32)
+        for i, (k, v) in enumerate(self._data.items()):
+            keys[i, 0] = k[0]
+            keys[i, 1] = k[1]
+            keys[i, 2] = k[2]
+            keys[i, 3] = k[3]
+            values[i] = v
         return keys, values
 
     @classmethod

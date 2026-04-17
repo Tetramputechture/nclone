@@ -37,6 +37,7 @@ from nclone.value_function.surface_graph import (
     SurfaceGraph,
     build_graph,
     compute_cost_to_go_with_tree,
+    _build_reverse_adjacency,
 )
 from nclone.value_function.edge_enumeration import (
     enumerate_edges,
@@ -118,6 +119,7 @@ def _save_surface_pbrs(
     predecessor_exit: Optional[np.ndarray] = None,
     best_edge_idx_switch: Optional[np.ndarray] = None,
     best_edge_idx_exit: Optional[np.ndarray] = None,
+    enumeration_stats: Optional[dict] = None,
 ) -> None:
     """Save all precomputed data to a single .npz file."""
     sp = graph.surface_points
@@ -154,6 +156,19 @@ def _save_surface_pbrs(
         # Route-tree data availability flag (for backward-compat load path).
         "has_route_tree": int(has_route_tree),
     }
+    # Velocity-bin clipping telemetry — high ratios signal that the chosen
+    # bin grid is too narrow for this level and d_star systematically
+    # underestimates true cost-to-go (see docs/LINEAR_PLAN_AUDIT.md C1).
+    if enumeration_stats is not None:
+        metadata["n_clipped_landings"] = int(
+            enumeration_stats.get("n_clipped_landings", 0)
+        )
+        metadata["n_total_landings"] = int(
+            enumeration_stats.get("n_total_landings", 0)
+        )
+        metadata["pct_clipped_landings"] = float(
+            enumeration_stats.get("pct_clipped", 0.0)
+        )
 
     save_kwargs = dict(
         # Surface points
@@ -219,6 +234,12 @@ def precompute_surface_pbrs(
     verbose: bool = False,
     demo_dir: str | None = None,
     mine_inflation_beta: float = 200.0,
+    arc_waypoint_interval: int = 1,
+    max_arc_frames: int = 500,
+    collect_waypoints: bool = True,
+    tile_cache_dir: str | None = None,
+    tile_cache_num_shards: int = 64,
+    extra_primitives: list | None = None,
 ) -> str:
     """Run the full surface-graph PBRS precomputation pipeline.
 
@@ -234,6 +255,13 @@ def precompute_surface_pbrs(
         mine_inflation_beta: Mine proximity inflation strength β (default 200.0).
             Higher values produce stronger avoidance of mine danger zones.
             Recommended sweep: 10 (mild), 50 (strong), 200 (near-hard).
+        arc_waypoint_interval: Sample one arc waypoint every N simulated
+            frames (default 1 = every frame).  Larger values reduce peak RSS
+            roughly linearly at the cost of arc-cache density.
+        max_arc_frames: Per-arc simulation cap in frames (default 500).
+        collect_waypoints: Whether to collect arc waypoints and build arc
+            caches (default True).  Disable to save memory/time when only the
+            graph + Dijkstra distances are needed (e.g. route-only PBRS).
 
     Returns:
         Path to the saved ``.npz`` file.
@@ -371,18 +399,43 @@ def precompute_surface_pbrs(
     # ------------------------------------------------------------------
     _section("Step 4: Enumerating Edges (this may take several minutes)")
     t0 = time.time()
+    enumeration_stats: dict = {}
+    if tile_cache_dir:
+        print(f"  Using tile-neighborhood cache: {tile_cache_dir}")
+    if extra_primitives:
+        # Extra primitives are currently logged for visibility and forwarded
+        # to ``enumerate_edges``.  Ingestion into the per-node arc templates
+        # is gated by ``edge_enumeration`` which falls back gracefully when
+        # the sweep schedule cannot express a given primitive.
+        print(
+            f"  Extra primitives supplied: {len(extra_primitives)} "
+            f"template(s) (see --extra-primitives)"
+        )
     edges, waypoints = enumerate_edges(
         graph,
         map_data=map_data,
         num_workers=num_workers,
-        collect_waypoints=True,
+        collect_waypoints=collect_waypoints,
         verbose=verbose,
         mine_positions=mine_positions,
         mine_inflation_beta=mine_inflation_beta,
+        waypoint_interval=arc_waypoint_interval,
+        max_arc_frames=max_arc_frames,
+        stats_out=enumeration_stats,
+        tile_cache_dir=tile_cache_dir,
+        tile_cache_num_shards=tile_cache_num_shards,
+        extra_primitives=extra_primitives,
     )
     populate_graph_edges(graph, edges)
     print(f"  Edges discovered: {len(edges):,}")
-    print(f"  Arc waypoints: {len(waypoints):,}")
+    print(f"  Arc waypoints (unique cells × destinations): {waypoints.n_entries:,}")
+    pct_clip = enumeration_stats.get("pct_clipped", 0.0)
+    print(
+        f"  Velocity-bin clip ratio: "
+        f"{enumeration_stats.get('n_clipped_landings', 0):,}/"
+        f"{enumeration_stats.get('n_total_landings', 0):,} "
+        f"({pct_clip:.2f}%)"
+    )
     print(f"  Enumeration time: {_format_time(time.time() - t0)}")
 
     # ------------------------------------------------------------------
@@ -398,8 +451,12 @@ def precompute_surface_pbrs(
     # dijkstra_backward_with_tree returns d_star + predecessor + best_edge_idx
     # arrays needed for route extraction.  The predecessor arrays are saved to
     # the .npz and loaded by RoutePBRS at runtime.
+    # Build the reversed adjacency list once and share it across both goals;
+    # otherwise we pay an O(|E|) Python loop twice (several seconds on 46K+
+    # edges).
+    rev_adj = _build_reverse_adjacency(graph)
     d_star_switch, predecessor_switch, best_edge_idx_switch = compute_cost_to_go_with_tree(
-        graph, switch_pos[0], switch_pos[1], "switch"
+        graph, switch_pos[0], switch_pos[1], "switch", rev_adj=rev_adj,
     )
     d_max_sw_raw = _safe_max(d_star_switch)
     d_max_sw = _robust_d_max(d_star_switch)
@@ -412,7 +469,7 @@ def precompute_surface_pbrs(
     )
 
     d_star_exit, predecessor_exit, best_edge_idx_exit = compute_cost_to_go_with_tree(
-        graph, exit_pos[0], exit_pos[1], "exit"
+        graph, exit_pos[0], exit_pos[1], "exit", rev_adj=rev_adj,
     )
     d_max_ex_raw = _safe_max(d_star_exit)
     d_max_ex = _robust_d_max(d_star_exit)
@@ -503,6 +560,7 @@ def precompute_surface_pbrs(
         predecessor_exit=predecessor_exit,
         best_edge_idx_switch=best_edge_idx_switch,
         best_edge_idx_exit=best_edge_idx_exit,
+        enumeration_stats=enumeration_stats,
     )
     file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f"  Saved to: {output_path}")
@@ -571,6 +629,65 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--arc-waypoint-interval",
+        type=int,
+        default=1,
+        help=(
+            "Sample arc waypoints every N simulated frames (default: 1). "
+            "Higher values reduce peak RSS roughly linearly at the cost "
+            "of arc-cache density.  For tight memory budgets (<4 GB/level), "
+            "try 2 or 4."
+        ),
+    )
+    parser.add_argument(
+        "--max-arc-frames",
+        type=int,
+        default=500,
+        help=(
+            "Per-arc simulation cap in frames (default: 500). "
+            "Shorter caps reduce waypoint count for long fall/edge arcs."
+        ),
+    )
+    parser.add_argument(
+        "--no-waypoints",
+        action="store_true",
+        help=(
+            "Disable arc waypoint collection and arc-cache construction. "
+            "Useful when only the graph + Dijkstra cost-to-go arrays are "
+            "needed (route-only PBRS) — reduces precompute memory and time "
+            "significantly."
+        ),
+    )
+    parser.add_argument(
+        "--tile-cache-dir",
+        default=None,
+        help=(
+            "Directory containing the pre-warmed tile-neighborhood cache. "
+            "When supplied, edge enumeration uses the three-phase cached "
+            "pipeline (launch-cache -> ballistic sweep -> landing-cache) "
+            "instead of running full native-sim arcs per node.  Leave "
+            "unset for the legacy enumerator."
+        ),
+    )
+    parser.add_argument(
+        "--tile-cache-num-shards",
+        type=int,
+        default=64,
+        help="Number of shards in the on-disk tile cache (default: 64).",
+    )
+    parser.add_argument(
+        "--extra-primitives",
+        default=None,
+        help=(
+            "Optional path to a JSON file listing additional arc-primitive "
+            "templates to sweep during edge enumeration.  Each entry is a "
+            "dict with 'kind' in {run, floor_jump, wall_jump, "
+            "wall_slide_fall, launch_pad} plus integer action parameters.  "
+            "Useful for levels where the default run/jump-hold grid misses "
+            "specific timings flagged by audit_completeness.py."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -584,6 +701,13 @@ def main() -> int:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
+    extra_primitives: list | None = None
+    if args.extra_primitives:
+        from nclone.value_function.tools.audit_completeness import (
+            load_extra_primitives,
+        )
+        extra_primitives = load_extra_primitives(args.extra_primitives)
+
     try:
         precompute_surface_pbrs(
             map_path=args.map_path,
@@ -592,6 +716,12 @@ def main() -> int:
             verbose=args.verbose,
             demo_dir=args.demo_dir,
             mine_inflation_beta=args.mine_inflation_beta,
+            arc_waypoint_interval=args.arc_waypoint_interval,
+            max_arc_frames=args.max_arc_frames,
+            collect_waypoints=(not args.no_waypoints),
+            tile_cache_dir=args.tile_cache_dir,
+            tile_cache_num_shards=args.tile_cache_num_shards,
+            extra_primitives=extra_primitives,
         )
     except Exception as e:
         logger.error(f"Precomputation failed: {e}", exc_info=True)

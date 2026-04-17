@@ -261,6 +261,7 @@ class EnvironmentConfig:
         )
         return config
 
+    @classmethod
     def for_visual_testing(cls, **kwargs) -> "EnvironmentConfig":
         """Create configuration optimized for visual testing."""
         config = cls(

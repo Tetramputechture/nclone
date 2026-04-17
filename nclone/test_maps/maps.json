@@ -94,5 +94,47 @@
     "path": "nclone/test_maps/switch-simple",
     "description": "A one tile high level where the player can move right and unlock locked doors to reach the exit.",
     "completable": true
+  },
+  {
+    "name": "stumbleine",
+    "path": "nclone/test_maps/stumbleine",
+    "description": "A complex open map requiring jumps across mine-sprinkled platforms and wall-jumps to achieve vertical height. Takes many frames to complete.",
+    "completable": true
+  },
+  {
+    "name": "basics",
+    "path": "nclone/test_maps/basics",
+    "description": "A hairpin U-shaped corridor on the 42x23 grid: the ninja spawns at the right end of a lower horizontal corridor and must run left, wall-jump up the left boundary through a 3-tile vertical gap, then run right along an upper corridor past three toggle mines (one at the left edge of the middle platform, one mid-surface that must be jumped over, and one permanently-deadly at the far-right wall) to reach the exit switch, then backtrack a short distance left to the exit door. Tests non-trivial A* routing (the exit is right of spawn but the path goes left first), wall-jumping, mine avoidance, and momentum management / braking before the deadly right-wall mine. Full prose in nclone/test_maps/basics_description.md.",
+    "completable": true
+  },
+  {
+    "name": "rampjump",
+    "path": "nclone/test_maps/rampjump",
+    "description": "A medium-difficulty open map that requires jumps off of ramps and precisely-timed jumps with velocity to clear a gap.",
+    "completable": true
+  },
+  {
+    "name": "simple-3x1",
+    "path": "nclone/test_maps/simple-3x1",
+    "description": "A trivial level with a 3-tile-wide, 1-tile-tall playspace surrounded by solid tiles. The agent wins by going right, activating the middle switch, and intersecting with the exit door.",
+    "completable": true
+  },
+  {
+    "name": "simplest-horizontal-path-3x1",
+    "path": "nclone/test_maps/simplest-horizontal-path-3x1",
+    "description": "A trivial level with the same 3x1 horizontal route as simple-3x1, except the route is located at the bottom-left corner of the map and all surrounding tiles are open (tile type 0) rather than solid.",
+    "completable": true
+  },
+  {
+    "name": "simplest-vertical-1x3",
+    "path": "nclone/test_maps/simplest-vertical-1x3",
+    "description": "A trivial level with a 1-tile-wide, 3-tile-tall playspace; the agent starts at the bottom and wins by jumping up to the exit.",
+    "completable": true
+  },
+  {
+    "name": "slopes",
+    "path": "nclone/test_maps/slopes",
+    "description": "A level composed primarily of sloped tiles, testing the ninja's traversal, sliding, and jump behavior on non-axis-aligned surfaces.",
+    "completable": true
   }
 ]

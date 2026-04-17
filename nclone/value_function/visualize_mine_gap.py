@@ -26,7 +26,7 @@ Usage::
 
     python -m nclone.value_function.visualize_mine_gap \\
         --data value_functions/basics_surface_pbrs.npz \\
-        --map-path test-single-level/basics \\
+        --map-path nclone/test_maps/basics \\
         --output basics_mine_gap.png
 """
 

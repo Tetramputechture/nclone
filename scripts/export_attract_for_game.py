@@ -62,7 +62,7 @@ def extract_raw_game_map(attract_path: str) -> bytes:
         [4:8]   uint32 LE  demo_data_length
         [8:]    raw_map section (map_data_length bytes)
 
-    Game level file layout (matches test-single-level format):
+    Game level file layout (matches nclone/test_maps format):
         [0:4]   uint32 LE  mode  (0 = standard)
         [4:8]   uint32 LE  total_file_size  (= 8 + map_data_length)
         [8:]    raw_map section  (identical to attract_file[8:8+map_data_length])

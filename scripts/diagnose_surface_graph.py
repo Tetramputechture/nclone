@@ -8,7 +8,7 @@ Runs 6 checks to pinpoint whether the failure is:
 
 Usage:
     python scripts/diagnose_surface_graph.py
-    python scripts/diagnose_surface_graph.py --map test-single-level/basics \
+    python scripts/diagnose_surface_graph.py --map nclone/test_maps/basics \
         --npz value_functions/basics_surface_pbrs.npz \
         --replay datasets/000basics/20260223_164858_basics.replay
 """
@@ -503,8 +503,8 @@ def print_verdict(goal_nodes_exit):
 
 def main():
     parser = argparse.ArgumentParser(description="Diagnose surface graph exit failure")
-    parser.add_argument("--map", default="test-single-level/basics",
-                        help="Path to level .map file (default: test-single-level/basics)")
+    parser.add_argument("--map", default="nclone/test_maps/basics",
+                        help="Path to level .map file (default: nclone/test_maps/basics)")
     parser.add_argument("--npz", default="value_functions/basics_surface_pbrs.npz",
                         help="Path to surface_pbrs.npz "
                              "(default: value_functions/basics_surface_pbrs.npz)")

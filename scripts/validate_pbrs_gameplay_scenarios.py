@@ -3,7 +3,7 @@
 
 Uses the same reward path as FiGAR + precomputed PBRS (primitive rewards per frame).
 
-Checks (see test-single-level/basics_description.md):
+Checks (see nclone/test_maps/basics_description.md):
   1) Moving left from spawn by ~50px yields positive cumulative step reward.
   2) After that, moving right ~50px then left ~50px again yields a *less* positive
      total cumulative reward than check (1), for comparable net displacement toward
@@ -12,7 +12,7 @@ Checks (see test-single-level/basics_description.md):
 Usage::
 
     python scripts/validate_pbrs_gameplay_scenarios.py \\
-        --map-path test-single-level/basics \\
+        --map-path nclone/test_maps/basics \\
         --value-function-dir value_functions
 
 Environment variables:
@@ -225,8 +225,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--map-path",
-        default="test-single-level/basics",
-        help="Path to level file (default: test-single-level/basics)",
+        default="nclone/test_maps/basics",
+        help="Path to level file (default: nclone/test_maps/basics)",
     )
     parser.add_argument(
         "--value-function-dir",

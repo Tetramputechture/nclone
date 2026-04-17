@@ -18,7 +18,7 @@ Usage::
 
     python -m nclone.value_function.visualize_mine_arcs \\
         --data value_functions/basics_surface_pbrs.npz \\
-        --map-path test-single-level/basics \\
+        --map-path nclone/test_maps/basics \\
         --mine-idx 1 \\
         --output basics_mine2_arcs.png
 """

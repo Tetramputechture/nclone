@@ -9,7 +9,7 @@ Usage::
 
     python scripts/validate_reward_incentives.py \\
         [--data value_functions/basics_surface_pbrs.npz] \\
-        [--map-path test-single-level/basics] \\
+        [--map-path nclone/test_maps/basics] \\
         [--output validation_output/]
 
 If --data is omitted, checks 1–3 and 5 run (no PBRS landscape sampling).

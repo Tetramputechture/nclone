@@ -47,6 +47,7 @@ from .surface_graph import (
 from .edge_enumeration import (
     enumerate_edges,
     populate_graph_edges,
+    CompactWaypoints,
 )
 from .arc_cache import ArcCache
 from .airborne_evaluator import AirborneEvaluator
@@ -95,6 +96,7 @@ __all__ = [
     # Edge enumeration
     "enumerate_edges",
     "populate_graph_edges",
+    "CompactWaypoints",
     # Arc cache & airborne
     "ArcCache",
     "AirborneEvaluator",

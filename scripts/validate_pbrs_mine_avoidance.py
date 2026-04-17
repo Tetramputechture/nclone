@@ -20,7 +20,7 @@ Usage::
 
     python scripts/validate_pbrs_mine_avoidance.py \\
         --data value_functions/basics_surface_pbrs.npz \\
-        [--map-path test-single-level/basics] \\
+        [--map-path nclone/test_maps/basics] \\
         [--output validation_output/]
 
 All outputs go to --output (default: validation_output/).
@@ -896,7 +896,7 @@ def print_report(data: Dict, mine_results: List[Dict]) -> None:
             f"   cost of those arcs until the d* gradient is strictly repulsive all the way\n"
             f"   to the exclusion boundary.\n"
             f"   Command: python -m nclone.value_function.precompute_cli \\\n"
-            f"       --map-path test-single-level/basics \\\n"
+            f"       --map-path nclone/test_maps/basics \\\n"
             f"       --output-dir value_functions \\\n"
             f"       --mine-inflation-beta 200",
         ))
@@ -928,7 +928,7 @@ def print_report(data: Dict, mine_results: List[Dict]) -> None:
             f"   whether jump trajectories physically exist for those mines:\n"
             f"   python -m nclone.value_function.visualize_mine_arcs \\\n"
             f"       --data value_functions/basics_surface_pbrs.npz \\\n"
-            f"       --map-path test-single-level/basics",
+            f"       --map-path nclone/test_maps/basics",
         ))
 
     for mines_r in mine_results:
