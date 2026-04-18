@@ -14,6 +14,7 @@ from typing import Dict, Tuple, Optional, Any, List
 import heapq
 
 from ..level_data import LevelData
+from .level_data_helpers import get_mine_state_signature
 from .node_lookup import (
     find_closest_node_to_position,
     extract_spatial_lookups_from_graph_data,
@@ -121,6 +122,10 @@ class CachedPathDistanceCalculator:
         # Track current curriculum stage to detect stage changes (for multi-stage caches)
         self._current_curriculum_stage: Optional[int] = None
 
+        # Mine / locked-door signature mirrors (L1.5): invalidate cache on toggle-mine updates
+        self._cached_mine_signature: Optional[Tuple] = None
+        self._cached_switch_signature: Optional[Tuple] = None
+
         # Spatial hash for fast node lookup (updated per level)
         self._spatial_hash: Optional[any] = None
 
@@ -174,6 +179,14 @@ class CachedPathDistanceCalculator:
         # Aggressive cache size: 5000 node pairs per level (~200KB)
         # With generous memory budget, we can cache extensively
         self._geometric_cache_max_size = 5000
+
+    def _switch_to_local_caches(self) -> None:
+        """Detach shared-memory views; build fresh local caches for dynamic mine/switch updates."""
+        self.level_cache = LevelBasedPathDistanceCache(
+            simulation_phi_dir=self._simulation_phi_dir
+        )
+        self.mine_proximity_cache = MineProximityCostCache()
+        self.mine_sdf = create_mine_sdf()
 
     def _select_curriculum_cache(self) -> Optional[Any]:
         """Select appropriate SharedLevelCache based on current curriculum stage.
@@ -267,18 +280,17 @@ class CachedPathDistanceCalculator:
         )
         stage_changed = self._current_curriculum_stage != current_stage
 
-        # Log cache rebuild decisions for curriculum debugging
-        # logger.info(
-        #     f"[CACHE_BUILD] level_id={level_data.level_id}, "
-        #     f"curriculum_stage={current_stage if current_stage is not None else 'N/A'}, "
-        #     f"current_level_id={self._current_level_id}, "
-        #     f"level_changed={level_changed}, "
-        #     f"stage_changed={stage_changed}"
-        # )
+        new_mine_sig = get_mine_state_signature(level_data)
+        new_switch_sig = tuple(sorted(level_data.switch_states.items()))
 
-        # Fast rejection: skip if same level AND same stage
+        # Fast rejection: same level, stage, and mine/switch world state
         if not level_changed and not stage_changed:
-            return False  # Cache already valid for this level and stage
+            if (
+                self._cached_mine_signature is not None
+                and new_mine_sig == self._cached_mine_signature
+                and new_switch_sig == self._cached_switch_signature
+            ):
+                return False
 
         # OPTIMIZATION: If shared cache is provided, use view wrappers instead of building locally
         # Select appropriate cache based on curriculum stage
@@ -325,6 +337,9 @@ class CachedPathDistanceCalculator:
                     for entity in level_data.get_entities_by_type(EntityType.EXIT_DOOR)
                 ]
 
+                self._cached_mine_signature = new_mine_sig
+                self._cached_switch_signature = new_switch_sig
+
                 stage_info = (
                     f", stage={current_stage}" if current_stage is not None else ""
                 )
@@ -336,7 +351,18 @@ class CachedPathDistanceCalculator:
 
                 return True  # "Rebuilt" by using/switching shared cache
 
-            return False  # Already using correct shared cache, no rebuild needed
+            if (
+                self._cached_mine_signature is not None
+                and new_mine_sig == self._cached_mine_signature
+                and new_switch_sig == self._cached_switch_signature
+            ):
+                return False
+
+            # Static shared views cannot reflect toggled mines — rebuild locally.
+            logger.debug(
+                "[SHARED_CACHE] Mine/switch signature changed; switching to local caches"
+            )
+            self._switch_to_local_caches()
 
         # Standard path: build caches locally
         if self.level_cache is None:
@@ -466,6 +492,10 @@ class CachedPathDistanceCalculator:
                 (entity.get("x", 0), entity.get("y", 0))
                 for entity in level_data.get_entities_by_type(EntityType.EXIT_DOOR)
             ]
+
+        # Record signatures after any local build attempt so fast-reject matches current world.
+        self._cached_mine_signature = new_mine_sig
+        self._cached_switch_signature = new_switch_sig
 
         return rebuilt or mine_cache_rebuilt or sdf_rebuilt
 

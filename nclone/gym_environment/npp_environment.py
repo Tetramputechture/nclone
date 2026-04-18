@@ -17,6 +17,7 @@ from ..constants import MAP_TILE_HEIGHT, MAP_TILE_WIDTH
 from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 from .constants import (
     GAME_STATE_CHANNELS,
+    GAME_STATE_SWITCH_ACTIVATED_IDX,
     LEVEL_DIAGONAL,
     REACHABILITY_FEATURES_DIM,
     MINE_SDF_FEATURES_DIM,
@@ -1430,7 +1431,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._game_state_buffer[:NINJA_STATE_DIM] = base_game_state[:NINJA_STATE_DIM]
 
         # Append physics-derived features: horizontal_range, max_jump_height, time_to_ground
-        self._game_state_buffer[NINJA_STATE_DIM:] = self._compute_physics_derived_features()
+        self._game_state_buffer[
+            NINJA_STATE_DIM : NINJA_STATE_DIM + PHYSICS_DERIVED_DIM
+        ] = self._compute_physics_derived_features()
+
+        # L1.4: phase indicator for policy (same source as obs["switch_activated"])
+        self._game_state_buffer[GAME_STATE_SWITCH_ACTIVATED_IDX] = float(
+            self.nplay_headless.exit_switch_activated()
+        )
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 

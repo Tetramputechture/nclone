@@ -533,7 +533,7 @@ class ReplayExecutor:
         if not isinstance(ninja_state, np.ndarray):
             ninja_state = np.array(ninja_state, dtype=np.float32)
 
-        # game_state: 24 ninja + 3 physics-derived = 27 (matches NppEnvironment)
+        # game_state: 24 ninja + 3 physics-derived + switch_activated = 28 (matches NppEnvironment)
         base_state = ninja_state[:NINJA_STATE_DIM].astype(np.float32)
         physics_derived = self._compute_physics_derived_features()
         game_state = np.concatenate([base_state, physics_derived]).astype(np.float32)
@@ -1000,7 +1000,7 @@ class ReplayExecutor:
         return features
 
     def _compute_physics_derived_features(self) -> np.ndarray:
-        """Compute 3 physics-derived features matching NppEnvironment (27-dim game_state).
+        """Compute 3 physics-derived features matching NppEnvironment (28-dim game_state).
 
         ReplayExecutor has no precomputed PBRS, so phi_gradient is (0,0) in reachability.
         Uses _cached_graph_data for geometry-accurate time_to_ground when available.

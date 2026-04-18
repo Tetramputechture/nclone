@@ -437,7 +437,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             high=1,
             shape=(
                 GAME_STATE_CHANNELS,
-            ),  # Now 41: enhanced physics state (40) + time_remaining (1)
+            ),  # NppEnvironment overwrites with 24 ninja + 3 physics-derived + switch (28); base supplies 25 here
             dtype=np.float32,
         )
         # Action mask for invalid action filtering - always available
@@ -469,7 +469,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             dtype=np.float32,
         )
 
-        # Note: time_remaining is now included as the 41st feature in game_state
+        # Note: NppEnvironment._get_observation replaces game_state with 28-dim vector (L1.4).
 
         return SpacesDict(obs_spaces)
 
@@ -3239,9 +3239,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         ninja_state = self.nplay_headless.get_ninja_state()
 
-        # game_state contains ninja_state (40 enhanced physics features) + time_remaining (1) = 41 total
-        # This is the complete physics state - path-aware objectives, mines, etc. are now in the graph
-        # Always append time_remaining to create consistent 41D state
+        # Base game_state: get_ninja_state() (24) + time_remaining (1) = 25 floats.
+        # NppEnvironment expands to 28 (adds physics-derived + switch_activated).
         import numpy as np
 
         game_state = np.append(ninja_state, time_remaining)

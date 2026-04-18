@@ -25,7 +25,7 @@ class RewardConfig:
     """Single source of truth for reward component lifecycle.
 
     HWM pipeline uses fixed reward magnitudes:
-    - R_SWITCH = 1.0 (switch activation)
+    - R_SWITCH = 0.5 (switch activation / phase bonus)
     - R_EXIT = 5.0 (level completion)
     - R_DEATH = -0.5 (any death)
     - HWM_ALPHA = 1.0 (shaping weight, constant)

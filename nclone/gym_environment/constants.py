@@ -27,7 +27,9 @@ RENDERED_VIEW_CHANNELS = 1  # Grayscale
 # Physics-derived (3): horizontal_range_norm, max_jump_height_norm, time_to_ground_norm
 NINJA_STATE_DIM = 24  # Was 26: removed own-action features (hor_input, jump_input)
 PHYSICS_DERIVED_DIM = 3
-GAME_STATE_CHANNELS = NINJA_STATE_DIM + PHYSICS_DERIVED_DIM
+# L1.4 (NPP-12): append switch_activated (0/1) for phase indicator in the policy MLP stream.
+GAME_STATE_SWITCH_ACTIVATED_IDX = NINJA_STATE_DIM + PHYSICS_DERIVED_DIM
+GAME_STATE_CHANNELS = NINJA_STATE_DIM + PHYSICS_DERIVED_DIM + 1
 
 # Switch states array (legacy format, still used by some components)
 MAX_LOCKED_DOORS = 5  # Maximum doors for switch_states array
@@ -95,7 +97,7 @@ SPATIAL_CONTEXT_DIM = 84
 MINIMAL_OBSERVATION_DIM = 30
 
 # Total observation space (for graph_free architecture, Version 2.1)
-# 27 (game_state) + 10 (reachability) + 84 (spatial_context) + 3 (mine_sdf) = 124 dims
+# 28 (game_state) + 10 (reachability) + 84 (spatial_context) + 3 (mine_sdf) = 125 dims
 # Version 2.1 (Feb 2026): Streamlined from 151 dims (removed redundancies)
 # Mar 2026: +3 physics-derived, +2 phi-gradient
 

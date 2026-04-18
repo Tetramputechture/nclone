@@ -26,11 +26,11 @@ GLOBAL_REWARD_SCALE = 1.0
 # HWM SPARSE TERMINAL REWARDS (Fixed Values)
 # =============================================================================
 # No curriculum scaling - fixed magnitudes per spec Section 5.
-# Hierarchy: R_EXIT(5.0) >> R_SWITCH(1.0) >> HWM_max(3.0) >> |mine death|(3.5)
+# Hierarchy: R_EXIT(5.0) >> HWM_max(3.0) >> R_SWITCH(0.5) >> |mine death|(3.5)
 #
 # With HWM_ALPHA=3.0 and normalized HWM in [0, 1]:
-#   Complete: R_SWITCH(1.0) + HWM_switch(~3.0) + R_EXIT(5.0) + HWM_exit(~3.0) = ~12.0
-#   Switch + death: R_SWITCH(1.0) + HWM_switch(~1.0) + R_DEATH(-0.5) = ~1.5
+#   Complete: R_SWITCH(0.5) + HWM_switch(~3.0) + R_EXIT(5.0) + HWM_exit(~3.0) = ~11.5
+#   Switch + death: R_SWITCH(0.5) + HWM_switch(~1.0) + R_DEATH(-0.5) = ~1.0
 #   Quick death: HWM(~0.1) + R_DEATH(-0.5) = ~-0.4
 #
 # R_DEATH reverted to -0.5 (from -1.5): run-221 showed -1.5 caused passive risk-aversion
@@ -40,7 +40,7 @@ GLOBAL_REWARD_SCALE = 1.0
 # making the learning signal substantially stronger relative to the death risk.
 # TIME_PENALTY increased to -0.001 (from -0.0005): with R_DEATH=-0.5, standing still for
 # 500 steps costs -0.5 (same as one death), creating a strong incentive to act efficiently.
-R_SWITCH = 1.0
+R_SWITCH = 0.5  # L1.5 phase-transition bonus (C_PHASE); replaces prior 1.0 sparse switch reward
 R_EXIT = 5.0
 R_DEATH = -0.5
 

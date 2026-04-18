@@ -159,6 +159,19 @@ class RewardCalculator:
             "switch_activated", False
         )
 
+        # L1.5: refresh level cache when mine or switch state changes (e.g. toggle mines).
+        # build_level_cache fast-rejects when signatures match; ~100ms on actual rebuild.
+        level_data = obs.get("level_data")
+        adjacency = obs.get("_adjacency_graph")
+        graph_data = obs.get("_graph_data")
+        if level_data is not None and adjacency is not None:
+            base_adjacency = (
+                graph_data.get("base_adjacency", adjacency) if graph_data else adjacency
+            )
+            self.pbrs_calculator.path_calculator.build_level_cache(
+                level_data, adjacency, base_adjacency, graph_data
+            )
+
         # === Compute A* distances ===
         dist_switch, dist_exit = self._get_distances(obs, curriculum_manager)
 
