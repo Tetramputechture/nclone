@@ -235,7 +235,6 @@ class VideoGenerator:
                     enable_debug_overlay=False,
                 ),
                 custom_map_path=custom_map_path,
-                enable_visual_observations=True,
                 frame_skip=1,
             )
             self.env = NppEnvironment(config)

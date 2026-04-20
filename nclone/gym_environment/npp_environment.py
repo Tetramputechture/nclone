@@ -12,23 +12,19 @@ from gymnasium.spaces import box, Dict as SpacesDict
 from typing import Dict, Any, Optional, Tuple
 
 
-from ..graph.common import N_MAX_NODES, E_MAX_EDGES, NODE_FEATURE_DIM
-from ..constants import MAP_TILE_HEIGHT, MAP_TILE_WIDTH
+from ..constants import MAP_TILE_WIDTH
 from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 from .constants import (
     GAME_STATE_CHANNELS,
     GAME_STATE_SWITCH_ACTIVATED_IDX,
     LEVEL_DIAGONAL,
-    REACHABILITY_FEATURES_DIM,
-    MINE_SDF_FEATURES_DIM,
-    MINE_THREAT_MAP_CHANNELS,
-    MINE_THREAT_MAP_HEIGHT,
-    MINE_THREAT_MAP_WIDTH,
+    HAZARD_MAP_CHANNELS,
+    HAZARD_MAP_HEIGHT,
+    HAZARD_MAP_WIDTH,
     MAX_LOCKED_DOORS,
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
     MAX_LOCKED_DOORS_ATTENTION,
-    SPATIAL_CONTEXT_DIM,
 )
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
@@ -82,15 +78,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             value_function_dir=self.config.pbrs.value_function_dir,
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
-            enable_augmentation=self.config.augmentation.enable_augmentation,
             enable_profiling=self.config.enable_profiling,
             reward_config=self.config.reward_config,
-            augmentation_config={
-                "p": self.config.augmentation.p,
-                "intensity": self.config.augmentation.intensity,
-                "disable_validation": self.config.augmentation.disable_validation,
-            },
-            enable_visual_observations=self.config.enable_visual_observations,
             frame_skip=self.config.frame_skip,
             shared_level_cache=self.config.shared_level_cache,
             shared_level_caches_by_stage=getattr(
@@ -127,21 +116,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             {"debug": self.config.graph.debug or self.config.reachability.debug}
         )
 
-        # Store graph observation flag for conditional observation space building
-        # When False, graph arrays are excluded from observation space (memory optimization)
-        # Graph is still built internally for PBRS reward calculation
-        self.enable_graph_observations = self.config.enable_graph_observations
-
-        # Store level context observation flag for level-context CNN encoding
-        # When True, tile_grid (42x23 int8) and level_id (int32) are included in obs
-        self.enable_level_context_observations = (
-            self.config.enable_level_context_observations
-        )
-
-        # Rust mine threat map (3×168×92 @ 6px); incremental recompute on mine state change
+        # Rust mine SDF engine powering the 1-channel `hazard_map` Layer 1 key.
         self._mine_threat_map_rs = MineThreatMap()
-        self._mine_threat_map_cache = np.zeros(
-            (MINE_THREAT_MAP_CHANNELS, MINE_THREAT_MAP_HEIGHT, MINE_THREAT_MAP_WIDTH),
+        # Layer 1 1-channel deadly-mine hazard map cache (NPP-46).
+        self._hazard_map_cache = np.zeros(
+            (HAZARD_MAP_CHANNELS, HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH),
             dtype=np.float32,
         )
 
@@ -236,133 +215,28 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         return distance
 
     def _build_extended_observation_space(self) -> SpacesDict:
-        """Build the extended observation space with graph and reachability features.
+        """Build the Layer 1 policy observation space.
 
-        Graph observation spaces are conditionally included based on enable_graph_observations:
-        - When True (default): Full graph arrays included (~21KB per observation)
-        - When False: Graph arrays excluded (memory optimization for graph_free architecture)
+        Exactly four structured tensors plus control masks:
 
-        Note: Graph is still built internally for PBRS reward calculation regardless of this flag.
-        This only controls whether graph arrays appear in the observation space.
+        * ``tile_grid``       — inherited from base env
+        * ``entity_overlays`` — inherited from base env
+        * ``hazard_map``      — 1-channel deadly-mine SDF (NPP-46)
+        * ``game_state``      — inherited from base env (overwritten with 28 dims)
+        * ``action_mask`` / ``duration_mask`` — control masks
+
+        Graph tensors, reachability vectors, spatial_context, mine_sdf_features,
+        level_id and switch_states are kept internally by reward-side
+        infrastructure but are NOT exposed to the policy.
         """
-        # Check if we're in minimal observation mode
-        from .config import ObservationMode
-        from .constants import MINIMAL_OBSERVATION_DIM
-
-        if self.config.observation_mode == ObservationMode.MINIMAL:
-            # Minimal mode: replace game_state with minimal_observation
-            # Only keep action_mask from base, remove game_state
-            obs_spaces = {
-                "minimal_observation": box.Box(
-                    low=-1.0,
-                    high=1.0,
-                    shape=(MINIMAL_OBSERVATION_DIM,),
-                    dtype=np.float32,
-                ),
-                "action_mask": box.Box(
-                    low=0,
-                    high=1,
-                    shape=(6,),
-                    dtype=np.int8,
-                ),
-            }
-            if self.enable_layer3_macro_action_mask:
-                obs_spaces["duration_mask"] = box.Box(
-                    low=0,
-                    high=1,
-                    shape=(6, self._layer3_num_durations),
-                    dtype=np.int8,
-                )
-            return SpacesDict(obs_spaces)
-
         obs_spaces = dict(self.observation_space.spaces)
 
-        # Full mode: Add reachability features (always available)
-        # low=-1.0: phi_gradient_x/y can be negative
-        obs_spaces["reachability_features"] = box.Box(
-            low=-1.0, high=1.0, shape=(REACHABILITY_FEATURES_DIM,), dtype=np.float32
-        )
-
-        # Add GCN-optimized minimal graph observation spaces
-        # Only includes data actually used by GCN encoder (no edge features, no types)
-        # This keeps SubprocVecEnv serialization overhead low
-        # MEMORY OPTIMIZATION: Skip when enable_graph_observations=False (saves ~21KB per obs)
-        if self.enable_graph_observations:
-            obs_spaces["graph_node_feats"] = box.Box(
-                low=-np.inf,
-                high=np.inf,
-                shape=(N_MAX_NODES, NODE_FEATURE_DIM),  # 7-dim features
-                dtype=np.float32,
-            )
-            obs_spaces["graph_edge_index"] = box.Box(
-                low=0,
-                high=N_MAX_NODES - 1,
-                shape=(2, E_MAX_EDGES),
-                dtype=np.uint16,
-            )
-            obs_spaces["graph_node_mask"] = box.Box(
-                low=0,
-                high=1,
-                shape=(N_MAX_NODES,),
-                dtype=np.uint8,
-            )
-            obs_spaces["graph_edge_mask"] = box.Box(
-                low=0,
-                high=1,
-                shape=(E_MAX_EDGES,),
-                dtype=np.uint8,
-            )
-
-        # Switch states for locked doors (25 total: 5 doors * 5 features each)
-        # Features: [switch_x, switch_y, door_x, door_y, collected] per door
-        obs_spaces["switch_states"] = box.Box(
-            low=0.0,
-            high=1.0,
-            shape=(SWITCH_STATES_DIM,),
-            dtype=np.float32,
-        )
-
-        # Spatial context for graph-free observation (96 dims)
-        # 64 dims: 8×8 local tile grid (simplified categories)
-        # 32 dims: 8 nearest mines (relative_pos + state + radius)
-        obs_spaces["spatial_context"] = box.Box(
+        obs_spaces["hazard_map"] = box.Box(
             low=-1.0,
             high=1.0,
-            shape=(SPATIAL_CONTEXT_DIM,),
+            shape=(HAZARD_MAP_CHANNELS, HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH),
             dtype=np.float32,
         )
-
-        # Mine SDF features for actor safety awareness (3 dims)
-        # Global danger signal from ALL mines (not just 8 nearest in spatial_context)
-        # [SDF value, escape gradient X, escape gradient Y]
-        obs_spaces["mine_sdf_features"] = box.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(MINE_SDF_FEATURES_DIM,),
-            dtype=np.float32,
-        )
-
-        # Mine threat map: deadly SDF, safe SDF, passability (sigmoid of deadly SDF)
-        obs_spaces["mine_threat_map"] = box.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(
-                MINE_THREAT_MAP_CHANNELS,
-                MINE_THREAT_MAP_HEIGHT,
-                MINE_THREAT_MAP_WIDTH,
-            ),
-            dtype=np.float32,
-        )
-
-        # Level context: stable level_id only; tile_grid is always in base (NPP-9).
-        # Only level_id is gated to avoid extra rollout fields when unused.
-        if self.enable_level_context_observations:
-            obs_spaces["level_id"] = box.Box(
-                low=0,
-                high=2**31 - 1,
-                shape=(1,),
-                dtype=np.int32,
-            )
 
         return SpacesDict(obs_spaces)
 
@@ -599,11 +473,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # Reset observation processor (buffer clearing, no reallocation)
             self.observation_processor.reset()
 
-            # Reset spatial context cache (mine overlay position-based cache)
-            from .spatial_context import reset_mine_overlay_cache
-
-            reset_mine_overlay_cache()
-
             # ============================================================
             # Reset tracking variables from BaseNppEnvironment
             # ============================================================
@@ -710,11 +579,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
             # Reset observation processor
             self.observation_processor.reset()
-
-            # Reset spatial context cache (mine overlay position-based cache)
-            from .spatial_context import reset_mine_overlay_cache
-
-            reset_mine_overlay_cache()
 
             # ============================================================
             # CRITICAL: Reset tracking variables from BaseNppEnvironment
@@ -1442,59 +1306,54 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 
-        obs["reachability_features"] = self._get_reachability_features()
-
-        # OPTIMIZATION: Add cached distances for PBRS to avoid duplicate computation
-        # These are computed during reachability feature extraction and stored in instance vars
+        # Populate the internal A*-path-distance cache used by PBRS. The feature
+        # vector is discarded; only `_cached_switch_distance` / `_cached_exit_distance`
+        # (set as a side-effect of `_compute_reachability`) matter for the reward
+        # path. These are not exposed to the policy.
+        self._update_path_distance_cache()
         if hasattr(self, "_cached_switch_distance"):
             obs["_cached_switch_distance"] = self._cached_switch_distance
         if hasattr(self, "_cached_exit_distance"):
             obs["_cached_exit_distance"] = self._cached_exit_distance
 
-        obs.update(self._get_graph_observations())
-
-        # Extract locked door switch states from environment
+        # Extract locked door switch states from environment — kept internally
+        # for the reward path even though `switch_states` is no longer in the
+        # policy obs dict.
         switch_states_dict = self._get_switch_states_from_env()
-
-        # Update level_data.switch_states for consistent cache key generation
-        # CRITICAL: This must be done before adding level_data to observation
-        # so that PBRS cache keys include correct switch states
         if hasattr(self, "level_data") and self.level_data is not None:
             self.level_data.switch_states = switch_states_dict
-
-        # Store dict version for ICM and reachability systems
         obs["switch_states_dict"] = switch_states_dict
-
-        switch_states_array = self._build_switch_states_array(obs)
-        obs["switch_states"] = switch_states_array
 
         obs["level_data"] = self.level_data
 
-        # Add adjacency graph and full graph data for PBRS path-aware reward shaping
+        # Add adjacency graph and full graph data for PBRS path-aware reward shaping.
         adjacency = self._get_adjacency_for_rewards()
         if adjacency is None:
             raise RuntimeError("Adjacency graph not available. Graph building failed.")
         obs["_adjacency_graph"] = adjacency
-        # Include full graph_data for spatial indexing (contains spatial_hash)
         obs["_graph_data"] = self.current_graph_data
 
-        # Add mine SDF features for actor safety awareness (3 dims)
-        # These provide GLOBAL mine danger signal from ALL mines (not just 8 nearest)
-        obs["mine_sdf_features"] = self._compute_mine_sdf_features(obs)
+        obs["hazard_map"] = self._compute_hazard_map()
 
-        from .config import ObservationMode
-
-        if self.config.observation_mode != ObservationMode.MINIMAL:
-            obs["mine_threat_map"] = self._compute_mine_threat_map()
-
-        # Add metadata for cached graph extraction (hybrid_cached_graph architecture)
-        # These are not trainable features, just identifiers for cache lookup
-        obs["level_id"] = self.map_loader.current_map_name
-        obs["ninja_node_pos"] = self._get_ninja_node_position_for_cache()
-
-        # Return full observation - conversion to minimal happens in _process_observation()
-        # This ensures reward calculator has access to all metadata
+        # Return full observation - conversion to Layer 1 dict happens in
+        # _process_observation(). This ensures the reward calculator has
+        # access to all metadata.
         return obs
+
+    def _update_path_distance_cache(self) -> None:
+        """Run the A* path distance computation to populate reward caches.
+
+        This used to be part of `_get_reachability_features`, which also
+        produced a feature vector for the policy. The feature vector is no
+        longer part of the observation (Layer 1), but the cached path
+        distances (`_cached_switch_distance`, `_cached_exit_distance`) are
+        still required by `PBRSCalculator`. Any exception here is non-fatal
+        since PBRS will fall back to direct path cost queries.
+        """
+        try:
+            self._compute_reachability(self.nplay_headless.ninja_position())
+        except Exception:
+            pass
 
     def _compute_physics_derived_features(self) -> np.ndarray:
         """Compute 3 physics-derived features for value function alignment with Φ.
@@ -1578,75 +1437,32 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         return features
 
-    def _compute_mine_sdf_features(self, obs: Dict[str, Any]) -> np.ndarray:
-        """Compute mine SDF features for actor safety awareness.
+    def _compute_hazard_map(self) -> np.ndarray:
+        """NPP-46: 1-channel deadly-mine SDF at 6px (hazard_map key).
 
-        These features provide GLOBAL mine danger information from ALL mines,
-        not just the 8 nearest mines in spatial_context. This helps the actor
-        make better decisions about avoiding dangerous areas.
+        Canonical Layer 1 hazard channel: `deadly_sdf = clip((d - 14) / 24, -1, 1)`
+        where `d` is the Euclidean distance from each 6px cell center to the
+        nearest currently-deadly toggle mine. Positive outside the 14px kill
+        zone, zero at the boundary, negative inside. Shape: (1, H, W).
 
-        MINE SDF FEATURES (3 dimensions):
-        0. SDF value at ninja [-1,1]: distance to nearest mine (negative=danger zone)
-        1. Escape gradient X [-1,1]: X component of escape direction
-        2. Escape gradient Y [-1,1]: Y component of escape direction
-
-        All features use O(1) lookups from pre-computed 88x50 SDF grid (12px resolution).
-
-        Returns:
-            np.ndarray: Mine SDF features [3]
+        Recomputes only when the deadly-mine set changes vs the last call.
         """
-        mine_sdf_features = np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32)
-
-        ninja_x = obs.get("player_x", 0.0)
-        ninja_y = obs.get("player_y", 0.0)
-
-        pbrs_calculator = self.reward_calculator.pbrs_calculator
-        if pbrs_calculator is not None and pbrs_calculator.path_calculator is not None:
-            mine_sdf = pbrs_calculator.path_calculator.mine_sdf
-            # Feature 0: SDF value at ninja position
-            # Negative = inside danger zone, positive = safe
-            sdf_value = mine_sdf.get_sdf_at_position(ninja_x, ninja_y)
-            mine_sdf_features[0] = sdf_value
-
-            # Features 1-2: Escape gradient (unit vector away from nearest mine)
-            # Tells actor optimal direction to move for safety
-            grad_x, grad_y = mine_sdf.get_gradient_at_position(ninja_x, ninja_y)
-            mine_sdf_features[1] = grad_x
-            mine_sdf_features[2] = grad_y
-
-        return mine_sdf_features
-
-    def _compute_mine_threat_map(self) -> np.ndarray:
-        """3-channel mine threat map at 6px (168×92): deadly SDF, safe SDF, passability.
-
-        Deadly = toggle mines in STATE_TOGGLED (0); safe = untoggled/toggling (1, 2).
-        Uses Rust R-tree nearest-neighbor; recomputes only when mine positions/states change.
-        """
-        from .config import ObservationMode
-
-        if self.config.observation_mode == ObservationMode.MINIMAL:
-            return self._mine_threat_map_cache
-
         toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
         deadly: list[tuple[float, float]] = []
-        safe: list[tuple[float, float]] = []
         for mine in (*toggle_mines, *toggled_mines):
-            pos = (float(mine.xpos), float(mine.ypos))
             if getattr(mine, "state", 1) == 0:
-                deadly.append(pos)
-            else:
-                safe.append(pos)
+                deadly.append((float(mine.xpos), float(mine.ypos)))
 
-        flat = self._mine_threat_map_rs.compute_threat_map_if_changed(deadly, safe)
+        flat = self._mine_threat_map_rs.compute_hazard_map_if_changed(deadly)
         if flat is None:
-            return self._mine_threat_map_cache
+            return self._hazard_map_cache
 
         arr = np.asarray(flat, dtype=np.float32).reshape(
-            MINE_THREAT_MAP_CHANNELS,
-            MINE_THREAT_MAP_HEIGHT,
-            MINE_THREAT_MAP_WIDTH,
+            HAZARD_MAP_CHANNELS,
+            HAZARD_MAP_HEIGHT,
+            HAZARD_MAP_WIDTH,
         )
-        self._mine_threat_map_cache = arr
+        self._hazard_map_cache = arr
         return arr
 
     def _compute_nearest_approaching_deadly_mine_distance(self) -> float:
@@ -2094,142 +1910,36 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         return features
 
-    def _calculate_reward(self, curr_obs, prev_obs, action=None):
-        """Calculate reward, handling minimal observation mode.
-
-        In minimal mode, graph/level data are stored separately to avoid
-        pickling issues, so we temporarily add them back for reward calculation.
-        """
-        from .config import ObservationMode
-
-        if self.config.observation_mode == ObservationMode.MINIMAL:
-            # Add graph/level data from cached observations
-            # Use current cache for curr_obs, previous cache for prev_obs
-            if hasattr(self, "_cached_full_obs"):
-                curr_full_obs = self._cached_full_obs
-                curr_metadata = {
-                    "_adjacency_graph": curr_full_obs.get("_adjacency_graph"),
-                    "_graph_data": curr_full_obs.get("_graph_data"),
-                    "level_data": curr_full_obs.get("level_data") or self.level_data,
-                    "switch_states_dict": curr_full_obs.get("switch_states_dict"),
-                }
-                curr_obs_with_metadata = dict(curr_obs)
-                curr_obs_with_metadata.update(curr_metadata)
-            else:
-                # Fallback: use instance variables directly
-                curr_obs_with_metadata = dict(curr_obs)
-                curr_obs_with_metadata.update(
-                    {
-                        "_adjacency_graph": self._get_adjacency_for_rewards(),
-                        "_graph_data": self.current_graph_data,
-                        "level_data": self.level_data,
-                        "switch_states_dict": self._get_switch_states_from_env(),
-                    }
-                )
-
-            if hasattr(self, "_prev_cached_full_obs"):
-                prev_full_obs = self._prev_cached_full_obs
-                prev_metadata = {
-                    "_adjacency_graph": prev_full_obs.get("_adjacency_graph"),
-                    "_graph_data": prev_full_obs.get("_graph_data"),
-                    "level_data": prev_full_obs.get("level_data") or self.level_data,
-                    "switch_states_dict": prev_full_obs.get("switch_states_dict"),
-                }
-                prev_obs_with_metadata = dict(prev_obs)
-                prev_obs_with_metadata.update(prev_metadata)
-            else:
-                # Fallback: use instance variables directly
-                prev_obs_with_metadata = dict(prev_obs)
-                prev_obs_with_metadata.update(
-                    {
-                        "_adjacency_graph": self._get_adjacency_for_rewards(),
-                        "_graph_data": self.current_graph_data,
-                        "level_data": self.level_data,
-                        "switch_states_dict": self._get_switch_states_from_env(),
-                    }
-                )
-
-            return self.reward_calculator.calculate_reward(
-                curr_obs_with_metadata,
-                prev_obs_with_metadata,
-                action,
-                curriculum_manager=self.goal_curriculum_manager,
-            )
-        return super()._calculate_reward(curr_obs, prev_obs, action)
-
     def _process_observation(self, obs):
-        """Process the observation from the environment.
+        """Reduce the raw observation dict to the Layer 1 policy contract.
 
-        Graph observations are conditionally included based on enable_graph_observations:
-        - When True (default): Graph arrays added to observation (~21KB per obs)
-        - When False: Graph arrays excluded (memory optimization for graph_free architecture)
-
-        Note: Graph is still built internally for PBRS reward calculation regardless.
+        Raw obs carries reward-side metadata (`_adjacency_graph`, `_graph_data`,
+        `level_data`, `switch_states_dict`, cached path distances). That
+        metadata is consumed by the reward calculator BEFORE this call and is
+        stripped here so the rollout buffer only holds the four policy
+        tensors plus control masks.
         """
-        # Check if we're in minimal observation mode
         processed_obs = super()._process_observation(obs)
 
-        # Add reachability features if not already added (always present in raw obs)
-        if "reachability_features" not in processed_obs:
-            processed_obs["reachability_features"] = obs.get(
-                "reachability_features",
-                np.zeros(REACHABILITY_FEATURES_DIM, dtype=np.float32),
+        if "hazard_map" not in processed_obs:
+            processed_obs["hazard_map"] = obs.get(
+                "hazard_map",
+                np.zeros(
+                    (HAZARD_MAP_CHANNELS, HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH),
+                    dtype=np.float32,
+                ),
             )
 
-        # Add graph observations only if enabled (memory optimization)
-        # Graph is still built internally for PBRS, but arrays excluded from obs when disabled
-        if self.enable_graph_observations:
-            graph_obs = self._get_graph_observations()
-            for key, value in graph_obs.items():
-                if key not in processed_obs:
-                    processed_obs[key] = value
-
-        if "switch_states" not in processed_obs:
-            processed_obs["switch_states"] = obs.get(
-                "switch_states", np.zeros(SWITCH_STATES_DIM, dtype=np.float32)
-            )
-
-        # Add spatial_context (graph-free local geometry features)
-        if "spatial_context" not in processed_obs:
-            processed_obs["spatial_context"] = self._compute_spatial_context()
-
-        # Add mine_sdf_features (global mine danger signal for actor safety)
-        if "mine_sdf_features" not in processed_obs:
-            processed_obs["mine_sdf_features"] = obs.get(
-                "mine_sdf_features",
-                np.zeros(MINE_SDF_FEATURES_DIM, dtype=np.float32),
-            )
-
-        from .config import ObservationMode
-
-        if self.config.observation_mode != ObservationMode.MINIMAL:
-            if "mine_threat_map" not in processed_obs:
-                processed_obs["mine_threat_map"] = obs.get(
-                    "mine_threat_map",
-                    np.zeros(
-                        (
-                            MINE_THREAT_MAP_CHANNELS,
-                            MINE_THREAT_MAP_HEIGHT,
-                            MINE_THREAT_MAP_WIDTH,
-                        ),
-                        dtype=np.float32,
-                    ),
-                )
-
-        # Add level context observations (tile grid + stable integer level ID)
-        # tile_grid is static per level: cache it at level load and reuse every step
-        if self.enable_level_context_observations:
-            processed_obs["tile_grid"] = self._get_cached_tile_grid()
-            processed_obs["level_id"] = self._get_cached_level_id()
-
-        # MEMORY OPTIMIZATION: Remove internal-only observations that are not needed for training
-        # These are only used during environment step for PBRS reward computation
-        # Removing them prevents storing ~30-40% extra data in rollout buffer
+        # Strip reward-only / legacy metadata so rollout buffer holds just
+        # tile_grid, entity_overlays, hazard_map, game_state (+ masks).
         internal_only_keys = [
-            "_adjacency_graph",  # Used internally for PBRS path distance calculation
-            "_graph_data",  # Contains spatial_hash and other build artifacts
-            "switch_states_dict",  # Dict version, array version is kept as switch_states
-            "level_data",  # Only needed during graph building
+            "_adjacency_graph",
+            "_graph_data",
+            "_cached_switch_distance",
+            "_cached_exit_distance",
+            "switch_states_dict",
+            "level_data",
+            "entity_positions",
         ]
         for key in internal_only_keys:
             processed_obs.pop(key, None)
@@ -2259,109 +1969,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._cached_level_id_int = None
 
         return self._cached_tile_grid
-
-    def _get_cached_level_id(self) -> np.ndarray:
-        """Return a stable integer level ID for the current level.
-
-        Uses a truncated hash of the map name so the level-context encoder can use it
-        as a dictionary key for per-level caching without string comparisons on-device.
-
-        Returns:
-            np.ndarray: shape (1,) int32 with a non-negative level ID
-        """
-        if self._cached_level_id_int is None:
-            map_name = getattr(self.map_loader, "current_map_name", "") or ""
-            # Use Python's built-in hash truncated to non-negative int32 range
-            level_hash = hash(map_name) & 0x7FFFFFFF
-            self._cached_level_id_int = np.array([level_hash], dtype=np.int32)
-
-        return self._cached_level_id_int
-
-    def _compute_spatial_context(self) -> np.ndarray:
-        """Compute spatial context features (graph-free local geometry).
-
-        Returns 84-dimensional array:
-        - 64 dims: 8×8 local tile grid (simplified tile categories)
-        - 20 dims: 5 nearest mines (4 features each):
-          - relative_pos (2), state (1), velocity_dot_direction (1)
-
-        Markov Property: All features depend only on current state (position, velocity).
-
-        Returns:
-            np.ndarray: 84-dimensional spatial context features
-        """
-        from .spatial_context import (
-            compute_local_tile_grid,
-            compute_mine_overlay_from_entities,
-        )
-
-        # Get ninja position and velocity (current state only - Markovian)
-        ninja_pos = self.nplay_headless.ninja_position()
-        ninja_velocity = self.nplay_headless.ninja_velocity()
-
-        # Get level data for tiles
-        level_data = self.level_data
-
-        # Profile tile grid computation
-        tile_grid = compute_local_tile_grid(ninja_pos, level_data.tiles)
-
-        # Profile mine overlay computation (optimized with direct entity access + caching)
-        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
-        mine_overlay = compute_mine_overlay_from_entities(
-            ninja_pos,
-            ninja_velocity,
-            toggle_mines,
-            toggled_mines,
-            LEVEL_WIDTH_PX,
-            LEVEL_HEIGHT_PX,
-        )
-
-        # Concatenate features
-        return np.concatenate([tile_grid, mine_overlay])
-
-    def _get_ninja_node_position_for_cache(self) -> Tuple[int, int]:
-        """Get ninja's current graph node position for cached graph extraction.
-
-        Returns node position in tile data space (not world space).
-        Used by hybrid_cached_graph architecture for O(1) k-hop extraction.
-
-        Uses path_calculator step cache when available to avoid redundant find_ninja_node
-        (Optimization 6: route direct find_ninja_node through step cache).
-
-        Returns:
-            Tuple of (x, y) in tile data space, or (0, 0) if node not found
-        """
-        ninja_pos = self.nplay_headless.ninja_position()  # World space
-
-        if not hasattr(self, "current_graph_data") or self.current_graph_data is None:
-            return (0, 0)  # Fallback
-
-        adjacency = self.current_graph_data.get("adjacency")
-        if adjacency is None:
-            return (0, 0)
-
-        # Use path_calculator step cache when available (avoids ~501 redundant find_ninja_node/step)
-        if hasattr(self, "_path_calculator") and self._path_calculator is not None:
-            ninja_node = self._path_calculator._get_cached_or_find_ninja_node(
-                (int(ninja_pos[0]), int(ninja_pos[1])),
-                adjacency,
-                goal_id=None,  # Position-only lookup; shares cache with PBRS/reachability
-                subcell_lookup=None,  # path_calculator uses _spatial_hash from build_level_cache
-                ninja_radius=10.0,
-            )
-            return ninja_node if ninja_node is not None else (0, 0)
-
-        # Fallback when path_calculator unavailable (e.g. before first _compute_reachability)
-        from nclone.graph.reachability.pathfinding_utils import find_ninja_node
-
-        spatial_hash = self.current_graph_data.get("spatial_hash")
-        ninja_node = find_ninja_node(
-            ninja_pos,
-            adjacency,
-            spatial_hash=spatial_hash,
-            ninja_radius=10.0,
-        )
-        return ninja_node if ninja_node is not None else (0, 0)
 
     def set_feature_extractor_callback(self, callback):
         """Set callback for feature extractor cache precomputation.

@@ -1,6 +1,19 @@
-"""8-channel entity overlay grid for Layer 1 observations (NPP-9).
+"""5-channel entity overlay grid for Layer 1 observations (NPP-38, toggle-mines scope).
 
-Builds (8, MAP_TILE_WIDTH, MAP_TILE_HEIGHT) float32 in [0, 1] from simulator state.
+Builds ``(5, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)`` float32 in [0, 1] from simulator
+state. The Layer 1 policy sees only the toggle-mines-world entities:
+
+    0. ``ninja_pos``            - bilinear splat at ninja tile-space position
+    1. ``switch_pos``           - 1.0 at exit-switch tile iff not yet collected
+    2. ``exit_pos``             - 1.0 at exit-door tile
+    3. ``mine_deadly_density``  - count of deadly mines per tile, /8 clamp to [0, 1]
+    4. ``mine_safe_density``    - count of safe/toggling mines per tile, /8 clamp
+
+NPP-38 dropped the previous ``bounce_block``, ``thwump``, ``launch_pad_pos``
+channels because their source mechanics are explicitly out of scope for the
+toggle-mines Layer 1 chunk (see ``docs/LAYER1_MARKOV_AUDIT.md``). If any of
+those mechanics come back into scope, extend the overlay tensor rather than
+resurrecting these channels in place.
 """
 
 from __future__ import annotations
@@ -19,6 +32,16 @@ from ..constants.physics_constants import (
 # Toggle mine kill zone radius (matches STRATEGY_EPIC / mine overlay spec)
 MINE_KILL_ZONE_RADIUS_PX = 14.0
 MINE_DENSITY_NORMALIZER = 8.0
+
+# NPP-38: channel count for entity_overlays after toggle-mines rescope.
+ENTITY_OVERLAY_CHANNELS = 5
+
+# Named channel indices (kept stable for downstream extractors).
+ENTITY_OVERLAY_CH_NINJA = 0
+ENTITY_OVERLAY_CH_SWITCH = 1
+ENTITY_OVERLAY_CH_EXIT = 2
+ENTITY_OVERLAY_CH_MINE_DEADLY = 3
+ENTITY_OVERLAY_CH_MINE_SAFE = 4
 
 
 def _entity_pixel_xy(entity: Any) -> Tuple[float, float]:
@@ -68,17 +91,15 @@ def compute_entity_overlays(
     exit_pos: Optional[Tuple[float, float]],
     deadly_mines: Sequence[Any],
     safe_mines: Sequence[Any],
-    bounce_blocks: Sequence[Any],
-    thwumps: Sequence[Any],
-    launch_pads: Sequence[Any],
 ) -> np.ndarray:
-    """Build 8-channel entity overlay grid (8, MAP_TILE_WIDTH, MAP_TILE_HEIGHT), float32 in [0, 1].
+    """Build the 5-channel entity overlay grid.
 
-    Channel order matches STRATEGY_EPIC / NPP-9: ninja bilinear splat, switch, exit,
-    deadly mine density, safe mine density, bounce block, thwump, launch pad.
-    Mine densities count mines whose 14px kill zone overlaps each tile, normalized by 8.
+    Shape: ``(ENTITY_OVERLAY_CHANNELS, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)``,
+    float32 in [0, 1]. See module docstring for channel order.
     """
-    overlays = np.zeros((8, MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.float32)
+    overlays = np.zeros(
+        (ENTITY_OVERLAY_CHANNELS, MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.float32
+    )
 
     npx, npy = float(ninja_pos[0]), float(ninja_pos[1])
     tx_f = npx / float(TILE_PIXEL_SIZE) - 1.0
@@ -96,17 +117,17 @@ def compute_entity_overlays(
     for (dx, dy), w in weights:
         tx, ty = x0 + dx, y0 + dy
         if 0 <= tx < MAP_TILE_WIDTH and 0 <= ty < MAP_TILE_HEIGHT and w > 0.0:
-            overlays[0, tx, ty] += float(w)
+            overlays[ENTITY_OVERLAY_CH_NINJA, tx, ty] += float(w)
 
     if not switch_activated and switch_pos is not None:
         sx, sy = float(switch_pos[0]), float(switch_pos[1])
         stx, sty = _px_to_inner_tile(sx, sy)
-        overlays[1, stx, sty] = 1.0
+        overlays[ENTITY_OVERLAY_CH_SWITCH, stx, sty] = 1.0
 
     if exit_pos is not None:
         ex, ey = float(exit_pos[0]), float(exit_pos[1])
         etx, ety = _px_to_inner_tile(ex, ey)
-        overlays[2, etx, ety] = 1.0
+        overlays[ENTITY_OVERLAY_CH_EXIT, etx, ety] = 1.0
 
     for ty in range(MAP_TILE_HEIGHT):
         for tx in range(MAP_TILE_WIDTH):
@@ -117,7 +138,7 @@ def compute_entity_overlays(
                     mx, my, MINE_KILL_ZONE_RADIUS_PX, tx, ty
                 ):
                     deadly_count += 1
-            overlays[3, tx, ty] = min(
+            overlays[ENTITY_OVERLAY_CH_MINE_DEADLY, tx, ty] = min(
                 1.0, float(deadly_count) / MINE_DENSITY_NORMALIZER
             )
 
@@ -130,16 +151,8 @@ def compute_entity_overlays(
                     mx, my, MINE_KILL_ZONE_RADIUS_PX, tx, ty
                 ):
                     safe_count += 1
-            overlays[4, tx, ty] = min(1.0, float(safe_count) / MINE_DENSITY_NORMALIZER)
-
-    for entities, ch in (
-        (bounce_blocks, 5),
-        (thwumps, 6),
-        (launch_pads, 7),
-    ):
-        for e in entities:
-            ex, ey = _entity_pixel_xy(e)
-            etx, ety = _px_to_inner_tile(ex, ey)
-            overlays[ch, etx, ety] = 1.0
+            overlays[ENTITY_OVERLAY_CH_MINE_SAFE, tx, ty] = min(
+                1.0, float(safe_count) / MINE_DENSITY_NORMALIZER
+            )
 
     return overlays

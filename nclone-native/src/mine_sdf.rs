@@ -184,6 +184,12 @@ impl MineSDF {
 }
 
 // --- Mine threat map (L1.2, NPP-10): 3 × 168 × 92 @ 6px ---
+//
+// NPP-46 (Layer 1 toggle-mines chunk): adds a 1-channel `hazard_map`
+// view on top of the existing 3-channel `MineThreatMap`. The 1-channel path
+// exposes only the deadly-mine SDF (channel 0 of the 3-channel map) and is
+// the shape the Layer 1 policy consumes. The 3-channel path is kept as a
+// legacy fallback until all downstream consumers migrate.
 
 const THREAT_CELL_SIZE: f64 = 6.0;
 const THREAT_WIDTH: usize = 168;
@@ -195,11 +201,18 @@ const SDF_SCALE_PX: f64 = 24.0;
 ///
 /// Output layout (channel-first, row-major within each channel): `[deadly | safe | pass]`,
 /// each block length `THREAT_WIDTH * THREAT_HEIGHT`.
+///
+/// NPP-46 adds `compute_hazard_map{,_if_changed}` helpers that return only the
+/// 1-channel deadly SDF buffer (`THREAT_WIDTH * THREAT_HEIGHT` floats).
 #[pyclass]
 pub struct MineThreatMap {
     last_deadly: Vec<(f64, f64)>,
     last_safe: Vec<(f64, f64)>,
     last_output: Vec<f32>,
+    /// Last deadly-only inputs for the 1-channel `hazard_map` path (NPP-46).
+    last_hazard_deadly: Vec<(f64, f64)>,
+    /// Last 1-channel deadly SDF output (NPP-46). Empty until first compute.
+    last_hazard_output: Vec<f32>,
 }
 
 impl MineThreatMap {
@@ -250,6 +263,29 @@ impl MineThreatMap {
         1.0 / (1.0 + (-x).exp())
     }
 
+    /// 1-channel deadly SDF buffer (NPP-46).
+    ///
+    /// Returns `THREAT_WIDTH * THREAT_HEIGHT` floats in row-major order, matching
+    /// channel 0 of `compute_threat_map_inner` bit-for-bit. Callers shape the
+    /// result into `(1, THREAT_HEIGHT, THREAT_WIDTH)` for the `hazard_map` key.
+    fn compute_hazard_map_inner(deadly_positions: &[(f64, f64)]) -> Vec<f32> {
+        let deadly_tree = Self::build_tree(deadly_positions);
+        let mut out = vec![0.0_f32; THREAT_WIDTH * THREAT_HEIGHT];
+
+        for row in 0..THREAT_HEIGHT {
+            for col in 0..THREAT_WIDTH {
+                let cx = (col as f64 + 0.5) * THREAT_CELL_SIZE;
+                let cy = (row as f64 + 0.5) * THREAT_CELL_SIZE;
+                let idx = row * THREAT_WIDTH + col;
+
+                let d_sq = Self::nearest_dist_sq(cx, cy, &deadly_tree);
+                let min_d = d_sq.sqrt();
+                out[idx] = Self::sdf_from_min_dist(min_d) as f32;
+            }
+        }
+        out
+    }
+
     fn compute_threat_map_inner(
         deadly_positions: &[(f64, f64)],
         safe_positions: &[(f64, f64)],
@@ -290,6 +326,8 @@ impl MineThreatMap {
             last_deadly: Vec::new(),
             last_safe: Vec::new(),
             last_output: Vec::new(),
+            last_hazard_deadly: Vec::new(),
+            last_hazard_output: Vec::new(),
         }
     }
 
@@ -324,5 +362,62 @@ impl MineThreatMap {
         self.last_safe = safe_positions;
         self.last_output = out.clone();
         Some(out)
+    }
+
+    /// NPP-46: compute the 1-channel deadly-mine SDF buffer (length `H*W`).
+    ///
+    /// Always recomputes; returns a flat row-major buffer of floats in [-1, 1].
+    /// Python reshapes to `(1, THREAT_HEIGHT, THREAT_WIDTH)` for `hazard_map`.
+    fn compute_hazard_map(&mut self, deadly_positions: Vec<(f64, f64)>) -> Vec<f32> {
+        let out = Self::compute_hazard_map_inner(&deadly_positions);
+        self.last_hazard_deadly = deadly_positions;
+        self.last_hazard_output = out.clone();
+        out
+    }
+
+    /// NPP-46: recompute the 1-channel deadly-mine SDF only if deadly positions changed.
+    fn compute_hazard_map_if_changed(
+        &mut self,
+        deadly_positions: Vec<(f64, f64)>,
+    ) -> Option<Vec<f32>> {
+        if !self.last_hazard_output.is_empty()
+            && Self::positions_equal(&self.last_hazard_deadly, &deadly_positions)
+        {
+            return None;
+        }
+        let out = Self::compute_hazard_map_inner(&deadly_positions);
+        self.last_hazard_deadly = deadly_positions;
+        self.last_hazard_output = out.clone();
+        Some(out)
+    }
+
+    /// NPP-46: width of the `hazard_map` grid (168).
+    #[staticmethod]
+    fn hazard_map_width() -> usize {
+        THREAT_WIDTH
+    }
+
+    /// NPP-46: height of the `hazard_map` grid (92).
+    #[staticmethod]
+    fn hazard_map_height() -> usize {
+        THREAT_HEIGHT
+    }
+
+    /// NPP-46: deadly kill radius in world pixels (14.0).
+    #[staticmethod]
+    fn hazard_kill_radius() -> f64 {
+        MINE_KILL_RADIUS_PX
+    }
+
+    /// NPP-46: SDF normalization scale in world pixels (24.0).
+    #[staticmethod]
+    fn hazard_sdf_scale() -> f64 {
+        SDF_SCALE_PX
+    }
+
+    /// NPP-46: cell size in world pixels (6.0).
+    #[staticmethod]
+    fn hazard_cell_size() -> f64 {
+        THREAT_CELL_SIZE
     }
 }

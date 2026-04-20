@@ -71,63 +71,6 @@ class ReachabilityMixin:
         if hasattr(self, "_path_calculator"):
             self._path_calculator.clear_cache()
 
-    def _get_reachability_features(self) -> np.ndarray:
-        """Get 10-dim reachability features.
-
-        When a RoutePBRS is active (has get_arc_target_features), returns arc
-        target features that directly encode the current planned arc:
-          [dx_launch, dy_launch, vx_error, dx_land, dy_land,
-           jump_hold_norm, req_speed, progress, switch_activated, spare]
-
-        Fallback (no RoutePBRS or legacy SurfaceGraphPBRS): returns the
-        8-dim graph-path features padded to 10 dims with zeros at indices 8-9
-        (for backward compatibility with non-precomputed training).
-        """
-        precomputed = getattr(self, "_current_precomputed_pbrs", None)
-
-        # RoutePBRS path: arc target features replace graph features entirely
-        if precomputed is not None and hasattr(precomputed, "get_arc_target_features"):
-            pos = self.nplay_headless.ninja_position()
-            vel = self.nplay_headless.ninja_velocity()
-            switch = self.nplay_headless.exit_switch_activated()
-            state_dict = {
-                "x": float(pos[0]),
-                "y": float(pos[1]),
-                "vx": float(vel[0]),
-                "vy": float(vel[1]),
-                "switch_activated": switch,
-                "on_surface": self.nplay_headless.ninja_on_surface()
-                    if hasattr(self.nplay_headless, "ninja_on_surface") else True,
-            }
-            features = precomputed.get_arc_target_features(state_dict)
-            return features.astype(np.float32)
-
-        # Legacy path: 8-dim graph features + phi gradient (or zeros)
-        reachability_features = self._compute_reachability(
-            self.nplay_headless.ninja_position()
-        )
-
-        # Phi gradient from SurfaceGraphPBRS (indices 8-9)
-        if precomputed is not None and hasattr(precomputed, "get_gradient"):
-            pos = self.nplay_headless.ninja_position()
-            vel = self.nplay_headless.ninja_velocity()
-            switch = self.nplay_headless.exit_switch_activated()
-            grad = precomputed.get_gradient({
-                "player_x": float(pos[0]),
-                "player_y": float(pos[1]),
-                "player_xspeed": float(vel[0]),
-                "player_yspeed": float(vel[1]),
-                "switch_activated": switch,
-            })
-            phi_gx = float(np.clip(grad[0] * 6.0, -1.0, 1.0))
-            phi_gy = float(np.clip(grad[1] * 6.0, -1.0, 1.0))
-        else:
-            phi_gx, phi_gy = 0.0, 0.0
-
-        return np.concatenate([reachability_features, [phi_gx, phi_gy]]).astype(
-            np.float32
-        )
-
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
         Compute 38-dimensional reachability features using adjacency graph (expanded in Phases 1-5).

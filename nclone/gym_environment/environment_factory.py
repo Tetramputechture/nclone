@@ -1,11 +1,12 @@
-"""
-Environment factory functions for creating NPP-RL environments with different configurations.
+"""Environment factory functions for creating NPP-RL environments.
 
-This module provides convenient factory functions to create NppEnvironment instances
-with common configurations for training, evaluation, and research.
+Post strict-Layer-1 cleanup: no visual observations, no frame stacking, no
+graph / reachability / level-context plumbing. All helpers return a plain
+:class:`NppEnvironment` driven by an :class:`EnvironmentConfig` that emits the
+4-key Layer 1 policy observation dict.
 """
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 from .npp_environment import NppEnvironment
 from .config import EnvironmentConfig
 
@@ -14,94 +15,35 @@ def create_training_env(config: Optional[EnvironmentConfig] = None) -> NppEnviro
     """Create an environment optimized for training."""
     if config is None:
         config = EnvironmentConfig.for_training()
-    env = NppEnvironment(config)
-
-    # Apply frame stacking wrapper if enabled
-    if (
-        config.enable_visual_observations
-        and config.frame_stack.enable_visual_frame_stacking
-        or config.frame_stack.enable_state_stacking
-    ):
-        from .frame_stack_wrapper import FrameStackWrapper
-
-        env = FrameStackWrapper(
-            env,
-            visual_stack_size=config.frame_stack.visual_stack_size,
-            state_stack_size=config.frame_stack.state_stack_size,
-            enable_state_stacking=config.frame_stack.enable_state_stacking,
-            padding_type=config.frame_stack.padding_type,
-        )
-
-    return env
+    return NppEnvironment(config)
 
 
-def create_evaluation_env(config: Optional[EnvironmentConfig] = None) -> NppEnvironment:
+def create_evaluation_env(
+    config: Optional[EnvironmentConfig] = None,
+) -> NppEnvironment:
     """Create an environment optimized for evaluation."""
     if config is None:
         config = EnvironmentConfig.for_evaluation()
-    env = NppEnvironment(config)
-
-    # Apply frame stacking wrapper if enabled
-    if (
-        config.frame_stack.enable_visual_frame_stacking
-        or config.frame_stack.enable_state_stacking
-    ):
-        from .frame_stack_wrapper import FrameStackWrapper
-
-        env = FrameStackWrapper(
-            env,
-            visual_stack_size=config.frame_stack.visual_stack_size,
-            state_stack_size=config.frame_stack.state_stack_size,
-            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
-            enable_state_stacking=config.frame_stack.enable_state_stacking,
-            padding_type=config.frame_stack.padding_type,
-        )
-
-    return env
+    return NppEnvironment(config)
 
 
 def create_visual_testing_env(
     config: Optional[EnvironmentConfig] = None,
 ) -> NppEnvironment:
-    """Create an environment optimized for testing rendering and visualization."""
+    """Create an environment configured for human playback / video capture.
+
+    The policy observation is identical; this only enables the pygame window
+    via `RenderConfig(render_mode='human')` for interactive debugging.
+    """
     if config is None:
         config = EnvironmentConfig.for_visual_testing()
-    env = NppEnvironment(config)
-
-    # Apply frame stacking wrapper if enabled
-    if (
-        config.frame_stack.enable_visual_frame_stacking
-        or config.frame_stack.enable_state_stacking
-    ):
-        from .frame_stack_wrapper import FrameStackWrapper
-
-        env = FrameStackWrapper(
-            env,
-            visual_stack_size=config.frame_stack.visual_stack_size,
-            state_stack_size=config.frame_stack.state_stack_size,
-            enable_visual_stacking=config.frame_stack.enable_visual_frame_stacking,
-            enable_state_stacking=config.frame_stack.enable_state_stacking,
-            padding_type=config.frame_stack.padding_type,
-        )
-
-    return env
+    return NppEnvironment(config)
 
 
 def make_vectorizable_env(
     env_factory: Callable[[], NppEnvironment],
 ) -> Callable[[], NppEnvironment]:
-    """
-    Factory function to create a vectorizable environment.
-
-    This wraps an environment factory to ensure proper initialization
-    for SubprocVecEnv compatibility.
-
-    Args:
-        env_factory: Function that returns an NppEnvironment instance
-
-    Returns:
-        Callable that returns NppEnvironment instance
-    """
+    """Wrap an environment factory for SubprocVecEnv compatibility."""
 
     def _make_env():
         return env_factory()
@@ -114,40 +56,25 @@ def create_vectorized_training_envs(
     env_kwargs: Optional[Dict[str, Any]] = None,
     debug: bool = False,
 ) -> list:
-    """
-    Create multiple training environments for vectorization.
-
-    Args:
-        num_envs: Number of environments to create
-        env_kwargs: Environment configuration parameters
-        debug: Enable debug logging for graph operations
-
-    Returns:
-        List of environment factory functions
-    """
+    """Create multiple training environment factories for vectorization."""
     env_factories = []
 
     for i in range(num_envs):
-        # Create config with specified graph settings
-        config = EnvironmentConfig.for_training()
-        config.graph.debug = debug
+        seed_value = (
+            env_kwargs["seed"]
+            if env_kwargs is not None and "seed" in env_kwargs
+            else i
+        )
 
-        # Add a unique seed for each environment
-        if env_kwargs and "seed" in env_kwargs:
-            config.seed = env_kwargs["seed"]
-        else:
-            config.seed = i
-
-        # Create factory function with proper closure
-        def make_env_factory(seed_value):
+        def make_env_factory(seed: int):
             def make_env():
                 cfg = EnvironmentConfig.for_training()
                 cfg.graph.debug = debug
-                cfg.seed = seed_value
+                cfg.seed = seed
                 return create_training_env(config=cfg)
 
             return make_env
 
-        env_factories.append(make_vectorizable_env(make_env_factory(i)))
+        env_factories.append(make_vectorizable_env(make_env_factory(seed_value)))
 
     return env_factories

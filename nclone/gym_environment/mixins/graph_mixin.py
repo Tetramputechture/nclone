@@ -12,12 +12,7 @@ from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 from ...graph.level_data import LevelData
-from ...graph.common import (
-    GraphData,
-    N_MAX_NODES,
-    E_MAX_EDGES,
-    NODE_FEATURE_DIM,
-)
+from ...graph.common import GraphData
 from ...graph.reachability.graph_builder import GraphBuilder
 from ...graph.reachability.subcell_node_lookup import SUB_NODE_SIZE
 from ...graph.reachability.pathfinding_utils import (
@@ -467,43 +462,6 @@ class GraphMixin:
         """Extract level data from environment for graph building."""
         # Use existing level_data property
         return self.level_data
-
-    def _get_graph_observations(self) -> Dict[str, np.ndarray]:
-        """Get complete graph observations (DENSE FORMAT ONLY).
-
-        Simplified to always return dense padded arrays with masks.
-        No edge features or types - all edges are simple adjacency.
-
-        Returns:
-            Dictionary with dense graph observations:
-            - graph_node_feats: [N_MAX_NODES, NODE_FEATURE_DIM] float32
-            - graph_edge_index: [2, E_MAX_EDGES] int32
-            - graph_node_mask: [N_MAX_NODES] uint8 (1 for valid, 0 for padding)
-            - graph_edge_mask: [E_MAX_EDGES] uint8 (1 for valid, 0 for padding)
-        """
-        # Empty graph case
-        if self.current_graph is None:
-            return {
-                "graph_node_feats": np.zeros(
-                    (N_MAX_NODES, NODE_FEATURE_DIM), dtype=np.float32
-                ),
-                "graph_edge_index": np.zeros((2, E_MAX_EDGES), dtype=np.uint16),
-                "graph_node_mask": np.zeros(N_MAX_NODES, dtype=np.uint8),
-                "graph_edge_mask": np.zeros(E_MAX_EDGES, dtype=np.uint8),
-            }
-
-        # Minimal format: only what GCN needs
-        graph_data = self.current_graph
-        return {
-            "graph_node_feats": graph_data.node_features.astype(np.float32),
-            "graph_edge_index": graph_data.edge_index.astype(np.uint16),
-            "graph_node_mask": (np.arange(N_MAX_NODES) < graph_data.num_nodes).astype(
-                np.uint8
-            ),
-            "graph_edge_mask": (np.arange(E_MAX_EDGES) < graph_data.num_edges).astype(
-                np.uint8
-            ),
-        }
 
     def get_graph_data(self):
         """Get the fast graph data (adjacency dict) for pathfinding/reachability."""

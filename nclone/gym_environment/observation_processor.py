@@ -1,47 +1,30 @@
-"""This class handles the processing of the game state into a format that can be used for training.
+"""Layer 1 observation processor.
 
-We get our formatted game observation from the NPlusPlus get_observation() method, which has these keys:
+After the strict Layer 1 cleanup the policy observation dict is exactly four
+tensors produced inside :class:`NppEnvironment` (plus control masks):
 
-    'screen' -- the current frame of the game
-    'game_state' -- the current game state
-        - Concatenated array of ninja state and entity states (only exit and switch)
-    'player_dead' -- whether the player has died
-    'player_won' -- whether the player has won
-    'player_x' -- the x position of the player
-    'player_y' -- the y position of the player
-    'switch_activated' -- whether the switch has been activated
-    'switch_x' -- the x position of the switch
-    'switch_y' -- the y position of the switch
-    'exit_door_x' -- the x position of the exit door
-    'exit_door_y' -- the y position of the exit door
-    NOTE: time_remaining is now included as the 41st feature in 'game_state'
+* ``tile_grid`` — ``Box(0, 33, (42, 23), int8)``
+* ``entity_overlays`` — ``Box(0, 1, (5, 42, 23), float32)``
+* ``hazard_map`` — ``Box(-1, 1, (1, 168, 92), float32)``
+* ``game_state`` — ``Box(-1, 1, (27,), float32)``
 
-This class should handle returning:
+and the masks ``action_mask`` / ``duration_mask`` used for valid-action filtering
+and FiGAR macro-actions. This processor:
 
-- The frame centered on the player (PLAYER_FRAME_WIDTH x PLAYER_FRAME_HEIGHT)
-  - This covers the player's movement in detail
-- The global view (RENDERED_VIEW_WIDTH x RENDERED_VIEW_HEIGHT)
-  - This covers the global view of the level at 1/6th resolution
-- The game state
-    - Ninja state
-    - Exit and switch entity states
-    - Time remaining
+* normalizes the ninja state vector,
+* packs entity positions for internal bookkeeping, and
+* passes through the Layer 1 tensors plus control masks.
+
+Rendering (``obs["screen"]``), visual frames (``player_frame`` / ``global_view``),
+graph tensors, reachability vectors, spatial_context, mine_sdf_features and
+legacy placeholders are no longer produced.
 """
 
 import logging
 import numpy as np
-import cv2
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict
 
-from .constants import (
-    PLAYER_FRAME_WIDTH,
-    PLAYER_FRAME_HEIGHT,
-    LEVEL_WIDTH,
-    LEVEL_HEIGHT,
-    RENDERED_VIEW_WIDTH,
-    RENDERED_VIEW_HEIGHT,
-)
-from ..constants.physics_constants import MAX_HOR_SPEED
+from .constants import GAME_STATE_CHANNELS, LEVEL_WIDTH, LEVEL_HEIGHT
 
 # Entity position array indices
 # Format: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
@@ -53,213 +36,38 @@ ENTITY_POSITIONS_SIZE = 6
 logger = logging.getLogger(__name__)
 
 
-def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Resize frame to desired dimensions with stable interpolation."""
-    return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-
-
-def stabilize_frame(frame: Any) -> np.ndarray:
-    """Ensure frame has consistent properties for stable processing.
-
-    OPTIMIZED: More efficient conversion with early exits and optimized grayscale conversion.
-    """
-    # Convert pygame.Surface to numpy array if needed
-    if not isinstance(frame, np.ndarray):
-        try:
-            import pygame  # type: ignore
-
-            if isinstance(frame, pygame.Surface):
-                # OPTIMIZATION: Use pixels_array for direct memory access (fastest method)
-                # This is faster than array3d/array2d and handles both RGB and grayscale
-                try:
-                    # Try pygame.surfarray.pixels2d for grayscale or pixels3d for RGB
-                    if frame.get_bytesize() == 1:
-                        # Grayscale surface - use pixels2d with view (no copy!)
-                        frame_view = pygame.surfarray.pixels2d(frame)
-                        # Transpose to (H, W) and add channel dimension
-                        frame = np.transpose(frame_view, (1, 0))
-                        # Must copy because pixels2d returns a view that locks the surface
-                        frame = np.array(frame, copy=True, dtype=np.uint8)
-                        frame = frame[..., np.newaxis]
-                        return frame
-                    else:
-                        # RGB surface - use array3d and transpose
-                        frame = np.transpose(pygame.surfarray.array3d(frame), (1, 0, 2))
-                except:
-                    # Fallback to array3d if pixels2d fails
-                    frame = np.transpose(pygame.surfarray.array3d(frame), (1, 0, 2))
-            else:
-                frame = np.asarray(frame)
-        except Exception:
-            frame = np.asarray(frame)
-
-    # If channel-first (C, H, W), move channels last
-    if (
-        isinstance(frame, np.ndarray)
-        and frame.ndim == 3
-        and frame.shape[0] in (1, 3, 4)
-        and frame.shape[0] < min(frame.shape[1], frame.shape[2])
-    ):
-        frame = np.moveaxis(frame, 0, -1)
-
-    # Ensure uint8 dtype
-    if frame.dtype != np.uint8:
-        frame = np.clip(frame, 0, 255).astype(np.uint8)
-
-    # Ensure proper shape (H, W, 1) for grayscale
-    if len(frame.shape) == 2:
-        frame = frame[..., np.newaxis]
-    elif len(frame.shape) == 3:
-        # Normalize channel count
-        if frame.shape[-1] == 4:
-            # Drop alpha if present
-            frame = frame[..., :3]
-        if frame.shape[-1] == 3:
-            # OPTIMIZATION: Use cv2.cvtColor for faster RGB to grayscale conversion
-            # This is ~2-3x faster than manual weighted sum
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            frame = frame[..., np.newaxis]
-        elif frame.shape[-1] != 1:
-            raise ValueError(f"Unexpected frame shape: {frame.shape}")
-
-    return frame
-
-
-def normalize_position(x: float, y: float) -> Tuple[float, float]:
-    """Normalize position coordinates to [-1, 1] range."""
-    return ((x / LEVEL_WIDTH) * 2 - 1, (y / LEVEL_HEIGHT) * 2 - 1)
-
-
-def normalize_velocity(vx: float, vy: float) -> Tuple[float, float]:
-    """Normalize velocity components to [-1, 1] range."""
-    return (np.clip(vx / MAX_HOR_SPEED, -1, 1), np.clip(vy / MAX_HOR_SPEED, -1, 1))
-
-
-def calculate_vector(
-    from_x: float, from_y: float, to_x: float, to_y: float
-) -> Tuple[float, float]:
-    """Calculate normalized vector between two points."""
-    dx = to_x - from_x
-    dy = to_y - from_y
-    magnitude = np.sqrt(dx * dx + dy * dy)
-    if magnitude == 0:
-        return (0.0, 0.0)
-    return (dx / magnitude, dy / magnitude)
-
-
 class ObservationProcessor:
-    """Processes raw game observations into frames and normalized feature vectors.
+    """Builds the Layer 1 observation dict from the raw environment output."""
 
-    Performance optimizations:
-    - Frame stabilization called once per observation (67% reduction from baseline)
-    - Augmentation validation can be disabled for ~12% performance boost
-    - Augmentation pipelines are cached via functools.lru_cache
-    """
+    # Layer 1 observation keys that `NppEnvironment._get_observation` may include.
+    # Anything outside this list is dropped from the policy-facing dict.
+    _LAYER1_PASSTHROUGH_KEYS = (
+        "tile_grid",
+        "entity_overlays",
+        "hazard_map",
+        "action_mask",
+        "duration_mask",
+    )
 
-    def __init__(
-        self,
-        enable_augmentation: bool = True,
-        augmentation_config: Dict[str, Any] = None,
-        training_mode: bool = True,
-        enable_visual_processing: bool = False,
-    ):
-        # OPTIMIZATION: Only enable augmentation during training
-        self.enable_augmentation = enable_augmentation and training_mode
-        self.training_mode = training_mode
-        self.enable_visual_processing = enable_visual_processing
-
-        # Set augmentation configuration optimized for platformer games
-        if (
-            augmentation_config is None
-            and enable_visual_processing
-            and not training_mode
-        ):
-            from .frame_augmentation import get_recommended_config
-
-            self.augmentation_config = get_recommended_config("mid")
-        else:
-            self.augmentation_config = augmentation_config
-
-        # Add disable_validation flag if not present (defaults based on training_mode)
-        if (
-            self.augmentation_config is not None
-            and "disable_validation" not in self.augmentation_config
-        ):
-            self.augmentation_config["disable_validation"] = training_mode
-
-        # MEMORY OPTIMIZATION: Pre-allocate reusable buffers to avoid repeated allocations
-        # These buffers are reused across observations to minimize memory churn
-        if self.enable_visual_processing:
-            self._player_frame_buffer = np.zeros(
-                (PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH, 1), dtype=np.uint8
-            )
-            self._global_view_buffer = np.zeros(
-                (RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1), dtype=np.uint8
-            )
-        else:
-            self._player_frame_buffer = None
-            self._global_view_buffer = None
-
+    def __init__(self) -> None:
+        # Pre-allocated buffer reused across observations to minimize churn.
         self._entity_positions_buffer = np.zeros(
             ENTITY_POSITIONS_SIZE, dtype=np.float32
         )
 
     def process_game_state(self, obs: Dict[str, Any]) -> np.ndarray:
-        """Process game state into enhanced normalized feature vector."""
-        # Extract the ninja state (GAME_STATE_CHANNELS features)
-        from .constants import GAME_STATE_CHANNELS
-
-        ninja_state = (
-            obs["game_state"][:GAME_STATE_CHANNELS]
-            if len(obs["game_state"]) >= GAME_STATE_CHANNELS
-            else obs["game_state"]
-        )
-        ninja_state = list(ninja_state)  # Convert to list for modification
-
-        # Convert back to numpy array
-        ninja_state = np.array(ninja_state, dtype=np.float32)
-
-        processed_state = ninja_state
-
-        # Ensure final state is float32
-        return processed_state.astype(np.float32)
-
-    def process_rendered_global_view(self, screen: np.ndarray) -> np.ndarray:
-        """Process the rendered screen into a downsampled global view.
-
-        Args:
-            screen (np.ndarray): The rendered screen image with shape (H, W, C) or (H, W)
-                Should already be stabilized by caller for performance.
-
-        Returns:
-            np.ndarray: Downsampled grayscale view with shape (RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1)
-            in the range 0-255
-        """
-        # Screen is already stabilized by caller - use directly
-
-        # Downsample using area interpolation for better quality
-        downsampled = cv2.resize(
-            screen,
-            (RENDERED_VIEW_WIDTH, RENDERED_VIEW_HEIGHT),
-            interpolation=cv2.INTER_AREA,
-        )
-
-        # Ensure we have a channel dimension
-        if len(downsampled.shape) == 2:
-            downsampled = downsampled[..., np.newaxis]
-
-        return downsampled
+        """Extract and normalize the ninja state vector (GAME_STATE_CHANNELS)."""
+        raw = obs["game_state"]
+        ninja_state = raw[:GAME_STATE_CHANNELS] if len(raw) >= GAME_STATE_CHANNELS else raw
+        return np.asarray(ninja_state, dtype=np.float32)
 
     def process_observation(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
-        """Process observation into player frame, global view, and feature vectors.
+        """Reduce the raw observation dict to the Layer 1 policy contract.
 
-        MEMORY OPTIMIZED: Reuses pre-allocated buffers to minimize allocations.
-
-        When 'screen' key is missing, skips all visual processing entirely.
-        Graph + state + reachability contain all necessary information.
+        Returns a dict containing `game_state`, `entity_positions` (internal only)
+        plus whichever Layer 1 keys the environment produced.
         """
-        # Extract entity positions from raw observation
-        # Normalize positions to [0, 1] range based on level dimensions
+        # Normalize entity positions to [0, 1] for internal bookkeeping.
         ninja_x_norm = obs["player_x"] / LEVEL_WIDTH
         ninja_y_norm = obs["player_y"] / LEVEL_HEIGHT
         switch_x_norm = obs["switch_x"] / LEVEL_WIDTH
@@ -267,7 +75,6 @@ class ObservationProcessor:
         exit_x_norm = obs["exit_door_x"] / LEVEL_WIDTH
         exit_y_norm = obs["exit_door_y"] / LEVEL_HEIGHT
 
-        # Reuse buffer: [ninja_x, ninja_y, switch_x, switch_y, exit_x, exit_y]
         self._entity_positions_buffer[NINJA_POS_IDX : NINJA_POS_IDX + 2] = [
             ninja_x_norm,
             ninja_y_norm,
@@ -280,94 +87,14 @@ class ObservationProcessor:
             exit_x_norm,
             exit_y_norm,
         ]
-
         entity_positions = np.array(self._entity_positions_buffer, copy=True)
 
-        game_state = self.process_game_state(obs)
-
-        # Skip all visual processing if screen not in observation
-        # This enables maximum performance when graph+state+reachability are sufficient
-        if not self.enable_visual_processing:
-            result = {
-                "game_state": game_state,
-                "entity_positions": entity_positions,
-            }
-
-            # Pass through additional keys that don't need processing
-            passthrough_keys = [
-                "action_mask",
-                "duration_mask",
-                # Graph observations (GCN-optimized: only what GCN needs)
-                "graph_num_nodes",
-                "graph_num_edges",
-                "graph_node_feats",
-                "graph_edge_index",
-                "graph_node_mask",
-                "graph_edge_mask",
-                "reachability_features",
-                "switch_states",
-                # Spatial context (graph-free local geometry features)
-                "spatial_context",
-                # Position data (needed for waypoint extraction in replay processing)
-                "mine_sdf_features",
-                "mine_threat_map",
-                "player_x",
-                "player_y",
-                "switch_x",
-                "switch_y",
-                "exit_door_x",
-                "exit_door_y",
-                "switch_activated",
-                # Layer 1 structured observations (NPP-9)
-                "tile_grid",
-                "entity_overlays",
-            ]
-            for key in passthrough_keys:
-                if key in obs:
-                    result[key] = obs[key]
-
-            return result
-
-        # Original visual processing path for visual configs
-        # Ensure screen stability and consistent format
-        screen = stabilize_frame(obs["screen"])
-
-        # Process current frame using already grayscale screen
-        player_frame = self.frame_around_player(
-            screen, obs["player_x"], obs["player_y"]
-        )
-
-        # Ensure player_frame has shape (H, W, 1)
-        if len(player_frame.shape) == 2:
-            player_frame = player_frame[..., np.newaxis]
-
-        global_view = self.process_rendered_global_view(screen)
-
-        result = {
-            "game_state": game_state,
-            "global_view": global_view,
-            "reachability_features": obs["reachability_features"],
+        result: Dict[str, np.ndarray] = {
+            "game_state": self.process_game_state(obs),
             "entity_positions": entity_positions,
-            "player_frame": player_frame,
         }
 
-        # Pass through additional keys that don't need processing
-        passthrough_keys = [
-            "action_mask",
-            "duration_mask",
-            # Graph observations (GCN-optimized: only what GCN needs)
-            "graph_num_nodes",
-            "graph_num_edges",
-            "graph_node_feats",
-            "graph_edge_index",
-            "graph_node_mask",
-            "graph_edge_mask",
-            "mine_sdf_features",
-            "mine_threat_map",
-            # Spatial context (graph-free local geometry features)
-            "spatial_context",
-        ]
-        for key in passthrough_keys:
+        for key in self._LAYER1_PASSTHROUGH_KEYS:
             if key in obs:
                 result[key] = obs[key]
 
@@ -376,6 +103,3 @@ class ObservationProcessor:
     def reset(self) -> None:
         """Reset processor state and clear buffers."""
         self._entity_positions_buffer.fill(0)
-        if self.enable_visual_processing:
-            self._player_frame_buffer.fill(0)
-            self._global_view_buffer.fill(0)

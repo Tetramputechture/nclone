@@ -22,17 +22,12 @@ from ..graph.level_data import LevelData, extract_start_position_from_map_data
 from .constants import (
     GAME_STATE_CHANNELS,
     NUM_TILE_TYPES,
-    PLAYER_FRAME_WIDTH,
-    PLAYER_FRAME_HEIGHT,
-    RENDERED_VIEW_WIDTH,
-    RENDERED_VIEW_HEIGHT,
     LEVEL_WIDTH,
     LEVEL_HEIGHT,
-    FEATURES_PER_DOOR,
 )
 from .reward_calculation.main_reward_calculator import RewardCalculator
 from .reward_calculation.reward_config import RewardConfig
-from .entity_overlay_utils import compute_entity_overlays
+from .entity_overlay_utils import compute_entity_overlays, ENTITY_OVERLAY_CHANNELS
 from .observation_processor import ObservationProcessor
 from .profiling_mixin import ProfilingMixin
 from .truncation_checker import TruncationChecker
@@ -73,10 +68,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         eval_mode: bool = False,
         custom_map_path: Optional[str] = None,
         test_dataset_path: Optional[str] = None,
-        enable_augmentation: bool = True,
-        augmentation_config: Optional[Dict[str, Any]] = None,
         pbrs_gamma: float = PBRS_GAMMA,
-        enable_visual_observations: bool = False,
         enable_profiling: bool = False,
         reward_config: Optional[
             RewardConfig
@@ -115,11 +107,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             eval_mode: Use evaluation maps instead of training maps
             custom_map_path: Path to custom map file
             test_dataset_path: Path to test dataset directory for evaluation
-            enable_augmentation: Enable frame augmentation
-            augmentation_config: Augmentation configuration dictionary
             pbrs_gamma: PBRS discount factor
-            enable_visual_observations: If False, skip rendering and visual observation processing
-                (graph + state + reachability contain all necessary information)
             enable_profiling: Enable detailed performance profiling (~5% overhead)
             value_function_dir: Directory containing precomputed value functions (.npz files)
             use_precomputed_pbrs: If True, use precomputed value function instead of path-based PBRS
@@ -138,23 +126,21 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.custom_map_path = custom_map_path
         self.test_dataset_path = test_dataset_path
         self.eval_mode = eval_mode
-        self.enable_visual_observations = (
-            enable_visual_observations or render_mode == "human"
-        )
 
         # Cache for previous observation to avoid redundant computation
         self._prev_obs_cache = None
 
-        # Initialize core game interface
-        # Note: Grayscale rendering is automatic in headless mode (grayscale_array)
-        # Skip rendering entirely if visual observations disabled for maximum performance
+        # Initialize core game interface. Rendering (pygame + `render()`) is only
+        # required for human playback / video capture / debug overlays, never
+        # for the policy observation — which is structured tensors (tile_grid,
+        # entity_overlays, hazard_map, game_state) produced elsewhere.
         self.nplay_headless = NPlayHeadless(
             render_mode=render_mode,
             enable_animation=enable_animation,
             enable_logging=enable_logging,
             enable_debug_overlay=enable_debug_overlay,
             seed=seed,
-            enable_rendering=enable_visual_observations,
+            enable_rendering=(render_mode == "human"),
         )
 
         # Set environment reference in simulator for cache invalidation
@@ -172,9 +158,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._last_episode_reward = 0  # For reset validation
 
         # When True, skip the inner HWM/PBRS reward calculation entirely.
-        # Used by SACEnvironment, which has its own reward calculator and
-        # discards the inner reward. Avoids expensive A*/path-distance calls
-        # that would run every primitive frame for no benefit.
+        # Retained for offline dataset generation where only the raw obs is
+        # needed and reward is recomputed downstream. Avoids expensive
+        # A*/path-distance calls when they would be discarded anyway.
         self.skip_reward_calculation = False
 
         # Track last action for death context learning
@@ -321,14 +307,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     "This may cause validation failures and BFS fallbacks."
                 )
 
-        # Initialize observation processor with performance optimizations
-        # training_mode=True disables validation for ~12% performance boost
-        self.observation_processor = ObservationProcessor(
-            enable_augmentation=enable_augmentation,
-            augmentation_config=augmentation_config,
-            training_mode=not eval_mode,  # Disable validation in training mode
-            enable_visual_processing=enable_visual_observations,
-        )
+        # Layer 1 observation processor — structured tensors only, no visual processing.
+        self.observation_processor = ObservationProcessor()
 
         self.reward_calculator = RewardCalculator(
             reward_config=reward_config,
@@ -399,37 +379,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_door_switches: Optional[list] = None
         self._cached_toggle_mines: Optional[list] = None
         self._cached_tile_grid: Optional[np.ndarray] = None
-        self._cached_bounce_blocks: Optional[list] = None
-        self._cached_thwumps: Optional[list] = None
-        self._cached_launch_pads: Optional[list] = None
 
         # Load the initial map
         self.map_loader.load_map()
 
     def _build_base_observation_space(self) -> SpacesDict:
-        """Build the base observation space."""
-        obs_spaces = {}
+        """Build the base observation space (Layer 1 contract).
 
-        # Only include visual observation spaces if visual observations are enabled
-        if self.enable_visual_observations:
-            # Player-centered frame
-            obs_spaces["player_frame"] = box.Box(
-                low=0,
-                high=255,
-                shape=(
-                    PLAYER_FRAME_HEIGHT,
-                    PLAYER_FRAME_WIDTH,
-                    1,
-                ),
-                dtype=np.uint8,
-            )
-            # Global view frame
-            obs_spaces["global_view"] = box.Box(
-                low=0,
-                high=255,
-                shape=(RENDERED_VIEW_HEIGHT, RENDERED_VIEW_WIDTH, 1),
-                dtype=np.uint8,
-            )
+        Always exactly the four structured tensors plus masks. Visual
+        observations (`player_frame`, `global_view`, `screen`) are not part of
+        the policy observation.
+        """
+        obs_spaces = {}
 
         # Game state features (ninja state + entity states) - always available
         obs_spaces["game_state"] = box.Box(
@@ -465,7 +426,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         obs_spaces["entity_overlays"] = box.Box(
             low=0.0,
             high=1.0,
-            shape=(8, MAP_TILE_WIDTH, MAP_TILE_HEIGHT),
+            shape=(ENTITY_OVERLAY_CHANNELS, MAP_TILE_WIDTH, MAP_TILE_HEIGHT),
             dtype=np.float32,
         )
 
@@ -1366,39 +1327,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             obs["exit_door_y"] / LEVEL_HEIGHT
         )
 
-        # === REACHABILITY FEATURES ===
-        if "reachability_features" in obs:
-            reachability = obs["reachability_features"]
-            if isinstance(reachability, np.ndarray):
-                for i in range(len(reachability)):
-                    metrics[f"obs/reachability_features/feature_{i}"] = float(
-                        reachability[i]
-                    )
-
-        # === SWITCH STATES ===
-        # Log first door's features as example
-        if "switch_states" in obs:
-            switch_states = obs["switch_states"]
-            if isinstance(switch_states, np.ndarray) and len(switch_states) > 0:
-                # Log first door's features (5 features: switch_x, switch_y, door_x, door_y, collected)
-                for i in range(min(FEATURES_PER_DOOR, len(switch_states))):
-                    feature_names = [
-                        "switch_x_norm",
-                        "switch_y_norm",
-                        "door_x_norm",
-                        "door_y_norm",
-                        "collected",
-                    ]
-                    if i < len(feature_names):
-                        metrics[f"obs/switch_states/door_0_{feature_names[i]}"] = float(
-                            switch_states[i]
-                        )
-
         # === KEY PHYSICS STATE ===
         metrics["obs/physics/xspeed"] = float(obs["player_xspeed"])
         metrics["obs/physics/yspeed"] = float(obs["player_yspeed"])
         metrics["obs/switch_activated"] = float(obs["switch_activated"])
-        metrics["obs/time_remaining"] = float(obs["time_remaining"])
 
         return metrics
 
@@ -2033,11 +1965,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset observation processor
         self.observation_processor.reset()
 
-        # Reset spatial context cache (mine overlay position-based cache)
-        from .spatial_context import reset_mine_overlay_cache
-
-        reset_mine_overlay_cache()
-
         # Reset reward calculator
         self.reward_calculator.reset()
 
@@ -2158,9 +2085,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_door_switches = None
         self._cached_toggle_mines = None
         self._cached_tile_grid = None
-        self._cached_bounce_blocks = None
-        self._cached_thwumps = None
-        self._cached_launch_pads = None
 
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
@@ -3372,11 +3296,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             tile_data = self.nplay_headless.sim.get_tile_grid()
             self._cached_tile_grid = np.array(tile_data, dtype=np.int8).reshape(23, 42).T
 
-        if self._cached_bounce_blocks is None:
-            ed = self.nplay_headless.sim.entity_dic
-            self._cached_bounce_blocks = ed.get(EntityType.BOUNCE_BLOCK, [])
-            self._cached_thwumps = ed.get(EntityType.THWUMP, [])
-            self._cached_launch_pads = ed.get(EntityType.LAUNCH_PAD, [])
+        # NPP-38: launch pads, bounce blocks, and thwumps are out of scope for
+        # the Layer 1 toggle-mines chunk; their entity caches were removed.
 
         # Use cached static values (with fallback to fresh fetch if cache failed)
         switch_pos = self._cached_switch_pos
@@ -3460,9 +3381,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             exit_pos=exit_pos,
             deadly_mines=self._cached_toggle_mines or [],
             safe_mines=toggled_mines,
-            bounce_blocks=self._cached_bounce_blocks or [],
-            thwumps=self._cached_thwumps or [],
-            launch_pads=self._cached_launch_pads or [],
         )
 
         # Extract jump_duration_remaining from ninja_state (index 11, 0-indexed)
@@ -3520,11 +3438,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 duration_mask = obs["duration_mask"].copy()
                 duration_mask[0, 0] = 1
                 obs["duration_mask"] = duration_mask
-
-        # Only add screen if visual observations enabled
-        # When disabled, graph + state + reachability contain all necessary information
-        if self.enable_visual_observations:
-            obs["screen"] = self.render()
 
         # Cache the computed observation before returning
         self._cached_observation = obs
