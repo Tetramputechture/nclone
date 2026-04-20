@@ -19,6 +19,9 @@ from .map_jump_platforms import MapJumpPlatforms
 from .map_multi_chamber import MultiChamberGenerator
 from .map_single_chamber import SingleChamberGenerator
 from .map_corridors import MapCorridors
+from .map_basic_jump import MapBasicJump
+from .map_wall_jump import MapWallJump
+from .map_mine_path import MapMinePath
 from .generator_configs import GENERATOR_PRESETS
 
 
@@ -34,6 +37,9 @@ GENERATOR_REGISTRY: Dict[str, Type[Map]] = {
     "multi_chamber": MultiChamberGenerator,
     "single_chamber": SingleChamberGenerator,
     "corridors": MapCorridors,
+    "basic_jump": MapBasicJump,
+    "wall_jump": MapWallJump,
+    "mine_path": MapMinePath,
 }
 
 

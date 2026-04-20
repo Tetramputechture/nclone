@@ -174,6 +174,64 @@ class CorridorsConfig:
     max_mines: int = -1
 
 
+@dataclass
+class BasicJumpConfig:
+    """Configuration for the dedicated BASIC_JUMP generator.
+
+    Minimal single-chamber level with exactly one required jump-type
+    obstacle (gap, drop, or step-up). No mines, no slopes, no
+    wall-jump segments.
+    """
+
+    min_width: int = 12
+    max_width: int = 20
+    min_height: int = 5
+    max_height: int = 8
+    min_gap_width: int = 2
+    max_gap_width: int = 3
+    min_drop_height: int = 2
+    max_drop_height: int = 3
+    min_step_height: int = 1
+    max_step_height: int = 2
+    variant: str = "single_gap_flat"
+
+
+@dataclass
+class WallJumpConfig:
+    """Configuration for the dedicated WALL_JUMP generator.
+
+    Clean narrow vertical shaft with smooth parallel walls. No mines,
+    no chaotic wall tiles. Optional single middle ledge for higher
+    tiers.
+    """
+
+    min_width: int = 2
+    max_width: int = 3
+    min_height: int = 8
+    max_height: int = 18
+    add_middle_ledge: bool = False
+    goal_position: str = "top"
+
+
+@dataclass
+class MinePathConfig:
+    """Configuration for the dedicated MINE_NAVIGATION generator.
+
+    Flat horizontal corridor with N toggle mines on the floor at a
+    parameterized minimum spacing. No walls, no slopes, no vertical
+    mechanics.
+    """
+
+    min_width: int = 10
+    max_width: int = 24
+    min_height: int = 3
+    max_height: int = 5
+    min_mine_count: int = 1
+    max_mine_count: int = 4
+    min_mine_spacing: int = 2
+    spawn_buffer_tiles: int = 2
+
+
 # Generator presets organized by difficulty
 GENERATOR_PRESETS = {
     "maze": {
@@ -676,7 +734,235 @@ GENERATOR_PRESETS = {
             add_mines=True,
         ),
     },
+    # ---- Minimal per-mechanic presets (driven by BUCKET_CATALOG) --------
+    "basic_jump": {
+        # Tier 1: tiny chamber, smallest possible gap. Single-jump baseline.
+        "single_gap_flat_t1": BasicJumpConfig(
+            min_width=10,
+            max_width=14,
+            min_height=5,
+            max_height=6,
+            min_gap_width=2,
+            max_gap_width=2,
+            variant="single_gap_flat",
+        ),
+        # Tier 2: a one-tile step up and a short drop variant introduce
+        # height change without additional mechanics.
+        "single_step_up_t2": BasicJumpConfig(
+            min_width=12,
+            max_width=16,
+            min_height=6,
+            max_height=8,
+            min_step_height=1,
+            max_step_height=1,
+            variant="single_step_up",
+        ),
+        "single_drop_t2": BasicJumpConfig(
+            min_width=12,
+            max_width=16,
+            min_height=6,
+            max_height=8,
+            min_drop_height=2,
+            max_drop_height=2,
+            variant="single_drop",
+        ),
+        # Tier 3: wider chamber, bigger gap, two-tile step-ups.
+        "single_gap_flat_t3": BasicJumpConfig(
+            min_width=14,
+            max_width=18,
+            min_height=6,
+            max_height=8,
+            min_gap_width=3,
+            max_gap_width=3,
+            variant="single_gap_flat",
+        ),
+        "single_step_up_t3": BasicJumpConfig(
+            min_width=14,
+            max_width=18,
+            min_height=6,
+            max_height=8,
+            min_step_height=2,
+            max_step_height=2,
+            variant="single_step_up",
+        ),
+        # Tier 4: double-gap forces two precisely-spaced jumps in a row.
+        "double_gap_t4": BasicJumpConfig(
+            min_width=18,
+            max_width=24,
+            min_height=7,
+            max_height=9,
+            min_gap_width=2,
+            max_gap_width=3,
+            variant="double_gap",
+        ),
+    },
+    "wall_jump": {
+        # Tier 1: short shaft, 2-tile wide, goal always at the top.
+        "shaft_short_t1": WallJumpConfig(
+            min_width=2,
+            max_width=2,
+            min_height=8,
+            max_height=10,
+            add_middle_ledge=False,
+            goal_position="top",
+        ),
+        # Tier 2: medium shaft; ninja still ascends.
+        "shaft_medium_t2": WallJumpConfig(
+            min_width=2,
+            max_width=3,
+            min_height=10,
+            max_height=14,
+            add_middle_ledge=False,
+            goal_position="top",
+        ),
+        # Tier 3: tall shaft, goal direction randomized per level.
+        "shaft_tall_t3": WallJumpConfig(
+            min_width=2,
+            max_width=3,
+            min_height=14,
+            max_height=18,
+            add_middle_ledge=False,
+            goal_position="random",
+        ),
+        # Tier 4: tall shaft with one ledge break to vary rhythm.
+        "shaft_tall_ledge_t4": WallJumpConfig(
+            min_width=2,
+            max_width=3,
+            min_height=14,
+            max_height=18,
+            add_middle_ledge=True,
+            goal_position="random",
+        ),
+    },
+    "mine_path": {
+        # Tier 1: short corridor, single mine.
+        "flat_one_mine_t1": MinePathConfig(
+            min_width=10,
+            max_width=14,
+            min_height=3,
+            max_height=4,
+            min_mine_count=1,
+            max_mine_count=1,
+            min_mine_spacing=2,
+        ),
+        # Tier 2: short corridor, 1-2 mines.
+        "flat_few_mines_t2": MinePathConfig(
+            min_width=12,
+            max_width=16,
+            min_height=3,
+            max_height=4,
+            min_mine_count=1,
+            max_mine_count=2,
+            min_mine_spacing=2,
+        ),
+        # Tier 3: medium corridor, 2-3 mines.
+        "flat_mines_t3": MinePathConfig(
+            min_width=16,
+            max_width=20,
+            min_height=3,
+            max_height=5,
+            min_mine_count=2,
+            max_mine_count=3,
+            min_mine_spacing=2,
+        ),
+        # Tier 4: long corridor, up to 4 mines, tighter spacing.
+        "flat_mines_t4": MinePathConfig(
+            min_width=20,
+            max_width=24,
+            min_height=3,
+            max_height=5,
+            min_mine_count=3,
+            max_mine_count=4,
+            min_mine_spacing=2,
+        ),
+    },
 }
+
+
+# -------------------------------------------------------------------------
+# Minimal FLAT_RUN bucket presets on existing generators.
+#
+# The FLAT_RUN bucket reuses existing generators (horizontal_corridor and
+# single_chamber) because they are already clean enough when the right
+# knobs are cleared. We add explicit per-tier presets here to keep the
+# bucket catalog declarative.
+# -------------------------------------------------------------------------
+GENERATOR_PRESETS["horizontal_corridor"].update(
+    {
+        "flat_run_t1": HorizontalCorridorConfig(
+            min_width=4,
+            max_width=8,
+            min_height=1,
+            max_height=2,
+            random_edge_tiles=False,
+            add_mines=False,
+        ),
+        "flat_run_t2": HorizontalCorridorConfig(
+            min_width=6,
+            max_width=12,
+            min_height=1,
+            max_height=3,
+            random_edge_tiles=False,
+            add_mines=False,
+        ),
+        "flat_run_t3": HorizontalCorridorConfig(
+            min_width=10,
+            max_width=18,
+            min_height=1,
+            max_height=3,
+            random_edge_tiles=False,
+            add_mines=False,
+        ),
+        "flat_run_t4": HorizontalCorridorConfig(
+            min_width=14,
+            max_width=23,
+            min_height=1,
+            max_height=4,
+            random_edge_tiles=False,
+            add_mines=False,
+        ),
+    }
+)
+GENERATOR_PRESETS["single_chamber"].update(
+    {
+        "flat_run_t1": SingleChamberConfig(
+            min_width=6,
+            max_width=10,
+            min_height=4,
+            max_height=6,
+            global_max_up_deviation=0,
+            global_max_down_deviation=0,
+            add_center_obstacle=False,
+            add_floor_mines=False,
+            add_platform_gap=False,
+            add_ceiling_obstacles=False,
+        ),
+        "flat_run_t2": SingleChamberConfig(
+            min_width=8,
+            max_width=14,
+            min_height=4,
+            max_height=6,
+            global_max_up_deviation=0,
+            global_max_down_deviation=0,
+        ),
+        "flat_run_t3": SingleChamberConfig(
+            min_width=12,
+            max_width=18,
+            min_height=4,
+            max_height=6,
+            global_max_up_deviation=0,
+            global_max_down_deviation=0,
+        ),
+        "flat_run_t4": SingleChamberConfig(
+            min_width=16,
+            max_width=24,
+            min_height=4,
+            max_height=7,
+            global_max_up_deviation=0,
+            global_max_down_deviation=0,
+        ),
+    }
+)
 
 
 @dataclass
@@ -833,3 +1119,120 @@ def get_category_config(name: str) -> CategoryConfig:
     if name not in CATEGORIES:
         raise ValueError(f"Unknown category: {name}. Available: {get_category_names()}")
     return CATEGORIES[name]
+
+
+# =========================================================================
+# BUCKET_CATALOG: mechanic-primary procedural benchmark taxonomy.
+#
+# Maps each mechanic bucket to a dict of tier (1..4) -> list of
+# ``(generator_type, preset, weight)`` entries. Weights are relative
+# integers used for round-robin/weighted sampling inside a tier.
+#
+# The catalog drives ``scripts/generate_benchmark_dataset.py`` and is
+# additive alongside the legacy ``CATEGORIES`` taxonomy. Empty dicts
+# are placeholders for buckets that depend on entities outside Layer 1
+# scope (see ``docs/MECHANIC_SUPPORT_MATRIX.md``); they stay empty
+# until their generators come online.
+# =========================================================================
+
+BucketEntry = Tuple[str, str, int]
+BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
+    "FLAT_RUN": {
+        1: [
+            ("horizontal_corridor", "flat_run_t1", 1),
+            ("single_chamber", "flat_run_t1", 1),
+        ],
+        2: [
+            ("horizontal_corridor", "flat_run_t2", 1),
+            ("single_chamber", "flat_run_t2", 1),
+        ],
+        3: [
+            ("horizontal_corridor", "flat_run_t3", 1),
+            ("single_chamber", "flat_run_t3", 1),
+        ],
+        4: [
+            ("horizontal_corridor", "flat_run_t4", 1),
+            ("single_chamber", "flat_run_t4", 1),
+        ],
+    },
+    "BASIC_JUMP": {
+        1: [("basic_jump", "single_gap_flat_t1", 1)],
+        2: [
+            ("basic_jump", "single_drop_t2", 1),
+            ("basic_jump", "single_step_up_t2", 1),
+        ],
+        3: [
+            ("basic_jump", "single_gap_flat_t3", 1),
+            ("basic_jump", "single_step_up_t3", 1),
+        ],
+        4: [("basic_jump", "double_gap_t4", 1)],
+    },
+    "WALL_JUMP": {
+        1: [("wall_jump", "shaft_short_t1", 1)],
+        2: [("wall_jump", "shaft_medium_t2", 1)],
+        3: [("wall_jump", "shaft_tall_t3", 1)],
+        4: [("wall_jump", "shaft_tall_ledge_t4", 1)],
+    },
+    "MINE_NAVIGATION": {
+        1: [("mine_path", "flat_one_mine_t1", 1)],
+        2: [("mine_path", "flat_few_mines_t2", 1)],
+        3: [("mine_path", "flat_mines_t3", 1)],
+        4: [("mine_path", "flat_mines_t4", 1)],
+    },
+    # Out-of-scope buckets (empty until Layer 2+ generators exist).
+    "SLOPES": {},
+    "SWITCH_PUZZLE": {},
+    "LAUNCH_PAD": {},
+    "THWUMP": {},
+    "DRONE": {},
+    "DEATH_BALL": {},
+}
+
+
+# Phase-1 (toggle-mines only) in-scope buckets, in canonical order.
+PHASE_1_BUCKETS: List[str] = [
+    "FLAT_RUN",
+    "BASIC_JUMP",
+    "WALL_JUMP",
+    "MINE_NAVIGATION",
+]
+
+BUCKET_TIERS: List[int] = [1, 2, 3, 4]
+
+
+def get_bucket_names(include_empty: bool = True) -> List[str]:
+    """Return all bucket names declared in ``BUCKET_CATALOG``."""
+    if include_empty:
+        return list(BUCKET_CATALOG.keys())
+    return [b for b, tiers in BUCKET_CATALOG.items() if tiers]
+
+
+def get_bucket_entries(bucket: str, tier: int) -> List[BucketEntry]:
+    """Return catalog entries for a given bucket/tier (empty list if unset)."""
+    return BUCKET_CATALOG.get(bucket, {}).get(tier, [])
+
+
+def validate_bucket_catalog() -> List[str]:
+    """Check every non-empty bucket entry points to a valid preset.
+
+    Returns a list of human-readable error strings; empty if the catalog
+    is consistent with ``GENERATOR_PRESETS``.
+    """
+    errors: List[str] = []
+    for bucket, tiers in BUCKET_CATALOG.items():
+        for tier, entries in tiers.items():
+            for gen_type, preset, weight in entries:
+                if weight <= 0:
+                    errors.append(
+                        f"{bucket}/T{tier}: entry {gen_type}:{preset} has non-positive weight {weight}"
+                    )
+                if gen_type not in GENERATOR_PRESETS:
+                    errors.append(
+                        f"{bucket}/T{tier}: generator {gen_type!r} not in GENERATOR_PRESETS"
+                    )
+                    continue
+                if preset not in GENERATOR_PRESETS[gen_type]:
+                    errors.append(
+                        f"{bucket}/T{tier}: preset {gen_type}:{preset!r} not defined"
+                    )
+    return errors
