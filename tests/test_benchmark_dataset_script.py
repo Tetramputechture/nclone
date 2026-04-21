@@ -187,3 +187,16 @@ def test_smoke_layout_is_by_bucket_then_tier(smoke_dataset):
             assert bucket in PHASE_1_BUCKETS
             assert tier_dir.startswith("T") and tier_dir[1:].isdigit()
             assert fname.endswith(".pkl")
+
+
+def test_mechanic_benchmark_loader_reads_smoke_dataset(smoke_dataset):
+    """``MechanicBenchmarkLoader`` matches on-disk layout (used by test_environment)."""
+    from nclone.evaluation.mechanic_benchmark_loader import MechanicBenchmarkLoader
+
+    loader = MechanicBenchmarkLoader(smoke_dataset, splits=("train", "test"))
+    assert len(loader) > 0
+    payload = loader.load_payload(0)
+    assert "map_data" in payload and len(payload["map_data"]) >= MAP_DATA_MIN_LEN
+    lines = MechanicBenchmarkLoader.overlay_lines(payload, 0, len(loader))
+    assert any("[benchmark]" in line for line in lines)
+    assert payload.get("bucket") in PHASE_1_BUCKETS

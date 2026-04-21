@@ -1,5 +1,6 @@
 """Performance profiling mixin for environment bottleneck analysis."""
 
+import math
 import time
 from collections import defaultdict, deque
 from typing import Dict, Optional
@@ -9,11 +10,17 @@ import numpy as np
 class ProfilingMixin:
     """Mixin for detailed environment performance profiling."""
     
-    def _init_profiling(self, profile_enabled: bool = False):
+    def _init_profiling(
+        self,
+        profile_enabled: bool = False,
+        console_report_interval: Optional[float] = None,
+    ):
         """Initialize profiling system.
         
         Args:
             profile_enabled: Enable detailed profiling (adds ~5% overhead)
+            console_report_interval: Seconds between stdout reports; ``None`` uses
+                10.0. ``<= 0`` disables periodic printing (data still collected).
         """
         self.profile_enabled = profile_enabled
 
@@ -33,7 +40,12 @@ class ProfilingMixin:
         # Step breakdown tracking
         self._step_start_time = 0.0
         self._last_report_time = time.time()
-        self._report_interval = 10.0  # Report every 10 seconds
+        if console_report_interval is None:
+            self._report_interval = 10.0
+        elif console_report_interval <= 0:
+            self._report_interval = math.inf  # never print from _profile_end
+        else:
+            self._report_interval = float(console_report_interval)
     
     def _profile_start(self, key: str) -> float:
         """Start timing a section.
@@ -64,7 +76,9 @@ class ProfilingMixin:
         
         # Check if it's time to report
         current_time = time.time()
-        if current_time - self._last_report_time >= self._report_interval:
+        if self._report_interval < math.inf and (
+            current_time - self._last_report_time >= self._report_interval
+        ):
             self._print_profiling_report()
             self._last_report_time = current_time
     
@@ -92,10 +106,19 @@ class ProfilingMixin:
         # Hierarchical component structure
         components = [
             ("step_total", "TOTAL STEP", 0),
+            ("physics_loop", "  └─ Physics + primitive PBRS (frame_skip loop)", 1),
             ("physics_total", "  └─ Physics (tick+sync)", 1),
             ("sync_get_state", "       ├─ sync: get_state FFI", 2),
             ("sync_build_tile", "       └─ sync: build_tile_dic (cached)", 2),
-            ("observation_get", "  └─ Get observation", 1),
+            ("observation_get", "  └─ Get observation (total)", 1),
+            ("obs_super_layers", "       ├─ N++ layers on base obs (super)", 2),
+            ("obs_base_prep", "       ├─ Base: caches + state before overlays", 2),
+            ("obs_entity_overlays", "       ├─ Base: entity_overlays (Python)", 2),
+            ("obs_action_masks", "       ├─ Base: action/duration masks + path", 2),
+            ("obs_npp_physics_derived", "       ├─ Npp: physics-derived game_state", 2),
+            ("obs_npp_path_dist", "       ├─ Npp: path-distance / reachability cache", 2),
+            ("obs_npp_switch_adj", "       ├─ Npp: switch states + adjacency", 2),
+            ("obs_npp_hazard", "       ├─ Npp: hazard_map (Rust SDF)", 2),
             ("obs_base", "       ├─ Base observation", 2),
             ("obs_reachability", "       ├─ Reachability features", 2),
             ("reach_features", "       │    └─ Feature computation", 3),
@@ -108,7 +131,7 @@ class ProfilingMixin:
             ("obs_privileged", "       ├─ Privileged features", 2),
             ("obs_ninja_node", "       └─ Ninja node lookup", 2),
             ("reward_calc", "  └─ Reward calculation", 1),
-            ("observation_process", "  └─ Process observation", 1),
+            ("observation_process", "  └─ Process observation (tensor layout)", 1),
             ("info_build", "  └─ Build episode info", 1),
             ("graph_check", "  └─ Graph should_update check", 1),
             ("graph_build", "  └─ Graph build (if updated)", 1),

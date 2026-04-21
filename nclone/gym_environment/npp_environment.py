@@ -12,7 +12,7 @@ from gymnasium.spaces import box, Dict as SpacesDict
 from typing import Dict, Any, Optional, Tuple
 
 
-from ..constants import MAP_TILE_WIDTH
+from ..constants import MAP_TILE_HEIGHT, MAP_TILE_WIDTH
 from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 from .constants import (
     GAME_STATE_CHANNELS,
@@ -78,7 +78,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             value_function_dir=self.config.pbrs.value_function_dir,
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
+            defer_initial_map_load=self.config.defer_initial_map_load,
             enable_profiling=self.config.enable_profiling,
+            profiling_console_interval=self.config.profiling_console_interval,
             reward_config=self.config.reward_config,
             frame_skip=self.config.frame_skip,
             shared_level_cache=self.config.shared_level_cache,
@@ -429,11 +431,17 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         skip_map_load = False
         new_level = False  # True if a different level was loaded externally
         map_name = None
+        option_map_data = None
         if options is not None and isinstance(options, dict):
             skip_map_load = options.get("skip_map_load", False)
             # When skip_map_load=True, assume new level unless explicitly told otherwise
             new_level = options.get("new_level", skip_map_load)
             map_name = options.get("map_name", None)
+            option_map_data = options.get("map_data", None)
+            if option_map_data is not None:
+                # Explicit payload-driven load: force the standard (non-fast)
+                # reset path so caches get cleared and the new map sticks.
+                new_level = True
 
         # === FAST RESET PATH (2-3x faster for single-level training) ===
         # Use fast reset when:
@@ -643,7 +651,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 self.goal_curriculum_manager.state.unified_stage
             )
 
-        if not skip_map_load:
+        if option_map_data is not None:
+            # Benchmark-driven training / eval: the level payload is supplied
+            # directly via reset options. Bypass every dataset / curriculum
+            # map-selection branch and load the payload.
+            effective_name = map_name if map_name is not None else "benchmark_level"
+            self.map_loader.load_map_data(option_map_data, str(effective_name))
+            use_curriculum_map_cache = False
+        elif not skip_map_load:
             # Check if we have pre-cached curriculum map data
             use_curriculum_map_cache = (
                 self.goal_curriculum_manager is not None
@@ -1284,8 +1299,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
-        # Get base observation
+        t_sup = self._profile_start("obs_super_layers")
         obs = super()._get_observation()
+        self._profile_end("obs_super_layers", t_sup)
 
         from .constants import NINJA_STATE_DIM, PHYSICS_DERIVED_DIM
 
@@ -1295,9 +1311,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._game_state_buffer[:NINJA_STATE_DIM] = base_game_state[:NINJA_STATE_DIM]
 
         # Append physics-derived features: horizontal_range, max_jump_height, time_to_ground
+        t_phys = self._profile_start("obs_npp_physics_derived")
         self._game_state_buffer[
             NINJA_STATE_DIM : NINJA_STATE_DIM + PHYSICS_DERIVED_DIM
         ] = self._compute_physics_derived_features()
+        self._profile_end("obs_npp_physics_derived", t_phys)
 
         # L1.4: phase indicator for policy (same source as obs["switch_activated"])
         self._game_state_buffer[GAME_STATE_SWITCH_ACTIVATED_IDX] = float(
@@ -1310,7 +1328,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # vector is discarded; only `_cached_switch_distance` / `_cached_exit_distance`
         # (set as a side-effect of `_compute_reachability`) matter for the reward
         # path. These are not exposed to the policy.
+        t_path = self._profile_start("obs_npp_path_dist")
         self._update_path_distance_cache()
+        self._profile_end("obs_npp_path_dist", t_path)
         if hasattr(self, "_cached_switch_distance"):
             obs["_cached_switch_distance"] = self._cached_switch_distance
         if hasattr(self, "_cached_exit_distance"):
@@ -1319,6 +1339,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Extract locked door switch states from environment — kept internally
         # for the reward path even though `switch_states` is no longer in the
         # policy obs dict.
+        t_sa = self._profile_start("obs_npp_switch_adj")
         switch_states_dict = self._get_switch_states_from_env()
         if hasattr(self, "level_data") and self.level_data is not None:
             self.level_data.switch_states = switch_states_dict
@@ -1332,8 +1353,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             raise RuntimeError("Adjacency graph not available. Graph building failed.")
         obs["_adjacency_graph"] = adjacency
         obs["_graph_data"] = self.current_graph_data
+        self._profile_end("obs_npp_switch_adj", t_sa)
 
+        t_haz = self._profile_start("obs_npp_hazard")
         obs["hazard_map"] = self._compute_hazard_map()
+        self._profile_end("obs_npp_hazard", t_haz)
 
         # Return full observation - conversion to Layer 1 dict happens in
         # _process_observation(). This ensures the reward calculator has

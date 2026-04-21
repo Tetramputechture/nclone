@@ -84,6 +84,59 @@ def _circle_overlaps_tile_rect(
     return dx * dx + dy * dy <= radius * radius
 
 
+def _inner_tile_bounds_for_kill_zone(
+    cx: float, cy: float, radius: float
+) -> Tuple[int, int, int, int]:
+    """Inclusive inner-tile index bounds that may intersect the mine kill-zone circle.
+
+    The naive implementation iterated all ``MAP_TILE_WIDTH * MAP_TILE_HEIGHT`` tiles
+    per mine (very slow in Python). The circle radius is small relative to the map,
+    so we only need a local neighborhood (~few tiles per axis). We derive bounds
+    from the circle's pixel AABB (same as ``_px_to_inner_tile`` on corners) and
+    pad by one tile so edge cases stay bit-identical to the full-grid reference.
+    """
+    ts = float(TILE_PIXEL_SIZE)
+    min_px = cx - radius
+    max_px = cx + radius
+    min_py = cy - radius
+    max_py = cy + radius
+    # Match ``_px_to_inner_tile`` for positive coordinates (playable area).
+    tx_lo = int(min_px / ts) - 1
+    tx_hi = int(max_px / ts) - 1
+    ty_lo = int(min_py / ts) - 1
+    ty_hi = int(max_py / ts) - 1
+    tx_lo -= 1
+    tx_hi += 1
+    ty_lo -= 1
+    ty_hi += 1
+    if tx_lo > tx_hi or ty_lo > ty_hi:
+        return 0, -1, 0, -1
+    tx_min = max(0, min(tx_lo, tx_hi))
+    tx_max = min(MAP_TILE_WIDTH - 1, max(tx_lo, tx_hi))
+    ty_min = max(0, min(ty_lo, ty_hi))
+    ty_max = min(MAP_TILE_HEIGHT - 1, max(ty_lo, ty_hi))
+    return tx_min, tx_max, ty_min, ty_max
+
+
+def _accumulate_mine_density(
+    mines: Sequence[Any],
+    out: np.ndarray,
+) -> None:
+    """Fill ``out`` with mine counts / ``MINE_DENSITY_NORMALIZER``, clamped to [0, 1]."""
+    counts = np.zeros((MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.int32)
+    r = MINE_KILL_ZONE_RADIUS_PX
+    for m in mines:
+        mx, my = _entity_pixel_xy(m)
+        tx_min, tx_max, ty_min, ty_max = _inner_tile_bounds_for_kill_zone(mx, my, r)
+        if tx_min > tx_max or ty_min > ty_max:
+            continue
+        for tx in range(tx_min, tx_max + 1):
+            for ty in range(ty_min, ty_max + 1):
+                if _circle_overlaps_tile_rect(mx, my, r, tx, ty):
+                    counts[tx, ty] += 1
+    out[:] = np.minimum(counts.astype(np.float32) / MINE_DENSITY_NORMALIZER, 1.0)
+
+
 def compute_entity_overlays(
     ninja_pos: Tuple[float, float],
     switch_pos: Optional[Tuple[float, float]],
@@ -129,30 +182,7 @@ def compute_entity_overlays(
         etx, ety = _px_to_inner_tile(ex, ey)
         overlays[ENTITY_OVERLAY_CH_EXIT, etx, ety] = 1.0
 
-    for ty in range(MAP_TILE_HEIGHT):
-        for tx in range(MAP_TILE_WIDTH):
-            deadly_count = 0
-            for m in deadly_mines:
-                mx, my = _entity_pixel_xy(m)
-                if _circle_overlaps_tile_rect(
-                    mx, my, MINE_KILL_ZONE_RADIUS_PX, tx, ty
-                ):
-                    deadly_count += 1
-            overlays[ENTITY_OVERLAY_CH_MINE_DEADLY, tx, ty] = min(
-                1.0, float(deadly_count) / MINE_DENSITY_NORMALIZER
-            )
-
-    for ty in range(MAP_TILE_HEIGHT):
-        for tx in range(MAP_TILE_WIDTH):
-            safe_count = 0
-            for m in safe_mines:
-                mx, my = _entity_pixel_xy(m)
-                if _circle_overlaps_tile_rect(
-                    mx, my, MINE_KILL_ZONE_RADIUS_PX, tx, ty
-                ):
-                    safe_count += 1
-            overlays[ENTITY_OVERLAY_CH_MINE_SAFE, tx, ty] = min(
-                1.0, float(safe_count) / MINE_DENSITY_NORMALIZER
-            )
+    _accumulate_mine_density(deadly_mines, overlays[ENTITY_OVERLAY_CH_MINE_DEADLY])
+    _accumulate_mine_density(safe_mines, overlays[ENTITY_OVERLAY_CH_MINE_SAFE])
 
     return overlays

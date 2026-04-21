@@ -42,6 +42,14 @@ class RewardConfig:
     _curriculum_stage: int = 0
     _num_curriculum_stages: int = 1
 
+    # --- NPP-14 / NPP-45: BSRS blend with HWM (A* distance surrogate) ---
+    # When enable_bsrs_blend is True, HWM dense shaping is scaled by beta_blend(timesteps)
+    # and the trainer adds (1-beta) * eta_bsrs * (gamma * V(s') - V(s)) on each step.
+    enable_bsrs_blend: bool = False
+    eta_bsrs: float = 0.005  # Theorem-compatible with gamma=0.99: (1-gamma)/(1+gamma) ≈ 0.005025
+    bsrs_gamma: float = 0.99  # Must match PPO gamma; used in BSRS term only
+    bsrs_blend_horizon_fraction: float = 0.7  # beta goes 1→0 linearly over this fraction of total_timesteps
+
     SUCCESS_THRESHOLD_MID: float = 0.15
     SUCCESS_THRESHOLD_LATE: float = 0.40
 
@@ -230,6 +238,23 @@ class RewardConfig:
         self.current_timesteps = timesteps
         self.recent_success_rate = success_rate
 
+    def sync_training_timesteps(self, timesteps: int) -> None:
+        """Sync global training timestep counter (for beta_blend) without success-rate churn."""
+        self.current_timesteps = int(timesteps)
+
+    def beta_blend(self) -> float:
+        """Anneal A* (HWM) weight vs BSRS: 1.0 early → 0.0 after horizon fraction of training.
+
+        Returns 1.0 when BSRS blend is disabled (full HWM scale).
+        """
+        if not self.enable_bsrs_blend:
+            return 1.0
+        horizon = max(int(self.total_timesteps * self.bsrs_blend_horizon_fraction), 1)
+        t = int(self.current_timesteps)
+        if t >= horizon:
+            return 0.0
+        return 1.0 - (float(t) / float(horizon))
+
     def get_active_components(self) -> Dict[str, Any]:
         """Get current state of all reward components for logging."""
         return {
@@ -243,6 +268,10 @@ class RewardConfig:
             "entropy_coefficient": self.entropy_coefficient,
             "action_masking_mode": self.action_masking_mode,
             "logit_bias_strength": self.logit_bias_strength,
+            "enable_bsrs_blend": self.enable_bsrs_blend,
+            "eta_bsrs": self.eta_bsrs,
+            "bsrs_gamma": self.bsrs_gamma,
+            "beta_blend": self.beta_blend(),
         }
 
     def __str__(self) -> str:

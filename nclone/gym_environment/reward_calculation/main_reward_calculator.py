@@ -239,7 +239,10 @@ class RewardCalculator:
             dist_exit=dist_exit,
             switch_activated=switch_activated,
         )
-        hwm_reward = self.config.hwm_alpha * hwm_progress
+        # NPP-14: when BSRS blend is on, scale HWM by beta so total dense signal is
+        # beta * HWM (env) + (1-beta) * eta * (gamma V' - V) (trainer, MaskedPPO).
+        beta_hwm = self.config.beta_blend()
+        hwm_reward = self.config.hwm_alpha * hwm_progress * beta_hwm
         reward += hwm_reward
 
         # Time penalty: small per-step cost to discourage aimless backtracking.
@@ -312,6 +315,7 @@ class RewardCalculator:
         self.last_pbrs_components = {
             "hwm_reward": hwm_reward,
             "hwm_progress": hwm_progress,
+            "beta_blend_hwm": beta_hwm,
             "total_reward": reward,
             "scaled_reward": scaled,
             "is_terminal": truncated,
@@ -333,8 +337,22 @@ class RewardCalculator:
     ) -> Tuple[float, float]:
         """Get A* path distances to switch and exit.
 
-        Reuses existing path calculator infrastructure. Tries cached values first.
+        Prefer distances from the observation dict when present (NppEnvironment
+        computes them in ``_compute_reachability`` using the env's path calculator).
+        The reward calculator holds a *separate* ``CachedPathDistanceCalculator``;
+        skipping duplicate ``get_path_cost`` calls removes two hot-path A* lookups per step.
         """
+        # Fast path: obs/reward sharing (see NppEnvironment._get_observation)
+        cs = obs.get("_cached_switch_distance")
+        ce = obs.get("_cached_exit_distance")
+        if cs is not None and ce is not None:
+            dist_switch = float(cs)
+            dist_exit = float(ce)
+            obs["_pbrs_last_distance_to_goal"] = (
+                dist_switch if not obs.get("switch_activated", False) else dist_exit
+            )
+            return dist_switch, dist_exit
+
         adjacency = obs.get("_adjacency_graph")
         level_data = obs.get("level_data")
         graph_data = obs.get("_graph_data")

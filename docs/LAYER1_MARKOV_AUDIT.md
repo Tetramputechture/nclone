@@ -2,7 +2,7 @@
 
 **Issue:** [NPP-42](https://linear.app/npp-rl/issue/NPP-42/new-d-observation-completeness-audit-toggle-mines-markov-gate)
 **Scope:** Layer 1, toggle-mines-only (no launch pads, bounce blocks, thwumps, drones, death balls, one-way platforms, doors, moving platforms).
-**Status:** Draft sign-off for in-chunk consumers (NPP-38, NPP-15, NPP-16, NPP-21).
+**Status:** Signed off (2026-04-20) for the toggle-mines Layer 1 chunk — consumers: NPP-38, NPP-15, NPP-16, NPP-21.
 
 Companion to [MECHANIC_SUPPORT_MATRIX.md](MECHANIC_SUPPORT_MATRIX.md) (row-level in-scope / waived column).
 

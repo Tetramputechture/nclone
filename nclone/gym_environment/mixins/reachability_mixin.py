@@ -178,6 +178,13 @@ class ReachabilityMixin:
 
         # Compute all reachability features (22 dims)
         # Includes: 4 base + 2 path distances + 4 direction vectors + 2 mine context + 1 phase indicator + 8 path direction + 1 difficulty
+        reach_cfg = getattr(
+            getattr(self, "config", None), "reachability", None
+        )
+        include_navigation = bool(
+            reach_cfg is not None
+            and getattr(reach_cfg, "compute_navigation_features", False)
+        )
         t_reach = self._profile_start("reach_features")
         features, switch_distance_raw, exit_distance_raw = (
             compute_reachability_features_from_graph(
@@ -187,6 +194,7 @@ class ReachabilityMixin:
                 ninja_pos,
                 self._path_calculator,
                 goal_positions=goal_positions,  # Pass pre-computed positions
+                include_navigation_features=include_navigation,
             )
         )
         self._profile_end("reach_features", t_reach)

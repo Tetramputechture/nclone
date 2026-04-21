@@ -73,6 +73,10 @@ class ReachabilityConfig:
     """Configuration for reachability analysis (reward-side only)."""
 
     debug: bool = False
+    # When True, compute full next-hop + directional-platform features (3–6) in
+    # ``compute_reachability_features_from_graph``. Layer 1 policy does not use
+    # them; default False saves several ms per step on reachability cache miss.
+    compute_navigation_features: bool = False
 
     def __post_init__(self):
         """Validate reachability configuration."""
@@ -95,10 +99,17 @@ class EnvironmentConfig:
     eval_mode: bool = False
     custom_map_path: Optional[str] = None
     test_dataset_path: Optional[str] = None  # Path to test dataset for evaluation
+    # When True, skip BaseNppEnvironment's initial ``load_map()``; the first level is
+    # supplied via ``reset(options={"map_data": ...})`` (benchmark / payload-driven).
+    defer_initial_map_load: bool = False
     enable_logging: bool = False
     enable_profiling: bool = (
         False  # Enable detailed performance profiling (~5% overhead)
     )
+    # Seconds between "ENVIRONMENT PROFILING REPORT" blocks on stdout; 0 disables
+    # printing (timings still recorded for get_profiling_summary). Use 0 for
+    # multi-worker runs to avoid interleaved garbage on the console.
+    profiling_console_interval: float = 10.0
 
     # Component configurations
     render: RenderConfig = field(default_factory=RenderConfig)

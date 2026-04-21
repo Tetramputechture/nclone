@@ -68,6 +68,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         eval_mode: bool = False,
         custom_map_path: Optional[str] = None,
         test_dataset_path: Optional[str] = None,
+        defer_initial_map_load: bool = False,
         pbrs_gamma: float = PBRS_GAMMA,
         enable_profiling: bool = False,
         reward_config: Optional[
@@ -94,6 +95,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             str
         ] = None,  # Directory with precomputed simulation-based phi grids
         use_reachability_pbrs: bool = False,  # Use analytical reachability for PBRS
+        profiling_console_interval: Optional[float] = None,
     ):
         """
         Initialize the base N++ environment.
@@ -107,6 +109,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             eval_mode: Use evaluation maps instead of training maps
             custom_map_path: Path to custom map file
             test_dataset_path: Path to test dataset directory for evaluation
+            defer_initial_map_load: If True, skip initial ``load_map()``; first map from
+                ``reset(options={"map_data": ...})`` (e.g. mechanic benchmark wrapper).
             pbrs_gamma: PBRS discount factor
             enable_profiling: Enable detailed performance profiling (~5% overhead)
             value_function_dir: Directory containing precomputed value functions (.npz files)
@@ -117,7 +121,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         super().__init__()
 
         # Initialize profiling before other components
-        self._init_profiling(enable_profiling)
+        self._init_profiling(
+            enable_profiling,
+            console_report_interval=profiling_console_interval,
+        )
 
         self.render_mode = render_mode
         self.enable_animation = enable_animation
@@ -126,6 +133,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.custom_map_path = custom_map_path
         self.test_dataset_path = test_dataset_path
         self.eval_mode = eval_mode
+        self.defer_initial_map_load = defer_initial_map_load
 
         # Cache for previous observation to avoid redundant computation
         self._prev_obs_cache = None
@@ -380,8 +388,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_toggle_mines: Optional[list] = None
         self._cached_tile_grid: Optional[np.ndarray] = None
 
-        # Load the initial map
-        self.map_loader.load_map()
+        # Load the initial map (skipped when benchmark / payload-driven code will load
+        # on first reset via ``map_loader.load_map_data``).
+        if not defer_initial_map_load:
+            self.map_loader.load_map()
 
     def _build_base_observation_space(self) -> SpacesDict:
         """Build the base observation space (Layer 1 contract).
@@ -568,7 +578,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Get initial observation for frame skip reward calculation
             initial_obs = self._prev_obs_cache
             if initial_obs is None:
+                t_ini_obs = self._profile_start("observation_get")
                 initial_obs = self._get_observation()
+                self._profile_end("observation_get", t_ini_obs)
 
             # Record action for debug visualization
             if hasattr(self, "_record_action_for_debug"):
@@ -602,6 +614,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Track switch activation state across frames for per-frame PBRS delta detection
             prev_switch_activated = getattr(self, "_prev_switch_activated", False)
 
+            t_phys = self._profile_start("physics_loop")
             for i in range(self.frame_skip):
                 headless.tick(action_hoz, action_jump)
 
@@ -668,6 +681,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     terminated = True
                     break
 
+            self._profile_end("physics_loop", t_phys)
+
             # Persist switch activation state for the next step's first-frame delta
             self._prev_switch_activated = current_switch_activated
 
@@ -692,7 +707,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             self._post_action_hook()
 
             # Get final observation - OBSERVATION GENERATION
+            t_obs = self._profile_start("observation_get")
             final_obs = self._get_observation()
+            self._profile_end("observation_get", t_obs)
 
             # Cache observation for reward calculation in next step
             self._prev_obs_cache = final_obs
@@ -702,6 +719,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
             use_primitive_reward_path = self._current_precomputed_pbrs is not None
 
+            t_reward = self._profile_start("reward_calc")
             if not self.skip_reward_calculation:
                 # Hook: After observation, before reward calculation
                 self._pre_reward_hook(final_obs, player_won)
@@ -738,6 +756,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     self.current_ep_reward += reward
             else:
                 reward = 0.0
+            self._profile_end("reward_calc", t_reward)
 
             # Process observation for training
             t_proc = self._profile_start("observation_process")
@@ -2090,12 +2109,19 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         skip_map_load = False
         checkpoint = None
         map_name = None
+        map_data = None
         if options is not None and isinstance(options, dict):
             skip_map_load = options.get("skip_map_load", False)
             checkpoint = options.get("checkpoint", None)
             map_name = options.get("map_name", None)
+            map_data = options.get("map_data", None)
 
-        if not skip_map_load:
+        if map_data is not None:
+            # Benchmark-driven training path: load the provided map payload
+            # directly and bypass every dataset/curriculum selection branch.
+            effective_name = map_name if map_name is not None else "benchmark_level"
+            self.map_loader.load_map_data(map_data, str(effective_name))
+        elif not skip_map_load:
             # Load map - this calls sim.load() which calls sim.reset()
             self.map_loader.load_map()
         else:
@@ -3148,6 +3174,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         if self._cached_observation is not None:
             return self._cached_observation
 
+        t_obs_prep = self._profile_start("obs_base_prep")
+
         # Calculate time remaining feature using curriculum-aware truncation limit
         # This ensures agents see accurate time pressure that aligns with actual truncation behavior
         current_frame = self.nplay_headless.sim.frame
@@ -3374,6 +3402,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     f"Entity repositioning failed or was undone! Switch will be collected immediately!"
                 )
 
+        self._profile_end("obs_base_prep", t_obs_prep)
+
+        t_ov = self._profile_start("obs_entity_overlays")
         entity_overlays = compute_entity_overlays(
             ninja_pos=(float(ninja_pos[0]), float(ninja_pos[1])),
             switch_pos=switch_pos,
@@ -3382,6 +3413,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             deadly_mines=self._cached_toggle_mines or [],
             safe_mines=toggled_mines,
         )
+        self._profile_end("obs_entity_overlays", t_ov)
 
         # Extract jump_duration_remaining from ninja_state (index 11, 0-indexed)
         # This is normalized [0, 1]: 1.0 = full jump available, 0.0 = no jump frames left
@@ -3389,7 +3421,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             float(ninja_state[11]) if len(ninja_state) > 11 else 0.0
         )
 
+        t_masks = self._profile_start("obs_action_masks")
         action_mask, duration_mask = self._get_action_and_duration_mask()
+        self._profile_end("obs_action_masks", t_masks)
 
         obs = {
             "game_state": game_state,
@@ -3526,6 +3560,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         """Reset the reward calculator."""
         self.reward_calculator.reset()
         self.primitive_reward_calculator.reset()
+
+    def sync_reward_timesteps(self, timesteps: int) -> None:
+        """Sync global training step for NPP-14 BSRS beta / HWM anneal (MaskedPPO calls via env_method)."""
+        if hasattr(self, "reward_calculator") and self.reward_calculator is not None:
+            cfg = getattr(self.reward_calculator, "config", None)
+            if cfg is not None and hasattr(cfg, "sync_training_timesteps"):
+                cfg.sync_training_timesteps(int(timesteps))
 
     def _get_switch_states_from_env(self) -> Dict[str, bool]:
         """

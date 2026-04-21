@@ -8,9 +8,10 @@ Since node positions are fixed on a 6px grid (tile*24 + {3, 9, 15, 21}),
 we can precompute this once offline and reuse for all levels.
 """
 
+import gzip
+import logging
 import os
 import pickle
-import gzip
 import numpy as np
 from typing import Dict, Tuple, Optional
 
@@ -44,6 +45,8 @@ SUBCELL_HEIGHT_EXTENDED = EXTENDED_MAP_HEIGHT_PX // SUB_NODE_SIZE  # 648 / 6 = 1
 # Query position (x, y) maps to subcell index: ((x - LOOKUP_X_OFFSET - 3) // 6, (y - LOOKUP_Y_OFFSET - 3) // 6)
 LOOKUP_X_OFFSET = -LOOKUP_BORDER_PX  # -48 pixels
 LOOKUP_Y_OFFSET = -LOOKUP_BORDER_PX  # -48 pixels
+
+_logger = logging.getLogger(__name__)
 
 
 class SubcellNodeLookupPrecomputer:
@@ -196,9 +199,31 @@ class SubcellNodeLookupLoader:
                 f"Please run subcell_node_lookup.py first to generate it."
             )
 
-        # Load compressed data
-        with gzip.open(data_path, "rb") as f:
-            self._lookup_table = pickle.load(f)
+        def _read_pickle() -> np.ndarray:
+            with gzip.open(data_path, "rb") as f:
+                return pickle.load(f)
+
+        try:
+            self._lookup_table = _read_pickle()
+        except (
+            ModuleNotFoundError,
+            ImportError,
+            AttributeError,
+            pickle.UnpicklingError,
+            EOFError,
+        ) as exc:
+            # Common case: table was pickled with a different NumPy major version
+            # (e.g. references ``numpy._core`` from NumPy 2.x while runtime is 1.x).
+            _logger.warning(
+                "Subcell lookup cache unreadable (%s: %s); recomputing and re-saving %s",
+                type(exc).__name__,
+                exc,
+                data_path,
+            )
+            precomputer = SubcellNodeLookupPrecomputer()
+            lookup = precomputer.precompute_all(verbose=False)
+            precomputer.save_to_file(lookup, data_path, verbose=False)
+            self._lookup_table = lookup
 
     def find_closest_node_position(
         self,

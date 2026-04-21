@@ -278,6 +278,8 @@ def compute_reachability_features_from_graph(
     ninja_pos: Tuple[int, int],
     path_calculator: CachedPathDistanceCalculator,
     goal_positions: Optional[Dict[str, Any]] = None,
+    *,
+    include_navigation_features: bool = True,
 ) -> Tuple[np.ndarray, float, float]:
     """
     Compute 8-dimensional streamlined reachability features.
@@ -315,6 +317,9 @@ def compute_reachability_features_from_graph(
         path_calculator: CachedPathDistanceCalculator instance
         goal_positions: Optional pre-computed goal positions from nplay_headless.get_goal_positions_for_features()
                        If provided, skips O(n) entity iteration for massive speedup
+        include_navigation_features: When False, skip next-hop / directional-platform
+            work (features 3–6). Layer 1 training only needs path distances for PBRS;
+            this saves several ms per observation on cache miss.
 
     Returns:
         Tuple of:
@@ -357,34 +362,33 @@ def compute_reachability_features_from_graph(
     switch_pos_for_computation = None
     exit_pos_for_computation = None
 
-    # Compute reachable area scale for distance normalization.
-    # NOTE: area_scale is tracked in diagnostics but is NO LONGER used to normalize
-    # path distance features 0, 1, 7 (they use LEVEL_DIAGONAL instead).  Retaining
-    # the computation keeps the diagnostic value accurate and avoids breaking any
-    # future callers that might rely on it.
-    with _profile_section("surface_area"):
-        area_scale = LEVEL_DIAGONAL  # Fallback
-        _diag_surface_area = 0.0
-        try:
-            start_position = getattr(level_data, "start_position", None)
-            if start_position is not None:
-                cache_key = level_data.get_cache_key_for_reachability(
-                    include_switch_states=True
-                )
-                start_pos = (
-                    int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
-                    int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
-                )
-                surface_area = get_cached_surface_area(
-                    cache_key, start_pos, adjacency, graph_data
-                )
-                _diag_surface_area = float(surface_area)
-                area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
-        except Exception:
-            pass
-    # Update normalization diagnostics (area_scale is now only used for diagnostics).
-    _reach_diagnostics["area_scale"] = float(area_scale)
-    _reach_diagnostics["surface_area"] = _diag_surface_area
+    # Compute reachable area scale for distance normalization (diagnostics only).
+    # Skipped in PBRS-only mode to save a graph walk on every cache miss.
+    if include_navigation_features:
+        with _profile_section("surface_area"):
+            area_scale = LEVEL_DIAGONAL  # Fallback
+            _diag_surface_area = 0.0
+            try:
+                start_position = getattr(level_data, "start_position", None)
+                if start_position is not None:
+                    cache_key = level_data.get_cache_key_for_reachability(
+                        include_switch_states=True
+                    )
+                    start_pos = (
+                        int(start_position[0]) + NODE_WORLD_COORD_OFFSET,
+                        int(start_position[1]) + NODE_WORLD_COORD_OFFSET,
+                    )
+                    surface_area = get_cached_surface_area(
+                        cache_key, start_pos, adjacency, graph_data
+                    )
+                    _diag_surface_area = float(surface_area)
+                    area_scale = np.sqrt(surface_area) * SUB_NODE_SIZE
+            except Exception:
+                pass
+        _reach_diagnostics["area_scale"] = float(area_scale)
+        _reach_diagnostics["surface_area"] = _diag_surface_area
+    else:
+        _reach_diagnostics["area_scale"] = float(LEVEL_DIAGONAL)
 
     # OPTIMIZATION: Use pre-computed goal positions if provided (O(1) instead of O(n))
     # This eliminates entity iteration bottleneck by using nplay_headless helper methods
@@ -524,6 +528,19 @@ def compute_reachability_features_from_graph(
             switch_activated = True
             break
     features[2] = 1.0 if switch_activated else 0.0
+
+    # Layer 1 / PBRS-only: path costs + normalized distances for reward; skip
+    # next-hop and directional connectivity (several ms per cache miss).
+    if not include_navigation_features:
+        if switch_activated:
+            current_goal_dist = exit_distance_raw
+        else:
+            current_goal_dist = switch_distance_raw
+        if current_goal_dist != float("inf"):
+            features[7] = np.clip(current_goal_dist / LEVEL_DIAGONAL, 0.0, 1.0)
+        else:
+            features[7] = 1.0
+        return features, switch_distance_raw, exit_distance_raw
 
     # ========================================================================
     # Features 3-7: Path Direction Features

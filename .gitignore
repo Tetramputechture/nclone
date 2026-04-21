@@ -64,6 +64,9 @@ datasets/
 
 *.mp4
 
+# Local optimal-route / viz outputs (see scripts/render_optimal_route_videos.py)
+optimal_route_videos/
+
 *.gz
 
 # Rust native build artifacts

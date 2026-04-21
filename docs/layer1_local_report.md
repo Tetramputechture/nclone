@@ -171,3 +171,41 @@ policy can train against the local subset without them.
 
 Parent gate [NPP-5](https://linear.app/npp-rl/issue/NPP-5) — toggle-mines
 chunk — is satisfied for the Layer 1 local-validation deliverable.
+
+---
+
+## L1.11 closeout addendum (2026-04-20)
+
+**Issue:** Linear `L1.11` (deferred T2 / T4 / T7 after NPP-14 / NPP-39 / NPP-41).
+
+### T2 — BSRS / value ordering (unit-level)
+
+Implemented and covered by:
+
+- `nclone/tests/test_reward_config_bsrs.py` — `beta_blend` schedule + theorem-scale `eta_bsrs`.
+- `npp_rl/tests/test_bsrs_smdp.py` — frame-level γ vs macro γ^k distinction (NPP-45).
+- Runtime blend: `RewardConfig.enable_bsrs_blend` + `MaskedPPO` rollout term `(1-β) η (γ V' - V)`; HWM scaled by `β` in `main_reward_calculator.py`.
+
+**Command:**
+
+```bash
+cd nclone && .venv/bin/python -m pytest tests/test_reward_config_bsrs.py -q
+cd npp-rl && PYTHONPATH=npp-rl:nclone .venv/bin/python -m pytest tests/test_bsrs_smdp.py -q
+```
+
+### T3 extension — `hazard_map` cache stats (NPP-48)
+
+- `nclone-native` `MineThreatMap`: `get_hazard_cache_stats`, `reset_hazard_cache_stats`, `set_hazard_force_full` (hook).
+- `nclone/tests/test_hazard_map.py::test_hazard_map_cache_stats_increment`
+
+### T4 — Single-level overnight train
+
+Not executed in CI (GPU/time). **Manual:** `scripts/train_and_compare.py` with `--enable-bsrs`, `--hardware-profile dev-3080ti-overnight`, non-FiGAR PPO, single-level or LevelPool; verify no NaN in TB.
+
+### T7 — Per-bucket comparison
+
+Requires successful **NPP-41** checkpoint + `python -m npp_rl.benchmarks.minimal_rl_comparison --model …` vs `run_benchmark` baselines on the four buckets. **Stage 0 harness:** `python -m npp_rl.benchmarks.stage0_entry` (writes JSON/MD under `npp-rl/docs/non-ml-results/stage0/`). Local run may need a NumPy build compatible with cached pickle tables in `nclone` graph code.
+
+### NPP-41 — Minimal RL baseline
+
+Train `minimal_mlp` via `train_and_compare.py`, then score with `minimal_rl_comparison.py`; store checkpoint path and JSON next to Stage 0 artifacts.

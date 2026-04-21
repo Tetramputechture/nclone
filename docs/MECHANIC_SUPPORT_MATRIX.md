@@ -14,6 +14,7 @@ Single source of truth for **what is simulated**, **what the observation exposes
 | **Planner (tile graph)** | Velocity-augmented surface graph / Dijkstra in `nclone/value_function/` — **approximate** for many mechanics. |
 | **Baseline Tier** | From `SUPPORT_BOUNDARY.md`: Tier 1 = plan-only strong; Tier 2 = hybrid; Tier 3 = weak without ML. |
 | **Bucket** | Primary `BucketType` in `mechanic_buckets.py` (if applicable). |
+| **layer1_scope** | Same semantics as the **Layer 1 scope** column below (`in_scope` vs waived); used for tooling / Linear NPP-42. |
 
 ## Matrix (high level)
 

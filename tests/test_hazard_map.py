@@ -142,3 +142,19 @@ def test_hazard_map_if_changed_returns_none_on_repeat(mine_fixture_100):
     mutated[0] = (mx + 6.0, my)
     changed = m.compute_hazard_map_if_changed(mutated)
     assert changed is not None
+
+
+def test_hazard_map_cache_stats_increment(mine_fixture_100):
+    """NPP-48: cache hit/miss counters track hazard_map_if_changed behaviour."""
+    m = MineThreatMap()
+    m.reset_hazard_cache_stats()
+    deadly = list(mine_fixture_100)
+    m.compute_hazard_map_if_changed(deadly)
+    h1, miss1, cells1 = m.get_hazard_cache_stats()
+    assert miss1 >= 1
+    assert cells1 == HAZARD_MAP_HEIGHT * HAZARD_MAP_WIDTH
+
+    m.compute_hazard_map_if_changed(deadly)
+    h2, miss2, _ = m.get_hazard_cache_stats()
+    assert h2 > h1
+    assert miss2 == miss1

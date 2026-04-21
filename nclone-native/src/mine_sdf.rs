@@ -213,6 +213,14 @@ pub struct MineThreatMap {
     last_hazard_deadly: Vec<(f64, f64)>,
     /// Last 1-channel deadly SDF output (NPP-46). Empty until first compute.
     last_hazard_output: Vec<f32>,
+    /// NPP-48: profiling counters for hazard_map cache behaviour.
+    hazard_cache_hits: u64,
+    hazard_cache_misses: u64,
+    /// Cell count recomputed on last miss (full grid = THREAT_WIDTH * THREAT_HEIGHT).
+    hazard_cells_recomputed: usize,
+    /// Reserved for future partial-incremental hazard updates (NPP-48); API hook only.
+    #[allow(dead_code)]
+    hazard_force_full: bool,
 }
 
 impl MineThreatMap {
@@ -328,6 +336,10 @@ impl MineThreatMap {
             last_output: Vec::new(),
             last_hazard_deadly: Vec::new(),
             last_hazard_output: Vec::new(),
+            hazard_cache_hits: 0,
+            hazard_cache_misses: 0,
+            hazard_cells_recomputed: 0,
+            hazard_force_full: false,
         }
     }
 
@@ -370,6 +382,7 @@ impl MineThreatMap {
     /// Python reshapes to `(1, THREAT_HEIGHT, THREAT_WIDTH)` for `hazard_map`.
     fn compute_hazard_map(&mut self, deadly_positions: Vec<(f64, f64)>) -> Vec<f32> {
         let out = Self::compute_hazard_map_inner(&deadly_positions);
+        self.hazard_cells_recomputed = THREAT_WIDTH * THREAT_HEIGHT;
         self.last_hazard_deadly = deadly_positions;
         self.last_hazard_output = out.clone();
         out
@@ -383,12 +396,38 @@ impl MineThreatMap {
         if !self.last_hazard_output.is_empty()
             && Self::positions_equal(&self.last_hazard_deadly, &deadly_positions)
         {
+            self.hazard_cache_hits += 1;
             return None;
         }
+        self.hazard_cache_misses += 1;
+        // NPP-48: full-grid recompute on deadly-set change. `hazard_force_full` is reserved
+        // for future partial invalidation debugging (always uses inner full path today).
         let out = Self::compute_hazard_map_inner(&deadly_positions);
+        self.hazard_cells_recomputed = THREAT_WIDTH * THREAT_HEIGHT;
         self.last_hazard_deadly = deadly_positions;
         self.last_hazard_output = out.clone();
         Some(out)
+    }
+
+    /// Reset NPP-48 hazard cache counters (not the cached grid).
+    fn reset_hazard_cache_stats(&mut self) {
+        self.hazard_cache_hits = 0;
+        self.hazard_cache_misses = 0;
+        self.hazard_cells_recomputed = 0;
+    }
+
+    /// When set, the next recompute path still fills the full grid (placeholder for incremental parity tests).
+    fn set_hazard_force_full(&mut self, v: bool) {
+        self.hazard_force_full = v;
+    }
+
+    /// Returns ``(hazard_cache_hits, hazard_cache_misses, hazard_cells_recomputed)``.
+    fn get_hazard_cache_stats(&self) -> (u64, u64, usize) {
+        (
+            self.hazard_cache_hits,
+            self.hazard_cache_misses,
+            self.hazard_cells_recomputed,
+        )
     }
 
     /// NPP-46: width of the `hazard_map` grid (168).

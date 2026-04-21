@@ -21,8 +21,10 @@ from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 class MapWallJump(Map):
     """Minimal WALL_JUMP generator: clean vertical shaft, no mines."""
 
-    MIN_WIDTH = 2
-    MAX_WIDTH = 3
+    # Single-column shaft: matches :func:`nclone.planning.optimal_route.geometry.classify`
+    # (``TOPOLOGY_WALL_JUMP_SHAFT`` requires ``chamber_tile_width == 1``).
+    MIN_WIDTH = 1
+    MAX_WIDTH = 1
     MIN_HEIGHT = 8
     MAX_HEIGHT = 18
 

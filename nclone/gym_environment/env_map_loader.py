@@ -108,6 +108,28 @@ class EnvMapLoader:
             )
             self.nplay_headless.load_random_map(self.random_map_type)
 
+    def load_map_data(
+        self,
+        map_data,
+        map_name: str,
+    ) -> None:
+        """Load a map from an in-memory payload (used by benchmark training).
+
+        The caller (typically :class:`BenchmarkLevelSource` via an
+        :class:`EnvironmentFactory` worker) already holds the raw N++
+        ``map_data`` array and a stable name/ID. This bypasses all dataset
+        directory scanning and is the normal path for benchmark-driven
+        training.
+
+        Args:
+            map_data: Raw N++ map data array (passed through to
+                ``nplay_headless.load_map_from_map_data``).
+            map_name: Display / cache-key name (usually the integer level ID).
+        """
+        self.current_map_name = str(map_name)
+        self.random_map_type = None
+        self.nplay_headless.load_map_from_map_data(list(map_data))
+
     def load_map(self):
         """Load the map specified by custom_map_path or follow default logic."""
         if self.custom_map_path:

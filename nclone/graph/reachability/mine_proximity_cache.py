@@ -186,12 +186,13 @@ class MineProximityCostCache:
                 nodes_with_costs += 1
             # If min_distance >= MINE_HAZARD_RADIUS, no penalty (1.0), don't store
 
-        # Log diagnostic info if cache is empty despite having deadly mines
+        # Valid when mines are >radius from all walkable nodes (e.g. unreachable mine fields).
+        # Match path_distance_calculator: avoid WARNING spam on every cache rebuild / worker.
         if len(deadly_mine_positions) > 0 and nodes_with_costs == 0:
             import logging
 
             logger = logging.getLogger(__name__)
-            logger.warning(
+            logger.debug(
                 f"[MINE_CACHE] No nodes within {MINE_HAZARD_RADIUS}px of {len(deadly_mine_positions)} deadly mines. "
                 f"Cache is empty. Mines: {deadly_mine_positions[:3]}, "
                 f"Adjacency nodes: {len(adjacency)}"

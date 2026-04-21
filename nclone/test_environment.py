@@ -28,6 +28,7 @@ Examples:
 --------
 python test_environment.py --headless --export-frame test_level.png
 python test_environment.py --headless --profile-frames 1000  # Benchmark with profiling
+python test_environment.py --benchmark-dataset --test-dataset-path datasets/mechanic_benchmark
 """
 
 import os
@@ -51,6 +52,7 @@ import os
 
 from nclone.replay.gameplay_recorder import GameplayRecorder
 from nclone.gym_environment.npp_environment import NppEnvironment
+from nclone.evaluation.mechanic_benchmark_loader import MechanicBenchmarkLoader
 
 
 class MemoryProfiler:
@@ -359,7 +361,12 @@ parser.add_argument(
     "--test-dataset-path",
     type=str,
     default="datasets/test",
-    help="Path to test dataset directory (default: datasets/test)",
+    help=(
+        "Path to legacy test suite root (test_metadata.json) or, with "
+        "--benchmark-dataset, the mechanic benchmark root containing manifest.json "
+        "(default: datasets/test; if --benchmark-dataset and this is still the "
+        "default, datasets/mechanic_benchmark is used)"
+    ),
 )
 parser.add_argument(
     "--start-level",
@@ -371,6 +378,24 @@ parser.add_argument(
     "--auto-advance",
     action="store_true",
     help="Auto-advance to next level on completion (for validation)",
+)
+parser.add_argument(
+    "--benchmark-dataset",
+    action="store_true",
+    help=(
+        "Load levels from a mechanic-primary benchmark dataset (manifest.json + "
+        "train/<BUCKET>/T<tier>/*.pkl from scripts/generate_benchmark_dataset.py). "
+        "Uses --test-dataset-path as the dataset root; if that is still the default "
+        "datasets/test, uses datasets/mechanic_benchmark instead. Incompatible with "
+        "--test-suite."
+    ),
+)
+parser.add_argument(
+    "--benchmark-split",
+    type=str,
+    choices=("train", "test", "both"),
+    default="train",
+    help="Which split(s) to include when --benchmark-dataset is set (default: train).",
 )
 
 # Generator testing arguments
@@ -412,6 +437,21 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
+
+# Dataset root for mechanic benchmark mode (see docs/BENCHMARK_DATASET.md)
+benchmark_dataset_root = args.test_dataset_path
+if args.benchmark_dataset and args.test_dataset_path == "datasets/test":
+    benchmark_dataset_root = "datasets/mechanic_benchmark"
+
+if args.benchmark_dataset and args.test_suite:
+    print("Error: --benchmark-dataset cannot be used together with --test-suite.")
+    sys.exit(1)
+if args.benchmark_dataset and args.test_generators:
+    print("Error: --benchmark-dataset cannot be used together with --test-generators.")
+    sys.exit(1)
+if args.benchmark_dataset and args.test_official_maps:
+    print("Error: --benchmark-dataset cannot be used together with --test-official-maps.")
+    sys.exit(1)
 
 print(f"Headless: {args.headless}")
 
@@ -489,6 +529,25 @@ if args.test_suite:
         print("• Auto-advance enabled: next level loads on completion")
     else:
         print("• Manual advance: press 'N' to load next level")
+    print("\nControls:")
+    print("  R - Reset current level")
+    print("  N - Load next level")
+    print("  P - Load previous level")
+    print("=" * 60 + "\n")
+
+# Display help for mechanic benchmark dataset mode
+if args.benchmark_dataset:
+    print("\n" + "=" * 60)
+    print("MECHANIC BENCHMARK DATASET MODE")
+    print("=" * 60)
+    print(f"• Dataset root: {benchmark_dataset_root}")
+    print(f"• Split(s): {args.benchmark_split}")
+    print(f"• Starting level index: {args.start_level}")
+    if args.auto_advance:
+        print("• Auto-advance enabled: next level loads on completion")
+    else:
+        print("• Manual advance: press 'N' / 'P' to change levels")
+    print("\nOn-screen HUD shows bucket, tier, generator, preset, seed, and level id.")
     print("\nControls:")
     print("  R - Reset current level")
     print("  N - Load next level")
@@ -639,6 +698,27 @@ else:
         enable_profiling=args.profile_frames is not None,
     )
     env = create_visual_testing_env(config=config)
+
+
+def _draw_benchmark_overlay(lines) -> None:
+    """Draw mechanic-benchmark metadata in the top-left (after env.render())."""
+    if not lines:
+        return
+    screen = pygame.display.get_surface()
+    if screen is None:
+        return
+    font = pygame.font.SysFont("monospace", 14)
+    x0, y = 8, 6
+    pad = 4
+    for line in lines:
+        text = font.render(line, True, (255, 255, 255))
+        bg = pygame.Surface((text.get_width() + pad * 2, text.get_height() + 4))
+        bg.set_alpha(210)
+        bg.fill((20, 22, 32))
+        screen.blit(bg, (x0, y))
+        screen.blit(text, (x0 + pad, y + 2))
+        y += bg.get_height() + 4
+    pygame.display.flip()
 
 
 # Define manual_reset helper function before initialization blocks that use it
@@ -915,6 +995,11 @@ test_suite_loader = None
 test_suite_level_ids = []
 current_level_idx = 0
 
+# Mechanic-primary benchmark dataset (see docs/BENCHMARK_DATASET.md)
+benchmark_loader = None
+benchmark_index = 0
+benchmark_payload = None
+
 if args.test_suite:
     try:
         from nclone.evaluation.test_suite_loader import TestSuiteLoader
@@ -949,8 +1034,55 @@ if args.test_suite:
         traceback.print_exc()
         sys.exit(1)
 
+if args.benchmark_dataset:
+    try:
+        splits = (
+            ("train", "test")
+            if args.benchmark_split == "both"
+            else (args.benchmark_split,)
+        )
+        benchmark_loader = MechanicBenchmarkLoader(
+            benchmark_dataset_root, splits=splits
+        )
+        if len(benchmark_loader) == 0:
+            print(f"Error: no levels found under {benchmark_dataset_root!r}")
+            sys.exit(1)
+
+        benchmark_index = args.start_level
+        if benchmark_index >= len(benchmark_loader):
+            print(
+                f"Error: Start level {benchmark_index} exceeds available levels "
+                f"({len(benchmark_loader)})"
+            )
+            sys.exit(1)
+
+        benchmark_payload = benchmark_loader.load_payload(benchmark_index)
+        env.nplay_headless.load_map_from_map_data(benchmark_payload["map_data"])
+        map_name = f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+        manual_reset(env, map_name=map_name)
+
+        print(
+            f"Loaded benchmark level {benchmark_index + 1}/{len(benchmark_loader)} "
+            f"(level_id={benchmark_payload.get('level_id')})"
+        )
+        print(
+            f"  {benchmark_payload.get('bucket')} T{benchmark_payload.get('tier')} "
+            f"{benchmark_payload.get('generator')}:{benchmark_payload.get('preset')}\n"
+        )
+    except Exception as e:
+        print(f"Error loading benchmark dataset: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
 # Normal environment initialization - call reset only if not in special modes
-if not args.test_generators and not args.test_suite and not args.test_official_maps:
+if (
+    not args.test_generators
+    and not args.test_suite
+    and not args.test_official_maps
+    and not args.benchmark_dataset
+):
     env.reset()
 
 # Initialize replay recorder if enabled
@@ -1208,8 +1340,30 @@ while running:
                         player_won = env.nplay_headless.ninja_has_won()
                         recorder.stop_recording(success=player_won, save=player_won)
 
+                    # Benchmark dataset: reload current level from pickle
+                    if benchmark_loader is not None and benchmark_payload is not None:
+                        try:
+                            env.nplay_headless.load_map_from_map_data(
+                                benchmark_payload["map_data"]
+                            )
+                            map_name = (
+                                f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+                            )
+                            manual_reset(env, map_name=map_name)
+                            initial_obs = env._get_observation()
+                            observation = env._process_observation(initial_obs)
+                            print(
+                                f"Reloaded benchmark level {benchmark_index + 1}/"
+                                f"{len(benchmark_loader)} (level_id="
+                                f"{benchmark_payload.get('level_id')})"
+                            )
+                        except Exception as e:
+                            print(f"Error reloading benchmark level: {e}")
+                            import traceback
+
+                            traceback.print_exc()
                     # Generator testing mode: generate new map from current generator
-                    if generator_tester is not None:
+                    elif generator_tester is not None:
                         try:
                             new_map = generator_tester.generate_map()
                             env.nplay_headless.load_map_from_map_data(
@@ -1254,7 +1408,7 @@ while running:
                             import traceback
 
                             traceback.print_exc()
-                    else:
+                    elif generator_tester is None and official_map_tester is None:
                         # Normal reset for non-generator-testing mode
                         observation, info = env.reset()
 
@@ -1295,7 +1449,7 @@ while running:
                         print("Already recording!")
 
                 if event.key == pygame.K_n:
-                    # Test suite navigation or recording control
+                    # Test suite / benchmark navigation or recording control
                     if test_suite_loader is not None and test_suite_level_ids:
                         if args.step_on_input:
                             input_sequence.clear()
@@ -1311,30 +1465,64 @@ while running:
                             f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
                         )
                         print(f"Category: {level.get('category', 'unknown')}")
+                    elif benchmark_loader is not None:
+                        if args.step_on_input:
+                            input_sequence.clear()
+                        benchmark_index = (benchmark_index + 1) % len(benchmark_loader)
+                        benchmark_payload = benchmark_loader.load_payload(benchmark_index)
+                        env.nplay_headless.load_map_from_map_data(
+                            benchmark_payload["map_data"]
+                        )
+                        map_name = (
+                            f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+                        )
+                        manual_reset(env, map_name=map_name)
+                        print(
+                            f"Loaded benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
+                            f"level_id={benchmark_payload.get('level_id')} "
+                            f"{benchmark_payload.get('bucket')} T{benchmark_payload.get('tier')} "
+                            f"{benchmark_payload.get('generator')}:{benchmark_payload.get('preset')}"
+                        )
                     elif recorder is not None and recorder.is_recording:
                         # Stop recording without saving
                         recorder.stop_recording(success=False, save=False)
                         print("Recording stopped (not saved)")
 
-                if (
-                    event.key == pygame.K_p
-                    and test_suite_loader is not None
-                    and test_suite_level_ids
-                ):
-                    # Load previous level in test suite
-                    if args.step_on_input:
-                        input_sequence.clear()
-                    current_level_idx = (current_level_idx - 1) % len(
-                        test_suite_level_ids
-                    )
-                    level_id = test_suite_level_ids[current_level_idx]
-                    level = test_suite_loader.get_level(level_id)
-                    env.nplay_headless.load_map_from_map_data(level["map_data"])
-                    env.reset()
-                    print(
-                        f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
-                    )
-                    print(f"Category: {level.get('category', 'unknown')}")
+                if event.key == pygame.K_p:
+                    if (
+                        test_suite_loader is not None
+                        and test_suite_level_ids
+                    ):
+                        # Load previous level in test suite
+                        if args.step_on_input:
+                            input_sequence.clear()
+                        current_level_idx = (current_level_idx - 1) % len(
+                            test_suite_level_ids
+                        )
+                        level_id = test_suite_level_ids[current_level_idx]
+                        level = test_suite_loader.get_level(level_id)
+                        env.nplay_headless.load_map_from_map_data(level["map_data"])
+                        env.reset()
+                        print(
+                            f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
+                        )
+                        print(f"Category: {level.get('category', 'unknown')}")
+                    elif benchmark_loader is not None:
+                        if args.step_on_input:
+                            input_sequence.clear()
+                        benchmark_index = (benchmark_index - 1) % len(benchmark_loader)
+                        benchmark_payload = benchmark_loader.load_payload(benchmark_index)
+                        env.nplay_headless.load_map_from_map_data(
+                            benchmark_payload["map_data"]
+                        )
+                        map_name = (
+                            f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+                        )
+                        manual_reset(env, map_name=map_name)
+                        print(
+                            f"Loaded benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
+                            f"level_id={benchmark_payload.get('level_id')}"
+                        )
                 if event.key == pygame.K_c:
                     # Toggle grid outline debug overlay
                     grid_debug_enabled = not grid_debug_enabled
@@ -2234,6 +2422,26 @@ while running:
             print(
                 f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
             )
+        elif (
+            args.benchmark_dataset
+            and args.auto_advance
+            and benchmark_loader is not None
+        ):
+            player_won = env.nplay_headless.ninja_has_won()
+            result_str = "✓ Success" if player_won else "✗ Failed"
+            print(
+                f"{result_str} - benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
+                f"level_id={benchmark_payload.get('level_id') if benchmark_payload else '?'}"
+            )
+            benchmark_index = (benchmark_index + 1) % len(benchmark_loader)
+            benchmark_payload = benchmark_loader.load_payload(benchmark_index)
+            env.nplay_headless.load_map_from_map_data(benchmark_payload["map_data"])
+            map_name = f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+            manual_reset(env, map_name=map_name)
+            print(
+                f"Auto-advanced to benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
+                f"level_id={benchmark_payload.get('level_id')}"
+            )
 
         # Generate new map in generator testing mode, reload map in official maps mode, otherwise normal reset
         if generator_tester is not None:
@@ -2282,6 +2490,7 @@ while running:
 
                 traceback.print_exc()
         else:
+            # Normal episode reset (test suite, benchmark without auto-advance, default map)
             observation, info = env.reset()
 
     current_time = time.perf_counter()
@@ -2293,6 +2502,18 @@ while running:
     # In headless mode, we don't call clock.tick() as it relies on pygame.display
     if not args.headless and clock:
         clock.tick(60)
+
+    # Human mode: ensure a frame is presented; overlay mechanic-benchmark metadata
+    if not args.headless:
+        env.render()
+        if benchmark_loader is not None and benchmark_payload is not None:
+            _draw_benchmark_overlay(
+                MechanicBenchmarkLoader.overlay_lines(
+                    benchmark_payload,
+                    benchmark_index,
+                    len(benchmark_loader),
+                )
+            )
 
     frame_counter += 1
     if args.profile_frames is not None and frame_counter >= args.profile_frames:
