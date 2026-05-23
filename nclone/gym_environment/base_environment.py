@@ -27,7 +27,11 @@ from .constants import (
 )
 from .reward_calculation.main_reward_calculator import RewardCalculator
 from .reward_calculation.reward_config import RewardConfig
-from .entity_overlay_utils import compute_entity_overlays, ENTITY_OVERLAY_CHANNELS
+from .entity_overlay_utils import (
+    classify_mines_by_state,
+    compute_entity_overlays,
+    ENTITY_OVERLAY_CHANNELS,
+)
 from .observation_processor import ObservationProcessor
 from .profiling_mixin import ProfilingMixin
 from .truncation_checker import TruncationChecker
@@ -87,14 +91,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         enable_layer3_macro_action_mask: bool = False,
         layer3_duration_bins: Optional[tuple[int, ...]] = None,
         layer3_all_masked_fallback: str = "noop",
-        value_function_dir: Optional[
-            str
-        ] = None,  # Directory with precomputed value functions
-        use_precomputed_pbrs: bool = True,  # Use precomputed value function for PBRS
-        simulation_phi_dir: Optional[
-            str
-        ] = None,  # Directory with precomputed simulation-based phi grids
-        use_reachability_pbrs: bool = False,  # Use analytical reachability for PBRS
         profiling_console_interval: Optional[float] = None,
     ):
         """
@@ -111,10 +107,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             test_dataset_path: Path to test dataset directory for evaluation
             defer_initial_map_load: If True, skip initial ``load_map()``; first map from
                 ``reset(options={"map_data": ...})`` (e.g. mechanic benchmark wrapper).
-            pbrs_gamma: PBRS discount factor
+            pbrs_gamma: PBRS discount factor (legacy, kept for BSRS γ matching).
             enable_profiling: Enable detailed performance profiling (~5% overhead)
-            value_function_dir: Directory containing precomputed value functions (.npz files)
-            use_precomputed_pbrs: If True, use precomputed value function instead of path-based PBRS
         """
         _logger = logging.getLogger(__name__)
 
@@ -194,15 +188,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # This is captured at reset() and used in _build_episode_info() for correct visualization
         self._episode_start_curriculum_stage: Optional[int] = None
 
-        # Per-episode PBRS diagnostics tracking (also reset in reset())
-        self._phi_at_spawn: Optional[float] = None
-        self._phi_at_switch_collection: Optional[float] = None
-        self._phi_at_terminal: Optional[float] = None
-        self._contact_floor_frames: int = 0
-        self._contact_wall_frames: int = 0
-        self._contact_airborne_frames: int = 0
-        self._first_frame_of_episode: bool = True
-
         # Frame skip for temporal abstraction (always enabled)
         self.frame_skip = max(1, frame_skip)  # Ensure at least 1
         self.enable_layer3_macro_action_mask = enable_layer3_macro_action_mask
@@ -210,37 +195,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.layer3_all_masked_fallback = layer3_all_masked_fallback
         self._layer3_num_durations = len(self.layer3_duration_bins)
 
-        # Precomputed value function support
-        self.value_function_dir = value_function_dir
-        self.use_precomputed_pbrs = use_precomputed_pbrs
-
-        # Simulation-based phi grid support
-        self.simulation_phi_dir = simulation_phi_dir
-        self._current_precomputed_pbrs = None  # Loaded per level
-
-        # Analytical reachability PBRS support
-        self.use_reachability_pbrs = use_reachability_pbrs
-        self._current_reachability_pbrs = None  # Built per level
-
         # Layer 3 episode-level diagnostics (updated by mask builders at decision points)
         self._layer3_decision_points = 0
         self._layer3_masked_actions_total = 0
         self._layer3_masked_candidates_total = 0
         self._layer3_mask_override_count = 0
         self._layer3_all_masked_events = 0
-
-        if use_reachability_pbrs:
-            _logger.info("Analytical reachability PBRS enabled")
-
-        if use_precomputed_pbrs and value_function_dir:
-            _logger.info(
-                f"Precomputed value function PBRS enabled (dir: {value_function_dir})"
-            )
-        elif use_precomputed_pbrs and not value_function_dir:
-            _logger.warning(
-                "use_precomputed_pbrs=True but value_function_dir not specified, falling back to path-based PBRS"
-            )
-            self.use_precomputed_pbrs = False
 
         # Action sequence tracking for Go-Explore checkpoint replay
         # Stores all actions since last reset for deterministic replay
@@ -324,29 +284,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             shared_level_cache=shared_level_cache,
             shared_level_caches_by_stage=shared_level_caches_by_stage,
             goal_curriculum_manager=self.goal_curriculum_manager,
-            simulation_phi_dir=simulation_phi_dir,
-        )
-
-        # Initialize primitive-level reward calculator for FiGAR-PPO per-frame PBRS
-        from .reward_calculation.primitive_reward_calculator import (
-            PrimitiveRewardCalculator,
-        )
-        from .reward_calculation.reward_constants import (
-            R_SWITCH,
-            R_EXIT,
-            R_DEATH,
-            R_DEATH_MINE,
-            TIME_PENALTY_PER_STEP,
-        )
-
-        self.primitive_reward_calculator = PrimitiveRewardCalculator(
-            gamma=pbrs_gamma,
-            alpha=5.0,  # Stronger PBRS vs TIME_PENALTY_PER_STEP for FiGAR primitive rewards
-            r_switch=R_SWITCH,  # 1.0
-            r_exit=R_EXIT,      # 5.0
-            r_death=R_DEATH,    # -0.5
-            r_death_mine=R_DEATH_MINE,  # -0.5 extra when death_cause=='mine'
-            time_penalty_per_frame=TIME_PENALTY_PER_STEP,
         )
 
         # Initialize truncation checker
@@ -608,12 +545,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # OPTIMIZATION: Check profiling state once before loop
             _profile = getattr(self, "profile_enabled", False)
 
-            # Per-frame primitive rewards for FiGAR-PPO primitive-level GAE
-            primitive_rewards = []
-
-            # Track switch activation state across frames for per-frame PBRS delta detection
-            prev_switch_activated = getattr(self, "_prev_switch_activated", False)
-
             t_phys = self._profile_start("physics_loop")
             for i in range(self.frame_skip):
                 headless.tick(action_hoz, action_jump)
@@ -632,71 +563,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 player_won = headless.ninja_has_won()
                 player_dead = headless.ninja_has_died()
 
-                # Per-frame PBRS reward for FiGAR-PPO primitive-level GAE.
-                # Only computed when a precomputed surface-graph PBRS is loaded.
-                if self._current_precomputed_pbrs is not None:
-                    pos = headless.ninja_position()
-                    vel = headless.ninja_velocity()
-                    # Map Rust ninja state codes to PBRS contact categories:
-                    # 0-2 (Immobile/Running/GroundSlide) → floor, 5 (WallSlide) → wall, else → airborne
-                    ninja_sc = headless.sim.ninja.state
-                    contact = (
-                        0 if ninja_sc in (0, 1, 2) else (1 if ninja_sc == 5 else 2)
-                    )
-                    death_cause = headless.ninja_death_cause() if player_dead else None
-                    frame_r = self.primitive_reward_calculator.calculate_frame_reward(
-                        player_x=float(pos[0]),
-                        player_y=float(pos[1]),
-                        player_dead=player_dead,
-                        player_won=player_won,
-                        switch_activated=current_switch_activated,
-                        prev_switch_activated=prev_switch_activated,
-                        phi_grid_cache=None,
-                        precomputed_pbrs=self._current_precomputed_pbrs,
-                        player_xspeed=float(vel[0]),
-                        player_yspeed=float(vel[1]),
-                        contact_state=contact,
-                        death_cause=death_cause,
-                    )
-                    primitive_rewards.append(frame_r)
-
-                    # Diagnostic tracking: contact distribution and phi at key moments
-                    comps = self.primitive_reward_calculator.last_components
-                    if contact == 0:
-                        self._contact_floor_frames += 1
-                    elif contact == 1:
-                        self._contact_wall_frames += 1
-                    else:
-                        self._contact_airborne_frames += 1
-                    if self._first_frame_of_episode:
-                        self._phi_at_spawn = comps.get("prev_potential")
-                        self._first_frame_of_episode = False
-                    if current_switch_activated and not prev_switch_activated:
-                        self._phi_at_switch_collection = comps.get("phi_state")
-                    self._phi_at_terminal = comps.get("phi_state")
-
-                    prev_switch_activated = current_switch_activated
-
                 if player_won or player_dead:
                     terminated = True
                     break
 
             self._profile_end("physics_loop", t_phys)
 
-            # Persist switch activation state for the next step's first-frame delta
-            self._prev_switch_activated = current_switch_activated
-
             # Check truncation only once after all frames (expensive curriculum-aware check)
             if not terminated:
                 truncated = self._check_curriculum_aware_truncation()
-
-            # Primitive / FiGAR path: append truncation penalty before episode reward + info
-            # so current_ep_reward, info["r"], and info["primitive_rewards"] stay consistent.
-            if self._current_precomputed_pbrs is not None and truncated and primitive_rewards:
-                from .reward_calculation.reward_constants import TRUNCATION_PENALTY
-
-                primitive_rewards = list(primitive_rewards)
-                primitive_rewards.append(TRUNCATION_PENALTY)
 
             self._track_position_after_step()
 
@@ -717,43 +592,33 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Get player_won for reward calculation
             player_won = final_obs.get("player_won", False)
 
-            use_primitive_reward_path = self._current_precomputed_pbrs is not None
-
             t_reward = self._profile_start("reward_calc")
             if not self.skip_reward_calculation:
                 # Hook: After observation, before reward calculation
                 self._pre_reward_hook(final_obs, player_won)
 
-                if use_primitive_reward_path:
-                    # FiGAR-PPO: only PrimitiveRewardCalculator runs (precomputed PBRS path).
-                    reward = float(sum(primitive_rewards)) if primitive_rewards else 0.0
-                    self.current_ep_reward += reward
-                else:
-                    # Standard PPO: main HWM / grid reward calculator
-                    reward = self.reward_calculator.calculate_reward(
-                        final_obs,
-                        initial_obs,
-                        action,
-                        frames_executed=frames_executed,
-                        curriculum_manager=self.goal_curriculum_manager,
-                        truncated=truncated,
-                    )
+                # Single reward path: RewardCalculator emits the step-level reward
+                # (sparse terminals + beta*alpha*hwm_progress + time_penalty*frames
+                # + backtrack_penalty*frames). BSRS shaping (if enabled) is applied
+                # on the trainer side (see MaskedPPO / FiGARPPO collect_rollouts).
+                reward = self.reward_calculator.calculate_reward(
+                    final_obs,
+                    initial_obs,
+                    action,
+                    frames_executed=frames_executed,
+                    curriculum_manager=self.goal_curriculum_manager,
+                    truncated=truncated,
+                )
 
-                    # Update dynamic truncation limit if PBRS surface area is now available
-                    self._update_dynamic_truncation_if_needed()
+                # Update dynamic truncation limit if path surface area is now available
+                self._update_dynamic_truncation_if_needed()
 
-                    # Hook: Modify reward if needed
-                    reward = self._modify_reward_hook(
-                        reward, final_obs, player_won, terminated
-                    )
+                # Hook: Modify reward if needed
+                reward = self._modify_reward_hook(
+                    reward, final_obs, player_won, terminated
+                )
 
-                    # === TRUNCATION HANDLING ===
-                    # No additional penalty for truncation. HWM pipeline:
-                    # - HWM shaping rewards progress toward objectives (zero when no progress)
-                    # - Sparse terminal rewards (R_SWITCH, R_EXIT, R_DEATH) define task hierarchy
-                    # - Truncation yields 0 reward; agent learns from HWM accumulated during episode
-
-                    self.current_ep_reward += reward
+                self.current_ep_reward += reward
             else:
                 reward = 0.0
             self._profile_end("reward_calc", t_reward)
@@ -778,87 +643,40 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 )
                 final_distance = final_obs.get("_pbrs_last_distance_to_goal", None)
 
-                if use_primitive_reward_path:
-                    prc = self.primitive_reward_calculator
-                    sc = prc.global_reward_scale
-                    total_pbrs_u = (
-                        sum(prc.episode_pbrs_rewards)
-                        if prc.episode_pbrs_rewards
-                        else 0.0
-                    )
-                    n_fr = len(prc.episode_pbrs_rewards)
-                    pbrs_total_scaled = prc.alpha * total_pbrs_u * sc
-                    time_total_scaled = n_fr * prc.time_penalty_per_frame * sc
-                    # No main PBRS path distance cache in primitive-only mode
-                    if final_distance is None or final_distance == float("inf"):
-                        progress = 0.0
-                    elif combined_path_distance > 0:
-                        progress = 1.0 - (final_distance / combined_path_distance)
-                        progress = max(0.0, min(1.0, progress))
-                    else:
-                        progress = 0.0
-                    info["_timeout_reward_breakdown"] = {
-                        "pbrs_total": pbrs_total_scaled,
-                        "time_total": time_total_scaled,
-                        "final_progress": progress,
-                        "final_distance": final_distance,
-                        "combined_path": combined_path_distance,
-                        "forward_steps": prc.episode_forward_steps,
-                        "backtrack_steps": prc.episode_backtrack_steps,
-                    }
-                else:
-                    pbrs_total_unscaled = (
-                        sum(self.reward_calculator.episode_pbrs_rewards)
-                        if hasattr(self.reward_calculator, "episode_pbrs_rewards")
-                        else 0.0
-                    )
-                    time_total_unscaled = (
-                        sum(self.reward_calculator.episode_time_penalties)
-                        if hasattr(self.reward_calculator, "episode_time_penalties")
-                        else 0.0
-                    )
-                    pbrs_total_scaled = pbrs_total_unscaled * GLOBAL_REWARD_SCALE
-                    time_total_scaled = time_total_unscaled * GLOBAL_REWARD_SCALE
-
-                    if final_distance is None or final_distance == float("inf"):
-                        final_distance = (
-                            self.reward_calculator.closest_distance_this_episode
-                        )
-
-                    if combined_path_distance > 0 and final_distance != float("inf"):
-                        progress = 1.0 - (final_distance / combined_path_distance)
-                        progress = max(0.0, min(1.0, progress))
-                    else:
-                        progress = 0.0
-
-                    info["_timeout_reward_breakdown"] = {
-                        "pbrs_total": pbrs_total_scaled,
-                        "time_total": time_total_scaled,
-                        "final_progress": progress,
-                        "final_distance": final_distance,
-                        "combined_path": combined_path_distance,
-                        "forward_steps": self.reward_calculator.episode_forward_steps,
-                        "backtrack_steps": self.reward_calculator.episode_backtrack_steps,
-                    }
-
-            # Route viz: full primitive reward breakdown (death, timeout, success)
-            if (
-                not self.skip_reward_calculation
-                and use_primitive_reward_path
-                and (terminated or truncated)
-            ):
-                info["_primitive_reward_breakdown"] = self._build_primitive_reward_breakdown(
-                    final_obs, player_won, terminated, truncated
+                hwm_total_unscaled = sum(self.reward_calculator.episode_hwm_rewards)
+                time_total_unscaled = (
+                    self.reward_calculator.config.time_penalty_per_step
+                    * self.reward_calculator.steps_taken
                 )
+                hwm_total_scaled = hwm_total_unscaled * GLOBAL_REWARD_SCALE
+                time_total_scaled = time_total_unscaled * GLOBAL_REWARD_SCALE
+
+                if final_distance is None or final_distance == float("inf"):
+                    final_distance = (
+                        self.reward_calculator.closest_distance_this_episode
+                    )
+
+                if combined_path_distance > 0 and final_distance != float("inf"):
+                    progress = 1.0 - (final_distance / combined_path_distance)
+                    progress = max(0.0, min(1.0, progress))
+                else:
+                    progress = 0.0
+
+                info["_timeout_reward_breakdown"] = {
+                    "hwm_total": hwm_total_scaled,
+                    "time_total": time_total_scaled,
+                    "final_progress": progress,
+                    "final_distance": final_distance,
+                    "combined_path": combined_path_distance,
+                    "forward_steps": self.reward_calculator.episode_forward_steps,
+                    "backtrack_steps": self.reward_calculator.episode_backtrack_steps,
+                }
 
             # Add frame skip stats to info
             info["frame_skip_stats"] = {
                 "skip_value": self.frame_skip,
                 "frames_executed": frames_executed,
             }
-
-            # Per-frame primitive rewards (truncation already applied above for precomputed path)
-            info["primitive_rewards"] = primitive_rewards
 
             # Hook: Add additional info fields
             self._extend_info_hook(info)
@@ -882,179 +700,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             )
             # Re-raise to maintain normal error handling
             raise
-
-    def _try_load_value_function_pbrs(self) -> None:
-        """Try to load value function PBRS for the current level.
-
-        Priority order:
-            1. Neural IQL V(s) checkpoint (if iql_checkpoint_path is set)
-            2. Surface graph .npz (existing TwoPhaseValuePBRS)
-            3. Fall through to phi grid / path-based fallback
-
-        Sets _current_precomputed_pbrs when a value function is loaded.
-        Clears it when no files are found.
-        """
-        if not getattr(self, "use_precomputed_pbrs", False):
-            self._current_precomputed_pbrs = None
-            return
-
-        level_id = getattr(self.map_loader, "current_map_name", None)
-        if not level_id:
-            self._current_precomputed_pbrs = None
-            return
-
-        # Priority 1: Neural IQL V(s) checkpoint
-        iql_path = getattr(self, "iql_checkpoint_path", None)
-        if iql_path:
-            try:
-                from nclone.value_function.two_phase_pbrs import create_neural_pbrs
-
-                iql_device = getattr(self, "iql_device", "cpu")
-                adapter = create_neural_pbrs(
-                    checkpoint_path=iql_path,
-                    device=iql_device,
-                )
-
-                # Set level data from current headless simulator
-                headless = getattr(self, "headless", None)
-                if headless is not None:
-                    self._setup_neural_pbrs_level(adapter, headless)
-
-                self._current_precomputed_pbrs = adapter
-                logger.info(
-                    "Loaded neural IQL PBRS for level %s from %s",
-                    level_id,
-                    iql_path,
-                )
-                return
-            except (FileNotFoundError, ImportError) as e:
-                logger.warning("Failed to load neural IQL PBRS: %s, falling back", e)
-
-        # Priority 2: Surface graph .npz — prefer RoutePBRS (route-tracking) when
-        # the .npz contains predecessor arrays; fall back to legacy SurfaceGraphPBRS.
-        vf_dir = getattr(self, "value_function_dir", None)
-        if not vf_dir:
-            self._current_precomputed_pbrs = None
-            return
-
-        # Try RoutePBRS first (requires predecessor arrays in the .npz)
-        try:
-            from nclone.value_function.route_pbrs import create_route_pbrs
-            route_pbrs = create_route_pbrs(level_id, vf_dir)
-            if route_pbrs is not None:
-                self._current_precomputed_pbrs = route_pbrs
-                logger.info(f"Loaded RoutePBRS (route-tracking) for level {level_id}")
-                return
-        except Exception as e:
-            logger.warning(f"RoutePBRS load failed for {level_id}: {e}, falling back")
-
-        # Fall back to legacy SurfaceGraphPBRS
-        from nclone.value_function import create_two_phase_pbrs
-
-        self._current_precomputed_pbrs = create_two_phase_pbrs(
-            level_id,
-            value_function_dir=vf_dir,
-            interpolation_method="linear",
-            blend_mode="continuous",
-        )
-        logger.info(f"Loaded legacy SurfaceGraphPBRS for level {level_id}")
-
-    def _setup_neural_pbrs_level(self, adapter: Any, headless: Any) -> None:
-        """Configure neural PBRS adapter with current level data from headless.
-
-        Extracts tile grid, entity positions, and mine data from the headless
-        simulator to set up the NeuralValuePBRS adapter for the current level.
-
-        Args:
-            adapter: NeuralValuePBRS instance.
-            headless: NativePlayHeadless or NPlayHeadless instance.
-        """
-        import numpy as np
-
-        try:
-            sim = headless.sim if hasattr(headless, "sim") else headless
-            sim_state = sim.get_state()
-
-            # Extract tile grid (42x23)
-            tile_data = sim.get_tile_grid()
-            tile_grid = np.array(tile_data, dtype=np.int8).reshape(23, 42).T
-
-            # Find switch and exit positions from entities
-            switch_pos = (0.0, 0.0)
-            exit_pos = (0.0, 0.0)
-            mine_positions = []
-
-            for ent in sim_state.entities:
-                if ent.entity_type == 4:  # exit switch
-                    switch_pos = (ent.x, ent.y)
-                elif ent.entity_type == 3:  # exit door
-                    exit_pos = (ent.x, ent.y)
-                elif ent.entity_type in (1, 21):  # toggle mines
-                    mine_positions.append((ent.x, ent.y, ent.entity_type))
-
-            adapter.set_level(
-                tile_grid=tile_grid,
-                switch_pos=switch_pos,
-                exit_pos=exit_pos,
-                mine_positions=mine_positions,
-                headless=headless,
-            )
-        except Exception as e:
-            logger.warning("Failed to set up neural PBRS level data: %s", e)
-
-    def _try_build_reachability_pbrs(self) -> None:
-        """Build analytical reachability PBRS from current graph data.
-
-        Requires self.current_graph_data to be populated (by graph mixin).
-        Sets self._current_precomputed_pbrs so the reward calculator picks
-        it up via the existing precomputed_pbrs code path (same interface).
-        """
-        if not getattr(self, "use_reachability_pbrs", False):
-            return
-
-        graph_data = getattr(self, "current_graph_data", None)
-        if not graph_data:
-            return
-
-        try:
-            from nclone.analytical_physics.reachability_builder import (
-                build_reachability_pbrs,
-                should_rebuild,
-            )
-
-            # Get level data
-            try:
-                level_data = self.level_data
-            except Exception:
-                return
-
-            # Check if rebuild is needed (mine state may have changed)
-            existing = self._current_reachability_pbrs
-            if existing is not None and not should_rebuild(existing, level_data):
-                # No mine state change, reuse existing PBRS
-                self._current_precomputed_pbrs = existing
-                return
-
-            switch_pos = self.nplay_headless.exit_switch_position()
-            exit_pos = self.nplay_headless.exit_door_position()
-
-            if switch_pos is None or exit_pos is None:
-                return
-
-            pbrs = build_reachability_pbrs(
-                graph_data=graph_data,
-                level_data=level_data,
-                switch_pos=switch_pos,
-                exit_pos=exit_pos,
-            )
-
-            self._current_reachability_pbrs = pbrs
-            # Use the same slot as precomputed PBRS (same interface)
-            self._current_precomputed_pbrs = pbrs
-
-        except Exception as e:
-            logger.warning(f"Failed to build reachability PBRS: {e}")
-            self._current_reachability_pbrs = None
 
     def get_observation(self) -> Dict[str, Any]:
         """Public accessor for current observation (for frame skip wrapper).
@@ -1432,32 +1077,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         return int(base_limit * multiplier)
 
     def _update_dynamic_truncation_if_needed(self):
-        """Update dynamic truncation limit if PBRS surface area becomes available.
+        """Update dynamic truncation limit if the level surface area can be computed now.
 
-        This ensures that dynamic truncation is applied as soon as the level complexity
-        can be determined from PBRS calculations, even if it wasn't available during
-        initial level loading.
+        NppEnvironment sets this at reset time; the base class provides a no-op so
+        tests using BaseNppEnvironment don't require a surface-area computation hook.
+        Subclasses may override to apply a complexity-aware truncation update.
         """
-        from .constants import MAX_TIME_IN_FRAMES
-
-        pbrs_calculator = self.reward_calculator.pbrs_calculator
-        if (
-            pbrs_calculator._cached_surface_area is not None
-            and self.truncation_checker.current_truncation_limit == MAX_TIME_IN_FRAMES
-        ):
-            # Surface area is now available but we're still using fallback limit
-            surface_area = pbrs_calculator._cached_surface_area
-            reachable_mine_count = 0  # Simplified reward system
-
-            truncation_limit = self.truncation_checker.set_level_truncation_limit(
-                surface_area, reachable_mine_count
-            )
-
-            if self.enable_logging:
-                logger.info(
-                    f"Updated to dynamic truncation limit: {truncation_limit} frames "
-                    f"(surface_area={surface_area:.0f})"
-                )
+        return
 
     def _extend_info_hook(self, info: Dict[str, Any]):
         """Hook to add additional fields to info dictionary.
@@ -1515,85 +1141,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                     exc_info=True,
                 )
                 self._warned_about_position = True
-
-    def _build_primitive_reward_breakdown(
-        self,
-        final_obs: Dict[str, Any],
-        player_won: bool,
-        terminated: bool,
-        truncated: bool,
-    ) -> Dict[str, Any]:
-        """Scaled reward components for route visualization (FiGAR / precomputed PBRS).
-
-        ``episode_return`` is ``current_ep_reward`` (sum of ``primitive_rewards`` per
-        step, including truncation penalty when applicable). ``components_sum`` is
-        sparse + α·PBRS + time + truncation in scaled units; ``residual`` catches
-        float drift or inconsistent truncation scaling.
-        """
-        from .reward_calculation.reward_constants import TRUNCATION_PENALTY
-
-        prc = self.primitive_reward_calculator
-        sc = prc.global_reward_scale
-        total_pbrs_u = sum(prc.episode_pbrs_rewards) if prc.episode_pbrs_rewards else 0.0
-        total_sparse_u = (
-            sum(prc.episode_sparse_rewards) if prc.episode_sparse_rewards else 0.0
-        )
-        n = len(prc.episode_pbrs_rewards)
-        pbrs_scaled = prc.alpha * total_pbrs_u * sc
-        sparse_scaled = total_sparse_u * sc
-        time_scaled = n * prc.time_penalty_per_frame * sc
-        trunc_scaled = (TRUNCATION_PENALTY * sc) if truncated else 0.0
-
-        components_sum = pbrs_scaled + sparse_scaled + time_scaled + trunc_scaled
-        ep_ret = float(self.current_ep_reward)
-        residual = ep_ret - components_sum
-
-        if truncated and not terminated:
-            combined_path_distance = final_obs.get("_pbrs_combined_path_distance", 1000.0)
-            final_distance = final_obs.get("_pbrs_last_distance_to_goal", None)
-            if final_distance is None or final_distance == float("inf"):
-                progress = 0.0
-            elif combined_path_distance > 0:
-                progress = 1.0 - (final_distance / combined_path_distance)
-                progress = max(0.0, min(1.0, progress))
-            else:
-                progress = 0.0
-        else:
-            combined_path_distance = None
-            final_distance = None
-            progress = None
-
-        death_cause = None
-        if terminated and not player_won:
-            death_cause = self.nplay_headless.ninja_death_cause()
-
-        if player_won:
-            terminal_label = "win"
-        elif truncated:
-            terminal_label = "timeout"
-        else:
-            terminal_label = "death"
-
-        return {
-            "pbrs_scaled": pbrs_scaled,
-            "sparse_scaled": sparse_scaled,
-            "time_scaled": time_scaled,
-            "truncation_scaled": trunc_scaled,
-            "components_sum": components_sum,
-            "episode_return": ep_ret,
-            "residual": residual,
-            "forward_steps": prc.episode_forward_steps,
-            "backtrack_steps": prc.episode_backtrack_steps,
-            "n_primitive_frames": n,
-            "death_cause": death_cause,
-            "terminal": terminal_label,
-            "alpha": prc.alpha,
-            "gamma": prc.gamma,
-            "global_reward_scale": sc,
-            "final_progress": progress,
-            "final_distance": final_distance,
-            "combined_path_distance": combined_path_distance,
-        }
 
     def _build_episode_info(
         self, player_won: bool, terminated: bool, truncated: bool
@@ -1839,28 +1386,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                         f"[CURRICULUM] Stage advanced to {new_stage}, switching shared cache and invalidating PBRS caches. "
                         "Next PBRS calculation will use new stage's SharedLevelCache with curriculum goal positions."
                     )
-                    # Clear PBRS normalization cache (will rebuild on next step with curriculum positions)
-                    # CRITICAL: All position-dependent PBRS caches must be cleared on curriculum advancement
-                    if hasattr(self.reward_calculator, "pbrs_calculator"):
-                        pbrs_calc = self.reward_calculator.pbrs_calculator
-
-                        # Clear path distance caches (used for PBRS normalization)
-                        pbrs_calc._cached_combined_path_distance = None
-                        pbrs_calc._cached_spawn_to_switch_distance = None
-                        pbrs_calc._cached_switch_to_exit_distance = None
-                        pbrs_calc._cached_combined_physics_cost = None
-
-                        # Clear surface area cache (geometry-based, not position-based, but clear for safety)
-                        pbrs_calc._cached_surface_area = None
-
-                        # Clear level/state tracking (forces recomputation on next step)
-                        pbrs_calc._cached_level_id = None
-                        pbrs_calc._cached_switch_states = None
-
-                        # Clear per-step caches (distance to current goal)
-                        pbrs_calc._cached_distance = None
-                        pbrs_calc._cached_start_node = None
-                        pbrs_calc._cached_next_hop = None
+                    # Clear all path caches on curriculum advancement: the new stage
+                    # uses different goal positions, so any cached path distances or
+                    # level-scoped structures are stale.
+                    if hasattr(self.reward_calculator, "path_calculator"):
+                        self.reward_calculator.path_calculator.clear_cache()
 
                     # Clear level_data cache (contains old stage's entity positions)
                     self._cached_level_data = None
@@ -1870,12 +1400,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
                     # Stage-aware level_ids automatically trigger cache rebuilds
                     # Just clear step cache for immediate effect
-                    if hasattr(
-                        self.reward_calculator.pbrs_calculator, "path_calculator"
-                    ):
-                        path_calc = (
-                            self.reward_calculator.pbrs_calculator.path_calculator
-                        )
+                    if hasattr(self.reward_calculator, "path_calculator"):
+                        path_calc = self.reward_calculator.path_calculator
                         # Clear step cache only (level cache will rebuild due to new level_id)
                         path_calc.clear_step_cache()
                         logger.debug(
@@ -1890,38 +1416,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Episode-end reward metrics (only populated when the episode is actually done)
         if terminated or truncated:
-            # FiGAR / precomputed PBRS: TensorBoard + PBRSLoggingCallback use primitive stats only
-            if self._current_precomputed_pbrs is not None:
-                info["episode_pbrs_metrics"] = (
-                    self.primitive_reward_calculator.get_episode_reward_metrics()
-                )
-            elif hasattr(self.reward_calculator, "get_episode_reward_metrics"):
-                info["episode_pbrs_metrics"] = (
+            if hasattr(self.reward_calculator, "get_episode_reward_metrics"):
+                info["episode_reward_metrics"] = (
                     self.reward_calculator.get_episode_reward_metrics()
                 )
-
-            # Surface-graph precomputed PBRS diagnostics
-            if self._current_precomputed_pbrs is not None:
-                sg = self.primitive_reward_calculator.get_episode_stats()
-                sg["phi_at_spawn"] = self._phi_at_spawn
-                sg["phi_at_switch_collection"] = self._phi_at_switch_collection
-                sg["phi_at_terminal"] = self._phi_at_terminal
-                sg["contact_floor_frames"] = self._contact_floor_frames
-                sg["contact_wall_frames"] = self._contact_wall_frames
-                sg["contact_airborne_frames"] = self._contact_airborne_frames
-                if hasattr(self._current_precomputed_pbrs, "get_statistics"):
-                    sg["vf_stats"] = self._current_precomputed_pbrs.get_statistics()
-                else:
-                    sg["vf_stats"] = {}
-                # RoutePBRS route-tracking metrics (absent for SurfaceGraphPBRS)
-                if hasattr(self._current_precomputed_pbrs, "get_route_metrics"):
-                    sg["route_metrics"] = self._current_precomputed_pbrs.get_route_metrics()
-                # Full episode return (includes truncation penalty on last step when timed out)
-                sg["scaled_episode_return"] = float(self.current_ep_reward)
-                info["episode_precomputed_pbrs_metrics"] = sg
-                info["precomputed_pbrs_active"] = True
-            else:
-                info["precomputed_pbrs_active"] = False
 
         return info
 
@@ -1987,44 +1485,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset reward calculator
         self.reward_calculator.reset()
 
-        # Reset primitive reward calculator
-        self.primitive_reward_calculator.reset()
-
-        # Reset per-episode tracking for precomputed PBRS diagnostics
-        self._phi_at_spawn: Optional[float] = None
-        self._phi_at_switch_collection: Optional[float] = None
-        self._phi_at_terminal: Optional[float] = None
-        self._contact_floor_frames: int = 0
-        self._contact_wall_frames: int = 0
-        self._contact_airborne_frames: int = 0
-        self._first_frame_of_episode: bool = True
-
-        # Reset per-episode fallback counters so vf_stats reports per-episode
-        # rates rather than lifetime cumulative fractions.
-        if self._current_precomputed_pbrs is not None and hasattr(
-            self._current_precomputed_pbrs, "reset_fallback_stats"
-        ):
-            self._current_precomputed_pbrs.reset_fallback_stats()
-
-        # RoutePBRS: extract initial route from spawn position.
-        # Must be called after the level is loaded (headless is ready) so that
-        # ninja_position() returns the actual spawn coordinates.
-        if self._current_precomputed_pbrs is not None and hasattr(
-            self._current_precomputed_pbrs, "reset"
-        ):
-            try:
-                pos = self.nplay_headless.ninja_position()
-                vel = self.nplay_headless.ninja_velocity()
-                sc = getattr(self.nplay_headless.sim.ninja, "state", None)
-                if pos is not None and vel is not None:
-                    self._current_precomputed_pbrs.reset(
-                        float(pos[0]), float(pos[1]),
-                        float(vel[0]), float(vel[1]),
-                        contact_state=sc,
-                    )
-            except Exception as e:
-                logger.debug(f"RoutePBRS.reset failed (non-fatal): {e}")
-
         # Reset truncation checker
         self.truncation_checker.reset()
 
@@ -2076,9 +1536,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Reset switch activation tracking
         self._switch_activation_frame = None
         self._switch_activation_step = None
-
-        # Reset per-frame switch state tracker for surface-graph PBRS delta computation
-        self._prev_switch_activated = False
 
         # Capture curriculum stage at EPISODE START for correct visualization
         # This is the stage that determines entity positions for THIS episode
@@ -3405,13 +2862,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._profile_end("obs_base_prep", t_obs_prep)
 
         t_ov = self._profile_start("obs_entity_overlays")
+        # Classify mines by live `state`, not by entity type, so the overlay
+        # agrees with `_compute_hazard_map` after any mid-episode toggle.
+        deadly_mines, safe_mines = classify_mines_by_state(
+            (*(self._cached_toggle_mines or []), *toggled_mines)
+        )
         entity_overlays = compute_entity_overlays(
             ninja_pos=(float(ninja_pos[0]), float(ninja_pos[1])),
             switch_pos=switch_pos,
             switch_activated=switch_activated,
             exit_pos=exit_pos,
-            deadly_mines=self._cached_toggle_mines or [],
-            safe_mines=toggled_mines,
+            deadly_mines=deadly_mines,
+            safe_mines=safe_mines,
         )
         self._profile_end("obs_entity_overlays", t_ov)
 
@@ -3559,7 +3021,6 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     def _reset_reward_calculator(self):
         """Reset the reward calculator."""
         self.reward_calculator.reset()
-        self.primitive_reward_calculator.reset()
 
     def sync_reward_timesteps(self, timesteps: int) -> None:
         """Sync global training step for NPP-14 BSRS beta / HWM anneal (MaskedPPO calls via env_method)."""
@@ -3837,15 +3298,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             Returns (None, None) if calculation not possible
         """
         try:
-            # Get path calculator from reward calculator's PBRS calculator
-            if not hasattr(self.reward_calculator, "pbrs_calculator"):
+            if not hasattr(self.reward_calculator, "path_calculator"):
                 return (None, None)
 
-            pbrs_calc = self.reward_calculator.pbrs_calculator
-            if not hasattr(pbrs_calc, "path_calculator"):
-                return (None, None)
-
-            path_calculator = pbrs_calc.path_calculator
+            path_calculator = self.reward_calculator.path_calculator
 
             # Get current level data and graph
             level_data = self.level_data
@@ -4096,13 +3552,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             from nclone.graph.reachability.pathfinding_utils import find_ninja_node
             from nclone.constants.physics_constants import NINJA_RADIUS
 
-            # Get path calculator from reward calculator
-            if not hasattr(self.reward_calculator, "pbrs_calculator"):
-                raise RuntimeError("PBRS calculator not found in reward calculator")
-            pbrs_calc = self.reward_calculator.pbrs_calculator
-            if not hasattr(pbrs_calc, "path_calculator"):
-                raise RuntimeError("Path calculator not found in PBRS calculator")
-            path_calculator = pbrs_calc.path_calculator
+            if not hasattr(self.reward_calculator, "path_calculator"):
+                raise RuntimeError("Path calculator not found in reward calculator")
+            path_calculator = self.reward_calculator.path_calculator
 
             # Get level cache
             if not hasattr(path_calculator, "level_cache"):

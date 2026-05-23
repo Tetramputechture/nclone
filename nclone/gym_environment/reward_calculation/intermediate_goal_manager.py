@@ -211,7 +211,7 @@ class IntermediateGoalManager:
 
             # Build mine proximity cache (for entity masking; cost multipliers deprecated)
             mine_cache = MineProximityCostCache()
-            mine_cache.build_cache(level_data, adjacency)
+            mine_cache.build_cache(level_data, adjacency, graph_data)
 
             # Find spawn node
             spawn_node = find_ninja_node(

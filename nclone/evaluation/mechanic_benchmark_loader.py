@@ -87,6 +87,50 @@ class MechanicBenchmarkLoader:
     def get_map_data(self, index: int) -> List[Any]:
         return list(self.load_payload(index)["map_data"])
 
+    def bucket_name_for_index(self, index: int) -> str:
+        """Bucket (mechanic category) from layout ``<split>/<BUCKET>/T<tier>/*.pkl``."""
+        if not self._entries or index < 0 or index >= len(self._entries):
+            return "?"
+        _split, pkl, _lid = self._entries[index]
+        # pkl = .../BUCKET/T1/level_id.pkl
+        return pkl.parent.parent.name
+
+    def next_category_index(self, index: int) -> int:
+        """First level index whose bucket differs from ``index``, scanning forward then wrap."""
+        n = len(self._entries)
+        if n <= 1:
+            return index
+        b0 = self.bucket_name_for_index(index)
+        for j in range(index + 1, n):
+            if self.bucket_name_for_index(j) != b0:
+                return j
+        for j in range(0, index):
+            if self.bucket_name_for_index(j) != b0:
+                return j
+        return (index + 1) % n
+
+    def prev_category_index(self, index: int) -> int:
+        """First level of the previous bucket in dataset order (wraps)."""
+        n = len(self._entries)
+        if n <= 1:
+            return index
+        b0 = self.bucket_name_for_index(index)
+        for j in range(index - 1, -1, -1):
+            if self.bucket_name_for_index(j) != b0:
+                b1 = self.bucket_name_for_index(j)
+                k = j
+                while k > 0 and self.bucket_name_for_index(k - 1) == b1:
+                    k -= 1
+                return k
+        for j in range(n - 1, index, -1):
+            if self.bucket_name_for_index(j) != b0:
+                b1 = self.bucket_name_for_index(j)
+                k = j
+                while k > 0 and self.bucket_name_for_index(k - 1) == b1:
+                    k -= 1
+                return k
+        return (index - 1) % n
+
     @staticmethod
     def overlay_lines(
         payload: Dict[str, Any], index: int, n_levels: int

@@ -59,7 +59,6 @@ class CachedPathDistanceCalculator:
         shared_level_cache: Optional[Any] = None,
         shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
         goal_curriculum_manager: Optional[Any] = None,
-        simulation_phi_dir: Optional[str] = None,
     ):
         """
         Initialize cached path distance calculator.
@@ -72,10 +71,6 @@ class CachedPathDistanceCalculator:
             shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
             shared_level_caches_by_stage: Optional dict of stage -> SharedLevelCache for curriculum
             goal_curriculum_manager: Optional IntermediateGoalManager for stage selection
-            simulation_phi_dir: Optional directory containing precomputed
-                simulation-based phi grids (.npz files). When provided,
-                the path calculator will try to load simulation phi grids
-                for higher-quality PBRS potentials.
         """
         # Per-query cache for physics-optimal paths (start_node, goal_node) → distance
         # Physics costs are deterministic, so aggressive caching is beneficial
@@ -90,7 +85,6 @@ class CachedPathDistanceCalculator:
         self._shared_level_cache = shared_level_cache
         self._shared_level_caches_by_stage = shared_level_caches_by_stage
         self.goal_curriculum_manager = goal_curriculum_manager
-        self._simulation_phi_dir = simulation_phi_dir
 
         # Determine which shared cache to use
         has_shared_cache = (
@@ -100,9 +94,7 @@ class CachedPathDistanceCalculator:
         # Level-based cache for precomputed distances
         # If shared cache provided, this will be set to a view wrapper
         self.level_cache: Optional[LevelBasedPathDistanceCache] = (
-            None
-            if has_shared_cache
-            else LevelBasedPathDistanceCache(simulation_phi_dir=simulation_phi_dir)
+            None if has_shared_cache else LevelBasedPathDistanceCache()
         )
         self.level_data: Optional[LevelData] = None
 
@@ -182,9 +174,7 @@ class CachedPathDistanceCalculator:
 
     def _switch_to_local_caches(self) -> None:
         """Detach shared-memory views; build fresh local caches for dynamic mine/switch updates."""
-        self.level_cache = LevelBasedPathDistanceCache(
-            simulation_phi_dir=self._simulation_phi_dir
-        )
+        self.level_cache = LevelBasedPathDistanceCache()
         self.mine_proximity_cache = MineProximityCostCache()
         self.mine_sdf = create_mine_sdf()
 
@@ -366,9 +356,7 @@ class CachedPathDistanceCalculator:
 
         # Standard path: build caches locally
         if self.level_cache is None:
-            self.level_cache = LevelBasedPathDistanceCache(
-                simulation_phi_dir=self._simulation_phi_dir
-            )
+            self.level_cache = LevelBasedPathDistanceCache()
 
         # Build mine proximity cache FIRST (needed for level cache building)
         # CRITICAL: This MUST be done before level cache building to ensure
@@ -376,7 +364,7 @@ class CachedPathDistanceCalculator:
         mine_cache_rebuilt = False
         if self.mine_proximity_cache is not None:
             mine_cache_rebuilt = self.mine_proximity_cache.build_cache(
-                level_data, adjacency
+                level_data, adjacency, graph_data
             )
 
             # DIAGNOSTIC: Validate mine cache state after build
@@ -441,7 +429,9 @@ class CachedPathDistanceCalculator:
         # Build mine SDF for O(1) observation space features
         # This is precomputed at tile resolution (44x25) for zero runtime cost
         sdf_rebuilt = (
-            self.mine_sdf.build_sdf(level_data) if self.mine_sdf is not None else False
+            self.mine_sdf.build_sdf(level_data, graph_data)
+            if self.mine_sdf is not None
+            else False
         )
 
         # Then build level cache (uses mine proximity cache and SDF during BFS)

@@ -1,11 +1,12 @@
 """Reproducibility + mechanic-purity tests for BUCKET_CATALOG generators.
 
-Covers the three new dedicated Phase-1 generators that back the
+Covers the dedicated Phase-1 generators that back the
 mechanic-primary benchmark taxonomy:
 
 * ``MapBasicJump``  (``basic_jump`` in ``GENERATOR_REGISTRY``)
 * ``MapWallJump``   (``wall_jump``)
 * ``MapMinePath``   (``mine_path``)
+* ``MapSlopes``     (``slopes``)
 
 For each generator we assert:
 
@@ -59,7 +60,14 @@ EXIT_SWITCH_ENTITY_TYPE = 4
 LOCKED_DOOR_TYPE = 6
 TRAP_DOOR_TYPE = 8
 
-DEDICATED_GENERATORS = {"basic_jump", "wall_jump", "mine_path"}
+# BASIC_JUMP mixed-secondary presets (tier 3/4) intentionally place mines.
+BASIC_JUMP_MIXED_MINE_PRESETS = frozenset(
+    {"single_gap_with_mine_t3", "double_gap_mines_t4"}
+)
+
+DEDICATED_GENERATORS = {"basic_jump", "wall_jump", "mine_path", "slopes"}
+# Tile ids 6–9 (45°) and 18–33 (mild/steep slopes)
+SLOPE_TILE_TYPES = set(range(6, 10)) | set(range(18, 34))
 
 
 def _extract_tile_grid(map_data: List[int]) -> List[int]:
@@ -166,20 +174,56 @@ def _dedicated_entries(phase1_entries):
     ]
 
 
-def test_basic_jump_and_wall_jump_contain_no_mines(phase1_entries):
-    """BASIC_JUMP and WALL_JUMP must never emit toggle mines."""
-    checked = 0
+def test_basic_jump_and_wall_jump_mine_purity(phase1_entries):
+    """WALL_JUMP never emits mines; pure BASIC_JUMP presets never emit mines.
+
+    Tier 3/4 mixed presets in BASIC_JUMP (``*with_mine*``) must place at
+    least one mine.
+    """
+    checked_pure = 0
+    checked_mixed = 0
     for bucket, _tier, gen_type, preset in _dedicated_entries(phase1_entries):
         if bucket not in ("BASIC_JUMP", "WALL_JUMP"):
             continue
         md = _build(gen_type, preset, seed=0).map_data()
         entities = _extract_dedicated_entities(md)
         mines = [e for e in entities if e[0] in MINE_ENTITY_TYPES]
-        assert not mines, (
-            f"{bucket}/{gen_type}:{preset} emitted mines: {mines}"
+        if bucket == "WALL_JUMP":
+            assert not mines, f"{bucket}/{gen_type}:{preset} emitted mines: {mines}"
+        elif gen_type == "basic_jump" and preset in BASIC_JUMP_MIXED_MINE_PRESETS:
+            assert mines, f"{bucket}/{gen_type}:{preset} expected at least one mine"
+            checked_mixed += 1
+        else:
+            assert not mines, (
+                f"{bucket}/{gen_type}:{preset} emitted mines: {mines}"
+            )
+            if bucket == "BASIC_JUMP":
+                checked_pure += 1
+    assert checked_pure > 0, "no pure BASIC_JUMP entries exercised"
+    assert checked_mixed > 0, "no mixed-mine BASIC_JUMP entries exercised"
+
+
+def test_slopes_emits_slopes_tiles_and_mine_budget(phase1_entries):
+    """SLOPES bucket: tiles include a slope; optional mines follow tier cap."""
+    checked = 0
+    for bucket, tier, gen_type, preset in phase1_entries:
+        if gen_type != "slopes" or bucket != "SLOPES":
+            continue
+        md = _build(gen_type, preset, seed=0).map_data()
+        grid = _extract_tile_grid(md)
+        assert any(t in SLOPE_TILE_TYPES for t in grid), (
+            f"{preset}: expected at least one slope tile in grid"
         )
+        entities = _extract_dedicated_entities(md)
+        mines = [e for e in entities if e[0] in MINE_ENTITY_TYPES]
+        if tier <= 2:
+            assert not mines, f"{preset} tier {tier} must not have mines, got {mines}"
+        if tier == 3:
+            assert len(mines) <= 1, f"{preset} T3: at most 1 mine, got {len(mines)}"
+        if tier == 4:
+            assert len(mines) <= 2, f"{preset} T4: at most 2 mines, got {len(mines)}"
         checked += 1
-    assert checked > 0, "no BASIC_JUMP/WALL_JUMP entries exercised"
+    assert checked == 4, f"expected 4 SLOPES catalog entries, got {checked}"
 
 
 def test_mine_path_contains_at_least_one_mine(phase1_entries):

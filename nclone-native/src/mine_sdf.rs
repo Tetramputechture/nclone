@@ -1,195 +1,15 @@
-//! Signed Distance Field (SDF) to mines for O(1) hazard lookups.
+//! Mine threat map (NPP-10) and 1-channel deadly-mine SDF (NPP-46).
 //!
-//! Phase 4.5: Port of MineSignedDistanceField from Python.
-//! Used for observation space features (escape direction).
-//!
-//! `MineThreatMap` (NPP-10): 3-channel 168×92 @ 6px. Uses an [`rstar::RTree`] spatial
-//! index so each cell queries nearest deadly/safe mines in O(log n) instead of scanning
-//! all mines (same role as spatial-hash pruning in the spec).
+//! `MineThreatMap` produces either a 3-channel (`deadly_sdf`, `safe_sdf`,
+//! `passability`) or 1-channel (`deadly_sdf`) buffer at 168x92 on a 6px grid.
+//! The Layer 1 policy consumes the 1-channel `hazard_map` view. An
+//! [`rstar::RTree`] spatial index gives per-cell nearest-neighbor queries in
+//! O(log n), and the 1-channel path recomputes only cells within the SDF
+//! effective radius of toggled mines (see `compute_hazard_map_if_changed`).
 
 use pyo3::prelude::*;
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
-
-const SDF_CELL_SIZE: f64 = 6.0;
-const SDF_WIDTH: usize = 176;
-const SDF_HEIGHT: usize = 100;
-const DANGER_RADIUS: f64 = 20.0;
-
-/// Signed Distance Field to nearest deadly mine.
-#[pyclass]
-pub struct MineSDF {
-    /// SDF grid: normalized distance [-1, 1] per 6px cell
-    sdf_grid: Vec<f32>,
-    /// Gradient: (dx, dy) escape direction per cell
-    gradient_grid: Vec<(f32, f32)>,
-}
-
-#[pymethods]
-impl MineSDF {
-    #[new]
-    fn new() -> Self {
-        MineSDF {
-            sdf_grid: vec![],
-            gradient_grid: vec![],
-        }
-    }
-
-    /// Build SDF from deadly mine positions (world coords).
-    ///
-    /// Args:
-    ///   mine_positions: List of (x, y) in world pixels
-    fn build_from_mines(&mut self, mine_positions: Vec<(f64, f64)>) {
-        self.sdf_grid = vec![1.0_f32; SDF_WIDTH * SDF_HEIGHT];
-        self.gradient_grid = vec![(0.0_f32, 0.0_f32); SDF_WIDTH * SDF_HEIGHT];
-
-        if mine_positions.is_empty() {
-            return;
-        }
-
-        for row in 0..SDF_HEIGHT {
-            for col in 0..SDF_WIDTH {
-                let cell_center_x = (col as f64 + 0.5) * SDF_CELL_SIZE;
-                let cell_center_y = (row as f64 + 0.5) * SDF_CELL_SIZE;
-
-                let mut min_dist = f64::INFINITY;
-                let mut nearest_dx = 0.0_f64;
-                let mut nearest_dy = 0.0_f64;
-
-                for &(mine_x, mine_y) in &mine_positions {
-                    let dx = cell_center_x - mine_x;
-                    let dy = cell_center_y - mine_y;
-                    let dist = (dx * dx + dy * dy).sqrt();
-
-                    if dist < min_dist {
-                        min_dist = dist;
-                        nearest_dx = dx;
-                        nearest_dy = dy;
-                    }
-                }
-
-                let normalized_dist = if min_dist <= DANGER_RADIUS {
-                    (min_dist / DANGER_RADIUS) - 1.0
-                } else {
-                    ((min_dist - DANGER_RADIUS) / (2.0 * DANGER_RADIUS)).min(1.0)
-                };
-
-                let idx = row * SDF_WIDTH + col;
-                self.sdf_grid[idx] = normalized_dist as f32;
-
-                if min_dist > 1e-6 {
-                    self.gradient_grid[idx] = (
-                        (nearest_dx / min_dist) as f32,
-                        (nearest_dy / min_dist) as f32,
-                    );
-                }
-            }
-        }
-    }
-
-    /// Get SDF value at world position (nearest cell).
-    fn get_sdf_value(&self, x: f64, y: f64) -> f64 {
-        if self.sdf_grid.is_empty() {
-            return 1.0;
-        }
-        let col = (x / SDF_CELL_SIZE) as i32;
-        let row = (y / SDF_CELL_SIZE) as i32;
-        let col = col.clamp(0, (SDF_WIDTH - 1) as i32);
-        let row = row.clamp(0, (SDF_HEIGHT - 1) as i32);
-        self.sdf_grid[row as usize * SDF_WIDTH + col as usize] as f64
-    }
-
-    /// Get bilinear interpolated SDF value.
-    fn get_sdf_value_interp(&self, x: f64, y: f64) -> f64 {
-        if self.sdf_grid.is_empty() {
-            return 1.0;
-        }
-        let gx = x / SDF_CELL_SIZE;
-        let gy = y / SDF_CELL_SIZE;
-        let max_gx = (SDF_WIDTH - 1) as f64;
-        let max_gy = (SDF_HEIGHT - 1) as f64;
-        let gx = gx.clamp(0.0, max_gx);
-        let gy = gy.clamp(0.0, max_gy);
-
-        let ix0 = gx.floor() as usize;
-        let iy0 = gy.floor() as usize;
-        let ix1 = (ix0 + 1).min(SDF_WIDTH - 1);
-        let iy1 = (iy0 + 1).min(SDF_HEIGHT - 1);
-        let fx = gx - ix0 as f64;
-        let fy = gy - iy0 as f64;
-
-        let v00 = self.sdf_grid[iy0 * SDF_WIDTH + ix0] as f64;
-        let v10 = self.sdf_grid[iy0 * SDF_WIDTH + ix1] as f64;
-        let v01 = self.sdf_grid[iy1 * SDF_WIDTH + ix0] as f64;
-        let v11 = self.sdf_grid[iy1 * SDF_WIDTH + ix1] as f64;
-
-        v00 * (1.0 - fx) * (1.0 - fy) + v10 * fx * (1.0 - fy)
-            + v01 * (1.0 - fx) * fy
-            + v11 * fx * fy
-    }
-
-    /// Get gradient (escape direction) at world position.
-    fn get_gradient(&self, x: f64, y: f64) -> (f64, f64) {
-        if self.gradient_grid.is_empty() {
-            return (0.0, 0.0);
-        }
-        let col = (x / SDF_CELL_SIZE) as i32;
-        let row = (y / SDF_CELL_SIZE) as i32;
-        let col = col.clamp(0, (SDF_WIDTH - 1) as i32);
-        let row = row.clamp(0, (SDF_HEIGHT - 1) as i32);
-        let (gx, gy) = self.gradient_grid[row as usize * SDF_WIDTH + col as usize];
-        (gx as f64, gy as f64)
-    }
-
-    /// Get bilinear interpolated gradient.
-    fn get_gradient_interp(&self, x: f64, y: f64) -> (f64, f64) {
-        if self.gradient_grid.is_empty() {
-            return (0.0, 0.0);
-        }
-        let gx = x / SDF_CELL_SIZE;
-        let gy = y / SDF_CELL_SIZE;
-        let max_gx = (SDF_WIDTH - 1) as f64;
-        let max_gy = (SDF_HEIGHT - 1) as f64;
-        let gx = gx.clamp(0.0, max_gx);
-        let gy = gy.clamp(0.0, max_gy);
-
-        let ix0 = gx.floor() as usize;
-        let iy0 = gy.floor() as usize;
-        let ix1 = (ix0 + 1).min(SDF_WIDTH - 1);
-        let iy1 = (iy0 + 1).min(SDF_HEIGHT - 1);
-        let fx = gx - ix0 as f64;
-        let fy = gy - iy0 as f64;
-
-        let (g00x, g00y) = self.gradient_grid[iy0 * SDF_WIDTH + ix0];
-        let (g10x, g10y) = self.gradient_grid[iy0 * SDF_WIDTH + ix1];
-        let (g01x, g01y) = self.gradient_grid[iy1 * SDF_WIDTH + ix0];
-        let (g11x, g11y) = self.gradient_grid[iy1 * SDF_WIDTH + ix1];
-
-        let out_x = g00x as f64 * (1.0 - fx) * (1.0 - fy)
-            + g10x as f64 * fx * (1.0 - fy)
-            + g01x as f64 * (1.0 - fx) * fy
-            + g11x as f64 * fx * fy;
-        let out_y = g00y as f64 * (1.0 - fx) * (1.0 - fy)
-            + g10y as f64 * fx * (1.0 - fy)
-            + g01y as f64 * (1.0 - fx) * fy
-            + g11y as f64 * fx * fy;
-
-        let mag = (out_x * out_x + out_y * out_y).sqrt();
-        if mag > 1e-9 {
-            (out_x / mag, out_y / mag)
-        } else {
-            (out_x, out_y)
-        }
-    }
-}
-
-// --- Mine threat map (L1.2, NPP-10): 3 × 168 × 92 @ 6px ---
-//
-// NPP-46 (Layer 1 toggle-mines chunk): adds a 1-channel `hazard_map`
-// view on top of the existing 3-channel `MineThreatMap`. The 1-channel path
-// exposes only the deadly-mine SDF (channel 0 of the 3-channel map) and is
-// the shape the Layer 1 policy consumes. The 3-channel path is kept as a
-// legacy fallback until all downstream consumers migrate.
 
 const THREAT_CELL_SIZE: f64 = 6.0;
 const THREAT_WIDTH: usize = 168;
@@ -388,7 +208,15 @@ impl MineThreatMap {
         out
     }
 
-    /// NPP-46: recompute the 1-channel deadly-mine SDF only if deadly positions changed.
+    /// NPP-46/48: recompute the 1-channel deadly-mine SDF only if deadly positions changed.
+    ///
+    /// When the deadly set changes, only cells within the SDF effective radius
+    /// (``MINE_KILL_RADIUS_PX + SDF_SCALE_PX = 38 px``) of a toggled mine can
+    /// actually change — beyond that radius the SDF saturates to ``1.0`` from
+    /// either the old or new nearest neighbor. The incremental path rebuilds
+    /// only those dirty cells, which is a ~60x reduction vs the full grid for
+    /// the typical single-mine-toggle case. Calling ``set_hazard_force_full(true)``
+    /// disables the fast path (for parity tests).
     fn compute_hazard_map_if_changed(
         &mut self,
         deadly_positions: Vec<(f64, f64)>,
@@ -400,13 +228,90 @@ impl MineThreatMap {
             return None;
         }
         self.hazard_cache_misses += 1;
-        // NPP-48: full-grid recompute on deadly-set change. `hazard_force_full` is reserved
-        // for future partial invalidation debugging (always uses inner full path today).
-        let out = Self::compute_hazard_map_inner(&deadly_positions);
-        self.hazard_cells_recomputed = THREAT_WIDTH * THREAT_HEIGHT;
+
+        // Cold start or forced full: compute the entire grid.
+        if self.last_hazard_output.is_empty() || self.hazard_force_full {
+            let out = Self::compute_hazard_map_inner(&deadly_positions);
+            self.hazard_cells_recomputed = THREAT_WIDTH * THREAT_HEIGHT;
+            self.last_hazard_deadly = deadly_positions;
+            self.last_hazard_output = out.clone();
+            return Some(out);
+        }
+
+        // Incremental path: only cells within EFFECT_RADIUS of a toggled mine
+        // can change. Toggle = symmetric difference of prev and curr position
+        // sets (positions themselves never move — only `state` toggles cause
+        // entities to appear/disappear from the deadly set).
+        let prev: std::collections::HashSet<(u64, u64)> = self
+            .last_hazard_deadly
+            .iter()
+            .map(|&(x, y)| (x.to_bits(), y.to_bits()))
+            .collect();
+        let curr: std::collections::HashSet<(u64, u64)> = deadly_positions
+            .iter()
+            .map(|&(x, y)| (x.to_bits(), y.to_bits()))
+            .collect();
+        let changed_mines: Vec<(f64, f64)> = prev
+            .symmetric_difference(&curr)
+            .map(|&(xb, yb)| (f64::from_bits(xb), f64::from_bits(yb)))
+            .collect();
+
+        // Defensive fallback: if the diff is somehow larger than a full rebuild
+        // (e.g., entire set replaced), just recompute the full grid.
+        if changed_mines.len() * 256 > THREAT_WIDTH * THREAT_HEIGHT {
+            let out = Self::compute_hazard_map_inner(&deadly_positions);
+            self.hazard_cells_recomputed = THREAT_WIDTH * THREAT_HEIGHT;
+            self.last_hazard_deadly = deadly_positions;
+            self.last_hazard_output = out.clone();
+            return Some(out);
+        }
+
+        // Brute-force nearest over the (small) current deadly set is faster
+        // than rstar for the dirty-cell count we touch here (<~200 cells,
+        // <~50 mines in practice). It also avoids the R-tree build per call.
+        let effect_radius = MINE_KILL_RADIUS_PX + SDF_SCALE_PX;
+        let effect_radius_sq = effect_radius * effect_radius;
+        let mut cells_recomputed: usize = 0;
+
+        for &(mx, my) in &changed_mines {
+            let col_lo = ((mx - effect_radius) / THREAT_CELL_SIZE - 0.5).floor();
+            let col_hi = ((mx + effect_radius) / THREAT_CELL_SIZE - 0.5).ceil();
+            let row_lo = ((my - effect_radius) / THREAT_CELL_SIZE - 0.5).floor();
+            let row_hi = ((my + effect_radius) / THREAT_CELL_SIZE - 0.5).ceil();
+            let col_min = col_lo.max(0.0) as usize;
+            let col_max = col_hi.min((THREAT_WIDTH - 1) as f64).max(0.0) as usize;
+            let row_min = row_lo.max(0.0) as usize;
+            let row_max = row_hi.min((THREAT_HEIGHT - 1) as f64).max(0.0) as usize;
+
+            for row in row_min..=row_max {
+                for col in col_min..=col_max {
+                    let cx = (col as f64 + 0.5) * THREAT_CELL_SIZE;
+                    let cy = (row as f64 + 0.5) * THREAT_CELL_SIZE;
+                    let dx = cx - mx;
+                    let dy = cy - my;
+                    if dx * dx + dy * dy > effect_radius_sq {
+                        continue;
+                    }
+                    let mut min_d_sq = f64::INFINITY;
+                    for &(px, py) in &deadly_positions {
+                        let ex = cx - px;
+                        let ey = cy - py;
+                        let d2 = ex * ex + ey * ey;
+                        if d2 < min_d_sq {
+                            min_d_sq = d2;
+                        }
+                    }
+                    let idx = row * THREAT_WIDTH + col;
+                    self.last_hazard_output[idx] =
+                        Self::sdf_from_min_dist(min_d_sq.sqrt()) as f32;
+                    cells_recomputed += 1;
+                }
+            }
+        }
+
+        self.hazard_cells_recomputed = cells_recomputed;
         self.last_hazard_deadly = deadly_positions;
-        self.last_hazard_output = out.clone();
-        Some(out)
+        Some(self.last_hazard_output.clone())
     }
 
     /// Reset NPP-48 hazard cache counters (not the cached grid).

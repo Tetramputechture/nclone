@@ -14,7 +14,8 @@ E - Toggle exploration debug overlay
 C - Toggle grid debug overlay
 I - Toggle tile type overlay
 L - Toggle tile rendering
-M - Toggle mine predictor debug overlay
+M - Toggle mine SDF heatmap (signed distance field)
+H - Toggle combined hazard overlay (graph + SDF + path mine cost on nodes)
 D - Toggle mine death probability debug overlay
 W - Toggle action mask debug overlay
 U - Toggle reachable walls debug overlay
@@ -29,6 +30,8 @@ Examples:
 python test_environment.py --headless --export-frame test_level.png
 python test_environment.py --headless --profile-frames 1000  # Benchmark with profiling
 python test_environment.py --benchmark-dataset --test-dataset-path datasets/mechanic_benchmark
+# CPU-only profiling: skip 60 FPS pacing, pygame flip, and benchmark HUD text (see --no-benchmark-hud)
+python test_environment.py --headless --benchmark-dataset --test-dataset-path datasets/mechanic_benchmark --profile-frames 2000
 """
 
 import os
@@ -397,6 +400,15 @@ parser.add_argument(
     default="train",
     help="Which split(s) to include when --benchmark-dataset is set (default: train).",
 )
+parser.add_argument(
+    "--no-benchmark-hud",
+    action="store_true",
+    help=(
+        "With --benchmark-dataset in windowed mode: do not set benchmark info lines on the "
+        "env (avoids many pygame Font.render calls). Use with --headless to skip tick/render; "
+        "this flag only affects the benchmark HUD when not headless."
+    ),
+)
 
 # Generator testing arguments
 parser.add_argument(
@@ -544,14 +556,17 @@ if args.benchmark_dataset:
     print(f"• Split(s): {args.benchmark_split}")
     print(f"• Starting level index: {args.start_level}")
     if args.auto_advance:
-        print("• Auto-advance enabled: next level loads on completion")
+        print("• --auto-advance: next level on any episode end (win or fail)")
     else:
-        print("• Manual advance: press 'N' / 'P' to change levels")
-    print("\nOn-screen HUD shows bucket, tier, generator, preset, seed, and level id.")
+        print("• On success, auto-advance to next level; use N / P to sample manually")
+    print(
+        "\nOn-screen HUD shows bucket, tier, generator, preset, seed, level id, and keys."
+    )
     print("\nControls:")
     print("  R - Reset current level")
     print("  N - Load next level")
     print("  P - Load previous level")
+    print("  [ - First level of previous mechanic bucket   ] - First level of next bucket")
     print("=" * 60 + "\n")
 
 # Display help information for graph visualization
@@ -600,8 +615,9 @@ if (
     print("  B - Toggle blocked entity highlighting")
     print("  P - Toggle PBRS path overlay (shortest path to goal + cost-to-go heatmap)")
     print("  O - Toggle route PBRS overlay (surface heatmap + arcs + optimal route + arc features)")
-    print("  M - Toggle Mine SDF (Signed Distance Field) heatmap")
+    print("  M - Toggle mine SDF heatmap (signed distance field)")
     print("      • Red=danger zone | Yellow=boundary | Green=safe")
+    print("  H - Toggle combined hazard overlay (adjacency + SDF under graph + mine path costs on nodes)")
     print("  T - Run pathfinding benchmark at current position")
     print("  X - Export path analysis screenshot")
     print("  R - Reset environment")
@@ -700,25 +716,17 @@ else:
     env = create_visual_testing_env(config=config)
 
 
-def _draw_benchmark_overlay(lines) -> None:
-    """Draw mechanic-benchmark metadata in the top-left (after env.render())."""
-    if not lines:
-        return
-    screen = pygame.display.get_surface()
-    if screen is None:
-        return
-    font = pygame.font.SysFont("monospace", 14)
-    x0, y = 8, 6
-    pad = 4
-    for line in lines:
-        text = font.render(line, True, (255, 255, 255))
-        bg = pygame.Surface((text.get_width() + pad * 2, text.get_height() + 4))
-        bg.set_alpha(210)
-        bg.fill((20, 22, 32))
-        screen.blit(bg, (x0, y))
-        screen.blit(text, (x0 + pad, y + 2))
-        y += bg.get_height() + 4
-    pygame.display.flip()
+def _benchmark_hud_lines(
+    payload: dict, index: int, n_levels: int, auto_advance_flag: bool
+) -> list:
+    """Lines for on-screen HUD: metadata + level-sampling hotkeys (drawn in debug overlay, one flip)."""
+    lines = MechanicBenchmarkLoader.overlay_lines(payload, index, n_levels)
+    lines.append("Keys: N next  P prev  [ prev bucket  ] next bucket  R reset")
+    if auto_advance_flag:
+        lines.append("Auto: next on any episode end (--auto-advance)")
+    else:
+        lines.append("Auto: next level on success (add --auto-advance for any end)")
+    return lines
 
 
 # Define manual_reset helper function before initialization blocks that use it
@@ -1112,6 +1120,7 @@ tile_types_debug_enabled = False
 action_mask_debug_enabled = False
 reachable_walls_debug_enabled = False
 mine_sdf_debug_enabled = False
+hazard_debug_combo_enabled = False
 path_aware_system = None
 adjacency_graph_debug_enabled = False
 blocked_entities_debug_enabled = False
@@ -1120,8 +1129,6 @@ value_function_debug_enabled = False
 value_function_pbrs_cache = {}  # level_name -> pbrs instance
 reachability_overlay_enabled = False
 pbrs_path_overlay_enabled = False
-route_overlay_enabled = False
-route_pbrs_instance = None   # RoutePBRS loaded for the 'R' key overlay
 
 if (
     args.test_path_aware
@@ -1523,6 +1530,56 @@ while running:
                             f"Loaded benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
                             f"level_id={benchmark_payload.get('level_id')}"
                         )
+                if event.key == pygame.K_RIGHTBRACKET and benchmark_loader is not None:
+                    if args.step_on_input:
+                        input_sequence.clear()
+                    benchmark_index = benchmark_loader.next_category_index(
+                        benchmark_index
+                    )
+                    benchmark_payload = benchmark_loader.load_payload(benchmark_index)
+                    try:
+                        env.nplay_headless.load_map_from_map_data(
+                            benchmark_payload["map_data"]
+                        )
+                        map_name = (
+                            f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+                        )
+                        manual_reset(env, map_name=map_name)
+                        print(
+                            f"Loaded benchmark (next bucket) {benchmark_index + 1}/"
+                            f"{len(benchmark_loader)}: {benchmark_loader.bucket_name_for_index(benchmark_index)} "
+                            f"level_id={benchmark_payload.get('level_id')}"
+                        )
+                    except Exception as e:
+                        print(f"Error loading benchmark level: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                if event.key == pygame.K_LEFTBRACKET and benchmark_loader is not None:
+                    if args.step_on_input:
+                        input_sequence.clear()
+                    benchmark_index = benchmark_loader.prev_category_index(
+                        benchmark_index
+                    )
+                    benchmark_payload = benchmark_loader.load_payload(benchmark_index)
+                    try:
+                        env.nplay_headless.load_map_from_map_data(
+                            benchmark_payload["map_data"]
+                        )
+                        map_name = (
+                            f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+                        )
+                        manual_reset(env, map_name=map_name)
+                        print(
+                            f"Loaded benchmark (prev bucket) {benchmark_index + 1}/"
+                            f"{len(benchmark_loader)}: {benchmark_loader.bucket_name_for_index(benchmark_index)} "
+                            f"level_id={benchmark_payload.get('level_id')}"
+                        )
+                    except Exception as e:
+                        print(f"Error loading benchmark level: {e}")
+                        import traceback
+
+                        traceback.print_exc()
                 if event.key == pygame.K_c:
                     # Toggle grid outline debug overlay
                     grid_debug_enabled = not grid_debug_enabled
@@ -1572,6 +1629,17 @@ while running:
                         )
                     except Exception as e:
                         print(f"Could not toggle mine SDF overlay: {e}")
+
+                if event.key == pygame.K_h:
+                    hazard_debug_combo_enabled = not hazard_debug_combo_enabled
+                    try:
+                        env.set_hazard_debug_combo_enabled(hazard_debug_combo_enabled)
+                        print(
+                            f"Hazard combo (graph+SDF+path mine costs): "
+                            f"{'ON' if hazard_debug_combo_enabled else 'OFF'}"
+                        )
+                    except Exception as e:
+                        print(f"Could not toggle hazard combo overlay: {e}")
 
                 # Generator testing controls
                 if event.key == pygame.K_g and generator_tester is not None:
@@ -1899,53 +1967,6 @@ while running:
                         traceback.print_exc()
                         pbrs_path_overlay_enabled = False
 
-                # Route PBRS overlay (surface heatmap + all arcs + planned route)
-                if event.key == pygame.K_o:
-                    route_overlay_enabled = not route_overlay_enabled
-                    if route_overlay_enabled:
-                        try:
-                            level_name = getattr(
-                                env.map_loader, "current_map_name", None
-                            )
-                            if level_name is None and args.map:
-                                from pathlib import Path
-                                level_name = Path(args.map).stem
-                            if level_name:
-                                from nclone.value_function.route_pbrs import (
-                                    create_route_pbrs,
-                                )
-                                route_pbrs_instance = create_route_pbrs(
-                                    level_name, "value_functions"
-                                )
-                                if route_pbrs_instance is None:
-                                    print(
-                                        f"Route PBRS not available for '{level_name}'. "
-                                        "Run precompute_cli.py with --map-path to generate it."
-                                    )
-                                    route_overlay_enabled = False
-                                else:
-                                    ninja_pos = env.nplay_headless.ninja_position()
-                                    ninja_vel = env.nplay_headless.ninja_velocity()
-                                    route_pbrs_instance.reset(
-                                        ninja_pos[0], ninja_pos[1],
-                                        ninja_vel[0], ninja_vel[1],
-                                        contact_state=None,
-                                    )
-                                    env.set_route_pbrs(route_pbrs_instance)
-                                    env.set_route_overlay_enabled(True)
-                                    print(f"Route overlay: ON (level={level_name})")
-                            else:
-                                print("Cannot determine level name for route overlay.")
-                                route_overlay_enabled = False
-                        except Exception as e:
-                            print(f"Failed to load route overlay: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            route_overlay_enabled = False
-                    else:
-                        env.set_route_overlay_enabled(False)
-                        print("Route overlay: OFF")
-
                 # Demo checkpoint visualization controls
                 if demo_checkpoint_system is not None:
                     if event.key == pygame.K_q:
@@ -2248,17 +2269,11 @@ while running:
         env.set_blocked_entities_debug_enabled(blocked_entities_debug_enabled)
         env.set_show_paths_to_goals(show_paths_to_goals)
 
-        # Get cached paths from reward calculator (ensures visualization matches what's being rewarded)
-        cached_paths = None
-        if hasattr(env, "reward_calculator") and env.reward_calculator:
-            cached_paths = env.reward_calculator.get_cached_paths()
-
-        # Pass graph data and cached paths to environment for visualization
         env.set_path_aware_data(
             graph_data=path_aware_system["current_graph"],
             entity_mask=path_aware_system.get("current_entity_mask"),
             level_data=level_data,
-            cached_paths=cached_paths,
+            cached_paths=None,
         )
     elif path_aware_system is not None:
         # Turn off all path-aware debug flags when none are enabled
@@ -2317,24 +2332,8 @@ while running:
             pass
     env.set_pbrs_path_overlay_enabled(pbrs_path_overlay_enabled)
 
-    # Per-frame route PBRS update (arc advancement / replanning)
-    if route_overlay_enabled and route_pbrs_instance is not None:
-        try:
-            ninja_pos = env.nplay_headless.ninja_position()
-            ninja_vel = env.nplay_headless.ninja_velocity()
-            switch_activated = env.nplay_headless.exit_switch_activated()
-            state_dict = {
-                "x": ninja_pos[0],
-                "y": ninja_pos[1],
-                "vx": ninja_vel[0],
-                "vy": ninja_vel[1],
-                "switch_activated": switch_activated,
-                "on_surface": True,
-            }
-            route_pbrs_instance.update(state_dict)
-        except Exception:
-            pass
-    env.set_route_overlay_enabled(route_overlay_enabled)
+    env.set_mine_sdf_debug_enabled(mine_sdf_debug_enabled)
+    env.set_hazard_debug_combo_enabled(hazard_debug_combo_enabled)
 
     # Update demo checkpoint visualization if enabled
     if demo_checkpoint_system is not None:
@@ -2358,10 +2357,10 @@ while running:
     # Step the environment
     if args.step_on_input:
         if action == 0 and not explicit_noop:
-            # No input: render current state without stepping
+            # No input: show current state without stepping (one env.render() at
+            # end of frame draws overlay, avoiding HUD flicker).
             hold_start_time = None
             hold_action = 0
-            env.render()
             did_step = False
         else:
             # Keys held: 200ms delay before repeat (enables single-frame taps)
@@ -2380,7 +2379,6 @@ while running:
                 did_step = True
             else:
                 # Within 200ms of initial press: no repeat (single-frame tap)
-                env.render()
                 did_step = False
     else:
         observation, reward, terminated, truncated, info = env.step(action)
@@ -2406,6 +2404,8 @@ while running:
             player_won = env.nplay_headless.ninja_has_won()
             recorder.stop_recording(success=player_won, save=player_won)
 
+        skip_default_reset = False
+
         # Auto-advance to next level if in test suite mode with auto-advance enabled
         if args.test_suite and args.auto_advance and test_suite_loader is not None:
             player_won = env.nplay_headless.ninja_has_won()
@@ -2422,26 +2422,27 @@ while running:
             print(
                 f"Loaded level {current_level_idx + 1}/{len(test_suite_level_ids)}: {level_id}"
             )
-        elif (
-            args.benchmark_dataset
-            and args.auto_advance
-            and benchmark_loader is not None
-        ):
+            skip_default_reset = True
+        elif args.benchmark_dataset and benchmark_loader is not None and benchmark_payload is not None:
             player_won = env.nplay_headless.ninja_has_won()
-            result_str = "✓ Success" if player_won else "✗ Failed"
-            print(
-                f"{result_str} - benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
-                f"level_id={benchmark_payload.get('level_id') if benchmark_payload else '?'}"
-            )
-            benchmark_index = (benchmark_index + 1) % len(benchmark_loader)
-            benchmark_payload = benchmark_loader.load_payload(benchmark_index)
-            env.nplay_headless.load_map_from_map_data(benchmark_payload["map_data"])
-            map_name = f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
-            manual_reset(env, map_name=map_name)
-            print(
-                f"Auto-advanced to benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
-                f"level_id={benchmark_payload.get('level_id')}"
-            )
+            if player_won or args.auto_advance:
+                result_str = "✓ Success" if player_won else "✗ Failed"
+                print(
+                    f"{result_str} - benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
+                    f"level_id={benchmark_payload.get('level_id', '?')}"
+                )
+                benchmark_index = (benchmark_index + 1) % len(benchmark_loader)
+                benchmark_payload = benchmark_loader.load_payload(benchmark_index)
+                env.nplay_headless.load_map_from_map_data(benchmark_payload["map_data"])
+                map_name = f"benchmark_{benchmark_payload.get('level_id', benchmark_index)}"
+                manual_reset(env, map_name=map_name)
+                initial_obs = env._get_observation()
+                observation = env._process_observation(initial_obs)
+                print(
+                    f"Auto-advanced to benchmark {benchmark_index + 1}/{len(benchmark_loader)}: "
+                    f"level_id={benchmark_payload.get('level_id')}"
+                )
+                skip_default_reset = True
 
         # Generate new map in generator testing mode, reload map in official maps mode, otherwise normal reset
         if generator_tester is not None:
@@ -2490,8 +2491,9 @@ while running:
 
                 traceback.print_exc()
         else:
-            # Normal episode reset (test suite, benchmark without auto-advance, default map)
-            observation, info = env.reset()
+            # Normal episode reset (test suite, benchmark without advance, default map)
+            if not skip_default_reset:
+                observation, info = env.reset()
 
     current_time = time.perf_counter()
     if args.log_frametimes:
@@ -2503,17 +2505,22 @@ while running:
     if not args.headless and clock:
         clock.tick(60)
 
-    # Human mode: ensure a frame is presented; overlay mechanic-benchmark metadata
+    # Human mode: one render + flip; benchmark HUD is composited in debug overlay (no extra flip)
     if not args.headless:
-        env.render()
-        if benchmark_loader is not None and benchmark_payload is not None:
-            _draw_benchmark_overlay(
-                MechanicBenchmarkLoader.overlay_lines(
-                    benchmark_payload,
-                    benchmark_index,
-                    len(benchmark_loader),
-                )
+        if (
+            benchmark_loader is not None
+            and benchmark_payload is not None
+            and not args.no_benchmark_hud
+        ):
+            env._benchmark_hud_lines = _benchmark_hud_lines(
+                benchmark_payload,
+                benchmark_index,
+                len(benchmark_loader),
+                args.auto_advance,
             )
+        else:
+            env._benchmark_hud_lines = None
+        env.render()
 
     frame_counter += 1
     if args.profile_frames is not None and frame_counter >= args.profile_frames:

@@ -158,3 +158,73 @@ def test_hazard_map_cache_stats_increment(mine_fixture_100):
     h2, miss2, _ = m.get_hazard_cache_stats()
     assert h2 > h1
     assert miss2 == miss1
+
+
+def _shape(buf):
+    return np.asarray(buf, dtype=np.float32).reshape(
+        HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH
+    )
+
+
+def test_hazard_map_incremental_matches_full_on_single_toggle(mine_fixture_100):
+    """NPP-48: incremental update is bit-parity with a full recompute.
+
+    Single-mine toggle is the most common runtime event. The incremental
+    path must produce the exact same SDF as a full recompute.
+    """
+    deadly = list(mine_fixture_100)
+    m_inc = MineThreatMap()
+    _ = m_inc.compute_hazard_map_if_changed(deadly)
+
+    toggled = deadly[:-1]
+    inc = _shape(m_inc.compute_hazard_map_if_changed(toggled))
+
+    m_full = MineThreatMap()
+    m_full.set_hazard_force_full(True)
+    _ = m_full.compute_hazard_map_if_changed(deadly)
+    full = _shape(m_full.compute_hazard_map_if_changed(toggled))
+
+    np.testing.assert_allclose(inc, full, atol=0.0, rtol=0.0)
+
+
+def test_hazard_map_incremental_matches_full_on_add_and_move(mine_fixture_100):
+    """NPP-48: adding a mine and moving one must also match full recompute."""
+    deadly = list(mine_fixture_100)
+    m_inc = MineThreatMap()
+    _ = m_inc.compute_hazard_map_if_changed(deadly)
+
+    # Add a new mine in an empty region
+    added = deadly + [(900.0, 500.0)]
+    inc_add = _shape(m_inc.compute_hazard_map_if_changed(added))
+
+    m_full = MineThreatMap()
+    m_full.set_hazard_force_full(True)
+    _ = m_full.compute_hazard_map_if_changed(deadly)
+    full_add = _shape(m_full.compute_hazard_map_if_changed(added))
+
+    np.testing.assert_allclose(inc_add, full_add, atol=0.0, rtol=0.0)
+
+    # "Move" a mine = remove old position + add new position
+    moved = list(added)
+    moved[0] = (moved[0][0] + 18.0, moved[0][1] + 6.0)
+    inc_moved = _shape(m_inc.compute_hazard_map_if_changed(moved))
+    full_moved = _shape(m_full.compute_hazard_map_if_changed(moved))
+    np.testing.assert_allclose(inc_moved, full_moved, atol=0.0, rtol=0.0)
+
+
+def test_hazard_map_incremental_recomputes_fewer_cells_than_full(mine_fixture_100):
+    """NPP-48: incremental update must touch < full grid after a small delta."""
+    deadly = list(mine_fixture_100)
+    m = MineThreatMap()
+    m.reset_hazard_cache_stats()
+    _ = m.compute_hazard_map_if_changed(deadly)
+    _, _, cells_cold = m.get_hazard_cache_stats()
+    assert cells_cold == HAZARD_MAP_HEIGHT * HAZARD_MAP_WIDTH
+
+    # Toggle a single mine off
+    _ = m.compute_hazard_map_if_changed(deadly[:-1])
+    _, _, cells_inc = m.get_hazard_cache_stats()
+    # At most ~pi * (38/6)^2 ~= 126 cells per toggled mine; allow generous slack.
+    assert cells_inc < HAZARD_MAP_HEIGHT * HAZARD_MAP_WIDTH // 10, (
+        f"incremental touched {cells_inc} cells (expected << full grid)"
+    )

@@ -51,12 +51,12 @@ This forms a **Semi-Markov Decision Process (SMDP)**: the agent makes decisions 
 
 The most architecturally distinctive feature of this implementation is the asymmetric training signal:
 
-- **Value loss:** computed on **all primitive frames** — every `env.step()` call within a macro-action
-- **Policy loss + entropy:** computed at **decision points only** — the first frame of each macro-action
+- **Value loss:** computed on **all macro-action boundaries** — every `env.step()` call (one per macro-action)
+- **Policy loss + entropy:** computed at **decision points** — the start of each macro-action
 
-This is stored in a custom `PrimitiveSMDPRolloutBuffer` where `n_steps` is measured in primitive frames, not macro-actions. The rollout buffer effectively accumulates 4–10× more value training samples than policy training samples per wall-clock batch collection.
+This is stored in the `PrimitiveSMDPRolloutBuffer`, which bookkeeps decision-point vs. non-decision-point samples so the policy loss runs only on macro-action starts while the value loss can still run across the full rollout. `env.step()` is the SMDP time unit; intra-macro-action primitive physics frames are not separately buffered because the environment already integrates them into a single scalar reward via `RewardCalculator`.
 
-**Justification:** The value function `V(s)` must generalize across all states, including mid-macro-action states where the agent has no decision to make. Training `V` on every frame provides the densest possible supervision. The policy `π(a|s)` is only meaningful at decision points, so training it on non-decision frames would introduce gradient noise from states where the action is already determined.
+**Justification:** The value function `V(s)` must generalize across the SMDP state distribution at macro-action boundaries (including interrupted windows shorter than the requested duration). The policy `π(a|s)` is only meaningful at decision points, so training it on non-decision frames would introduce gradient noise from states where the action is already determined.
 
 ### Contact-State Interruption
 
@@ -78,7 +78,7 @@ States 6–9 (dead, celebrating, etc.) are mapped to AIRBORNE to avoid spurious 
 L_total = L_policy              (action + duration, at decision points)
         + ent_coef      * L_action_entropy      (at decision points)
         + dur_ent_coef  * L_duration_entropy    (at decision points)
-        + vf_coef       * L_value               (all primitive frames)
+        + vf_coef       * L_value               (all macro-action boundaries)
         + L_rnd_predictor                        (if RND attached)
 ```
 
@@ -100,13 +100,13 @@ Full FP16 mixed-precision training is supported via an `amp_helper` context mana
 
 ## Reward Function
 
-FiGAR-PPO uses `NppEnvironment` directly (no SAC wrapper) with the full `RewardCalculator` defined in `main_reward_calculator.py`. The total reward per macro-action step is:
+FiGAR-PPO uses `NppEnvironment` directly (no SAC wrapper) with the full `RewardCalculator` defined in `main_reward_calculator.py`. This is the **single runtime reward path** — the precomputed-PBRS branch and `PrimitiveRewardCalculator` were removed in NPP-30 / NPP-31; see `nclone/gym_environment/reward_calculation/README.md`. The total reward per macro-action step is:
 
 ```
 r_total = (r_sparse + r_HWM + r_time + r_backtrack) × GLOBAL_REWARD_SCALE
 ```
 
-where `GLOBAL_REWARD_SCALE = 1.0` (identity; kept for backward compatibility with earlier reward-scaled training runs).
+where `GLOBAL_REWARD_SCALE = 1.0` (identity; kept for backward compatibility with earlier reward-scaled training runs). On top of this, the trainer optionally blends in a BSRS term `(1 - beta(t)) * eta * (gamma * V(s') - V(s))` in `collect_rollouts`; the environment itself does not depend on the value function.
 
 ### Sparse Rewards
 
@@ -160,13 +160,27 @@ On phase transition, shaping reward = 0 and `watermark_exit` is initialized to t
 
 ### Reward Collection in the SMDP Buffer
 
-Primitive rewards (one per frame executed) are summed across each macro-action:
+Each `env.step()` already returns a macro-action-level scalar reward from
+`RewardCalculator.calculate_reward`, computed across all `frames_executed`
+primitive frames of the macro-action (the calculator multiplies the per-frame
+time and backtrack penalties by `frames_executed` and accumulates HWM progress
+and any terminal events within the window). The trainer consumes this scalar
+directly; no per-frame primitive-reward list is produced or expected:
 
 ```python
-step_rewards = sum(info.get("primitive_rewards") or [r])
+step_rewards = rewards          # env.step() reward array, one per env per macro-step
+if self.bsrs_enabled:
+    beta = self._bsrs_beta(t)
+    delta = (1.0 - beta) * self.bsrs_eta * (self.bsrs_gamma * V_next - V_curr)
+    step_rewards = step_rewards + delta
 ```
 
-This means a macro-action held for `k` frames accumulates `k × r_frame` in step penalties, matching the time-pressure semantics of the reward function.
+GAE runs at macro-action (`env.step()`) resolution, matching the SMDP
+formulation in which the macro-action's return is the cumulative reward over
+its duration. `info["primitive_rewards"]` and `info["precomputed_pbrs_active"]`
+are no longer emitted by the environment; the legacy primitive-reward and
+precomputed-PBRS runtime paths were removed as part of the unified reward-path
+refactor (NPP-30 / NPP-31).
 
 #### Optional RND Intrinsic Rewards
 

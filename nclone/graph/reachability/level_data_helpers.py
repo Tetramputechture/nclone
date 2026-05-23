@@ -11,51 +11,43 @@ from ...constants.entity_types import EntityType
 
 
 def extract_goal_positions(level_data: LevelData) -> List[Tuple[Tuple[int, int], str]]:
-    """
-    Extract goal positions from level data.
+    """Extract Layer 1 pathfinding goals from level data.
 
-    Matches the exact logic used in debug_overlay_renderer.py visualization:
-    - Exit switches: Only include if active=True (not collected)
-    - Exit doors: Always include
-    - Locked door switches: Always include
-
-    Args:
-        level_data: LevelData instance containing entities
+    Layer 1 scope (toggle-mines chunk): only the exit switch and exit door are
+    first-class goals. ``LOCKED_DOOR_SWITCH`` is intentionally excluded — locked
+    doors are not part of the toggle-mines-world policy and have no associated
+    A* goal here. If locked doors come back into scope they should be reintroduced
+    behind a feature flag rather than by resurrecting this branch in place.
 
     Returns:
-        List of (position, goal_id) tuples where position is (x, y) in pixels
+        List of ``(position, goal_id)`` tuples where position is ``(x, y)`` in
+        pixels and ``goal_id`` is a stable per-goal string used by the A*
+        distance cache.
     """
-    import logging
-    _logger = logging.getLogger(__name__)
-    
-    goals = []
+    goals: List[Tuple[Tuple[int, int], str]] = []
 
-    # Extract exit switches (only active ones - matches visualization logic)
+    # Exit switches: only include if still active (not collected).
     exit_switches = level_data.get_entities_by_type(EntityType.EXIT_SWITCH)
     for i, switch in enumerate(exit_switches):
-        # Check if switch is still active (not collected)
-        # In nclone: active=True means NOT collected, active=False means collected
         is_active = switch.get("active", True)
-        if is_active:
-            x = switch.get("x", 0)
-            y = switch.get("y", 0)
-            # CRITICAL: Validate goal position - should never be (0, 0)
-            if x == 0 and y == 0:
-                raise ValueError(
-                    f"EXIT SWITCH at (0, 0) - entity not properly loaded! "
-                    f"Switch index: {i}, Entity data: {switch}. "
-                    f"This should have been caught in entity_extractor.py. "
-                    f"Level file may be corrupted or entity initialization failed."
-                )
-            goal_id = f"exit_switch_{i}"
-            goals.append(((int(x), int(y)), goal_id))
+        if not is_active:
+            continue
+        x = switch.get("x", 0)
+        y = switch.get("y", 0)
+        if x == 0 and y == 0:
+            raise ValueError(
+                f"EXIT SWITCH at (0, 0) - entity not properly loaded! "
+                f"Switch index: {i}, Entity data: {switch}. "
+                f"This should have been caught in entity_extractor.py. "
+                f"Level file may be corrupted or entity initialization failed."
+            )
+        goals.append(((int(x), int(y)), f"exit_switch_{i}"))
 
-    # Extract exit doors (always include - matches visualization logic)
+    # Exit doors: always include.
     exit_doors = level_data.get_entities_by_type(EntityType.EXIT_DOOR)
     for i, door in enumerate(exit_doors):
         x = door.get("x", 0)
         y = door.get("y", 0)
-        # CRITICAL: Validate goal position - should never be (0, 0)
         if x == 0 and y == 0:
             raise ValueError(
                 f"EXIT DOOR at (0, 0) - entity not properly loaded! "
@@ -63,26 +55,7 @@ def extract_goal_positions(level_data: LevelData) -> List[Tuple[Tuple[int, int],
                 f"This should have been caught in entity_extractor.py. "
                 f"Level file may be corrupted or entity initialization failed."
             )
-        goal_id = f"exit_door_{i}"
-        goals.append(((int(x), int(y)), goal_id))
-
-    # Extract locked door switches (always include)
-    locked_door_switches = level_data.get_entities_by_type(
-        EntityType.LOCKED_DOOR_SWITCH
-    )
-    for i, switch in enumerate(locked_door_switches):
-        x = switch.get("x", 0)
-        y = switch.get("y", 0)
-        # CRITICAL: Validate goal position - should never be (0, 0)
-        if x == 0 and y == 0:
-            raise ValueError(
-                f"LOCKED DOOR SWITCH at (0, 0) - entity not properly loaded! "
-                f"Switch index: {i}, Entity data: {switch}. "
-                f"This should have been caught in entity_extractor.py. "
-                f"Level file may be corrupted or entity initialization failed."
-            )
-        goal_id = f"locked_door_switch_{i}"
-        goals.append(((int(x), int(y)), goal_id))
+        goals.append(((int(x), int(y)), f"exit_door_{i}"))
 
     return goals
 

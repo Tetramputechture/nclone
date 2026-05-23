@@ -105,14 +105,20 @@ Phase-1 buckets (Layer 1 = toggle mines + exit switch + exit door):
 | Bucket              | Generators                                   | Focus                                          |
 | ------------------- | -------------------------------------------- | ---------------------------------------------- |
 | `FLAT_RUN`          | `horizontal_corridor`, `single_chamber`      | Flat horizontal locomotion; no jumps/mines.    |
-| `BASIC_JUMP`        | `basic_jump`                                 | Single-mechanic jump (gap / drop / step-up).   |
+| `BASIC_JUMP`        | `basic_jump`                                 | Jump obstacles (gap / drop / step-up / double gap). T3/T4 may add toggle mines on a pure jump layout. |
 | `WALL_JUMP`         | `wall_jump`                                  | Vertical shafts; wall-jump only.               |
-| `MINE_NAVIGATION`   | `mine_path`                                  | Flat corridor + toggle mines on the floor.     |
+| `MINE_NAVIGATION`   | `mine_path`                                  | Flat corridor + toggle mines; T3/T4 may add a one-tile floor step. |
+| `SLOPES`            | `slopes`                                     | Ramps and hills (mild / steep / 45°); T3/T4 may add toggle mines. |
 
-Out-of-scope buckets (`SLOPES`, `SWITCH_PUZZLE`, `LAUNCH_PAD`, `THWUMP`,
-`DRONE`, `DEATH_BALL`) are present in the catalog but intentionally
-empty until their generators come online. See
+Out-of-scope buckets (`SWITCH_PUZZLE`, `LAUNCH_PAD`, `THWUMP`, `DRONE`,
+`DEATH_BALL`) are present in the catalog but intentionally empty until
+their generators come online. See
 [`docs/MECHANIC_SUPPORT_MATRIX.md`](MECHANIC_SUPPORT_MATRIX.md).
+
+**Tier 3/4 mixed mechanics (Layer 1 only):** T1–T2 presets stay
+single-mechanic-pure. Some T3/T4 catalog entries add exactly *one*
+secondary in-scope mechanic (toggle mines and/or a short step-up) so
+learned value / BSRS sees combined states without new entity types.
 
 ### Tier semantics
 
@@ -123,8 +129,8 @@ envelopes in `GENERATOR_PRESETS`:
 | ---- | ------------------------------------------------------------------------ |
 | T1   | Smallest valid chamber; minimum-difficulty instance of the mechanic.     |
 | T2   | One additional axis of variation (e.g. alternate variant, extra size).   |
-| T3   | Wider/taller, larger obstacle magnitudes, multiple sub-variants.         |
-| T4   | Combined variations (e.g. double gap, shaft + ledge, tighter mine spacing). |
+| T3   | Wider/taller, multiple sub-variants; optional one mixed-secondary preset (mine or step). |
+| T4   | Combined variations (e.g. double gap + mine, shaft + ledge, slope + mines). |
 
 Each `BUCKET_CATALOG[bucket][tier]` is a list of
 `(generator_type, preset, weight)` tuples. Weights drive deterministic
@@ -173,12 +179,12 @@ The defaults below are intended for the full Phase-1 benchmark:
 | `--seed_base_test`                               | 100 000     |
 | `--max_retry`                                    | 10          |
 
-With 4 Phase-1 buckets × 4 tiers that yields 400 train / 160 test
+With 5 Phase-1 buckets × 4 tiers that yields 500 train / 200 test
 unique levels, dominated by the minimal/dedicated generators.
 
 ## Regenerating the dataset
 
-Full default run (400 train / 160 test):
+Full default run (500 train / 200 test):
 
 ```bash
 python -m scripts.generate_benchmark_dataset \
@@ -247,8 +253,8 @@ procedural levels to the hand-crafted registry instead of replacing it.
 The pipeline has two fast test suites:
 
 - `tests/test_procedural_bucket_generators.py`: reproducibility and
-  mechanic-purity checks for the three dedicated Phase-1 generators
-  (`basic_jump`, `wall_jump`, `mine_path`).
+  mechanic-purity checks for the dedicated Phase-1 generators
+  (`basic_jump`, `wall_jump`, `mine_path`, `slopes`).
 - `tests/test_benchmark_dataset_script.py`: `BUCKET_CATALOG` validity,
   deterministic level-id / seed math, and an end-to-end smoke run of
   `BenchmarkGenerator` that round-trips the pickles on disk.
@@ -263,12 +269,12 @@ loaders consume it correctly.
 - Validation is currently **hash-dedup only** (fast path). A future
   iteration may add optional A\* solvability / baseline-playout
   verification behind a flag.
-- Only Phase-1 buckets have generators; the empty buckets in the
-  catalog are intentional placeholders and will be populated alongside
-  their Layer-2+ support code.
+- Phase-1 includes `FLAT_RUN`, `BASIC_JUMP`, `WALL_JUMP`, `MINE_NAVIGATION`,
+  and `SLOPES`. Remaining catalog buckets are empty placeholders until
+  their Layer-2+ support code exists.
 - Legacy `horizontal_corridor` / `single_chamber` presets for
   `FLAT_RUN` can emit non-mine secondary entities (locked doors, trap
   doors) that are outside the Layer-1 simulator's scope. If strict
   mechanic purity is required end-to-end, restrict to the dedicated
-  `basic_jump` / `wall_jump` / `mine_path` generators until `FLAT_RUN`
-  gets its own dedicated generator.
+  `basic_jump` / `wall_jump` / `mine_path` / `slopes` generators until
+  `FLAT_RUN` gets its own dedicated generator.

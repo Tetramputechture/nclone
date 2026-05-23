@@ -19,7 +19,7 @@ resurrecting these channels in place.
 from __future__ import annotations
 
 import math
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -32,6 +32,31 @@ from ..constants.physics_constants import (
 # Toggle mine kill zone radius (matches STRATEGY_EPIC / mine overlay spec)
 MINE_KILL_ZONE_RADIUS_PX = 14.0
 MINE_DENSITY_NORMALIZER = 8.0
+
+# Canonical toggle-mine state semantics (see `entities/entity_toggle_mine.py`).
+# state == 0 is the lethal "toggled" phase; any non-zero state is safe or
+# currently toggling. Both `TOGGLE_MINE` (type 1) and `TOGGLE_MINE_TOGGLED`
+# (type 21) entities are classified by the live `state` field, not by entity
+# type, so the overlay stays consistent with `_compute_hazard_map`.
+MINE_STATE_DEADLY = 0
+
+
+def classify_mines_by_state(
+    mines: Iterable[Any],
+) -> Tuple[List[Any], List[Any]]:
+    """Split a mine iterable into ``(deadly, safe)`` by the live ``state`` field.
+
+    Mirrors the filter used by the 1-channel hazard map so the two observation
+    views never disagree when a mine toggles mid-episode.
+    """
+    deadly: List[Any] = []
+    safe: List[Any] = []
+    for mine in mines:
+        if getattr(mine, "state", 1) == MINE_STATE_DEADLY:
+            deadly.append(mine)
+        else:
+            safe.append(mine)
+    return deadly, safe
 
 # NPP-38: channel count for entity_overlays after toggle-mines rescope.
 ENTITY_OVERLAY_CHANNELS = 5
@@ -125,15 +150,25 @@ def _accumulate_mine_density(
     """Fill ``out`` with mine counts / ``MINE_DENSITY_NORMALIZER``, clamped to [0, 1]."""
     counts = np.zeros((MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.int32)
     r = MINE_KILL_ZONE_RADIUS_PX
+    r2 = r * r
+    ts = float(TILE_PIXEL_SIZE)
     for m in mines:
         mx, my = _entity_pixel_xy(m)
         tx_min, tx_max, ty_min, ty_max = _inner_tile_bounds_for_kill_zone(mx, my, r)
         if tx_min > tx_max or ty_min > ty_max:
             continue
-        for tx in range(tx_min, tx_max + 1):
-            for ty in range(ty_min, ty_max + 1):
-                if _circle_overlaps_tile_rect(mx, my, r, tx, ty):
-                    counts[tx, ty] += 1
+        txs = np.arange(tx_min, tx_max + 1, dtype=np.float64)
+        tys = np.arange(ty_min, ty_max + 1, dtype=np.float64)
+        tx_lo = (txs + 1.0) * ts
+        tx_hi = tx_lo + ts - 1e-9
+        ty_lo = (tys + 1.0) * ts
+        ty_hi = ty_lo + ts - 1e-9
+        cx = np.clip(mx, tx_lo[:, None], tx_hi[:, None])
+        cy = np.clip(my, ty_lo[None, :], ty_hi[None, :])
+        dx = mx - cx
+        dy = my - cy
+        overlap = (dx * dx + dy * dy) <= r2
+        counts[tx_min : tx_max + 1, ty_min : ty_max + 1] += overlap.astype(np.int32)
     out[:] = np.minimum(counts.astype(np.float32) / MINE_DENSITY_NORMALIZER, 1.0)
 
 

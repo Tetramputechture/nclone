@@ -884,6 +884,9 @@ class GraphBuilder:
             base_graph["adjacency"], blocked_pixel_positions, blocked_edges
         )
 
+        # Exposed to mine proximity / SDF to skip a duplicate spawn flood fill
+        spawn_reachable_nodes: Optional[Set[Tuple[int, int]]] = None
+
         # Filter adjacency to only include nodes reachable from initial player position
         # This ensures path caching only operates on reachable areas
         # Skip filtering when rebuilding mid-gameplay (ninja may be in isolated area)
@@ -917,6 +920,7 @@ class GraphBuilder:
             # Filter adjacency to only reachable nodes
             # Critical: This ensures all cached distances are for reachable areas only
             adjacency = self._filter_adjacency_to_reachable(adjacency, reachable_nodes)
+            spawn_reachable_nodes = set(adjacency.keys())
 
             # # Apply smart truncation if graph exceeds N_MAX_NODES
             # # This preserves full exploration space when possible, only truncating
@@ -954,6 +958,7 @@ class GraphBuilder:
             "spatial_hash": spatial_hash,  # For fast node lookup
             "reachable_node_count": len(adjacency),  # For adaptive caching strategy
             "node_physics": node_physics_cache,  # Pre-computed physics properties (grounded, walled)
+            "spawn_reachable_nodes": spawn_reachable_nodes,
         }
 
         # If ninja position provided, compute reachable set for that position

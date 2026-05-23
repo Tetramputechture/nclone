@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Validate precomputed PBRS and reward structure for FiGAR-PPO mine navigation.
+"""Validate the unified reward structure for FiGAR-PPO mine navigation.
 
-Diagnoses why the agent may prefer timing out at the left wall over making
-forward progress toward the goal when mines are in the path. Runs five
-diagnostic checks on reward constants, discounted returns, and PBRS potential.
+The environment emits a single per-step reward composed of sparse terminals,
+A* HWM shaping, time penalty, and backtrack penalty. This script diagnoses
+whether the constants (time penalty, truncation penalty, death penalty) are
+calibrated well enough that timing out at a wall is strictly worse than a
+mine death earlier in the episode.
+
+Check 4 (offline potential landscape) still samples a ``TwoPhaseValuePBRS``
+npz when supplied; this reads offline curriculum data and does not affect
+the runtime reward path. Skip it by omitting --data.
 
 Usage::
 
@@ -11,8 +17,6 @@ Usage::
         [--data value_functions/basics_surface_pbrs.npz] \\
         [--map-path nclone/test_maps/basics] \\
         [--output validation_output/]
-
-If --data is omitted, checks 1–3 and 5 run (no PBRS landscape sampling).
 """
 
 import argparse
@@ -79,10 +83,9 @@ def check_1_discounted_return_table(
 
     T = truncation_frames
     v_timeout = discounted_time_penalty(T, time_penalty)
-    # Truncation: lump-sum terminal penalty when episode hits horizon (matches
-    # primitive_rewards appending TRUNCATION_PENALTY). Do not multiply by gamma^T
-    # for large T — that term vanishes and wrongly makes timeout look attractive
-    # when per-step time penalty is small (PBRS-first tuning).
+    # Truncation: lump-sum terminal penalty when episode hits horizon. Do not
+    # multiply by gamma^T for large T -- that term vanishes and wrongly makes
+    # timeout look attractive when per-step time penalty is small.
     if truncation_penalty != 0.0:
         v_timeout += truncation_penalty
 
@@ -310,7 +313,7 @@ def run_all_checks(
     fails = 0
 
     lines.append("=" * 70)
-    lines.append("PBRS Reward Incentives Validation Report")
+    lines.append("Reward Incentives Validation Report")
     lines.append("=" * 70)
     lines.append("")
     lines.append("Constants:")
@@ -416,7 +419,7 @@ def run_all_checks(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Validate PBRS reward incentives for FiGAR-PPO mine navigation"
+        description="Validate reward incentives for FiGAR-PPO mine navigation"
     )
     parser.add_argument(
         "--data",

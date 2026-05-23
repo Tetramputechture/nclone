@@ -22,6 +22,7 @@ from .map_corridors import MapCorridors
 from .map_basic_jump import MapBasicJump
 from .map_wall_jump import MapWallJump
 from .map_mine_path import MapMinePath
+from .map_slopes import MapSlopes
 from .generator_configs import GENERATOR_PRESETS
 
 
@@ -40,6 +41,7 @@ GENERATOR_REGISTRY: Dict[str, Type[Map]] = {
     "basic_jump": MapBasicJump,
     "wall_jump": MapWallJump,
     "mine_path": MapMinePath,
+    "slopes": MapSlopes,
 }
 
 

@@ -28,6 +28,7 @@ from .constants import (
 )
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
+from .entity_overlay_utils import classify_mines_by_state
 from .layer3_macro_action_mask import Layer3MacroActionMasker
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
 from .config import EnvironmentConfig
@@ -47,7 +48,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
     Features:
     - Multiple observation profiles (minimal/rich)
-    - HWM A* distance shaping (or Phi-based PBRS when use_precomputed_pbrs)
+    - HWM A* distance shaping (single unified reward path)
     - Frame stacking support
     - Graph-based planning and visualization
     - Episode truncation based on progress
@@ -74,8 +75,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             seed=self.config.seed,
             eval_mode=self.config.eval_mode,
             pbrs_gamma=self.config.pbrs.pbrs_gamma,
-            use_precomputed_pbrs=self.config.pbrs.use_precomputed_pbrs,
-            value_function_dir=self.config.pbrs.value_function_dir,
             custom_map_path=self.config.custom_map_path,
             test_dataset_path=self.config.test_dataset_path,
             defer_initial_map_load=self.config.defer_initial_map_load,
@@ -107,6 +106,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             debug=self.config.graph.debug,
         )
         self._init_reachability_system(self.config.reachability.debug)
+        # Single CachedPathDistanceCalculator: reward and reachability share SDF, mine
+        # proximity, and level path caches (avoids duplicate rebuilds on graph/mine changes).
+        self.reward_calculator.path_calculator = self._path_calculator
         self._init_debug_system(self.config.render.enable_debug_overlay)
 
         # Initialize reset retry counter for handling degenerate maps
@@ -411,6 +413,35 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Mark switch states as fresh (no changes yet)
         self._switch_states_changed = False
 
+    def _compute_level_surface_area(self) -> Optional[float]:
+        """Compute reachable surface area (node count) for the current level.
+
+        Used to set a complexity-scaled truncation limit at level load.
+        Returns ``None`` if graph data is not yet available.
+        """
+        graph_data = getattr(self, "current_graph_data", None)
+        if not graph_data:
+            return None
+        adjacency = graph_data.get("adjacency")
+        level_data = self.level_data
+        if not adjacency or level_data is None:
+            return None
+        start_pos = getattr(level_data, "start_position", None)
+        if start_pos is None:
+            return None
+        try:
+            from ..graph.reachability.surface_area import get_cached_surface_area
+
+            cache_key = level_data.get_cache_key_for_reachability(
+                include_switch_states=True
+            )
+            return get_cached_surface_area(
+                cache_key, start_pos, adjacency, graph_data
+            )
+        except Exception as e:
+            logger.debug(f"Failed to compute level surface area: {e}")
+            return None
+
     def reset(self, seed=None, options=None):
         """Reset the environment with planning components and visualization."""
 
@@ -501,16 +532,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._deterministic_mask_applied_count = 0
             self._total_steps_count = 0
 
-            # Reset reward calculators (both main and primitive)
             self._reset_reward_calculator()
 
-            # Reset primitive reward tracking
-            self._prev_switch_activated = False
-
-            # Reset truncation checker
             self.truncation_checker.reset()
 
-            # Reset episode reward
             self.current_ep_reward = 0
 
             # === GOAL CURRICULUM: Reapply curriculum positions ===
@@ -534,17 +559,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                         f"positioning after fast_reset (waypoints unchanged - same stage)"
                     )
 
-            # Clear per-step PBRS caches (ninja position resets to spawn)
-            # NOTE: We keep normalization caches (_cached_combined_path_distance, etc.)
-            # because entity positions haven't changed (same curriculum stage)
+            # Clear per-step path caches (ninja position resets to spawn).
+            # Level-scoped caches remain valid because entity positions are unchanged.
             if hasattr(self, "reward_calculator") and hasattr(
-                self.reward_calculator, "pbrs_calculator"
+                self.reward_calculator, "path_calculator"
             ):
-                pbrs_calc = self.reward_calculator.pbrs_calculator
-                # Clear per-step caches (distance from current ninja position to goal)
-                pbrs_calc._cached_distance = None
-                pbrs_calc._cached_start_node = None
-                pbrs_calc._cached_next_hop = None
+                self.reward_calculator.path_calculator.clear_step_cache()
 
             # Reset graph state (fast - graph structure unchanged)
             # graph_start = self._profile_start("reset_fast_graph")
@@ -601,16 +621,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.current_route = []
             self._warned_about_position = False
 
-            # Reset reward calculators (both main and primitive)
             self._reset_reward_calculator()
 
-            # Reset primitive reward tracking
-            self._prev_switch_activated = False
-
-            # Reset truncation checker
             self.truncation_checker.reset()
 
-            # Reset episode reward
             self.current_ep_reward = 0
 
             # Clear caches appropriately based on whether this is a new level
@@ -998,35 +1012,18 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # Force switch cache invalidation to clear path distance caches
             self.invalidate_switch_cache()
 
-            # Clear PBRS normalization cache (will rebuild with curriculum positions)
-            # CRITICAL: All position-dependent PBRS caches must be cleared on curriculum advancement
+            # Clear the reward calculator's path caches on curriculum stage
+            # advancement: goal positions change, so all level-scoped and
+            # step-scoped path data is stale.
             if hasattr(self, "reward_calculator") and hasattr(
-                self.reward_calculator, "pbrs_calculator"
+                self.reward_calculator, "path_calculator"
             ):
-                pbrs_calc = self.reward_calculator.pbrs_calculator
-
-                # Clear path distance caches (used for PBRS normalization)
-                pbrs_calc._cached_combined_path_distance = None
-                pbrs_calc._cached_spawn_to_switch_distance = None
-                pbrs_calc._cached_switch_to_exit_distance = None
-                pbrs_calc._cached_combined_physics_cost = None
-
-                # Clear surface area cache (geometry-based, not position-based, but clear for safety)
-                pbrs_calc._cached_surface_area = None
-
-                # Clear level/state tracking (forces recomputation on next step)
-                pbrs_calc._cached_level_id = None
-                pbrs_calc._cached_switch_states = None
-
-                # Clear per-step caches (distance to current goal)
-                pbrs_calc._cached_distance = None
-                pbrs_calc._cached_start_node = None
-                pbrs_calc._cached_next_hop = None
+                self.reward_calculator.path_calculator.clear_cache()
 
                 if self.enable_logging:
                     logger.info(
-                        "[CURRICULUM] Cleared all PBRS caches for curriculum stage advancement - "
-                        "PBRS will recompute distances with new entity positions"
+                        "[CURRICULUM] Cleared reward-calculator path caches on curriculum "
+                        "stage advancement"
                     )
 
             # Force path distance calculator to switch to new stage's SharedLevelCache
@@ -1039,31 +1036,18 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     "Invalidated all entity-dependent caches after curriculum entity movement"
                 )
 
-        # CRITICAL FIX: Clear PBRS caches ALWAYS when curriculum is enabled
-        # This must happen even when using pre-cached curriculum maps (use_curriculum_map_cache=True)
-        # because PBRS caches persist across episodes but entity positions change with stage advancement
+        # When curriculum is enabled, always clear reward-calculator path caches on
+        # full reset: entity positions can change with stage advancement, so any
+        # cached distances could be stale.
         if self.goal_curriculum_manager is not None:
             if hasattr(self, "reward_calculator") and hasattr(
-                self.reward_calculator, "pbrs_calculator"
+                self.reward_calculator, "path_calculator"
             ):
-                pbrs_calc = self.reward_calculator.pbrs_calculator
-
-                # Clear ALL PBRS caches for curriculum stage
-                pbrs_calc._cached_combined_path_distance = None
-                pbrs_calc._cached_spawn_to_switch_distance = None
-                pbrs_calc._cached_switch_to_exit_distance = None
-                pbrs_calc._cached_combined_physics_cost = None
-                pbrs_calc._cached_surface_area = None
-                pbrs_calc._cached_level_id = None
-                pbrs_calc._cached_switch_states = None
-                pbrs_calc._cached_distance = None
-                pbrs_calc._cached_start_node = None
-                pbrs_calc._cached_next_hop = None
+                self.reward_calculator.path_calculator.clear_cache()
 
                 if self.enable_logging:
                     logger.info(
-                        "[PBRS_FIX] Cleared all PBRS caches on full reset with curriculum - "
-                        "ensures fresh distance calculations with current stage entity positions"
+                        "[CURRICULUM] Cleared reward-calculator path caches on full reset"
                     )
 
         # CRITICAL: Reset and rebuild graph BEFORE getting observation
@@ -1164,23 +1148,17 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # PERFORMANCE: Cache static door entities and initialize switch states
         self._initialize_locked_door_caches()
 
-        # Set dynamic truncation limit based on level complexity
-        # Uses PBRS surface area (mine count set to 0 since simplified reward system doesn't use mine proximity)
-        pbrs_calculator = self.reward_calculator.pbrs_calculator
-        if pbrs_calculator._cached_surface_area is not None:
-            surface_area = pbrs_calculator._cached_surface_area
-            # Simplified reward system: mine proximity removed, so mine count = 0 for truncation
-            # Truncation now based purely on level size (surface area)
-            reachable_mine_count = 0
-
+        # Set dynamic truncation limit based on level complexity (reachable surface area).
+        # Computed once per level via the shared module-level surface-area cache.
+        surface_area = self._compute_level_surface_area()
+        if surface_area is not None:
             truncation_limit = self.truncation_checker.set_level_truncation_limit(
-                surface_area, reachable_mine_count
+                surface_area, 0
             )
-
             if self.enable_logging:
                 logger.info(
                     f"Level truncation limit: {truncation_limit} frames "
-                    f"(surface_area={surface_area:.0f}, mines={reachable_mine_count})"
+                    f"(surface_area={surface_area:.0f})"
                 )
 
         # VALIDATION: Verify curriculum positions match actual entity positions
@@ -1282,9 +1260,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     f"stage={stage}, switch={actual_switch}, exit={actual_exit}"
                 )
 
-        # Load surface-graph PBRS for the current level (no-op if not configured)
-        self._try_load_value_function_pbrs()
-
         # NOW get initial observation (with valid graph data)
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
@@ -1371,8 +1346,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         produced a feature vector for the policy. The feature vector is no
         longer part of the observation (Layer 1), but the cached path
         distances (`_cached_switch_distance`, `_cached_exit_distance`) are
-        still required by `PBRSCalculator`. Any exception here is non-fatal
-        since PBRS will fall back to direct path cost queries.
+        still consumed by ``RewardCalculator._get_distances`` to avoid a
+        duplicate A* call. Any exception here is non-fatal since the reward
+        calculator falls back to direct path cost queries.
         """
         try:
             self._compute_reachability(self.nplay_headless.ninja_position())
@@ -1470,12 +1446,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         zone, zero at the boundary, negative inside. Shape: (1, H, W).
 
         Recomputes only when the deadly-mine set changes vs the last call.
+        Classification uses the shared ``classify_mines_by_state`` helper so the
+        overlay and the hazard map never disagree after a mid-episode toggle.
         """
         toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
-        deadly: list[tuple[float, float]] = []
-        for mine in (*toggle_mines, *toggled_mines):
-            if getattr(mine, "state", 1) == 0:
-                deadly.append((float(mine.xpos), float(mine.ypos)))
+        deadly_mines, _ = classify_mines_by_state((*toggle_mines, *toggled_mines))
+        deadly = [(float(m.xpos), float(m.ypos)) for m in deadly_mines]
 
         flat = self._mine_threat_map_rs.compute_hazard_map_if_changed(deadly)
         if flat is None:
@@ -1674,16 +1650,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if hasattr(self, "_path_calculator") and self._path_calculator is not None:
             self._path_calculator.clear_cache()
 
-        # CRITICAL FIX: Also clear reward calculator's path calculator cache!
-        # The reward calculator has its own separate path_calculator that needs clearing too
-        if hasattr(self, "reward_calculator"):
-            if hasattr(self.reward_calculator, "pbrs_calculator"):
-                if hasattr(self.reward_calculator.pbrs_calculator, "path_calculator"):
-                    reward_path_calc = (
-                        self.reward_calculator.pbrs_calculator.path_calculator
-                    )
-                    if reward_path_calc is not None:
-                        reward_path_calc.clear_cache()
+        # Also clear the reward calculator's (separate) path_calculator cache.
+        if hasattr(self, "reward_calculator") and hasattr(
+            self.reward_calculator, "path_calculator"
+        ):
+            self.reward_calculator.path_calculator.clear_cache()
 
     def _extract_mine_features(
         self, obs: Dict[str, Any], buffer: np.ndarray
@@ -2210,6 +2181,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         self._reinit_graph_system_after_unpickling(self.config.graph.debug)
         self._reinit_reachability_system_after_unpickling()
+
+        if getattr(self, "_path_calculator", None) is not None and hasattr(
+            self, "reward_calculator"
+        ):
+            self.reward_calculator.path_calculator = self._path_calculator
 
         # Mark that we need to reinitialize on next reset
         self._needs_reinit = True

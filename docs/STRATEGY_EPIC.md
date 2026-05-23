@@ -1,9 +1,49 @@
 # N++ Generalizable Agent: Strategy Epic
 
-**Document Version:** 2.0  
-**Date:** March 31, 2026  
+**Document Version:** 2.1  
+**Date:** April 21, 2026  
 **Scope:** Observation architecture, reward pipeline, policy architecture, and curriculum system for training a generalizable N++ RL agent.  
-**Key change from v1.0:** Surface graph PBRS removed from per-frame reward and observation space. Replaced with 6px A\* HWM (early training bootstrap) + BSRS (dynamic physics-aware shaping after ~40% training). Surface graph retained as offline curriculum tool only.
+**Key change from v2.0:** Layer 1 narrowed to **toggle mines + exit switch + exit door only**. Non-mine entities (bounce blocks, thwumps, launch pads, locked doors, drones, death balls, one-way platforms) are deferred. The observation space and model are sized accordingly — see *Layer 1 implementation reality* immediately below before reading Section 3, which preserves the original long-term design.
+
+---
+
+## 1a. Layer 1 implementation reality (April 2026)
+
+The long-form design in Section 3 describes the eventual target. The live code in `nclone` + `npp-rl` implements a strict subset of it, scoped to toggle mines / exit switch / exit door:
+
+| Key | Shape | Source |
+|---|---|---|
+| `tile_grid` | `(42, 23)` int8, values 0–33 | `base_environment._get_obs` |
+| `entity_overlays` | `(5, 42, 23)` float32 | `entity_overlay_utils.compute_entity_overlays` |
+| `hazard_map` | `(1, 168, 92)` float32 | `MineThreatMap` (Rust) — deadly-mine SDF only |
+| `game_state` | `(28,)` float32 | `observation_processor` |
+
+Active entity overlay channels (5): ninja position splat, switch-not-collected indicator at switch tile, exit-door tile, deadly-mine density, safe-mine density. Mines are split by live `state` (0 = deadly, 1 = safe) via `classify_mines_by_state`, so the hazard map and overlay never disagree.
+
+Deferred — **not** in the observation, the model, or the reward:
+
+- 3-channel mine threat map (`safe_sdf`, `passability`); only the 1-channel deadly SDF (`hazard_map`) is live.
+- Entity attention (`entity_list`, `entity_mask`) — non-mine entities are out of scope.
+- Bounce-block, thwump, launch-pad overlays — out of scope.
+- Locked-door surface nodes and locked-door-switch goals — explicitly excluded from `extract_goal_positions` and `observation_processor`.
+- Recurrent policies (LSTM / GRU / Mamba) — purged; policy is feedforward.
+
+Reward pipeline actually shipped (see `main_reward_calculator.py`):
+
+```
+r = r_sparse
+  + beta * alpha_astar * hwm_progress              # NPP-42 HWM on A* cost-to-go
+  + time_penalty_per_step * frames                 # TIME_PENALTY_PER_STEP = -0.001
+  + BACKTRACK_PENALTY * frames [if d(goal) ↑]      # = -0.0004
+  # BSRS rollout term (1 - beta) * eta * (gamma * V(s') - V(s)) is added on the
+  # training side in FiGARPPO / MaskedPPO, not inside the env reward calculator.
+```
+
+Terminals add `R_SWITCH`, `R_EXIT`, `R_DEATH` (+ `R_DEATH_MINE`), or `TRUNCATION_PENALTY`. `beta` anneals 1 → 0 over `bsrs_blend_horizon_fraction * total_timesteps` (see `RewardConfig.beta_blend`).
+
+**Single runtime reward path (NPP-30 / NPP-31 closed, April 2026).** The primitive-frame reward loop, the precomputed-PBRS branch, `PrimitiveRewardCalculator`, `pbrs_potentials.py`, `simulation_pbrs/`, and the runtime route overlay are deleted. Every `env.step()` calls `RewardCalculator.calculate_reward` exactly once. `nclone/value_function/` is retained strictly as offline curriculum tooling (route extraction, surface graph, expert-route visualization). See `nclone/gym_environment/reward_calculation/README.md` for the full contract.
+
+Everything below this block is preserved as the multi-layer strategic target. Layer 1 acceptance is defined by the table above, not by the Section 3 tables.
 
 ---
 
@@ -697,7 +737,13 @@ After mutation, verify reachability using the 6px A\* graph (~100ms). Re-run the
 - `nclone/value_function/arc_cache.py` — retained for expert route computation
 
 **Removed from runtime pipeline (no longer used for per-frame reward or observations):**
-- `nclone/value_function/precomputed_pbrs.py` — was for runtime Φ(s,v) evaluation; no longer needed
+- `nclone/gym_environment/reward_calculation/primitive_reward_calculator.py` — the legacy per-frame primitive reward loop (NPP-30)
+- `nclone/gym_environment/reward_calculation/pbrs_potentials.py` — `PBRSCalculator` wrapper and static `PBRSPotentials`
+- `nclone/gym_environment/reward_calculation/reward_machine.py`, `adaptive_pbrs.py`, `sparse_reward_calculator.py` — unused alternative reward paths
+- `nclone/simulation_pbrs/` — precomputed per-level Φ grids consumed only by the deleted primitive path (NPP-31)
+- Runtime route overlay (`_debug_route_overlay`, `set_route_overlay_enabled`) — removed from `debug_mixin.py`; offline viewer in `nclone/value_function/visualize_route_interactive.py` is unaffected
+- `env.step()` info keys `primitive_rewards` and `precomputed_pbrs_active` — no longer emitted
+- `base_environment.py` kwargs `value_function_dir`, `use_precomputed_pbrs`, `simulation_phi_dir`, `use_reachability_pbrs`, `iql_checkpoint_path` — removed
 - Route overlay channel generation code — removed from `observation_processor.py`
 - Waypoint vector generation code — removed from `observation_processor.py`
 

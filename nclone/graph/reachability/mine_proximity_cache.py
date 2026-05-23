@@ -9,10 +9,12 @@ Also includes a Signed Distance Field (SDF) to mines for O(1) hazard lookups
 in the observation space, and gradient vectors for escape direction features.
 """
 
-from typing import Dict, Tuple, Optional, Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from ..level_data import LevelData
 from .level_data_helpers import get_mine_state_signature
+from .cost_functions import NODE_WORLD_COORD_OFFSET
+from .spatial_hash import SpatialHash
 
 # Level dimensions in tiles (N++ standard level size)
 LEVEL_WIDTH_TILES = 44
@@ -24,6 +26,69 @@ TILE_SIZE = 24  # pixels per tile
 SDF_CELL_SIZE = 6  # pixels per SDF cell
 SDF_WIDTH = 176  # 44 tiles * 4 = 176 cells at 6px resolution
 SDF_HEIGHT = 100  # 25 tiles * 4 = 100 cells at 6px resolution
+
+
+def get_playable_nodes_for_mine_filter(
+    level_data: LevelData,
+    adjacency: Dict[Tuple[int, int], Any],
+    graph_data: Optional[Dict[str, Any]],
+) -> Set[Tuple[int, int]]:
+    """
+    Floodable spawn-reachable nodes (tile data space) for filtering mines.
+
+    When graph_data contains spawn_reachable_nodes from GraphBuilder, uses that
+    to avoid a duplicate flood fill. Otherwise runs flood_fill_reachable_nodes
+    from level_data.start_position. If the flood returns empty, falls back to
+    all adjacency keys (matches graph_builder). Returns empty if adjacency empty.
+    """
+    if not adjacency:
+        return set()
+    if graph_data is not None and graph_data.get("spawn_reachable_nodes") is not None:
+        return set(graph_data["spawn_reachable_nodes"])
+
+    from .surface_area import flood_fill_reachable_nodes
+    from .pathfinding_utils import extract_spatial_lookups_from_graph_data
+
+    spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(graph_data)
+    reachable = flood_fill_reachable_nodes(
+        level_data.start_position,
+        adjacency,
+        spatial_hash=spatial_hash,
+        subcell_lookup=subcell_lookup,
+        player_radius=10.0,
+    )
+    if not reachable:
+        return set(adjacency.keys())
+    return reachable
+
+
+def filter_mine_world_positions_to_playable_area(
+    mine_world_positions: List[Tuple[float, float]],
+    playable_nodes: Set[Tuple[int, int]],
+) -> List[Tuple[float, float]]:
+    """
+    Keep mines that lie within R pixels (tile data) of the playable component.
+
+    Uses spatial hash on playable node positions. Mines are in world space;
+    queries use the same node/tile space convention as find_closest_node_to_position.
+    """
+    if not mine_world_positions:
+        return []
+    if not playable_nodes:
+        return []
+
+    from ...gym_environment.reward_calculation.reward_constants import MINE_HAZARD_RADIUS
+
+    r_assoc = max(96.0, 2.0 * MINE_HAZARD_RADIUS)
+    sh = SpatialHash(cell_size=24.0)
+    sh.build(list(playable_nodes))
+    out: List[Tuple[float, float]] = []
+    for mx, my in mine_world_positions:
+        qx = float(mx) - NODE_WORLD_COORD_OFFSET
+        qy = float(my) - NODE_WORLD_COORD_OFFSET
+        if sh.find_closest(qx, qy, max_distance=r_assoc) is not None:
+            out.append((float(mx), float(my)))
+    return out
 
 
 class MineProximityCostCache:
@@ -71,6 +136,7 @@ class MineProximityCostCache:
         self,
         adjacency: Dict[Tuple[int, int], Any],
         level_data: LevelData,
+        graph_data: Optional[Dict[str, Any]] = None,
     ):
         """
         Precompute mine proximity cost multipliers for all nodes.
@@ -82,6 +148,8 @@ class MineProximityCostCache:
         Args:
             adjacency: Graph adjacency structure (keys are node positions)
             level_data: Level data containing mine entities
+            graph_data: Optional graph build output; if provided, only mines
+                associated with the spawn flood-fill component are used.
         """
         from ...gym_environment.reward_calculation.reward_constants import (
             MINE_HAZARD_RADIUS,
@@ -137,6 +205,16 @@ class MineProximityCostCache:
                 f"All paths will have 1.0x mine cost (no avoidance)."
             )
             return  # No deadly mines, all nodes get 1.0 multiplier
+
+        if graph_data is not None and adjacency:
+            playable = get_playable_nodes_for_mine_filter(
+                level_data, adjacency, graph_data
+            )
+            deadly_mine_positions = filter_mine_world_positions_to_playable_area(
+                deadly_mine_positions, playable
+            )
+            if not deadly_mine_positions:
+                return
 
         # Log deadly mine count for diagnostics
         import logging
@@ -209,6 +287,7 @@ class MineProximityCostCache:
         self,
         level_data: LevelData,
         adjacency: Dict[Tuple[int, int], Any],
+        graph_data: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Build or rebuild cache if needed.
@@ -220,6 +299,8 @@ class MineProximityCostCache:
         Args:
             level_data: Current level data
             adjacency: Graph adjacency structure (keys are node positions)
+            graph_data: Optional graph dict from GraphBuilder; used to restrict
+                mines to the spawn-reachable (playable) component when set.
 
         Returns:
             True if cache was rebuilt, False if cache was valid
@@ -236,7 +317,7 @@ class MineProximityCostCache:
 
         if needs_rebuild:
             # Precompute mine proximity costs for all nodes
-            self._precompute_mine_proximity_costs(adjacency, level_data)
+            self._precompute_mine_proximity_costs(adjacency, level_data, graph_data)
 
             # Update cached state
             self._cached_level_data = level_data
@@ -310,29 +391,29 @@ class MineSignedDistanceField:
         # Danger radius (NINJA_RADIUS + max mine radius + safety margin)
         self.danger_radius: float = 20.0  # 10 (ninja) + 4.5 (mine) + 5.5 (margin)
 
-        # Cache invalidation tracking
-        self._cached_level_data: Optional[LevelData] = None
-        self._cached_mine_signature: Optional[Tuple] = None
+        # Cache invalidation: (level_key, mine_signature); level_key prefers level_id
+        self._cached_sdf_key: Optional[Tuple[Any, Tuple]] = None
 
-    def build_sdf(self, level_data: LevelData) -> bool:
+    def build_sdf(
+        self,
+        level_data: LevelData,
+        graph_data: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """
         Build or rebuild the SDF if needed.
 
         Args:
             level_data: Current level data with mine entities
+            graph_data: Optional graph dict; when provided, only mines in the
+                spawn-reachable (playable) component affect the SDF.
 
         Returns:
             True if SDF was rebuilt, False if cache was valid
         """
-        from ...constants.entity_types import EntityType
-
-        # Check cache validity
         mine_signature = get_mine_state_signature(level_data)
-        if (
-            self._cached_level_data == level_data
-            and self._cached_mine_signature == mine_signature
-            and self.sdf_grid is not None
-        ):
+        level_key = getattr(level_data, "level_id", None) or f"ld_{id(level_data)}"
+        cache_key = (level_key, mine_signature)
+        if self._cached_sdf_key == cache_key and self.sdf_grid is not None:
             return False  # Cache still valid
 
         # Initialize grids at 6px resolution for higher accuracy
@@ -365,56 +446,61 @@ class MineSignedDistanceField:
             mine_y = mine.get("y", 0)
             sdf_mine_positions.append((mine_x, mine_y))
 
+        if graph_data is not None and graph_data.get("adjacency"):
+            playable = get_playable_nodes_for_mine_filter(
+                level_data, graph_data["adjacency"], graph_data
+            )
+            world_list = [(float(x), float(y)) for x, y in sdf_mine_positions]
+            filtered = filter_mine_world_positions_to_playable_area(
+                world_list, playable
+            )
+            sdf_mine_positions = [(x, y) for x, y in filtered]
+
         if not sdf_mine_positions:
             # No mines to penalize - all tiles are safe (max distance)
-            self._cached_level_data = level_data
-            self._cached_mine_signature = mine_signature
+            self._cached_sdf_key = cache_key
             return True
 
-        # Compute SDF for each 6px cell (sub-node resolution)
-        for row in range(SDF_HEIGHT):
-            for col in range(SDF_WIDTH):
-                # Cell center in pixel coordinates (6px resolution)
-                cell_center_x = (col + 0.5) * SDF_CELL_SIZE
-                cell_center_y = (row + 0.5) * SDF_CELL_SIZE
+        cols = (np.arange(SDF_WIDTH, dtype=np.float64) + 0.5) * SDF_CELL_SIZE
+        rows = (np.arange(SDF_HEIGHT, dtype=np.float64) + 0.5) * SDF_CELL_SIZE
+        mx = np.array([p[0] for p in sdf_mine_positions], dtype=np.float64)
+        my = np.array([p[1] for p in sdf_mine_positions], dtype=np.float64)
+        # Distances from each cell center to every mine: (H, W, M)
+        ccx = cols[np.newaxis, :, np.newaxis]  # (1, W, 1)
+        ccy = rows[:, np.newaxis, np.newaxis]  # (H, 1, 1)
+        mxa = mx.reshape(1, 1, -1)
+        mya = my.reshape(1, 1, -1)
+        d2 = (ccx - mxa) ** 2 + (ccy - mya) ** 2
+        min_d = np.sqrt(np.min(d2, axis=2))
+        nearest_idx = np.argmin(d2, axis=2)
+        mx_s = mx[nearest_idx]
+        my_s = my[nearest_idx]
+        cell_x = cols[np.newaxis, :]  # (1, W)
+        cell_y = rows[:, np.newaxis]  # (H, 1)
+        nearest_dx = cell_x - mx_s
+        nearest_dy = cell_y - my_s
 
-                # Find nearest mine and direction
-                min_dist = float("inf")
-                nearest_dx, nearest_dy = 0.0, 0.0
+        dr = self.danger_radius
+        norm = np.empty((SDF_HEIGHT, SDF_WIDTH), dtype=np.float32)
+        inside = min_d <= dr
+        norm[inside] = (min_d[inside] / dr - 1.0).astype(np.float32)
+        outside = ~inside
+        norm[outside] = np.minimum(1.0, (min_d[outside] - dr) / (2.0 * dr)).astype(
+            np.float32
+        )
+        self.sdf_grid = norm
 
-                for mine_x, mine_y in sdf_mine_positions:
-                    dx = cell_center_x - mine_x
-                    dy = cell_center_y - mine_y
-                    dist = np.sqrt(dx * dx + dy * dy)
+        g = np.zeros((SDF_HEIGHT, SDF_WIDTH, 2), dtype=np.float32)
+        safe = min_d > 1e-6
+        inv = np.zeros_like(min_d)
+        np.divide(1.0, min_d, out=inv, where=safe)
+        g[:, :, 0] = (nearest_dx * inv).astype(np.float32)
+        g[:, :, 1] = (nearest_dy * inv).astype(np.float32)
+        g[~safe, 0] = 0.0
+        g[~safe, 1] = 0.0
+        self.gradient_grid = g
 
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest_dx = dx
-                        nearest_dy = dy
-
-                # Normalize distance to [-1, 1] range
-                # -1 = at mine center, 0 = at danger_radius edge, 1 = far from mines
-                if min_dist <= self.danger_radius:
-                    # Inside danger zone: negative SDF
-                    normalized_dist = (min_dist / self.danger_radius) - 1.0
-                else:
-                    # Outside danger zone: positive SDF, capped at 1.0
-                    # Map [danger_radius, 3*danger_radius] to [0, 1]
-                    normalized_dist = min(
-                        1.0, (min_dist - self.danger_radius) / (2 * self.danger_radius)
-                    )
-
-                self.sdf_grid[row, col] = normalized_dist
-
-                # Compute normalized gradient (escape direction)
-                if min_dist > 1e-6:  # Avoid division by zero
-                    self.gradient_grid[row, col, 0] = nearest_dx / min_dist
-                    self.gradient_grid[row, col, 1] = nearest_dy / min_dist
-                # If at mine center, gradient stays (0, 0)
-
-        # Update cache state
-        self._cached_level_data = level_data
-        self._cached_mine_signature = mine_signature
+        self._cached_sdf_key = cache_key
         return True
 
     def get_sdf_at_position(self, x: float, y: float) -> float:
@@ -497,8 +583,7 @@ class MineSignedDistanceField:
         """Clear the SDF cache."""
         self.sdf_grid = None
         self.gradient_grid = None
-        self._cached_level_data = None
-        self._cached_mine_signature = None
+        self._cached_sdf_key = None
 
 
 def create_mine_sdf() -> MineSignedDistanceField:

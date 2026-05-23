@@ -69,12 +69,17 @@ class ReachabilitySystem:
             reachable_positions = graph_data["reachable"]
         else:
             # Perform flood fill using the existing adjacency graph
-            from ...gym_environment.reward_calculation.pbrs_potentials import (
-                _flood_fill_reachable_nodes,
-            )
+            from .surface_area import flood_fill_reachable_nodes
+            from .node_lookup import extract_spatial_lookups_from_graph_data
 
-            reachable_positions = _flood_fill_reachable_nodes(
-                ninja_position, adjacency, graph_data
+            spatial_hash, subcell_lookup = extract_spatial_lookups_from_graph_data(
+                graph_data
+            )
+            reachable_positions = flood_fill_reachable_nodes(
+                ninja_position,
+                adjacency,
+                spatial_hash=spatial_hash,
+                subcell_lookup=subcell_lookup,
             )
 
         return ReachabilityResult(

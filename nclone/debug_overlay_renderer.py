@@ -315,10 +315,11 @@ class DebugOverlayRenderer:
             return surface
 
         rows, cols = sdf_grid.shape
-        # SDF uses 12px cells (sub-node resolution) for higher accuracy
-        sdf_cell_size = 12 * self.adjust
+        # Match MineSignedDistanceField grid (see mine_proximity_cache.SDF_CELL_SIZE)
+        cell_px = float(mine_sdf_info.get("sdf_cell_size", 6))
+        sdf_cell_size = cell_px * self.adjust
 
-        # Draw SDF heatmap at 12px resolution
+        # Draw SDF heatmap at SDF_CELL_SIZE resolution
         for row in range(rows):
             for col in range(cols):
                 sdf_value = sdf_grid[row, col]
@@ -360,7 +361,7 @@ class DebugOverlayRenderer:
         #     pygame.draw.circle(surface, (140, 0, 0, 255), (screen_x, screen_y), 6)
         #     pygame.draw.circle(surface, (255, 255, 255, 200), (screen_x, screen_y), 6, 2)
 
-        # Draw danger approach arrows at regular 24px intervals (2 cells × 12px)
+        # Draw danger approach arrows at regular intervals in SDF cells
         # Static grid showing direction TO nearest mine - doesn't change with player position
         # Dense grid with shorter arrows for clearer visualization
         if gradient_grid is not None:
@@ -635,6 +636,8 @@ class DebugOverlayRenderer:
         show_distances = path_aware_info.get("show_distances", False)
         show_blocked = path_aware_info.get("show_blocked", False)
         show_paths = path_aware_info.get("show_paths", False)
+        mine_proximity_by_node = path_aware_info.get("mine_proximity_by_node")
+        hazard_combo = path_aware_info.get("hazard_combo", False)
 
         # Colors for visualization
         NODE_COLOR = (100, 255, 100, 180)  # Green nodes
@@ -761,11 +764,29 @@ class DebugOverlayRenderer:
                     node_color = BLOCKED_NODE_COLOR
                 elif ninja_node is not None and pos == ninja_node:
                     node_color = NINJA_NODE_COLOR
+                elif mine_proximity_by_node:
+                    mult = mine_proximity_by_node.get(pos, 1.0)
+                    if mult > 1.02:
+                        from nclone.gym_environment.reward_calculation.reward_constants import (
+                            MINE_HAZARD_COST_MULTIPLIER,
+                        )
+
+                        denom = max(
+                            MINE_HAZARD_COST_MULTIPLIER - 1.0, 1e-6
+                        )
+                        t = min(1.0, (mult - 1.0) / denom)
+                        r = int(90 + 165 * t)
+                        g = int(255 - 200 * t)
+                        b = int(60 + 40 * (1.0 - t))
+                        node_color = (r, g, b, 240)
+                    else:
+                        node_color = NODE_COLOR
                 else:
                     node_color = NODE_COLOR
 
-                # Draw node circle
-                pygame.draw.circle(surface, node_color, (screen_x, screen_y), 3)
+                # Draw node circle (slightly larger when showing mine path costs)
+                radius = 4 if mine_proximity_by_node else 3
+                pygame.draw.circle(surface, node_color, (screen_x, screen_y), radius)
 
         # Find and visualize switches and exits
         switch_positions = []
@@ -840,7 +861,7 @@ class DebugOverlayRenderer:
                 )
 
             mine_cache_rebuilt = self._mine_proximity_cache.build_cache(
-                level_data, adjacency
+                level_data, adjacency, graph_data
             )
 
             # DIAGNOSTIC: Log mine cache state for path cost validation
@@ -1496,6 +1517,27 @@ class DebugOverlayRenderer:
                 surface.blit(switch_surf, (50 + 10, 50 + 28))
                 surface.blit(exit_surf, (50 + 10, 50 + 50))
 
+        if hazard_combo:
+            try:
+                legend_font = pygame.font.Font(None, 18)
+            except pygame.error:
+                legend_font = pygame.font.SysFont("arial", 14)
+            lines = [
+                "Hazard (H): SDF heatmap under graph",
+                "Yellow-red nodes: path mine cost >1x",
+            ]
+            pad = 6
+            y = self.screen.get_height() - 8
+            for line in reversed(lines):
+                text = legend_font.render(line, True, (255, 255, 255))
+                bg = pygame.Surface(
+                    (text.get_width() + pad * 2, text.get_height() + 4), pygame.SRCALPHA
+                )
+                bg.fill((0, 0, 0, 200))
+                bg.blit(text, (pad, 2))
+                y -= bg.get_height() + 4
+                surface.blit(bg, (8, y))
+
         return surface
 
     def _draw_demo_checkpoints_heatmap(
@@ -2044,6 +2086,27 @@ class DebugOverlayRenderer:
             )
             pygame.draw.rect(surface, (r, g, b, 80), rect)
 
+    def _blit_benchmark_hud_text(self, surface: pygame.Surface, lines) -> None:
+        """Top-left mechanic-benchmark / tool HUD (keeps parity with test_environment styling)."""
+        if not lines:
+            return
+        font = pygame.font.SysFont("monospace", 14)
+        x0, y = 8, 6
+        pad = 4
+        for line in lines:
+            s = str(line)
+            if not s:
+                continue
+            text = font.render(s, True, (255, 255, 255))
+            bg = pygame.Surface(
+                (text.get_width() + pad * 2, text.get_height() + 4)
+            )
+            bg.set_alpha(210)
+            bg.fill((20, 22, 32))
+            surface.blit(bg, (x0, y))
+            surface.blit(text, (x0 + pad, y + 2))
+            y += bg.get_height() + 4
+
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -2054,8 +2117,8 @@ class DebugOverlayRenderer:
             pygame.Surface: Surface containing the rendered debug text and exploration grid.
         """
         surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        if not debug_info:
-            return surface  # Return empty surface if no debug info
+        if debug_info is None:
+            return surface
 
         # Draw grid outline if provided
         if debug_info and "grid_outline" in debug_info:
@@ -2067,23 +2130,36 @@ class DebugOverlayRenderer:
             tile_types_surface = self._draw_tile_types()
             surface.blit(tile_types_surface, (0, 0))
 
-        # Draw path-aware visualization if provided
-        if debug_info and "path_aware" in debug_info:
-            path_aware_surface = self._draw_path_aware(debug_info["path_aware"])
+        # Path-aware + mine SDF: when hazard combo, draw SDF first so graph/nodes stay readable
+        path_aware_info = debug_info.get("path_aware") if debug_info else None
+        mine_sdf_info = debug_info.get("mine_sdf") if debug_info else None
+        hazard_combo = bool(
+            path_aware_info and path_aware_info.get("hazard_combo") and mine_sdf_info
+        )
+
+        if hazard_combo:
+            mine_sdf_surface = self._draw_mine_sdf(mine_sdf_info)
+            if mine_sdf_surface:
+                surface.blit(mine_sdf_surface, (0, 0))
+            path_aware_surface = self._draw_path_aware(path_aware_info)
             if path_aware_surface:
                 surface.blit(path_aware_surface, (0, 0))
+        else:
+            if path_aware_info is not None:
+                path_aware_surface = self._draw_path_aware(path_aware_info)
+                if path_aware_surface:
+                    surface.blit(path_aware_surface, (0, 0))
+
+            if mine_sdf_info is not None:
+                mine_sdf_surface = self._draw_mine_sdf(mine_sdf_info)
+                if mine_sdf_surface:
+                    surface.blit(mine_sdf_surface, (0, 0))
 
         # Draw action mask visualization if provided
         if debug_info and "action_mask" in debug_info:
             action_mask_surface = self._draw_action_mask(debug_info["action_mask"])
             if action_mask_surface:
                 surface.blit(action_mask_surface, (0, 0))
-
-        # Draw mine SDF visualization if provided
-        if debug_info and "mine_sdf" in debug_info:
-            mine_sdf_surface = self._draw_mine_sdf(debug_info["mine_sdf"])
-            if mine_sdf_surface:
-                surface.blit(mine_sdf_surface, (0, 0))
 
         # Draw demo checkpoint heatmap if provided
         if debug_info and "demo_checkpoints" in debug_info:
@@ -2134,6 +2210,10 @@ class DebugOverlayRenderer:
             )
             if input_seq_surface:
                 surface.blit(input_seq_surface, (0, 0))
+
+        # Mechanic-benchmark / tooling HUD: top-left text (single composited pass with the game)
+        if debug_info and "benchmark_hud" in debug_info:
+            self._blit_benchmark_hud_text(surface, debug_info["benchmark_hud"])
 
         return surface
 

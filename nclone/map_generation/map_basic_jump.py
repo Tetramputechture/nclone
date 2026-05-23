@@ -18,7 +18,7 @@ Variants are selected via the ``VARIANT`` class attribute (driven by
 - ``double_gap``: two gaps with a narrow mid-platform between them.
 """
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .map import Map
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
@@ -50,6 +50,8 @@ class MapBasicJump(Map):
     MAX_STEP_HEIGHT = 2
 
     VARIANT = "single_gap_flat"
+    # Mixed tier 3+4 (``max_mines`` from ``BasicJumpConfig``)
+    MAX_MINES = 0
 
     def _pick_chamber(self) -> Tuple[int, int, int, int]:
         """Choose a chamber rectangle ``(x1, y1, x2, y2)`` inside the map.
@@ -124,6 +126,50 @@ class MapBasicJump(Map):
         orientation = 1 if switch_x > ninja_x else -1
         self.set_ninja_spawn(ninja_x, ninja_y, orientation=orientation)
         self.add_entity(3, door_x, door_y, 0, 0, switch_x, switch_y)
+
+    def _place_optional_mines(
+        self,
+        x1: int,
+        x2: int,
+        y1: int,
+        y2: int,
+        variant: str,
+        obstacle_center_x: int,
+        ninja_x: int,
+        switch_x: int,
+        door_x: int,
+    ) -> None:
+        n = int(self.MAX_MINES)
+        if n <= 0:
+            return
+        reserved = {ninja_x, switch_x, door_x}
+        candidates: List[int] = []
+        if variant == "single_gap_flat":
+            if ninja_x < obstacle_center_x:
+                lo, hi = obstacle_center_x + 1, x2 - 1
+            else:
+                lo, hi = x1 + 1, obstacle_center_x - 1
+            candidates = [x for x in range(lo, hi + 1) if x not in reserved]
+        elif variant == "double_gap":
+            mid = obstacle_center_x
+            candidates = [
+                x
+                for x in range(mid - 2, mid + 3)
+                if x1 < x < x2 and x not in reserved
+            ]
+        if not candidates:
+            candidates = [x for x in range(x1 + 1, x2) if x not in reserved]
+        # Drop gap columns (no solid tile directly under the floor row).
+        floor_y = y2
+        good = []
+        for x in candidates:
+            if x1 <= x <= x2 and self.get_tile(x, floor_y + 1) == 1:
+                good.append(x)
+        candidates = good if good else candidates
+        self.rng.shuffle(candidates)
+        for mx in candidates[:n]:
+            my = self._ground_y_for(mx, x1, x2, y1, y2)
+            self.add_entity(1, mx, my)
 
     def _apply_single_gap_flat(
         self, x1: int, y1: int, x2: int, y2: int
@@ -254,6 +300,17 @@ class MapBasicJump(Map):
         door_y = self._ground_y_for(door_x, x1, x2, y1, y2)
 
         self._set_entities(ninja_x, ninja_y, switch_x, switch_y, door_x, door_y)
+        self._place_optional_mines(
+            x1,
+            x2,
+            y1,
+            y2,
+            variant,
+            obstacle_center_x,
+            ninja_x,
+            switch_x,
+            door_x,
+        )
         return self
 
     def _ground_y_for(

@@ -64,15 +64,8 @@ class LevelBasedPathDistanceCache:
     current position TO goal (not cached, computed fresh each time).
     """
 
-    def __init__(self, simulation_phi_dir: Optional[str] = None):
-        """Initialize level-based path distance cache.
-
-        Args:
-            simulation_phi_dir: Optional directory containing precomputed
-                simulation-based phi grids (.npz files). When provided and
-                grids are found for the current level, uses 6px resolution
-                simulation phi instead of 12px BFS-based phi.
-        """
+    def __init__(self):
+        """Initialize level-based path distance cache."""
         # Cache mapping (node_position, goal_id) -> physics-weighted distance
         self.cache: Dict[Tuple[Tuple[int, int], str], float] = {}
         # Cache mapping (node_position, goal_id) -> geometric distance (pixels)

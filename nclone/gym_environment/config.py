@@ -41,9 +41,7 @@ class PBRSConfig:
     Policy invariance holds for ANY γ, but γ=1.0 ensures clean telescoping in episodic tasks.
     """
 
-    pbrs_gamma: float = 1.0  # Changed from 0.995 to eliminate systematic negative bias
-    use_precomputed_pbrs: bool = False  # Use precomputed surface-graph PBRS (.npz) for per-frame rewards
-    value_function_dir: Optional[str] = None  # Directory containing {level_id}_surface_pbrs.npz files
+    pbrs_gamma: float = 1.0  # Retained for BSRS γ matching on the trainer side
 
     def __post_init__(self):
         """Validate PBRS configuration."""

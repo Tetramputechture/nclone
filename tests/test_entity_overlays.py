@@ -27,12 +27,14 @@ from nclone.gym_environment.entity_overlay_utils import (
     ENTITY_OVERLAY_CHANNELS,
     MINE_DENSITY_NORMALIZER,
     MINE_KILL_ZONE_RADIUS_PX,
+    MINE_STATE_DEADLY,
+    classify_mines_by_state,
     compute_entity_overlays,
 )
 
 
-def _mine(x: float, y: float) -> SimpleNamespace:
-    return SimpleNamespace(xpos=float(x), ypos=float(y))
+def _mine(x: float, y: float, state: int = MINE_STATE_DEADLY) -> SimpleNamespace:
+    return SimpleNamespace(xpos=float(x), ypos=float(y), state=int(state))
 
 
 def _px_from_inner_tile(tx: int, ty: int) -> tuple[float, float]:
@@ -162,6 +164,66 @@ def _reference_mine_density(mines) -> np.ndarray:
                     count += 1
             out[tx, ty] = min(1.0, count / MINE_DENSITY_NORMALIZER)
     return out
+
+
+def test_classify_mines_by_state_splits_on_live_state():
+    """Mines must be classified by live `state`, not by entity type.
+
+    Regression for the overlay/hazard divergence: a type-1 TOGGLE_MINE that has
+    transitioned to STATE_UNTOGGLED (state != 0) must appear in the safe
+    bucket, not the deadly bucket, and vice versa for a type-21
+    TOGGLE_MINE_TOGGLED that has become deadly.
+    """
+    t1_deadly = SimpleNamespace(xpos=10.0, ypos=10.0, state=0, entity_type=1)
+    t1_safe = SimpleNamespace(xpos=20.0, ypos=20.0, state=1, entity_type=1)
+    t21_deadly = SimpleNamespace(xpos=30.0, ypos=30.0, state=0, entity_type=21)
+    t21_toggling = SimpleNamespace(xpos=40.0, ypos=40.0, state=2, entity_type=21)
+
+    deadly, safe = classify_mines_by_state(
+        [t1_deadly, t1_safe, t21_deadly, t21_toggling]
+    )
+
+    assert t1_deadly in deadly
+    assert t21_deadly in deadly
+    assert t1_safe in safe
+    assert t21_toggling in safe
+    assert len(deadly) == 2
+    assert len(safe) == 2
+
+
+def test_overlay_classification_agrees_with_hazard_state_filter():
+    """End-to-end: deadly density must include only state==0 mines, regardless of type.
+
+    The hazard map filters `state == 0` across the union of toggle_mines and
+    toggled_mines; the overlay must do the same via `classify_mines_by_state`.
+    """
+    mines = [
+        SimpleNamespace(xpos=100.0, ypos=100.0, state=0, entity_type=1),
+        SimpleNamespace(xpos=160.0, ypos=100.0, state=1, entity_type=1),
+        SimpleNamespace(xpos=220.0, ypos=100.0, state=0, entity_type=21),
+        SimpleNamespace(xpos=280.0, ypos=100.0, state=2, entity_type=21),
+    ]
+    deadly, safe = classify_mines_by_state(mines)
+
+    arr = compute_entity_overlays(
+        ninja_pos=(50.0, 50.0),
+        switch_pos=None,
+        switch_activated=True,
+        exit_pos=None,
+        deadly_mines=deadly,
+        safe_mines=safe,
+    )
+
+    expected_deadly = _reference_mine_density(deadly)
+    expected_safe = _reference_mine_density(safe)
+    np.testing.assert_allclose(
+        arr[ENTITY_OVERLAY_CH_MINE_DEADLY], expected_deadly, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        arr[ENTITY_OVERLAY_CH_MINE_SAFE], expected_safe, atol=1e-6
+    )
+    assert float(arr[ENTITY_OVERLAY_CH_MINE_DEADLY].sum()) > 0.0
+    assert float(arr[ENTITY_OVERLAY_CH_MINE_SAFE].sum()) > 0.0
 
 
 def test_no_launch_pad_signature_in_call():

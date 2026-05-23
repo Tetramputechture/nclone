@@ -214,7 +214,9 @@ def build_shared_level_cache(
     from .mine_proximity_cache import MineProximityCostCache, MineSignedDistanceField
 
     mine_proximity_cache = MineProximityCostCache()
-    mine_cache_rebuilt = mine_proximity_cache.build_cache(level_data, adjacency)
+    mine_cache_rebuilt = mine_proximity_cache.build_cache(
+        level_data, adjacency, graph_data
+    )
 
     mine_cache_size = len(mine_proximity_cache.cache)
     logger.warning(
@@ -224,7 +226,7 @@ def build_shared_level_cache(
 
     # Build mine SDF for velocity-aware hazard costs
     mine_sdf = MineSignedDistanceField()
-    sdf_rebuilt = mine_sdf.build_sdf(level_data)
+    sdf_rebuilt = mine_sdf.build_sdf(level_data, graph_data)
     logger.info(f"    Mine SDF built: rebuilt={sdf_rebuilt}")
 
     # Step 5: Run BFS flood fill for path distances
@@ -360,12 +362,8 @@ def build_shared_level_cache(
     from .mine_proximity_cache import SDF_WIDTH, SDF_HEIGHT, SDF_CELL_SIZE
 
     # Use the SDF that was already built (don't recompute)
-    if (
-        mine_sdf
-        and hasattr(mine_sdf, "distance_grid")
-        and mine_sdf.distance_grid is not None
-    ):
-        sdf_grid = mine_sdf.distance_grid.copy()
+    if mine_sdf and getattr(mine_sdf, "sdf_grid", None) is not None:
+        sdf_grid = mine_sdf.sdf_grid.copy()
         gradient_grid = mine_sdf.gradient_grid.copy()
         logger.info(
             f"    Transferred SDF grid from built mine_sdf (shape={sdf_grid.shape})"
@@ -387,12 +385,23 @@ def build_shared_level_cache(
                 continue  # Skip safe mines if MINE_PENALIZE_DEADLY_ONLY is True
             sdf_mine_positions.append((mine.get("x", 0), mine.get("y", 0)))
 
+        from .mine_proximity_cache import (
+            filter_mine_world_positions_to_playable_area,
+            get_playable_nodes_for_mine_filter,
+        )
+
+        if graph_data and graph_data.get("adjacency"):
+            playable = get_playable_nodes_for_mine_filter(
+                level_data, graph_data["adjacency"], graph_data
+            )
+            world_list = [(float(x), float(y)) for x, y in sdf_mine_positions]
+            filtered = filter_mine_world_positions_to_playable_area(
+                world_list, playable
+            )
+            sdf_mine_positions = [(x, y) for x, y in filtered]
+
     # Only compute SDF manually if mine_sdf wasn't available (fallback)
-    if not (
-        mine_sdf
-        and hasattr(mine_sdf, "distance_grid")
-        and mine_sdf.distance_grid is not None
-    ):
+    if not (mine_sdf and getattr(mine_sdf, "sdf_grid", None) is not None):
         if sdf_mine_positions:
             danger_radius = 20.0  # ninja_radius (10) + mine_radius (4.5) + margin (5.5)
 
@@ -565,11 +574,11 @@ def build_multi_stage_shared_cache(
 
     # Build mine cache for pathfinding (same for all stages)
     mine_proximity_cache = MineProximityCostCache()
-    mine_proximity_cache.build_cache(level_data, adjacency)
+    mine_proximity_cache.build_cache(level_data, adjacency, graph_data)
 
     # Build mine SDF (same for all stages - mines don't move with curriculum)
     mine_sdf_shared = MineSignedDistanceField()
-    mine_sdf_shared.build_sdf(level_data)
+    mine_sdf_shared.build_sdf(level_data, graph_data)
     logger.info(
         f"    Mine cache: {len(mine_proximity_cache.cache)} nodes, SDF built: {mine_sdf_shared.sdf_grid is not None}"
     )

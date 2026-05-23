@@ -194,6 +194,8 @@ class BasicJumpConfig:
     min_step_height: int = 1
     max_step_height: int = 2
     variant: str = "single_gap_flat"
+    # Mixed tier 3+4: optional toggle mines (Layer 1 only)
+    max_mines: int = 0
 
 
 @dataclass
@@ -230,6 +232,24 @@ class MinePathConfig:
     max_mine_count: int = 4
     min_mine_spacing: int = 2
     spawn_buffer_tiles: int = 2
+    # One-tile step-up for mixed tier 3+4
+    add_step: bool = False
+
+
+@dataclass
+class SlopesConfig:
+    """Configuration for the dedicated SLOPES generator."""
+
+    min_width: int = 12
+    max_width: int = 32
+    min_height: int = 6
+    max_height: int = 16
+    min_slope_height: int = 2
+    max_slope_height: int = 4
+    slope_type_pool: Tuple[str, ...] = ("mild",)
+    variant: str = "single_slope_up"
+    max_mines: int = 0
+    min_mine_spacing: int = 2
 
 
 # Generator presets organized by difficulty
@@ -795,6 +815,28 @@ GENERATOR_PRESETS = {
             max_gap_width=3,
             variant="double_gap",
         ),
+        # Mixed secondary: single gap + one toggle mine on the far platform.
+        "single_gap_with_mine_t3": BasicJumpConfig(
+            min_width=14,
+            max_width=18,
+            min_height=6,
+            max_height=8,
+            min_gap_width=2,
+            max_gap_width=3,
+            variant="single_gap_flat",
+            max_mines=1,
+        ),
+        # Mixed secondary: double gap + one mine on the mid platform.
+        "double_gap_mines_t4": BasicJumpConfig(
+            min_width=18,
+            max_width=24,
+            min_height=7,
+            max_height=9,
+            min_gap_width=2,
+            max_gap_width=3,
+            variant="double_gap",
+            max_mines=1,
+        ),
     },
     "wall_jump": {
         # Tier 1: short shaft, 2-tile wide, goal always at the top.
@@ -874,6 +916,73 @@ GENERATOR_PRESETS = {
             min_mine_count=3,
             max_mine_count=4,
             min_mine_spacing=2,
+        ),
+        # Mixed secondary: same mine counts + one-tile step-up.
+        "mines_with_step_t3": MinePathConfig(
+            min_width=16,
+            max_width=20,
+            min_height=4,
+            max_height=6,
+            min_mine_count=2,
+            max_mine_count=3,
+            min_mine_spacing=2,
+            add_step=True,
+        ),
+        "mines_with_step_t4": MinePathConfig(
+            min_width=20,
+            max_width=24,
+            min_height=4,
+            max_height=6,
+            min_mine_count=3,
+            max_mine_count=4,
+            min_mine_spacing=2,
+            add_step=True,
+        ),
+    },
+    "slopes": {
+        "single_slope_t1": SlopesConfig(
+            min_width=12,
+            max_width=18,
+            min_height=6,
+            max_height=10,
+            min_slope_height=2,
+            max_slope_height=3,
+            slope_type_pool=("mild",),
+            variant="single_slope_up",
+            max_mines=0,
+        ),
+        "hill_symmetric_t2": SlopesConfig(
+            min_width=16,
+            max_width=24,
+            min_height=8,
+            max_height=12,
+            min_slope_height=2,
+            max_slope_height=4,
+            slope_type_pool=("mild", "steep"),
+            variant="hill_symmetric",
+            max_mines=0,
+        ),
+        "hill_asymmetric_t3": SlopesConfig(
+            min_width=16,
+            max_width=28,
+            min_height=8,
+            max_height=14,
+            min_slope_height=2,
+            max_slope_height=4,
+            slope_type_pool=("mild", "steep", "45"),
+            variant="hill_asymmetric",
+            max_mines=1,
+        ),
+        "hill_multi_t4": SlopesConfig(
+            min_width=20,
+            max_width=32,
+            min_height=10,
+            max_height=16,
+            min_slope_height=2,
+            max_slope_height=4,
+            slope_type_pool=("mild", "steep", "45"),
+            variant="valley",
+            max_mines=2,
         ),
     },
 }
@@ -1164,8 +1273,12 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
         3: [
             ("basic_jump", "single_gap_flat_t3", 1),
             ("basic_jump", "single_step_up_t3", 1),
+            ("basic_jump", "single_gap_with_mine_t3", 1),
         ],
-        4: [("basic_jump", "double_gap_t4", 1)],
+        4: [
+            ("basic_jump", "double_gap_t4", 1),
+            ("basic_jump", "double_gap_mines_t4", 1),
+        ],
     },
     "WALL_JUMP": {
         1: [("wall_jump", "shaft_short_t1", 1)],
@@ -1176,11 +1289,22 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
     "MINE_NAVIGATION": {
         1: [("mine_path", "flat_one_mine_t1", 1)],
         2: [("mine_path", "flat_few_mines_t2", 1)],
-        3: [("mine_path", "flat_mines_t3", 1)],
-        4: [("mine_path", "flat_mines_t4", 1)],
+        3: [
+            ("mine_path", "flat_mines_t3", 1),
+            ("mine_path", "mines_with_step_t3", 1),
+        ],
+        4: [
+            ("mine_path", "flat_mines_t4", 1),
+            ("mine_path", "mines_with_step_t4", 1),
+        ],
+    },
+    "SLOPES": {
+        1: [("slopes", "single_slope_t1", 1)],
+        2: [("slopes", "hill_symmetric_t2", 1)],
+        3: [("slopes", "hill_asymmetric_t3", 1)],
+        4: [("slopes", "hill_multi_t4", 1)],
     },
     # Out-of-scope buckets (empty until Layer 2+ generators exist).
-    "SLOPES": {},
     "SWITCH_PUZZLE": {},
     "LAUNCH_PAD": {},
     "THWUMP": {},
@@ -1195,6 +1319,7 @@ PHASE_1_BUCKETS: List[str] = [
     "BASIC_JUMP",
     "WALL_JUMP",
     "MINE_NAVIGATION",
+    "SLOPES",
 ]
 
 BUCKET_TIERS: List[int] = [1, 2, 3, 4]

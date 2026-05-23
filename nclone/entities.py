@@ -208,7 +208,8 @@ class Entity:
 
     def __init__(self, entity_type, sim, xcoord, ycoord):
         """Inititate a member from map data"""
-        self.type = entity_type
+        # map_data from JSON/NumPy can use floats (e.g. 20.0); list indices require int
+        self.type = int(entity_type)
         # Initialize entity_counts for this simulator instance if not already present
         if not hasattr(sim, "entity_counts"):
             sim.entity_counts = [0] * 40

@@ -6,7 +6,8 @@ tensors produced inside :class:`NppEnvironment` (plus control masks):
 * ``tile_grid`` — ``Box(0, 33, (42, 23), int8)``
 * ``entity_overlays`` — ``Box(0, 1, (5, 42, 23), float32)``
 * ``hazard_map`` — ``Box(-1, 1, (1, 168, 92), float32)``
-* ``game_state`` — ``Box(-1, 1, (27,), float32)``
+* ``game_state`` — ``Box(-1, 1, (28,), float32)`` — see
+  :data:`nclone.gym_environment.constants.GAME_STATE_CHANNELS`.
 
 and the masks ``action_mask`` / ``duration_mask`` used for valid-action filtering
 and FiGAR macro-actions. This processor:
@@ -15,9 +16,11 @@ and FiGAR macro-actions. This processor:
 * packs entity positions for internal bookkeeping, and
 * passes through the Layer 1 tensors plus control masks.
 
-Rendering (``obs["screen"]``), visual frames (``player_frame`` / ``global_view``),
-graph tensors, reachability vectors, spatial_context, mine_sdf_features and
-legacy placeholders are no longer produced.
+Any other keys the environment still produces (``entities``, ``locked_doors``,
+``locked_door_switches``, etc.) are filtered out here so they never reach the
+policy. Rendering, visual frames, graph tensors, reachability vectors,
+``spatial_context``, ``mine_sdf_features`` and legacy placeholders are not
+produced by Layer 1.
 """
 
 import logging

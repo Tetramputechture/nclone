@@ -421,31 +421,27 @@ class GraphMixin:
                     level_data, adjacency, base_adjacency, self.current_graph_data
                 )
 
-                # CRITICAL FIX: Also build reward calculator's path calculator cache!
-                # The reward calculator has its own separate path_calculator instance
-                # that needs its cache built too. Without this, PBRS potentials are always 0.
-                if hasattr(self, "reward_calculator"):
-                    if hasattr(self.reward_calculator, "pbrs_calculator"):
-                        if hasattr(
-                            self.reward_calculator.pbrs_calculator, "path_calculator"
-                        ):
-                            reward_path_calc = (
-                                self.reward_calculator.pbrs_calculator.path_calculator
+                # Also build the reward calculator's path_calculator cache when it is a
+                # second instance (tests / legacy). Usually it aliases _path_calculator.
+                if hasattr(self, "reward_calculator") and hasattr(
+                    self.reward_calculator, "path_calculator"
+                ):
+                    reward_path_calc = self.reward_calculator.path_calculator
+                    if (
+                        reward_path_calc is not None
+                        and reward_path_calc is not self._path_calculator
+                    ):
+                        reward_cache_built = reward_path_calc.build_level_cache(
+                            level_data,
+                            adjacency,
+                            base_adjacency,
+                            self.current_graph_data,
+                        )
+                        if reward_cache_built:
+                            level_id = getattr(level_data, "level_id", "unknown")
+                            _logger.info(
+                                f"Built reward calculator's path cache for level {level_id}"
                             )
-                            if reward_path_calc is not None:
-                                reward_cache_built = reward_path_calc.build_level_cache(
-                                    level_data,
-                                    adjacency,
-                                    base_adjacency,
-                                    self.current_graph_data,
-                                )
-                                if reward_cache_built:
-                                    level_id = getattr(
-                                        level_data, "level_id", "unknown"
-                                    )
-                                    _logger.info(
-                                        f"Built reward calculator's path cache for level {level_id}"
-                                    )
 
         # Update switch and mine state tracking
         self.last_switch_states = self._get_switch_states_from_env()

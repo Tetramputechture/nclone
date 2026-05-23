@@ -124,7 +124,10 @@ class NSimRenderer:
                     tiles_surface, (self.tile_x_offset, self.tile_y_offset)
                 )
 
-        if self.enable_debug_overlay:
+        # Draw overlay for F4-style debug and/or mechanic-benchmark HUD (single flip; no post-pass flicker)
+        if self.enable_debug_overlay or (
+            debug_info and "benchmark_hud" in debug_info
+        ):
             overlay_surface = self.debug_overlay_renderer.draw_debug_overlay(debug_info)
             self.screen.blit(overlay_surface, (0, 0))
 

@@ -347,59 +347,53 @@ class DemoCheckpointSeeder:
         level_data: Any,
         graph_data: Dict[str, Any],
     ) -> float:
-        """Calculate simplified step reward for demo trajectory.
+        """Calculate a simplified progress-based step reward for demo trajectories.
 
-        Uses PBRS component as the primary reward signal since that's what
-        determines checkpoint value for navigation.
-
-        CRITICAL: Uses PBRS_GAMMA (1.0) to match training reward calculation.
-        This ensures demo checkpoint cumulative_reward values are directly
-        comparable to training checkpoint values for UCB selection.
-
-        Args:
-            prev_obs: Previous observation
-            obs: Current observation
-            reward_calculator: MainRewardCalculator instance
-            level_data: Level data
-            graph_data: Graph adjacency data
-
-        Returns:
-            Step reward (primarily PBRS component)
+        Uses the change in A* path distance to the current goal as a proxy for
+        the unified HWM reward signal. This is used only for ranking demo
+        checkpoints by value, not for training.
         """
-        # Get PBRS calculator from reward calculator
-        pbrs_calc = getattr(reward_calculator, "pbrs_calculator", None)
-        if pbrs_calc is None:
-            return 0.001  # Fallback
+        path_calc = getattr(reward_calculator, "path_calculator", None)
+        if path_calc is None:
+            return 0.001
 
         try:
-            # Calculate PBRS potential difference
-            current_pos = (obs["player_x"], obs["player_y"])
-            prev_pos = (prev_obs["player_x"], prev_obs["player_y"])
-
+            current_pos = (int(obs["player_x"]), int(obs["player_y"]))
+            prev_pos = (int(prev_obs["player_x"]), int(prev_obs["player_y"]))
             adjacency = graph_data.get("adjacency", {})
+            base_adjacency = graph_data.get("base_adjacency", adjacency)
 
-            # Get current goal based on switch state
             if obs["switch_activated"]:
-                goal_pos = (obs["exit_door_x"], obs["exit_door_y"])
+                goal_pos = (int(obs["exit_door_x"]), int(obs["exit_door_y"]))
+                cache_key = "demo_exit"
             else:
-                goal_pos = (obs["switch_x"], obs["switch_y"])
+                goal_pos = (int(obs["switch_x"]), int(obs["switch_y"]))
+                cache_key = "demo_switch"
 
-            # Calculate potentials
-            current_potential = pbrs_calc.objective_distance_potential(
-                current_pos, goal_pos, adjacency, level_data, graph_data, obs
+            dist_current = path_calc.get_path_cost(
+                current_pos,
+                goal_pos,
+                adjacency,
+                base_adjacency,
+                cache_key=cache_key,
+                level_data=level_data,
+                graph_data=graph_data,
             )
-            prev_potential = pbrs_calc.objective_distance_potential(
-                prev_pos, goal_pos, adjacency, level_data, graph_data, prev_obs
+            dist_prev = path_calc.get_path_cost(
+                prev_pos,
+                goal_pos,
+                adjacency,
+                base_adjacency,
+                cache_key=cache_key,
+                level_data=level_data,
+                graph_data=graph_data,
             )
-
-            # PBRS reward: γ * Φ(s') - Φ(s)
-            # Use PBRS_GAMMA (1.0) to match training reward calculation
-            pbrs_reward = PBRS_GAMMA * current_potential - prev_potential
-
-            return pbrs_reward
+            if dist_current == float("inf") or dist_prev == float("inf"):
+                return 0.001
+            return float(dist_prev - dist_current) * PBRS_GAMMA
 
         except Exception as e:
-            logger.debug(f"PBRS calculation failed: {e}")
+            logger.debug(f"Demo step reward calculation failed: {e}")
             return 0.001
 
     def extract_best_checkpoints(

@@ -216,6 +216,8 @@ class Simulator:
         self.entity_dic = {
             i: [] for i in range(1, 29)
         }  # Initialize with expected entity types
+        # Per-type instance indices; must reset each map (see Entity.__init__ / map_loader)
+        self.entity_counts = [0] * 40
 
     def reset_map_tile_data(self):
         """Reset the map cell data. This is used when a new map is loaded."""

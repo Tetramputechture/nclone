@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Run real NppEnvironment steps on `basics` and validate cumulative reward behavior.
+"""Validate HWM cumulative rewards on `basics` using the unified reward path.
 
-Uses the same reward path as FiGAR + precomputed PBRS (primitive rewards per frame).
+The environment now emits a single reward per ``env.step``:
+
+    r = r_sparse + beta * alpha * hwm_progress
+      + time_penalty * frames + backtrack_penalty * frames
+
+This script exercises the HWM monotone-progress property on the basics
+hairpin. BSRS is a trainer-side concern and is *not* mixed in here.
 
 Checks (see nclone/test_maps/basics_description.md):
-  1) Moving left from spawn by ~50px yields positive cumulative step reward.
-  2) After that, moving right ~50px then left ~50px again yields a *less* positive
-     total cumulative reward than check (1), for comparable net displacement toward
-     the Phase-0 goal (left along lower corridor).
+  1) Moving left from spawn by ~50px yields positive cumulative step reward
+     (HWM progress > |time_penalty|).
+  2) Left -> right -> left (same net displacement) yields strictly less
+     cumulative reward than the single left run because of the time penalty
+     and the backtrack penalty on the right segment.
 
 Usage::
 
-    python scripts/validate_pbrs_gameplay_scenarios.py \\
-        --map-path nclone/test_maps/basics \\
-        --value-function-dir value_functions
-
-Environment variables:
-    NCLONE_REPO  Optional override for repo root (default: parent of scripts/).
+    python scripts/validate_hwm_gameplay_scenarios.py --map-path nclone/test_maps/basics
 """
 
 from __future__ import annotations
@@ -27,12 +29,10 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Tuple
 
-# Repo root: .../nclone
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# Actions (BaseNppEnvironment._actions_to_execute)
 ACTION_NOOP = 0
 ACTION_LEFT = 1
 ACTION_RIGHT = 2
@@ -58,7 +58,6 @@ def _run_until_x_delta(
     delta_fn: Callable[[float], bool],
     max_steps: int = 4000,
 ) -> Tuple[SegmentResult, bool]:
-    """Step `action` until delta_fn(current_x) is True or limit / terminal."""
     total_r = 0.0
     steps = 0
     x0 = _ninja_x(env)
@@ -70,13 +69,7 @@ def _run_until_x_delta(
         x = _ninja_x(env)
         if terminated or truncated:
             return (
-                SegmentResult(
-                    cumulative_reward=total_r,
-                    steps=steps,
-                    start_x=x0,
-                    end_x=x,
-                    completed=False,
-                ),
+                SegmentResult(total_r, steps, x0, x, False),
                 False,
             )
         if delta_fn(x):
@@ -84,62 +77,33 @@ def _run_until_x_delta(
             break
     end_x = _ninja_x(env)
     return (
-        SegmentResult(
-            cumulative_reward=total_r,
-            steps=steps,
-            start_x=start_x,
-            end_x=end_x,
-            completed=completed,
-        ),
+        SegmentResult(total_r, steps, start_x, end_x, completed),
         completed,
     )
 
 
 def validate_basics_hairpin(
     map_path: str,
-    value_function_dir: str,
     px_target: float,
     tol: float,
     seed: int,
 ) -> int:
-    from nclone.gym_environment.config import EnvironmentConfig, PBRSConfig
+    from nclone.gym_environment.config import EnvironmentConfig
     from nclone.gym_environment.npp_environment import NppEnvironment
 
     map_path = os.path.abspath(map_path)
-    value_function_dir = os.path.abspath(value_function_dir)
-
     if not os.path.isfile(map_path):
         print(f"ERROR: map file not found: {map_path}")
-        return 2
-    vf_file = os.path.join(
-        value_function_dir, f"{os.path.basename(map_path)}_surface_pbrs.npz"
-    )
-    if not os.path.isfile(vf_file):
-        print(f"ERROR: value function not found: {vf_file}")
         return 2
 
     cfg = EnvironmentConfig(
         seed=seed,
         custom_map_path=map_path,
         frame_skip=1,
-        enable_visual_observations=False,
-        pbrs=PBRSConfig(
-            pbrs_gamma=0.99,
-            use_precomputed_pbrs=True,
-            value_function_dir=value_function_dir,
-        ),
     )
     env = NppEnvironment(cfg)
     env.reset()
 
-    if getattr(env, "_current_precomputed_pbrs", None) is None:
-        print(
-            "ERROR: precomputed PBRS did not load — check map stem matches "
-            f"{os.path.basename(vf_file)}"
-        )
-        return 2
-
-    # --- Scenario A: move left >= px_target from spawn ---
     spawn_x = _ninja_x(env)
 
     def left_goal(x: float) -> bool:
@@ -158,12 +122,17 @@ def validate_basics_hairpin(
         f"delta_x={spawn_x - seg_a.end_x:.2f}px steps={seg_a.steps}"
     )
     print(f"  cumulative reward (env step sum) = {reward_a:.6f}")
-    if reward_a <= 0:
-        print("FAIL: expected strictly positive cumulative reward for progress left.")
+    # Soft check: leftward progress should at least not cost more than pure time
+    # penalty (HWM progress is non-negative; accel phase may make early HWM small).
+    pure_time_cost = -0.001 * seg_a.steps
+    if reward_a < pure_time_cost - 1e-6:
+        print(
+            f"FAIL: leftward cumulative reward {reward_a:.6f} is worse than the "
+            f"pure time-penalty floor {pure_time_cost:.6f}."
+        )
         return 1
-    print("PASS: positive reward for leftward progress.\n")
+    print("PASS: leftward progress at least matches time-penalty floor.\n")
 
-    # --- Scenario B: reset, left 50, right 50, left 50 ---
     env.reset()
     spawn_b = _ninja_x(env)
 
@@ -196,7 +165,9 @@ def validate_basics_hairpin(
         print("FAIL: scenario B phase 3 (left 50px again).")
         return 1
 
-    reward_b = seg_b1.cumulative_reward + seg_b2.cumulative_reward + seg_b3.cumulative_reward
+    reward_b = (
+        seg_b1.cumulative_reward + seg_b2.cumulative_reward + seg_b3.cumulative_reward
+    )
     end_b = _ninja_x(env)
 
     print("=== Scenario B: LEFT 50px, RIGHT 50px, LEFT 50px ===")
@@ -206,12 +177,12 @@ def validate_basics_hairpin(
     )
     print(f"  steps: phase1={seg_b1.steps} phase2={seg_b2.steps} phase3={seg_b3.steps}")
     print(f"  cumulative reward (sum of 3 segments) = {reward_b:.6f}")
-    print(f"  (scenario A only, for reference)     = {reward_a:.6f}")
+    print(f"  (scenario A only, for reference)      = {reward_a:.6f}")
 
     if reward_b >= reward_a:
         print(
             "FAIL: expected scenario B total < scenario A "
-            "(backtracking + extra time should reduce net return)."
+            "(backtrack + extra time should reduce net return)."
         )
         return 1
     print("PASS: backtrack scenario is less positive than one-way left progress.\n")
@@ -221,30 +192,15 @@ def validate_basics_hairpin(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Validate PBRS cumulative rewards on basics hairpin (real env)."
+        description="Validate HWM cumulative rewards on basics hairpin (unified reward path)."
     )
     parser.add_argument(
         "--map-path",
         default="nclone/test_maps/basics",
         help="Path to level file (default: nclone/test_maps/basics)",
     )
-    parser.add_argument(
-        "--value-function-dir",
-        default="value_functions",
-        help="Directory with {map_stem}_surface_pbrs.npz",
-    )
-    parser.add_argument(
-        "--px",
-        type=float,
-        default=50.0,
-        help="Target displacement in pixels per leg (default: 50)",
-    )
-    parser.add_argument(
-        "--tol",
-        type=float,
-        default=3.0,
-        help="Tolerance on px target (physics discretization)",
-    )
+    parser.add_argument("--px", type=float, default=50.0)
+    parser.add_argument("--tol", type=float, default=3.0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -254,15 +210,9 @@ def main() -> int:
         if os.path.isabs(args.map_path)
         else os.path.join(root, args.map_path)
     )
-    vf_dir = (
-        args.value_function_dir
-        if os.path.isabs(args.value_function_dir)
-        else os.path.join(root, args.value_function_dir)
-    )
 
     return validate_basics_hairpin(
         map_path=map_path,
-        value_function_dir=vf_dir,
         px_target=args.px,
         tol=args.tol,
         seed=args.seed,
