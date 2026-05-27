@@ -24,6 +24,47 @@ pub struct Simulator {
 
     // Tile data for Python access
     pub tile_grid: [[u8; MAP_HEIGHT]; MAP_WIDTH],
+
+    /// Broadphase mask for `kill_on_deadly_mine_contact`: `deadly_mine_zone[cx][cy]`
+    /// is true iff a currently-deadly toggle mine (state 0) sits in the 3x3 cell
+    /// neighbourhood of cell `(cx, cy)` — i.e. iff a ninja in that cell could
+    /// gather a deadly mine.  Computed once at load.  Valid only because the sole
+    /// caller (`tick_physics_mines_only`) never mutates mine state, so the
+    /// load-time deadly set is constant across an enumeration.
+    pub deadly_mine_zone: [[bool; MAP_HEIGHT]; MAP_WIDTH],
+
+    /// Enumeration kernel fast-paths (open-air collision skip + deadly-mine
+    /// broadphase).  Disabled when the env var `NCLONE_KERNEL_BASELINE` is set,
+    /// which forces the original full-collision behaviour — used to prove the
+    /// fast paths are byte-identical via a same-binary A/B.  Read once at load.
+    pub kernel_opt: bool,
+
+    // --- Experimental: reachability-flood sizing (off in production) ---
+    /// When `Some`, every arc tick records a quantized `(pre-state, input)` key
+    /// here.  Counting distinct keys vs `flood_ticks` measures trajectory-
+    /// transition redundancy = the transposition-merge speedup ceiling.  Built
+    /// only by the `flood_stats` measurement path; `None` (and thus free) in the
+    /// production enumeration path.
+    pub flood_keys: Option<std::collections::HashSet<u64>>,
+    pub flood_ticks: u64,
+    pub flood_qpos: f64,
+    pub flood_qvel: f64,
+    /// Same as `flood_keys`/`flood_ticks` but counts only *collision-relevant*
+    /// ticks (a tile segment is within reach this frame).  After K1 the open-air
+    /// ticks are already cheap, so this — redundancy among the *expensive* ticks
+    /// — is what actually bounds a flood/collision-cache speedup.
+    pub flood_keys_coll: Option<std::collections::HashSet<u64>>,
+    pub flood_ticks_coll: u64,
+
+    /// Experimental: collision-merge accuracy study.  When `snap_qpos > 0`, after
+    /// any tick that did real collision work (floor/wall/ceiling contact) the
+    /// ninja pos/vel are snapped to a `(snap_qpos, snap_qvel)` grid.  This forces
+    /// the same grain-G equivalence classes a collision cache would create, so
+    /// the resulting d* shows the merge's accuracy cost.  A proxy for the cache
+    /// (it snaps the post-state rather than applying a cached response), and
+    /// conservative on position.  Off (0.0) in production.
+    pub snap_qpos: f64,
+    pub snap_qvel: f64,
 }
 
 impl Simulator {
@@ -40,12 +81,80 @@ impl Simulator {
             entities: data.entities,
             entity_grid: std::array::from_fn(|_| std::array::from_fn(|_| Vec::new())),
             tile_grid: data.tile_grid,
+            deadly_mine_zone: [[false; MAP_HEIGHT]; MAP_WIDTH],
+            kernel_opt: std::env::var_os("NCLONE_KERNEL_BASELINE").is_none(),
+            flood_keys: None,
+            flood_ticks: 0,
+            flood_qpos: 0.0,
+            flood_qvel: 0.0,
+            flood_keys_coll: None,
+            flood_ticks_coll: 0,
+            snap_qpos: 0.0,
+            snap_qvel: 0.0,
         };
 
         // Populate entity grid (skip exit doors -- they're only added when switch is collected)
         sim.rebuild_entity_grid();
+        sim.compute_deadly_mine_zone();
 
         sim
+    }
+
+    /// Recompute `deadly_mine_zone` from the current entity set: mark the 3x3 cell
+    /// neighbourhood of every currently-deadly toggle mine (state 0).  The 3x3
+    /// dilation mirrors `gather_entities_from_neighbourhood`, so a ninja whose
+    /// cell is unset cannot possibly gather a deadly mine — letting
+    /// `kill_on_deadly_mine_contact` skip its gather + overlap loop on the vast
+    /// majority of frames on mine-bearing maps.
+    pub fn compute_deadly_mine_zone(&mut self) {
+        for col in self.deadly_mine_zone.iter_mut() {
+            for c in col.iter_mut() {
+                *c = false;
+            }
+        }
+        for entity in &self.entities {
+            if let Entity::ToggleMine(mine) = entity {
+                if mine.state != 0 {
+                    continue;
+                }
+                let (mx, my) = entity.cell();
+                let x0 = mx.saturating_sub(1);
+                let x1 = (mx + 1).min(MAP_WIDTH - 1);
+                let y0 = my.saturating_sub(1);
+                let y1 = (my + 1).min(MAP_HEIGHT - 1);
+                for zx in x0..=x1 {
+                    for zy in y0..=y1 {
+                        self.deadly_mine_zone[zx][zy] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Broadphase guard for the per-frame tile-collision substeps.  Returns true
+    /// iff the swept region covered by this frame's motion (both
+    /// `sweep_circle_vs_tiles` at `NINJA_RADIUS*0.5+1` and the depenetration
+    /// gather at `NINJA_RADIUS`) could contain an active tile segment.  When
+    /// false, every `collide_vs_tiles` substep is a provable no-op (position,
+    /// velocity and collision accumulators are all left untouched), so the whole
+    /// `0..4` substep block can be skipped — byte-identically.  Requires
+    /// `xpos_old`/`ypos_old` to hold the pre-`integrate` position (true between
+    /// `integrate` and the substep loop).
+    #[inline]
+    fn frame_has_tile_segments(&self) -> bool {
+        if !self.kernel_opt {
+            return true; // baseline: always run the full 4-substep collision
+        }
+        let n = &self.ninja;
+        let pad = crate::constants::NINJA_RADIUS + 1.0;
+        crate::collision::spatial::region_has_segments(
+            &self.segment_grid,
+            &self.segments,
+            n.xpos.min(n.xpos_old) - pad,
+            n.ypos.min(n.ypos_old) - pad,
+            n.xpos.max(n.xpos_old) + pad,
+            n.ypos.max(n.ypos_old) + pad,
+        )
     }
 
     /// Rebuild entity grid from current entity positions.
@@ -190,14 +299,111 @@ impl Simulator {
                 self.ninja.integrate();
                 self.ninja.pre_collision(&self.entity_grid);
 
-                for _ in 0..4 {
-                    // Skip collide_vs_objects — no entity depenetration or bounce blocks
-                    self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                // Open-air skip: the 4 substeps are a no-op when no active segment
+                // is within the swept region (the common case mid-flight).
+                if self.frame_has_tile_segments() {
+                    for _ in 0..4 {
+                        // Skip collide_vs_objects — no entity depenetration or bounce blocks
+                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                    }
                 }
 
                 self.post_collision_tiles_only();
             }
             self.ninja.think();
+        }
+    }
+
+    /// Execute one physics frame with tile collisions + toggle-mine DEATH only.
+    ///
+    /// The ninja trajectory is identical to `tick_tiles_only` (toggle mines exert
+    /// no physical force — the ninja passes through them), but the ninja is
+    /// additionally killed on contact with a *currently-deadly* toggle mine
+    /// (state 0).  Switch/door logical collisions are SKIPPED and, critically,
+    /// **no entity state is mutated** — the lethal mine is NOT toggled to safe as
+    /// it would be in `tick` (`post_collision_with_entities`).  Because the
+    /// entity field is left pristine, `save_ninja_state`/`restore_ninja_state`
+    /// (ninja-only) remains valid across the thousands of arcs of surface-graph
+    /// edge enumeration: a pruned (lethal) arc does not poison the mine field for
+    /// the next arc.
+    ///
+    /// Use this for entity-aware edge enumeration so arcs are pruned by REAL
+    /// physics death (matching the executor) rather than a geometric
+    /// waypoint-clearance test, which mismatches the continuous replay near mine
+    /// boundaries (a bin-center arc can clear by >14px yet the real trajectory
+    /// drifts into the kill zone).
+    pub fn tick_physics_mines_only(&mut self, hor_input: i32, jump_input: i32) {
+        self.frame += 1;
+        self.ninja.hor_input = hor_input;
+        self.ninja.jump_input = jump_input;
+        self.ninja.record_action_start_position();
+
+        if self.ninja.state != 9 {
+            if self.ninja.state != 6 {
+                self.ninja.integrate();
+                self.ninja.pre_collision(&self.entity_grid);
+
+                // Open-air skip (see tick_tiles_only): no-op substeps when the swept
+                // region holds no active segment.
+                if self.frame_has_tile_segments() {
+                    for _ in 0..4 {
+                        // Tiles only — mines have no physical (depenetration) collision.
+                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                    }
+                }
+
+                self.post_collision_tiles_only();
+                self.kill_on_deadly_mine_contact();
+            }
+            self.ninja.think();
+        }
+    }
+
+    /// Kill the ninja if it overlaps a currently-deadly toggle mine (state 0),
+    /// WITHOUT mutating the mine (no toggle-to-safe).  Entity-state-preserving
+    /// companion to `tick_physics_mines_only`; switch/door are ignored.
+    fn kill_on_deadly_mine_contact(&mut self) {
+        if !self.ninja.is_valid_target() {
+            return;
+        }
+        let (nx, ny) = (self.ninja.xpos, self.ninja.ypos);
+        // Broadphase: a deadly mine can only be gathered from cells flagged in
+        // `deadly_mine_zone`.  Elsewhere the gather + overlap loop are skipped.
+        if self.kernel_opt {
+            let (cx, cy) = crate::collision::spatial::cell_from_pos(nx, ny);
+            if !self.deadly_mine_zone[cx][cy] {
+                return;
+            }
+        }
+        let entity_indices = crate::collision::spatial::gather_entities_from_neighbourhood(
+            &self.entity_grid,
+            nx,
+            ny,
+        );
+        let mut hit = false;
+        for eidx in entity_indices {
+            if eidx >= self.entities.len() {
+                continue;
+            }
+            if let Entity::ToggleMine(mine) = &self.entities[eidx] {
+                if mine.state == 0
+                    && crate::collision::intersection::overlap_circle_vs_circle(
+                        mine.xpos,
+                        mine.ypos,
+                        mine.radius,
+                        nx,
+                        ny,
+                        crate::constants::NINJA_RADIUS,
+                    )
+                {
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        if hit {
+            // No death kinematics needed for enumeration; the arc is simply pruned.
+            self.ninja.kill(0, 0.0, 0.0, 0.0, 0.0, Some("mine"));
         }
     }
 

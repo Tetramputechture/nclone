@@ -557,6 +557,8 @@ def create_route_pbrs(
         graph.edges_jump_hold = data["edges_jump_hold"].astype(np.int8)
     if "edges_h_input" in data:
         graph.edges_h_input = data["edges_h_input"].astype(np.int8)
+    if "edges_h_after" in data:
+        graph.edges_h_after = data["edges_h_after"].astype(np.int8)
 
     # Load d* arrays
     d_star_switch = data["d_star_switch"].astype(np.float32)

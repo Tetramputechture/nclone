@@ -8,6 +8,7 @@ use crate::segments::Segment;
 use crate::types::NinjaSnapshot;
 
 /// The Ninja physics object.
+#[derive(Clone)]
 pub struct Ninja {
     // Position/velocity
     pub xpos: f64,
@@ -177,9 +178,15 @@ impl Ninja {
     }
 
     /// Reset collision accumulators before collision phase.
+    ///
+    /// `_entity_grid` is accepted for API stability but unused: the entity
+    /// neighbourhood is (re)gathered fresh in `post_collision_with_entities`,
+    /// so the old per-frame `cached_entity_indices` gather here was dead work
+    /// (the field is never read).  Dropping it is byte-identical and removes one
+    /// allocating spatial gather from every physics frame.
     pub fn pre_collision(
         &mut self,
-        entity_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
+        _entity_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
     ) {
         self.xspeed_old = self.xspeed;
         self.yspeed_old = self.yspeed;
@@ -194,8 +201,6 @@ impl Ninja {
         self.x_crush = 0.0;
         self.y_crush = 0.0;
         self.crush_len = 0.0;
-        self.cached_entity_indices =
-            spatial::gather_entities_from_neighbourhood(entity_grid, self.xpos, self.ypos);
     }
 
     /// Handle physical collisions with entities (bounce blocks, thwumps, etc.).

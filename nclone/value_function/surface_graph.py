@@ -174,6 +174,12 @@ class SurfaceGraph:
     # Action metadata per edge (optional; None if loaded from legacy .npz)
     edges_jump_hold: Optional[np.ndarray] = None  # int8: hold duration (0=run/slide)
     edges_h_input: Optional[np.ndarray] = None    # int8: primary h-input (-1/0/1)
+    edges_h_after: Optional[np.ndarray] = None    # int8: post-release h-input (-1/0/1)
+
+    # Trick edges (e.g. Corner Double Jump): edge_index -> per-tick (h,j) tape.
+    # These are composite edges the executor replays verbatim (not a single
+    # continuous jump), letting the global d* route compose tricks anywhere.
+    trick_tapes: Optional[Dict[int, list]] = None
 
     # Cost-to-go arrays (populated by dijkstra)
     d_star_switch: np.ndarray = field(
@@ -510,6 +516,7 @@ def dijkstra_backward_with_tree(
     goal_nodes: List[int],
     blocked_nodes: Optional[Set[int]] = None,
     rev_adj: Optional[Dict[int, List[Tuple[int, float, int]]]] = None,
+    goal_init_costs: Optional[Dict[int, float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run backward Dijkstra and return the shortest-path tree.
 
@@ -531,6 +538,11 @@ def dijkstra_backward_with_tree(
         graph: Surface graph with populated edge arrays.
         goal_nodes: Node ids initialised at cost 0 (the goals).
         blocked_nodes: Optional set of impassable node ids.
+        goal_init_costs: Optional ``{node: initial_cost}`` map.  Goal nodes are
+            seeded with this cost instead of 0 — used for two-phase composition
+            where each switch-contact node is seeded with its remaining cost to
+            the exit (its phase-1 ``d_exit`` value).  Nodes in ``goal_nodes`` not
+            present here default to 0.0.
 
     Returns:
         (d_star, predecessor, best_edge_idx)
@@ -543,10 +555,19 @@ def dijkstra_backward_with_tree(
                 -1 for goals/unreachable.
     """
     n = graph.n_nodes
-    d_star = np.full(n, np.inf, dtype=np.float32)
+    # Accumulate in float64 and cast to float32 only on return.  The heap keys
+    # are Python floats (f64); storing the working distances as float32 would
+    # truncate ``new_dist`` *down* for non-integer weights, after which the
+    # popped f64 key tests ``dist_u > d_star[u]`` and the entry is wrongly
+    # skipped as stale — its finite cost then never propagates, leaving
+    # genuinely-reachable nodes at ``inf``.  Integer frame weights are exact in
+    # float32 so this was latent until risk-reweighted (non-integer) costs were
+    # introduced; float64 fixes it and is identical for integer weights.
+    d_star = np.full(n, np.inf, dtype=np.float64)
     predecessor = np.full(n, -1, dtype=np.int32)
     best_edge_idx = np.full(n, -1, dtype=np.int32)
     _blocked = blocked_nodes or set()
+    _seed = goal_init_costs or {}
 
     # rev_adj[dst] -> list of (src, weight, original_edge_index)
     # An entry (src, w, i) means original edge i: src -> dst exists.
@@ -559,8 +580,10 @@ def dijkstra_backward_with_tree(
     heap: List[Tuple[float, int]] = []
     for gn in goal_nodes:
         if 0 <= gn < n and gn not in _blocked:
-            d_star[gn] = 0.0
-            heapq.heappush(heap, (0.0, gn))
+            c = float(_seed.get(gn, 0.0))
+            if c < d_star[gn]:  # keep the cheapest seed if duplicates
+                d_star[gn] = c
+                heapq.heappush(heap, (c, gn))
 
     while heap:
         dist_u, u = heapq.heappop(heap)
@@ -579,7 +602,7 @@ def dijkstra_backward_with_tree(
                 best_edge_idx[v] = edge_i
                 heapq.heappush(heap, (new_dist, v))
 
-    return d_star, predecessor, best_edge_idx
+    return d_star.astype(np.float32), predecessor, best_edge_idx
 
 
 def compute_cost_to_go_with_tree(
@@ -609,6 +632,112 @@ def compute_cost_to_go_with_tree(
     return dijkstra_backward_with_tree(
         graph, goal_nodes, blocked_nodes=blocked_nodes, rev_adj=rev_adj,
     )
+
+
+def compute_two_phase_cost_to_go(
+    graph: SurfaceGraph,
+    switch_x: float,
+    switch_y: float,
+    exit_x: float,
+    exit_y: float,
+    blocked_nodes: Optional[Set[int]] = None,
+    rev_adj: Optional[Dict[int, List[Tuple[int, float, int]]]] = None,
+    switch_air_contacts: Optional[Dict[int, float]] = None,
+    exit_air_contacts: Optional[Dict[int, float]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Jointly optimal switch-then-exit cost-to-go.
+
+    The level is solved by touching the exit switch and then the exit door, so a
+    node's true cost-to-go is ``cost(node -> nearest switch) + cost(that switch
+    -> exit)`` minimised jointly.  Computing ``d_switch`` and ``d_exit``
+    independently and summing the spawn's ``d_switch`` with one switch node's
+    ``d_exit`` is NOT jointly optimal: the cheapest switch to *reach* is rarely
+    the cheapest switch to *leave for the exit* (measured: long-jump-reachable
+    235f separate vs 201f joint vs 198f spike — the 19% gap was almost entirely
+    this composition error, not edge-set incompleteness).
+
+    Correct composition: run phase-1 backward Dijkstra to the exit, then seed the
+    phase-0 backward Dijkstra's switch-contact goal nodes with their phase-1
+    ``d_exit`` value (instead of 0).  ``d_combined[node]`` is then the jointly
+    optimal frames from ``node`` (pre-switch) to the exit via some switch.
+
+    Route extraction: follow the ``predecessor_combined`` tree from the start node
+    until a switch-contact node (``predecessor_combined == -1`` — a phase-0 seed),
+    then continue along the ``predecessor_exit`` tree to the exit.
+
+    Returns:
+        ``(d_combined, pred_combined, best_combined, d_exit, pred_exit, best_exit)``.
+    """
+    if rev_adj is None:
+        rev_adj = _build_reverse_adjacency(graph)
+    _blocked = blocked_nodes or set()
+
+    # --- Phase 1: cost-to-exit ---------------------------------------------
+    # Exit goal seeds = surface-adjacent exit-contact nodes (cost 0) UNION
+    # air-reachable exit contacts (cost = frames for the arc that passes through
+    # the exit's contact zone — the exit may have no adjacent surface node, which
+    # is valid on open levels).
+    exit_seed: Dict[int, float] = {
+        n: 0.0 for n in find_goal_nodes(graph, exit_x, exit_y, "exit")
+    }
+    # Air contacts are a FALLBACK only when the exit has NO surface-adjacent node
+    # (a genuinely air-reachable exit).  When a surface node exists, prefer the
+    # surface route: the executor reaches a goal by *standing on its node*, and a
+    # fly-through arc that the d* finds cheaper is not (yet) executable as a
+    # route arc — using it would mis-route otherwise-solvable levels.
+    if exit_air_contacts and not exit_seed:
+        for s, fr in exit_air_contacts.items():
+            if s not in _blocked and (s not in exit_seed or fr < exit_seed[s]):
+                exit_seed[s] = float(fr)
+    if not exit_seed:
+        raise ValueError(
+            f"Exit at ({exit_x:.1f}, {exit_y:.1f}) is unreachable: no surface "
+            f"contact node and no air-contact arc.  Check surface extraction / "
+            f"pass goal_positions to enumerate_edges for air goals."
+        )
+    d_exit, pred_exit, best_exit = dijkstra_backward_with_tree(
+        graph, list(exit_seed),
+        blocked_nodes=blocked_nodes, rev_adj=rev_adj,
+        goal_init_costs=exit_seed,
+    )
+
+    # --- Phase 0: jointly optimal cost spawn -> switch -> exit --------------
+    # Surface-adjacent switch nodes are seeded with their d_exit (standing on the
+    # switch, then go to the exit).  Air-reachable switch contacts: the arc from
+    # source ``s`` touches the switch in ``fr`` frames; after that arc the ninja
+    # continues to the exit, approximated by ``fr + d_exit[s]`` (the executor's
+    # micro-search recovers the exact continuation — it targets the entities).
+    surface_switch_nodes = find_goal_nodes(graph, switch_x, switch_y, "switch")
+    goal_init: Dict[int, float] = {}
+    for s in surface_switch_nodes:
+        if s not in _blocked and np.isfinite(d_exit[s]):
+            goal_init[s] = float(d_exit[s])
+    # Air contacts are a FALLBACK only when the switch has no surface-adjacent
+    # node (see the exit note above).
+    if switch_air_contacts and not surface_switch_nodes:
+        # Global min finite d_exit as a fallback continuation estimate.
+        finite = d_exit[np.isfinite(d_exit)]
+        min_dexit = float(finite.min()) if finite.size else 0.0
+        for s, fr in switch_air_contacts.items():
+            if s in _blocked:
+                continue
+            cont = float(d_exit[s]) if np.isfinite(d_exit[s]) else min_dexit
+            c = float(fr) + cont
+            if s not in goal_init or c < goal_init[s]:
+                goal_init[s] = c
+    if not goal_init:
+        raise ValueError(
+            f"Switch at ({switch_x:.1f}, {switch_y:.1f}) is unreachable: no "
+            f"surface contact node and no air-contact arc.  Pass goal_positions "
+            f"to enumerate_edges for air goals."
+        )
+    d_combined, pred_combined, best_combined = dijkstra_backward_with_tree(
+        graph, list(goal_init),
+        blocked_nodes=blocked_nodes, rev_adj=rev_adj,
+        goal_init_costs=goal_init,
+    )
+    return (d_combined, pred_combined, best_combined,
+            d_exit, pred_exit, best_exit)
 
 
 def find_mine_blocked_nodes(

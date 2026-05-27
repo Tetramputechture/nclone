@@ -37,6 +37,7 @@ from nclone.value_function.surface_graph import (
     SurfaceGraph,
     build_graph,
     compute_cost_to_go_with_tree,
+    dijkstra_backward_with_tree,
     _build_reverse_adjacency,
 )
 from nclone.value_function.edge_enumeration import (
@@ -119,6 +120,9 @@ def _save_surface_pbrs(
     predecessor_exit: Optional[np.ndarray] = None,
     best_edge_idx_switch: Optional[np.ndarray] = None,
     best_edge_idx_exit: Optional[np.ndarray] = None,
+    d_star_combined: Optional[np.ndarray] = None,
+    predecessor_combined: Optional[np.ndarray] = None,
+    best_edge_idx_combined: Optional[np.ndarray] = None,
     enumeration_stats: Optional[dict] = None,
 ) -> None:
     """Save all precomputed data to a single .npz file."""
@@ -213,6 +217,8 @@ def _save_surface_pbrs(
         save_kwargs["edges_jump_hold"] = graph.edges_jump_hold
     if graph.edges_h_input is not None:
         save_kwargs["edges_h_input"] = graph.edges_h_input
+    if graph.edges_h_after is not None:
+        save_kwargs["edges_h_after"] = graph.edges_h_after
 
     # Route-tree arrays (new; absent in legacy .npz files)
     if has_route_tree:
@@ -220,6 +226,15 @@ def _save_surface_pbrs(
         save_kwargs["predecessor_exit"] = predecessor_exit.astype(np.int32)
         save_kwargs["best_edge_idx_switch"] = best_edge_idx_switch.astype(np.int32)
         save_kwargs["best_edge_idx_exit"] = best_edge_idx_exit.astype(np.int32)
+
+    # Jointly-optimal switch->exit tree (new; absent in legacy .npz files).
+    # Extract the optimal route by following predecessor_combined to a switch
+    # node (pred == -1), then predecessor_exit to the exit.
+    if (d_star_combined is not None and predecessor_combined is not None
+            and best_edge_idx_combined is not None):
+        save_kwargs["d_star_combined"] = d_star_combined.astype(np.float32)
+        save_kwargs["predecessor_combined"] = predecessor_combined.astype(np.int32)
+        save_kwargs["best_edge_idx_combined"] = best_edge_idx_combined.astype(np.int32)
 
     np.savez_compressed(output_path, **save_kwargs)
 
@@ -240,6 +255,8 @@ def precompute_surface_pbrs(
     tile_cache_dir: str | None = None,
     tile_cache_num_shards: int = 64,
     extra_primitives: list | None = None,
+    use_native: bool = True,
+    native_threads: int | None = None,
 ) -> str:
     """Run the full surface-graph PBRS precomputation pipeline.
 
@@ -400,6 +417,17 @@ def precompute_surface_pbrs(
     _section("Step 4: Enumerating Edges (this may take several minutes)")
     t0 = time.time()
     enumeration_stats: dict = {}
+    if use_native:
+        # The native kernel returns landings only (no arc waypoints), so the
+        # arc caches cannot be built on this path.  Force-disable waypoint
+        # collection rather than silently fall back to the legacy enumerator.
+        if collect_waypoints:
+            print(
+                "  --use-native: arc-waypoint collection disabled "
+                "(arc caches will be empty; d*/route trees are unaffected)"
+            )
+        collect_waypoints = False
+        print("  Using native Rust enumeration kernel (exact, rayon-parallel)")
     if tile_cache_dir:
         print(f"  Using tile-neighborhood cache: {tile_cache_dir}")
     if extra_primitives:
@@ -425,6 +453,8 @@ def precompute_surface_pbrs(
         tile_cache_dir=tile_cache_dir,
         tile_cache_num_shards=tile_cache_num_shards,
         extra_primitives=extra_primitives,
+        use_native=use_native,
+        native_threads=native_threads,
     )
     populate_graph_edges(graph, edges)
     print(f"  Edges discovered: {len(edges):,}")
@@ -485,6 +515,34 @@ def precompute_surface_pbrs(
     print(
         f"  Route tree: {n_tree_sw:,} switch predecessors, "
         f"{n_tree_ex:,} exit predecessors"
+    )
+
+    # Jointly-optimal switch-then-exit cost-to-go.  Reuses the just-computed
+    # d_star_exit to seed the phase-0 Dijkstra: each switch-contact node starts
+    # at its remaining cost-to-exit, so d_star_combined[node] is the optimal
+    # frames node -> switch -> exit.  Computing d_switch and d_exit independently
+    # and summing is NOT jointly optimal (the cheapest switch to reach is rarely
+    # the cheapest to leave for the exit); routes extracted from d_star_combined
+    # are ~optimal-on-lattice (long-jump-reachable: 235f separate -> 201f joint,
+    # spike 198f).  Route extraction: follow predecessor_combined to a switch
+    # node (pred == -1), then predecessor_exit to the exit.
+    from .surface_graph import find_goal_nodes
+    _switch_nodes = find_goal_nodes(graph, switch_pos[0], switch_pos[1], "switch")
+    _goal_init = {
+        s: float(d_star_exit[s]) for s in _switch_nodes if np.isfinite(d_star_exit[s])
+    }
+    _seed_nodes = list(_goal_init) if _goal_init else _switch_nodes
+    d_star_combined, predecessor_combined, best_edge_idx_combined = (
+        dijkstra_backward_with_tree(
+            graph, _seed_nodes, rev_adj=rev_adj, goal_init_costs=_goal_init,
+        )
+    )
+    n_tree_comb = int(np.sum(predecessor_combined >= 0))
+    n_reach_comb = int(np.sum(np.isfinite(d_star_combined)))
+    print(
+        f"  Combined (joint switch->exit): {n_reach_comb:,}/{graph.n_nodes:,} "
+        f"reachable, {n_tree_comb:,} predecessors, "
+        f"{len(_goal_init):,} switch nodes seeded with d_exit"
     )
     print(f"  Dijkstra time: {_format_time(time.time() - t0)}")
 
@@ -560,6 +618,9 @@ def precompute_surface_pbrs(
         predecessor_exit=predecessor_exit,
         best_edge_idx_switch=best_edge_idx_switch,
         best_edge_idx_exit=best_edge_idx_exit,
+        d_star_combined=d_star_combined,
+        predecessor_combined=predecessor_combined,
+        best_edge_idx_combined=best_edge_idx_combined,
         enumeration_stats=enumeration_stats,
     )
     file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
@@ -676,6 +737,34 @@ def main() -> int:
         help="Number of shards in the on-disk tile cache (default: 64).",
     )
     parser.add_argument(
+        "--no-native",
+        action="store_true",
+        help=(
+            "Disable the native Rust enumeration kernel and use the (slower) "
+            "legacy Python enumerator.  Native is the DEFAULT: it is the exact, "
+            "rayon-parallel kernel (nclone_native.enumerate_arcs), bit-identical "
+            "edges but ~10x+ faster.  Native returns landings only, so arc "
+            "waypoints / arc caches are NOT built (implies --no-waypoints); "
+            "d*/route trees are unaffected.  Pass --no-native only when you need "
+            "the legacy arc-waypoint caches."
+        ),
+    )
+    parser.add_argument(
+        "--use-native",
+        action="store_true",
+        help="Deprecated no-op alias (native is the default); use --no-native "
+             "to opt out.",
+    )
+    parser.add_argument(
+        "--native-threads",
+        type=int,
+        default=None,
+        help=(
+            "Thread count for the native kernel (default: os.cpu_count()). "
+            "Only used with --use-native."
+        ),
+    )
+    parser.add_argument(
         "--extra-primitives",
         default=None,
         help=(
@@ -722,6 +811,8 @@ def main() -> int:
             tile_cache_dir=args.tile_cache_dir,
             tile_cache_num_shards=args.tile_cache_num_shards,
             extra_primitives=extra_primitives,
+            use_native=(not args.no_native),
+            native_threads=args.native_threads,
         )
     except Exception as e:
         logger.error(f"Precomputation failed: {e}", exc_info=True)

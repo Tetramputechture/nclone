@@ -52,9 +52,12 @@ class ArcTarget:
         surface_normal_x: Surface normal x at launch point.
         surface_normal_y: Surface normal y at launch point.
         jump_hold_frames: Frames to hold the jump button (0 = run/slide, no jump).
-        h_input_during: Primary horizontal input (-1/0/1) during the arc.
-            Post-release air control is not stored; the agent learns it
-            reactively from spatial context (tile grid).
+        h_input_during: Primary horizontal input (-1/0/1) during the hold phase.
+        h_input_after: Post-release air-control input (-1/0/1) applied after the
+            jump button is released.  Equals h_input_during for single-input
+            primitives (runs/slides/falls).  Required to replay the arc
+            faithfully — without it the post-release fall is ambiguous and
+            stitched routes drift off the lattice ("snap-through").
         landing_x: Ninja-center x at the landing point (pixels).
         landing_y: Ninja-center y at the landing point (pixels).
         landing_vx: Expected horizontal velocity at landing.
@@ -72,11 +75,23 @@ class ArcTarget:
     surface_normal_y: float
     jump_hold_frames: int
     h_input_during: int
+    h_input_after: int
     landing_x: float
     landing_y: float
     landing_vx: float
     arc_cost_frames: float
     cumulative_cost: float
+    # Set for Corner-Double-Jump (and other) TRICK edges: the verbatim per-tick
+    # (h_input, jump_input) tape the executor replays instead of micro-searching
+    # a single jump. None for ordinary run/jump arcs.
+    trick_tape: Optional[list] = None
+    # Off-axis launch/landing velocity.  0.0 in the legacy model (floor=vx,
+    # wall=vy stored in launch_vx); under the tangential model the node velocity
+    # is along the surface tangent, so launch/landing carry BOTH world
+    # components (vx = vel*tangent_x, vy = vel*tangent_y) — required to seed a
+    # curved/slope-node arc replay from the correct 2D velocity.
+    launch_vy: float = 0.0
+    landing_vy: float = 0.0
 
 
 def extract_route(
@@ -136,18 +151,42 @@ def extract_route(
             launch_vel_raw = float(src_centers[src_vel_bin])
         else:
             launch_vel_raw = 0.0
-        launch_vx = launch_vel_raw if src_sp.surface_type == SURFACE_FLOOR else 0.0
 
         dst_centers = velocity_bin_centers(dst_sp.surface_type)
         if dst_vel_bin < len(dst_centers):
             landing_vel_raw = float(dst_centers[dst_vel_bin])
         else:
             landing_vel_raw = 0.0
-        landing_vx = landing_vel_raw if dst_sp.surface_type == SURFACE_FLOOR else 0.0
+
+        # Reconstruct the world launch/landing velocity from the binned speed.
+        # Tangential model: the bin is the signed along-surface speed, so both
+        # world components follow the tangent (vx = vel*tan_x, vy = vel*tan_y).
+        # Legacy: floor stores vx, wall stores 0 in launch_vx (unchanged), vy=0.
+        if getattr(graph, "momentum_model", "legacy") == "tangential":
+            launch_vx = launch_vel_raw * src_sp.tangent_x
+            launch_vy = launch_vel_raw * src_sp.tangent_y
+            landing_vx = landing_vel_raw * dst_sp.tangent_x
+            landing_vy = landing_vel_raw * dst_sp.tangent_y
+        else:
+            launch_vx = launch_vel_raw if src_sp.surface_type == SURFACE_FLOOR else 0.0
+            launch_vy = 0.0
+            landing_vx = landing_vel_raw if dst_sp.surface_type == SURFACE_FLOOR else 0.0
+            landing_vy = 0.0
 
         # Action metadata (may be None for legacy graphs without these arrays)
         jh = int(graph.edges_jump_hold[edge_i]) if graph.edges_jump_hold is not None else 0
         hi = int(graph.edges_h_input[edge_i]) if graph.edges_h_input is not None else 0
+        # Post-release input: fall back to the during-hold input for legacy
+        # graphs (pre-h_after) — the historical, ambiguous behaviour.
+        ha = int(graph.edges_h_after[edge_i]) if graph.edges_h_after is not None else hi
+
+        # TRICK edge (e.g. CDJ): replay its tape verbatim. jump_hold_frames is set
+        # to the tape length so merge_running_arcs never collapses it as a run.
+        trick_tape = None
+        tt = getattr(graph, "trick_tapes", None)
+        if tt is not None and edge_i in tt:
+            trick_tape = tt[edge_i]
+            jh = len(trick_tape)
 
         arc = ArcTarget(
             launch_segment_id=src_sp.segment_id,
@@ -158,11 +197,15 @@ def extract_route(
             surface_normal_y=src_sp.normal_y,
             jump_hold_frames=jh,
             h_input_during=hi,
+            h_input_after=ha,
             landing_x=dst_sp.x,
             landing_y=dst_sp.y,
             landing_vx=landing_vx,
             arc_cost_frames=float(graph.edges_weight[edge_i]),
             cumulative_cost=float(d_star[next_node]),
+            trick_tape=trick_tape,
+            launch_vy=launch_vy,
+            landing_vy=landing_vy,
         )
         route.append(arc)
         node = next_node
@@ -220,11 +263,14 @@ def merge_running_arcs(route: List[ArcTarget]) -> List[ArcTarget]:
                 surface_normal_y=current.surface_normal_y,
                 jump_hold_frames=0,
                 h_input_during=current.h_input_during,
+                h_input_after=current.h_input_during,
                 landing_x=next_arc.landing_x,
                 landing_y=next_arc.landing_y,
                 landing_vx=next_arc.landing_vx,
                 arc_cost_frames=current.arc_cost_frames + next_arc.arc_cost_frames,
                 cumulative_cost=next_arc.cumulative_cost,
+                launch_vy=current.launch_vy,
+                landing_vy=next_arc.landing_vy,
             )
         else:
             merged.append(current)
@@ -234,12 +280,56 @@ def merge_running_arcs(route: List[ArcTarget]) -> List[ArcTarget]:
     return merged
 
 
+def dedup_position_loops(
+    route: List[ArcTarget],
+    threshold_px: float = 6.0,
+) -> List[ArcTarget]:
+    """Collapse physical-position loops out of a single-phase route.
+
+    The Dijkstra route is acyclic in *node* space, but the velocity augmentation
+    lets an optimal-by-frames trace revisit the same physical surface point at a
+    different velocity bin (e.g. running back and forth to build launch speed).
+    That is a *loop* the planner should avoid under the priority
+    ``completion > lack-of-loops > speed``: when an arc's launch point returns to
+    within ``threshold_px`` of an earlier arc's launch point, the arcs in between
+    form a cycle that adds frames without net progress, so we splice it out.
+
+    Continuity is preserved: if ``route[j].launch ≈ route[i].launch`` (``i < j``)
+    we drop ``route[i:j]`` and keep ``route[j]`` onward — ``route[i-1]``'s landing
+    already coincides with ``route[i].launch ≈ route[j].launch``.
+
+    Only collapses cycles spanning ``>= 2`` arcs (adjacent micro-arcs are handled
+    by :func:`merge_running_arcs`), so it never touches a clean route.  Returns a
+    new list; the input is unchanged.
+    """
+    if len(route) < 3:
+        return list(route)
+
+    def _key(arc: ArcTarget) -> Tuple[int, int]:
+        return (int(round(arc.launch_x / threshold_px)),
+                int(round(arc.launch_y / threshold_px)))
+
+    out: List[ArcTarget] = []
+    seen: dict = {}  # launch-position key -> index into `out`
+    for arc in route:
+        k = _key(arc)
+        prev = seen.get(k)
+        if prev is not None and len(out) - prev >= 2:
+            # Loop from out[prev:] back to here — drop it and rebuild `seen`.
+            del out[prev:]
+            seen = {_key(a): idx for idx, a in enumerate(out)}
+        out.append(arc)
+        seen.setdefault(k, len(out) - 1)
+    return out
+
+
 def extract_and_simplify_route(
     graph: SurfaceGraph,
     d_star: np.ndarray,
     predecessor: np.ndarray,
     best_edge_idx: np.ndarray,
     start_node: int,
+    dedup_loops: bool = False,
 ) -> List[ArcTarget]:
     """Extract the Dijkstra route and merge consecutive same-segment running arcs.
 
@@ -255,12 +345,22 @@ def extract_and_simplify_route(
         best_edge_idx: Index of the v -> u edge for each node v.
         start_node: Node id to start tracing from.
 
+    Args (continued):
+        dedup_loops: When True, also splice out physical-position loops via
+            :func:`dedup_position_loops` (priority: lack-of-loops > speed).  Off
+            by default so the RoutePBRS / reward path is byte-for-byte unchanged
+            (the d* potential is loop-neutral under PBRS); enable it for oracle
+            tape generation / visualization where a clean route is wanted.
+
     Returns:
         Ordered list of ArcTargets with consecutive running arcs merged.
     """
-    return merge_running_arcs(
+    route = merge_running_arcs(
         extract_route(graph, d_star, predecessor, best_edge_idx, start_node)
     )
+    if dedup_loops:
+        route = dedup_position_loops(route)
+    return route
 
 
 def find_nearest_start_node(

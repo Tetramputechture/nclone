@@ -37,7 +37,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=["heatmap", "edges", "dashboard", "neural",
-                 "arc_heatmap", "combined", "mine_masking"],
+                 "arc_heatmap", "combined", "mine_masking", "potential_compare"],
         default="heatmap",
         help=(
             "Visualization mode (default: heatmap). "
@@ -46,7 +46,10 @@ def _parse_args() -> argparse.Namespace:
             "on the same normalised scale. "
             "mine_masking: overlay mine kill-radius circles and highlight "
             "blocked nodes/edges so you can verify that mine-proximity masking "
-            "correctly removes dangerous routes."
+            "correctly removes dangerous routes. "
+            "potential_compare: Stage-0 diagnostic -- geometric-A* reward potential "
+            "vs surface-graph d*, with the geometric path (coloured by floor depth) "
+            "and a naive gradient rollout that falls into voids. Requires --map-path."
         ),
     )
     # Surface-graph options
@@ -164,6 +167,12 @@ def main() -> int:
     args = _parse_args()
     if args.mode == "neural":
         return _run_neural(args)
+    if args.mode == "potential_compare":
+        if not args.map_path:
+            print("ERROR: --map-path is required for potential_compare mode")
+            return 1
+        from .tools.potential_compare import render_comparison
+        return render_comparison(args.map_path, args.data, args.output)
     return _run_surface(args)
 
 

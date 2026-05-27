@@ -16,7 +16,7 @@ from typing import List, Dict, Tuple, Optional
 import numpy as np
 
 from ..constants.physics_constants import NINJA_RADIUS, TOGGLE_MINE_RADIUS_TOGGLED
-from ..entities import GridSegmentLinear
+from ..entities import GridSegmentCircular, GridSegmentLinear
 from ..utils.tile_segment_factory import TileSegmentFactory
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,12 @@ class SurfacePoint:
         surface_type: SURFACE_FLOOR (0) or SURFACE_WALL (1).
         segment_id: ID of the merged surface run this point belongs to.
         is_edge: True if within EDGE_PROXIMITY of a platform / wall endpoint.
+        tangent_x, tangent_y: Unit surface TANGENT, canonically oriented so the
+            binned velocity is the signed along-surface speed (floor: +x = right;
+            wall: +y = down).  For axis-aligned floors/walls this is exactly
+            (1,0)/(0,1) so the legacy world-vx/vy model is reproduced; for
+            slopes/curves it carries the surface angle.  Used only by the
+            ``"tangential"`` momentum model (default ``(1,0)``).
     """
 
     x: float
@@ -104,6 +110,8 @@ class SurfacePoint:
     surface_type: int
     segment_id: int
     is_edge: bool
+    tangent_x: float = 1.0
+    tangent_y: float = 0.0
 
 
 @dataclass
@@ -134,6 +142,30 @@ def _compute_linear_normal(seg: GridSegmentLinear) -> Optional[Tuple[float, floa
         return None
     length = math.sqrt(length_sq)
     return (-seg.py / length, seg.px / length)
+
+
+def surface_tangent(
+    normal_x: float, normal_y: float, surface_type: int,
+) -> Tuple[float, float]:
+    """Unit surface tangent, canonically oriented so the binned velocity is the
+    signed along-surface speed.
+
+    The raw tangent is ``(-ny, nx)`` (perpendicular to the outward normal).  We
+    orient it so a FLOOR's tangent points right (+x, matching the legacy ``+vx``
+    bin) and a WALL/SLIDE's tangent points down (+y, matching the legacy ``+vy``
+    bin).  For an axis-aligned floor this is exactly ``(1, 0)`` and for a vertical
+    wall exactly ``(0, 1)`` regardless of which side the wall is on — so the
+    tangential model reproduces the world-vx/vy model on axis-aligned surfaces.
+    For slopes/curves it carries the true surface angle.
+    """
+    tx, ty = -normal_y, normal_x
+    if is_wall_like(surface_type):
+        if ty < 0.0:                      # orient downward-positive (+vy)
+            tx, ty = -tx, -ty
+    else:
+        if tx < 0.0:                      # orient rightward-positive (+vx)
+            tx, ty = -tx, -ty
+    return tx, ty
 
 
 def _classify_linear_segment(seg) -> Optional[_ClassifiedSegment]:
@@ -295,6 +327,7 @@ def _sample_segment(
     dx = seg.x2 - seg.x1
     dy = seg.y2 - seg.y1
     points: List[SurfacePoint] = []
+    tan_x, tan_y = surface_tangent(seg.normal_x, seg.normal_y, seg.surface_type)
 
     # --- Regular sampling at SAMPLE_RESOLUTION ---
     n_samples = max(2, int(math.ceil(seg.length / SAMPLE_RESOLUTION)) + 1)
@@ -317,6 +350,8 @@ def _sample_segment(
                 surface_type=seg.surface_type,
                 segment_id=segment_id,
                 is_edge=is_edge,
+                tangent_x=tan_x,
+                tangent_y=tan_y,
             )
         )
 
@@ -346,6 +381,8 @@ def _sample_segment(
                         surface_type=seg.surface_type,
                         segment_id=segment_id,
                         is_edge=True,
+                        tangent_x=tan_x,
+                        tangent_y=tan_y,
                     )
                 )
 
@@ -662,12 +699,61 @@ def compute_mine_boundary_nodes(
     return result
 
 
+def _sample_circular(seg: GridSegmentCircular, segment_id: int) -> List[SurfacePoint]:
+    """Sample SurfacePoint positions along a circular (quarter-arc) tile segment.
+
+    Uses the REAL arc geometry (centre, quadrant, convex) the collision system
+    uses.  The arc is parameterised by ``alpha in [0, pi/2]`` from ``p_hor`` to
+    ``p_ver``; the contact point is ``centre + radius*(hor*cos, ver*sin)``.  The
+    OUTWARD normal (toward the walkable, non-back-facing side per
+    ``GridSegmentCircular.get_closest_point``) is the radial direction away from
+    the centre for a CONVEX corner and toward the centre for a CONCAVE pipe.
+    Each sample is typed FLOOR/WALL by the same normal thresholds as a linear
+    segment (so a quarter-pipe is wall near its side and floor near its base,
+    and down-facing arc portions are skipped), and the tangent carries the local
+    surface angle for the tangential momentum model.
+    """
+    r = seg.radius
+    arc_len = r * (math.pi / 2.0)
+    n = max(2, int(math.ceil(arc_len / SAMPLE_RESOLUTION)) + 1)
+    pts: List[SurfacePoint] = []
+    for i in range(n):
+        alpha = (math.pi / 2.0) * (i / (n - 1))
+        rx = seg.hor * math.cos(alpha)   # unit radial dir centre -> contact
+        ry = seg.ver * math.sin(alpha)
+        contact_x = seg.xpos + r * rx
+        contact_y = seg.ypos + r * ry
+        nx, ny = (rx, ry) if seg.convex else (-rx, -ry)   # outward normal
+        if ny < _FLOOR_NORMAL_Y_THRESHOLD:
+            stype = SURFACE_FLOOR
+        elif abs(nx) > _WALL_NORMAL_X_THRESHOLD and ny < _WALL_NORMAL_Y_MAX:
+            stype = SURFACE_WALL
+        else:
+            continue  # arc portion faces down / overhang: not walkable
+        tan_x, tan_y = surface_tangent(nx, ny, stype)
+        pts.append(
+            SurfacePoint(
+                x=contact_x + nx * NINJA_RADIUS,
+                y=contact_y + ny * NINJA_RADIUS,
+                normal_x=nx,
+                normal_y=ny,
+                surface_type=stype,
+                segment_id=segment_id,
+                is_edge=(i == 0 or i == n - 1),
+                tangent_x=tan_x,
+                tangent_y=tan_y,
+            )
+        )
+    return pts
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def extract_surfaces(
     tile_dict: Dict[Tuple[int, int], int],
     mine_positions: Optional[List[Tuple[float, float]]] = None,
+    momentum_model: str = "legacy",
 ) -> List[SurfacePoint]:
     """Extract walkable surface points from level tile data.
 
@@ -722,6 +808,19 @@ def extract_surfaces(
         for seg in run_segments:
             seg_points = _sample_segment(seg, run_id, open_endpoints)
             surface_points.extend(seg_points)
+
+    # 4b. Curved tiles (tangential model only).  The legacy model drops every
+    # circular segment (the isinstance(GridSegmentLinear) classifier); here we
+    # sample arc nodes from the REAL GridSegmentCircular geometry so routes can
+    # anchor on quarter-pipes / convex corners for velocity gain.  Mine masking
+    # for these nodes is left to find_mine_blocked_nodes (per plan).
+    if momentum_model == "tangential":
+        next_id = len(runs)
+        for _cell_key, cell_segments in segment_dic.items():
+            for seg in cell_segments:
+                if isinstance(seg, GridSegmentCircular):
+                    surface_points.extend(_sample_circular(seg, next_id))
+                    next_id += 1
 
     # 5. Deduplicate
     surface_points = _deduplicate_points(surface_points)

@@ -305,13 +305,17 @@ class SurfaceGraphVisualizer:
 
         # Also load mine positions from the .npz when available (stored since
         # the runtime-masking refactor), so they show up even without --map-path.
-        if not self.mine_positions and "mine_positions_x" in data and len(data["mine_positions_x"]) > 0:
-            mine_xs = data["mine_positions_x"]
-            mine_ys = data["mine_positions_y"]
-            self.mine_positions = [
-                (float(mine_xs[i]), float(mine_ys[i]))
-                for i in range(len(mine_xs))
-            ]
+        # (Re-open the npz here: ``_load_surface_pbrs`` does not return the raw
+        # archive, and referencing it directly raised NameError on no-mine levels.)
+        if not self.mine_positions:
+            _arch = np.load(data_path, allow_pickle=True)
+            if "mine_positions_x" in _arch and len(_arch["mine_positions_x"]) > 0:
+                mine_xs = _arch["mine_positions_x"]
+                mine_ys = _arch["mine_positions_y"]
+                self.mine_positions = [
+                    (float(mine_xs[i]), float(mine_ys[i]))
+                    for i in range(len(mine_xs))
+                ]
 
         n = len(sp)
         n_edges = len(self.graph.edges_src)

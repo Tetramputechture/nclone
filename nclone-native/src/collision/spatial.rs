@@ -37,6 +37,56 @@ pub fn gather_segments_from_region(
     result
 }
 
+/// True iff any *active* collision segment lives in the tile cells overlapped by
+/// the rectangle.  Allocation-free; early-exits on the first hit.  Used as a
+/// broadphase guard to skip the per-frame tile-collision substeps on open-air
+/// frames, where they are provable no-ops (`sweep_circle_vs_tiles` returns 1.0
+/// and the depenetration loop breaks immediately on an empty gather).  The cell
+/// math is identical to `gather_segments_from_region`, so "no active segment
+/// here" guarantees both of that frame's gathers are empty.
+#[inline]
+pub fn region_has_segments(
+    segment_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
+    all_segments: &[Segment],
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+) -> bool {
+    let min_x = x1.min(x2);
+    let min_y = y1.min(y2);
+    let max_x = x1.max(x2);
+    let max_y = y1.max(y2);
+
+    let min_cell_x = (min_x / TILE_SIZE).floor().max(0.0).min((MAP_WIDTH - 1) as f64) as usize;
+    let max_cell_x = (max_x / TILE_SIZE).floor().max(0.0).min((MAP_WIDTH - 1) as f64) as usize;
+    let min_cell_y = (min_y / TILE_SIZE).floor().max(0.0).min((MAP_HEIGHT - 1) as f64) as usize;
+    let max_cell_y = (max_y / TILE_SIZE).floor().max(0.0).min((MAP_HEIGHT - 1) as f64) as usize;
+
+    for xcell in min_cell_x..=max_cell_x {
+        for ycell in min_cell_y..=max_cell_y {
+            for &seg_idx in &segment_grid[xcell][ycell] {
+                let seg = &all_segments[seg_idx];
+                if !seg.is_active() {
+                    continue;
+                }
+                // Fine reject: only segments whose bounds actually overlap the
+                // (already radius-padded) query rect can affect the ninja this
+                // frame.  A 24px cell can hold a segment that is still out of
+                // reach — skipping those frames too is what makes the guard
+                // effective on dense maps.  Same AABB test as
+                // `get_single_closest_point`.
+                let (smin_x, smin_y, smax_x, smax_y) = seg.get_bounds();
+                if smax_x < min_x || smin_x > max_x || smax_y < min_y || smin_y > max_y {
+                    continue;
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Gather entity indices from the 3x3 neighbourhood around a position.
 pub fn gather_entities_from_neighbourhood(
     entity_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
