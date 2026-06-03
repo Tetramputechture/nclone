@@ -57,8 +57,6 @@ class CachedPathDistanceCalculator:
         max_cache_size: int = 50,
         enable_timing: bool = False,
         shared_level_cache: Optional[Any] = None,
-        shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
-        goal_curriculum_manager: Optional[Any] = None,
     ):
         """
         Initialize cached path distance calculator.
@@ -69,8 +67,6 @@ class CachedPathDistanceCalculator:
                           physics paths are deterministic for (start, goal, mine_state) pairs)
             enable_timing: Enable performance timing instrumentation
             shared_level_cache: Optional SharedLevelCache for zero-copy multi-worker training
-            shared_level_caches_by_stage: Optional dict of stage -> SharedLevelCache for curriculum
-            goal_curriculum_manager: Optional IntermediateGoalManager for stage selection
         """
         # Per-query cache for physics-optimal paths (start_node, goal_node) → distance
         # Physics costs are deterministic, so aggressive caching is beneficial
@@ -81,15 +77,11 @@ class CachedPathDistanceCalculator:
         self.hits = 0
         self.misses = 0
 
-        # Store shared cache references (used instead of local caches if provided)
+        # Store shared cache reference (used instead of local caches if provided)
         self._shared_level_cache = shared_level_cache
-        self._shared_level_caches_by_stage = shared_level_caches_by_stage
-        self.goal_curriculum_manager = goal_curriculum_manager
 
         # Determine which shared cache to use
-        has_shared_cache = (
-            shared_level_cache is not None or shared_level_caches_by_stage is not None
-        )
+        has_shared_cache = shared_level_cache is not None
 
         # Level-based cache for precomputed distances
         # If shared cache provided, this will be set to a view wrapper
@@ -179,54 +171,7 @@ class CachedPathDistanceCalculator:
         self.mine_sdf = create_mine_sdf()
 
     def _select_curriculum_cache(self) -> Optional[Any]:
-        """Select appropriate SharedLevelCache based on current curriculum stage.
-
-        When goal curriculum is active, selects the precomputed cache for the current
-        stage from multi-stage caches. This enables SharedLevelCache to work with
-        curriculum without rebuilding caches locally.
-
-        Returns:
-            SharedLevelCache for current stage, or None if no caches available
-        """
-        # Goal curriculum active - select stage-specific cache
-        if self.goal_curriculum_manager is not None:
-            stage = self.goal_curriculum_manager.state.unified_stage
-
-            # Use multi-stage caches if available (precomputed for each stage)
-            if self._shared_level_caches_by_stage is not None:
-                selected_cache = self._shared_level_caches_by_stage.get(stage)
-                if selected_cache is not None:
-                    logger.debug(
-                        f"[CURRICULUM_CACHE] Using precomputed cache for stage {stage} "
-                        f"({selected_cache.num_nodes} nodes, {selected_cache.num_goals} goals)"
-                    )
-                    return selected_cache
-                else:
-                    logger.warning(
-                        f"[CURRICULUM_CACHE] No cache for stage {stage}, falling back to local build. "
-                        f"Available stages: {list(self._shared_level_caches_by_stage.keys())}"
-                    )
-                    return None
-
-            # No multi-stage caches - fall back to local cache building
-            logger.debug(
-                f"[CURRICULUM_CACHE] Goal curriculum active (stage {stage}) but no "
-                f"multi-stage caches available. Using local cache with curriculum positions."
-            )
-            return None
-
-        # No curriculum active - use shared caches if available
-        if self._shared_level_caches_by_stage is not None:
-            # Multi-stage mode (shouldn't happen without curriculum, but handle it)
-            selected_cache = self._shared_level_caches_by_stage.get(0)
-            if selected_cache is not None:
-                logger.debug(
-                    f"[SHARED_CACHE] Using multi-stage cache stage 0 "
-                    f"({selected_cache.num_nodes} nodes, {selected_cache.num_goals} goals)"
-                )
-            return selected_cache
-
-        # Standard mode: return single shared cache
+        """Return the active SharedLevelCache (single-cache mode), or None."""
         return self._shared_level_cache
 
     def build_level_cache(
@@ -256,14 +201,9 @@ class CachedPathDistanceCalculator:
         # Fast rejection: skip if same level (avoid expensive LevelData comparison)
         # This makes redundant calls essentially free (single string comparison)
 
-        # Get current curriculum stage (for stage change detection)
-        current_stage = (
-            self.goal_curriculum_manager.state.unified_stage
-            if self.goal_curriculum_manager
-            else None
-        )
+        current_stage = None
 
-        # Detect level or stage changes
+        # Detect level changes
         level_changed = (
             self._current_level_id is None
             or level_data.level_id != self._current_level_id
@@ -747,18 +687,12 @@ class CachedPathDistanceCalculator:
                                 goal_id = "exit"  # Use generic alias
                                 break
 
-                    # Log goal_id inference for curriculum debugging
+                    # Log goal_id inference for debugging
                     if goal_id is not None:
-                        current_stage = (
-                            self.goal_curriculum_manager.state.unified_stage
-                            if self.goal_curriculum_manager
-                            else "N/A"
-                        )
                         logger.debug(
                             f"[GOAL_ID_INFER] goal={goal}, inferred goal_id={goal_id}, "
                             f"cached_switch_positions={self._cached_switch_positions[:2] if len(self._cached_switch_positions) > 0 else []}, "
-                            f"cached_exit_positions={self._cached_exit_positions[:2] if len(self._cached_exit_positions) > 0 else []}, "
-                            f"stage={current_stage}"
+                            f"cached_exit_positions={self._cached_exit_positions[:2] if len(self._cached_exit_positions) > 0 else []}"
                         )
 
                 if goal_id is not None:
@@ -771,17 +705,12 @@ class CachedPathDistanceCalculator:
                         dx = abs(goal_pos[0] - goal[0])
                         dy = abs(goal_pos[1] - goal[1])
 
-                        # Log validation failures with curriculum context
+                        # Log validation failures
                         if dx > 6 or dy > 6:
-                            current_stage = (
-                                self.goal_curriculum_manager.state.unified_stage
-                                if self.goal_curriculum_manager
-                                else "N/A"
-                            )
                             logger.warning(
                                 f"[VALIDATION_FAIL] get_distance: goal_id={goal_id}, "
                                 f"goal={goal} (from caller), goal_pos={goal_pos} (from cache), "
-                                f"dx={dx:.1f}, dy={dy:.1f}, threshold=6, stage={current_stage}. "
+                                f"dx={dx:.1f}, dy={dy:.1f}, threshold=6. "
                                 f"Cache/entity position mismatch. Skipping level cache."
                             )
 

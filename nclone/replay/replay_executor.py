@@ -83,6 +83,10 @@ class ReplayExecutor:
             render_kwargs["render"] = RenderConfig(render_mode=render_mode)
 
         cfg = EnvironmentConfig.for_training(**render_kwargs)
+        # Faithful replay: one physics tick per emitted input byte. Without this
+        # the env runs at the default frame_skip (4 ticks/step), repeating each
+        # input 4x and diverging from the recorded demo.
+        cfg.frame_skip = self.frame_skip
         self.env = NppEnvironment(cfg)
         # Skip PBRS/A* work during replay ingestion — we only need raw obs.
         self.env.skip_reward_calculation = True

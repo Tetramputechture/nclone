@@ -79,10 +79,6 @@ class EntityExit(Entity):
         CRITICAL: Exit door must NOT be added to grid_entity during reset.
         The door is only added to grid_entity when the exit switch is collected
         (in EntityExitSwitch.logical_collision()).
-        
-        IMPORTANT: This method resets the door to ORIGINAL position.
-        The environment's curriculum manager will call apply_to_simulator()
-        after fast_reset() to move this door to the curriculum position.
         """
         self.xpos = self._initial_xpos
         self.ypos = self._initial_ypos

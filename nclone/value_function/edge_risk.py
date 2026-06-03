@@ -64,6 +64,14 @@ _MINE_RISK_EPSILON: float = 32.0
 # Execution-difficulty risk contributions.
 _JUMP_RISK_MAX: float = 0.5     # a max-duration jump contributes up to this
 _TRICK_RISK: float = 0.8        # CDJ / scripted trick edges are hardest
+# A "carry" CDJ fires mid-flight from an arrived rising state (no settle to rest),
+# so it is even more frame-sensitive than a floor-jump-launched CDJ: d* should
+# prefer a floor-jump CDJ when both reach the same goal.
+_TRICK_CARRY_RISK: float = 0.92
+# A slope-jump chain depends on the live xspeed/hor_input at each hop AND on
+# re-contact timing across multiple bounces — frame-sensitive like a carry, so
+# d* prefers a plain arc when one reaches the same goal.
+_TRICK_SLOPE_RISK: float = 0.9
 
 # Momentum-preservation risk contributions.  These two terms target the
 # "jump the instant you touch a wall" failure mode that crowds out velocity-
@@ -216,13 +224,25 @@ def compute_edge_risk(
         ).astype(np.float32)
         risk = np.clip(risk + low_speed, 0.0, 1.0)
 
-    # Trick edges (CDJ et al.) are the hardest to execute frame-perfectly.
+    # Trick edges (CDJ et al.) are the hardest to execute frame-perfectly;
+    # "carry" CDJs (no settle, fired from a rising arrival) are harder still.
     trick = getattr(graph, "trick_tapes", None)
     if trick:
+        modes = getattr(graph, "trick_modes", None) or {}
         idx = np.fromiter((i for i in trick.keys() if 0 <= i < n),
                           dtype=np.int64)
         if idx.size:
             risk[idx] = np.maximum(risk[idx], _TRICK_RISK)
+        carry_idx = np.fromiter(
+            (i for i, m in modes.items() if m == "carry" and 0 <= i < n),
+            dtype=np.int64)
+        if carry_idx.size:
+            risk[carry_idx] = np.maximum(risk[carry_idx], _TRICK_CARRY_RISK)
+        slope_idx = np.fromiter(
+            (i for i, m in modes.items() if m == "slope_jump" and 0 <= i < n),
+            dtype=np.int64)
+        if slope_idx.size:
+            risk[slope_idx] = np.maximum(risk[slope_idx], _TRICK_SLOPE_RISK)
 
     return np.clip(risk, 0.0, 1.0)
 

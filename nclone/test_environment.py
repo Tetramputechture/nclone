@@ -2137,10 +2137,8 @@ while running:
         and pygame.key.get_pressed()[pygame.K_PERIOD]
     )
 
-    # Record action if recording is active (only when we actually step)
-    if recorder is not None and recorder.is_recording:
-        if not args.step_on_input or action != 0 or explicit_noop:
-            recorder.record_action(action)
+    # NOTE: recording happens AFTER the step block below, gated by `did_step`,
+    # so the saved input sequence is exactly one byte per simulator tick.
 
     # Pass input sequence overlay data to env (step-on-input mode)
     if args.step_on_input and not args.headless:
@@ -2366,7 +2364,23 @@ while running:
             # Keys held: 200ms delay before repeat (enables single-frame taps)
             now_ms = time.perf_counter() * 1000
             if hold_start_time is None or hold_action != action:
-                # New press or key combo change: step immediately
+                # New press or key combo change: step immediately.
+                # The sim's jump is edge-triggered: a floor jump fires only when
+                # jump_input rises 0->1 (tracked by ninja.jump_input_old, updated
+                # only on a tick). Continuous/discrete modes tick every frame, so
+                # the released-jump frames send jump_input=0 and reset that edge
+                # detector for free. Step-on-input never ticks idle frames, so
+                # after one jump jump_input_old stays stuck at 1 and every later
+                # jump press is swallowed. On a *fresh* jump press (the previous
+                # step was not a jump) clear it so this press registers as a new
+                # jump; held repeats below intentionally leave it set so variable
+                # jump height still works.
+                # if action in (3, 4, 5) and hold_action not in (3, 4, 5):
+                #     ninja = getattr(
+                #         getattr(env.nplay_headless, "sim", None), "ninja", None
+                #     )
+                #     if ninja is not None:
+                #         ninja.jump_input_old = 0
                 hold_start_time = now_ms
                 hold_action = action
                 observation, reward, terminated, truncated, info = env.step(action)
@@ -2385,6 +2399,17 @@ while running:
         if args.step_on_input:
             input_sequence.append(action)
         did_step = True
+
+    # Record action ONLY when the sim actually advanced a tick. In step-on-input
+    # mode the main loop spins at render framerate; without this gate the recorder
+    # logged phantom frames during the HOLD_REPEAT_DELAY dead-zone (and any non-
+    # stepping iteration) that the sim never ticked, inflating the byte stream so
+    # it no longer mapped 1:1 to simulator ticks and could not be replayed
+    # faithfully. Gating by `did_step` yields exactly one byte per tick. (In
+    # continuous/discrete modes `did_step` is always True, so behavior is
+    # unchanged there.)
+    if did_step and recorder is not None and recorder.is_recording:
+        recorder.record_action(action)
 
     # Memory profiling snapshot (only when we stepped)
     if (

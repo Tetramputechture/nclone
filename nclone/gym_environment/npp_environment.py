@@ -17,10 +17,12 @@ from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
 from .constants import (
     GAME_STATE_CHANNELS,
     GAME_STATE_SWITCH_ACTIVATED_IDX,
+    GAME_STATE_GOLD_REMAINING_IDX,
     LEVEL_DIAGONAL,
     HAZARD_MAP_CHANNELS,
     HAZARD_MAP_HEIGHT,
     HAZARD_MAP_WIDTH,
+    LATTICE_NAV_DIM,
     MAX_LOCKED_DOORS,
     FEATURES_PER_DOOR,
     SWITCH_STATES_DIM,
@@ -83,10 +85,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             reward_config=self.config.reward_config,
             frame_skip=self.config.frame_skip,
             shared_level_cache=self.config.shared_level_cache,
-            shared_level_caches_by_stage=getattr(
-                self.config, "shared_level_caches_by_stage", None
-            ),
-            goal_curriculum_config=self.config.goal_curriculum_config,
+            sim_backend=self.config.sim_backend,
             enable_layer3_macro_action_mask=self.config.enable_layer3_macro_action_mask,
             layer3_duration_bins=self.config.layer3_duration_bins,
             layer3_all_masked_fallback=self.config.layer3_all_masked_fallback,
@@ -110,10 +109,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # proximity, and level path caches (avoids duplicate rebuilds on graph/mine changes).
         self.reward_calculator.path_calculator = self._path_calculator
         self._init_debug_system(self.config.render.enable_debug_overlay)
-
-        # Initialize reset retry counter for handling degenerate maps
-        self._reset_retry_count = 0
-        self._max_reset_retries = 3
 
         # Update configuration flags with new options
         self.config_flags.update(
@@ -241,6 +236,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             shape=(HAZARD_MAP_CHANNELS, HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH),
             dtype=np.float32,
         )
+
+        # Optional physics-aware navigation hint from the lattice d* plan
+        # (``[dx_hop, dy_hop, cost_to_go_norm, phase]``).  Off by default so the
+        # strict Layer-1 contract / existing checkpoints are unaffected; enabled
+        # via ReachabilityConfig.expose_lattice_features.  See lattice_distance.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_lattice_features", False):
+            obs_spaces["lattice_nav"] = box.Box(
+                low=-1.0, high=1.0, shape=(LATTICE_NAV_DIM,), dtype=np.float32,
+            )
 
         return SpacesDict(obs_spaces)
 
@@ -479,16 +484,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # 1. Same level detected (no map change)
         # 2. Not a new level load
         # 3. Entities already exist (not first reset)
-        # 4. CRITICAL: No pending curriculum stage change (stage advancement requires full reset)
-        has_curriculum_stage_change = (
-            hasattr(self, "_pending_curriculum_stage")
-            and self._pending_curriculum_stage is not None
-        )
-
         use_fast_reset = (
             same_level_reset
             and not new_level
-            and not has_curriculum_stage_change  # Full reset needed for curriculum advancement
             and hasattr(self.nplay_headless, "sim")
             and self.nplay_headless.sim.ninja is not None
         )
@@ -538,27 +536,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
             self.current_ep_reward = 0
 
-            # === GOAL CURRICULUM: Reapply curriculum positions ===
-            # CRITICAL: fast_reset() resets entities to ORIGINAL positions
-            # We must call apply_to_simulator() to move them to curriculum positions
-            # NOTE: Fast reset only used when curriculum stage has NOT changed (line 544)
-            # so existing waypoints are still valid for current stage
-            if self.goal_curriculum_manager is not None:
-                self._episode_start_curriculum_stage = (
-                    self.goal_curriculum_manager.state.unified_stage
-                )
-
-                # Apply curriculum positioning (moves entities to curriculum positions)
-                # curriculum_start = self._profile_start("reset_fast_curriculum")
-                self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
-                # self._profile_end("reset_fast_curriculum", curriculum_start)
-
-                if self.enable_logging:
-                    logger.info(
-                        f"[FAST_RESET] Applied curriculum stage {self._episode_start_curriculum_stage} "
-                        f"positioning after fast_reset (waypoints unchanged - same stage)"
-                    )
-
             # Clear per-step path caches (ninja position resets to spawn).
             # Level-scoped caches remain valid because entity positions are unchanged.
             if hasattr(self, "reward_calculator") and hasattr(
@@ -574,6 +551,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # Update graph from current env state (fast - uses cached graph structure)
             self._update_graph_from_env_state()
             # self._profile_end("reset_fast_graph", graph_start)
+
+            # Optional start-state curriculum: restore a mid-route ninja state.
+            self._maybe_apply_start_state(options)
 
             # Get initial observation and return
             # obs_start = self._profile_start("reset_fast_observation")
@@ -592,19 +572,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # === STANDARD RESET PATH (full reset) ===
         # Only reached if NOT using fast reset
         else:
-            # Log why we're not using fast reset
-            if self.enable_logging and same_level_reset and has_curriculum_stage_change:
-                old_stage = (
-                    self.goal_curriculum_manager.state.unified_stage
-                    if self.goal_curriculum_manager
-                    else None
-                )
-                new_stage = self._pending_curriculum_stage
-                logger.info(
-                    f"[RESET] Curriculum stage advancing {old_stage} → {new_stage}: "
-                    f"Using full reset to rebuild paths and reposition entities"
-                )
-
             # Reset observation processor
             self.observation_processor.reset()
 
@@ -640,74 +607,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 # Same level being reset - clear only episode-specific caches
                 clear_all_caches_for_reset(self)
 
-        # === PRE-LOAD: Apply pending curriculum stage BEFORE loading map ===
-        # This allows us to load the correct pre-cached map_data variant
-        curriculum_stage_for_map_load = None
-        if (
-            hasattr(self, "_pending_curriculum_stage")
-            and self._pending_curriculum_stage is not None
-            and self.goal_curriculum_manager is not None
-        ):
-            curriculum_stage_for_map_load = self._pending_curriculum_stage
-            # Update stage immediately (will be used by map cache lookup)
-            old_stage = self.goal_curriculum_manager.state.unified_stage
-            self.goal_curriculum_manager.state.unified_stage = (
-                curriculum_stage_for_map_load
-            )
-            self._pending_curriculum_stage = None
-            if self.enable_logging:
-                logger.info(
-                    f"[CURRICULUM] Pre-applied stage change {old_stage} → {curriculum_stage_for_map_load} "
-                    f"before map load (enables pre-cached map_data)"
-                )
-        elif self.goal_curriculum_manager is not None:
-            curriculum_stage_for_map_load = (
-                self.goal_curriculum_manager.state.unified_stage
-            )
-
         if option_map_data is not None:
             # Benchmark-driven training / eval: the level payload is supplied
-            # directly via reset options. Bypass every dataset / curriculum
-            # map-selection branch and load the payload.
+            # directly via reset options. Bypass every dataset map-selection
+            # branch and load the payload.
             effective_name = map_name if map_name is not None else "benchmark_level"
             self.map_loader.load_map_data(option_map_data, str(effective_name))
-            use_curriculum_map_cache = False
         elif not skip_map_load:
-            # Check if we have pre-cached curriculum map data
-            use_curriculum_map_cache = (
-                self.goal_curriculum_manager is not None
-                and hasattr(self.config, "curriculum_map_cache")
-                and self.config.curriculum_map_cache is not None
-                and curriculum_stage_for_map_load is not None
-            )
-
-            if use_curriculum_map_cache:
-                # Load pre-cached map_data with entities at curriculum positions
-                curriculum_map_cache = self.config.curriculum_map_cache
-                try:
-                    map_data = curriculum_map_cache.get_map_data_for_stage(
-                        curriculum_stage_for_map_load
-                    )
-                    self.nplay_headless.load_map_from_map_data(map_data)
-                    if self.enable_logging:
-                        logger.info(
-                            f"[CURRICULUM] Loaded pre-cached map_data for stage {curriculum_stage_for_map_load} "
-                            f"(entities already at correct positions, ~10x faster than apply_to_simulator)"
-                        )
-                except (KeyError, AttributeError) as e:
-                    # Fallback to standard load if cache lookup fails
-                    logger.warning(
-                        f"[CURRICULUM] Failed to load pre-cached map_data for stage {curriculum_stage_for_map_load}: {e}. "
-                        f"Falling back to standard map load + apply_to_simulator()"
-                    )
-                    self.map_loader.load_map()
-                    use_curriculum_map_cache = False
-            else:
-                # Standard map load (original entity positions)
-                self.map_loader.load_map()
+            self.map_loader.load_map()
         else:
             # Map loading skipped
-            use_curriculum_map_cache = False
             # Update map_loader.current_map_name if provided
             # This is critical for cache keying and momentum waypoint loading
             if map_name is not None:
@@ -773,283 +682,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         except Exception as e:
             logger.warning(f"Failed to reset entity states: {e}")
 
-        # === GOAL CURRICULUM: Reposition entities (if not using pre-cached map) ===
-        # NOTE: If we loaded pre-cached map_data, entities are already at correct positions
-        # and we skip apply_to_simulator() entirely
-
-        # CRITICAL: Capture curriculum stage for THIS episode
-        # This ensures visualization uses the correct stage for this episode
-        if self.goal_curriculum_manager is not None:
-            self._episode_start_curriculum_stage = (
-                self.goal_curriculum_manager.state.unified_stage
-            )
-
-            # If we used pre-cached map, store positions and set overrides
-            # (needed for curriculum info and visualization)
-            if use_curriculum_map_cache:
-                orig_switch_pos = self.nplay_headless.exit_switch_position()
-                orig_exit_pos = self.nplay_headless.exit_door_position()
-
-                if self.enable_logging:
-                    logger.info(
-                        f"[CURRICULUM] Pre-cached map loaded with stage {self._episode_start_curriculum_stage}: "
-                        f"switch={orig_switch_pos}, exit={orig_exit_pos} (already at curriculum positions)"
-                    )
-
-                # Store these as "original" for consistency with apply_to_simulator path
-                # In this case, the "original" positions ARE the curriculum positions
-                self.goal_curriculum_manager.store_original_positions(
-                    orig_switch_pos, orig_exit_pos
-                )
-
-                # CRITICAL: Set position overrides so get_curriculum_switch_position()
-                # returns the actual loaded positions without needing path building
-                self.goal_curriculum_manager.set_curriculum_position_overrides(
-                    {"switch": orig_switch_pos, "exit": orig_exit_pos}
-                )
-
-                if self.enable_logging:
-                    logger.debug(
-                        f"[CURRICULUM] Set position overrides for stage {self._episode_start_curriculum_stage}"
-                    )
-        else:
-            self._episode_start_curriculum_stage = None
-
-        # Step 2: Reposition entities BEFORE any extraction/caching
-        # TIMING: Must happen AFTER map load/reset AND stage update, BEFORE _extract_level_data()
-        # OPTIMIZATION: Skip if we loaded pre-cached map_data (entities already correct)
-        if self.goal_curriculum_manager is not None and not use_curriculum_map_cache:
-            # 1. Store original entity positions (from freshly loaded/reset map)
-            orig_switch_pos = self.nplay_headless.exit_switch_position()
-            orig_exit_pos = self.nplay_headless.exit_door_position()
-
-            if self.enable_logging:
-                logger.info(
-                    f"[CURRICULUM] Original entity positions after map/reset: "
-                    f"switch={orig_switch_pos}, exit={orig_exit_pos}"
-                )
-
-            self.goal_curriculum_manager.store_original_positions(
-                orig_switch_pos, orig_exit_pos
-            )
-
-            # CRITICAL: Check if we have multi-stage SharedLevelCaches
-            # If so, use pre-computed curriculum positions instead of recalculating
-            if (
-                hasattr(self, "shared_level_caches_by_stage")
-                and self.shared_level_caches_by_stage is not None
-            ):
-                current_stage = self.goal_curriculum_manager.state.unified_stage
-                stage_cache = self.shared_level_caches_by_stage.get(current_stage)
-
-                if stage_cache is not None:
-                    # Get pre-computed curriculum positions from cache
-                    curriculum_positions = stage_cache.get_curriculum_entity_positions()
-
-                    if curriculum_positions:
-                        # Use cached positions to ensure exact match with cache
-                        self.goal_curriculum_manager.set_curriculum_position_overrides(
-                            curriculum_positions
-                        )
-                        if self.enable_logging:
-                            logger.info(
-                                f"[CURRICULUM] Using pre-computed positions from SharedLevelCache stage {current_stage}: "
-                                f"switch={curriculum_positions.get('switch')}, "
-                                f"exit={curriculum_positions.get('exit')}"
-                            )
-                    else:
-                        # Clear overrides if cache doesn't have positions
-                        self.goal_curriculum_manager.set_curriculum_position_overrides(
-                            None
-                        )
-                        if self.enable_logging:
-                            logger.warning(
-                                f"[CURRICULUM] SharedLevelCache stage {current_stage} has no curriculum positions, "
-                                f"will calculate from paths"
-                            )
-                else:
-                    # Clear overrides if no cache for this stage
-                    self.goal_curriculum_manager.set_curriculum_position_overrides(None)
-                    if self.enable_logging:
-                        logger.warning(
-                            f"[CURRICULUM] No SharedLevelCache for stage {current_stage}, "
-                            f"will calculate positions from paths"
-                        )
-            else:
-                # No multi-stage caches, clear any overrides
-                self.goal_curriculum_manager.set_curriculum_position_overrides(None)
-
-            # 2. Build optimal paths using ORIGINAL positions
-            # Extract minimal level_data WITHOUT caching (_extract_level_data caches!)
-            tile_dic = self.nplay_headless.get_tile_data()
-            tiles = np.zeros((MAP_TILE_HEIGHT, MAP_TILE_WIDTH), dtype=np.int32)
-            for (x, y), tile_id in tile_dic.items():
-                inner_x = x - 1
-                inner_y = y - 1
-                if 0 <= inner_x < MAP_TILE_WIDTH and 0 <= inner_y < MAP_TILE_HEIGHT:
-                    tiles[inner_y, inner_x] = int(tile_id)
-
-            from ..graph.level_data import (
-                extract_start_position_from_map_data,
-                LevelData,
-            )
-
-            spawn_pos = extract_start_position_from_map_data(
-                self.nplay_headless.sim.map_data
-            )
-
-            # Extract entities at ORIGINAL positions (before repositioning)
-            # Do NOT use _cached_entities here - extract fresh
-            entities_original = self.entity_extractor.extract_graph_entities()
-
-            level_data_for_paths = LevelData(
-                start_position=spawn_pos,
-                tiles=tiles,
-                entities=entities_original,
-                switch_states={},
-            )
-
-            # Build temporary graph for pathfinding (with original positions)
-            temp_graph_data = self.graph_builder.build_graph(
-                level_data_for_paths, ninja_pos=(int(spawn_pos[0]), int(spawn_pos[1]))
-            )
-
-            self.goal_curriculum_manager.build_paths_for_level(
-                temp_graph_data, level_data_for_paths, spawn_pos
-            )
-
-            # 3. NOW move entities to curriculum positions
-            self.goal_curriculum_manager.apply_to_simulator(self.nplay_headless.sim)
-
-            # CRITICAL: Clear ALL position caches IMMEDIATELY after repositioning
-            # This prevents any code from caching old positions
-            # Must happen BEFORE any observation access or level_data property access
-            self._cached_switch_pos = None
-            self._cached_exit_pos = None
-            self._cached_level_data = None
-            self._cached_entities = None
-            self._cached_observation = None
-
-            # VERIFY entities were actually moved
-            actual_switch_pos = self.nplay_headless.exit_switch_position()
-            expected_switch_pos = (
-                self.goal_curriculum_manager.get_curriculum_switch_position()
-            )
-            actual_exit_pos = self.nplay_headless.exit_door_position()
-            expected_exit_pos = (
-                self.goal_curriculum_manager.get_curriculum_exit_position()
-            )
-
-            # Validation: Check if repositioning worked
-            switch_dx = abs(actual_switch_pos[0] - expected_switch_pos[0])
-            switch_dy = abs(actual_switch_pos[1] - expected_switch_pos[1])
-            exit_dx = abs(actual_exit_pos[0] - expected_exit_pos[0])
-            exit_dy = abs(actual_exit_pos[1] - expected_exit_pos[1])
-
-            # Also verify grid_entity placement (critical for collision detection)
-            try:
-                sim = self.nplay_headless.sim
-                exit_entities = sim.entity_dic.get(3, [])
-                switch_entity = None
-                for entity in reversed(exit_entities):
-                    if type(entity).__name__ == "EntityExitSwitch":
-                        switch_entity = entity
-                        break
-
-                if switch_entity:
-                    expected_cell = (
-                        int(expected_switch_pos[0] // 24),
-                        int(expected_switch_pos[1] // 24),
-                    )
-                    actual_cell = switch_entity.cell
-                    switch_in_grid = switch_entity in sim.grid_entity.get(
-                        actual_cell, []
-                    )
-
-                    if self.enable_logging:
-                        logger.info(
-                            f"[CURRICULUM] Switch grid placement: "
-                            f"entity.cell={actual_cell}, expected={expected_cell}, "
-                            f"in_grid_entity={switch_in_grid}, "
-                            f"entity.active={getattr(switch_entity, 'active', 'N/A')}"
-                        )
-            except Exception as e:
-                logger.debug(f"Failed to verify grid placement: {e}")
-
-            if self.enable_logging:
-                logger.info(
-                    f"[CURRICULUM] Entity positions AFTER apply_to_simulator: "
-                    f"switch={actual_switch_pos} (expected {expected_switch_pos}), "
-                    f"exit={actual_exit_pos} (expected {expected_exit_pos}), "
-                    f"switch_error=({switch_dx:.1f}, {switch_dy:.1f})px, "
-                    f"exit_error=({exit_dx:.1f}, {exit_dy:.1f})px"
-                )
-
-            if switch_dx > 1.0 or switch_dy > 1.0:
-                logger.error(
-                    f"[CURRICULUM] Entity repositioning FAILED for switch! "
-                    f"Expected: {expected_switch_pos}, Actual: {actual_switch_pos}, "
-                    f"Error: ({switch_dx:.1f}, {switch_dy:.1f})px. "
-                    f"This will cause immediate switch collection at spawn!"
-                )
-
-            if exit_dx > 1.0 or exit_dy > 1.0:
-                logger.error(
-                    f"[CURRICULUM] Entity repositioning FAILED for exit! "
-                    f"Expected: {expected_exit_pos}, Actual: {actual_exit_pos}, "
-                    f"Error: ({exit_dx:.1f}, {exit_dy:.1f})px."
-                )
-
-        # Step 3: Invalidate ALL caches after repositioning
-        # Any caches filled during path building have OLD positions
-        if self.goal_curriculum_manager is not None:
-            self._cached_switch_pos = None
-            self._cached_exit_pos = None
-            self._cached_level_data = None  # Contains entity references
-            self._cached_entities = None  # Contains entity list
-            self._cached_observation = None
-
-            # Force switch cache invalidation to clear path distance caches
-            self.invalidate_switch_cache()
-
-            # Clear the reward calculator's path caches on curriculum stage
-            # advancement: goal positions change, so all level-scoped and
-            # step-scoped path data is stale.
-            if hasattr(self, "reward_calculator") and hasattr(
-                self.reward_calculator, "path_calculator"
-            ):
-                self.reward_calculator.path_calculator.clear_cache()
-
-                if self.enable_logging:
-                    logger.info(
-                        "[CURRICULUM] Cleared reward-calculator path caches on curriculum "
-                        "stage advancement"
-                    )
-
-            # Force path distance calculator to switch to new stage's SharedLevelCache
-            if hasattr(self, "_path_calculator") and self._path_calculator is not None:
-                self._path_calculator.level_cache = None
-                self._path_calculator.clear_cache()
-
-            if self.enable_logging:
-                logger.debug(
-                    "Invalidated all entity-dependent caches after curriculum entity movement"
-                )
-
-        # When curriculum is enabled, always clear reward-calculator path caches on
-        # full reset: entity positions can change with stage advancement, so any
-        # cached distances could be stale.
-        if self.goal_curriculum_manager is not None:
-            if hasattr(self, "reward_calculator") and hasattr(
-                self.reward_calculator, "path_calculator"
-            ):
-                self.reward_calculator.path_calculator.clear_cache()
-
-                if self.enable_logging:
-                    logger.info(
-                        "[CURRICULUM] Cleared reward-calculator path caches on full reset"
-                    )
-
         # CRITICAL: Reset and rebuild graph BEFORE getting observation
         self._reset_graph_state()
         self._reset_reachability_state()
@@ -1062,83 +694,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if hasattr(self, "_feature_extractor_cache_callback"):
             level_id = self.map_loader.current_map_name
             self._feature_extractor_cache_callback(level_id, self.current_graph_data)
-
-        # # Validate spawn position can reach graph nodes (detect degenerate maps early)
-        # if hasattr(self, "current_graph_data") and self.current_graph_data:
-        #     adjacency = self.current_graph_data.get("adjacency")
-        #     if adjacency:
-        #         # Warn if graph is very small
-        #         if len(adjacency) < 10:
-        #             logger.warning(
-        #                 f"Small graph detected: {len(adjacency)} nodes. "
-        #                 f"Map: {getattr(self.map_loader, 'current_map_name', 'unknown')}"
-        #             )
-
-        #         # Validate spawn can reach at least one graph node
-        #         # First verify simulator and ninja entity are properly initialized
-        #         if not (
-        #             hasattr(self.nplay_headless, "sim")
-        #             and hasattr(self.nplay_headless.sim, "ninja")
-        #             and hasattr(self.nplay_headless.sim.ninja, "xpos")
-        #             and hasattr(self.nplay_headless.sim.ninja, "ypos")
-        #         ):
-        #             # Simulator not fully initialized - skip validation
-        #             # This can happen in multiprocessing environments during unpickling
-        #             logger.warning(
-        #                 "Simulator not fully initialized during reset - skipping spawn validation. "
-        #                 "This is expected in multiprocessing environments."
-        #             )
-        #         else:
-        #             from nclone.graph.reachability.pathfinding_utils import (
-        #                 find_closest_node_to_position,
-        #             )
-
-        #             # Get ninja position (already in world space with 1-tile padding)
-        #             ninja_pos = self.nplay_headless.ninja_position()
-        #             start_pos = (
-        #                 int(ninja_pos[0]),
-        #                 int(ninja_pos[1]),
-        #             )  # Use world space coordinates directly
-
-        #             closest = find_closest_node_to_position(
-        #                 start_pos,
-        #                 adjacency,
-        #                 threshold=50.0,
-        #                 spatial_hash=self.current_graph_data.get("spatial_hash"),
-        #                 subcell_lookup=None,
-        #             )
-
-        #             if closest is None:
-        #                 # Critical: Spawn unreachable from graph
-        #                 self._reset_retry_count += 1
-
-        #                 if self._reset_retry_count >= self._max_reset_retries:
-        #                     # All retries failed - raise with full diagnostics
-        #                     sample_nodes = list(adjacency.keys())[:10]
-        #                     raise RuntimeError(
-        #                         f"Failed to generate valid map after {self._max_reset_retries} attempts. "
-        #                         f"Spawn consistently unreachable from graph. "
-        #                         f"Last attempt: spawn={start_pos} (world space), "
-        #                         f"graph_nodes={len(adjacency)}, sample_nodes={sample_nodes}. "
-        #                         f"This is a critical bug in map generation."
-        #                     )
-
-        #                 # Log and retry with new map
-        #                 sample_nodes = list(adjacency.keys())[:5]
-        #                 logger.error(
-        #                     f"CRITICAL: Spawn unreachable from graph! "
-        #                     f"Retry {self._reset_retry_count}/{self._max_reset_retries}. "
-        #                     f"spawn={start_pos} (world space), graph_nodes={len(adjacency)}, "
-        #                     f"sample_nodes={sample_nodes}. "
-        #                     f"Regenerating map..."
-        #                 )
-
-        #                 # Regenerate map and retry reset
-        #                 self.map_loader.load_map()
-        #                 return self.reset(seed=seed, options=options)
-
-        #             # Success - reset retry counter
-        #             self._reset_retry_count = 0
 
         # Build precomputed door feature cache after graph is ready
         # PERFORMANCE: Precomputes ALL path distances for O(1) runtime lookup
@@ -1161,104 +716,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     f"(surface_area={surface_area:.0f})"
                 )
 
-        # VALIDATION: Verify curriculum positions match actual entity positions
-        # This catches any issues where entities got reset after repositioning
-        if self.goal_curriculum_manager is not None:
-            expected_switch = (
-                self.goal_curriculum_manager.get_curriculum_switch_position()
-            )
-            actual_switch = self.nplay_headless.exit_switch_position()
-            expected_exit = self.goal_curriculum_manager.get_curriculum_exit_position()
-            actual_exit = self.nplay_headless.exit_door_position()
-            ninja_pos = self.nplay_headless.ninja_position()
-
-            # Calculate distances
-            # ninja_to_switch = (
-            #     (ninja_pos[0] - actual_switch[0]) ** 2
-            #     + (ninja_pos[1] - actual_switch[1]) ** 2
-            # ) ** 0.5
-            # ninja_to_expected = (
-            #     (ninja_pos[0] - expected_switch[0]) ** 2
-            #     + (ninja_pos[1] - expected_switch[1]) ** 2
-            # ) ** 0.5
-
-            switch_match = (
-                abs(actual_switch[0] - expected_switch[0]) < 1.0
-                and abs(actual_switch[1] - expected_switch[1]) < 1.0
-            )
-            exit_match = (
-                abs(actual_exit[0] - expected_exit[0]) < 1.0
-                and abs(actual_exit[1] - expected_exit[1]) < 1.0
-            )
-
-            stage = self.goal_curriculum_manager.state.unified_stage
-
-            # DIAGNOSTIC: Always print curriculum validation at reset
-            # print(
-            #     f"\n{'#' * 60}\n"
-            #     f"[CURRICULUM_RESET_VALIDATION] Stage {stage}\n"
-            #     f"  Ninja: ({ninja_pos[0]:.1f}, {ninja_pos[1]:.1f})\n"
-            #     f"  Switch actual: ({actual_switch[0]:.1f}, {actual_switch[1]:.1f})\n"
-            #     f"  Switch expected: ({expected_switch[0]:.1f}, {expected_switch[1]:.1f})\n"
-            #     f"  Switch match: {switch_match}\n"
-            #     f"  Distance ninja→actual_switch: {ninja_to_switch:.1f}px\n"
-            #     f"  Distance ninja→expected_switch: {ninja_to_expected:.1f}px\n"
-            #     f"{'#' * 60}\n"
-            # )
-
-            # Also check grid_entity placement
-            try:
-                sim = self.nplay_headless.sim
-                exit_entities = sim.entity_dic.get(3, [])
-                switch_entity = None
-                for entity in reversed(exit_entities):
-                    if type(entity).__name__ == "EntityExitSwitch":
-                        switch_entity = entity
-                        break
-
-                if switch_entity:
-                    expected_cell = (
-                        int(expected_switch[0] // 24),
-                        int(expected_switch[1] // 24),
-                    )
-                    actual_cell = switch_entity.cell
-                    # entity_in_grid = switch_entity in sim.grid_entity.get(
-                    #     actual_cell, []
-                    # )
-                    ninja_cell = (int(ninja_pos[0] // 24), int(ninja_pos[1] // 24))
-
-                    # print(
-                    #     f"[CURRICULUM_GRID_CHECK]\n"
-                    #     f"  Switch entity.cell: {actual_cell}\n"
-                    #     f"  Expected cell: {expected_cell}\n"
-                    #     f"  Entity in grid_entity[{actual_cell}]: {entity_in_grid}\n"
-                    #     f"  Ninja cell: {ninja_cell}\n"
-                    #     f"  Switch entity.active: {switch_entity.active}\n"
-                    #     f"  Switch entity pos: ({switch_entity.xpos:.1f}, {switch_entity.ypos:.1f})\n"
-                    # )
-
-                    # CRITICAL: If ninja spawns in same cell as switch, immediate activation!
-                    if ninja_cell == actual_cell:
-                        print(
-                            f"[CURRICULUM_WARNING] Ninja and switch in SAME CELL! "
-                            f"Cell: {ninja_cell}. This causes immediate activation!"
-                        )
-            except Exception as e:
-                print(f"[CURRICULUM_GRID_CHECK] Error: {e}")
-
-            if not switch_match or not exit_match:
-                logger.error(
-                    f"[CURRICULUM] POSITION MISMATCH at episode start! "
-                    f"Stage: {stage}, "
-                    f"Switch - Expected: {expected_switch}, Actual: {actual_switch}, Match: {switch_match} | "
-                    f"Exit - Expected: {expected_exit}, Actual: {actual_exit}, Match: {exit_match}. "
-                    f"This will cause immediate switch collection and wrong PBRS distances!"
-                )
-            elif self.enable_logging:
-                logger.debug(
-                    f"[CURRICULUM] Position validation passed at episode start: "
-                    f"stage={stage}, switch={actual_switch}, exit={actual_exit}"
-                )
+        # Optional start-state curriculum: restore a mid-route ninja state.
+        self._maybe_apply_start_state(options)
 
         # NOW get initial observation (with valid graph data)
         initial_obs = self._get_observation()
@@ -1271,6 +730,51 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # self._profile_end("reset_total", reset_start_time)
 
         return (processed_obs, {})
+
+    # Frame-input table for start-action prefixes (matches the planner ACT map).
+    _START_ACT = {0: (0, 0), 1: (1, 0), 2: (-1, 0), 3: (0, 1), 4: (1, 1), 5: (-1, 1)}
+
+    def _maybe_apply_start_state(self, options):
+        """Optional start-state curriculum hook (general, sim-agnostic).
+
+        ``options['start_state']`` is a curriculum start state — a dict with
+        ``start_actions`` (a frame-input prefix, list of action ids 0-5) — or
+        ``options['start_state_curriculum']`` is an object with ``.sample(difficulty)``
+        returning one. After the normal reset we **replay that prefix on the env's
+        own sim**, so the episode begins mid-route and the state is faithful to the
+        env's physics by construction (works whether the env is Python- or
+        native-backed; no save/restore or cross-engine parity concern). If the
+        prefix dies partway (e.g. a native-found prefix drifting on the Python sim),
+        we stop at the last surviving frame — always a valid start state.
+
+        This is the basis for a reverse curriculum (start near the goal, schedule
+        the start back toward spawn) for fine-tuning hard levels, and for
+        restart-state diversity in generalized training."""
+        if not options or not isinstance(options, dict):
+            return
+        ss = options.get("start_state")
+        if ss is None:
+            cur = options.get("start_state_curriculum")
+            if cur is not None and hasattr(cur, "sample"):
+                ss = cur.sample(options.get("start_state_difficulty", 1.0))
+        if not ss:
+            return
+        actions = ss.get("start_actions") if isinstance(ss, dict) else ss
+        if not actions:
+            return
+        nh = self.nplay_headless
+        try:
+            for a in actions:
+                h, j = self._START_ACT.get(int(a), (0, 0))
+                nh.tick(h, j)
+                if nh.ninja_has_died() or nh.ninja_has_won():
+                    break
+        except Exception:
+            return
+        # Re-decide per-episode potential gates at the new start position.
+        for attr in ("_lattice_episode_decided", "_freespace_episode_decided"):
+            if hasattr(self, attr):
+                setattr(self, attr, False)
 
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
@@ -1297,6 +801,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.nplay_headless.exit_switch_activated()
         )
 
+        # Gold objective: fraction of gold still remaining (built in base env).
+        self._game_state_buffer[GAME_STATE_GOLD_REMAINING_IDX] = float(
+            obs.get("gold_fraction_remaining", 0.0)
+        )
+
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 
         # Populate the internal A*-path-distance cache used by PBRS. The feature
@@ -1310,6 +819,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             obs["_cached_switch_distance"] = self._cached_switch_distance
         if hasattr(self, "_cached_exit_distance"):
             obs["_cached_exit_distance"] = self._cached_exit_distance
+        # Number of necessary locked doors opened (from the lattice door plan);
+        # consumed by the reward calculator for the locked-door-switch bonus +
+        # HWM sub-goal phase. 0 when no plan / no necessary doors.
+        obs["necessary_doors_open"] = int(getattr(self, "_necessary_doors_open", 0))
 
         # Extract locked door switch states from environment — kept internally
         # for the reward path even though `switch_states` is no longer in the
@@ -1333,6 +846,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         t_haz = self._profile_start("obs_npp_hazard")
         obs["hazard_map"] = self._compute_hazard_map()
         self._profile_end("obs_npp_hazard", t_haz)
+
+        # Optional physics-aware nav hint (lattice d*).  ``_cached_lattice_nav``
+        # is refreshed by `_compute_reachability` (called via
+        # `_update_path_distance_cache` above) on cell change; zeros when no plan.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_lattice_features", False):
+            obs["lattice_nav"] = np.array(
+                getattr(self, "_cached_lattice_nav", np.zeros(LATTICE_NAV_DIM)),
+                copy=True, dtype=np.float32,
+            )
 
         # Return full observation - conversion to Layer 1 dict happens in
         # _process_observation(). This ensures the reward calculator has
@@ -1932,6 +1455,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             "_graph_data",
             "_cached_switch_distance",
             "_cached_exit_distance",
+            "necessary_doors_open",
             "switch_states_dict",
             "level_data",
             "entity_positions",
@@ -1989,173 +1513,6 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         from nclone.cache_management import clear_all_caches_for_new_level
 
         clear_all_caches_for_new_level(self, verbose=verbose)
-
-    def _save_degenerate_map_debug_image(self, tile_dic, adjacency, num_nodes):
-        """Save a debug visualization when a degenerate map (tiny graph) is detected.
-
-        Args:
-            tile_dic: Dictionary mapping (x, y) coordinates to tile type values
-            adjacency: Graph adjacency structure
-            num_nodes: Number of nodes in the graph
-        """
-        try:
-            import matplotlib
-
-            matplotlib.use("Agg")  # Non-interactive backend
-            import matplotlib.pyplot as plt
-            import matplotlib.patches as mpatches
-            from datetime import datetime
-            import os
-
-            # Get spawn position
-            ninja_pos = self.nplay_headless.ninja_position()
-            spawn_x, spawn_y = int(ninja_pos[0]), int(ninja_pos[1])
-
-            # Create output directory
-            output_dir = "debug_degenerate_maps"
-            os.makedirs(output_dir, exist_ok=True)
-
-            # Generate filename with timestamp and map name
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            map_name = getattr(self.map_loader, "current_map_name", "unknown")
-            filename = f"{output_dir}/{timestamp}_{map_name}_nodes{num_nodes}.png"
-
-            # Create figure
-            fig, ax = plt.subplots(figsize=(16, 10))
-
-            # Render tiles - import from npp-rl if available, otherwise skip
-            try:
-                import sys
-
-                # Try to import from npp-rl project
-                npp_rl_path = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                    "npp-rl",
-                )
-                if os.path.exists(npp_rl_path):
-                    sys.path.insert(0, npp_rl_path)
-
-                from npp_rl.rendering.matplotlib_tile_renderer import (
-                    render_tiles_to_axis,
-                )
-
-                render_tiles_to_axis(
-                    ax,
-                    tile_dic,
-                    tile_size=24.0,
-                    tile_color="#808080",
-                    alpha=0.6,
-                    show_tile_labels=False,
-                )
-            except ImportError:
-                # Fallback: render simple rectangles for solid tiles
-                for (x, y), tile_type in tile_dic.items():
-                    if tile_type == 1:  # Solid tiles
-                        rect = mpatches.Rectangle(
-                            (x * 24, y * 24), 24, 24, facecolor="#808080", alpha=0.6
-                        )
-                        ax.add_patch(rect)
-
-            # Draw graph nodes
-            for node_pos in adjacency.keys():
-                x, y = node_pos
-                # Convert from tile data space (subtracts 24px) to display space
-                screen_x = x + 24  # Add back the offset
-                screen_y = y + 24
-                circle = mpatches.Circle(
-                    (screen_x, screen_y),
-                    5,
-                    facecolor="green",
-                    edgecolor="black",
-                    linewidth=1,
-                    alpha=0.8,
-                )
-                ax.add_patch(circle)
-
-            # Draw graph edges
-            for node_pos, neighbors in adjacency.items():
-                x1, y1 = node_pos
-                screen_x1 = x1 + 24
-                screen_y1 = y1 + 24
-                for neighbor_pos, _ in neighbors:
-                    x2, y2 = neighbor_pos
-                    screen_x2 = x2 + 24
-                    screen_y2 = y2 + 24
-                    ax.plot(
-                        [screen_x1, screen_x2],
-                        [screen_y1, screen_y2],
-                        "y-",
-                        alpha=0.5,
-                        linewidth=1,
-                    )
-
-            # Mark spawn position
-            spawn_circle = mpatches.Circle(
-                (spawn_x, spawn_y),
-                8,
-                facecolor="red",
-                edgecolor="white",
-                linewidth=2,
-                alpha=1.0,
-            )
-            ax.add_patch(spawn_circle)
-
-            # Add text annotation for spawn
-            ax.text(
-                spawn_x,
-                spawn_y - 20,
-                f"SPAWN\n({spawn_x}, {spawn_y})",
-                ha="center",
-                va="top",
-                fontsize=10,
-                color="red",
-                weight="bold",
-                bbox=dict(boxstyle="round,pad=0.5", facecolor="white", alpha=0.8),
-            )
-
-            # Configure plot
-            ax.set_xlim(0, 44 * 24)  # Full map width with padding
-            ax.set_ylim(25 * 24, 0)  # Full map height with padding (inverted Y)
-            ax.set_aspect("equal")
-            ax.set_title(
-                f"Degenerate Map Debug: {map_name}\n"
-                f"Nodes: {num_nodes}, Spawn: ({spawn_x}, {spawn_y})",
-                fontsize=14,
-                weight="bold",
-            )
-            ax.set_xlabel("X (pixels)", fontsize=10)
-            ax.set_ylabel("Y (pixels)", fontsize=10)
-
-            # Add grid
-            ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
-
-            # Add legend
-            legend_elements = [
-                mpatches.Circle(
-                    (0, 0),
-                    1,
-                    facecolor="red",
-                    edgecolor="white",
-                    linewidth=2,
-                    label="Spawn Position",
-                ),
-                mpatches.Circle(
-                    (0, 0), 1, facecolor="green", edgecolor="black", label="Graph Node"
-                ),
-                mpatches.Patch(facecolor="yellow", alpha=0.5, label="Graph Edge"),
-                mpatches.Patch(facecolor="#808080", alpha=0.6, label="Solid Tile"),
-            ]
-            ax.legend(handles=legend_elements, loc="upper right", fontsize=9)
-
-            # Save figure
-            plt.tight_layout()
-            plt.savefig(filename, dpi=150, bbox_inches="tight")
-            plt.close(fig)
-
-            logger.info(f"Saved degenerate map debug image: {filename}")
-
-        except Exception as e:
-            logger.warning(f"Failed to save degenerate map debug image: {e}")
 
     def __getstate__(self):
         """Custom pickle method to handle non-picklable pygame objects and support vectorization."""

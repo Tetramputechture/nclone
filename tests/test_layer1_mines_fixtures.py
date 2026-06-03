@@ -139,7 +139,8 @@ def test_switch_collection_flag_layout(shared_env: NppEnvironment):
     assert "game_state" in obs
     gs = np.asarray(obs["game_state"], dtype=np.float32)
     assert gs.shape == (GAME_STATE_CHANNELS,)
-    assert GAME_STATE_SWITCH_ACTIVATED_IDX == GAME_STATE_CHANNELS - 1
+    # switch_activated is the second-to-last channel; gold-remaining is last.
+    assert GAME_STATE_SWITCH_ACTIVATED_IDX == GAME_STATE_CHANNELS - 2
     assert gs[GAME_STATE_SWITCH_ACTIVATED_IDX] in (0.0, 1.0), (
         "switch_activated must be a {0,1} bit"
     )

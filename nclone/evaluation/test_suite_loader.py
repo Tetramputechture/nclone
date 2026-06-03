@@ -1,11 +1,23 @@
 """
 Test Suite Loader for N++ Evaluation (Task 3.3).
 
-This module provides utilities for loading and managing the comprehensive test suite
-of 250 deterministic N++ levels across 5 complexity categories.
+.. deprecated::
+    This is the LEGACY evaluation loader. Its dataset (``datasets/test_suite/``)
+    is NOT shipped in the repo — the directory is empty and must be regenerated
+    with ``python -m nclone.map_generation.generate_test_suite_maps``. Code that
+    points at a missing ``test_metadata.json`` falls back to random maps.
 
-The test suite dataset is located in this repository at:
-    nclone/datasets/test_suite/
+    The CURRENT, populated benchmark is the **mechanic-primary** dataset under
+    ``datasets/mechanic_benchmark/`` (train/test split, buckets FLAT_RUN /
+    BASIC_JUMP / WALL_JUMP / MINE_NAVIGATION / SLOPES), loaded via
+    :class:`nclone.evaluation.mechanic_benchmark_loader.MechanicBenchmarkLoader`.
+    New evaluation (the npp-rl trainer) uses that loader; prefer it.
+
+This module provides utilities for loading and managing the comprehensive test suite
+of 250 deterministic N++ levels across complexity categories.
+
+The test suite dataset is expected at:
+    datasets/test_suite/
 
 Usage:
     from nclone.evaluation import TestSuiteLoader

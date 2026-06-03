@@ -4,6 +4,8 @@
 use crate::constants::{MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
 use crate::entities::exit_door::ExitDoor;
 use crate::entities::exit_switch::ExitSwitch;
+use crate::entities::gold::Gold;
+use crate::entities::locked_door::LockedDoor;
 use crate::entities::toggle_mine::ToggleMine;
 use crate::entities::Entity;
 use crate::map::tiles::{TILE_SEGMENT_CIRCULAR_MAP, TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_ORTHO_MAP};
@@ -279,6 +281,10 @@ fn load_entities(map_data: &[i32], data: &mut MapData) {
                 let mine = ToggleMine::new(entity_type as u8, xcoord, ycoord);
                 data.entities.push(Entity::ToggleMine(mine));
             }
+            Some(EntityType::Gold) => {
+                let gold = Gold::new(xcoord, ycoord);
+                data.entities.push(Entity::Gold(gold));
+            }
             Some(EntityType::ExitSwitch) => {
                 // Associate with the corresponding exit door
                 let parent_door = if door_idx < exit_doors.len() {
@@ -292,6 +298,31 @@ fn load_entities(map_data: &[i32], data: &mut MapData) {
             }
             Some(EntityType::ExitDoor) => {
                 // Already created in first pass, skip
+            }
+            Some(EntityType::LockedDoor) => {
+                // Type-6 entry is self-contained: [6, door_x, door_y, orient, mode]
+                // followed by the switch coords at index+6, index+7 (mirrors
+                // entity_factory.py:202-216). Build the toggleable door segment in the
+                // shared pool, index it, and remember its index on the entity so the
+                // simulator can open it on switch contact.
+                if index + 7 < map_data.len() {
+                    let orientation = map_data[index + 3] as u8;
+                    let sw_xcoord = map_data[index + 6] as i32;
+                    let sw_ycoord = map_data[index + 7] as i32;
+                    let (seg, cell) =
+                        LockedDoor::make_door_segment(xcoord, ycoord, orientation);
+                    let seg_idx = data.segments.len();
+                    data.segments.push(seg);
+                    data.segment_grid[cell.0][cell.1].push(seg_idx);
+                    let door = LockedDoor::new(
+                        xcoord, ycoord, orientation, sw_xcoord, sw_ycoord, seg_idx,
+                    );
+                    data.entities.push(Entity::LockedDoor(door));
+                }
+            }
+            Some(EntityType::LockedDoorSwitch) => {
+                // Phantom in the Python model -- the switch lives on the type-6
+                // entity. No-op (do not create an entity).
             }
             None => {
                 // Unsupported entity type, skip

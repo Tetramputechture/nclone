@@ -8,6 +8,11 @@ pub const NINJA_RADIUS_SQ: f64 = NINJA_RADIUS * NINJA_RADIUS;
 // Entity collision radii
 pub const EXIT_SWITCH_RADIUS: f64 = 6.0;
 pub const EXIT_DOOR_RADIUS: f64 = 12.0;
+pub const GOLD_RADIUS: f64 = 6.0;
+
+// Locked door (type 6): 24px wall segment (radius 12) + switch trigger (radius 5).
+pub const LOCKED_DOOR_RADIUS: f64 = 12.0;
+pub const LOCKED_DOOR_SWITCH_RADIUS: f64 = 5.0;
 
 // Toggle mine radii by state: 0=toggled(deadly), 1=untoggled(safe), 2=toggling
 pub const TOGGLE_MINE_RADIUS_TOGGLED: f64 = 4.0;

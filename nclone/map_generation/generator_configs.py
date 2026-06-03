@@ -152,6 +152,11 @@ class HorizontalCorridorConfig:
     fixed_height: int = None
     add_mines: bool = False
     max_mines: int = -1
+    # When False, suppress the incidental locked-door injection that the
+    # generator otherwise adds to height==1, width>=4 corridors. FLAT_RUN
+    # presets set this False so the bucket stays a pure no-locked-door
+    # mechanic (locked doors are out of scope for the Phase-1 dataset).
+    allow_locked_doors: bool = True
 
 
 @dataclass
@@ -255,6 +260,16 @@ class SlopesConfig:
 # Generator presets organized by difficulty
 GENERATOR_PRESETS = {
     "maze": {
+        # Micro maze: the easy on-ramp for the CHAMBER_MAZE size curriculum
+        # (CHAMBER_MAZE was stuck ~7% at the old "tiny" floor). A 4-6 x 3-4 grid
+        # is little more than a couple of branches to the exit.
+        "micro": MazeConfig(
+            min_width=4,
+            max_width=6,
+            min_height=3,
+            max_height=4,
+            max_cell_size=1,
+        ),
         "tiny": MazeConfig(
             min_width=6,
             max_width=10,
@@ -839,34 +854,37 @@ GENERATOR_PRESETS = {
         ),
     },
     "wall_jump": {
-        # Tier 1: short shaft, 2-tile wide, goal always at the top.
+        # Tier 1: SINGLE wall-jump. Short 2-wide shaft just beyond a plain jump's
+        # reach (~4 tiles), so one wall-jump completes it. The easy on-ramp so
+        # the size curriculum can start WALL_JUMP trivial (was h8-10 ≈ 2 jumps,
+        # which left the bucket stuck at 0% for an untrained agent).
         "shaft_short_t1": WallJumpConfig(
             min_width=2,
             max_width=2,
-            min_height=8,
-            max_height=10,
+            min_height=4,
+            max_height=6,
             add_middle_ledge=False,
             goal_position="top",
         ),
-        # Tier 2: medium shaft; ninja still ascends.
+        # Tier 2: DOUBLE — ~two wall-jumps to ascend.
         "shaft_medium_t2": WallJumpConfig(
             min_width=2,
             max_width=3,
-            min_height=10,
-            max_height=14,
+            min_height=7,
+            max_height=9,
             add_middle_ledge=False,
             goal_position="top",
         ),
-        # Tier 3: tall shaft, goal direction randomized per level.
+        # Tier 3: TRIPLE — taller shaft, goal still at the top for learnability.
         "shaft_tall_t3": WallJumpConfig(
             min_width=2,
             max_width=3,
-            min_height=14,
-            max_height=18,
+            min_height=10,
+            max_height=13,
             add_middle_ledge=False,
-            goal_position="random",
+            goal_position="top",
         ),
-        # Tier 4: tall shaft with one ledge break to vary rhythm.
+        # Tier 4: TALL shaft with randomized goal + a ledge break to vary rhythm.
         "shaft_tall_ledge_t4": WallJumpConfig(
             min_width=2,
             max_width=3,
@@ -1005,6 +1023,7 @@ GENERATOR_PRESETS["horizontal_corridor"].update(
             max_height=2,
             random_edge_tiles=False,
             add_mines=False,
+            allow_locked_doors=False,
         ),
         "flat_run_t2": HorizontalCorridorConfig(
             min_width=6,
@@ -1013,6 +1032,7 @@ GENERATOR_PRESETS["horizontal_corridor"].update(
             max_height=3,
             random_edge_tiles=False,
             add_mines=False,
+            allow_locked_doors=False,
         ),
         "flat_run_t3": HorizontalCorridorConfig(
             min_width=10,
@@ -1021,6 +1041,7 @@ GENERATOR_PRESETS["horizontal_corridor"].update(
             max_height=3,
             random_edge_tiles=False,
             add_mines=False,
+            allow_locked_doors=False,
         ),
         "flat_run_t4": HorizontalCorridorConfig(
             min_width=14,
@@ -1029,6 +1050,7 @@ GENERATOR_PRESETS["horizontal_corridor"].update(
             max_height=4,
             random_edge_tiles=False,
             add_mines=False,
+            allow_locked_doors=False,
         ),
     }
 )
@@ -1086,7 +1108,21 @@ class CategoryConfig:
     generators: List[Tuple[str, str]]
 
 
-# Category configurations - add new categories here
+# =========================================================================
+# CATEGORIES: difficulty-tiered taxonomy for general training.
+#
+# Each category maps to a list of ``(generator_type, preset)`` pairs that
+# ``GeneratorRegistry`` samples from at runtime to pick a level. This is the
+# legacy/general training taxonomy and is distinct from ``BUCKET_CATALOG``
+# below (the mechanic-primary *benchmark* taxonomy) — both are live and serve
+# different purposes; do not merge them.
+#
+# ``ratio`` sizes the *offline* static test-suite dataset
+# (``generate_test_suite_maps.py``); the *runtime* sampling distribution lives
+# separately in ``gym_environment/curriculum_config.py`` as ``default_weight``.
+#
+# Add new training categories here.
+# =========================================================================
 CATEGORIES = {
     "simplest": CategoryConfig(
         name="simplest",
@@ -1303,6 +1339,15 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
         2: [("slopes", "hill_symmetric_t2", 1)],
         3: [("slopes", "hill_asymmetric_t3", 1)],
         4: [("slopes", "hill_multi_t4", 1)],
+    },
+    # Chamber mazes: navigate a maze of connected chambers. Tiers map the maze
+    # generator's presets tiny -> small -> large -> exploration (monotonic in
+    # width/height/cell-size), so the size knob grows the maze smoothly.
+    "CHAMBER_MAZE": {
+        1: [("maze", "micro", 1)],
+        2: [("maze", "tiny", 1)],
+        3: [("maze", "small", 1)],
+        4: [("maze", "large", 1)],
     },
     # Out-of-scope buckets (empty until Layer 2+ generators exist).
     "SWITCH_PUZZLE": {},

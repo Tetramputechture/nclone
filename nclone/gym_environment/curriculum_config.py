@@ -1,9 +1,22 @@
 """
 Curriculum and category configuration for map generation.
 
-This module provides a centralized configuration system for curriculum learning
-and map generation categories. Category definitions are imported from
-generator_configs.py to maintain a single source of truth.
+This module owns the *runtime training* curriculum: the per-category sampling
+weights and validation helpers consumed by ``env_map_loader.EnvMapLoader`` to
+pick a difficulty category each episode.
+
+Category *names* and descriptions are imported from
+``map_generation.generator_configs.CATEGORIES`` (the single source of truth for
+the category set), so the two never drift apart on which categories exist.
+
+Note on ``default_weight`` vs ``generator_configs.CategoryConfig.ratio``:
+these are intentionally distinct and serve different purposes.
+  * ``ratio`` (generator_configs) sizes the *offline* static test-suite dataset
+    (how many maps per category) and is only read by
+    ``generate_test_suite_maps.py``.
+  * ``default_weight`` (here) is the *runtime* weighted-sampling distribution
+    over categories during training.
+A difference between the two for a given category is expected, not a bug.
 """
 
 from dataclasses import dataclass

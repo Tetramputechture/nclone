@@ -60,6 +60,7 @@ from ..surface_graph import (
     compute_two_phase_cost_to_go,
     _build_reverse_adjacency,
     find_goal_nodes,
+    find_mine_blocked_nodes,
     node_id_to_parts,
 )
 from ..edge_enumeration import enumerate_edges, populate_graph_edges
@@ -83,6 +84,51 @@ from .physics_route_spike import (
     _MINE_STATE_DEADLY,
     _MINE_KILL_PX,
 )
+
+
+_ENTITY_LOCKED_DOOR = 6
+
+
+def _extract_locked_doors(sim):
+    """Build DoorDescriptors from a native sim's type-6 snapshots.
+
+    The entity (x, y) is the SWITCH; door_x/door_y/door_orientation describe the
+    barrier (vertical iff orientation in {0, 4}, 24px long)."""
+    from ..door_dependency import DoorDescriptor
+
+    doors = []
+    for e in sim.get_state().entities:
+        if e.entity_type != _ENTITY_LOCKED_DOOR:
+            continue
+        dx, dy = float(e.door_x), float(e.door_y)
+        if int(e.door_orientation) in (0, 4):  # vertical barrier
+            x1, y1, x2, y2 = dx, dy - 12.0, dx, dy + 12.0
+        else:  # horizontal barrier
+            x1, y1, x2, y2 = dx - 12.0, dy, dx + 12.0, dy
+        doors.append(
+            DoorDescriptor(float(e.x), float(e.y), x1, y1, x2, y2)
+        )
+    return doors
+
+
+def _map_data_doors_open(map_data, open_indices=None):
+    """Return a copy of ``map_data`` with locked-door entities disabled (open).
+
+    Zeroing the type-6 byte makes the loader skip the door (no barrier segment is
+    created) without shifting any bytes, keeping the rest of the entity stream
+    aligned (mirrors the loader's 5-byte stride from index 1230). ``open_indices``
+    (entity-stream order of type-6 entities) selects WHICH doors to open; ``None``
+    opens all of them."""
+    md = list(map_data)
+    index = 1230
+    door_i = 0
+    while index + 4 < len(md):
+        if md[index] == _ENTITY_LOCKED_DOOR:
+            if open_indices is None or door_i in open_indices:
+                md[index] = 0  # unsupported type -> loader skips, door open
+            door_i += 1
+        index += 5
+    return md
 
 
 # ---------------------------------------------------------------------------
@@ -195,14 +241,51 @@ class LatticeAudit:
                  w_loop: float = DEFAULT_W_LOOP,
                  risk_cap: float = DEFAULT_RISK_CAP,
                  jump_tax: float = DEFAULT_JUMP_TAX,
-                 momentum_model: str = "legacy"):
+                 momentum_model: str = "legacy",
+                 cdj_launch_modes: Optional[str] = None,
+                 slope_jump_modes: Optional[str] = None,
+                 keep_mine_geometry: Optional[bool] = None):
         self.map_path = map_path
         self.use_native = use_native
+        # CDJ trick-edge launch families to enumerate.  "floor_jump" (default) =
+        # settle + floor-jump up the wall only; "floor_jump+carry" also enumerates
+        # generalized carry launches from reachable wall nodes that arrive rising
+        # (any upward velocity at the corner, not just a floor jump from rest).
+        # Env override NCLONE_CDJ_LAUNCH_MODES lets corpus/training jobs flip it.
+        self.cdj_launch_modes = str(
+            cdj_launch_modes
+            if cdj_launch_modes is not None
+            else os.environ.get("NCLONE_CDJ_LAUNCH_MODES", "floor_jump")
+        )
+        # Slope-jump trick edges (slope_jump_edges).  Empty (default) => OFF, so
+        # the enumerated edge set is byte-identical to before.  Any non-empty
+        # value (e.g. "on") enumerates slope-jump chains off ALL slope FLOOR nodes
+        # so the global d* can route the height/momentum the base single-hold jump
+        # cannot express.  Env override NCLONE_SLOPE_JUMP_MODES for corpus/training.
+        self.slope_jump_modes = str(
+            slope_jump_modes
+            if slope_jump_modes is not None
+            else os.environ.get("NCLONE_SLOPE_JUMP_MODES", "")
+        )
         # Velocity representation: "legacy" world-vx/vy bins (default) or
         # "tangential" along-surface speed + curved/slope node extraction
         # (see surface_extraction / edge_enumeration).  Tangential currently
         # runs the single-process Python enumeration (no native kernel yet).
         self.momentum_model = str(momentum_model)
+        # Mine handling: legacy DELETES surface geometry within a flat exclusion
+        # radius measured on the raw tile edge (over-broad: erases 1-tile trick
+        # launch corners that are 2D-survivable).  When ``keep_mine_geometry`` is
+        # on we instead KEEP the geometry and apply the precise 2D node mask
+        # (find_mine_blocked_nodes, ninja-center coords) for routing, so trick
+        # enumeration can launch from the survivable corner.  Default off =>
+        # byte-identical.  Env override NCLONE_KEEP_MINE_GEOMETRY.
+        if keep_mine_geometry is not None:
+            self.keep_mine_geometry = bool(keep_mine_geometry)
+        else:
+            self.keep_mine_geometry = (
+                os.environ.get("NCLONE_KEEP_MINE_GEOMETRY", "").strip().lower()
+                in ("1", "true", "yes", "on")
+            )
         # Soft, bounded completion>loops>speed reweighting of the d* edge costs
         # (see edge_risk.apply_risk_weighting).  w_risk=w_loop=jump_tax=0 =>
         # pure frames.  jump_tax is an additive per-jump cost that discourages
@@ -224,6 +307,9 @@ class LatticeAudit:
         self.switch, self.exit, mines = _goal_positions(self.sim)
         self.deadly = [(x, y) for (x, y, s) in mines if s == _MINE_STATE_DEADLY]
         self.all_mines = [(x, y) for (x, y, _s) in mines]
+        # Locked doors (type 6): switch trigger + toggleable barrier. Extracted
+        # from the native snapshot so the planner can resolve door dependencies.
+        self.locked_doors = _extract_locked_doors(self.sim)
 
     def _cache_path(self) -> str:
         import hashlib
@@ -240,7 +326,10 @@ class LatticeAudit:
                      f"|wr={self.w_risk}|wl={self.w_loop}|rc={self.risk_cap}"
                      f"|jt={self.jump_tax}|riskv=2"
                      f"|mm={self.momentum_model}|mmv=1"
-                     "|v14-wallchain".encode()
+                     f"|cdjlm={self.cdj_launch_modes}"
+                     f"|sjm={self.slope_jump_modes}"
+                     f"|kmg={int(self.keep_mine_geometry)}"
+                     "|v16-slopejump|dpv2-faithful".encode()
                    + sched)
         h = hashlib.md5(payload).hexdigest()[:12]
         # Persistent/shared cache location override so an offline corpus job and
@@ -268,13 +357,22 @@ class LatticeAudit:
         from ..cdj_edges import enumerate_cdj_edges
         sw_air: dict = {}
         ex_air: dict = {}
+        enable_floor = "floor_jump" in self.cdj_launch_modes
+        enable_carry = "carry" in self.cdj_launch_modes
         try:
-            tedges = enumerate_cdj_edges(graph, self.sim, self.switch, self.exit)
+            tedges = enumerate_cdj_edges(graph, self.sim, self.switch, self.exit,
+                                         enable_floor=enable_floor,
+                                         enable_carry=enable_carry,
+                                         fire_on_buffer_intersect=self.keep_mine_geometry,
+                                         chain_fixpoint=self.keep_mine_geometry)
         except Exception:
             return sw_air, ex_air
         if not tedges:
             return sw_air, ex_air
         graph.trick_tapes = dict(graph.trick_tapes or {})
+        # Parallel to trick_tapes: edge_index -> launch_mode ("floor_jump"|"carry").
+        # Absent => "floor_jump" (back-compat for caches built before carry).
+        graph.trick_modes = dict(getattr(graph, "trick_modes", None) or {})
         new_src, new_dst, new_w = [], [], []
         base = len(graph.edges_src)
         for te in tedges:
@@ -284,6 +382,67 @@ class LatticeAudit:
                 new_dst.append(int(te.dst_node))
                 new_w.append(float(te.cost_frames))
                 graph.trick_tapes[idx] = list(te.full_tape)
+                graph.trick_modes[idx] = str(te.launch_mode)
+            if te.switch_contact_frame is not None:
+                s = int(te.src_node)
+                sw_air[s] = min(sw_air.get(s, te.switch_contact_frame),
+                                int(te.switch_contact_frame))
+            if te.exit_contact_frame is not None:
+                s = int(te.src_node)
+                ex_air[s] = min(ex_air.get(s, te.exit_contact_frame),
+                                int(te.exit_contact_frame))
+        if new_src:
+            n = len(new_src)
+            graph.edges_src = np.concatenate(
+                [graph.edges_src, np.array(new_src, np.int32)])
+            graph.edges_dst = np.concatenate(
+                [graph.edges_dst, np.array(new_dst, np.int32)])
+            graph.edges_weight = np.concatenate(
+                [graph.edges_weight, np.array(new_w, np.float32)])
+            if graph.edges_jump_hold is not None:
+                graph.edges_jump_hold = np.concatenate(
+                    [graph.edges_jump_hold, np.zeros(n, np.int8)])
+            if graph.edges_h_input is not None:
+                graph.edges_h_input = np.concatenate(
+                    [graph.edges_h_input, np.zeros(n, np.int8)])
+            if graph.edges_h_after is not None:
+                graph.edges_h_after = np.concatenate(
+                    [graph.edges_h_after, np.zeros(n, np.int8)])
+        return sw_air, ex_air
+
+    def _append_slope_jump_trick_edges(self, graph):
+        """Enumerate slope-jump trick edges (off ALL slope types) and append them
+        to ``graph`` so the global d* can route the chained-slope height/momentum
+        the base single-hold jump cannot express.  Same mechanism as
+        ``_append_cdj_trick_edges``: landing edges become real ``src -> dst`` edges
+        (cost = tape frames, verbatim tape in ``graph.trick_tapes[idx]``, mode
+        ``"slope_jump"`` in ``graph.trick_modes[idx]``); mid-air goal contacts are
+        returned as ``(switch_air, exit_air)`` seeds.  OFF when ``slope_jump_modes``
+        is empty (default) => byte-identical pipeline."""
+        sw_air: dict = {}
+        ex_air: dict = {}
+        if not self.slope_jump_modes:
+            return sw_air, ex_air
+        from ..slope_jump_edges import enumerate_slope_jump_edges
+        try:
+            tedges = enumerate_slope_jump_edges(
+                graph, self.sim, self.switch, self.exit)
+        except Exception:
+            return sw_air, ex_air
+        if not tedges:
+            return sw_air, ex_air
+        graph.trick_tapes = dict(graph.trick_tapes or {})
+        graph.trick_modes = dict(getattr(graph, "trick_modes", None) or {})
+        new_src, new_dst, new_w = [], [], []
+        base = len(graph.edges_src)
+        for te in tedges:
+            if te.dst_node is not None and te.dst_node != te.src_node:
+                idx = base + len(new_src)
+                new_src.append(int(te.src_node))
+                new_dst.append(int(te.dst_node))
+                new_w.append(float(te.cost_frames))
+                graph.trick_tapes[idx] = list(te.full_tape)
+                graph.trick_modes[idx] = str(te.launch_mode)
             if te.switch_contact_frame is not None:
                 s = int(te.src_node)
                 sw_air[s] = min(sw_air.get(s, te.switch_contact_frame),
@@ -325,7 +484,8 @@ class LatticeAudit:
         phys = PhysicsStepWrapper(map_data=self.map_data)
         td = phys.tile_dic
         surface_points = extract_surfaces(td, mine_positions=self.all_mines,
-                                          momentum_model=self.momentum_model)
+                                          momentum_model=self.momentum_model,
+                                          keep_mine_geometry=self.keep_mine_geometry)
         graph = build_graph(surface_points)
         # Tag the graph so route_extraction reconstructs launch/landing velocity
         # in the matching frame (tangential => via per-point tangent).
@@ -347,8 +507,15 @@ class LatticeAudit:
             (self.exit[0], self.exit[1], NINJA_RADIUS + EXIT_DOOR_RADIUS),
         ]
         stats: dict = {}
+        # When locked doors are present, enumerate with them OPEN so the graph
+        # carries the full post-open edge set; closed doors are then represented
+        # by per-phase node masking in the door-dependency solver below.
+        enum_map_data = (
+            _map_data_doors_open(self.map_data)
+            if self.locked_doors else self.map_data
+        )
         edges, _wp = enumerate_edges(
-            graph, self.map_data,
+            graph, enum_map_data,
             num_workers=self.workers,
             collect_waypoints=False,
             mine_positions=mine_pos,
@@ -370,6 +537,14 @@ class LatticeAudit:
             sw_air[n] = min(sw_air.get(n, f), f)
         for n, f in tex.items():
             ex_air[n] = min(ex_air.get(n, f), f)
+        # Slope-jump trick edges (off ALL slope types) — off by default; when
+        # enabled, lets d* route chained-slope height/momentum.  Appended after
+        # CDJ so they carry their (high) execution risk too.
+        ssw, sex = self._append_slope_jump_trick_edges(graph)
+        for n, f in ssw.items():
+            sw_air[n] = min(sw_air.get(n, f), f)
+        for n, f in sex.items():
+            ex_air[n] = min(ex_air.get(n, f), f)
         # Completion>loops>speed: soft, bounded risk/loop reweight of the edge
         # costs BEFORE Dijkstra so d* descends toward safe, executable routes.
         # No-op when w_risk==w_loop==0 (pure frames).  Applied after trick edges
@@ -380,6 +555,15 @@ class LatticeAudit:
             jump_tax=self.jump_tax, goal_xy=self.exit,
         )
         rev_adj = _build_reverse_adjacency(graph)
+        # When mine geometry is kept (not deleted), normal routing must avoid the
+        # lethal nodes via the PRECISE 2D mask (ninja-center within kill radius of
+        # a DEADLY mine).  Trick enumeration above already ran on the full graph,
+        # so the survivable launch corners remain available; here we only block
+        # routing THROUGH lethal nodes.  None (default) preserves legacy behavior.
+        blocked_nodes = (
+            find_mine_blocked_nodes(graph, self.deadly)
+            if self.keep_mine_geometry else None
+        )
         # Jointly optimal switch-then-exit cost-to-go (d_comb) plus the phase-1
         # exit tree for post-switch route extraction.  Air-contact seeds make
         # air-reachable switches/exits work.
@@ -387,15 +571,46 @@ class LatticeAudit:
          d_ex, pred_ex, best_ex) = compute_two_phase_cost_to_go(
             graph, self.switch[0], self.switch[1],
             self.exit[0], self.exit[1], rev_adj=rev_adj,
-            switch_air_contacts=sw_air, exit_air_contacts=ex_air)
+            switch_air_contacts=sw_air, exit_air_contacts=ex_air,
+            blocked_nodes=blocked_nodes,
+            seed_unreachable_switch=self.keep_mine_geometry)
         info_air = {"n_switch_air": len(sw_air), "n_exit_air": len(ex_air)}
+
+        # Locked-door dependency resolution via FAITHFUL per-configuration edge
+        # enumeration: the solver asks for a graph with a specific door set open
+        # and we enumerate the physics edges for exactly that config (no masking,
+        # which leaks). Config graphs reuse the SAME surface_points as the main
+        # graph, so all d* arrays are node-id-compatible. When no locked doors,
+        # this is skipped and the two-phase d_comb/d_ex are authoritative.
+        door_plan = None
+        if self.locked_doors:
+            from ..door_dependency import solve_door_dependencies
+
+            def _enumerate_config_graph(open_set):
+                g = build_graph(surface_points)
+                g.momentum_model = self.momentum_model
+                e, _ = enumerate_edges(
+                    g, _map_data_doors_open(self.map_data, set(open_set)),
+                    num_workers=self.workers, collect_waypoints=False,
+                    mine_positions=mine_pos, goal_positions=goal_positions,
+                    use_native=self.use_native, momentum_model=self.momentum_model,
+                )
+                populate_graph_edges(g, e)
+                return g
+
+            door_plan = solve_door_dependencies(
+                _enumerate_config_graph, self.locked_doors,
+                self.spawn[0], self.spawn[1],
+                self.switch[0], self.switch[1],
+                self.exit[0], self.exit[1],
+            )
 
         pc = {
             "graph": graph, "edges": edges, "stats": stats,
             "d_comb": d_comb, "pred_comb": pred_comb, "best_comb": best_comb,
             "d_ex": d_ex, "pred_ex": pred_ex, "best_ex": best_ex,
             "enum_time": enum_time, "cached": False, "air": info_air,
-            "risk": risk_stats,
+            "risk": risk_stats, "door_plan": door_plan,
         }
         try:
             import pickle
@@ -770,6 +985,42 @@ class LatticeAudit:
                     if h:
                         adir = 1 if h > 0 else -1
                         break
+
+                # CARRY trick arc: the ninja arrives at the corner already rising
+                # against the wall (its src is a reachable wall node with upward
+                # velocity — off a prior jump / CDJ / momentum), so there is NO
+                # settle-to-rest.  The recorded carry tape was captured from one
+                # injected velocity bin, but the live arrival differs (coarse bin
+                # vs real physics), so we RE-DERIVE the core adaptively from the
+                # current state via ``execute_cdj`` (which rides the wall up to the
+                # corner and fires), then replay that tape through ``_track`` for
+                # standalone-tape bookkeeping.  We try carry first and fall back to
+                # the floor-jump launch if the arrival is not airborne+rising, so a
+                # carry arc still completes whatever delivery state it lands in.
+                if getattr(arc, "trick_mode", "floor_jump") == "carry":
+                    from ..cdj_primitive import execute_cdj
+                    snap = self.sim.save_ninja_state()
+
+                    def _derive(mode):
+                        self.sim.restore_ninja_state(snap)
+                        return execute_cdj(
+                            self.sim, approach_dir=adir, hold_frames=74,
+                            launch_mode=mode, bail_if_no_corner=True)
+
+                    st = self.sim.get_ninja_state_code()
+                    vy = self.sim.get_ninja_velocity()[1]
+                    first = "carry" if (st not in (0, 1, 2) and vy < -0.2) else "floor_jump"
+                    ex = _derive(first)
+                    if not (ex.corner_found and not ex.result.died):
+                        ex = _derive("floor_jump" if first == "carry" else "carry")
+                    self.sim.restore_ninja_state(snap)
+                    for (h, j) in ex.tape:
+                        if won or died or f >= max_frames:
+                            break
+                        _track(h, j)
+                    n_reached += 1
+                    continue
+
                 # Drive into the corner until grounded at/over the launch point.
                 cap = 80
                 while cap > 0 and not (won or died) and f < max_frames:

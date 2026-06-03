@@ -90,24 +90,6 @@ class EnvMapLoader:
         # Curriculum weights (category name -> relative weight)
         self._curriculum_weights = get_default_weights()
 
-    def load_initial_map(self):
-        """Load the first map based on configuration."""
-        if self.eval_mode:
-            self.current_map_name = f"eval_map_{uuid.uuid4()}"
-            self.random_map_type = self.rng.choice(["JUMP_REQUIRED", "MAZE"])
-            self.nplay_headless.load_random_map(self.random_map_type)
-        else:
-            # Load random map for training
-            self.current_map_name = f"random_map_{uuid.uuid4()}"
-            self.random_map_type = self.rng.choice(
-                [
-                    "SIMPLE_HORIZONTAL_NO_BACKTRACK",
-                    "JUMP_REQUIRED",
-                    "MAZE",
-                ]
-            )
-            self.nplay_headless.load_random_map(self.random_map_type)
-
     def load_map_data(
         self,
         map_data,
@@ -160,12 +142,18 @@ class EnvMapLoader:
         if self.eval_mode:
             # Load test suite maps sequentially
             if not self._test_suite_levels:
-                print(
-                    "Warning: No test suite levels loaded, falling back to random map"
+                logging.getLogger(__name__).warning(
+                    "No test suite levels loaded, falling back to a generated map"
                 )
-                self.random_map_type = "SIMPLE_HORIZONTAL_NO_BACKTRACK"
+                if self._generator_registry is None:
+                    self._generator_registry = GeneratorRegistry(self.rng)
+                self._train_seed_counter += 1
+                map_gen = self._generator_registry.get_map(
+                    "simplest", self._train_seed_counter
+                )
+                self.nplay_headless.load_map_from_map_data(map_gen.map_data())
+                self.random_map_type = None
                 self.current_map_name = f"eval_map_{uuid.uuid4()}"
-                self.nplay_headless.load_random_map(self.random_map_type)
                 return
 
             # Get the current level ID and load it

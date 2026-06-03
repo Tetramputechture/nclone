@@ -85,6 +85,10 @@ class ArcTarget:
     # (h_input, jump_input) tape the executor replays instead of micro-searching
     # a single jump. None for ordinary run/jump arcs.
     trick_tape: Optional[list] = None
+    # CDJ trick launch mode: "floor_jump" (default; settle + floor-jump up the
+    # wall) or "carry" (arrive rising against the wall, no settle — the executor
+    # delivers upward velocity and re-derives the core).  None tape => ignored.
+    trick_mode: str = "floor_jump"
     # Off-axis launch/landing velocity.  0.0 in the legacy model (floor=vx,
     # wall=vy stored in launch_vx); under the tangential model the node velocity
     # is along the surface tangent, so launch/landing carry BOTH world
@@ -183,10 +187,14 @@ def extract_route(
         # TRICK edge (e.g. CDJ): replay its tape verbatim. jump_hold_frames is set
         # to the tape length so merge_running_arcs never collapses it as a run.
         trick_tape = None
+        trick_mode = "floor_jump"
         tt = getattr(graph, "trick_tapes", None)
         if tt is not None and edge_i in tt:
             trick_tape = tt[edge_i]
             jh = len(trick_tape)
+            tm = getattr(graph, "trick_modes", None)
+            if tm is not None and edge_i in tm:
+                trick_mode = str(tm[edge_i])
 
         arc = ArcTarget(
             launch_segment_id=src_sp.segment_id,
@@ -204,6 +212,7 @@ def extract_route(
             arc_cost_frames=float(graph.edges_weight[edge_i]),
             cumulative_cost=float(d_star[next_node]),
             trick_tape=trick_tape,
+            trick_mode=trick_mode,
             launch_vy=launch_vy,
             landing_vy=landing_vy,
         )

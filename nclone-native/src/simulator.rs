@@ -441,6 +441,9 @@ impl Simulator {
         // Process entity logical collisions
         let mut switch_collected = false;
         let mut switch_parent_door = 0usize;
+        // Locked-door segments to open (deactivate) after the entity loop; entities
+        // cannot reach `self.segments`, so the flip happens here, simulator-side.
+        let mut doors_to_open: Vec<usize> = Vec::new();
 
         for &eidx in &entity_indices {
             if eidx >= self.entities.len() {
@@ -460,6 +463,23 @@ impl Simulator {
                             mine.state = 1;
                             mine.radius = crate::constants::TOGGLE_MINE_RADIUS_UNTOGGLED;
                             self.ninja.kill(0, 0.0, 0.0, 0.0, 0.0, Some("mine"));
+                        }
+                    }
+                }
+                Entity::Gold(gold) => {
+                    // Collected by a ninja not in the winning state (state 8);
+                    // mirrors entity_gold.py. No physical interaction.
+                    if gold.active && self.ninja.state != 8 {
+                        if crate::collision::intersection::overlap_circle_vs_circle(
+                            gold.xpos,
+                            gold.ypos,
+                            crate::constants::GOLD_RADIUS,
+                            self.ninja.xpos,
+                            self.ninja.ypos,
+                            crate::constants::NINJA_RADIUS,
+                        ) {
+                            gold.active = false;
+                            self.ninja.gold_collected += 1;
                         }
                     }
                 }
@@ -492,6 +512,23 @@ impl Simulator {
                             self.ninja.win();
                         }
                     }
+                }
+                Entity::LockedDoor(door) => {
+                    // Switch contact (radius 5) opens the door permanently.
+                    if door.logical_collision(&mut self.ninja) {
+                        self.ninja.doors_opened += 1;
+                        doors_to_open.push(door.door_segment_index);
+                    }
+                }
+            }
+        }
+
+        // Open (deactivate) any locked-door segments collected this frame.
+        for seg_idx in doors_to_open {
+            if let Some(seg) = self.segments.get_mut(seg_idx) {
+                match seg {
+                    crate::segments::Segment::Linear(s) => s.active = false,
+                    crate::segments::Segment::Circular(s) => s.active = false,
                 }
             }
         }
@@ -749,6 +786,26 @@ impl Simulator {
         // Reset all entities
         for entity in &mut self.entities {
             entity.reset_state();
+        }
+
+        // Restore locked-door segment solidity (entities can't reach self.segments).
+        // After reset_state every locked door is closed again, so re-activate its
+        // segment.
+        let door_segs: Vec<(usize, bool)> = self
+            .entities
+            .iter()
+            .filter_map(|e| match e {
+                Entity::LockedDoor(d) => Some((d.door_segment_index, d.closed)),
+                _ => None,
+            })
+            .collect();
+        for (seg_idx, closed) in door_segs {
+            if let Some(seg) = self.segments.get_mut(seg_idx) {
+                match seg {
+                    Segment::Linear(s) => s.active = closed,
+                    Segment::Circular(s) => s.active = closed,
+                }
+            }
         }
 
         // Rebuild entity grid

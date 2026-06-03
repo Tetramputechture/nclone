@@ -1,19 +1,27 @@
-"""5-channel entity overlay grid for Layer 1 observations (NPP-38, toggle-mines scope).
+"""8-channel entity overlay grid for Layer 1 observations (mines + gold + doors).
 
-Builds ``(5, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)`` float32 in [0, 1] from simulator
-state. The Layer 1 policy sees only the toggle-mines-world entities:
+Builds ``(8, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)`` float32 in [0, 1] from simulator
+state. The Layer 1 policy sees the toggle-mines-world entities plus gold and
+locked doors:
 
-    0. ``ninja_pos``            - bilinear splat at ninja tile-space position
-    1. ``switch_pos``           - 1.0 at exit-switch tile iff not yet collected
-    2. ``exit_pos``             - 1.0 at exit-door tile
-    3. ``mine_deadly_density``  - count of deadly mines per tile, /8 clamp to [0, 1]
-    4. ``mine_safe_density``    - count of safe/toggling mines per tile, /8 clamp
+    0. ``ninja_pos``             - bilinear splat at ninja tile-space position
+    1. ``switch_pos``            - 1.0 at exit-switch tile iff not yet collected
+    2. ``exit_pos``              - 1.0 at exit-door tile
+    3. ``mine_deadly_density``   - count of deadly mines per tile, /8 clamp to [0, 1]
+    4. ``mine_safe_density``     - count of safe/toggling mines per tile, /8 clamp
+    5. ``gold_density``          - count of *remaining* (uncollected) gold per tile,
+                                   /4 clamp to [0, 1]. Collected gold drops out of the
+                                   caller's position list, so this channel *is* the
+                                   remaining-gold state and is fixed-size at any N.
+    6. ``locked_door_density``   - count of *closed* locked-door barriers per tile,
+                                   /4 clamp. Opened doors drop out (live state).
+    7. ``locked_switch_density`` - count of *uncollected* locked-door switches per
+                                   tile, /4 clamp. N-invariant -> any door count.
 
 NPP-38 dropped the previous ``bounce_block``, ``thwump``, ``launch_pad_pos``
-channels because their source mechanics are explicitly out of scope for the
-toggle-mines Layer 1 chunk (see ``docs/LAYER1_MARKOV_AUDIT.md``). If any of
-those mechanics come back into scope, extend the overlay tensor rather than
-resurrecting these channels in place.
+channels because their source mechanics were out of scope for the toggle-mines
+Layer 1 chunk (see ``docs/LAYER1_MARKOV_AUDIT.md``). The gold channel was added
+for the gold-collection objective (see ``docs/GOLD_COLLECTION_HANDOFF.md``).
 """
 
 from __future__ import annotations
@@ -32,6 +40,10 @@ from ..constants.physics_constants import (
 # Toggle mine kill zone radius (matches STRATEGY_EPIC / mine overlay spec)
 MINE_KILL_ZONE_RADIUS_PX = 14.0
 MINE_DENSITY_NORMALIZER = 8.0
+
+# Gold density normalizer: a single gold in a tile reads as 0.25 (visible for the
+# scattered-gold levels), 4+ gold saturates (dense clusters). Tunable.
+GOLD_DENSITY_NORMALIZER = 4.0
 
 # Canonical toggle-mine state semantics (see `entities/entity_toggle_mine.py`).
 # state == 0 is the lethal "toggled" phase; any non-zero state is safe or
@@ -58,8 +70,12 @@ def classify_mines_by_state(
             safe.append(mine)
     return deadly, safe
 
-# NPP-38: channel count for entity_overlays after toggle-mines rescope.
-ENTITY_OVERLAY_CHANNELS = 5
+# Door density normalizer: a single closed door / uncollected switch in a tile
+# reads as 0.25; 4+ saturates. Matches the gold-channel scale.
+DOOR_DENSITY_NORMALIZER = 4.0
+
+# Channel count for entity_overlays (toggle-mines + gold + locked doors).
+ENTITY_OVERLAY_CHANNELS = 8
 
 # Named channel indices (kept stable for downstream extractors).
 ENTITY_OVERLAY_CH_NINJA = 0
@@ -67,6 +83,11 @@ ENTITY_OVERLAY_CH_SWITCH = 1
 ENTITY_OVERLAY_CH_EXIT = 2
 ENTITY_OVERLAY_CH_MINE_DEADLY = 3
 ENTITY_OVERLAY_CH_MINE_SAFE = 4
+ENTITY_OVERLAY_CH_GOLD = 5
+# Locked doors (type 6): permutation/N-invariant density channels (same binning
+# as gold), so the policy perceives any number of doors/switches at procgen scale.
+ENTITY_OVERLAY_CH_LOCKED_DOOR = 6      # closed-door barriers per tile
+ENTITY_OVERLAY_CH_LOCKED_SWITCH = 7    # uncollected locked-door switches per tile
 
 
 def _entity_pixel_xy(entity: Any) -> Tuple[float, float]:
@@ -76,6 +97,23 @@ def _entity_pixel_xy(entity: Any) -> Tuple[float, float]:
     if hasattr(entity, "x") and hasattr(entity, "y"):
         return (float(entity.x), float(entity.y))
     raise TypeError(f"Entity has no xpos/ypos or x/y: {type(entity)!r}")
+
+
+def _door_barrier_xy(door: Any) -> Tuple[float, float]:
+    """Return a locked door's BARRIER center (distinct from its switch).
+
+    The barrier geometry lives on the door's ``segment`` (endpoints
+    ``x1/y1/x2/y2``) on both the Python (GridSegmentLinear) and native
+    (_DoorSegmentProxy) backends, so the midpoint is backend-agnostic. Falls back
+    to the switch position (``xpos``/``ypos``) only if no segment is present.
+    """
+    seg = getattr(door, "segment", None)
+    if seg is not None and hasattr(seg, "x1"):
+        return (
+            (float(seg.x1) + float(seg.x2)) * 0.5,
+            (float(seg.y1) + float(seg.y2)) * 0.5,
+        )
+    return (float(getattr(door, "xpos", 0.0)), float(getattr(door, "ypos", 0.0)))
 
 
 def _px_to_inner_tile(px: float, py: float) -> Tuple[int, int]:
@@ -172,6 +210,48 @@ def _accumulate_mine_density(
     out[:] = np.minimum(counts.astype(np.float32) / MINE_DENSITY_NORMALIZER, 1.0)
 
 
+def _accumulate_gold_density(
+    gold_positions: Sequence[Tuple[float, float]],
+    out: np.ndarray,
+) -> None:
+    """Fill ``out`` with remaining-gold counts / ``GOLD_DENSITY_NORMALIZER``, clamped.
+
+    Gold is a point collectible; we bin each remaining gold center to its inner
+    tile (same mapping as ``_px_to_inner_tile``) and normalize the per-tile count.
+    """
+    out.fill(0.0)
+    if len(gold_positions) == 0:
+        return
+    pts = np.asarray(gold_positions, dtype=np.float64).reshape(-1, 2)
+    ts = float(TILE_PIXEL_SIZE)
+    tx = np.clip((pts[:, 0] / ts).astype(np.int64) - 1, 0, MAP_TILE_WIDTH - 1)
+    ty = np.clip((pts[:, 1] / ts).astype(np.int64) - 1, 0, MAP_TILE_HEIGHT - 1)
+    flat = tx * MAP_TILE_HEIGHT + ty
+    counts = np.bincount(flat, minlength=MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
+    counts = counts.reshape(MAP_TILE_WIDTH, MAP_TILE_HEIGHT)
+    out[:] = np.minimum(counts.astype(np.float32) / GOLD_DENSITY_NORMALIZER, 1.0)
+
+
+def _accumulate_density(
+    positions: Sequence[Tuple[float, float]],
+    out: np.ndarray,
+    normalizer: float,
+) -> None:
+    """Bin point ``positions`` to inner tiles and write the per-tile count /
+    ``normalizer`` (clamped to 1.0). Generalizes the gold-density binning."""
+    out.fill(0.0)
+    if len(positions) == 0:
+        return
+    pts = np.asarray(positions, dtype=np.float64).reshape(-1, 2)
+    ts = float(TILE_PIXEL_SIZE)
+    tx = np.clip((pts[:, 0] / ts).astype(np.int64) - 1, 0, MAP_TILE_WIDTH - 1)
+    ty = np.clip((pts[:, 1] / ts).astype(np.int64) - 1, 0, MAP_TILE_HEIGHT - 1)
+    flat = tx * MAP_TILE_HEIGHT + ty
+    counts = np.bincount(flat, minlength=MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
+    counts = counts.reshape(MAP_TILE_WIDTH, MAP_TILE_HEIGHT)
+    out[:] = np.minimum(counts.astype(np.float32) / float(normalizer), 1.0)
+
+
 def compute_entity_overlays(
     ninja_pos: Tuple[float, float],
     switch_pos: Optional[Tuple[float, float]],
@@ -179,11 +259,18 @@ def compute_entity_overlays(
     exit_pos: Optional[Tuple[float, float]],
     deadly_mines: Sequence[Any],
     safe_mines: Sequence[Any],
+    gold_positions: Sequence[Tuple[float, float]] = (),
+    locked_doors: Sequence[Any] = (),
 ) -> np.ndarray:
-    """Build the 5-channel entity overlay grid.
+    """Build the 8-channel entity overlay grid.
 
     Shape: ``(ENTITY_OVERLAY_CHANNELS, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)``,
-    float32 in [0, 1]. See module docstring for channel order.
+    float32 in [0, 1]. See module docstring for channel order. ``gold_positions``
+    is the list of *remaining* (uncollected) gold centers in pixel coords.
+    ``locked_doors`` is the list of locked-door entities; the BARRIER center comes
+    from each door's ``segment`` (channel 6) and the SWITCH from ``xpos/ypos``
+    (channel 7), gated by ``closed``/``active`` so each channel reflects the live
+    remaining state. Both are N-invariant density channels.
     """
     overlays = np.zeros(
         (ENTITY_OVERLAY_CHANNELS, MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.float32
@@ -219,5 +306,31 @@ def compute_entity_overlays(
 
     _accumulate_mine_density(deadly_mines, overlays[ENTITY_OVERLAY_CH_MINE_DEADLY])
     _accumulate_mine_density(safe_mines, overlays[ENTITY_OVERLAY_CH_MINE_SAFE])
+    _accumulate_gold_density(gold_positions, overlays[ENTITY_OVERLAY_CH_GOLD])
+
+    # Locked doors: closed barriers (channel 6) and uncollected switches
+    # (channel 7). Both N-invariant density channels — the policy perceives any
+    # number of doors. A door's barrier drops out once opened; its switch drops
+    # out once collected, so each channel is the live remaining state.
+    if locked_doors:
+        closed_barriers: List[Tuple[float, float]] = []
+        open_switches: List[Tuple[float, float]] = []
+        for d in locked_doors:
+            if bool(getattr(d, "closed", True)):
+                # Channel 6 marks the BARRIER (door segment), not the switch.
+                closed_barriers.append(_door_barrier_xy(d))
+            if bool(getattr(d, "active", True)):  # switch uncollected
+                # Channel 7 marks the SWITCH (entity xpos/ypos).
+                open_switches.append(
+                    (float(getattr(d, "xpos", 0.0)), float(getattr(d, "ypos", 0.0)))
+                )
+        _accumulate_density(
+            closed_barriers, overlays[ENTITY_OVERLAY_CH_LOCKED_DOOR],
+            DOOR_DENSITY_NORMALIZER,
+        )
+        _accumulate_density(
+            open_switches, overlays[ENTITY_OVERLAY_CH_LOCKED_SWITCH],
+            DOOR_DENSITY_NORMALIZER,
+        )
 
     return overlays

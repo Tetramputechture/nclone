@@ -76,6 +76,38 @@ class ReachabilityConfig:
     # them; default False saves several ms per step on reachability cache miss.
     compute_navigation_features: bool = False
 
+    # --- Lattice d* reward potential (substitute + geometric fallback) ------
+    # When True, the HWM distance signal (_cached_switch/exit_distance) is taken
+    # from the physics-aware lattice d* cost-to-go where the spawn has a finite
+    # plan, falling back to the geometric A* otherwise (robust to no-route
+    # levels).  Default False: opt-in per rollout so existing training dynamics
+    # are unchanged until validated.  See value_function/lattice_distance.py.
+    use_lattice_potential: bool = False
+    # When True (and use_lattice_potential is on), the substituted lattice
+    # distance includes an orienteering gold tail-cost (NN tour over only the
+    # WORTHWHILE remaining gold, i.e. gold whose detour costs < lattice_gold_value
+    # frames) so the PBRS potential guides toward gold worth collecting.  The tail
+    # depends on the remaining-gold SET, so it's a valid (policy-invariant)
+    # potential — see LatticeDistanceSource.gold_cost_to_go.  Default off (parity).
+    lattice_gold_potential: bool = False
+    lattice_gold_weight: float = 1.0
+    # Per-gold time-saving exchange rate (frames) used by the orienteering filter;
+    # mirror of reward_constants.GOLD_FRAME_VALUE. A gold enters the potential only
+    # if its detour costs fewer than this many frames.
+    lattice_gold_value: float = 120.0
+    # Planner objective knobs threaded to the per-level precompute
+    # (completion>loops>speed).  None => edge_risk module defaults.
+    lattice_w_risk: Optional[float] = None
+    lattice_w_loop: Optional[float] = None
+    lattice_risk_cap: Optional[float] = None
+    lattice_use_native: bool = True
+    # When True, expose a small physics-aware navigation hint to the POLICY obs
+    # under the ``lattice_nav`` key ([dx_hop, dy_hop, cost_to_go_norm, phase]).
+    # Default False keeps the strict Layer-1 contract; enabling it requires the
+    # feature extractor to accept the extra key.  Builds the lattice source even
+    # if use_lattice_potential is False.
+    expose_lattice_features: bool = False
+
     def __post_init__(self):
         """Validate reachability configuration."""
         if self.debug:
@@ -115,18 +147,16 @@ class EnvironmentConfig:
     graph: GraphConfig = field(default_factory=GraphConfig)
     reachability: ReachabilityConfig = field(default_factory=ReachabilityConfig)
 
-    # Reward system configuration (curriculum-aware)
+    # Reward system configuration
     reward_config: Optional[RewardConfig] = None
-
-    # Goal curriculum configuration (for intermediate goal curriculum learning)
-    goal_curriculum_config: Optional[Any] = None
 
     # Shared level cache (for zero-copy multi-worker training on same level)
     shared_level_cache: Optional[Any] = None
-    # Multi-stage shared caches (for goal curriculum with shared memory)
-    shared_level_caches_by_stage: Optional[Dict[int, Any]] = None
-    # Curriculum map cache (for pre-modified map_data per curriculum stage)
-    curriculum_map_cache: Optional[Any] = None
+
+    # Physics backend: "python" (NPlayHeadless) or "native" (Rust NativePlayHeadless).
+    # Native is a drop-in for the training hot path (much faster, no rendering); use
+    # "python" for human render / video capture. See base_environment for the gaps.
+    sim_backend: str = "python"
 
     # Frame skip
     frame_skip: int = 4

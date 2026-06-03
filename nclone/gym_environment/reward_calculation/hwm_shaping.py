@@ -38,6 +38,15 @@ class EpisodeRewardState:
     max_path_dist_switch: float = 1.0
     max_path_dist_exit: float = 1.0
 
+    # Locked-door sub-goal phase: number of NECESSARY locked doors opened so far.
+    # The pre-exit-switch distance (``dist_switch``) is the cost-to-go to the
+    # CURRENT sub-goal (next necessary door switch, or the exit switch once all
+    # are open). When this count increases, ``dist_switch`` jumps to the new,
+    # farther sub-goal, so the switch watermark must reset — otherwise the agent
+    # gets no progress credit on the new leg. 0 (and unchanging) when the level
+    # has no necessary locked doors, reproducing the original two-phase machine.
+    _subgoal_phase: int = 0
+
     def reset(
         self,
         initial_dist_switch: float,
@@ -56,6 +65,7 @@ class EpisodeRewardState:
         self.watermark_switch = initial_dist_switch
         self.watermark_exit = float("inf")
         self.current_phase = 0
+        self._subgoal_phase = 0
         self.max_path_dist_switch = max(max_dist_switch, 1.0)
         self.max_path_dist_exit = max(max_dist_exit, 1.0)
 
@@ -64,13 +74,18 @@ class EpisodeRewardState:
         dist_switch: float,
         dist_exit: float,
         switch_activated: bool,
+        subgoal_phase: int = 0,
     ) -> float:
         """Compute HWM shaping reward for one frame.
 
         Args:
-            dist_switch: Current A* path distance to switch (pixels)
+            dist_switch: Current A* path distance to the current pre-exit-switch
+                sub-goal (pixels). With locked doors this is the cost-to-go to the
+                next necessary door switch (or the exit switch once all are open).
             dist_exit: Current A* path distance to exit (pixels)
-            switch_activated: Whether the switch has been collected
+            switch_activated: Whether the exit switch has been collected
+            subgoal_phase: Number of necessary locked doors opened so far. A change
+                resets the switch watermark (the sub-goal moved). 0 when no doors.
 
         Returns:
             Normalized shaping reward in [0, 1]. Positive only when a new
@@ -78,9 +93,18 @@ class EpisodeRewardState:
         """
         new_phase = 1 if switch_activated else 0
 
+        # Exit-switch transition (phase 0 -> 1): reset the exit watermark.
         if new_phase != self.current_phase:
             self.current_phase = new_phase
+            self._subgoal_phase = subgoal_phase
             self.watermark_exit = dist_exit
+            return 0.0
+
+        # Locked-door sub-goal transition (still pre-exit-switch): the sub-goal
+        # moved to a farther switch, so reset the switch watermark.
+        if new_phase == 0 and subgoal_phase != self._subgoal_phase:
+            self._subgoal_phase = subgoal_phase
+            self.watermark_switch = dist_switch
             return 0.0
 
         if self.current_phase == 0:

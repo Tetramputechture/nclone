@@ -225,20 +225,23 @@ class Map:
         elif entity_type in (6, 8):  # Locked door or trap door
             if switch_x is None or switch_y is None:
                 raise ValueError(f"Door type {entity_type} requires switch coordinates")
-            # Add entity data and switch coordinates
-            # Use 9-byte format to match existing map files:
-            # [type, x, y, orientation, mode, 7, switch_x, switch_y, 0]
-            # Switch coordinates must be at index+6 and index+7 for entity loader
-            # Byte 5 is always 7 in real N++ maps (compatibility/format identifier)
-            # Note: No offset applied to door position (already done above as "pass")
-            # but switch still gets offset for proper positioning
+            # Real N++ maps encode a door as TWO full 5-byte slots (a 10-byte
+            # record), so the loader's fixed 5-byte stride stays aligned across
+            # multiple doors:
+            #   [type, x, y, orientation, mode]      (the door barrier slot)
+            #   [7,    switch_x, switch_y, 0, 0]     (the switch slot; type 7 is a
+            #                                         phantom the loader skips)
+            # The door loader reads its switch coords at index+6 and index+7.
+            # (A 9-byte record desyncs the stride for the 2nd+ door — verified
+            # against real maps in nclone/test_maps which use clean 5-byte slots.)
             self.entity_data.extend(entity_data)
             self.entity_data.extend(
                 [
                     7,  # format byte at index+5 (always 7 in real maps)
                     switch_units_x + SWITCH_OFFSET_UNITS,  # switch_x at index+6
                     switch_units_y + SWITCH_OFFSET_UNITS,  # switch_y at index+7
-                    0,  # padding byte at index+8
+                    0,  # padding at index+8
+                    0,  # padding at index+9 -> full 5-byte slot (keeps stride aligned)
                 ]
             )
         else:
@@ -487,7 +490,14 @@ class Map:
         map_data.extend([self.ninja_orientation, 0])
         map_data.extend(self.entity_data)  # Entity data starts at 1235
 
-        return map_data
+        # N++ map_data is a byte array (0-255 integers), exactly like the official
+        # map files. Coordinate conversion (GRID_SIZE_FACTOR=4.0) and some generators
+        # produce float entity coords; emitting them verbatim makes generated maps
+        # non-byte-faithful. The pure-Python sim tolerates floats (sub-pixel entity
+        # placement) but the Rust-native sim floors them, which silently shifts goal
+        # positions and diverges the A* reward between backends. Normalize to int so
+        # both backends decode identically and generated maps match the byte format.
+        return [int(v) for v in map_data]
 
     def reset(self):
         self.tile_data = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)

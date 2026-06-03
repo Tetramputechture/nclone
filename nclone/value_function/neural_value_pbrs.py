@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 from ..constants.physics_constants import (
     LEVEL_HEIGHT_PX,
@@ -31,6 +32,82 @@ MINE_FEATURE_DIM = NUM_NEAREST_MINES * 3
 TILE_GRID_W = 42
 TILE_GRID_H = 23
 TILE_SIZE_PX = 24
+
+# Self-contained frozen V-network (35D agent state + tile/goal CNN).
+# Previously imported from the offline_rl learner module; inlined here so the
+# value-function PBRS path has no dependency on RL-training code (that lives in
+# the npp-rl repo). The architecture matches the V-net checkpoints exported by
+# the legacy offline IQL: agent MLP (11D ninja + 24D nearest-8-mines) + tile CNN.
+_NUM_TILE_TYPES = 38
+_TILE_EMBED_DIM = 16
+_LEVEL_REPR_DIM = 128
+
+
+class _TileCNN(nn.Module):
+    """Tile-grid + switch/exit overlay CNN -> level representation vector."""
+
+    def __init__(self, embed_dim: int = _TILE_EMBED_DIM, out_dim: int = _LEVEL_REPR_DIM):
+        super().__init__()
+        self.tile_embedding = nn.Embedding(_NUM_TILE_TYPES, embed_dim)
+        self.conv = nn.Sequential(
+            nn.Conv2d(embed_dim + 2, 32, 3, padding=1),
+            nn.LayerNorm([32, TILE_GRID_W, TILE_GRID_H]), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.LayerNorm([64, TILE_GRID_W, TILE_GRID_H]), nn.ReLU(),
+            nn.Conv2d(64, out_dim, 3, padding=1),
+            nn.LayerNorm([out_dim, TILE_GRID_W, TILE_GRID_H]), nn.ReLU(),
+        )
+
+    def forward(self, tile_grid, switch_overlay, exit_overlay):
+        emb = self.tile_embedding(tile_grid).permute(0, 3, 1, 2)
+        x = torch.cat([emb, switch_overlay.unsqueeze(1), exit_overlay.unsqueeze(1)], dim=1)
+        return self.conv(x).mean(dim=(2, 3))
+
+
+class _AgentEnc(nn.Module):
+    """Agent-state MLP: forward(state(11), mine_features(24)) -> 256."""
+
+    def __init__(self):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(AGENT_STATE_DIM + MINE_FEATURE_DIM, 256),
+            nn.LayerNorm(256), nn.ReLU(),
+            nn.Linear(256, 256), nn.LayerNorm(256), nn.ReLU(),
+            nn.Linear(256, 256),
+        )
+
+    def forward(self, state, mine_features):
+        return self.mlp(torch.cat([state, mine_features], dim=-1))
+
+
+class _FrozenVNet(nn.Module):
+    """Minimal V(s) network matching the legacy exported IQL V-net checkpoint.
+
+    Exposes the same interface ``NeuralValuePBRS`` consumed from the old
+    ``IQLNetworks``: ``agent_encoder(state, mine)``, ``tile_encoder(tile, switch,
+    exit)``, ``combiner``, ``v_head``, ``use_tile_encoder``, and ``value(batch)``.
+    """
+
+    def __init__(self, hidden_dim: int = 512, use_tile_encoder: bool = True):
+        super().__init__()
+        self.use_tile_encoder = use_tile_encoder
+        self.agent_encoder = _AgentEnc()
+        self.tile_encoder = _TileCNN() if use_tile_encoder else None
+        combiner_in = 256 + (_LEVEL_REPR_DIM if use_tile_encoder else 0)
+        self.combiner = nn.Sequential(
+            nn.Linear(combiner_in, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
+        )
+        self.v_head = nn.Linear(hidden_dim, 1)
+
+    def value(self, batch):
+        agent = self.agent_encoder(batch["state"], batch["mine_features"])
+        if self.use_tile_encoder and self.tile_encoder is not None and "tile_grid" in batch:
+            lvl = self.tile_encoder(
+                batch["tile_grid"], batch["switch_overlay"], batch["exit_overlay"]
+            )
+            agent = torch.cat([agent, lvl], dim=-1)
+        return self.v_head(self.combiner(agent))
 
 
 class NeuralValuePBRS:
@@ -64,10 +141,8 @@ class NeuralValuePBRS:
         data = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         config = data["config"]
 
-        # Reconstruct V-network architecture
-        from ..offline_rl.networks.value_networks import IQLNetworks
-
-        self._networks = IQLNetworks(
+        # Reconstruct V-network architecture (self-contained; see _FrozenVNet).
+        self._networks = _FrozenVNet(
             hidden_dim=config["hidden_dim"],
             use_tile_encoder=config.get("use_tile_encoder", True),
         ).to(self.device)

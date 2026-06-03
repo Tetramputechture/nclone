@@ -98,11 +98,20 @@ impl PySimulator {
                     e.xpos = x;
                     e.ypos = y;
                 }
+                entities::Entity::Gold(e) => {
+                    e.xpos = x;
+                    e.ypos = y;
+                }
                 entities::Entity::ExitSwitch(e) => {
                     e.xpos = x;
                     e.ypos = y;
                 }
                 entities::Entity::ExitDoor(e) => {
+                    e.xpos = x;
+                    e.ypos = y;
+                }
+                entities::Entity::LockedDoor(e) => {
+                    // Position is the switch; the door barrier segment is static.
                     e.xpos = x;
                     e.ypos = y;
                 }
@@ -120,6 +129,11 @@ impl PySimulator {
     /// Check if ninja has won.
     fn has_won(&self) -> bool {
         self.inner.ninja.has_won()
+    }
+
+    /// Number of gold pieces collected so far (fast getter for gold-aware search).
+    fn get_ninja_gold_collected(&self) -> u32 {
+        self.inner.ninja.gold_collected
     }
 
     /// Check if ninja has died.
@@ -575,6 +589,11 @@ fn register_constants_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     // Entity constants
     m.add("EXIT_SWITCH_RADIUS", constants::EXIT_SWITCH_RADIUS)?;
     m.add("EXIT_DOOR_RADIUS", constants::EXIT_DOOR_RADIUS)?;
+    m.add("LOCKED_DOOR_RADIUS", constants::LOCKED_DOOR_RADIUS)?;
+    m.add(
+        "LOCKED_DOOR_SWITCH_RADIUS",
+        constants::LOCKED_DOOR_SWITCH_RADIUS,
+    )?;
     m.add(
         "TOGGLE_MINE_RADIUS_TOGGLED",
         constants::TOGGLE_MINE_RADIUS_TOGGLED,

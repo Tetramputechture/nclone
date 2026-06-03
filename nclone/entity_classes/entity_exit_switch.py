@@ -79,42 +79,6 @@ class EntityExitSwitch(Entity):
         if overlap_circle_vs_circle(
             self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
         ):
-            # DIAGNOSTIC: Log switch activation with full details
-            frame = getattr(self.sim, "frame", -1)
-            # print(
-            #     f"\n{'*' * 60}\n"
-            #     f"[SWITCH_COLLISION] Frame {frame}\n"
-            #     f"  Switch pos: ({self.xpos:.1f}, {self.ypos:.1f})\n"
-            #     f"  Ninja pos: ({ninja.xpos:.1f}, {ninja.ypos:.1f})\n"
-            #     f"  Distance: {distance:.1f}px (threshold: {collision_threshold:.1f}px)\n"
-            #     f"  Switch was active: {self.active}\n"
-            #     f"{'*' * 60}\n"
-            # )
-
-            # NOTE: At stage 0, switch IS supposed to be at spawn (distance=0)
-            # So frame 1 activation at stage 0 is CORRECT behavior
-            # Only warn if we expect the switch to be far from spawn
-            if frame <= 1:
-                # Get curriculum stage to check if this is expected
-                curriculum_stage = None
-                if hasattr(self.sim, "gym_env") and self.sim.gym_env:
-                    env = self.sim.gym_env
-                    if (
-                        hasattr(env, "goal_curriculum_manager")
-                        and env.goal_curriculum_manager
-                    ):
-                        curriculum_stage = (
-                            env.goal_curriculum_manager.state.unified_stage
-                        )
-
-                if curriculum_stage is not None and curriculum_stage > 0:
-                    print(
-                        f"[CURRICULUM_BUG] Switch collected on FRAME {frame} at STAGE {curriculum_stage}!\n"
-                        f"  At stage > 0, switch should be away from spawn.\n"
-                        f"  Check that _pending_curriculum_stage was applied before reset.\n"
-                        f"  Or check _episode_start_curriculum_stage tracking."
-                    )
-
             self.active = False
             # Add door to the entity grid so the ninja can touch it
             self.sim.grid_entity[self.parent.cell].append(self.parent)

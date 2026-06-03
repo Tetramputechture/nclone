@@ -10,10 +10,12 @@ BASE_TIME_PER_NODE = (
 TIME_PER_MINE = (
     75.0  # frames per reachable mine (increased for toggle mine state complexity)
 )
-TRUNCATION_MULTIPLIER = 25  # generous multiplier for learning (was 20, increased to make truncation a safety net)
-MIN_TRUNCATION_FRAMES = (
-    1200  # minimum for tiny levels (was 600, increased to 20 seconds)
-)
+# Tightened 2026-06: ~66% of episodes were timeouts at ~6.7k frames, so failed
+# episodes burned a lot of wall-clock wandering. A typical small-level solve is
+# only ~200-800 frames, so we still leave generous headroom while cycling failed
+# episodes ~2.5x faster (multiplier 25->10, min 1200->600).
+TRUNCATION_MULTIPLIER = 10  # was 25
+MIN_TRUNCATION_FRAMES = 600  # was 1200 (~10s floor for tiny levels)
 
 
 def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -> int:

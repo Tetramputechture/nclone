@@ -55,8 +55,13 @@ def create_vectorized_training_envs(
     num_envs: int = 4,
     env_kwargs: Optional[Dict[str, Any]] = None,
     debug: bool = False,
+    sim_backend: str = "python",
 ) -> list:
-    """Create multiple training environment factories for vectorization."""
+    """Create multiple training environment factories for vectorization.
+
+    ``sim_backend`` selects the physics backend per env ("python" or "native");
+    native is the faster Rust drop-in for headless training.
+    """
     env_factories = []
 
     for i in range(num_envs):
@@ -71,6 +76,7 @@ def create_vectorized_training_envs(
                 cfg = EnvironmentConfig.for_training()
                 cfg.graph.debug = debug
                 cfg.seed = seed
+                cfg.sim_backend = sim_backend
                 return create_training_env(config=cfg)
 
             return make_env

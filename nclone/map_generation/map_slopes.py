@@ -59,12 +59,25 @@ class MapSlopes(Map):
     def _find_walkable_y(
         self, x: int, floor_y: int, ceiling_y: int
     ) -> int:
-        """First empty tile in column x between ceiling and floor row."""
+        """Standing row in column ``x``: the empty tile directly above the
+        highest solid tile (floor or slope surface).
+
+        BUGFIX: the previous implementation scanned top-down from ``ceiling_y``
+        and returned the first empty tile — which is the chamber top, right
+        under the ceiling. Static entities (exit switch / exit door) therefore
+        spawned on the ceiling, unreachable. We now walk UP from the floor
+        through the solid slope/floor substrate and return the first empty cell,
+        which rests on the ground/slope surface.
+        """
         x = max(0, min(x, MAP_TILE_WIDTH - 1))
-        for y in range(ceiling_y, min(floor_y + 1, MAP_TILE_HEIGHT)):
-            if self.get_tile(x, y) == 0:
-                return y
-        return floor_y
+        bottom = min(floor_y, MAP_TILE_HEIGHT - 1)
+        y = bottom
+        # Decrement through solid (floor + slope) tiles; stop at the first empty
+        # cell, i.e. the standing position on top of the surface. ``ceiling_y``
+        # (the carved chamber top) is the clamp / fallback and is itself empty.
+        while y > ceiling_y and self.get_tile(x, y) != 0:
+            y -= 1
+        return y
 
     def _fill_floor_substrate(
         self, x_lo: int, x_hi: int, floor_y: int, depth: int = 2

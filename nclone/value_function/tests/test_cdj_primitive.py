@@ -23,6 +23,7 @@ from nclone.nplay_headless import NPlayHeadless
 from nclone.value_function.cdj_primitive import (
     DI_REQUIRED_CDJ,
     CDJParams,
+    cdj_approach_inputs,
     cdj_core_inputs,
     cdj_input_sequence,
     execute_cdj,
@@ -173,6 +174,44 @@ class TestCDJPrimitive(unittest.TestCase):
         ex = execute_cdj(nph, approach_dir=1, hold_frames=74, post_inputs=traverse)
         self.assertTrue(ex.result.won, "adaptive CDJ + traverse should win")
 
+    # 5. Generalized "carry" launch mode ------------------------------------
+    def test_carry_mode_fires_from_rising_arrival(self):
+        """``launch_mode="carry"`` completes a CDJ from a ninja that arrives at the
+        wall already airborne + rising, WITHOUT its own settle + launching floor
+        jump (the generalization: any upward velocity at the corner, not just a
+        floor jump from rest).
+
+        We produce the rising wall-contact arrival with the di-required approach
+        (floor jump up the wall, 1 climb frame), then hand off to carry mode — it
+        must auto-detect the corner and stack the same ~200px climb.
+        """
+        nph = _new_env(self.map_data)
+        # approach(8) + launching floor jump(1) + 1 climb frame => airborne, rising,
+        # wall-contacting (state 4) at the wall, just short of the corner.
+        for h, j in cdj_approach_inputs(approach_dir=1, approach_frames=8, climb_frames=1):
+            nph.tick(h, j)
+        n = nph.sim.ninja
+        self.assertTrue(n.airborn and n.walled and n.yspeed < 0,
+                        "test setup: ninja should arrive airborne, walled, rising")
+
+        ex = execute_cdj(nph, approach_dir=1, hold_frames=74, launch_mode="carry")
+        self.assertTrue(ex.corner_found, "carry mode did not detect the corner")
+        self.assertFalse(ex.result.died)
+        self.assertGreaterEqual(
+            ex.result.climb_px, 200.0, f"carry CDJ only climbed {ex.result.climb_px:.1f}px"
+        )
+        # Carry skips settle + launch jump: its first input is the trick core, not
+        # a floor-jump approach (the tape is climb + core only).
+        self.assertNotIn((1, 1), ex.tape[:1], "carry tape should not begin with a jump")
+
+    def test_carry_mode_requires_airborne_arrival(self):
+        """Carry mode abandons (corner_found=False) a grounded delivery so a
+        ninja standing still cannot spuriously fire detection on tick 0."""
+        nph = _new_env(self.map_data)  # spawn: grounded at rest
+        ex = execute_cdj(nph, approach_dir=1, hold_frames=74, launch_mode="carry")
+        self.assertFalse(ex.corner_found, "carry must not fire from a grounded arrival")
+        self.assertEqual(ex.tape, [], "carry from grounded should consume no ticks")
+
 
 _DI_MAP = _REPO_ROOT / "nclone/test_maps/di-required"
 
@@ -260,6 +299,83 @@ class TestCDJChain(unittest.TestCase):
             if sim.has_died():
                 break
         self.assertTrue(won, "emitted chain tape did not replay to a win")
+
+    def test_mirror_chain_composes_two_left_cdjs_and_wins(self):
+        """The left-wall mirror of the chain composes two LEFT-corner CDJs and
+        wins — CDJ enumeration / execution handle both corner orientations."""
+        from nclone.value_function.tools.cdj_chain_map import (
+            build_cdj_chain_map_mirrored)
+        from nclone.value_function.tools.lattice_audit import LatticeAudit
+        import nclone_native as N
+
+        md = build_cdj_chain_map_mirrored()
+        audit = LatticeAudit(map_data=md, name="cdj-chain-mirror")
+        pc = audit.precompute(use_cache=True)
+        phase0, phase1, _info = audit.build_route(pc)
+        route = phase0 + phase1
+        n_trick = sum(1 for a in route if getattr(a, "trick_tape", None))
+        self.assertEqual(n_trick, 2, f"expected 2 mirrored CDJ arcs, got {n_trick}")
+        # Left corners: the trick arcs drive LEFT into the wall (h_input < 0).
+        left_tricks = [a for a in route if getattr(a, "trick_tape", None)
+                       and any(h < 0 for (h, _j) in a.trick_tape)]
+        self.assertEqual(len(left_tricks), 2, "mirrored CDJs should drive left")
+
+        res = audit.plan_tape(use_cache=True)
+        self.assertTrue(res.get("won"), "mirror chain executor did not win")
+        sim = N.Simulator.load(md)
+        won = False
+        for h, j in res["tape"]:
+            sim.tick(h, j)
+            if sim.has_won():
+                won = True
+                break
+            if sim.has_died():
+                break
+        self.assertTrue(won, "emitted mirror chain tape did not replay to a win")
+
+
+class TestCDJCarry(unittest.TestCase):
+    """The generalized "carry" CDJ launch: a CDJ fired from a node where the
+    ninja arrives RISING against the wall (any upward velocity), with no settle +
+    floor jump.  ``cdj_launch_modes="carry"`` enumerates only carry trick edges,
+    so a win proves the lattice routed THROUGH a carry edge and the executor
+    delivered the rising approach + re-derived the trick.  Checked for both
+    corner orientations (right and left)."""
+
+    def _check(self, mirror: bool):
+        from nclone.value_function.tools.cdj_chain_map import build_cdj_single_map
+        from nclone.value_function.tools.lattice_audit import LatticeAudit
+        import nclone_native as N
+
+        md = build_cdj_single_map(mirror=mirror)
+        audit = LatticeAudit(map_data=md, name="cdj-single",
+                             cdj_launch_modes="carry")
+        pc = audit.precompute(use_cache=True)
+        phase0, phase1, _info = audit.build_route(pc)
+        route = phase0 + phase1
+        carry_arcs = [a for a in route if getattr(a, "trick_tape", None)
+                      and getattr(a, "trick_mode", "floor_jump") == "carry"]
+        self.assertGreaterEqual(len(carry_arcs), 1,
+                                "route should use a carry CDJ trick edge")
+
+        res = audit.plan_tape(use_cache=True)
+        self.assertTrue(res.get("won"), "carry executor did not win")
+        sim = N.Simulator.load(md)
+        won = False
+        for h, j in res["tape"]:
+            sim.tick(h, j)
+            if sim.has_won():
+                won = True
+                break
+            if sim.has_died():
+                break
+        self.assertTrue(won, "emitted carry tape did not replay to a win")
+
+    def test_carry_cdj_wins_right_corner(self):
+        self._check(mirror=False)
+
+    def test_carry_cdj_wins_left_corner(self):
+        self._check(mirror=True)
 
 
 if __name__ == "__main__":

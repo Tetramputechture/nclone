@@ -4,7 +4,6 @@ import math
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from .nsim import Simulator
-from .map_generation.map_generator import generate_map
 from .sim_config import SimConfig
 import numpy as np
 from .constants.physics_constants import (
@@ -235,16 +234,6 @@ class NPlayHeadless:
             map_data = [int(b) for b in map_file.read()]
         self.load_map_from_map_data(map_data)
 
-    def load_random_map(
-        self, map_type: Optional[str] = "SIMPLE_HORIZONTAL_NO_BACKTRACK"
-    ):
-        """
-        Generate a random map and load it into the simulator.
-        """
-        # Get the map data
-        map_data = generate_map(level_type=map_type, seed=self.seed).map_data()
-        self.load_map_from_map_data(map_data)
-
     def load_random_official_map(self):
         """
         Load a random official map from the maps/official folder.
@@ -297,11 +286,8 @@ class NPlayHeadless:
         training scenarios.
 
         CRITICAL: Must be called ONLY when the map has not changed since the last
-        reset. For new maps, use reset() instead.
-
-        Curriculum compatibility: This method resets entities to their ORIGINAL positions.
-        The environment must call goal_curriculum_manager.apply_to_simulator() after
-        fast_reset() to move entities to curriculum positions.
+        reset. For new maps, use reset() instead. Entities are reset to their
+        ORIGINAL positions.
         """
         self.sim.fast_reset()
 

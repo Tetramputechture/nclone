@@ -24,6 +24,7 @@ class MapHorizontalCorridor(Map):
     FIXED_HEIGHT = None
     ADD_MINES = False
     MAX_MINES = -1
+    ALLOW_LOCKED_DOORS = True
 
     def _calculate_pixel_distance(
         self, x1: float, y1: float, x2: float, y2: float
@@ -488,7 +489,7 @@ class MapHorizontalCorridor(Map):
         ninja_y = start_y + height - 1
 
         # Check if we should add a locked door
-        add_locked_door = height == 1 and width >= 4
+        add_locked_door = self.ALLOW_LOCKED_DOORS and height == 1 and width >= 4
 
         # Generate positions with half-tile increments (0.5)
         num_positions = (width - 1) * 4

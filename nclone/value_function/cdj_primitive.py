@@ -179,6 +179,9 @@ class _PyNsimView:
     def wall_buffer(self):
         return int(self._n.wall_buffer)
 
+    def floor_buffer(self):
+        return int(self._n.floor_buffer)
+
     def yspeed(self):
         return float(self._n.yspeed)
 
@@ -212,6 +215,9 @@ class _NativeView:
 
     def wall_buffer(self):
         return int(self._s.get_ninja_wall_buffer())
+
+    def floor_buffer(self):
+        return int(self._s.get_ninja_floor_buffer())
 
     def yspeed(self):
         return float(self._s.get_ninja_velocity()[1])
@@ -299,6 +305,8 @@ def execute_cdj(
     max_climb: int = 32,
     post_inputs: Optional[Sequence[Input]] = None,
     bail_if_no_corner: bool = False,
+    launch_mode: str = "floor_jump",
+    fire_on_buffer_intersect: bool = False,
 ) -> CDJExecution:
     """Adaptive closed-loop Corner Double Jump, driven by per-frame sim feedback.
 
@@ -331,9 +339,25 @@ def execute_cdj(
     core.  Enumeration discards non-corner launches anyway, so this is a large
     speedup when sweeping many candidate floor nodes (no behavioural change to
     the kept, corner-found results).
+
+    ``launch_mode`` generalizes where the upward velocity that carries the ninja
+    up the wall to the corner comes from:
+
+      * ``"floor_jump"`` (default) — the di-required path above: settle on the
+        floor, then floor-jump up the wall.  A floor jump from rest is only ONE
+        way to reach the corner rising.
+      * ``"carry"`` — skip the settle + launch floor jump and run the corner
+        detection / core directly from the ninja's CURRENT state, which is
+        assumed to be airborne, rising and wall-contacting (delivered by the
+        caller — e.g. injected into a wall node with upward velocity, or arriving
+        off a prior wall jump / CDJ).  If the ninja is not airborne on entry the
+        attempt is abandoned (``corner_found=False``) so a grounded delivery
+        cannot spuriously fire detection on tick 0.  The default path is
+        byte-identical to before (``became_airborne`` still starts ``False``).
     """
     h = int(approach_dir)
     v = _as_sim_view(sim)
+    carry = (launch_mode == "carry")
     tape: List[Input] = []
     start_y = float(v.pos()[1])
     peak_y = start_y
@@ -357,26 +381,36 @@ def execute_cdj(
         res = CDJResult(won, died, peak_y, start_y - peak_y, len(tape), landing)
         return CDJExecution(tape, res, corner_found, climb_frames)
 
-    # 1. approach / settle onto the launch floor. Step-first so the spawn-settle
-    #    artifact (ninja reports grounded but sits ~2px above the surface) does
-    #    not abort the settle at frame 0; stop once grounded with ~zero vy.
-    if approach_frames is not None:
-        for _ in range(int(approach_frames)):
-            if step(h, 0):
-                return _finish(False, 0)
+    if not carry:
+        # 1. approach / settle onto the launch floor. Step-first so the spawn-settle
+        #    artifact (ninja reports grounded but sits ~2px above the surface) does
+        #    not abort the settle at frame 0; stop once grounded with ~zero vy.
+        if approach_frames is not None:
+            for _ in range(int(approach_frames)):
+                if step(h, 0):
+                    return _finish(False, 0)
+        else:
+            for _ in range(max_approach):
+                if step(h, 0):
+                    return _finish(False, 0)
+                if (not v.airborn()) and abs(v.yspeed()) < 0.2:
+                    break
+
+        # 2. launch (floor jump up the wall)
+        if step(h, 1):
+            return _finish(False, 0)
     else:
-        for _ in range(max_approach):
-            if step(h, 0):
-                return _finish(False, 0)
-            if (not v.airborn()) and abs(v.yspeed()) < 0.2:
-                break
+        # carry: start from the ninja's current rising wall-contact state — no
+        # settle, no launching floor jump.  Require an airborne arrival so a
+        # grounded delivery can't make detection fire on the first frame.
+        if not v.airborn():
+            return _finish(False, 0)
 
-    # 2. launch (floor jump up the wall)
-    if step(h, 1):
-        return _finish(False, 0)
-
-    # 3. climb — adaptive corner detection
-    became_airborne = False
+    # 3. climb — adaptive corner detection.  In carry mode the ninja arrives
+    #    mid-air rising, so seed ``became_airborne`` true; the event logic
+    #    (re-grounded after airborne + wall contact => corner) is otherwise
+    #    identical, and ``carry`` is False on the default path (byte-identical).
+    became_airborne = carry
     saw_wall = False
     climb_frames = 0
     corner_found = False
@@ -384,6 +418,18 @@ def execute_cdj(
         became_airborne = became_airborne or v.airborn()
         saw_wall = saw_wall or v.walled() or (v.wall_buffer() >= 0)
         if became_airborne and saw_wall and not v.airborn():
+            corner_found = True
+            break
+        # SHORT-WALL / SHORT-FLOOR clincher: off a 1-tile block the ninja never
+        # "re-grounds" after the wall — instead it grounds on the block TOP
+        # (arming floor_buffer), slides off the edge into the side wall (arming
+        # wall_buffer) and both buffers go live together for a few frames.  That
+        # buffer INTERSECTION is the corner; firing the core there stacks the
+        # wall+floor jumps the same way (validated: ~116 px off a 24 px block vs
+        # ~29 px for the re-ground-only detector).  Gated so the canonical
+        # di-required path (which hits both conditions on the same frame) stays
+        # byte-identical when off.
+        if fire_on_buffer_intersect and v.wall_buffer() >= 0 and v.floor_buffer() >= 0:
             corner_found = True
             break
         if step(h, 0):

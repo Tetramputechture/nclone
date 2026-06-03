@@ -47,6 +47,12 @@ from ...constants.physics_constants import MAX_HOR_SPEED, NINJA_RADIUS
 
 # action id -> (hor_input, jump_input). Matches the 6-action env space.
 ACT = {0: (0, 0), 1: (-1, 0), 2: (1, 0), 3: (0, 1), 4: (-1, 1), 5: (1, 1)}
+# Composite CLINCHER actions (ids >= 100): run the adaptive Corner Double Jump
+# from the ninja's CURRENT state (frame-precise approach + buffer-intersection
+# fire + held stacked jump).  Applied to the live state, the clincher impulse
+# STACKS on the carried velocity, so a chain of these CONSERVES vertical momentum
+# up the blocks — the thing a fixed macro-hold cannot express.  id -> approach_dir.
+CLINCH_ACT = {100: -1, 101: 1}
 _ENTITY_SWITCH = 4
 _ENTITY_DOOR = 3
 _MINE_TYPES = (1, 21)
@@ -86,7 +92,9 @@ def _switch_done(sim) -> bool:
 class PhysicsRouteSpike:
     def __init__(self, map_path: str, macro: int = 6, cell_px: float = 12.0,
                  vel_bin: float = 0.25, max_expansions: int = 40000,
-                 max_frames: int = 1500, h_weight: float = 1.25):
+                 max_frames: int = 1500, h_weight: float = 1.25,
+                 enriched_key: bool = False, clinch_actions: bool = False,
+                 clinch_holds: Tuple[int, ...] = (74,)):
         self.map_path = map_path
         self.map_data = _load_map_data(map_path)
         self.sim = Nnative.Simulator.load(self.map_data)
@@ -94,33 +102,139 @@ class PhysicsRouteSpike:
         self.cell_px = cell_px
         self.vel_bin = vel_bin
         self.max_expansions = max_expansions
+        self.max_frames = max_frames
         self.max_actions = max_frames // macro
         self.w = h_weight
+        # When on, the dedup key also distinguishes the ninja's INTERNAL jump
+        # state — the variable-height jump-hold timer, movement-FSM state code and
+        # airborne flag.  Without these, two states with equal binned (x,y,vx,vy)
+        # but different jump-hold counts are merged, which prunes the held-jump
+        # trajectory that gains height — making frame-precise launch/CDJ tricks
+        # unfindable.  Off by default => byte-identical to the original search
+        # (more dedup, fewer expansions); turn on for jump-trick / air-launch
+        # levels.  (Validated on middlecircle: launch findable only with it.)
+        self.enriched_key = bool(enriched_key)
+        # Composite CLINCHER actions: expand the action set with frame-precise,
+        # momentum-conserving Corner Double Jumps the macro-hold vocabulary can't
+        # express.  Off by default => byte-identical search.
+        self.clinch_actions = bool(clinch_actions)
+        self.clinch_holds = tuple(int(h) for h in clinch_holds)
+        # Action ids available to the search (base macro-holds + optional clinches,
+        # one per (direction, hold)).
+        self._clinch_ids: Dict[int, Tuple[int, int]] = {}
+        if self.clinch_actions:
+            nid = 100
+            for d in (-1, 1):
+                for h in self.clinch_holds:
+                    self._clinch_ids[nid] = (d, h)
+                    nid += 1
+        self._action_ids = list(ACT) + list(self._clinch_ids)
         self.spawn = self.sim.get_ninja_pos()
         self.switch, self.exit, self.mines0 = _goal_positions(self.sim)
         self.deadly0 = [(x, y) for (x, y, s) in self.mines0 if s == _MINE_STATE_DEADLY]
+        # Locked doors (type 6): count them once so the search can track which are
+        # OPEN per node (door state is part of the search state — two nodes at the
+        # same position with different doors open are genuinely different).
+        self._n_locked_doors = sum(
+            1 for e in self.sim.get_state().entities if e.entity_type == 6
+        )
 
     # --- sim helpers ---
-    def _replay(self, actions: List[int]) -> None:
+    def _replay(self, actions: List[int]) -> int:
+        """Replay an action list on the sim; return total frames advanced.
+
+        Base actions hold ``ACT[a]`` for ``macro`` frames.  Clincher actions
+        (id in ``_clinch_ids``) run the adaptive CDJ from the CURRENT state, so
+        the trick's impulse stacks on whatever velocity the chain carried in."""
         self.sim.fast_reset()
+        frames = 0
         for a in actions:
-            h, j = ACT[a]
-            for _ in range(self.macro):
-                self.sim.tick(h, j)
-                if self.sim.has_died() or self.sim.has_won():
-                    return
+            if a in self._clinch_ids:
+                frames += self._apply_clinch(a)
+            else:
+                h, j = ACT[a]
+                for _ in range(self.macro):
+                    self.sim.tick(h, j)
+                    frames += 1
+                    if self.sim.has_died() or self.sim.has_won():
+                        return frames
+            if self.sim.has_died() or self.sim.has_won():
+                return frames
+        return frames
+
+    def _apply_clinch(self, a: int) -> int:
+        """Run one adaptive clincher (CDJ) from the current state; return frames."""
+        from ..cdj_primitive import execute_cdj
+        d, hold = self._clinch_ids[a]
+        launch_mode = "carry" if bool(self.sim.get_ninja_airborn()) else "floor_jump"
+        ex = execute_cdj(self.sim, approach_dir=int(d), hold_frames=int(hold),
+                         bail_if_no_corner=True, launch_mode=launch_mode,
+                         fire_on_buffer_intersect=True)
+        return len(ex.tape)
+
+    def frame_inputs(self, actions: List[int]) -> List[Tuple[int, int]]:
+        """Replay ``actions`` and return the exact per-frame ``(h, j)`` inputs.
+
+        Clincher actions are ADAPTIVE (state-dependent frame count), so the tape
+        cannot be expanded statically — it is captured live here by re-running the
+        clincher on the sim.  Used for the winning trajectory / render tape."""
+        from ..cdj_primitive import execute_cdj
+        self.sim.fast_reset()
+        tape: List[Tuple[int, int]] = []
+        for a in actions:
+            if a in self._clinch_ids:
+                d, hold = self._clinch_ids[a]
+                launch_mode = ("carry" if bool(self.sim.get_ninja_airborn())
+                               else "floor_jump")
+                ex = execute_cdj(self.sim, approach_dir=int(d), hold_frames=int(hold),
+                                 bail_if_no_corner=True, launch_mode=launch_mode,
+                                 fire_on_buffer_intersect=True)
+                tape.extend(ex.tape)
+            else:
+                h, j = ACT[a]
+                for _ in range(self.macro):
+                    self.sim.tick(h, j)
+                    tape.append((h, j))
+                    if self.sim.has_died() or self.sim.has_won():
+                        return tape
+            if self.sim.has_died() or self.sim.has_won():
+                return tape
+        return tape
+
+    def _open_doors(self) -> Tuple[int, ...]:
+        """Indices of currently-OPEN locked doors (type-6 entities in load order,
+        matching the lattice door-plan ordering). Empty for doorless maps."""
+        if self._n_locked_doors == 0:
+            return ()
+        out = []
+        i = 0
+        for e in self.sim.get_state().entities:
+            if e.entity_type == 6:
+                if not bool(getattr(e, "door_closed", True)):
+                    out.append(i)
+                i += 1
+        return tuple(out)
 
     def _state_after(self, actions: List[int]) -> dict:
-        self._replay(actions)
+        frames = self._replay(actions)
         x, y = self.sim.get_ninja_pos()
         vx, vy = self.sim.get_ninja_velocity()
-        return {
+        s = {
             "x": x, "y": y, "vx": vx, "vy": vy,
+            "frames": frames,
             "dead": self.sim.has_died(), "won": self.sim.has_won(),
             "switch": _switch_done(self.sim),
+            "doors": self._open_doors(),
         }
+        if self.enriched_key:
+            # Internal jump state for the dedup key (see __init__).
+            s["jd"] = min(self.sim.get_ninja_jump_duration(), 45)
+            s["stc"] = self.sim.get_ninja_state_code()
+            s["air"] = int(self.sim.get_ninja_airborn())
+        return s
 
-    def _h(self, x: float, y: float, switch_done: bool) -> float:
+    def _h(self, x: float, y: float, switch_done: bool,
+           open_doors: Optional[Tuple[int, ...]] = None) -> float:
         gx, gy = (self.exit if switch_done else self.switch)
         d = ((x - gx) ** 2 + (y - gy) ** 2) ** 0.5
         if not switch_done:
@@ -128,14 +242,22 @@ class PhysicsRouteSpike:
         return d / MAX_HOR_SPEED  # frames lower bound
 
     def _key(self, s: dict) -> Tuple:
-        return (round(s["x"] / self.cell_px), round(s["y"] / self.cell_px),
+        base = (round(s["x"] / self.cell_px), round(s["y"] / self.cell_px),
                 round(s["vx"] / self.vel_bin), round(s["vy"] / self.vel_bin),
                 bool(s["switch"]))
+        # Door-open set is part of the state: a position reached before vs after
+        # opening a gating door is genuinely different (the wall is/ isn't there).
+        if s.get("doors"):
+            base = base + (s["doors"],)
+        if self.enriched_key:
+            return base + (s["jd"], s["stc"], s["air"])
+        return base
 
     def plan(self) -> dict:
         t0 = time.time()
         root = self._state_after([])
-        start_node = (self.w * self._h(root["x"], root["y"], root["switch"]),
+        start_node = (self.w * self._h(root["x"], root["y"], root["switch"],
+                                       root["doors"]),
                       0.0, 0, [], root)
         frontier = [start_node]
         best_g: Dict[Tuple, float] = {self._key(root): 0.0}
@@ -152,21 +274,29 @@ class PhysicsRouteSpike:
             explored.append((s["x"], s["y"], g))
             if s["won"]:
                 return self._finish(actions, g, expansions, deaths, explored, t0, True)
-            if len(actions) >= self.max_actions:
+            # Budget by FRAMES (clincher actions span many frames each), not by
+            # action count, so the frame cap is honoured with composite actions.
+            if g >= self.max_frames or len(actions) >= self.max_actions:
                 continue
-            for a in ACT:
+            for a in self._action_ids:
                 child_actions = actions + [a]
                 cs = self._state_after(child_actions)
                 if cs["dead"]:
                     deaths += 1
                     continue
-                cg = g + self.macro
+                cg = cs["frames"]
                 k = self._key(cs)
                 if cg < best_g.get(k, float("inf")):
                     best_g[k] = cg
-                    if cs["won"]:
-                        return self._finish(child_actions, cg, expansions, deaths, explored, t0, True)
-                    cf = cg + self.w * self._h(cs["x"], cs["y"], cs["switch"])
+                    # Push winning states onto the heap (don't early-exit on
+                    # child win — that's greedy, not A*, and lets a costlier
+                    # win get found before a cheaper one whose subtree just
+                    # happens to be expanded later).  The won-state at the
+                    # top of the heap (lowest f == lowest g, since h=0) is
+                    # the optimal-by-frames win.
+                    cf = (cg if cs["won"]
+                          else cg + self.w * self._h(cs["x"], cs["y"], cs["switch"],
+                                                     cs["doors"]))
                     heapq.heappush(frontier, (cf, cg, counter, child_actions, cs))
                     counter += 1
         return self._finish([], float("inf"), expansions, deaths, explored, t0, False)
@@ -182,20 +312,19 @@ class PhysicsRouteSpike:
 
     def _trace(self, actions: List[int]) -> Tuple[List[Tuple[float, float]], Optional[int]]:
         """Replay frame-by-frame to capture the full physical trajectory."""
+        tape = self.frame_inputs(actions)  # exact per-frame inputs (mutates sim)
         self.sim.fast_reset()
         traj = [self.sim.get_ninja_pos()]
         switch_frame = None
         frame = 0
-        for a in actions:
-            h, j = ACT[a]
-            for _ in range(self.macro):
-                self.sim.tick(h, j)
-                frame += 1
-                traj.append(self.sim.get_ninja_pos())
-                if switch_frame is None and _switch_done(self.sim):
-                    switch_frame = frame
-                if self.sim.has_died() or self.sim.has_won():
-                    return traj, switch_frame
+        for (h, j) in tape:
+            self.sim.tick(h, j)
+            frame += 1
+            traj.append(self.sim.get_ninja_pos())
+            if switch_frame is None and _switch_done(self.sim):
+                switch_frame = frame
+            if self.sim.has_died() or self.sim.has_won():
+                return traj, switch_frame
         return traj, switch_frame
 
 

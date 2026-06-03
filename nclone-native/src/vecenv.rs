@@ -163,11 +163,19 @@ impl NativeVecEnv {
                         e.xpos = x;
                         e.ypos = y;
                     }
+                    Entity::Gold(e) => {
+                        e.xpos = x;
+                        e.ypos = y;
+                    }
                     Entity::ExitSwitch(e) => {
                         e.xpos = x;
                         e.ypos = y;
                     }
                     Entity::ExitDoor(e) => {
+                        e.xpos = x;
+                        e.ypos = y;
+                    }
+                    Entity::LockedDoor(e) => {
                         e.xpos = x;
                         e.ypos = y;
                     }

@@ -754,6 +754,7 @@ def extract_surfaces(
     tile_dict: Dict[Tuple[int, int], int],
     mine_positions: Optional[List[Tuple[float, float]]] = None,
     momentum_model: str = "legacy",
+    keep_mine_geometry: bool = False,
 ) -> List[SurfacePoint]:
     """Extract walkable surface points from level tile data.
 
@@ -793,7 +794,17 @@ def extract_surfaces(
     # Each mine creates a gap in the surface — the split endpoints become
     # open platform edges and automatically receive 3 px dense sampling in
     # step 4, giving the agent fine-resolution nodes for jump initiation.
-    if mine_positions:
+    # ``keep_mine_geometry`` skips this DELETION step: the segment cut here is
+    # measured on the raw tile-edge segment (where a surface-mounted mine sits at
+    # perpendicular distance 0) with a flat ``MINE_SURFACE_EXCLUSION_RADIUS``,
+    # which is wider than a 1-tile feature's half-width and so erases launchable
+    # trick corners (e.g. a CDJ off a 1×1 block topped by a deadly mine — the
+    # corner node is 2D-survivable by ~1.6 px but the edge-frame cut removes it).
+    # When enabled the geometry is preserved and the PRECISE 2D node mask
+    # (``find_mine_blocked_nodes``, ninja-center coords) is applied downstream by
+    # the caller, so normal routing still avoids lethal nodes while trick
+    # enumeration can launch from the surviving corner.
+    if mine_positions and not keep_mine_geometry:
         classified = _split_segments_at_mines(
             classified, mine_positions, MINE_SURFACE_EXCLUSION_RADIUS
         )

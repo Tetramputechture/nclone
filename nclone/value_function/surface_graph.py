@@ -180,6 +180,10 @@ class SurfaceGraph:
     # These are composite edges the executor replays verbatim (not a single
     # continuous jump), letting the global d* route compose tricks anywhere.
     trick_tapes: Optional[Dict[int, list]] = None
+    # Parallel to trick_tapes: edge_index -> CDJ launch mode
+    # ("floor_jump" settles + floor-jumps; "carry" arrives rising, no settle).
+    # Absent / None entry => "floor_jump" (back-compat).
+    trick_modes: Optional[Dict[int, str]] = None
 
     # Cost-to-go arrays (populated by dijkstra)
     d_star_switch: np.ndarray = field(
@@ -644,6 +648,7 @@ def compute_two_phase_cost_to_go(
     rev_adj: Optional[Dict[int, List[Tuple[int, float, int]]]] = None,
     switch_air_contacts: Optional[Dict[int, float]] = None,
     exit_air_contacts: Optional[Dict[int, float]] = None,
+    seed_unreachable_switch: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Jointly optimal switch-then-exit cost-to-go.
 
@@ -725,6 +730,29 @@ def compute_two_phase_cost_to_go(
             c = float(fr) + cont
             if s not in goal_init or c < goal_init[s]:
                 goal_init[s] = c
+    if not goal_init and seed_unreachable_switch:
+        # The switch is reachable only via a maneuver the binned-node injection
+        # enumerator under-models (e.g. a momentum-CONSERVING CDJ chain whose
+        # accumulated upward velocity the wall bins cannot represent).  Rather
+        # than abort, seed an OPTIMISTIC contact from the nearest reachable
+        # surface node to the switch: cost = its d_exit + straight-line frames to
+        # the switch.  This gives d_comb a finite gradient that pulls the search
+        # up toward the switch's vicinity (the top chain block); the forward
+        # spike then conserves momentum on real physics to actually reach it.
+        best_n, best_c = None, float("inf")
+        for n in range(graph.n_nodes):
+            if n in _blocked or not np.isfinite(d_exit[n]):
+                continue
+            pid = n // graph.max_vel_bins
+            if pid >= len(graph.surface_points):
+                continue
+            sp = graph.surface_points[pid]
+            dist = math.hypot(sp.x - switch_x, sp.y - switch_y)
+            c = float(d_exit[n]) + dist / max(MAX_HOR_SPEED, 1e-6)
+            if c < best_c:
+                best_c, best_n = c, n
+        if best_n is not None:
+            goal_init[best_n] = best_c
     if not goal_init:
         raise ValueError(
             f"Switch at ({switch_x:.1f}, {switch_y:.1f}) is unreachable: no "

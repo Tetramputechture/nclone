@@ -22,8 +22,7 @@ import numpy as np
 import torch
 
 from nclone.value_function.two_phase_pbrs import create_neural_pbrs
-from nclone.value_function.neural_value_pbrs import NeuralValuePBRS
-from nclone.offline_rl.networks.value_networks import IQLNetworks
+from nclone.value_function.neural_value_pbrs import NeuralValuePBRS, _FrozenVNet
 
 # Path to the trained checkpoint produced by T2.3 export step.
 TRAINED_CHECKPOINT_PATH = os.path.join(
@@ -54,7 +53,7 @@ _train_h5_available = os.path.exists(TRAIN_H5_PATH)
 
 def _make_synthetic_checkpoint(path: str, hidden_dim: int = 512) -> None:
     """Write a minimal exported-V-network file with random weights."""
-    networks = IQLNetworks(hidden_dim=hidden_dim, use_tile_encoder=True)
+    networks = _FrozenVNet(hidden_dim=hidden_dim, use_tile_encoder=True)
     networks.eval()
     v_state = {
         "agent_encoder": networks.agent_encoder.state_dict(),

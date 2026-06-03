@@ -71,6 +71,7 @@ class LatticeDistanceSource:
         use_cache: bool = True,
         name: Optional[str] = None,
         workers: int = 4,
+        slope_jump_modes: Optional[str] = None,
     ):
         self.available = False
         self._graph: Optional[SurfaceGraph] = None
@@ -80,6 +81,9 @@ class LatticeDistanceSource:
         self._d_max_ex = 1.0
         self.switch: Optional[Tuple[float, float]] = None
         self.exit: Optional[Tuple[float, float]] = None
+        # Locked-door N-phase plan (None when the level has no locked doors).
+        self._door_plan = None
+        self._door_leg_max = []  # per-leg finite max for normalization
         try:
             from .tools.lattice_audit import LatticeAudit
             from .edge_risk import (
@@ -94,6 +98,7 @@ class LatticeDistanceSource:
                 risk_cap=DEFAULT_RISK_CAP if risk_cap is None else float(risk_cap),
                 jump_tax=DEFAULT_JUMP_TAX if jump_tax is None else float(jump_tax),
                 momentum_model=momentum_model,
+                slope_jump_modes=slope_jump_modes,
             )
             pc = audit.precompute(use_cache=use_cache)
             self._graph = pc["graph"]
@@ -103,6 +108,10 @@ class LatticeDistanceSource:
             self._d_max_ex = _finite_max(self._d_ex)
             self.switch = audit.switch
             self.exit = audit.exit
+            plan = pc.get("door_plan")
+            if plan is not None and plan.solvable and plan.necessary_order:
+                self._door_plan = plan
+                self._door_leg_max = [_finite_max(d) for d in plan.door_leg_dstar]
             self.available = True
         except Exception:
             self.available = False
@@ -129,13 +138,47 @@ class LatticeDistanceSource:
             return None
         return best  # may be inf if all bins unreachable
 
-    def _phase_arrays(self, switch_activated: bool) -> Tuple[np.ndarray, float]:
+    def door_phase(
+        self, switch_activated: bool, open_door_indices=None
+    ) -> Optional[int]:
+        """Index of the current locked-door leg (0..k-1), or ``None`` once all
+        necessary doors are open (then the level's normal switch->exit potential
+        takes over) / when there is no door plan.
+
+        ``open_door_indices`` is the set of locked-door indices (audit order) whose
+        switch has been collected. The phase = how many necessary doors are open;
+        it only advances PAST the door legs once ALL k necessary doors are open —
+        so a pre-collected exit switch does NOT skip the door-opening legs.
+        """
+        plan = getattr(self, "_door_plan", None)
+        if plan is None:
+            return None
+        idx = set(open_door_indices or ())
+        k = len(plan.necessary_order)
+        n_open = sum(1 for d in plan.necessary_order if d in idx)
+        return n_open if n_open < k else None
+
+    def _phase_arrays(
+        self, switch_activated: bool, open_door_indices=None
+    ) -> Tuple[np.ndarray, float]:
+        ph = self.door_phase(switch_activated, open_door_indices)
+        if ph is not None:  # still opening necessary doors -> guide to next switch
+            leg_max = getattr(self, "_door_leg_max", [])
+            dstar = self._door_plan.door_leg_dstar[ph]
+            return dstar, (leg_max[ph] if ph < len(leg_max) else 0.0) or 1.0
+        # All necessary doors open (or no door plan): normal switch -> exit.
         if switch_activated:
             return self._d_ex, self._d_max_ex
         return self._d_comb, self._d_max_comb
 
-    def cost_to_go(self, x: float, y: float, switch_activated: bool) -> float:
+    def cost_to_go(
+        self, x: float, y: float, switch_activated: bool, open_door_indices=None
+    ) -> float:
         """Phase-aware lattice cost-to-go (frames) at ``(x, y)``.
+
+        With locked doors, ``open_door_indices`` selects the correct N-phase leg
+        (the agent's current sub-goal); without doors it falls back to the
+        two-phase switch/exit d*.
 
         ``inf`` only when no surface point exists near ``(x, y)``; a transient
         unreachable lookup is clamped to the per-level max finite ``d*`` to avoid
@@ -143,13 +186,76 @@ class LatticeDistanceSource:
         """
         if not self.available:
             return float("inf")
-        d_star, d_max = self._phase_arrays(switch_activated)
+        d_star, d_max = self._phase_arrays(switch_activated, open_door_indices)
         c = self._min_dstar_at(x, y, d_star)
         if c is None:
             return float("inf")
         if not np.isfinite(c):
             return float(d_max)
         return float(c)
+
+    @staticmethod
+    def gold_orienteering_tail(
+        x: float, y: float, remaining_gold, gold_frame_value: float = 120.0
+    ) -> float:
+        """Frames to detour through only the WORTHWHILE remaining gold from (x, y).
+
+        Greedy nearest-neighbour tour / max-horizontal-speed, but a gold is added
+        to the tail only while the nearest remaining gold's marginal detour is
+        below ``gold_frame_value`` frames — i.e. only gold whose 120-frame credit
+        outweighs the time cost of grabbing it.  Because the tour is built
+        nearest-first, once the closest remaining gold is too far to be worth it,
+        every farther gold is too, so we stop: the tail covers exactly the
+        prize-collecting (orienteering) prefix.
+
+        This is the upgrade over the old all-gold tour (which guided the agent
+        toward gold it should skip — the 'misleading potential' failure mode):
+        unworthwhile far-flung gold never enters the tail.
+
+        Depends only on the remaining-gold SET (not position alone), so collecting
+        a worthwhile gold strictly lowers it — the monotonicity a valid PBRS gold
+        potential needs.  Geometric (gold floats off surfaces so it isn't in the
+        lattice graph); exactness doesn't matter for a potential, only the SET
+        monotonicity and the worthwhile filter.
+
+        NB: the +gold_frame_value CREDIT per collected gold is realised through the
+        R_GOLD pickup reward, NOT subtracted here — this quantity is consumed as an
+        HWM *distance* (non-negative, lower=better), so folding the credit in would
+        double-count and could drive the distance negative.
+        """
+        from ..constants.physics_constants import MAX_HOR_SPEED
+        speed = max(MAX_HOR_SPEED, 1e-6)
+        pts = [(float(gx), float(gy)) for (gx, gy) in remaining_gold]
+        cx, cy = float(x), float(y)
+        total = 0.0
+        while pts:
+            j = min(range(len(pts)),
+                    key=lambda k: (pts[k][0] - cx) ** 2 + (pts[k][1] - cy) ** 2)
+            gx, gy = pts[j]
+            marginal = ((gx - cx) ** 2 + (gy - cy) ** 2) ** 0.5 / speed
+            if marginal >= gold_frame_value:
+                break  # nearest gold isn't worth the detour => none beyond it are
+            pts.pop(j)
+            total += marginal
+            cx, cy = gx, gy
+        return total
+
+    def gold_cost_to_go(self, x: float, y: float, switch_activated: bool,
+                        remaining_gold, gold_weight: float = 1.0,
+                        gold_frame_value: float = 120.0) -> float:
+        """Gold-aware phase potential: base lattice cost-to-go (frames) PLUS the
+        worthwhile-remaining-gold orienteering tail-cost.  Reduces to
+        ``cost_to_go`` when no (worthwhile) gold remains.  ``inf`` only when the
+        base is ``inf`` (no plan near (x, y)).
+
+        ``gold_frame_value`` is the per-gold time-saving exchange rate (mirror of
+        reward_constants.GOLD_FRAME_VALUE): only gold whose detour costs fewer than
+        this many frames is folded into the potential."""
+        base = self.cost_to_go(x, y, switch_activated)
+        if not np.isfinite(base):
+            return base
+        tail = self.gold_orienteering_tail(x, y, remaining_gold, gold_frame_value)
+        return base + float(gold_weight) * tail
 
     def spawn_finite(self, spawn_x: float, spawn_y: float) -> bool:
         """True iff the spawn has a finite phase-0 (``d_comb``) cost-to-go — the
@@ -168,29 +274,49 @@ class LatticeDistanceSource:
 
     def nav_feature(
         self, x: float, y: float, switch_activated: bool, step_px: float = 24.0,
+        remaining_gold=None, gold_frame_value: float = 120.0,
+        open_door_indices=None,
     ) -> np.ndarray:
         """4-dim physics-aware navigation hint for the POLICY observation:
         ``[dx_hop, dy_hop, cost_to_go_norm, phase]``.
 
-        ``(dx_hop, dy_hop)`` is the unit direction of steepest ``d*`` descent —
+        ``(dx_hop, dy_hop)`` is the unit direction of steepest descent —
         sampling the 8 neighbours one tile away and picking the one that most
         reduces the lattice cost-to-go (the direction the physics-aware plan
         wants to go, unlike the geometric Euclidean-to-goal that can point into a
-        wall).  ``cost_to_go_norm = d*/d_max`` in ``[0, 1]``.  ``phase`` = 1 once
+        wall).  ``cost_to_go_norm = c/d_max`` in ``[0, 1]``.  ``phase`` = 1 once
         the switch is collected.  All-zeros when no finite plan exists here, so
         the feature is a safe no-op on no-route levels.
+
+        When ``remaining_gold`` is supplied the descent follows the ORIENTEERING
+        potential (base cost-to-go + worthwhile-gold tail) instead of the plain
+        cost-to-go, so the hint bends the policy toward gold worth its detour —
+        encoding the 120-frame objective directly in the observation. ``d_max`` is
+        still the gold-free per-level scale, so the norm can exceed the no-gold
+        value while a worthwhile detour is pending (clamped to 1.0).
         """
         if not self.available:
             return np.zeros(4, dtype=np.float32)
-        d_star, d_max = self._phase_arrays(switch_activated)
-        c0 = self._min_dstar_at(x, y, d_star)
-        if c0 is None or not np.isfinite(c0):
+        _, d_max = self._phase_arrays(switch_activated, open_door_indices)
+        gold = list(remaining_gold) if remaining_gold else None
+
+        def cost_at(px: float, py: float) -> Optional[float]:
+            if gold:
+                c = self.gold_cost_to_go(px, py, switch_activated, gold,
+                                         gold_frame_value=gold_frame_value)
+                return c if np.isfinite(c) else None
+            d_star, _ = self._phase_arrays(switch_activated, open_door_indices)
+            c = self._min_dstar_at(px, py, d_star)
+            return c if (c is not None and np.isfinite(c)) else None
+
+        c0 = cost_at(x, y)
+        if c0 is None:
             return np.zeros(4, dtype=np.float32)
         best_c = c0
         best_dir = (0.0, 0.0)
         for ux, uy in self._NAV_DIRS:
-            c = self._min_dstar_at(x + ux * step_px, y + uy * step_px, d_star)
-            if c is not None and np.isfinite(c) and c < best_c:
+            c = cost_at(x + ux * step_px, y + uy * step_px)
+            if c is not None and c < best_c:
                 best_c = c
                 best_dir = (ux, uy)
         cost_norm = float(min(1.0, c0 / max(d_max, 1.0)))

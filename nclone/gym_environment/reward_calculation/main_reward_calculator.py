@@ -71,18 +71,12 @@ class RewardCalculator:
         reward_config: Optional[RewardConfig] = None,
         pbrs_gamma: float = 0.99,  # Retained for API compat; not used here.
         shared_level_cache: Optional[Any] = None,
-        shared_level_caches_by_stage: Optional[Dict[int, Any]] = None,
-        goal_curriculum_manager: Optional[Any] = None,
     ):
         self.config = reward_config or RewardConfig()
-
-        self.goal_curriculum_manager = goal_curriculum_manager
 
         self.path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200,
             shared_level_cache=shared_level_cache,
-            shared_level_caches_by_stage=shared_level_caches_by_stage,
-            goal_curriculum_manager=goal_curriculum_manager,
         )
 
         self.hwm_state = EpisodeRewardState()
@@ -116,13 +110,24 @@ class RewardCalculator:
         # Backtracking detection: previous A* distance to the current goal.
         self._prev_goal_dist: Optional[float] = None
 
+        # Gold collection (gated by config.enable_gold_rewards): track the
+        # running collected count so we can reward the per-step delta, plus a
+        # one-shot flag for the all-gold bonus.
+        self._prev_gold_collected: Optional[int] = None
+        self._all_gold_bonus_paid = False
+
+        # Locked-door switches (gated by config.enable_locked_door_rewards):
+        # reward each newly-opened NECESSARY door. obs["necessary_doors_open"] is
+        # a monotonic non-decreasing count provided by the env's door-dependency
+        # plan; we reward its positive delta.
+        self._prev_necessary_doors_open: Optional[int] = None
+
     def calculate_reward(
         self,
         obs: Dict[str, Any],
         prev_obs: Dict[str, Any],
         action: Optional[int] = None,
         frames_executed: int = 1,
-        curriculum_manager: Optional[Any] = None,
         truncated: bool = False,
     ) -> float:
         """Compute the unified step-level extrinsic reward.
@@ -132,7 +137,6 @@ class RewardCalculator:
             prev_obs: Previous observation.
             action: Action taken (optional, unused here).
             frames_executed: Number of physics frames collapsed into this step.
-            curriculum_manager: Optional curriculum manager.
             truncated: True when the env step terminated via timeout.
 
         Returns:
@@ -148,6 +152,17 @@ class RewardCalculator:
             "switch_activated", False
         )
 
+        # Gold pickup reward (delta + all-gold bonus). Computed once per step,
+        # before terminal branches, so gold collected on the same step the ninja
+        # wins/dies still counts. No-op unless config.enable_gold_rewards.
+        gold_reward = self._compute_gold_reward(obs, prev_obs)
+
+        # Necessary-locked-door-switch reward (delta of opened necessary doors).
+        # Computed once per step, before terminal branches, so a door opened on
+        # the same step the ninja wins/dies still counts. Also yields the current
+        # sub-goal phase for HWM watermark resets.
+        door_reward, subgoal_phase = self._compute_locked_door_reward(obs)
+
         # L1.5: refresh level cache when mine or switch state changes (e.g. toggle
         # mines). ``build_level_cache`` fast-rejects when signatures match.
         level_data = obs.get("level_data")
@@ -161,7 +176,7 @@ class RewardCalculator:
                 level_data, adjacency, base_adjacency, graph_data
             )
 
-        dist_switch, dist_exit = self._get_distances(obs, curriculum_manager)
+        dist_switch, dist_exit = self._get_distances(obs)
 
         if not self._episode_initialized:
             self._initial_dist_switch = (
@@ -186,12 +201,16 @@ class RewardCalculator:
                 terminal_reward += self.config.mine_death_penalty
             if switch_just_activated:
                 terminal_reward += self.config.switch_activation_reward
+            terminal_reward += gold_reward
+            terminal_reward += door_reward
             self.episode_terminal_reward = terminal_reward
 
             scaled = terminal_reward * GLOBAL_REWARD_SCALE
             self.last_components = {
                 "terminal_reward": terminal_reward,
                 "hwm_reward": 0.0,
+                "gold_reward": gold_reward,
+                "locked_door_reward": door_reward,
                 "total_reward": terminal_reward,
                 "scaled_reward": scaled,
                 "is_terminal": True,
@@ -204,12 +223,16 @@ class RewardCalculator:
             terminal_reward = self.config.level_completion_reward
             if switch_just_activated:
                 terminal_reward += self.config.switch_activation_reward
+            terminal_reward += gold_reward
+            terminal_reward += door_reward
             self.episode_terminal_reward = terminal_reward
 
             scaled = terminal_reward * GLOBAL_REWARD_SCALE
             self.last_components = {
                 "terminal_reward": terminal_reward,
                 "hwm_reward": 0.0,
+                "gold_reward": gold_reward,
+                "locked_door_reward": door_reward,
                 "total_reward": terminal_reward,
                 "scaled_reward": scaled,
                 "is_terminal": True,
@@ -217,16 +240,20 @@ class RewardCalculator:
             }
             return scaled
 
-        # Non-terminal: HWM shaping + sparse switch + time + backtrack.
+        # Non-terminal: HWM shaping + sparse switch + gold + time + backtrack.
         reward = 0.0
 
         if switch_just_activated:
             reward += self.config.switch_activation_reward
 
+        reward += gold_reward
+        reward += door_reward
+
         hwm_progress = self.hwm_state.step(
             dist_switch=dist_switch,
             dist_exit=dist_exit,
             switch_activated=switch_activated,
+            subgoal_phase=subgoal_phase,
         )
         beta_hwm = self.config.beta_blend()
         hwm_reward = self.config.hwm_alpha * hwm_progress * beta_hwm
@@ -289,6 +316,9 @@ class RewardCalculator:
         self.last_components = {
             "hwm_reward": hwm_reward,
             "hwm_progress": hwm_progress,
+            "gold_reward": gold_reward,
+            "locked_door_reward": door_reward,
+            "subgoal_phase": subgoal_phase,
             "beta_blend_hwm": beta_hwm,
             "time_penalty": time_penalty,
             "backtrack_penalty": backtrack_penalty,
@@ -309,7 +339,6 @@ class RewardCalculator:
     def _get_distances(
         self,
         obs: Dict[str, Any],
-        curriculum_manager: Optional[Any] = None,
     ) -> Tuple[float, float]:
         """Get A* path distances to switch and exit.
 
@@ -374,6 +403,54 @@ class RewardCalculator:
 
         return dist_switch, dist_exit
 
+    def _compute_gold_reward(self, obs: Dict[str, Any], prev_obs: Dict[str, Any]) -> float:
+        """Per-step gold reward: pickup delta + one-shot all-gold bonus.
+
+        Order-agnostic and non-negative: rewards the increase in collected gold
+        regardless of which piece or order, so opportunistic cluster grabs are
+        never penalized. Soft objective — does not gate completion. Returns 0
+        when ``enable_gold_rewards`` is off. Must be called exactly once per step
+        (it advances ``_prev_gold_collected``).
+        """
+        if not self.config.enable_gold_rewards:
+            return 0.0
+        gold_now = int(obs.get("gold_collected", 0) or 0)
+        total_gold = int(obs.get("total_gold", 0) or 0)
+        if self._prev_gold_collected is None:
+            self._prev_gold_collected = int(prev_obs.get("gold_collected", 0) or 0)
+        newly = gold_now - self._prev_gold_collected
+        self._prev_gold_collected = gold_now
+
+        gold_reward = 0.0
+        if newly > 0:
+            gold_reward += newly * self.config.gold_reward_per_piece
+        if total_gold > 0 and gold_now >= total_gold and not self._all_gold_bonus_paid:
+            gold_reward += self.config.all_gold_bonus
+            self._all_gold_bonus_paid = True
+        return gold_reward
+
+    def _compute_locked_door_reward(self, obs: Dict[str, Any]) -> Tuple[float, int]:
+        """Reward for opening NECESSARY locked doors this step + the sub-goal phase.
+
+        ``obs["necessary_doors_open"]`` is a monotonic non-decreasing count of the
+        necessary locked doors whose switch has been collected (computed by the
+        env from the planner's door-dependency plan). We reward its positive delta
+        so each newly-opened necessary door pays a one-shot bonus; non-necessary
+        doors are excluded from the count and pay nothing. Returns
+        ``(reward, subgoal_phase)`` where ``subgoal_phase`` (the same count) drives
+        the HWM watermark reset. Must be called exactly once per step (it advances
+        ``_prev_necessary_doors_open``). Reward is 0 when the feature is disabled.
+        """
+        n_open = int(obs.get("necessary_doors_open", 0) or 0)
+        if not self.config.enable_locked_door_rewards:
+            return 0.0, n_open
+        if self._prev_necessary_doors_open is None:
+            self._prev_necessary_doors_open = n_open
+        newly = n_open - self._prev_necessary_doors_open
+        self._prev_necessary_doors_open = n_open
+        reward = newly * self.config.locked_door_switch_reward if newly > 0 else 0.0
+        return reward, n_open
+
     def reset(self):
         """Reset episode-level reward state."""
         self.steps_taken = 0
@@ -395,6 +472,9 @@ class RewardCalculator:
         self.prev_player_pos = None
         self.spawn_position = None
         self._prev_goal_dist = None
+        self._prev_gold_collected = None
+        self._all_gold_bonus_paid = False
+        self._prev_necessary_doors_open = None
 
         self.last_components = {}
 

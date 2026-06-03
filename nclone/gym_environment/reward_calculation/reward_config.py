@@ -12,8 +12,12 @@ from typing import Dict, Any, Optional
 from .reward_constants import (
     R_SWITCH,
     R_EXIT,
+    R_LOCKED_DOOR_SWITCH,
     R_DEATH,
     R_DEATH_MINE,
+    R_GOLD,
+    R_ALL_GOLD,
+    GOLD_FRAME_VALUE,
     HWM_ALPHA,
     TIME_PENALTY_PER_STEP,
     TRUNCATION_PENALTY,
@@ -49,6 +53,25 @@ class RewardConfig:
     eta_bsrs: float = 0.005  # Theorem-compatible with gamma=0.99: (1-gamma)/(1+gamma) ≈ 0.005025
     bsrs_gamma: float = 0.99  # Must match PPO gamma; used in BSRS term only
     bsrs_blend_horizon_fraction: float = 0.7  # beta goes 1→0 linearly over this fraction of total_timesteps
+
+    # --- Gold collection (docs/GOLD_COLLECTION_HANDOFF.md) ---
+    # Off by default for a clean A/B against the completion-only pipeline. When
+    # True, the calculator pays a per-gold pickup reward calibrated so each gold
+    # is worth GOLD_FRAME_VALUE (120) frames of saved time — the exchange rate is
+    # tied to TIME_PENALTY_PER_STEP (see reward_constants). Gold is a soft
+    # objective: it never gates completion. No all-gold bonus by default (uniform
+    # valuation); set _all_gold_bonus_override for the collect-everything variant.
+    enable_gold_rewards: bool = False
+    _gold_reward_per_piece_override: Optional[float] = None
+    _all_gold_bonus_override: Optional[float] = None
+
+    # --- Locked-door switches (docs/ENTITY_AWARE_LATTICE_PLANNER_HANDOFF.md) ---
+    # When True, activating a NECESSARY locked-door switch (one the planner's
+    # door-dependency solver marks as required for completion) pays a one-shot
+    # milestone bonus, teaching the agent to route through gating switches.
+    # Opening a non-necessary door pays nothing (no detour incentive).
+    enable_locked_door_rewards: bool = False
+    _locked_door_switch_reward_override: Optional[float] = None
 
     SUCCESS_THRESHOLD_MID: float = 0.15
     SUCCESS_THRESHOLD_LATE: float = 0.40
@@ -107,6 +130,42 @@ class RewardConfig:
     def switch_activation_reward(self) -> float:
         """Fixed switch activation reward per spec."""
         return R_SWITCH
+
+    @property
+    def locked_door_switch_reward(self) -> float:
+        """Per-necessary-locked-door-switch activation bonus (only used when
+        enable_locked_door_rewards)."""
+        if self._locked_door_switch_reward_override is not None:
+            return self._locked_door_switch_reward_override
+        return R_LOCKED_DOOR_SWITCH
+
+    @property
+    def gold_reward_per_piece(self) -> float:
+        """Per-gold sparse pickup reward (only used when enable_gold_rewards)."""
+        if self._gold_reward_per_piece_override is not None:
+            return self._gold_reward_per_piece_override
+        return R_GOLD
+
+    @property
+    def all_gold_bonus(self) -> float:
+        """One-shot bonus for collecting all gold (only used when enable_gold_rewards).
+
+        Default 0.0 under the uniform 'each gold = GOLD_FRAME_VALUE frames'
+        objective. Set ``_all_gold_bonus_override`` for a collect-everything A/B.
+        """
+        if self._all_gold_bonus_override is not None:
+            return self._all_gold_bonus_override
+        return R_ALL_GOLD
+
+    @property
+    def gold_frame_value(self) -> float:
+        """Frames of saved time each collected gold is worth (the exchange rate).
+
+        Single source of truth shared with the planner and the lattice gold
+        potential: the orienteering rule is 'collect a gold iff its detour costs
+        fewer than this many frames'. ``R_GOLD`` is calibrated to it.
+        """
+        return GOLD_FRAME_VALUE
 
     @property
     def hwm_alpha(self) -> float:
@@ -228,11 +287,6 @@ class RewardConfig:
         t = min(max(t, 0.0), 1.0)
         return 2.0 - 1.5 * t
 
-    def set_curriculum_stage(self, stage: int, num_stages: int) -> None:
-        """Update curriculum stage for action masking mode calculation."""
-        self._curriculum_stage = stage
-        self._num_curriculum_stages = num_stages
-
     def update(self, timesteps: int, success_rate: float) -> None:
         """Update configuration with current training metrics."""
         self.current_timesteps = timesteps
@@ -283,18 +337,3 @@ class RewardConfig:
             f"death={self.death_penalty:.2f}, "
             f"entropy={self.entropy_coefficient:.3f})"
         )
-
-
-@dataclass
-class GoalCurriculumConfig:
-    """Configuration for sliding window goal curriculum learning."""
-
-    enabled: bool = True
-    stage_distance_interval: float = 100.0
-    advancement_threshold: float = 0.80
-    rolling_window: int = 5000
-    time_based_escalation_steps: int = 5_000_000
-
-    # DEPRECATED: kept for backwards compatibility
-    progress_stages: tuple = (0.2, 0.4, 0.6, 0.8, 1.0)
-    virtual_goal_radius: float = 15.0

@@ -6,7 +6,9 @@ import numpy as np
 # Note: Actual truncation limits are now calculated dynamically per level
 # based on PBRS surface area and reachable mine count
 MAX_TIME_IN_FRAMES = (
-    10000  # Fallback when dynamic calculation unavailable (~2.8 minutes)
+    4500  # Cap on the dynamic truncation limit (was 10000). Tightened so failed
+    # episodes (mostly timeouts) end ~2x sooner for throughput; still ~75s, far
+    # above a typical solve. Also the fallback when dynamic calc is unavailable.
 )
 
 # Game state feature dimensions (streamlined, no redundancies)
@@ -19,7 +21,10 @@ NINJA_STATE_DIM = 24  # Was 26: removed own-action features (hor_input, jump_inp
 PHYSICS_DERIVED_DIM = 3
 # L1.4 (NPP-12): append switch_activated (0/1) for phase indicator in the policy MLP stream.
 GAME_STATE_SWITCH_ACTIVATED_IDX = NINJA_STATE_DIM + PHYSICS_DERIVED_DIM
-GAME_STATE_CHANNELS = NINJA_STATE_DIM + PHYSICS_DERIVED_DIM + 1
+# Gold objective: append fraction of gold still remaining in [0, 1] (1.0 = none
+# collected, 0.0 = all collected). See docs/GOLD_COLLECTION_HANDOFF.md.
+GAME_STATE_GOLD_REMAINING_IDX = NINJA_STATE_DIM + PHYSICS_DERIVED_DIM + 1
+GAME_STATE_CHANNELS = NINJA_STATE_DIM + PHYSICS_DERIVED_DIM + 2
 
 # Switch states array (legacy format, still used internally by reward/PBRS code)
 MAX_LOCKED_DOORS = 5  # Maximum doors for switch_states array
@@ -38,6 +43,11 @@ LOCKED_DOOR_ARRAY_SIZE = MAX_LOCKED_DOORS_ATTENTION * LOCKED_DOOR_FEATURES_DIM  
 HAZARD_MAP_CHANNELS = 1
 HAZARD_MAP_WIDTH = 168  # 1008 / 6
 HAZARD_MAP_HEIGHT = 92  # 552 / 6
+
+# Optional lattice-d* navigation hint (policy obs key ``lattice_nav``), enabled
+# via ReachabilityConfig.expose_lattice_features.  Layout (4 dims):
+#   [dx_hop, dy_hop, cost_to_go_norm, phase] — see value_function/lattice_distance.
+LATTICE_NAV_DIM = 4
 
 LEVEL_WIDTH = 1056.0
 LEVEL_HEIGHT = 600.0

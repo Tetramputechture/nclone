@@ -48,15 +48,32 @@ class ReachabilityMixin:
 
         # Get shared_level_cache from parent environment if available
         shared_cache = getattr(self, "shared_level_cache", None)
-        shared_caches_by_stage = getattr(self, "shared_level_caches_by_stage", None)
-        curriculum_manager = getattr(self, "goal_curriculum_manager", None)
 
         self._path_calculator = CachedPathDistanceCalculator(
             max_cache_size=200,
             shared_level_cache=shared_cache,
-            shared_level_caches_by_stage=shared_caches_by_stage,
-            goal_curriculum_manager=curriculum_manager,
         )
+
+        # Lattice d* reward-potential source (substitute + geometric fallback).
+        # Built lazily per unique map; the per-episode use decision is made on
+        # the first reachability call (needs the spawn position).  See
+        # ReachabilityConfig.use_lattice_potential / lattice_distance.py.
+        self._lattice_distance_source = None
+        self._lattice_map_name = None
+        self._use_lattice_this_episode = False
+        self._lattice_episode_decided = False
+        # Free-space grid potential: fallback for airborne/mine-threading levels
+        # where the surface lattice has no finite cost-to-go (severed by mines).
+        self._freespace_source = None
+        self._freespace_map_name = None
+        self._use_freespace_this_episode = False
+        self._freespace_episode_decided = False
+        # Cached physics-aware nav hint for the optional ``lattice_nav`` obs key.
+        self._cached_lattice_nav = np.zeros(4, dtype=np.float32)
+        # Number of NECESSARY locked doors opened so far (from the lattice
+        # door-dependency plan); drives the locked-door reward + HWM sub-goal
+        # phase. 0 when there is no plan / no necessary doors.
+        self._necessary_doors_open = 0
 
         # Initialize logging if debug is enabled
         if self.debug:
@@ -67,6 +84,212 @@ class ReachabilityMixin:
         """Reset reachability state during environment reset."""
         if hasattr(self, "_path_calculator"):
             self._path_calculator.clear_cache()
+        # Re-decide lattice-vs-geometric on the next reachability call (the
+        # source itself is rebuilt only when the map identity changes).
+        self._lattice_episode_decided = False
+        self._freespace_episode_decided = False
+        self._cached_lattice_nav = np.zeros(4, dtype=np.float32)
+        self._necessary_doors_open = 0
+
+    def _build_lattice_source(self, reach_cfg):
+        """Build a LatticeDistanceSource from the current map_data (cached on
+        disk by map_data hash).  Returns None on any failure so the caller
+        falls back to the geometric A* distances."""
+        try:
+            nplay = getattr(self, "nplay_headless", None)
+            map_data = getattr(nplay, "current_map_data", None)
+            if not map_data:
+                return None
+            from ...value_function.lattice_distance import LatticeDistanceSource
+            return LatticeDistanceSource(
+                map_data,
+                w_risk=getattr(reach_cfg, "lattice_w_risk", None),
+                w_loop=getattr(reach_cfg, "lattice_w_loop", None),
+                risk_cap=getattr(reach_cfg, "lattice_risk_cap", None),
+                use_native=getattr(reach_cfg, "lattice_use_native", True),
+                use_cache=True,
+                name=self._lattice_map_name,
+            )
+        except Exception:
+            return None
+
+    def _maybe_substitute_lattice_distance(self, ninja_pos, switch_activated):
+        """Replace the geometric HWM distances with the lattice d* cost-to-go.
+
+        No-op unless ``ReachabilityConfig.use_lattice_potential`` is set.  The
+        source is rebuilt only when the map identity changes; the lattice-vs-
+        geometric choice is made once per episode (on the first call, when the
+        ninja is at spawn) and only commits to the lattice when the spawn has a
+        finite plan — so we never mix the two scales within an episode.  Any
+        failure leaves the geometric distances untouched.
+        """
+        cfg = getattr(self, "config", None)
+        reach_cfg = getattr(cfg, "reachability", None)
+        if reach_cfg is None:
+            return
+        want_reward = bool(getattr(reach_cfg, "use_lattice_potential", False))
+        want_obs = bool(getattr(reach_cfg, "expose_lattice_features", False))
+        # The locked-door reward needs the door-dependency plan (which defines
+        # "necessary"); building it requires the lattice source. So enable the
+        # build/plan when door rewards are on, even if the potential/obs aren't.
+        want_door_reward = bool(
+            getattr(getattr(cfg, "reward_config", None),
+                    "enable_locked_door_rewards", False)
+        )
+        if not (want_reward or want_obs or want_door_reward):
+            return
+        try:
+            map_name = getattr(
+                getattr(self, "map_loader", None), "current_map_name", None
+            )
+            if (map_name != self._lattice_map_name
+                    or self._lattice_distance_source is None):
+                self._lattice_map_name = map_name
+                self._lattice_distance_source = self._build_lattice_source(reach_cfg)
+                self._lattice_episode_decided = False
+
+            nx, ny = float(ninja_pos[0]), float(ninja_pos[1])
+            src = self._lattice_distance_source
+            if src is None or not getattr(src, "available", False):
+                self._use_lattice_this_episode = False
+                self._lattice_episode_decided = True
+                self._freespace_substitute(nx, ny, switch_activated, want_reward)
+                return
+
+            if not self._lattice_episode_decided:
+                self._use_lattice_this_episode = src.spawn_finite(nx, ny)
+                self._lattice_episode_decided = True
+            if not self._use_lattice_this_episode:
+                # Surface lattice severed at spawn (airborne / mine-threading) ->
+                # use the free-space grid potential instead of the geometric A*.
+                self._freespace_substitute(nx, ny, switch_activated, want_reward)
+                return
+
+            # Locked-door phase: which doors are open now, and how many of the
+            # NECESSARY ones (for the door reward + N-phase potential select).
+            open_door_indices = self._lattice_open_door_indices()
+            plan = getattr(src, "_door_plan", None)
+            if plan is not None:
+                self._necessary_doors_open = sum(
+                    1 for d in plan.necessary_order if d in open_door_indices
+                )
+            else:
+                self._necessary_doors_open = 0
+
+            # Policy nav hint (independent of the reward substitution). When the
+            # gold potential is on, make the hint orienteering-aware so it bends
+            # toward worthwhile gold (same 4 dims; parity when gold is off).
+            want_gold_nav = bool(getattr(reach_cfg, "lattice_gold_potential", False))
+            if want_obs:
+                if want_gold_nav:
+                    rem_gold_nav = [
+                        (float(g.xpos), float(g.ypos))
+                        for g in (getattr(self, "_cached_gold", None) or [])
+                        if getattr(g, "active", True)
+                    ]
+                    gfv = float(getattr(reach_cfg, "lattice_gold_value", 120.0))
+                    self._cached_lattice_nav = src.nav_feature(
+                        nx, ny, switch_activated,
+                        remaining_gold=rem_gold_nav, gold_frame_value=gfv,
+                        open_door_indices=open_door_indices)
+                else:
+                    self._cached_lattice_nav = src.nav_feature(
+                        nx, ny, switch_activated,
+                        open_door_indices=open_door_indices)
+
+            # Reward distance substitution: phase-0 metric -> d_comb
+            # (cost-to-completion via switch), phase-1 -> d_ex.  The reward picks
+            # the right one by switch state.  With lattice_gold_potential on, add
+            # the orienteering tail-cost (detour through only WORTHWHILE remaining
+            # gold, i.e. gold worth its <120-frame detour) so the potential guides
+            # toward gold worth collecting (depends on remaining-gold SET => PBRS).
+            if want_reward:
+                want_gold = bool(getattr(reach_cfg, "lattice_gold_potential", False))
+                if want_gold:
+                    rem_gold = [
+                        (float(g.xpos), float(g.ypos))
+                        for g in (getattr(self, "_cached_gold", None) or [])
+                        if getattr(g, "active", True)
+                    ]
+                    gw = float(getattr(reach_cfg, "lattice_gold_weight", 1.0))
+                    gfv = float(getattr(reach_cfg, "lattice_gold_value", 120.0))
+                    c_sw = src.gold_cost_to_go(nx, ny, False, rem_gold, gw, gfv)
+                    c_ex = src.gold_cost_to_go(nx, ny, True, rem_gold, gw, gfv)
+                else:
+                    c_sw = src.cost_to_go(
+                        nx, ny, False, open_door_indices=open_door_indices)
+                    c_ex = src.cost_to_go(
+                        nx, ny, True, open_door_indices=open_door_indices)
+                if np.isfinite(c_sw):
+                    self._cached_switch_distance = float(c_sw)
+                if np.isfinite(c_ex):
+                    self._cached_exit_distance = float(c_ex)
+        except Exception:
+            # Never let the potential source break an episode.
+            self._use_lattice_this_episode = False
+
+    def _lattice_open_door_indices(self) -> set:
+        """Indices of currently-OPEN locked doors, aligned with the lattice door
+        plan's door ordering.
+
+        Both the plan (``_extract_locked_doors`` in lattice_audit) and the runtime
+        ``nplay_headless.locked_doors()`` enumerate type-6 entities in map-load
+        order, so the i-th locked door here is door index ``i`` in the plan. A door
+        is open once its switch is collected (``closed`` is False)."""
+        try:
+            doors = self.nplay_headless.locked_doors()
+        except Exception:
+            return set()
+        return {
+            i for i, d in enumerate(doors)
+            if not bool(getattr(d, "closed", True))
+        }
+
+    def _freespace_substitute(self, nx, ny, switch_activated, want_reward):
+        """Fallback potential for levels where the surface lattice is severed
+        (airborne / dense-mine corridors): a mine-aware free-space grid cost-to-go.
+        Substitutes the reward distances so PBRS/HWM still get a dense, corridor-
+        following signal (the RL agent learns the frame-precise execution). The
+        per-episode use decision mirrors the lattice gate (commit only if the spawn
+        has a finite free-space route). No-op unless a reward potential is wanted."""
+        if not want_reward:
+            return
+        try:
+            map_name = getattr(
+                getattr(self, "map_loader", None), "current_map_name", None
+            )
+            if (map_name != self._freespace_map_name
+                    or self._freespace_source is None):
+                self._freespace_map_name = map_name
+                nplay = getattr(self, "nplay_headless", None)
+                md = getattr(nplay, "current_map_data", None)
+                if md:
+                    from ...value_function.free_space_distance import (
+                        FreeSpaceDistanceSource,
+                    )
+                    self._freespace_source = FreeSpaceDistanceSource(md, name=map_name)
+                else:
+                    self._freespace_source = None
+                self._freespace_episode_decided = False
+
+            fs = self._freespace_source
+            if fs is None or not getattr(fs, "available", False):
+                self._use_freespace_this_episode = False
+                self._freespace_episode_decided = True
+                return
+            if not self._freespace_episode_decided:
+                self._use_freespace_this_episode = fs.spawn_finite(nx, ny)
+                self._freespace_episode_decided = True
+            if not self._use_freespace_this_episode:
+                return
+            c_sw = fs.cost_to_go(nx, ny, False)
+            c_ex = fs.cost_to_go(nx, ny, True)
+            if np.isfinite(c_sw):
+                self._cached_switch_distance = float(c_sw)
+            if np.isfinite(c_ex):
+                self._cached_exit_distance = float(c_ex)
+        except Exception:
+            self._use_freespace_this_episode = False
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
@@ -132,7 +355,18 @@ class ReachabilityMixin:
             if hasattr(self, "nplay_headless")
             else False
         )
-        cache_key = (ninja_cell, switch_activated)
+        # When the gold-aware lattice potential is on, the substituted distance
+        # depends on the remaining-gold SET, so a gold pickup must invalidate the
+        # cell cache (else the potential wouldn't drop until the cell changes,
+        # making it history-dependent and no longer a valid potential).
+        gold_key = 0
+        _reach_cfg = getattr(getattr(self, "config", None), "reachability", None)
+        if _reach_cfg is not None and getattr(_reach_cfg, "lattice_gold_potential", False):
+            gold_key = sum(
+                1 for g in (getattr(self, "_cached_gold", None) or [])
+                if getattr(g, "active", True)
+            )
+        cache_key = (ninja_cell, switch_activated, gold_key)
 
         if (
             cache_key == self._last_reachability_key
@@ -200,6 +434,13 @@ class ReachabilityMixin:
         # Store in instance variable to be added to observation in _get_observation
         self._cached_switch_distance = switch_distance_raw
         self._cached_exit_distance = exit_distance_raw
+
+        # Substitute the physics-aware lattice d* cost-to-go for the geometric A*
+        # distance signal where we have a finite plan (handoff step #1: replace
+        # the "misleading 6px potential").  No-op unless
+        # ReachabilityConfig.use_lattice_potential is set; falls back to the
+        # geometric distances above on no-route levels / build failure.
+        self._maybe_substitute_lattice_distance(ninja_pos, switch_activated)
 
         # Feature experiment B: optionally exclude path distances from actor obs
         # (PBRS still uses raw distances; actor learns from reward gradient alone)

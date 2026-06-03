@@ -67,6 +67,68 @@ def build_cdj_chain_map() -> List[int]:
     return [int(round(x)) for x in m.map_data()]
 
 
+#: Tile-grid width (columns 0..41).  Used to mirror the chain map left<->right.
+_GRID_W = 42
+
+
+def build_cdj_single_map(mirror: bool = False) -> List[int]:
+    """One-corner CDJ map: spawn floor --CDJ--> high platform (switch + exit).
+
+    The first corner / climb of :func:`build_cdj_chain_map` (the segment a single
+    CDJ already solves to the mid platform), with BOTH the switch and the exit on
+    that platform so one CDJ + a short walk wins.  Used to validate a single CDJ
+    end-to-end in either launch mode — in particular the generalized "carry"
+    executor (``cdj_launch_modes="carry"``), which routes a wall-rising approach
+    into the CDJ instead of a settle + floor jump.  ``mirror`` flips it to a
+    left-facing corner (``approach_dir=-1``).
+    """
+    m = Map()
+
+    def fill(c0, c1, r0, r1):
+        if mirror:
+            _fill(m, _GRID_W - c1, _GRID_W - c0, r0, r1)
+        else:
+            _fill(m, c0, c1, r0, r1)
+
+    def gx(c):
+        return (_GRID_W - 1 - c) if mirror else c
+
+    fill(0, 20, 18, 23)     # spawn floor
+    fill(20, 26, 17, 23)    # step up to the corner (1-tile riser)
+    fill(22, 35, 9, 11)     # high platform (CDJ climbs ~212px to here)
+    m.set_ninja_spawn(gx(19), 17)
+    # Exit door + paired switch both on the high platform.
+    m.add_entity(3, gx(32), 8, switch_x=gx(25), switch_y=8)
+    return [int(round(x)) for x in m.map_data()]
+
+
+def build_cdj_chain_map_mirrored() -> List[int]:
+    """Left-wall mirror of :func:`build_cdj_chain_map` (column ``c -> 41-c``).
+
+    Physics is left/right symmetric, so the mirrored staircase requires the same
+    two CDJs but at LEFT-facing corners (``approach_dir=-1``, wall pushes right).
+    Validates that CDJ enumeration / execution handle both corner orientations.
+    """
+    m = Map()
+
+    def mfill(c0, c1, r0, r1):
+        # Mirror the half-open column span [c0,c1) about the grid: [W-c1, W-c0).
+        _fill(m, _GRID_W - c1, _GRID_W - c0, r0, r1)
+
+    mfill(0, 20, 18, 23)     # spawn floor (now on the right)
+    mfill(20, 26, 17, 23)    # step up to corner #1
+    mfill(22, 35, 9, 11)     # mid platform
+    mfill(28, 35, 8, 9)      # step up to corner #2
+    mfill(29, 42, 1, 3)      # top shelf
+    m.set_ninja_spawn(_GRID_W - 1 - 19, 17)
+    # Mirror the exit door (grid x) and its paired switch (grid x).
+    m.add_entity(3, _GRID_W - 1 - 34, 0,
+                 switch_x=_GRID_W - 1 - 25, switch_y=8)
+    return [int(round(x)) for x in m.map_data()]
+
+
 if __name__ == "__main__":
     md = build_cdj_chain_map()
     print(f"cdj-chain map_data: {len(md)} ints")
+    mdm = build_cdj_chain_map_mirrored()
+    print(f"cdj-chain-mirror map_data: {len(mdm)} ints")

@@ -108,11 +108,8 @@ class Simulator:
         4. Skips door segment cleanup (segments unchanged for same level)
 
         CRITICAL: Must be called ONLY when the map has not changed since the last
-        reset. For new maps, use reset() instead.
-
-        Curriculum compatibility: This method resets entities to their ORIGINAL positions.
-        The environment must call goal_curriculum_manager.apply_to_simulator() after
-        fast_reset() to move entities to curriculum positions.
+        reset. For new maps, use reset() instead. Entities are reset to their
+        ORIGINAL positions.
         """
         # Reset frame counter and collision log
         self.frame = 0

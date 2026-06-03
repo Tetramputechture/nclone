@@ -114,5 +114,51 @@ class TestLatticeDistanceSource(unittest.TestCase):
             src.nav_feature(0.0, 0.0, False), np.zeros(4, dtype=np.float32))
 
 
+class TestGoldOrienteeringTail(unittest.TestCase):
+    """The orienteering gold tail: only WORTHWHILE remaining gold (detour <
+    frame_value frames) contributes; depends on the remaining SET (valid PBRS)."""
+
+    FV = 120.0  # frames per gold (mirror of GOLD_FRAME_VALUE)
+
+    def test_no_gold_zero_tail(self):
+        self.assertEqual(
+            LatticeDistanceSource.gold_orienteering_tail(0, 0, [], self.FV), 0.0)
+
+    def test_far_gold_excluded(self):
+        # ~5000px / 3.333 px-per-frame ~= 1500f >> 120f: not worth it.
+        self.assertEqual(
+            LatticeDistanceSource.gold_orienteering_tail(0, 0, [(5000.0, 0.0)],
+                                                         self.FV), 0.0)
+
+    def test_near_gold_included_and_set_monotone(self):
+        near = [(10.0, 0.0), (20.0, 0.0)]
+        t_all = LatticeDistanceSource.gold_orienteering_tail(0, 0, near, self.FV)
+        self.assertGreater(t_all, 0.0)
+        # collecting the first gold (drop it from the SET) strictly lowers the tail
+        t_after = LatticeDistanceSource.gold_orienteering_tail(
+            10.0, 0.0, [(20.0, 0.0)], self.FV)
+        self.assertLess(t_after, t_all)
+
+    def test_mix_equals_worthwhile_only(self):
+        near = [(10.0, 0.0), (20.0, 0.0)]
+        mix = near + [(5000.0, 0.0)]
+        self.assertAlmostEqual(
+            LatticeDistanceSource.gold_orienteering_tail(0, 0, mix, self.FV),
+            LatticeDistanceSource.gold_orienteering_tail(0, 0, near, self.FV),
+            places=6)
+
+    def test_gold_cost_to_go_adds_tail_to_base(self):
+        src, _ = _make_source()
+        base = src.cost_to_go(0.0, 100.0, False)
+        with_gold = src.gold_cost_to_go(0.0, 100.0, False, [(10.0, 100.0)],
+                                        gold_weight=1.0, gold_frame_value=self.FV)
+        self.assertGreater(with_gold, base)
+        # unreachable / far gold leaves the potential at base
+        self.assertAlmostEqual(
+            src.gold_cost_to_go(0.0, 100.0, False, [(5000.0, 100.0)],
+                                gold_frame_value=self.FV),
+            base, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,8 +125,14 @@ impl NinjaState {
 #[repr(u8)]
 pub enum EntityType {
     ToggleMine = 1,
+    Gold = 2,
     ExitDoor = 3,
     ExitSwitch = 4,
+    LockedDoor = 6,
+    // Type 7 is a phantom in the Python model (the switch lives on the type-6
+    // entity); recognized only so map parsing treats it as a no-op rather than
+    // silently misreading subsequent bytes.
+    LockedDoorSwitch = 7,
     ToggleMineToggled = 21,
 }
 
@@ -134,8 +140,11 @@ impl EntityType {
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
             1 => Some(EntityType::ToggleMine),
+            2 => Some(EntityType::Gold),
             3 => Some(EntityType::ExitDoor),
             4 => Some(EntityType::ExitSwitch),
+            6 => Some(EntityType::LockedDoor),
+            7 => Some(EntityType::LockedDoorSwitch),
             21 => Some(EntityType::ToggleMineToggled),
             _ => None,
         }
@@ -268,6 +277,17 @@ pub struct EntitySnapshot {
     pub state: u8,
     #[pyo3(get)]
     pub radius: f64,
+    // Locked-door fields (zero/false for all other entity types). For a locked
+    // door, (x, y) above is the SWITCH position and `active` means the switch is
+    // uncollected; these expose the door barrier so the planner can model it.
+    #[pyo3(get)]
+    pub door_x: f64,
+    #[pyo3(get)]
+    pub door_y: f64,
+    #[pyo3(get)]
+    pub door_orientation: u8,
+    #[pyo3(get)]
+    pub door_closed: bool,
 }
 
 /// Top-level simulator state returned to Python each tick.

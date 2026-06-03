@@ -42,6 +42,13 @@ GLOBAL_REWARD_SCALE = 1.0
 # 500 steps costs -0.5 (same as one death), creating a strong incentive to act efficiently.
 R_SWITCH = 0.5  # L1.5 phase-transition bonus (C_PHASE); replaces prior 1.0 sparse switch reward
 R_EXIT = 5.0
+# Per-NECESSARY-locked-door-switch activation bonus. Each necessary locked-door
+# switch is a required sub-goal on the path to completion (the planner's
+# door-dependency solver decides necessity), so it earns a milestone bonus like
+# the exit switch — teaching the agent to route through gating switches. Only
+# NECESSARY doors are rewarded (opening an irrelevant door pays nothing) so the
+# signal never encourages detours. Gated by RewardConfig.enable_locked_door_rewards.
+R_LOCKED_DOOR_SWITCH = 0.5
 R_DEATH = -0.5
 
 # Extra penalty for mine deaths. Applied when death_cause == 'mine'. Total mine
@@ -54,11 +61,44 @@ R_DEATH_MINE = -3.0
 # HWM shaping weight (constant throughout training per spec Section 7)
 HWM_ALPHA = 3.0
 
+# =============================================================================
+# TIME PENALTY (the "fewest frames" pressure — gold value is calibrated to it)
+# =============================================================================
 # Per-step time penalty (applied in RewardConfig.time_penalty_per_step and primitive PBRS path).
 # Reduced from -0.011 to -0.002: with precomputed PBRS (alpha=5), per-frame progress shaping
 # must not be dominated by time cost, or the agent rationally prefers short episodes / quick
 # deaths. Truncation (-1.5) and mine penalties still discourage passive timeout vs progress.
+# NOTE: R_GOLD below is derived from this value — changing it rescales the gold
+# exchange rate automatically. Keep this definition ABOVE the gold block.
 TIME_PENALTY_PER_STEP = -0.002
+
+# =============================================================================
+# GOLD COLLECTION REWARDS (gated by RewardConfig.enable_gold_rewards)
+# =============================================================================
+# Objective reframe (docs/GOLD_COLLECTION_HANDOFF.md): the goal is completion in
+# the fewest frames, and **each gold piece is declared worth GOLD_FRAME_VALUE
+# frames of saved time**. We CALIBRATE the per-gold pickup reward to the per-frame
+# time penalty so the exchange is mathematically exact — collecting a gold pays
+# back precisely the time penalty of a GOLD_FRAME_VALUE-frame detour:
+#
+#     a detour of D frames costs        D * |TIME_PENALTY_PER_STEP|
+#     collecting one gold pays   GOLD_FRAME_VALUE * |TIME_PENALTY_PER_STEP|
+#     => break-even exactly at D == GOLD_FRAME_VALUE frames
+#
+# So the orienteering rule "collect a gold iff its detour < GOLD_FRAME_VALUE
+# frames" emerges from the reward arithmetic instead of being hand-tuned. This is
+# the single source of truth for the exchange rate; the planner and the lattice
+# gold potential read the same GOLD_FRAME_VALUE.
+#
+# Order-agnostic: reward is paid on the gold_collected delta regardless of which
+# gold or in what order, so opportunistic cluster grabs are never penalized.
+GOLD_FRAME_VALUE = 120.0  # frames of time saved per gold collected
+R_GOLD = GOLD_FRAME_VALUE * abs(TIME_PENALTY_PER_STEP)  # = 0.24 at -0.002/frame
+# Uniform valuation => NO all-gold one-shot bonus: a spike on the final gold would
+# make it worth far more than GOLD_FRAME_VALUE frames and distort the optimum.
+# Kept as a constant (default 0.0) only for backward-compat / optional
+# collect-everything A/B (RewardConfig._all_gold_bonus_override).
+R_ALL_GOLD = 0.0
 
 # Per-step backtracking penalty applied when the A* distance to the current goal increases.
 # This discourages aimless wandering away from the objective. Run-221-2 showed 80-93%

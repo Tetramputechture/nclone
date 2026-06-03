@@ -289,12 +289,23 @@ class NativePlayHeadless:
         return door_pos
 
     def locked_doors(self):
-        """Native doesn't support locked doors."""
-        return []
+        """Return locked door entities (type 6), incl. their switch coords.
+
+        Mirrors ``NPlayHeadless.locked_doors``; the native engine supports locked
+        doors and ``_build_entity_dic`` builds type-6 ``_EntityDoorLockedProxy``
+        objects exposing xpos/ypos (switch), ``segment`` (door barrier), and
+        active/closed state.
+        """
+        return list(self.sim.entity_dic.get(6, []))
 
     def locked_door_switches(self):
-        """Native doesn't support locked door switches."""
-        return []
+        """Return locked-door switch entities (type 7).
+
+        Mirrors ``NPlayHeadless.locked_door_switches``. In nclone the switch is
+        embedded in the type-6 locked-door entity, so type 7 is unused for locked
+        doors and this is empty (matching the Python backend).
+        """
+        return list(self.sim.entity_dic.get(7, []))
 
     def get_mine_entities(self):
         """Return (toggle_mines, toggled_mines) for spatial context computation."""
@@ -309,7 +320,7 @@ class NativePlayHeadless:
         Returns data for both entity types 1 (untoggled mines) and 21 (toggled mines).
         Mirrors NPlayHeadless API for compatibility with _build_episode_info.
         """
-        from ..constants.physics_constants import TOGGLE_MINE_RADII
+        from .constants.physics_constants import TOGGLE_MINE_RADII
 
         mines = []
         entity_dic = self.sim.entity_dic
@@ -384,10 +395,59 @@ class _EntityExitProxy(_EntityProxy):
 _EntityExitProxy.__name__ = "EntityExit"
 
 
+class _DoorSegmentProxy:
+    """Minimal door-segment proxy for the door barrier endpoints.
+
+    Exposes ``x1/y1/x2/y2`` (read by the entity extractor and base_environment to
+    recover the door midpoint) plus ``p1/p2`` tuples, mirroring the Python door
+    segment interface.
+    """
+
+    def __init__(self, p1, p2):
+        self.p1 = p1
+        self.p2 = p2
+        self.x1, self.y1 = p1
+        self.x2, self.y2 = p2
+
+
+class _EntityDoorLockedProxy(_EntityProxy):
+    """Proxy for a locked door (type 6).
+
+    Mirrors the Python EntityDoorLocked interface that downstream code reads:
+    xpos/ypos and sw_xpos/sw_ypos are the SWITCH position; `segment` exposes the
+    door barrier endpoints; `closed`/`active` track door and switch state.
+    """
+
+    def __init__(self, sw_x, sw_y, door_x, door_y, orientation, active, closed):
+        # Entity position == switch position (matches Python EntityDoorBase, which
+        # resets xpos/ypos to the switch after building the barrier segment, and
+        # exposes the barrier ONLY via `segment` — NOT a door_xpos attribute. We
+        # mirror that exactly so the shared entity overlay / extractor produce
+        # byte-identical output across backends.
+        super().__init__(sw_x, sw_y, active, 0, 6)
+        self.sw_xpos = sw_x
+        self.sw_ypos = sw_y
+        self.orientation = orientation
+        self.closed = closed
+        # Door endpoints: 24px segment, vertical iff orientation in (0, 4).
+        if orientation in (0, 4):
+            self.segment = _DoorSegmentProxy(
+                (door_x, door_y - 12.0), (door_x, door_y + 12.0)
+            )
+        else:
+            self.segment = _DoorSegmentProxy(
+                (door_x - 12.0, door_y), (door_x + 12.0, door_y)
+            )
+
+
+_EntityDoorLockedProxy.__name__ = "EntityDoorLocked"
+
+
 # Entity type constants from nclone
 _ENTITY_TOGGLE_MINE = 1
 _ENTITY_EXIT_DOOR = 3
 _ENTITY_EXIT_SWITCH = 4
+_ENTITY_LOCKED_DOOR = 6
 _ENTITY_TOGGLE_MINE_TOGGLED = 21
 
 
@@ -428,6 +488,18 @@ def _build_entity_dic(entities) -> dict:
         elif t == 3:  # ExitDoor
             proxy = _EntityExitProxy(e.x, e.y, True, e.state, t)
             exit_doors.append(proxy)
+        elif t == 6:  # LockedDoor: (e.x, e.y) is the switch; door_* is the barrier.
+            entity_dic[6].append(
+                _EntityDoorLockedProxy(
+                    e.x,
+                    e.y,
+                    e.door_x,
+                    e.door_y,
+                    e.door_orientation,
+                    e.active,
+                    e.door_closed,
+                )
+            )
 
     # entity_dic[3] = doors + switches (Python convention). Link switch.parent -> door.
     for door in exit_doors:
@@ -474,6 +546,11 @@ class _SimProxy:
         self._snapshot = None
         self._headless = headless
         self.map_data = None
+        # Parity with nclone.nsim.Simulator: action-masking knobs the env reads/writes.
+        # Native physics ignores these; kept so base_environment writes and the debug
+        # mixin read don't depend on backend.
+        self._action_masking_mode = None
+        self._straightness_masking_debug = False
         # Tile grid is static per level - cache to avoid rebuilding every tick
         self._tile_dic_cache_valid = False
         # Entity dic built lazily on first access (after frame loop)
@@ -484,6 +561,19 @@ class _SimProxy:
         """Lazy-load entity_dic on first access (e.g. during observation build)."""
         self._ensure_entity_dic()
         return self._entity_dic
+
+    def get_tile_grid(self):
+        """Return the 966-element flat tile slice (map_data[184:1150]).
+
+        Matches ``nclone.nsim.Simulator.get_tile_grid`` byte-for-byte (column-major
+        ``tile_data[x + y * 42]``), so callers reshape identically regardless of backend.
+        """
+        map_data = self.map_data
+        if map_data is None and self._headless is not None:
+            map_data = self._headless.current_map_data
+        if map_data is None:
+            return []
+        return map_data[184:1150]
 
     def _update_from_snapshot(self, state, native_sim, profile_env=None):
         """Update proxy from a SimulatorState snapshot."""

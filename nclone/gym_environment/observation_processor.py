@@ -4,9 +4,10 @@ After the strict Layer 1 cleanup the policy observation dict is exactly four
 tensors produced inside :class:`NppEnvironment` (plus control masks):
 
 * ``tile_grid`` — ``Box(0, 33, (42, 23), int8)``
-* ``entity_overlays`` — ``Box(0, 1, (5, 42, 23), float32)``
+* ``entity_overlays`` — ``Box(0, 1, (8, 42, 23), float32)`` (ch 5 = remaining gold,
+  ch 6 = closed locked-door barriers, ch 7 = uncollected locked-door switches)
 * ``hazard_map`` — ``Box(-1, 1, (1, 168, 92), float32)``
-* ``game_state`` — ``Box(-1, 1, (28,), float32)`` — see
+* ``game_state`` — ``Box(-1, 1, (29,), float32)`` — see
   :data:`nclone.gym_environment.constants.GAME_STATE_CHANNELS`.
 
 and the masks ``action_mask`` / ``duration_mask`` used for valid-action filtering
@@ -48,6 +49,7 @@ class ObservationProcessor:
         "tile_grid",
         "entity_overlays",
         "hazard_map",
+        "lattice_nav",  # optional d* nav hint (only present when enabled)
         "action_mask",
         "duration_mask",
     )

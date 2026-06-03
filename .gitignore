@@ -73,3 +73,9 @@ optimal_route_videos/
 nclone-native/target/
 
 *.npz
+# --- Excluded from VCS (kept locally) ---
+# Documentation + handoffs + cursor plans
+docs/
+.cursor/
+# Generated lattice route data
+nclone/latticepaths/
