@@ -257,6 +257,80 @@ class SlopesConfig:
     min_mine_spacing: int = 2
 
 
+@dataclass
+class CurvesConfig:
+    """Configuration for the dedicated CURVES generator.
+
+    Traverse curved terrain -- convex humps (ride over) and concave bowls
+    (ride through). No slopes/gaps/wall-jumps. ``min/max_curves`` scales the
+    number of curved features with the tier (registered as an interpolatable
+    count field in npp-rl's size curriculum).
+    """
+
+    min_width: int = 22
+    max_width: int = 40
+    min_height: int = 8
+    max_height: int = 14
+    min_curves: int = 1
+    max_curves: int = 2
+    max_mines: int = 0
+    variant: str = "mixed"  # bowl | hump | mixed | undulation
+
+
+@dataclass
+class MultiJumpConfig:
+    """Configuration for the dedicated MULTI_JUMP generator.
+
+    Levels requiring >=2 sequenced jumps (gaps and/or step-up staircases).
+    ``min/max_jumps`` scales the jump count with the tier.
+    """
+
+    min_width: int = 24
+    max_width: int = 40
+    min_height: int = 8
+    max_height: int = 14
+    min_jumps: int = 2
+    max_jumps: int = 3
+    max_mines: int = 0
+    variant: str = "gaps"  # gaps | staircase | mixed
+
+
+@dataclass
+class CompositeConfig:
+    """Configuration for the COMPOSITE generator (large multi-mechanic levels).
+
+    ``min/max_segments`` scales how many mechanic segments are chained across
+    the canvas with the tier.
+    """
+
+    min_width: int = 30
+    max_width: int = 40
+    min_height: int = 10
+    max_height: int = 16
+    min_segments: int = 2
+    max_segments: int = 5
+    max_mines: int = 0
+    variant: str = "mixed"  # mixed | undulation | terrain
+
+
+@dataclass
+class PrecisionConfig:
+    """Configuration for the PRECISION generator (narrow mined ledges).
+
+    Chains of short ledges separated by gaps with toggle mines on the ledges --
+    precise landing under a mine-avoidance constraint. Always carries >=1 mine.
+    """
+
+    min_width: int = 22
+    max_width: int = 38
+    min_height: int = 8
+    max_height: int = 12
+    min_jumps: int = 2
+    max_jumps: int = 4
+    max_mines: int = 2
+    ledge_width: int = 3
+
+
 # Generator presets organized by difficulty
 GENERATOR_PRESETS = {
     "maze": {
@@ -1003,6 +1077,78 @@ GENERATOR_PRESETS = {
             max_mines=2,
         ),
     },
+    "curves": {
+        "single_curve_t1": CurvesConfig(
+            min_width=20, max_width=26, min_height=8, max_height=10,
+            min_curves=1, max_curves=1, max_mines=0, variant="mixed",
+        ),
+        "two_curves_t2": CurvesConfig(
+            min_width=24, max_width=32, min_height=9, max_height=12,
+            min_curves=2, max_curves=2, max_mines=0, variant="mixed",
+        ),
+        "curves_t3": CurvesConfig(
+            min_width=28, max_width=36, min_height=10, max_height=13,
+            min_curves=3, max_curves=3, max_mines=1, variant="mixed",
+        ),
+        "undulation_t4": CurvesConfig(
+            min_width=32, max_width=40, min_height=11, max_height=14,
+            min_curves=4, max_curves=5, max_mines=2, variant="undulation",
+        ),
+    },
+    "multi_jump": {
+        "two_gaps_t1": MultiJumpConfig(
+            min_width=22, max_width=28, min_height=8, max_height=10,
+            min_jumps=2, max_jumps=2, max_mines=0, variant="gaps",
+        ),
+        "staircase_t2": MultiJumpConfig(
+            min_width=24, max_width=30, min_height=9, max_height=12,
+            min_jumps=2, max_jumps=3, max_mines=0, variant="staircase",
+        ),
+        "mixed_jumps_t3": MultiJumpConfig(
+            min_width=28, max_width=36, min_height=10, max_height=13,
+            min_jumps=3, max_jumps=3, max_mines=1, variant="mixed",
+        ),
+        "many_gaps_t4": MultiJumpConfig(
+            min_width=32, max_width=40, min_height=10, max_height=14,
+            min_jumps=4, max_jumps=4, max_mines=2, variant="mixed",
+        ),
+    },
+    "composite": {
+        "short_chain_t1": CompositeConfig(
+            min_width=26, max_width=32, min_height=10, max_height=12,
+            min_segments=2, max_segments=2, max_mines=0, variant="terrain",
+        ),
+        "chain_t2": CompositeConfig(
+            min_width=30, max_width=36, min_height=11, max_height=14,
+            min_segments=3, max_segments=3, max_mines=0, variant="mixed",
+        ),
+        "chain_t3": CompositeConfig(
+            min_width=34, max_width=40, min_height=12, max_height=15,
+            min_segments=4, max_segments=4, max_mines=1, variant="mixed",
+        ),
+        "long_chain_t4": CompositeConfig(
+            min_width=36, max_width=40, min_height=12, max_height=16,
+            min_segments=5, max_segments=6, max_mines=2, variant="mixed",
+        ),
+    },
+    "precision": {
+        "two_ledges_t1": PrecisionConfig(
+            min_width=20, max_width=26, min_height=8, max_height=10,
+            min_jumps=2, max_jumps=2, max_mines=1, ledge_width=4,
+        ),
+        "ledges_t2": PrecisionConfig(
+            min_width=24, max_width=30, min_height=8, max_height=11,
+            min_jumps=2, max_jumps=3, max_mines=1, ledge_width=3,
+        ),
+        "ledges_t3": PrecisionConfig(
+            min_width=28, max_width=34, min_height=9, max_height=12,
+            min_jumps=3, max_jumps=3, max_mines=2, ledge_width=3,
+        ),
+        "narrow_ledges_t4": PrecisionConfig(
+            min_width=30, max_width=38, min_height=9, max_height=12,
+            min_jumps=3, max_jumps=4, max_mines=2, ledge_width=3,
+        ),
+    },
 }
 
 
@@ -1349,6 +1495,34 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
         3: [("maze", "small", 1)],
         4: [("maze", "large", 1)],
     },
+    # Curved-tile traversal: ride over convex humps / through concave bowls.
+    "CURVES": {
+        1: [("curves", "single_curve_t1", 1)],
+        2: [("curves", "two_curves_t2", 1)],
+        3: [("curves", "curves_t3", 1)],
+        4: [("curves", "undulation_t4", 1)],
+    },
+    # Sequenced jumps: >=2 gaps/step-ups in a row.
+    "MULTI_JUMP": {
+        1: [("multi_jump", "two_gaps_t1", 1)],
+        2: [("multi_jump", "staircase_t2", 1)],
+        3: [("multi_jump", "mixed_jumps_t3", 1)],
+        4: [("multi_jump", "many_gaps_t4", 1)],
+    },
+    # Large multi-mechanic courses chaining gaps/slopes/curves/staircases.
+    "COMPOSITE": {
+        1: [("composite", "short_chain_t1", 1)],
+        2: [("composite", "chain_t2", 1)],
+        3: [("composite", "chain_t3", 1)],
+        4: [("composite", "long_chain_t4", 1)],
+    },
+    # Narrow mined ledges: precise landing + mine avoidance.
+    "PRECISION": {
+        1: [("precision", "two_ledges_t1", 1)],
+        2: [("precision", "ledges_t2", 1)],
+        3: [("precision", "ledges_t3", 1)],
+        4: [("precision", "narrow_ledges_t4", 1)],
+    },
     # Out-of-scope buckets (empty until Layer 2+ generators exist).
     "SWITCH_PUZZLE": {},
     "LAUNCH_PAD": {},
@@ -1365,6 +1539,10 @@ PHASE_1_BUCKETS: List[str] = [
     "WALL_JUMP",
     "MINE_NAVIGATION",
     "SLOPES",
+    "CURVES",
+    "MULTI_JUMP",
+    "COMPOSITE",
+    "PRECISION",
 ]
 
 BUCKET_TIERS: List[int] = [1, 2, 3, 4]

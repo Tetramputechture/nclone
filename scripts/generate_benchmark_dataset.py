@@ -125,6 +125,7 @@ class BenchmarkGenerator:
         seed_base_train: int,
         seed_base_test: int,
         max_retry: int = MAX_RETRY,
+        check_solvable: bool = False,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.buckets = buckets
@@ -134,6 +135,7 @@ class BenchmarkGenerator:
         self.seed_base_train = seed_base_train
         self.seed_base_test = seed_base_test
         self.max_retry = max_retry
+        self.check_solvable = check_solvable
 
         self._seen_hashes: set = set()
         self._duplicates = 0
@@ -167,6 +169,16 @@ class BenchmarkGenerator:
             ninja_y = map_data[1232]
             if ninja_x == 0 and ninja_y == 0:
                 continue
+
+            # Optional reachability gate: reject maps where the switch or exit
+            # is not reachable from the ninja spawn (uses the grid-based
+            # traversability graph, not the heavy lattice precompute). Off by
+            # default; the procedural generators are solvable-by-construction.
+            if self.check_solvable:
+                from nclone.map_generation.solvability import is_map_solvable
+
+                if not is_map_solvable(map_data):
+                    continue
 
             map_hash = _hash_map_data(map_data)
             if map_hash in self._seen_hashes:
@@ -437,6 +449,13 @@ def main() -> int:
         "--max_retry", type=int, default=MAX_RETRY,
         help=f"Max dedup retries per level (default: {MAX_RETRY})",
     )
+    parser.add_argument(
+        "--check_solvable", action="store_true",
+        help="Reject maps whose switch/exit is unreachable from spawn via the "
+        "grid reachability graph (slower; reseeds within --max_retry). The "
+        "procedural generators are solvable-by-construction, so this is a "
+        "safety net -- recommended when adding/tuning generators.",
+    )
     args = parser.parse_args()
 
     generator = BenchmarkGenerator(
@@ -448,6 +467,7 @@ def main() -> int:
         seed_base_train=args.seed_base_train,
         seed_base_test=args.seed_base_test,
         max_retry=args.max_retry,
+        check_solvable=args.check_solvable,
     )
     return generator.run(args.mode)
 
