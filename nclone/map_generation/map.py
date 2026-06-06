@@ -617,6 +617,11 @@ class Map:
         # Set ninja spawn and orientation
         map_instance.ninja_spawn_x = map_data[1231]
         map_instance.ninja_spawn_y = map_data[1232]
+        # Preserve the ninja's facing orientation (1231-1234 layout: x, y,
+        # orientation, pad). Without this, a from_map_data -> map_data round trip
+        # silently resets facing to the default, breaking faithfulness.
+        if len(map_data) > 1233 and map_data[1233] in (-1, 1):
+            map_instance.ninja_orientation = map_data[1233]
 
         # Process entity data starting at index 1235
         map_instance.entity_data = map_data[1235:]

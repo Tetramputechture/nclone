@@ -186,6 +186,24 @@ class BenchmarkGenerator:
                 continue
 
             self._seen_hashes.add(map_hash)
+            # Composable-template generators expose aggregated fine-grained
+            # labels; legacy generators do not. ``getattr`` defaults keep legacy
+            # records byte-identical to before this field existed.
+            secondary = list(getattr(map_gen, "secondary_tags", []))
+            metadata = {
+                "description": f"{bucket} tier {tier} ({gen_type}:{preset})",
+                "split": split,
+                "source": "procedural",
+                "map_hash": map_hash,
+                "index": index,
+            }
+            mechanics = list(getattr(map_gen, "mechanics", []))
+            if mechanics:
+                metadata["mechanics"] = mechanics
+                metadata["components"] = list(getattr(map_gen, "components_meta", []))
+                metadata["declared_difficulty"] = dict(
+                    getattr(map_gen, "declared_difficulty", {})
+                )
             return {
                 "level_id": level_id,
                 "seed": seed,
@@ -194,14 +212,8 @@ class BenchmarkGenerator:
                 "generator": gen_type,
                 "preset": preset,
                 "map_data": list(map_data),
-                "secondary": [],
-                "metadata": {
-                    "description": f"{bucket} tier {tier} ({gen_type}:{preset})",
-                    "split": split,
-                    "source": "procedural",
-                    "map_hash": map_hash,
-                    "index": index,
-                },
+                "secondary": secondary,
+                "metadata": metadata,
             }
 
         self._skipped.append(

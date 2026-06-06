@@ -176,6 +176,190 @@ impl Simulator {
         }
     }
 
+    /// Serialize the COMPLETE mutable simulation state to a byte blob for
+    /// replay-free Go-Explore checkpoint restore. Layout:
+    ///   [frame: u32][ninja_len: u32][ninja bytes][n_entities: u32]
+    ///   [per entity: tag u8 + mutable fields]
+    /// The ninja portion uses `Ninja::to_bytes` which is exhaustive (all
+    /// buffers: jump/floor/wall/launch_pad; all booleans: airborn/airborn_old/
+    /// walled/is_jump_useless/last_jump_was_buffered/is_crushable/terminal_impact;
+    /// normals, counts, crush, inputs, death state, gold/doors, temporal). The
+    /// entity portion captures every per-entity mutable field.
+    /// `restore_full_state` must run on a Simulator with the SAME map loaded.
+    pub fn save_full_state(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(1024);
+        out.extend_from_slice(&self.frame.to_le_bytes());
+        let nb = self.ninja.to_bytes();
+        out.extend_from_slice(&(nb.len() as u32).to_le_bytes());
+        out.extend_from_slice(&nb);
+        out.extend_from_slice(&(self.entities.len() as u32).to_le_bytes());
+        for entity in &self.entities {
+            match entity {
+                Entity::ToggleMine(e) => {
+                    out.push(1);
+                    out.push(e.active as u8);
+                    out.push(e.state);
+                    out.extend_from_slice(&e.xpos.to_le_bytes());
+                    out.extend_from_slice(&e.ypos.to_le_bytes());
+                    out.extend_from_slice(&e.radius.to_le_bytes());
+                }
+                Entity::Gold(e) => {
+                    out.push(2);
+                    out.push(e.active as u8);
+                    out.extend_from_slice(&e.xpos.to_le_bytes());
+                    out.extend_from_slice(&e.ypos.to_le_bytes());
+                }
+                Entity::ExitSwitch(e) => {
+                    out.push(4);
+                    out.push(e.active as u8);
+                    out.extend_from_slice(&e.xpos.to_le_bytes());
+                    out.extend_from_slice(&e.ypos.to_le_bytes());
+                }
+                Entity::ExitDoor(e) => {
+                    out.push(3);
+                    out.push(e.switch_hit as u8);
+                    out.extend_from_slice(&e.xpos.to_le_bytes());
+                    out.extend_from_slice(&e.ypos.to_le_bytes());
+                }
+                Entity::LockedDoor(e) => {
+                    out.push(6);
+                    out.push(e.active as u8);
+                    out.push(e.closed as u8);
+                    out.push(e.orientation);
+                    out.extend_from_slice(&e.xpos.to_le_bytes());
+                    out.extend_from_slice(&e.ypos.to_le_bytes());
+                }
+            }
+        }
+        out
+    }
+
+    /// Restore complete state captured by `save_full_state` (no action replay).
+    /// Rebuilds the entity grid afterwards so collision queries reflect the
+    /// restored entity states (e.g. an opened exit door re-enters the grid).
+    /// Restore complete state from a `save_full_state` blob. Returns `true` on
+    /// success, `false` if the blob is INCOMPATIBLE with the currently-loaded
+    /// level (different entity count / types, or truncated). On failure NOTHING
+    /// is mutated, so the caller can fall back to action replay. This guards
+    /// against a Go-Explore checkpoint captured on one level being restored onto
+    /// a different level (e.g. 3-entity vs 2-entity), which previously panicked
+    /// with an out-of-bounds index and killed the worker.
+    pub fn restore_full_state(&mut self, data: &[u8]) -> bool {
+        // Expected per-entity field byte count (after the 1-byte tag), and the
+        // tag each current entity variant must match.
+        fn field_len(tag: u8) -> Option<usize> {
+            match tag {
+                1 => Some(1 + 1 + 8 + 8 + 8), // ToggleMine: active,state,x,y,radius
+                2 => Some(1 + 8 + 8),         // Gold: active,x,y
+                4 => Some(1 + 8 + 8),         // ExitSwitch: active,x,y
+                3 => Some(1 + 8 + 8),         // ExitDoor: switch_hit,x,y
+                6 => Some(1 + 1 + 1 + 8 + 8), // LockedDoor: active,closed,orient,x,y
+                _ => None,
+            }
+        }
+        fn expected_tag(e: &Entity) -> u8 {
+            match e {
+                Entity::ToggleMine(_) => 1,
+                Entity::Gold(_) => 2,
+                Entity::ExitSwitch(_) => 4,
+                Entity::ExitDoor(_) => 3,
+                Entity::LockedDoor(_) => 6,
+            }
+        }
+
+        // ---- Phase 1: validate WITHOUT mutating ----
+        let mut p = 0usize;
+        if data.len() < 8 {
+            return false;
+        }
+        p += 4; // frame
+        let nlen = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
+        p += 4;
+        if p + nlen + 4 > data.len() {
+            return false;
+        }
+        p += nlen; // ninja bytes
+        let n_ent = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
+        p += 4;
+        if n_ent != self.entities.len() {
+            return false; // cross-level snapshot — entity count differs
+        }
+        for i in 0..n_ent {
+            if p + 1 > data.len() {
+                return false;
+            }
+            let tag = data[p];
+            p += 1;
+            if tag != expected_tag(&self.entities[i]) {
+                return false; // entity layout differs (different level)
+            }
+            match field_len(tag) {
+                Some(fl) if p + fl <= data.len() => p += fl,
+                _ => return false, // unknown tag or truncated
+            }
+        }
+
+        // ---- Phase 2: apply (validated -> all reads are in bounds) ----
+        let mut p = 0usize;
+        let read_u32 = |d: &[u8], p: &mut usize| -> u32 {
+            let v = u32::from_le_bytes(d[*p..*p + 4].try_into().unwrap());
+            *p += 4;
+            v
+        };
+        let read_f64 = |d: &[u8], p: &mut usize| -> f64 {
+            let v = f64::from_le_bytes(d[*p..*p + 8].try_into().unwrap());
+            *p += 8;
+            v
+        };
+        let read_u8 = |d: &[u8], p: &mut usize| -> u8 {
+            let v = d[*p];
+            *p += 1;
+            v
+        };
+
+        self.frame = read_u32(data, &mut p);
+        let nlen = read_u32(data, &mut p) as usize;
+        self.ninja = crate::ninja::Ninja::from_bytes(&data[p..p + nlen]);
+        p += nlen;
+        let n_ent = read_u32(data, &mut p) as usize;
+        for i in 0..n_ent {
+            let _tag = read_u8(data, &mut p);
+            match &mut self.entities[i] {
+                Entity::ToggleMine(e) => {
+                    e.active = read_u8(data, &mut p) != 0;
+                    e.state = read_u8(data, &mut p);
+                    e.xpos = read_f64(data, &mut p);
+                    e.ypos = read_f64(data, &mut p);
+                    e.radius = read_f64(data, &mut p);
+                }
+                Entity::Gold(e) => {
+                    e.active = read_u8(data, &mut p) != 0;
+                    e.xpos = read_f64(data, &mut p);
+                    e.ypos = read_f64(data, &mut p);
+                }
+                Entity::ExitSwitch(e) => {
+                    e.active = read_u8(data, &mut p) != 0;
+                    e.xpos = read_f64(data, &mut p);
+                    e.ypos = read_f64(data, &mut p);
+                }
+                Entity::ExitDoor(e) => {
+                    e.switch_hit = read_u8(data, &mut p) != 0;
+                    e.xpos = read_f64(data, &mut p);
+                    e.ypos = read_f64(data, &mut p);
+                }
+                Entity::LockedDoor(e) => {
+                    e.active = read_u8(data, &mut p) != 0;
+                    e.closed = read_u8(data, &mut p) != 0;
+                    e.orientation = read_u8(data, &mut p);
+                    e.xpos = read_f64(data, &mut p);
+                    e.ypos = read_f64(data, &mut p);
+                }
+            }
+        }
+        self.rebuild_entity_grid();
+        true
+    }
+
     /// Execute one full physics frame.
     pub fn tick(&mut self, hor_input: i32, jump_input: i32) {
         self.frame += 1;
@@ -828,6 +1012,23 @@ impl Simulator {
             frame: self.frame,
             action_mask: self.ninja.get_valid_action_mask(),
             tile_grid,
+        }
+    }
+
+    /// Like `get_state` but WITHOUT the (static, never-changing) tile grid.
+    /// The per-tick hot path only needs ninja + entities + frame + action_mask;
+    /// the tile grid is built once at load. Skipping the ~1100-byte grid copy
+    /// every tick removes pure marshalling waste (matters most at frame_skip=1,
+    /// where the proxy syncs every primitive frame with no amortization).
+    pub fn get_state_dynamic(&self) -> SimulatorState {
+        let entity_snapshots: Vec<EntitySnapshot> =
+            self.entities.iter().map(|e| e.snapshot()).collect();
+        SimulatorState {
+            ninja: self.ninja.snapshot(),
+            entities: entity_snapshots,
+            frame: self.frame,
+            action_mask: self.ninja.get_valid_action_mask(),
+            tile_grid: Vec::new(),
         }
     }
 

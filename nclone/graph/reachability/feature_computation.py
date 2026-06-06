@@ -280,6 +280,7 @@ def compute_reachability_features_from_graph(
     goal_positions: Optional[Dict[str, Any]] = None,
     *,
     include_navigation_features: bool = True,
+    distances_only: bool = False,
 ) -> Tuple[np.ndarray, float, float]:
     """
     Compute 8-dimensional streamlined reachability features.
@@ -502,6 +503,13 @@ def compute_reachability_features_from_graph(
         _reach_diagnostics["inf_count"] += 1
     else:
         _reach_diagnostics["finite_count"] += 1
+
+    # PBRS fast path: the reward only needs the two raw sub-node-resolved
+    # distances (computed above). Skip the feature vector + normalization + the
+    # navigation/directional work entirely. The caller computes this EVERY frame
+    # (no 24px cell cache), so slow <=1px movement still yields a PBRS gradient.
+    if distances_only:
+        return features, switch_distance_raw, exit_distance_raw
 
     # Features 0-1: Path distances normalized to [0, 1] using LEVEL_DIAGONAL.
     # LEVEL_DIAGONAL (~1215 px) is the maximum possible straight-line distance in the

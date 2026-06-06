@@ -71,11 +71,14 @@ def parse_entities_from_map_data(map_data: List[int]) -> dict:
         "mines": [],
     }
 
-    # Parse ninja spawn (indices 1231-1233)
-    ninja_x = map_data[1231] // 6  # Convert from map data units to tiles
-    ninja_y = map_data[1232] // 6
+    # Parse ninja spawn (indices 1231-1233). Decode through the authoritative,
+    # per-entity-offset-aware converter -- the old ``// 6`` (with no offset
+    # subtraction) mis-placed the ninja and any offset-bearing entity.
+    from .compose import coords
+
+    nx, ny = coords.entity_units_to_grid(0, map_data[1231], map_data[1232])
     ninja_orientation = map_data[1233]
-    entities["ninja"] = (ninja_x, ninja_y, ninja_orientation)
+    entities["ninja"] = (round(nx), round(ny), ninja_orientation)
 
     # Parse entity data (starts at index 1235)
     entity_data = map_data[1235:]
@@ -85,17 +88,20 @@ def parse_entities_from_map_data(map_data: List[int]) -> dict:
             break
 
         entity_type = entity_data[i]
-        entity_x = entity_data[i + 1] // 6  # Convert to tiles
-        entity_y = entity_data[i + 2] // 6
+        gx, gy = coords.entity_units_to_grid(
+            entity_type, entity_data[i + 1], entity_data[i + 2]
+        )
+        entity_x, entity_y = round(gx), round(gy)
 
         if entity_type == 3:  # Exit door
             entities["doors"].append((entity_x, entity_y))
             # Next entity should be switch (type 4)
             i += 5
             if i + 4 < len(entity_data) and entity_data[i] == 4:
-                switch_x = entity_data[i + 1] // 6
-                switch_y = entity_data[i + 2] // 6
-                entities["switches"].append((switch_x, switch_y))
+                sgx, sgy = coords.entity_units_to_grid(
+                    4, entity_data[i + 1], entity_data[i + 2]
+                )
+                entities["switches"].append((round(sgx), round(sgy)))
                 i += 5
         elif entity_type in (1, 21):  # Mines (toggle mine, toggled mine)
             entities["mines"].append((entity_x, entity_y))

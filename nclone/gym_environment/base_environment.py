@@ -1935,6 +1935,88 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         """
         return self._checkpoint_replay_in_progress
 
+    def get_state_snapshot(self):
+        """Return a complete, picklable simulation-state snapshot.
+
+        Used by Go-Explore to checkpoint the EXACT current state so it can be
+        restored later without replaying actions (see ``_restore_from_snapshot``).
+        Delegates to the active physics backend; works for both python and
+        native. Returns ``None`` if the backend cannot snapshot.
+        """
+        getter = getattr(self.nplay_headless, "get_state_snapshot", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception as exc:  # noqa: BLE001 - never let snapshotting crash a step
+            logger.warning(f"get_state_snapshot failed: {exc}")
+            return None
+
+    def _restore_from_snapshot(
+        self, checkpoint
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Restore a checkpoint by loading its complete state snapshot directly.
+
+        This is the replay-FREE Go-Explore restore path. Because we set the exact
+        captured ninja + entity + frame state, the resulting position is exact by
+        construction: there is NO action replay and therefore NO position drift /
+        mismatch / replay-death. If the checkpoint has no usable snapshot (e.g. a
+        demo checkpoint, or a snapshot from a different backend), we fall back to
+        the faithful action-replay path so behaviour degrades gracefully.
+
+        Returns a ``(processed_obs, info)`` tuple shaped like
+        ``_reset_to_checkpoint_from_wrapper`` so the GoExploreVecEnv handler is
+        identical, but with ``replay_frames=0`` and ``replay_failed=False``.
+        """
+        blob = getattr(checkpoint, "state_snapshot", None)
+        setter = getattr(self.nplay_headless, "set_state_snapshot", None)
+        if blob is None or setter is None:
+            # No snapshot available -> faithful action replay (legacy behaviour).
+            return self._reset_to_checkpoint_from_wrapper(checkpoint)
+
+        try:
+            setter(blob)
+        except Exception as exc:  # noqa: BLE001 - fall back rather than crash
+            logger.warning(
+                f"Snapshot restore failed ({exc}); falling back to action replay"
+            )
+            return self._reset_to_checkpoint_from_wrapper(checkpoint)
+
+        # Mark episode bookkeeping identically to the replay path.
+        self._checkpoint_replay_in_progress = False
+        self._from_checkpoint = True
+        self._checkpoint_base_reward = getattr(checkpoint, "cumulative_reward", 0.0)
+        self._checkpoint_source_frame_skip = getattr(
+            checkpoint, "source_frame_skip", self.frame_skip
+        )
+        # Fresh route starting at the restored position.
+        current_pos = self.nplay_headless.ninja_position()
+        current_vel = self.nplay_headless.ninja_velocity()
+        self.current_route = (
+            [(float(current_pos[0]), float(current_pos[1]))] if current_pos else []
+        )
+
+        initial_obs = self._get_observation()
+        processed_obs = self._process_observation(initial_obs)
+
+        info = {
+            "checkpoint_replay": True,
+            "checkpoint_restore_mode": "snapshot",
+            "replay_frames": 0,
+            "position_valid": True,
+            "checkpoint_cell": getattr(checkpoint, "cell", None),
+            "checkpoint_distance": getattr(checkpoint, "distance_to_goal", None),
+            "checkpoint_route": list(self.current_route),
+            "checkpoint_source": getattr(checkpoint, "source", "unknown"),
+            "replay_failed": False,
+            "replay_failure_reason": None,
+            "player_x": current_pos[0] if current_pos else 0.0,
+            "player_y": current_pos[1] if current_pos else 0.0,
+            "player_xspeed": current_vel[0] if current_vel else 0.0,
+            "player_yspeed": current_vel[1] if current_vel else 0.0,
+        }
+        return (processed_obs, info)
+
     def _reset_to_checkpoint_from_wrapper(
         self, checkpoint
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:

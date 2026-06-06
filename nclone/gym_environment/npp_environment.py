@@ -874,7 +874,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         calculator falls back to direct path cost queries.
         """
         try:
-            self._compute_reachability(self.nplay_headless.ninja_position())
+            # Compute the reward distances EVERY frame at sub-node resolution
+            # (not the 24px-cell-cached _compute_reachability, whose feature vector
+            # is unused in Layer 1). This keeps the PBRS/HWM gradient alive during
+            # slow <=1px movement while skipping the wasted feature-vector work.
+            self._refresh_reward_distances(self.nplay_headless.ninja_position())
         except Exception:
             pass
 
@@ -915,15 +919,28 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     int(ninja.xpos) - NODE_WORLD_COORD_OFFSET,
                     int(ninja.ypos) - NODE_WORLD_COORD_OFFSET,
                 )
-                dy = find_platform_in_direction(
-                    node_pos,
-                    (0, 1),  # South = downward in screen coords
-                    base_adjacency,
-                    physics_cache,
-                    spatial_hash,
-                    max_distance=500.0,
-                    step_size=12,
-                )
+                # The downward raycast result is a pure function of node_pos and
+                # the (static, per-level) graph, but it costs ~40 spatial-hash
+                # queries. Memoize it per level keyed by node_pos. ``graph_data``
+                # is rebuilt (fresh dict) on level change, so the memo auto-
+                # invalidates. Bit-identical: only the raycast distance is cached;
+                # the min() with the continuous height bound is applied after.
+                memo = graph_data.get("_downcast_memo")
+                if memo is None:
+                    memo = {}
+                    graph_data["_downcast_memo"] = memo
+                dy = memo.get(node_pos)
+                if dy is None:
+                    dy = find_platform_in_direction(
+                        node_pos,
+                        (0, 1),  # South = downward in screen coords
+                        base_adjacency,
+                        physics_cache,
+                        spatial_hash,
+                        max_distance=500.0,
+                        step_size=12,
+                    )
+                    memo[node_pos] = dy
                 dy = min(dy, max(0.0, LEVEL_HEIGHT_PX - ninja.ypos))
             else:
                 dy = max(0.0, LEVEL_HEIGHT_PX - ninja.ypos)

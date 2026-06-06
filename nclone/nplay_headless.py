@@ -405,6 +405,24 @@ class NPlayHeadless:
     def ninja_velocity(self):
         return self.sim.ninja.xspeed, self.sim.ninja.yspeed
 
+    def get_state_snapshot(self):
+        """Capture complete simulation state for replay-free checkpoint restore.
+
+        Returns a backend-tagged, picklable blob ``("python", state)``. The tag
+        lets :meth:`set_state_snapshot` reject a snapshot taken under a different
+        physics backend.
+        """
+        return ("python", self.sim.get_full_state())
+
+    def set_state_snapshot(self, blob):
+        """Restore a snapshot from :meth:`get_state_snapshot` (no action replay)."""
+        backend, state = blob
+        if backend != "python":
+            raise ValueError(
+                f"Cannot restore a {backend!r} snapshot into the python backend"
+            )
+        self.sim.restore_full_state(state)
+
     def ninja_velocity_old(self):
         """Get ninja's previous frame velocities for impact risk calculation."""
         return self.sim.ninja.xspeed_old, self.sim.ninja.yspeed_old

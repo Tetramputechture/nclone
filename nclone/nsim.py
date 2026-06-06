@@ -1,3 +1,4 @@
+import copy
 import logging
 
 from .sim_config import SimConfig
@@ -161,6 +162,78 @@ class Simulator:
                 # Exit doors are only added to grid after switch collection
                 if type(entity).__name__ != "EntityExit":
                     self.grid_entity[entity.cell].append(entity)
+
+    def get_full_state(self):
+        """Capture the COMPLETE mutable simulation state for exact restoration.
+
+        Returns a deep copy of the dynamic state — frame counter, the ninja, and
+        every entity (with grid membership preserved) — so it can be restored
+        later to resume the simulation bit-identically WITHOUT replaying actions.
+        This backs Go-Explore checkpointing (no action replay -> no position
+        drift). The blob is plain-picklable (it crosses the SubprocVecEnv
+        boundary): we temporarily detach the ``sim`` back-references (which point
+        at this Simulator and, through it, the gym env / renderer) before the
+        deepcopy and reattach them afterwards, so only physics state is copied.
+
+        Tiles/segments/grid-edges are immutable for a loaded map and are NOT
+        copied; ``restore_full_state`` must be called on a Simulator that has the
+        SAME map loaded.
+        """
+        ninja_sim = getattr(self.ninja, "sim", None)
+        if self.ninja is not None:
+            self.ninja.sim = None
+        detached = []
+        for entity_list in self.entity_dic.values():
+            for entity in entity_list:
+                if hasattr(entity, "sim"):
+                    detached.append((entity, entity.sim))
+                    entity.sim = None
+        try:
+            blob = copy.deepcopy(
+                {
+                    "frame": self.frame,
+                    "ninja": self.ninja,
+                    "entity_dic": self.entity_dic,
+                    "grid_entity": self.grid_entity,
+                }
+            )
+        finally:
+            if self.ninja is not None:
+                self.ninja.sim = ninja_sim
+            for entity, sim_ref in detached:
+                entity.sim = sim_ref
+        return blob
+
+    def _entity_signature(self, entity_dic):
+        """Cheap structural signature: sorted (entity_type, count) pairs."""
+        return tuple(sorted((k, len(v)) for k, v in entity_dic.items()))
+
+    def restore_full_state(self, blob):
+        """Restore state captured by :meth:`get_full_state` (no action replay).
+
+        Replaces the ninja, entity dict and entity grid wholesale with the
+        snapshot's deep-copied objects and reattaches the ``sim`` back-reference
+        so the restored objects query THIS Simulator. The map (tiles/segments)
+        must be the same as when the snapshot was taken.
+
+        Raises ValueError if the snapshot's entity structure does not match the
+        currently-loaded level (e.g. a Go-Explore checkpoint from a different
+        level), so the caller can fall back to action replay instead of silently
+        loading another level's entities onto this level's tiles.
+        """
+        if self._entity_signature(blob["entity_dic"]) != self._entity_signature(
+            self.entity_dic
+        ):
+            raise ValueError("snapshot incompatible with current level")
+        self.frame = blob["frame"]
+        self.ninja = blob["ninja"]
+        self.ninja.sim = self
+        self.entity_dic = blob["entity_dic"]
+        self.grid_entity = blob["grid_entity"]
+        for entity_list in self.entity_dic.values():
+            for entity in entity_list:
+                if hasattr(entity, "sim"):
+                    entity.sim = self
 
     def reset_map_entity_data(self):
         """Reset the map entity data. This is used when a new map is loaded or when the map is reset.

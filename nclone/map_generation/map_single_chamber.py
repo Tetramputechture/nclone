@@ -122,6 +122,24 @@ class SingleChamberGenerator(Map):
             switch_x = door_x + self.rng.randint(1, max(1, play_x2 - door_x - 1))
             ninja_x = switch_x + self.rng.randint(1, max(1, play_x2 - switch_x))
 
+        # Trivial on-ramp: force the switch within SWITCH_DOOR_MAX_SEP tiles of
+        # the door and the ninja just beyond the switch, so the route is the
+        # shortest possible switch->door traversal on a small chamber. 0 keeps
+        # the independent random placement above (legacy behavior).
+        max_sep = getattr(self, "SWITCH_DOOR_MAX_SEP", 0)
+        if max_sep and max_sep > 0 and play_x2 - play_x1 >= 2:
+            door_x = min(max(self.rng.randint(play_x1 + 1, play_x2 - 1), play_x1 + 1), play_x2 - 1)
+            sep = self.rng.randint(1, max_sep)
+            if door_x - sep >= play_x1 + 1:
+                switch_x = door_x - sep
+            else:
+                switch_x = min(door_x + sep, play_x2 - 1)
+            nin_sep = self.rng.randint(1, max_sep + 1)
+            if switch_x <= door_x:
+                ninja_x = max(switch_x - nin_sep, play_x1 + 1)
+            else:
+                ninja_x = min(switch_x + nin_sep, play_x2 - 1)
+
         # Handle surface deviations
         deviations = {}
         should_deviate = self.rng.choice([True, False])

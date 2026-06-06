@@ -27,7 +27,7 @@ for the gold-collection objective (see ``docs/GOLD_COLLECTION_HANDOFF.md``).
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -181,20 +181,33 @@ def _inner_tile_bounds_for_kill_zone(
     return tx_min, tx_max, ty_min, ty_max
 
 
-def _accumulate_mine_density(
-    mines: Sequence[Any],
-    out: np.ndarray,
-) -> None:
-    """Fill ``out`` with mine counts / ``MINE_DENSITY_NORMALIZER``, clamped to [0, 1]."""
-    counts = np.zeros((MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.int32)
+# Cache of each mine's kill-zone tile footprint, keyed by pixel position.
+# A mine's footprint (the set of inner tiles its kill-zone circle overlaps) is a
+# pure function of its STATIC position, so it is computed once and reused every
+# step. This turns the per-step mine-density build from a per-mine numpy
+# arange/clip/broadcast (the dominant env.step cost — ~74% in profiling) into a
+# cached gather + in-place add, with bit-identical output. Keyed by (mx, my)
+# floats: positions are deterministic and repeat exactly each step, and the
+# footprint depends only on position so it is safe to share across envs/levels.
+_MINE_FOOTPRINT_CACHE: Dict[Tuple[float, float], np.ndarray] = {}
+
+
+def _mine_kill_zone_footprint(mx: float, my: float) -> np.ndarray:
+    """Flat inner-tile indices (``tx * MAP_TILE_HEIGHT + ty``) a mine's kill zone
+    overlaps. Computed once per position via the exact same overlap test as the
+    reference, then cached. Indices within a single mine's footprint are unique.
+    """
+    key = (mx, my)
+    fp = _MINE_FOOTPRINT_CACHE.get(key)
+    if fp is not None:
+        return fp
     r = MINE_KILL_ZONE_RADIUS_PX
     r2 = r * r
     ts = float(TILE_PIXEL_SIZE)
-    for m in mines:
-        mx, my = _entity_pixel_xy(m)
-        tx_min, tx_max, ty_min, ty_max = _inner_tile_bounds_for_kill_zone(mx, my, r)
-        if tx_min > tx_max or ty_min > ty_max:
-            continue
+    tx_min, tx_max, ty_min, ty_max = _inner_tile_bounds_for_kill_zone(mx, my, r)
+    if tx_min > tx_max or ty_min > ty_max:
+        fp = np.empty(0, dtype=np.intp)
+    else:
         txs = np.arange(tx_min, tx_max + 1, dtype=np.float64)
         tys = np.arange(ty_min, ty_max + 1, dtype=np.float64)
         tx_lo = (txs + 1.0) * ts
@@ -205,9 +218,54 @@ def _accumulate_mine_density(
         cy = np.clip(my, ty_lo[None, :], ty_hi[None, :])
         dx = mx - cx
         dy = my - cy
-        overlap = (dx * dx + dy * dy) <= r2
-        counts[tx_min : tx_max + 1, ty_min : ty_max + 1] += overlap.astype(np.int32)
-    out[:] = np.minimum(counts.astype(np.float32) / MINE_DENSITY_NORMALIZER, 1.0)
+        overlap = (dx * dx + dy * dy) <= r2  # (ntx, nty)
+        oi, oj = np.nonzero(overlap)
+        gtx = tx_min + oi
+        gty = ty_min + oj
+        fp = (gtx * MAP_TILE_HEIGHT + gty).astype(np.intp)
+    _MINE_FOOTPRINT_CACHE[key] = fp
+    return fp
+
+
+# Cache of the finished density grid keyed by the mine position multiset. The
+# grid is a pure function of which mines are in the set; mine positions are
+# static, so the set only changes when a mine toggles (deadly<->safe) — rare
+# relative to the per-step cadence. Keyed by sorted positions (order-independent,
+# preserves duplicates); capped to bound memory.
+_MINE_DENSITY_GRID_CACHE: Dict[Tuple[Tuple[float, float], ...], np.ndarray] = {}
+_MINE_DENSITY_GRID_CACHE_CAP = 4096
+
+
+def _accumulate_mine_density(
+    mines: Sequence[Any],
+    out: np.ndarray,
+) -> None:
+    """Fill ``out`` with mine counts / ``MINE_DENSITY_NORMALIZER``, clamped to [0, 1].
+
+    Bit-identical to the per-mine overlap reference. Two layers of caching keep
+    this off the hot path: the finished density grid is cached by the mine
+    position multiset (recomputed only on a toggle), and on a cache miss each
+    mine's kill-zone footprint is itself cached (positions are static).
+    """
+    positions = tuple(_entity_pixel_xy(m) for m in mines)
+    key = tuple(sorted(positions))
+    cached = _MINE_DENSITY_GRID_CACHE.get(key)
+    if cached is not None:
+        out[:] = cached
+        return
+    counts = np.zeros(MAP_TILE_WIDTH * MAP_TILE_HEIGHT, dtype=np.int32)
+    for mx, my in positions:
+        fp = _mine_kill_zone_footprint(mx, my)
+        if fp.size:
+            counts[fp] += 1  # footprint indices are unique within a mine
+    grid = np.minimum(
+        counts.reshape(MAP_TILE_WIDTH, MAP_TILE_HEIGHT).astype(np.float32)
+        / MINE_DENSITY_NORMALIZER,
+        1.0,
+    )
+    if len(_MINE_DENSITY_GRID_CACHE) < _MINE_DENSITY_GRID_CACHE_CAP:
+        _MINE_DENSITY_GRID_CACHE[key] = grid
+    out[:] = grid
 
 
 def _accumulate_gold_density(

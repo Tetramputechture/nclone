@@ -116,3 +116,29 @@ class GeneratorFactory:
 
         config = GENERATOR_PRESETS[generator_type][preset]
         return GeneratorFactory.create_generator(generator_type, config, seed)
+
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass
+class _NullConfig:
+    """Empty config for composable-template generators (no UPPERCASE patching)."""
+
+
+def _register_compose_templates() -> None:
+    """Expose every registered composable template as a ``template_<name>``
+    generator with a ``default`` preset, additively. This touches no existing
+    generator/preset/catalog entry, so the legacy pipeline is byte-unchanged.
+    """
+    from .compose.registry import TEMPLATE_REGISTRY
+    from .compose.adapters import make_template_generator
+
+    for tname in TEMPLATE_REGISTRY:
+        key = f"template_{tname}"
+        if key not in GENERATOR_REGISTRY:
+            GENERATOR_REGISTRY[key] = make_template_generator(tname)
+        GENERATOR_PRESETS.setdefault(key, {"default": _NullConfig()})
+
+
+_register_compose_templates()

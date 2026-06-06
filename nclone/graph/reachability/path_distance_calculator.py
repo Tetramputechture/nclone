@@ -130,6 +130,18 @@ class CachedPathDistanceCalculator:
         self._step_cache_hits = 0
         self._step_cache_misses = 0
 
+        # Goal-node cache: the snapped goal node is a pure function of (goal,
+        # entity_radius, adjacency). The masked adjacency is built once per level
+        # and cached as the SAME object for the whole level (GraphMixin caches
+        # current_graph_data by level_id; mine toggles do NOT re-mask it), so the
+        # goal node is constant within a level. We cache it keyed by (goal,
+        # entity_radius) and invalidate by OBJECT IDENTITY: whenever the adjacency
+        # object changes we clear and rebind. Holding the reference prevents the
+        # object's id from being reused by a different adjacency (the only way an
+        # id-based key could go stale).
+        self._goal_node_cache: Dict[Tuple, Tuple[int, int]] = {}
+        self._gn_cache_adj = None
+
         # OPTIMIZATION: Step-scoped ninja node cache to avoid redundant find_ninja_node
         # Key: (rounded_pos, goal_id) -> ninja_node. Cleared each step.
         # Same ninja position queried 5x/step for observation + reward; cache to 1-2 lookups.
@@ -631,17 +643,25 @@ class CachedPathDistanceCalculator:
                 # build_level_cache() now sets _current_level_id, but ensure it's set here too
                 self._current_level_id = level_id
 
-            # Find goal node using spatial hash for O(1) lookup
+            # Find goal node using spatial hash for O(1) lookup. The snapped node
+            # is constant for a given adjacency object (built once per level), so
+            # cache it keyed by (goal, radius) and invalidate by adjacency identity.
             with self.timer.measure("find_goal_node"):
-                goal_node = find_closest_node_to_position(
-                    goal,
-                    adjacency,
-                    threshold=None,  # Will be calculated from radii (16px default)
-                    entity_radius=entity_radius,
-                    ninja_radius=ninja_radius,
-                    spatial_hash=self._spatial_hash,
-                    subcell_lookup=subcell_lookup,
-                )
+                if adjacency is not self._gn_cache_adj:
+                    self._goal_node_cache.clear()
+                    self._gn_cache_adj = adjacency  # hold ref -> no id reuse
+                _gn_key = (goal, entity_radius)
+                goal_node = self._goal_node_cache.get(_gn_key)
+                if goal_node is None:
+                    goal_node = find_closest_node_to_position(
+                        goal,
+                        adjacency,
+                        threshold=None,  # Will be calculated from radii (16px default)
+                        entity_radius=entity_radius,
+                        ninja_radius=ninja_radius,
+                        spatial_hash=self._spatial_hash,
+                        subcell_lookup=subcell_lookup,
+                    )
 
                 # Fallback: If 16px threshold fails, try with larger threshold (32px)
                 # This handles edge cases where the nearest node is slightly further
@@ -661,6 +681,9 @@ class CachedPathDistanceCalculator:
                             f"Goal node found with extended threshold (32px): "
                             f"goal={goal}, node={goal_node}"
                         )
+                # Cache the (per-level-constant) snapped goal node.
+                if goal_node is not None:
+                    self._goal_node_cache[_gn_key] = goal_node
 
             # Only proceed if we found a valid goal node within threshold
             if goal_node is not None:

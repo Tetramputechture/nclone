@@ -114,12 +114,46 @@ class NativePlayHeadless:
 
         if profile:
             t0 = time.perf_counter()
-        state = self._native_sim.get_state()
+        # The tile grid is static per level. Pay for the full snapshot only on the
+        # first sync after a (re)load to populate tile_dic; every subsequent tick
+        # uses the lean snapshot that omits the ~1100-byte tile grid copy. At
+        # frame_skip=1 (FiGAR-PPO) this is the per-primitive-frame hot path.
+        if self.sim is not None and self.sim._tile_dic_cache_valid:
+            state = self._native_sim.get_state_dynamic()
+        else:
+            state = self._native_sim.get_state()
         if profile:
             env._profile_end("sync_get_state", t0)
         self.sim._update_from_snapshot(
             state, self._native_sim, profile_env=env if profile else None
         )
+
+    def get_state_snapshot(self):
+        """Capture complete simulation state for replay-free checkpoint restore.
+
+        Returns a backend-tagged, picklable blob ``("native", bytes)`` covering
+        the frame counter, the full ninja (all buffers + booleans via
+        ``Ninja::to_bytes``) and every entity's mutable state.
+        """
+        if self._native_sim is None:
+            return None
+        return ("native", bytes(self._native_sim.save_full_state()))
+
+    def set_state_snapshot(self, blob):
+        """Restore a snapshot from :meth:`get_state_snapshot` (no action replay)."""
+        backend, data = blob
+        if backend != "native":
+            raise ValueError(
+                f"Cannot restore a {backend!r} snapshot into the native backend"
+            )
+        if self._native_sim is None:
+            raise RuntimeError("native simulator not loaded")
+        # Returns False if the snapshot is incompatible with the loaded level
+        # (e.g. a Go-Explore checkpoint from a different level / entity count).
+        # Raise so the env's _restore_from_snapshot falls back to action replay.
+        if not self._native_sim.restore_full_state(list(data)):
+            raise ValueError("snapshot incompatible with current level")
+        self._sync_proxy()
 
     def get_ninja_state(self):
         """Get ninja state as a list of 23 normalized floats matching NPlayHeadless exactly.
@@ -252,12 +286,11 @@ class NativePlayHeadless:
         return proxy
 
     def _get_switch_door_from_snapshot(self):
-        """Read switch/door from snapshot.entities (no entity_dic needed)."""
-        if self.sim._snapshot is None:
+        """Read switch/door from the per-tick cache (scanned once in _update_from_snapshot)."""
+        cache = getattr(self.sim, "_switch_door_cache", None)
+        if cache is None:
             return (0.0, 0.0), True, (0.0, 0.0)
-        (switch_pos, switch_active), door_pos = _get_switch_door_from_entities(
-            self.sim._snapshot.entities
-        )
+        (switch_pos, switch_active), door_pos = cache
         return switch_pos, switch_active, door_pos
 
     def exit_switch_activated(self):
@@ -544,6 +577,7 @@ class _SimProxy:
         self.grid_entity = {}
         self.gym_env = None
         self._snapshot = None
+        self._switch_door_cache = None  # ((switch_pos, switch_active), door_pos) per tick
         self._headless = headless
         self.map_data = None
         # Parity with nclone.nsim.Simulator: action-masking knobs the env reads/writes.
@@ -581,6 +615,11 @@ class _SimProxy:
         self.frame = state.frame
         self.ninja._update_from_snapshot(state.ninja)
         self._entity_dic_valid = False  # Invalidate - entities may have changed
+        # Scan entities for switch/door ONCE per tick and cache. Goal accessors
+        # (exit_switch_position/activated, exit_door_position) and the reward's
+        # goal-position lookup hit these many times per step; scanning every call
+        # was ~11 entity sweeps/step.
+        self._switch_door_cache = _get_switch_door_from_entities(state.entities)
         profile = profile_env and getattr(profile_env, "profile_enabled", False)
         # Tile grid is static per level - only rebuild when cache invalidated
         # Uses state.tile_grid (bundled in get_state) - no separate get_tile_grid() FFI

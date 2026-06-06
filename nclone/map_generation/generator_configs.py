@@ -138,6 +138,13 @@ class SingleChamberConfig:
     add_floor_mines: bool = False
     add_platform_gap: bool = False
     add_ceiling_obstacles: bool = False
+    # Trivial on-ramp knob: when > 0, the switch is forced within this many
+    # tiles of the exit door (and the ninja spawns just beyond the switch),
+    # producing a near-trivial switch->door route on a small chamber. 0 keeps
+    # the legacy independent random placement. The size curriculum interpolates
+    # this field, so a tiny sep=1 floor preset anneals back to 0 (unconstrained)
+    # as the bucket's size grows. See FLAT_RUN ``flat_run_onramp`` preset.
+    switch_door_max_sep: int = 0
 
 
 @dataclass
@@ -1202,6 +1209,24 @@ GENERATOR_PRESETS["horizontal_corridor"].update(
 )
 GENERATOR_PRESETS["single_chamber"].update(
     {
+        # Trivial curriculum on-ramp: a tiny enclosed chamber with the switch
+        # placed adjacent to the exit door and the ninja just beyond it, so the
+        # required route is the shortest possible switch->door traversal. This is
+        # the size-curriculum FLAT_RUN floor (size~0); ``switch_door_max_sep``
+        # anneals to 0 as size grows (see _DIMENSION_FIELDS in the size source).
+        "flat_run_onramp": SingleChamberConfig(
+            min_width=4,
+            max_width=6,
+            min_height=3,
+            max_height=4,
+            global_max_up_deviation=0,
+            global_max_down_deviation=0,
+            add_center_obstacle=False,
+            add_floor_mines=False,
+            add_platform_gap=False,
+            add_ceiling_obstacles=False,
+            switch_door_max_sep=1,
+        ),
         "flat_run_t1": SingleChamberConfig(
             min_width=6,
             max_width=10,
@@ -1430,6 +1455,11 @@ BucketEntry = Tuple[str, str, int]
 BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
     "FLAT_RUN": {
         1: [
+            # Trivial switch-adjacent on-ramp first: the size curriculum uses
+            # entries[0] as the size~0 floor, so this is the agent's very first
+            # (near-trivial) level. Listed first + weighted so the easiest tier
+            # of the eval dataset also contains genuinely trivial routes.
+            ("single_chamber", "flat_run_onramp", 2),
             ("horizontal_corridor", "flat_run_t1", 1),
             ("single_chamber", "flat_run_t1", 1),
         ],

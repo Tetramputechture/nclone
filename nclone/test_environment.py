@@ -36,6 +36,7 @@ python test_environment.py --headless --benchmark-dataset --test-dataset-path da
 
 import os
 import sys
+from pathlib import Path
 
 import pygame
 from nclone.gym_environment.environment_factory import create_visual_testing_env
@@ -268,6 +269,21 @@ parser.add_argument(
     type=str,
     default=None,
     help="Custom map file path to load (overrides default map behavior).",
+)
+parser.add_argument(
+    "--no-hot-reload",
+    action="store_true",
+    help=(
+        "Disable hot reloading of the --map file. By default, when a map file is "
+        "loaded, test_environment watches it for changes and resets to the new map "
+        "data (tiles and entities) whenever the file is overwritten on disk."
+    ),
+)
+parser.add_argument(
+    "--hot-reload-poll-frames",
+    type=int,
+    default=15,
+    help="Number of frames between map-file change checks for hot reloading (default: 15).",
 )
 # Graph visualization arguments
 parser.add_argument(
@@ -754,6 +770,68 @@ def manual_reset(env: NppEnvironment, map_name: str = None):
     env.reset(options=reset_options)
 
     print("Manual reset complete")
+
+
+def _map_file_signature(map_path: str):
+    """
+    Return a lightweight change signature (mtime_ns, size) for a map file.
+
+    Used for hot reloading: if the signature changes, the file was rewritten.
+    Returns None if the file is missing or cannot be stat'd (e.g. mid-write).
+    """
+    try:
+        st = os.stat(map_path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def hot_reload_map_if_changed(env: NppEnvironment, map_path: str, last_signature):
+    """
+    Reload the map from disk and reset the environment if the file changed.
+
+    Compares the current file signature against ``last_signature``. On a detected
+    change, loads the new map data (tiles + entities) into the simulator and runs
+    a manual reset so all caches are cleared and rebuilt against the new level.
+
+    Partial writes are tolerated: if loading fails (e.g. the file is being written),
+    the stored signature is NOT advanced so the reload is retried on the next poll.
+
+    Args:
+        env: The environment to reload into.
+        map_path: Path to the watched map file.
+        last_signature: Previous signature from this function or _map_file_signature.
+
+    Returns:
+        (new_signature, reloaded): the signature to carry forward and whether a
+        reload actually happened this call.
+    """
+    current_signature = _map_file_signature(map_path)
+
+    # File missing or unreadable right now (possibly mid-write) - keep old signature
+    # so we retry once it settles.
+    if current_signature is None:
+        return last_signature, False
+
+    if current_signature == last_signature:
+        return last_signature, False
+
+    map_name = Path(map_path).stem
+    try:
+        env.nplay_headless.load_map(map_path)
+        manual_reset(env, map_name=map_name)
+
+        # Refresh the cached observation so the next step sees the new level.
+        initial_obs = env._get_observation()
+        env._process_observation(initial_obs)
+
+        print(f"[HOT-RELOAD] Map reloaded from: {map_path}")
+        return current_signature, True
+    except Exception as e:
+        # Likely a partial write or transiently invalid file. Do not advance the
+        # signature; retry on the next poll when the file has settled.
+        print(f"[HOT-RELOAD] Failed to reload map (will retry): {e}")
+        return last_signature, False
 
 
 # Initialize generator testing if enabled
@@ -1310,11 +1388,36 @@ hold_start_time = None  # when current key hold started
 hold_action = 0  # action being held (for repeat delay)
 
 manual_reset(env)
+
+# Hot reloading: when launched with --map, watch the file for changes and reset to
+# the new map data (tiles + entities) whenever it is overwritten on disk. This lets
+# maps edited agentically (overwriting the same file) take effect without restarting.
+hot_reload_enabled = (
+    bool(args.map)
+    and not args.no_hot_reload
+    and generator_tester is None
+    and official_map_tester is None
+)
+map_file_signature = _map_file_signature(args.map) if hot_reload_enabled else None
+if hot_reload_enabled:
+    print(
+        f"[HOT-RELOAD] Watching map file for changes: {args.map} "
+        f"(poll every {args.hot_reload_poll_frames} frames)"
+    )
+
 # Main game loop
 # Wrap the game loop with profiler.enable() and profiler.disable()
 profiler.enable()
 frame_counter = 0  # Initialize frame counter
 while running:
+    # Hot reload: poll the watched map file and reset if it changed on disk.
+    if (
+        hot_reload_enabled
+        and frame_counter % max(1, args.hot_reload_poll_frames) == 0
+    ):
+        map_file_signature, _reloaded = hot_reload_map_if_changed(
+            env, args.map, map_file_signature
+        )
     # Reset keys pressed this frame (for discrete action mode)
     keys_just_pressed.clear()
     # Handle pygame events

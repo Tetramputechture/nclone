@@ -459,6 +459,68 @@ class ReachabilityMixin:
 
         return features
 
+    def _refresh_reward_distances(self, ninja_pos: Tuple[float, float]) -> None:
+        """Recompute the PBRS reward distances EVERY frame at sub-node resolution.
+
+        ``_compute_reachability`` caches its (unused-in-Layer-1) feature vector AND
+        the reward distances by a 24px ninja cell, which froze the reward distance
+        for every frame the ninja stayed in a cell — so slow (<=1px) movement
+        produced no PBRS/HWM gradient. This computes ONLY the two distances, fresh
+        each frame, via the path calculator's existing sub-node-resolved
+        ``get_path_cost`` (continuous in the exact ninja position). The expensive
+        cost-to-go field is still cached per level by the calculator's level cache,
+        so this is lean: a ninja-node lookup + field read + projection per goal.
+
+        Sets ``_cached_switch_distance``/``_cached_exit_distance`` (consumed by the
+        reward) and applies the lattice substitution, mirroring
+        ``_compute_reachability`` exactly but without the cell cache.
+        """
+        if not hasattr(self, "current_graph_data") or self.current_graph_data is None:
+            return
+        adjacency = self.current_graph_data.get("adjacency")
+        if adjacency is None:
+            return
+        base_adjacency = self.current_graph_data.get("base_adjacency", adjacency)
+        level_data = self.level_data
+        self._path_calculator.build_level_cache(
+            level_data, adjacency, base_adjacency, self.current_graph_data
+        )
+
+        # Minimal goal dict: the distances-only path needs only switch/exit
+        # positions + activation. Avoid the full get_goal_positions_for_features()
+        # (it also gathers locked doors + mines and builds the proxy entity_dic,
+        # none of which the distance computation uses). The switch/door accessors
+        # are O(1) (cached per tick on native).
+        nh = self.nplay_headless
+        goal_positions = {
+            "switch_pos": nh.exit_switch_position(),
+            "exit_pos": nh.exit_door_position(),
+            "switch_activated": nh.exit_switch_activated(),
+            "locked_door_switches": [],
+        }
+
+        _features, switch_distance_raw, exit_distance_raw = (
+            compute_reachability_features_from_graph(
+                adjacency,
+                self.current_graph_data,
+                level_data,
+                ninja_pos,
+                self._path_calculator,
+                goal_positions=goal_positions,
+                include_navigation_features=False,
+                distances_only=True,  # fresh sub-node distances, no feature vector
+            )
+        )
+        self._cached_switch_distance = switch_distance_raw
+        self._cached_exit_distance = exit_distance_raw
+
+        switch_activated = (
+            self.nplay_headless.exit_switch_activated()
+            if hasattr(self, "nplay_headless")
+            else False
+        )
+        self._maybe_substitute_lattice_distance(ninja_pos, switch_activated)
+
     def _reinit_reachability_system_after_unpickling(self):
         """Reinitialize reachability system components after unpickling."""
         if not hasattr(self, "_reachability_system"):

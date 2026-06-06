@@ -79,6 +79,12 @@ impl PySimulator {
         self.inner.get_state()
     }
 
+    /// Get state WITHOUT the static tile grid (per-tick hot path; tiles are
+    /// fetched once at load). Avoids copying ~1100 bytes across FFI every frame.
+    fn get_state_dynamic(&self) -> SimulatorState {
+        self.inner.get_state_dynamic()
+    }
+
     /// Get the flat tile grid (row-major, 1100 bytes).
     fn get_tile_grid(&self) -> Vec<u8> {
         self.inner.get_tile_grid_flat()
@@ -149,6 +155,19 @@ impl PySimulator {
     /// Restore ninja state from bytes (from save_ninja_state).
     fn restore_ninja_state(&mut self, data: Vec<u8>) {
         self.inner.ninja = ninja::Ninja::from_bytes(&data);
+    }
+
+    /// Save COMPLETE simulator state (frame + exhaustive ninja + all entities)
+    /// as a byte blob for replay-free Go-Explore checkpoint restore.
+    fn save_full_state(&self) -> Vec<u8> {
+        self.inner.save_full_state()
+    }
+
+    /// Restore COMPLETE simulator state from a `save_full_state` blob with no
+    /// action replay. Returns False (and mutates nothing) if the blob is
+    /// incompatible with the currently-loaded level, so the caller can fall back.
+    fn restore_full_state(&mut self, data: Vec<u8>) -> bool {
+        self.inner.restore_full_state(&data)
     }
 
     /// Inject position/velocity for transition enumeration.
