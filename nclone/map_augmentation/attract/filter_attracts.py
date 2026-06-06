@@ -12,17 +12,25 @@ Usage:
 """
 
 import argparse
+import functools
 import logging
 import os
 import time
 from collections import Counter
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ...constants.entity_types import EntityType
 
 logger = logging.getLogger(__name__)
+
+# Sanity caps from the plan's 4k-sample measurement: the subset skews entity-heavy
+# (median 37 mines, max 1801) so caps drop troll/art levels and bound sequence
+# length. These are a data-vs-quality knob -- tune against the expressive-range plot.
+DEFAULT_MINE_CAP = 64
+DEFAULT_GOLD_CAP = 40
+_MINE_TYPES = frozenset({EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED})
 
 ALLOWED_ENTITY_TYPES = frozenset(
     {
@@ -35,7 +43,10 @@ ALLOWED_ENTITY_TYPES = frozenset(
 )
 
 ENTITY_SECTION_OFFSET = 1235
-ENTITY_READ_SIZE = 500
+# Read enough of the entity section that any level within the sanity caps is fully
+# visible (cap-sum <= ~106 entities -> ~530 bytes); the generous window means
+# truncation only trips for genuine troll levels, which the caps reject anyway.
+ENTITY_READ_SIZE = 4096
 
 
 def _parse_entity_types_from_bytes(chunk: bytes) -> List[int]:
@@ -55,8 +66,16 @@ def _parse_entity_types_from_bytes(chunk: bytes) -> List[int]:
     return entity_types
 
 
-def check_file(path: str) -> Tuple[str, bool, str]:
+def check_file(
+    path: str,
+    mine_cap: Optional[int] = None,
+    gold_cap: Optional[int] = None,
+) -> Tuple[str, bool, str]:
     """Check whether a single attract file meets the entity criteria.
+
+    Criteria: entities subset of {mine, gold, exit door, exit switch, toggled mine},
+    exactly one exit door + one exit switch, and (optionally) at most ``mine_cap``
+    mines and ``gold_cap`` gold.
 
     Returns:
         (filename, passed, rejection_reason)
@@ -71,17 +90,34 @@ def check_file(path: str) -> Tuple[str, bool, str]:
             return (name, False, "too_short")
 
         entity_types = _parse_entity_types_from_bytes(chunk)
+        # If the entity section filled the read buffer we may have truncated the
+        # tail; mine/gold caps below still hold because they reject on lower bounds.
+        truncated = len(entity_types) * 5 >= len(chunk) - 4
 
         exit_doors = entity_types.count(EntityType.EXIT_DOOR)
         exit_switches = entity_types.count(EntityType.EXIT_SWITCH)
         disallowed = set(entity_types) - ALLOWED_ENTITY_TYPES
 
+        if disallowed:
+            return (name, False, f"disallowed_types={sorted(disallowed)}")
         if exit_doors != 1:
             return (name, False, f"exit_doors={exit_doors}")
         if exit_switches != 1:
             return (name, False, f"exit_switches={exit_switches}")
-        if disallowed:
-            return (name, False, f"disallowed_types={sorted(disallowed)}")
+
+        if mine_cap is not None:
+            n_mines = sum(entity_types.count(t) for t in _MINE_TYPES)
+            if n_mines > mine_cap:
+                return (name, False, f"mines>{mine_cap}")
+        if gold_cap is not None:
+            n_gold = entity_types.count(EntityType.GOLD)
+            if n_gold > gold_cap:
+                return (name, False, f"gold>{gold_cap}")
+        # A truncated read can only hide *more* entities, so a level that already
+        # passed the caps within the read window but filled the buffer is ambiguous;
+        # reject conservatively to keep the clean set clean.
+        if truncated and (mine_cap is not None or gold_cap is not None):
+            return (name, False, "entity_section_truncated")
 
         return (name, True, "")
 
@@ -94,6 +130,8 @@ def filter_attract_files(
     output_dir: str,
     workers: int = 8,
     dry_run: bool = False,
+    mine_cap: Optional[int] = None,
+    gold_cap: Optional[int] = None,
 ) -> Dict[str, int]:
     """Filter attract files and symlink qualifying ones to output_dir.
 
@@ -102,6 +140,8 @@ def filter_attract_files(
         output_dir: Directory for symlinks to qualifying files.
         workers: Number of multiprocessing workers.
         dry_run: If True, only report statistics without creating symlinks.
+        mine_cap: Reject levels with more than this many (toggle + toggled) mines.
+        gold_cap: Reject levels with more than this many gold pieces.
 
     Returns:
         Dictionary with filtering statistics.
@@ -128,9 +168,15 @@ def filter_attract_files(
     t0 = time.time()
 
     # Parallel entity-byte checking
-    logger.info("Checking entity criteria with %d workers...", workers)
+    logger.info(
+        "Checking entity criteria with %d workers (mine_cap=%s gold_cap=%s)...",
+        workers,
+        mine_cap,
+        gold_cap,
+    )
+    check = functools.partial(check_file, mine_cap=mine_cap, gold_cap=gold_cap)
     with Pool(processes=workers) as pool:
-        results = pool.map(check_file, all_files, chunksize=256)
+        results = pool.map(check, all_files, chunksize=256)
 
     elapsed_check = time.time() - t0
     logger.info(
@@ -214,6 +260,18 @@ def main():
         help="Only report statistics, don't create symlinks",
     )
     parser.add_argument(
+        "--mine-cap",
+        type=int,
+        default=None,
+        help=f"Reject levels with more than N mines (suggested {DEFAULT_MINE_CAP})",
+    )
+    parser.add_argument(
+        "--gold-cap",
+        type=int,
+        default=None,
+        help=f"Reject levels with more than N gold (suggested {DEFAULT_GOLD_CAP})",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -231,6 +289,8 @@ def main():
         output_dir=args.output,
         workers=args.workers,
         dry_run=args.dry_run,
+        mine_cap=args.mine_cap,
+        gold_cap=args.gold_cap,
     )
 
     print(f"\nDone: {stats['passed']}/{stats['total']} files passed filtering.")
