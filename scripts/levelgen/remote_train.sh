@@ -46,11 +46,16 @@ WORKERS="${WORKERS:-16}"              # attract decode workers (--from-attracts)
 LABEL_FULL="${LABEL_FULL:-0}"         # 1 = run label_corpus on the full corpus too
 OFFICIAL="${OFFICIAL:-1}"            # 1 = add official maps/ geometry to the tile stages
 
-# Tile-loss token-imbalance controls (Stage B: corpus is ~84% empty tile 0).
-# These push the tile stages toward human density (~47%) so generations aren't sparse.
-FOCAL_GAMMA="${FOCAL_GAMMA:-2.0}"
-EMPTY_WEIGHT="${EMPTY_WEIGHT:-0.5}"
-MASK_NONEMPTY_BIAS="${MASK_NONEMPTY_BIAS:-1.5}"
+# Tile-loss token-imbalance controls. DEFAULT OFF (plain CE) after the 2026-06-08
+# run: aggressive imbalance (0.5/2.0/1.5) drove converged fill to ~95% AND saturated
+# it across all cfg -- i.e. it destroyed cfg as a density dial. Plain CE keeps density
+# cfg-controllable (~17% @cfg1.5 -> ~57% @cfg3 over 30 epochs), so dial density at
+# GENERATION time via --cfg-scale, watching the live sample/fill TB curve, rather than
+# baking an uncalibrated loss weight. Re-enable + properly calibrate (needs ~30-epoch
+# runs; 5-epoch sweeps are undertrained and uninformative) only with viz guidance.
+FOCAL_GAMMA="${FOCAL_GAMMA:-0}"
+EMPTY_WEIGHT="${EMPTY_WEIGHT:-1.0}"
+MASK_NONEMPTY_BIAS="${MASK_NONEMPTY_BIAS:-1.0}"
 IMB_FLAGS="--focal-gamma $FOCAL_GAMMA --empty-weight $EMPTY_WEIGHT --mask-nonempty-bias $MASK_NONEMPTY_BIAS"
 
 # Tile-stage hyperparameters (doc-target 37.9M model: d512 / L12)

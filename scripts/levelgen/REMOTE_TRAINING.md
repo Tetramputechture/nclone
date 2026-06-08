@@ -108,8 +108,12 @@ Checkpoints land in remote `~/levelgen_ckpt/` (final `*.pt`, best-by-val `*.best
 `ENTITY_EPOCHS` `ENTITY_BATCH` `LR` `AMP=0` (disable bf16) `WORKERS` (attract decode)
 `DL_WORKERS` (torch DataLoader workers, default 8).
 
-Stage-B knobs: `OFFICIAL=0` (skip official-maps geometry) · `FOCAL_GAMMA` (default 2.0) ·
-`EMPTY_WEIGHT` (default 0.5, CE weight on the empty tile) · `MASK_NONEMPTY_BIAS` (default 1.5).
+Stage-B knobs: `OFFICIAL=0` (skip official-maps geometry) · imbalance loss is **OFF by
+default** (`FOCAL_GAMMA=0`, `EMPTY_WEIGHT=1.0`, `MASK_NONEMPTY_BIAS=1.0` = plain CE). The
+2026-06-08 run showed aggressive imbalance (0.5/2.0/1.5) drives converged fill to ~95% and
+**saturates it across all cfg** (kills cfg as a density dial). With plain CE, density is
+cfg-controllable — set it at generation time (below) and watch the live `sample/fill` curve.
+Only re-enable + calibrate the loss with ~30-epoch runs (5-epoch sweeps are undertrained).
 
 Efficiency/quality knobs: `COMPILE=1` (torch.compile forward) · `LR_SCHEDULE=cosine` (warmup+cosine) ·
 `WARMUP_FRAC` (0.03) · `EMA_DECAY` (0.999; sampling uses EMA weights). Batch defaults bumped to
@@ -129,10 +133,12 @@ the defaults in `generate_levels.py`:
 - **Spawn-on-surface** (`place_and_gate`): the ninja is placed on a reachable floor cell
   instead of the old hard-coded mid-air `(86,42)`. Disable with `--no-place-spawn`.
 - **`--cfg-scale` default 2.0** (was 1.5): the model's *unconditional* prior collapsed to
-  near-empty, so **higher** CFG raises fill+diversity here (the opposite of the usual
-  text-to-image guidance/diversity tradeoff). cfg≈2 is the sweet spot; cfg≥3 over-fills and
-  hurts solvability. Re-sweep cfg after the Stage-B retrain (the density loss should let a
-  lower cfg suffice). Validate with `scripts/levelgen/visualize_generations.py --place-and-gate`.
+  near-empty, so **higher** CFG raises fill+diversity (the opposite of the usual
+  text-to-image guidance/diversity tradeoff). With plain-CE training (current default),
+  **cfg is the density dial**: sweep cfg ~1.5–3 against the live `sample/fill` curve and pick
+  the value nearest the ~0.58 training-distribution density (first run: ~17% @cfg1.5 → ~57%
+  @cfg3; official maps shift this denser, so the right cfg is likely a bit lower). Validate
+  with `scripts/levelgen/visualize_generations.py --place-and-gate`.
 
 SSH: `SSH_KEY` `SSH_USER` (default `ubuntu`). Remote layout: code at
 `~/nclone-levelgen/nclone`, datasets at `~/datasets/levelgen`, logs at
