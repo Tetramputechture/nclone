@@ -59,16 +59,18 @@ TILE_DMODEL="${TILE_DMODEL:-512}"
 TILE_LAYERS="${TILE_LAYERS:-12}"
 TILE_HEADS="${TILE_HEADS:-8}"
 PRETRAIN_EPOCHS="${PRETRAIN_EPOCHS:-30}"
-PRETRAIN_BATCH="${PRETRAIN_BATCH:-512}"   # GH200 96GB lifts the 3080Ti batch cap
+# d512/L12 over 966 tokens: batch 256 peaks ~59GB; 512 OOMs the 96GB GH200
+# (full-attention activations are batch-scaled). Keep 256 for the tile stages.
+PRETRAIN_BATCH="${PRETRAIN_BATCH:-256}"
 FINETUNE_EPOCHS="${FINETUNE_EPOCHS:-20}"
-FINETUNE_BATCH="${FINETUNE_BATCH:-512}"
+FINETUNE_BATCH="${FINETUNE_BATCH:-256}"
 
-# Entity-stage hyperparameters
+# Entity-stage hyperparameters (d256/L6 is small -> 512 fits comfortably)
 ENTITY_DMODEL="${ENTITY_DMODEL:-256}"
 ENTITY_LAYERS="${ENTITY_LAYERS:-6}"
 ENTITY_EPOCHS="${ENTITY_EPOCHS:-20}"
 ENTITY_BATCH="${ENTITY_BATCH:-512}"
-LR="${LR:-4e-4}"                       # slightly higher peak LR + cosine warmup/decay
+LR="${LR:-3e-4}"                       # proven peak LR; cosine warmup/decay on top
 
 # Efficiency + EMA (per-stage; see train_tile/train_entity)
 COMPILE="${COMPILE:-1}"              # 1 = torch.compile the forward (Hopper)
@@ -148,6 +150,7 @@ cd "\$HOME/$NCLONE_SUB"
 export CUDA_HOME=/usr/local/cuda CUDA_PATH=/usr/local/cuda
 export PATH=/usr/local/cuda/bin:\$PATH
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\${LD_LIBRARY_PATH:-}
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # reduce fragmentation OOMs
 echo "[levelgen-remote] stage=$stage host=\$(hostname) start \$(date)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true
 set -x
