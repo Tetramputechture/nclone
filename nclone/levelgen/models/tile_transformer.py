@@ -22,11 +22,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..tokenizer import DIFFICULTY_BANDS, MECHANIC_TAGS, SOURCES
+from ..tokenizer import DIFFICULTY_BANDS, MECHANIC_TAGS, N_TILE_VALUES, SOURCES
 
 GRID_H, GRID_W = 23, 42
 NUM_TILES = GRID_H * GRID_W
-N_TILE_VALUES = 38  # tile ids 0..37
+# N_TILE_VALUES (tile ids 0..37) is owned by the tokenizer so build_dataset's OOB
+# filter and the model embedding stay in lock-step.
 MASK_ID = N_TILE_VALUES  # 38
 
 
@@ -122,33 +123,56 @@ class TileTransformer(nn.Module):
         return self.head(self.ln_f(x))
 
     # ---------------------------------------------------------------- losses
-    def loss(self, tiles, cond=None):
-        """Training loss for the configured mode. ``tiles``: (B, 966) long in 0..37."""
+    def loss(self, tiles, cond=None, *, focal_gamma: float = 0.0,
+             class_weight: Optional[torch.Tensor] = None, mask_nonempty_bias: float = 1.0):
+        """Training loss for the configured mode. ``tiles``: (B, 966) long in 0..37.
+
+        Token-imbalance controls (the corpus is ~84% empty tile 0, which a plain
+        masked-CE under-predicts -> sparse, unsolvable grids):
+          * ``class_weight`` (vocab,): per-class CE weight, e.g. down-weight tile 0.
+          * ``focal_gamma`` > 0: focal loss (1-p_t)^gamma * CE -- down-weights easy
+            (confident-empty) predictions, focuses on rare structural tiles.
+          * ``mask_nonempty_bias`` > 1: balanced masking -- mask non-empty tiles
+            ``bias``x more often so structure gets proportionally more supervision.
+        Defaults reproduce the original plain masked cross-entropy exactly.
+        """
         if self.cfg.mode == "gpt":
             logits = self.forward(tiles, cond)
-            # predict token t from < t (shift)
-            return F.cross_entropy(logits[:, :-1].reshape(-1, self.cfg.vocab), tiles[:, 1:].reshape(-1))
+            ce = F.cross_entropy(
+                logits[:, :-1].reshape(-1, self.cfg.vocab), tiles[:, 1:].reshape(-1),
+                weight=class_weight, reduction="none",
+            )
+            if focal_gamma > 0:
+                ce = (1.0 - torch.exp(-ce)) ** focal_gamma * ce
+            return ce.mean()
         # maskgit
         B, L = tiles.shape
         ratio = torch.rand(B, 1, device=tiles.device)
         ratio = torch.cos(0.5 * math.pi * (1 - ratio))  # cosine masking schedule
-        mask = torch.rand(B, L, device=tiles.device) < ratio
+        p = ratio.expand(B, L)
+        if mask_nonempty_bias != 1.0:
+            p = torch.where(tiles != 0, (p * mask_nonempty_bias).clamp(max=1.0), p)
+        mask = torch.rand(B, L, device=tiles.device) < p
         mask[:, 0] |= ~mask.any(dim=1)  # ensure at least one masked
         inp = torch.where(mask, torch.full_like(tiles, MASK_ID), tiles)
         logits = self.forward(inp, cond)
-        loss = F.cross_entropy(
-            logits.reshape(-1, self.cfg.vocab), tiles.reshape(-1), reduction="none"
+        ce = F.cross_entropy(
+            logits.reshape(-1, self.cfg.vocab), tiles.reshape(-1),
+            weight=class_weight, reduction="none",
         )
-        loss = (loss * mask.reshape(-1).float()).sum() / mask.sum().clamp_min(1)
-        return loss
+        if focal_gamma > 0:
+            ce = (1.0 - torch.exp(-ce)) ** focal_gamma * ce
+        m = mask.reshape(-1).float()
+        return (ce * m).sum() / m.sum().clamp_min(1)
 
     # ---------------------------------------------------------------- sampling
     @torch.no_grad()
-    def sample(self, n, cond=None, steps=12, temperature=1.0, cfg_scale=1.0, device=None, generator=None):
+    def sample(self, n, cond=None, steps=12, temperature=1.0, cfg_scale=1.0, device=None,
+               generator=None, gumbel_temp=0.0):
         device = device or next(self.parameters()).device
         if self.cfg.mode == "gpt":
             return self._sample_gpt(n, cond, temperature, device, generator)
-        return self._sample_maskgit(n, cond, steps, temperature, cfg_scale, device, generator)
+        return self._sample_maskgit(n, cond, steps, temperature, cfg_scale, device, generator, gumbel_temp)
 
     def _apply_cfg(self, ids, cond, cfg_scale):
         if cond is None or cfg_scale == 1.0:
@@ -158,7 +182,7 @@ class TileTransformer(nn.Module):
         return uncond_logits + cfg_scale * (cond_logits - uncond_logits)
 
     @torch.no_grad()
-    def _sample_maskgit(self, n, cond, steps, temperature, cfg_scale, device, generator):
+    def _sample_maskgit(self, n, cond, steps, temperature, cfg_scale, device, generator, gumbel_temp=0.0):
         ids = torch.full((n, NUM_TILES), MASK_ID, dtype=torch.long, device=device)
         for step in range(steps):
             logits = self._apply_cfg(ids, cond, cfg_scale)[:, :, :N_TILE_VALUES]  # forbid MASK output
@@ -166,13 +190,20 @@ class TileTransformer(nn.Module):
             pred = torch.multinomial(probs.reshape(-1, N_TILE_VALUES), 1, generator=generator).reshape(n, NUM_TILES)
             conf = probs.gather(-1, pred.unsqueeze(-1)).squeeze(-1)
             is_mask = ids == MASK_ID
-            conf = torch.where(is_mask, conf, torch.full_like(conf, -1.0))
+            # MaskGIT diversity trick: rank the keep/re-mask decision by confidence
+            # PLUS temperature-annealed Gumbel noise (more noise early). Without it the
+            # commit order is deterministic -> low output diversity.
+            if gumbel_temp > 0:
+                u = torch.rand(conf.shape, device=device, generator=generator).clamp_(1e-9, 1.0)
+                gumbel = -torch.log(-torch.log(u))
+                conf = conf + gumbel_temp * (1.0 - (step + 1) / steps) * gumbel
+            conf = torch.where(is_mask, conf, torch.full_like(conf, float("-inf")))
             # cosine schedule: how many to keep masked after this step
             r = (step + 1) / steps
             keep_masked = int(math.floor(NUM_TILES * math.cos(0.5 * math.pi * r)))
             ids = torch.where(is_mask, pred, ids)
             if keep_masked > 0:
-                # re-mask the lowest-confidence freshly-filled positions
+                # re-mask the lowest-score freshly-filled positions
                 thresh = torch.topk(conf, keep_masked, dim=-1, largest=False).values[:, -1:]
                 remask = (conf <= thresh) & is_mask
                 ids = torch.where(remask, torch.full_like(ids, MASK_ID), ids)

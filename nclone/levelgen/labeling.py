@@ -57,7 +57,11 @@ def subset_ok(map_data: Sequence[int]) -> bool:
 
 
 def _max_vertical_solid_run(grid: List[List[int]]) -> int:
-    """Longest run of solid tiles in any *interior* column (border frame excluded)."""
+    """Longest run of solid tiles in any *interior* column (border frame excluded).
+
+    NOTE: on dense human levels this saturates at the interior height, so it is a
+    poor wall-jump signal -- use :func:`_climbable_wall` instead. Kept for callers.
+    """
     best = 0
     for gx in range(2, GRID_W - 2):
         run = 0
@@ -70,40 +74,79 @@ def _max_vertical_solid_run(grid: List[List[int]]) -> int:
     return best
 
 
+# Salience thresholds, calibrated to the subset corpus distribution (slope p75~56,
+# curve p90~24, mines p75~44). Goal: tags fire on the MINORITY of levels where the
+# mechanic dominates, so the conditioning signal actually partitions the data
+# (the old presence-based tagger labelled ~98% jump / ~96% composite -> no signal).
+_SLOPE_MIN = 40      # slope-heavy levels (~top 30%)
+_CURVE_MIN = 8       # curves are rare; ~top 20%
+_PRECISION_MIN = 44  # dense-mine precision levels (~top 25%)
+_WALLJUMP_RUN = 8    # tall wall ...
+_WALLJUMP_FACE = 5   # ... with an adjacent empty face (climbable)
+_PLATFORM_MIN = 6    # floating platforms => real jump structure
+_FLAT_DENSITY = 0.25
+
+
+def _climbable_wall(grid: List[List[int]]) -> bool:
+    """A tall interior solid column with an adjacent empty face (wall-jumpable)."""
+    for gx in range(2, GRID_W - 2):
+        run = face = 0
+        for gy in range(2, GRID_H - 2):
+            if grid[gy][gx] in _SOLID_TILES:
+                run += 1
+                if grid[gy][gx - 1] == 0 or grid[gy][gx + 1] == 0:
+                    face += 1
+                if run >= _WALLJUMP_RUN and face >= _WALLJUMP_FACE:
+                    return True
+            else:
+                run = face = 0
+    return False
+
+
+def _floating_platforms(grid: List[List[int]]) -> int:
+    """Count solid cells with empty directly above AND below (jump-between platforms)."""
+    cnt = 0
+    for gy in range(3, GRID_H - 3):
+        for gx in range(2, GRID_W - 2):
+            if grid[gy][gx] in _SOLID_TILES and grid[gy - 1][gx] == 0 and grid[gy + 1][gx] == 0:
+                cnt += 1
+    return cnt
+
+
 def mechanic_tags(map_data: Sequence[int]) -> List[str]:
-    """Coarse composition-based tags. Always returns >=1 tag."""
+    """Salience-based composition tags (each fires when its mechanic dominates).
+
+    Always returns >=1 tag. Designed so the tag distribution partitions the corpus
+    (vs the old presence-based tagger that labelled nearly everything composite).
+    """
     grid = _tile_grid(map_data)
     counts = entity_counts(map_data)
     n_mines = sum(counts.get(t, 0) for t in _MINE_TYPES)
+    flat_tiles = [t for row in grid for t in row]
+    slope_count = sum(1 for t in flat_tiles if t in _SLOPE_TILES)
+    curve_count = sum(1 for t in flat_tiles if t in _CURVE_TILES)
+    density = sum(1 for t in flat_tiles if t != 0) / max(len(flat_tiles), 1)
 
-    tile_vals = {t for row in grid for t in row}
     tags: List[str] = []
     if n_mines > 0:
         tags.append("mine")
-    if tile_vals & _SLOPE_TILES:
+    if slope_count >= _SLOPE_MIN:
         tags.append("slope")
-    if tile_vals & _CURVE_TILES:
+    if curve_count >= _CURVE_MIN:
         tags.append("curve")
-    if _max_vertical_solid_run(grid) >= 4:
+    if _climbable_wall(grid):
         tags.append("wall_jump")
-    # a non-trivial interior floor with empty space implies jumping
-    interior_solid = sum(
-        1 for gy in range(2, GRID_H - 2) for gx in range(2, GRID_W - 2)
-        if grid[gy][gx] in _SOLID_TILES
-    )
-    interior_cells = (GRID_H - 4) * (GRID_W - 4)
-    if 0 < interior_solid < interior_cells:
+    if _floating_platforms(grid) >= _PLATFORM_MIN:
         tags.append("jump")
-    if n_mines >= 8:
+    if n_mines >= _PRECISION_MIN:
         tags.append("precision")
 
-    # composite if it spans several distinct mechanic domains
-    domains = {t for t in tags if t in ("jump", "wall_jump", "mine", "slope", "curve")}
-    if len(domains) >= 3:
+    # composite only when several GEOMETRY domains are jointly salient
+    geo = {t for t in tags if t in ("jump", "wall_jump", "slope", "curve")}
+    if len(geo) >= 3:
         tags.append("composite")
-    if not tags:
+    if not tags or (not geo and density < _FLAT_DENSITY):
         tags.append("flat")
-    # de-dup, preserve registry order
     return [t for t in MECHANIC_TAGS if t in set(tags)]
 
 

@@ -30,6 +30,10 @@ HEADER_LEN = 184
 TILE_START = 184
 TILE_END = 1150  # exclusive; 42 * 23 = 966 tiles
 NUM_TILES = TILE_END - TILE_START  # 966
+# Number of real tile ids the models embed (0..37). The decoder/corpus can emit a
+# handful of higher, degenerate ids (observed up to 50) -- build_dataset drops any
+# level whose tile region exceeds this so the tile embedding never indexes OOB.
+N_TILE_VALUES = 38
 META_START = 1150  # entity counts + ninja spawn + padding
 META_END = 1235  # exclusive; entity records begin here
 ENT_START = 1235
@@ -201,7 +205,17 @@ class LevelTokenizer:
         map_data: MapData,
         cond: Optional[Dict[str, object]] = None,
         include_cond: bool = True,
+        build_tokens: bool = True,
     ) -> TokenizedLevel:
+        """Parse a ``map_data`` into a :class:`TokenizedLevel`.
+
+        ``build_tokens=False`` skips constructing the flat ``tokens`` stream and
+        returns only the parsed content (tiles / ninja / entities + structural
+        bytes). Use it when you only need the parsed fields (e.g. ``build_dataset``)
+        -- it avoids the cost of the token build and, importantly, the
+        ``Vocab.etype``/``Vocab.tile`` range checks that would otherwise raise on a
+        degenerate corpus level instead of letting the caller drop it.
+        """
         md = list(map_data)
         if len(md) < MIN_MAP_LEN:
             raise ValueError(f"map_data too short: {len(md)} < {MIN_MAP_LEN}")
@@ -217,25 +231,27 @@ class LevelTokenizer:
         entities = self._parse_entities(md)
 
         cond = dict(cond or {})
-        toks: List[int] = [Vocab.BOS]
-        if include_cond:
-            toks.extend(self._cond_tokens(cond))
+        toks: List[int] = []
+        if build_tokens:
+            toks.append(Vocab.BOS)
+            if include_cond:
+                toks.extend(self._cond_tokens(cond))
 
-        toks.append(Vocab.TILE_SEP)
-        toks.extend(Vocab.tile(t) for t in tiles)
+            toks.append(Vocab.TILE_SEP)
+            toks.extend(Vocab.tile(t) for t in tiles)
 
-        toks.append(Vocab.NINJA)
-        toks.extend(Vocab.byte(b) for b in ninja)
+            toks.append(Vocab.NINJA)
+            toks.extend(Vocab.byte(b) for b in ninja)
 
-        toks.append(Vocab.ENT_SEP)
-        for e in entities:
-            toks.append(Vocab.ENT)
-            toks.append(Vocab.etype(e.type))
-            toks.append(Vocab.byte(e.x))
-            toks.append(Vocab.byte(e.y))
-            toks.append(Vocab.byte(e.orient))
-            toks.append(Vocab.byte(e.mode))
-        toks.append(Vocab.EOS)
+            toks.append(Vocab.ENT_SEP)
+            for e in entities:
+                toks.append(Vocab.ENT)
+                toks.append(Vocab.etype(e.type))
+                toks.append(Vocab.byte(e.x))
+                toks.append(Vocab.byte(e.y))
+                toks.append(Vocab.byte(e.orient))
+                toks.append(Vocab.byte(e.mode))
+            toks.append(Vocab.EOS)
 
         return TokenizedLevel(
             tokens=toks,
@@ -413,4 +429,5 @@ __all__ = [
     "MECHANIC_TAGS",
     "SUBSET_FLAGS",
     "NUM_TILES",
+    "N_TILE_VALUES",
 ]

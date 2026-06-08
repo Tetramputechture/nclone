@@ -30,10 +30,40 @@ from scripts.levelgen.common import iter_records
 logger = logging.getLogger("levelgen.label")
 
 
+def _dstar_calibration(records, sample_per_band: int, timeout: float) -> dict:
+    """Gate a stratified sample and report median d* per difficulty band.
+
+    Validates the demo-length proxy: if the proxy is good, median d* should rise
+    monotonically d0 -> d4. (Diagnostic only; does not auto-adjust the edges.)
+    """
+    import statistics
+    from collections import defaultdict
+    from scripts.levelgen.generate_levels import gate_with_timeout
+
+    by_band = defaultdict(list)
+    for r in records:
+        b = (r.labels or {}).get("difficulty_band", "unknown")
+        if b != "unknown":
+            by_band[b].append(r)
+    out = {}
+    for band in sorted(by_band):
+        sample = by_band[band][:sample_per_band]
+        ds = [d for d in (gate_with_timeout(list(r.map_data), timeout) for r in sample) if d is not None]
+        out[band] = {"n": len(ds), "median_dstar": float(statistics.median(ds)) if ds else None}
+        logger.info("d* calibration %s: n=%d median=%s", band, len(ds), out[band]["median_dstar"])
+    meds = [out[b]["median_dstar"] for b in sorted(out) if out[b]["median_dstar"] is not None]
+    out["monotonic"] = all(a <= b for a, b in zip(meds, meds[1:])) if len(meds) > 1 else None
+    logger.info("d* band ordering monotonic in proxy: %s", out["monotonic"])
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Label an ingested level corpus")
     ap.add_argument("--corpus", type=str, required=True)
     ap.add_argument("--bands", type=int, default=5, help="number of difficulty bands")
+    ap.add_argument("--dstar-sample", type=int, default=0,
+                    help="gate N levels/band to validate the demo-length proxy vs real d* (slow; 0=off)")
+    ap.add_argument("--dstar-timeout", type=float, default=30.0)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -92,6 +122,8 @@ def main() -> None:
         "difficulty_bands": dict(band_hist),
         "mechanic_tags": dict(tag_hist),
     }
+    if args.dstar_sample > 0:
+        index["dstar_calibration"] = _dstar_calibration(records, args.dstar_sample, args.dstar_timeout)
     with open(corpus / "labels_index.json", "w") as f:
         json.dump(index, f, indent=2)
     logger.info(

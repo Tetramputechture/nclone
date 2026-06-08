@@ -145,7 +145,96 @@ def expressive_range(tiles: List[np.ndarray], maps) -> dict:
     return out
 
 
-def evaluate(human_spec: str, cand_spec: str) -> dict:
+def _auc(scores: np.ndarray, labels: np.ndarray) -> float:
+    """Mann-Whitney AUC: P(score[pos] > score[neg]). 0.5 = indistinguishable."""
+    order = np.argsort(scores, kind="mergesort")
+    ranks = np.empty(len(scores), dtype=np.float64)
+    ranks[order] = np.arange(1, len(scores) + 1)
+    n_pos = float((labels == 1).sum())
+    n_neg = float((labels == 0).sum())
+    if n_pos == 0 or n_neg == 0:
+        return 0.5
+    return float((ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
+
+
+def novelty_metric(cand_tiles, ref_tiles, *, max_ref=3000, max_cand=500,
+                   seed=0, dup_thresh=0.02) -> dict:
+    """Nearest-neighbor (normalized Hamming) of each candidate to the reference set.
+
+    Low ``nn_distance`` / high ``memorized_frac`` => the generator is copying the
+    training corpus rather than generalizing.
+    """
+    rng = np.random.default_rng(seed)
+    ref = np.stack([t.astype(np.uint8) for t in ref_tiles])
+    if len(ref) > max_ref:
+        ref = ref[rng.choice(len(ref), max_ref, replace=False)]
+    cand = np.stack([t.astype(np.uint8) for t in cand_tiles])
+    if len(cand) > max_cand:
+        cand = cand[rng.choice(len(cand), max_cand, replace=False)]
+    nn = np.empty(len(cand))
+    for i in range(len(cand)):
+        nn[i] = (ref != cand[i]).mean(axis=1).min()
+    return {
+        "nn_distance_mean": float(nn.mean()),
+        "nn_distance_min": float(nn.min()),
+        "memorized_frac": float((nn < dup_thresh).mean()),
+        "ref_sampled": int(len(ref)),
+        "cand_sampled": int(len(cand)),
+    }
+
+
+def discriminator_auc(human_tiles, cand_tiles, *, epochs=6, seed=0, device="cpu") -> dict:
+    """Held-out AUC of a small tile-grid CNN trained to tell human from candidate.
+
+    ~0.5 = indistinguishable (good); ~1.0 = trivially separable (bad).
+    """
+    import torch
+    import torch.nn as nn
+
+    g = torch.Generator().manual_seed(seed)
+    X = torch.tensor(np.stack([t.astype(np.int64) for t in human_tiles + cand_tiles]))
+    y = torch.tensor([1] * len(human_tiles) + [0] * len(cand_tiles), dtype=torch.float32)
+    X = X.reshape(-1, GRID_H, GRID_W)
+    perm = torch.randperm(len(X), generator=g)
+    X, y = X[perm], y[perm]
+    n_test = max(1, len(X) // 5)
+    Xtr, Xte, ytr, yte = X[n_test:], X[:n_test], y[n_test:], y[:n_test]
+
+    class Disc(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.emb = nn.Embedding(N_TILE_TYPES, 8)
+            self.net = nn.Sequential(
+                nn.Conv2d(8, 16, 3, 2, 1), nn.ReLU(),
+                nn.Conv2d(16, 32, 3, 2, 1), nn.ReLU(),
+                nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(32, 1),
+            )
+
+        def forward(self, t):
+            h = self.emb(t.clamp(0, N_TILE_TYPES - 1)).permute(0, 3, 1, 2)
+            return self.net(h).squeeze(-1)
+
+    m = Disc().to(device)
+    opt = torch.optim.Adam(m.parameters(), lr=1e-3)
+    bce = nn.BCEWithLogitsLoss()
+    Xtr, ytr, Xte, yte = Xtr.to(device), ytr.to(device), Xte.to(device), yte.to(device)
+    bs = 256
+    for _ in range(epochs):
+        m.train()
+        idx = torch.randperm(len(Xtr), generator=g)
+        for j in range(0, len(Xtr), bs):
+            b = idx[j:j + bs]
+            opt.zero_grad()
+            bce(m(Xtr[b]), ytr[b]).backward()
+            opt.step()
+    m.eval()
+    with torch.no_grad():
+        scores = torch.sigmoid(m(Xte)).cpu().numpy()
+    return {"auc": _auc(scores, yte.cpu().numpy().astype(int)),
+            "n_train": int(len(Xtr)), "n_test": int(len(Xte))}
+
+
+def evaluate(human_spec: str, cand_spec: str, *, do_disc=False, disc_epochs=6) -> dict:
     h_tiles, h_maps = load_source(human_spec)
     c_tiles, c_maps = load_source(cand_spec)
     logger.info("human=%d levels, candidate=%d levels", len(h_tiles), len(c_tiles))
@@ -161,7 +250,10 @@ def evaluate(human_spec: str, cand_spec: str) -> dict:
         "patch2x2_KL_sym": 0.5 * (_kl(cp, hp) + _kl(hp, cp)),
         "human_expressive": expressive_range(h_tiles, h_maps),
         "candidate_expressive": expressive_range(c_tiles, c_maps),
+        "novelty": novelty_metric(c_tiles, h_tiles),
     }
+    if do_disc:
+        report["discriminator"] = discriminator_auc(h_tiles, c_tiles, epochs=disc_epochs)
     return report
 
 
@@ -170,10 +262,12 @@ def main() -> None:
     ap.add_argument("--human", required=True, help="reference source spec (corpus:/h5:/procgen:)")
     ap.add_argument("--candidate", required=True, help="candidate source spec")
     ap.add_argument("--out", default=None, help="optional json output path")
+    ap.add_argument("--discriminator", action="store_true", help="also train a CNN discriminator (AUC)")
+    ap.add_argument("--disc-epochs", type=int, default=6)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    report = evaluate(args.human, args.candidate)
+    report = evaluate(args.human, args.candidate, do_disc=args.discriminator, disc_epochs=args.disc_epochs)
     print(json.dumps(report, indent=2))
     if args.out:
         with open(args.out, "w") as f:

@@ -72,6 +72,54 @@ def gate(map_data: List[int]) -> Optional[float]:
         return None
 
 
+def place_and_gate(tile_list, entity_list, header, prefer: str = "hardest"):
+    """Place the ninja on a reachable floor surface, then gate.
+
+    The hard-coded mid-air spawn ``(86,42)`` is the dominant gate-failure cause
+    (LEVELGEN_REMAINING_WORK §C P1). Since the lattice ``d*`` field is computed
+    *to* the switch/exit and is independent of the spawn, we build the lattice
+    once and test every floor surface point as a candidate spawn, keeping one
+    from which the switch+exit are reachable (``spawn_finite``).
+
+    Returns ``(map_data, d_star)`` for a solvable, spawn-placed level, else
+    ``(None, None)``. Entities are left where the model placed them — the lattice
+    snaps switch/exit queries to their nearest surface, so a switch above a
+    reachable floor still gates solvable.
+    """
+    try:
+        import nclone_native
+        from nclone.value_function.lattice_distance import LatticeDistanceSource
+        try:
+            from nclone.value_function.surface_graph import SURFACE_FLOOR
+        except Exception:
+            SURFACE_FLOOR = 0
+
+        md0 = assemble_map_data(tile_list, (86, 42, 1), entity_list, header)
+        src = LatticeDistanceSource(list(md0), use_cache=True, name="levelgen")
+        if not src.available or src._graph is None:
+            return None, None
+        floor_pts = [p for p in src._graph.surface_points if p.surface_type == SURFACE_FLOOR]
+        cands = [(p, src.cost_to_go(p.x, p.y, switch_activated=False))
+                 for p in floor_pts if src.spawn_finite(p.x, p.y)]
+        if not cands:
+            return None, None
+        if prefer == "hardest":
+            p, d = max(cands, key=lambda c: c[1])
+        else:  # "central": closest to the level centre, more natural-looking
+            p, d = min(cands, key=lambda c: abs(c[0].x / 6 - 86) + abs(c[0].y / 6 - 42))
+        sx, sy = int(round(p.x / 6)), int(round(p.y / 6))
+        final = assemble_map_data(tile_list, (sx, sy, 1), entity_list, header)
+        # verify the *settled* spawn against the same (spawn-independent) d* field
+        sim = nclone_native.Simulator.load(list(final))
+        ax, ay = sim.get_ninja_pos()
+        if not src.spawn_finite(ax, ay):
+            return None, None
+        return final, float(d)
+    except Exception as e:  # pragma: no cover
+        logger.debug("place_and_gate error: %s", e)
+        return None, None
+
+
 def _gate_worker(map_data, q):  # pragma: no cover - runs in subprocess
     q.put(gate(map_data))
 
@@ -181,11 +229,18 @@ def main() -> None:
     ap.add_argument("--mechanic", default="mine", choices=list(MECHANIC_TAGS))
     ap.add_argument("--n-mines", type=int, default=4)
     ap.add_argument("--n-gold", type=int, default=0)
-    ap.add_argument("--cfg-scale", type=float, default=1.5)
+    ap.add_argument("--cfg-scale", type=float, default=2.0,
+                    help="CFG scale; 2.0 sweet spot (the unconditional prior is near-empty, so "
+                         "higher CFG raises fill+diversity here -- see Stage-A sweep)")
     ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--gumbel-temp", type=float, default=0.0,
+                    help="MaskGIT commit-ranking Gumbel noise (diversity); ~1.0 to enable, sweep it")
     ap.add_argument("--steps", type=int, default=12, help="maskgit decode steps")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gate-timeout", type=float, default=30.0, help="per-level gate wall-clock cap (s); 0=off")
+    ap.add_argument("--no-place-spawn", action="store_true",
+                    help="disable spawn-on-surface placement (legacy fixed mid-air spawn; fails most gates)")
+    ap.add_argument("--spawn-prefer", default="hardest", choices=["hardest", "central"])
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -217,17 +272,22 @@ def main() -> None:
     while len(kept) < args.n and attempts < max_attempts:
         bs = args.batch_size
         tiles = tile_model.sample(bs, cond=cond, steps=args.steps, temperature=args.temperature,
-                                  cfg_scale=args.cfg_scale, device=args.device, generator=gen)
+                                  cfg_scale=args.cfg_scale, device=args.device, generator=gen,
+                                  gumbel_temp=args.gumbel_temp)
         ent_sets = ent_model.constrained_generate(
             tiles, n_mines=args.n_mines, n_gold=args.n_gold, temperature=args.temperature, generator=gen
         )
         for i in range(bs):
             attempts += 1
             tile_list = tiles[i].tolist()
-            # ninja spawn from the sim default; place at a fixed interior unit, refined by gate
             ents = ent_sets[i]
-            md = assemble_map_data(tile_list, (86, 42, 0), ents, header)
-            d_star = gate_with_timeout(md, args.gate_timeout)
+            if args.no_place_spawn:
+                # legacy: fixed mid-air spawn (fails most gates -- kept only for ablation)
+                md = assemble_map_data(tile_list, (86, 42, 0), ents, header)
+                d_star = gate_with_timeout(md, args.gate_timeout)
+            else:
+                # place the ninja on a reachable floor surface, then gate (Stage-A fix)
+                md, d_star = place_and_gate(tile_list, ents, header, prefer=args.spawn_prefer)
             if d_star is None:
                 continue
             from scripts.levelgen.common import map_hash_int

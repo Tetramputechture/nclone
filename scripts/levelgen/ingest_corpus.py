@@ -78,7 +78,8 @@ def _ingest_attracts(attracts_dir: str, workers: int, limit: Optional[int]) -> L
     return out
 
 
-def _ingest_official(official_dir: str, dirs: Optional[List[str]]) -> List[LevelRecord]:
+def _ingest_official(official_dir: str, dirs: Optional[List[str]],
+                     geometry_only: bool = False) -> List[LevelRecord]:
     from nclone.maps.official_native_safe_filter import classify_map_data
 
     root = Path(official_dir)
@@ -96,12 +97,16 @@ def _ingest_official(official_dir: str, dirs: Optional[List[str]]) -> List[Level
             md = list(p.read_bytes())
             if len(md) < 1335:
                 continue
-            try:
-                ok, _reason, _hist = classify_map_data(md)
-            except Exception:
-                continue
-            if not ok:
-                continue
+            # geometry_only keeps every official tile grid for the TILE stage; the
+            # native-safe (entity-simulability) filter only matters for the entity
+            # stage / solvability gate, not for geometry pretraining.
+            if not geometry_only:
+                try:
+                    ok, _reason, _hist = classify_map_data(md)
+                except Exception:
+                    continue
+                if not ok:
+                    continue
             out.append(
                 LevelRecord(
                     level_id=map_hash(md),
@@ -112,7 +117,8 @@ def _ingest_official(official_dir: str, dirs: Optional[List[str]]) -> List[Level
                     src_path=str(p.relative_to(root)),
                 )
             )
-    logger.info("Kept %d/%d native-safe official maps", len(out), scanned)
+    logger.info("Kept %d/%d official maps (%s)", len(out), scanned,
+                "all-geometry" if geometry_only else "native-safe")
     return out
 
 
@@ -127,6 +133,8 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None, help="cap attract files (debug)")
     ap.add_argument("--shard-size", type=int, default=2000)
+    ap.add_argument("--official-all-geometry", action="store_true",
+                    help="keep ALL official tile grids (skip native-safe entity filter) for tile-stage geometry")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -135,7 +143,8 @@ def main() -> None:
     if args.attracts:
         records += _ingest_attracts(args.attracts, args.workers, args.limit)
     if args.official:
-        records += _ingest_official(args.official, args.official_dirs)
+        records += _ingest_official(args.official, args.official_dirs,
+                                    geometry_only=args.official_all_geometry)
     if not records:
         raise SystemExit("no sources given (use --attracts and/or --official)")
 

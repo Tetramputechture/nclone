@@ -36,7 +36,10 @@ from nclone.levelgen.tokenizer import (
     DIFFICULTY_BANDS,
     LevelTokenizer,
     MECHANIC_TAGS,
+    N_TILE_VALUES,
     SOURCES,
+    TILE_END,
+    TILE_START,
 )
 from nclone.levelgen.labeling import assign_band, mechanic_tags, subset_ok
 from nclone.map_augmentation.transforms import mirror_map_data
@@ -45,8 +48,19 @@ from scripts.levelgen.common import iter_records
 logger = logging.getLogger("levelgen.build")
 
 
+def _tiles_in_range(map_data) -> bool:
+    """True iff every tile id in the grid is a model-embeddable value (< N_TILE_VALUES).
+
+    The attract decoder occasionally emits degenerate tile ids (observed up to 50);
+    such a level would index past the tile embedding and crash training, so we drop it.
+    """
+    return max(map_data[TILE_START:TILE_END]) < N_TILE_VALUES
+
+
 def _encode(map_data, labels, tok: LevelTokenizer):
-    lvl = tok.tokenize(map_data, include_cond=False)
+    # build_tokens=False: we only need the parsed tiles/ninja/entities here, and it
+    # avoids the Vocab range checks raising on degenerate levels (we drop those upstream).
+    lvl = tok.tokenize(map_data, include_cond=False, build_tokens=False)
     tiles = np.array(lvl.tiles, dtype=np.uint8)
     ninja = np.array(lvl.ninja, dtype=np.uint8)
     ents = np.array([e.as_tuple() for e in lvl.entities], dtype=np.uint8).reshape(-1, 5)
@@ -62,24 +76,34 @@ def _encode(map_data, labels, tok: LevelTokenizer):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build HDF5 token dataset from labeled corpus")
-    ap.add_argument("--corpus", type=str, required=True)
+    ap.add_argument("--corpus", type=str, nargs="+", required=True,
+                    help="one or more labeled corpus dirs (concatenated; e.g. corpus_subset corpus_official)")
     ap.add_argument("--out", type=str, required=True)
     ap.add_argument("--subset-only", action="store_true", help="keep only subset_ok levels")
     ap.add_argument("--mirror", action="store_true", help="add horizontal-mirror variants")
-    ap.add_argument("--bands", type=int, default=5)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    corpus = Path(args.corpus)
+    corpora = [Path(c) for c in args.corpus]
     edges = None
-    idx_path = corpus / "labels_index.json"
-    if idx_path.exists():
-        edges = json.loads(idx_path.read_text()).get("difficulty_edges")
+    for c in corpora:  # take difficulty edges from the first corpus that has them
+        idx_path = c / "labels_index.json"
+        if idx_path.exists():
+            edges = json.loads(idx_path.read_text()).get("difficulty_edges")
+            if edges:
+                break
+    if args.subset_only and not edges:
+        logger.warning(
+            "no difficulty_edges in %s -- corpus appears unlabeled; every "
+            "difficulty_band will be 'unknown'. Run label_corpus first for "
+            "difficulty conditioning.",
+            corpora,
+        )
 
     tok = LevelTokenizer()
     tiles_l, ninja_l, ent_l, src_l, diff_l, sub_l, mech_l, dl_l = [], [], [], [], [], [], [], []
     ent_ptr: List[int] = [0]
-    n_in = n_kept = n_aug = 0
+    n_in = n_kept = n_aug = n_oob = 0
 
     def add(map_data, labels):
         nonlocal n_kept
@@ -95,7 +119,8 @@ def main() -> None:
         dl_l.append(dl)
         n_kept += 1
 
-    for r in iter_records(corpus):
+    for c in corpora:
+      for r in iter_records(c):
         n_in += 1
         labels = r.labels or {
             "source": r.source,
@@ -106,9 +131,15 @@ def main() -> None:
         }
         if args.subset_only and not labels["subset_ok"]:
             continue
+        if not _tiles_in_range(r.map_data):  # degenerate tile id -> would crash the embedding
+            n_oob += 1
+            continue
         add(r.map_data, labels)
         if args.mirror:
             mirrored = mirror_map_data(list(r.map_data))
+            if not _tiles_in_range(mirrored):
+                n_oob += 1
+                continue
             mlabels = dict(labels)
             mlabels["mechanic_tags"] = mechanic_tags(mirrored)  # chirality may shift tags
             mlabels["subset_ok"] = subset_ok(mirrored)
@@ -144,11 +175,12 @@ def main() -> None:
         h.attrs["mechanic_tags"] = json.dumps(list(MECHANIC_TAGS))
         h.attrs["difficulty_edges"] = json.dumps(edges or [])
     logger.info(
-        "Wrote %s: %d levels (in=%d, mirror_aug=%d, entities=%d)",
+        "Wrote %s: %d levels (in=%d, mirror_aug=%d, dropped_oob_tiles=%d, entities=%d)",
         out,
         n_kept,
         n_in,
         n_aug,
+        n_oob,
         len(ent_data),
     )
 
