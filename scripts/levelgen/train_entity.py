@@ -31,8 +31,10 @@ from nclone.levelgen.train_utils import (
     best_ckpt_path,
     cosine_warmup_lambda,
     make_writer,
+    overlay_entities,
     save_run_config,
     split_dataset,
+    tiles_to_rgb,
 )
 
 logger = logging.getLogger("levelgen.train_entity")
@@ -114,6 +116,10 @@ def main() -> None:
     ap.add_argument("--lr-schedule", default="constant", choices=["constant", "cosine"])
     ap.add_argument("--warmup-frac", type=float, default=0.03, help="warmup fraction of total steps (cosine)")
     ap.add_argument("--ema-decay", type=float, default=0.0, help="EMA decay for sampling weights (0=off)")
+    ap.add_argument("--sample-every", type=int, default=0,
+                    help="every N epochs, log sampled entity placements on val grids to TB (0=off)")
+    ap.add_argument("--sample-n", type=int, default=8, help="grids to visualize per viz")
+    ap.add_argument("--sample-mines", type=int, default=4, help="mines per viz placement")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -203,6 +209,36 @@ def main() -> None:
             return v
         return _validate(model, val_dl, args.device, autocast)
 
+    # fixed conditioning grids (real tiles) for comparable placement viz across epochs
+    viz_tiles = None
+    if args.sample_every and writer is not None:
+        src = val_ds if val_ds is not None else train_ds
+        k = min(args.sample_n, len(src))
+        viz_tiles = torch.stack([src[i]["tiles"] for i in range(k)]).to(args.device)
+
+    @torch.no_grad()
+    def _log_samples(ep):
+        if writer is None or args.sample_every <= 0 or viz_tiles is None:
+            return
+        backup = None
+        try:
+            if ema:
+                backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                ema.copy_to(model)
+            model.eval()
+            gsmpl = torch.Generator(device=args.device).manual_seed(1234)
+            ent_sets = model.constrained_generate(
+                viz_tiles, n_mines=args.sample_mines, n_gold=0, temperature=1.0, generator=gsmpl)
+            img = tiles_to_rgb(viz_tiles.cpu().numpy())
+            overlay_entities(img, ent_sets)
+            writer.add_images("sample/placements", img, ep, dataformats="NCHW")
+        except Exception as e:
+            logger.warning("sample logging failed: %s", e)
+        finally:
+            if backup is not None:
+                model.load_state_dict(backup)
+            model.train()
+
     thr = Throughput()
     best_val = float("inf")
     step = 0
@@ -247,6 +283,8 @@ def main() -> None:
                 _save(best_ckpt_path(args.out))
                 msg += " (best)"
         logger.info("%s", msg)
+        if args.sample_every and (ep % args.sample_every == 0 or ep == args.epochs - 1):
+            _log_samples(ep)
         if args.max_steps and step >= args.max_steps:
             break
     _save(args.out)

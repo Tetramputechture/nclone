@@ -139,6 +139,83 @@ def cosine_warmup_lambda(total_steps: int, warmup_steps: int, floor: float = 0.0
     return f
 
 
+# ---------------------------------------------------------------- sample viz
+_GEN_GRID_H, _GEN_GRID_W = 23, 42  # tile grid (must match tile_transformer.GRID_H/W)
+
+
+def _tile_palette():
+    """RGB LUT making structure + tile-family variety legible in TB previews."""
+    import numpy as np
+
+    pal = np.full((64, 3), (255, 0, 255), np.uint8)  # degenerate ids -> magenta
+    pal[0] = (24, 24, 32)        # empty
+    pal[1] = (225, 225, 225)     # full solid
+    for t in range(2, 6):
+        pal[t] = (165, 165, 170)  # half tiles
+    for t in list(range(6, 10)) + list(range(18, 34)):
+        pal[t] = (120, 165, 205)  # slopes (blue)
+    for t in range(10, 18):
+        pal[t] = (205, 160, 110)  # curves (orange)
+    return pal
+
+
+def tiles_to_rgb(tiles, scale: int = 6):
+    """(N, 966) tile ids -> (N, 3, H*scale, W*scale) uint8 for ``add_images``."""
+    import numpy as np
+
+    pal = _tile_palette()
+    arr = np.asarray(tiles).reshape(-1, _GEN_GRID_H, _GEN_GRID_W)
+    arr = np.clip(arr, 0, pal.shape[0] - 1)
+    img = pal[arr]  # (N, H, W, 3)
+    img = np.repeat(np.repeat(img, scale, axis=1), scale, axis=2)
+    return np.transpose(img, (0, 3, 1, 2)).copy()  # NCHW
+
+
+# entity-type -> marker color for the entity-stage overlay
+_ENT_COLOR = {1: (230, 60, 60), 21: (230, 60, 60), 2: (235, 215, 70),
+              3: (70, 210, 90), 4: (200, 90, 220)}
+
+
+def overlay_entities(img_nchw, ent_lists, scale: int = 6, r: int = 2):
+    """Draw entity markers (unit coords) onto an NCHW uint8 batch, in place.
+
+    ``ent_lists[i]`` is a list of objects with ``.type/.x/.y`` in map_data units
+    (grid cell = units/4). Returns the same array.
+    """
+    H = _GEN_GRID_H * scale
+    W = _GEN_GRID_W * scale
+    for i, ents in enumerate(ent_lists):
+        if i >= img_nchw.shape[0]:
+            break
+        for e in ents or []:
+            col = _ENT_COLOR.get(getattr(e, "type", -1))
+            if col is None:
+                continue
+            px = int(round((e.x / 4.0) * scale))
+            py = int(round((e.y / 4.0) * scale))
+            y0, y1 = max(0, py - r), min(H, py + r + 1)
+            x0, x1 = max(0, px - r), min(W, px + r + 1)
+            for c in range(3):
+                img_nchw[i, c, y0:y1, x0:x1] = col[c]
+    return img_nchw
+
+
+def pairwise_tile_diversity(tiles) -> float:
+    """Mean normalized Hamming distance across all sample pairs (0=identical)."""
+    import numpy as np
+
+    a = np.asarray(tiles)
+    n = a.shape[0]
+    if n < 2:
+        return float("nan")
+    tot = cnt = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            tot += float((a[i] != a[j]).mean())
+            cnt += 1
+    return tot / max(cnt, 1)
+
+
 class EMA:
     """Exponential moving average of a model's float tensors (params + buffers).
 

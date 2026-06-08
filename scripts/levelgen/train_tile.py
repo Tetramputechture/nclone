@@ -26,14 +26,17 @@ from torch.utils.data import DataLoader
 
 from nclone.levelgen.dataset import TileDataset
 from nclone.levelgen.models.tile_transformer import TileConfig, TileTransformer
+from nclone.levelgen.tokenizer import DIFFICULTY_BANDS, MECHANIC_TAGS, SOURCES
 from nclone.levelgen.train_utils import (
     EMA,
     Throughput,
     best_ckpt_path,
     cosine_warmup_lambda,
     make_writer,
+    pairwise_tile_diversity,
     save_run_config,
     split_dataset,
+    tiles_to_rgb,
 )
 
 logger = logging.getLogger("levelgen.train_tile")
@@ -104,6 +107,12 @@ def main() -> None:
     ap.add_argument("--warmup-frac", type=float, default=0.03, help="warmup fraction of total steps (cosine)")
     ap.add_argument("--ema-decay", type=float, default=0.0,
                     help="EMA decay for sampling weights (0=off; ~0.999 typical)")
+    # --- periodic generation viz to TensorBoard ---
+    ap.add_argument("--sample-every", type=int, default=0,
+                    help="every N epochs, sample + log grids/fill/diversity to TB (0=off)")
+    ap.add_argument("--sample-n", type=int, default=8, help="grids to sample per viz")
+    ap.add_argument("--sample-cfg", type=float, default=2.0, help="CFG scale for viz samples")
+    ap.add_argument("--sample-gumbel", type=float, default=0.0, help="Gumbel temp for viz samples")
     args = ap.parse_args()
     torch.backends.cuda.matmul.allow_tf32 = True  # Hopper/Ampere matmul speedup
     torch.backends.cudnn.allow_tf32 = True
@@ -196,6 +205,42 @@ def main() -> None:
             return v
         return _validate(model, val_dl, args.device, autocast, loss_kw)
 
+    def _sample_cond(n):
+        cond = {
+            "source": torch.full((n,), SOURCES.index("generated"), dtype=torch.long),
+            "difficulty": torch.full((n,), DIFFICULTY_BANDS.index("d2"), dtype=torch.long),
+            "subset": torch.ones(n, dtype=torch.long),
+            "mech": torch.zeros(n, len(MECHANIC_TAGS)),
+        }
+        cond["mech"][:, MECHANIC_TAGS.index("mine")] = 1.0
+        return cond
+
+    @torch.no_grad()
+    def _log_samples(ep):
+        """Sample (from EMA weights), log grid montage + fill + diversity to TB."""
+        if writer is None or args.sample_every <= 0:
+            return
+        backup = None
+        try:
+            if ema:
+                backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                ema.copy_to(model)
+            model.eval()
+            gsmpl = torch.Generator(device=args.device).manual_seed(1234)  # fixed -> comparable
+            tiles = model.sample(args.sample_n, cond=_sample_cond(args.sample_n), steps=12,
+                                 temperature=1.0, cfg_scale=args.sample_cfg, device=args.device,
+                                 generator=gsmpl, gumbel_temp=args.sample_gumbel)
+            t_np = tiles.cpu().numpy()
+            writer.add_scalar("sample/fill", float((t_np != 0).mean()), ep)
+            writer.add_scalar("sample/diversity", pairwise_tile_diversity(t_np), ep)
+            writer.add_images("sample/grids", tiles_to_rgb(t_np), ep, dataformats="NCHW")
+        except Exception as e:
+            logger.warning("sample logging failed: %s", e)
+        finally:
+            if backup is not None:
+                model.load_state_dict(backup)
+            model.train()
+
     thr = Throughput()
     best_val = float("inf")
     step = 0
@@ -240,6 +285,8 @@ def main() -> None:
                 _save(best_ckpt_path(args.out))
                 msg += " (best)"
         logger.info("%s", msg)
+        if args.sample_every and (ep % args.sample_every == 0 or ep == args.epochs - 1):
+            _log_samples(ep)
         if args.max_steps and step >= args.max_steps:
             break
     _save(args.out)

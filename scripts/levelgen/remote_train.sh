@@ -78,6 +78,12 @@ EMA_DECAY="${EMA_DECAY:-0.999}"      # 0 = off; sampling uses EMA weights
 EFF_FLAGS="--lr-schedule $LR_SCHEDULE --warmup-frac $WARMUP_FRAC --ema-decay $EMA_DECAY"
 [ "$COMPILE" = "1" ] && EFF_FLAGS="$EFF_FLAGS --compile"
 
+# Periodic generation visualization to TensorBoard (sample/grids, sample/fill,
+# sample/diversity for tiles; sample/placements for entities).
+SAMPLE_EVERY="${SAMPLE_EVERY:-5}"   # epochs between TB sample logs (0 = off)
+TILE_VIZ_FLAGS="--sample-every $SAMPLE_EVERY --sample-cfg 2.0"
+ENTITY_VIZ_FLAGS="--sample-every $SAMPLE_EVERY"
+
 AMP="${AMP:-1}"                       # 1 = pass --amp (bf16 autocast)
 AMP_FLAG=""; [ "$AMP" = "1" ] && AMP_FLAG="--amp"
 
@@ -201,13 +207,13 @@ python -m scripts.levelgen.build_dataset --corpus "\$D/corpus_full"$OFFICIAL_GEO
 FRAG
 }
 cmd_tile_pretrain() {
-  printf '%s\n' 'python -m scripts.levelgen.train_tile --data "$D/tiles_full.h5" --mode '"$TILE_MODE"' --d-model '"$TILE_DMODEL"' --n-layers '"$TILE_LAYERS"' --n-heads '"$TILE_HEADS"' --epochs '"$PRETRAIN_EPOCHS"' --batch-size '"$PRETRAIN_BATCH"' '"$DL_WORKERS_FLAG"' --lr '"$LR"' '"$AMP_FLAG"' '"$IMB_FLAGS"' '"$EFF_FLAGS"' --tb-logdir "$T" --run-name tile_pretrain --out "$C/tile_pretrain.pt"'
+  printf '%s\n' 'python -m scripts.levelgen.train_tile --data "$D/tiles_full.h5" --mode '"$TILE_MODE"' --d-model '"$TILE_DMODEL"' --n-layers '"$TILE_LAYERS"' --n-heads '"$TILE_HEADS"' --epochs '"$PRETRAIN_EPOCHS"' --batch-size '"$PRETRAIN_BATCH"' '"$DL_WORKERS_FLAG"' --lr '"$LR"' '"$AMP_FLAG"' '"$IMB_FLAGS"' '"$EFF_FLAGS"' '"$TILE_VIZ_FLAGS"' --tb-logdir "$T" --run-name tile_pretrain --out "$C/tile_pretrain.pt"'
 }
 cmd_tile_finetune() {
-  printf '%s\n' 'python -m scripts.levelgen.train_tile --data "$D/tiles_finetune.h5" --mode '"$TILE_MODE"' --d-model '"$TILE_DMODEL"' --n-layers '"$TILE_LAYERS"' --n-heads '"$TILE_HEADS"' --init-from "$C/tile_pretrain.pt" --epochs '"$FINETUNE_EPOCHS"' --batch-size '"$FINETUNE_BATCH"' '"$DL_WORKERS_FLAG"' --lr '"$LR"' '"$AMP_FLAG"' '"$IMB_FLAGS"' '"$EFF_FLAGS"' --tb-logdir "$T" --run-name tile_finetune --out "$C/tile.pt"'
+  printf '%s\n' 'python -m scripts.levelgen.train_tile --data "$D/tiles_finetune.h5" --mode '"$TILE_MODE"' --d-model '"$TILE_DMODEL"' --n-layers '"$TILE_LAYERS"' --n-heads '"$TILE_HEADS"' --init-from "$C/tile_pretrain.pt" --epochs '"$FINETUNE_EPOCHS"' --batch-size '"$FINETUNE_BATCH"' '"$DL_WORKERS_FLAG"' --lr '"$LR"' '"$AMP_FLAG"' '"$IMB_FLAGS"' '"$EFF_FLAGS"' '"$TILE_VIZ_FLAGS"' --tb-logdir "$T" --run-name tile_finetune --out "$C/tile.pt"'
 }
 cmd_entity() {
-  printf '%s\n' 'python -m scripts.levelgen.train_entity --data "$D/tiles_subset.h5" --tile-ckpt "$C/tile.pt" --d-model '"$ENTITY_DMODEL"' --n-layers '"$ENTITY_LAYERS"' --epochs '"$ENTITY_EPOCHS"' --batch-size '"$ENTITY_BATCH"' '"$DL_WORKERS_FLAG"' --lr '"$LR"' '"$AMP_FLAG"' '"$EFF_FLAGS"' --tb-logdir "$T" --run-name entity --out "$C/entity.pt"'
+  printf '%s\n' 'python -m scripts.levelgen.train_entity --data "$D/tiles_subset.h5" --tile-ckpt "$C/tile.pt" --d-model '"$ENTITY_DMODEL"' --n-layers '"$ENTITY_LAYERS"' --epochs '"$ENTITY_EPOCHS"' --batch-size '"$ENTITY_BATCH"' '"$DL_WORKERS_FLAG"' --lr '"$LR"' '"$AMP_FLAG"' '"$EFF_FLAGS"' '"$ENTITY_VIZ_FLAGS"' --tb-logdir "$T" --run-name entity --out "$C/entity.pt"'
 }
 
 data_cmds() {        # default (corpus-shard) data block

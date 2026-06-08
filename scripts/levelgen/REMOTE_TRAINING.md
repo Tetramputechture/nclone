@@ -39,6 +39,13 @@ All three training runs write per-step scalars to remote `~/experiments/tb/<run>
 - `epoch/train_loss` and `epoch/val_loss` — each stage holds out a deterministic 5%
   validation split (`--val-frac`, `--split-seed`); the best-by-val weights are saved
   alongside the final checkpoint as `<name>.best.pt`.
+- **Periodic generation previews** (every `SAMPLE_EVERY` epochs, default 5): the tile
+  stages log a sampled grid montage `sample/grids` plus `sample/fill` and
+  `sample/diversity` scalars (watch fill climb toward ~0.58 and diversity hold up
+  live — the two Stage-A failure modes); the entity stage logs `sample/placements`
+  (sampled entities overlaid on real val grids). Samples use the EMA weights and a
+  fixed seed/conditioning so the same slots are comparable across epochs. `SAMPLE_EVERY=0`
+  disables.
 
 Each checkpoint gets a `<name>.run_config.json` sidecar capturing the full hparams,
 the git SHA, and the model config for reproducibility.
