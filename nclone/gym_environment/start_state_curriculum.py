@@ -40,6 +40,118 @@ _LEVEL_H_PX = 25 * 24.0
 _CELLG = 12.0
 
 
+def _exit_guided_tree(map_data, fs, prefix_a, *, max_iter: int, kext: int,
+                      seed: int, log=lambda m: None):
+    """Exit-guided RRT from the POST-SWITCH state, returning the WHOLE tree.
+
+    Replays ``prefix_a`` on full ``tick`` to reach the post-switch state (switch
+    consumed, door open), snapshots it, then expands an RRT toward the exit via
+    full ``tick`` so the activated-switch / open-door entity state persists. This
+    is the same expansion the demo solver's Stage B uses, but instead of keeping
+    only the winning leaf it returns EVERY node — each is a graduated return-leg
+    position spanning the switch (full leg) down to the exit. The caller turns
+    each node into a ``(prefix_a + node_path, exit_cost_to_go)`` start state, which
+    gives the post-switch reverse curriculum the near-exit states it was missing.
+
+    Returns ``(nodes, exit_xy)`` where ``nodes`` is a list of
+    ``[full_state, x, y, parent, action]``, or ``(None, None)`` if the
+    post-switch state can't be reached (prefix died/won, switch not consumed, no
+    exit entity). Does NOT require a win — a partial tree still yields useful
+    graduated states on levels the planner can't fully solve."""
+    import nclone_native
+
+    sim = nclone_native.Simulator.load(list(map_data))
+    sim.fast_reset()
+    for a in prefix_a:
+        hin, jin = ACT.get(int(a), (0, 0))
+        sim.tick(hin, jin)
+        if sim.has_died() or sim.has_won():
+            return None, None
+    if not any(e.entity_type == 4 and not e.active for e in sim.get_state().entities):
+        return None, None
+    exit_xy = next(((float(e.x), float(e.y))
+                    for e in sim.get_state().entities if e.entity_type == 3), None)
+    if exit_xy is None:
+        return None, None
+
+    start_state = sim.save_full_state()
+    sx, sy = sim.get_ninja_pos()
+    rng = random.Random(seed + 7)
+
+    # node: [full_state_bytes, x, y, parent, action]
+    nodes = [[start_state, sx, sy, -1, None]]
+    buckets = {(int(sx / _CELLG), int(sy / _CELLG)): [0]}
+    closest_ni, closest_d = 0, 1e18
+
+    for it in range(max_iter):
+        r = rng.random()
+        if r < 0.3:
+            fx, fy = nodes[closest_ni][1], nodes[closest_ni][2]
+            tx = fx + rng.gauss(0, 45) + (exit_xy[0] - fx) * 0.4
+            ty = fy + rng.gauss(0, 45) + (exit_xy[1] - fy) * 0.4
+        elif r < 0.55:
+            tx, ty = exit_xy
+        else:
+            tx, ty = rng.uniform(0, _LEVEL_W_PX), rng.uniform(0, _LEVEL_H_PX)
+        bx, by = int(tx / _CELLG), int(ty / _CELLG)
+        best, bd = None, 1e18
+        for rr in range(0, 7):
+            for dx in range(-rr, rr + 1):
+                for dy in (range(-rr, rr + 1) if abs(dx) == rr else (-rr, rr)):
+                    for ni in buckets.get((bx + dx, by + dy), ()):
+                        d = (nodes[ni][1] - tx) ** 2 + (nodes[ni][2] - ty) ** 2
+                        if d < bd:
+                            bd, best = d, ni
+            if best is not None and rr >= 2:
+                break
+        if best is None:
+            continue
+        base = nodes[best][0]
+        ba, bdd, bstate, bxy = None, 1e18, None, None
+        for a, (hin, jin) in ACT.items():
+            sim.restore_full_state(base)
+            dead = False
+            for _ in range(kext):
+                sim.tick(hin, jin)
+                if sim.has_won():
+                    break
+                if sim.has_died():
+                    dead = True
+                    break
+            if dead:
+                continue
+            px, py = sim.get_ninja_pos()
+            d = (px - tx) ** 2 + (py - ty) ** 2
+            if d < bdd:
+                bdd, ba, bstate, bxy = d, a, sim.save_full_state(), (px, py)
+        if ba is None:
+            continue
+        nid = len(nodes)
+        nodes.append([bstate, bxy[0], bxy[1], best, ba])
+        buckets.setdefault((int(bxy[0] / _CELLG), int(bxy[1] / _CELLG)), []).append(nid)
+        gd = (bxy[0] - exit_xy[0]) ** 2 + (bxy[1] - exit_xy[1]) ** 2
+        if gd < closest_d:
+            closest_d, closest_ni = gd, nid
+        if it % 50000 == 0 and it:
+            log(f"  [post-switch tree] {it} it, {len(nodes)} nodes, "
+                f"closest {math.sqrt(closest_d):.0f}px")
+
+    return nodes, exit_xy
+
+
+def _node_prefix(nodes, ni: int, kext: int) -> List[int]:
+    """Action prefix (root -> node ``ni``), each tree edge repeated ``kext``x."""
+    seq = []
+    while nodes[ni][3] != -1:
+        seq.append(nodes[ni][4])
+        ni = nodes[ni][3]
+    seq.reverse()
+    out: List[int] = []
+    for a in seq:
+        out.extend([a] * kext)
+    return out
+
+
 @dataclass
 class StartStateCurriculum:
     """Reachable start states (frame-action prefixes) tagged by progress-to-goal.
@@ -185,3 +297,117 @@ class StartStateCurriculum:
         max_p = max((p for _, p in tagged), default=1.0) or 1.0
         log(f"  curriculum: {len(tagged)} states, progress 0..{max_p:.0f}")
         return cls(states=tagged, max_progress=max_p, goal_kind=goal_kind)
+
+    @classmethod
+    def generate_post_switch(cls, map_data, *, n_states: int = 400,
+                             max_iter: int = 120000, b_max_iter: int = 200000,
+                             kext: int = 4, seed: int = 0,
+                             log=lambda m: None) -> "StartStateCurriculum":
+        """Build a POST-SWITCH return-leg reverse curriculum.
+
+        The motivating bug: on FAR_OBJECTIVE (loop) levels the agent reaches the
+        switch but never completes the return trip to the exit (``exit_given_switch
+        == 0``) — the post-switch return policy is barely trained because it
+        rarely reaches that state. Seeding episodes *with the switch already
+        activated* lets it practise the return leg directly.
+
+        The switch-reaching RRT (:meth:`generate`) explores over
+        ``tick_physics_mines_only``, which never mutates entities, so its prefixes
+        only reach the switch *position* — they don't activate it. We replay each
+        switch-goal prefix on the FULL native physics (``tick``, which DOES process
+        the switch/door) and keep the ones that actually consume the exit switch
+        (entity-4 ``active`` flips ``True -> False``).
+
+        Those switch-consuming prefixes all END essentially AT the switch, so on
+        their own they only populate the curriculum at ~max exit-progress (the
+        FULL return leg) — leaving the ``difficulty`` knob with no near-exit states
+        to anneal *to*, which is exactly why the reverse curriculum was inert on
+        loop levels. So we additionally run an EXIT-GUIDED RRT from the post-switch
+        state of the best-connected switch prefix (:func:`_exit_guided_tree`) and
+        harvest EVERY node of that tree as a graduated start state, tagged by its
+        free-space cost-to-go to the exit. This fills the return leg from the
+        switch (full leg, difficulty 1) down to one hop from the exit (difficulty
+        0 — an on-policy-discoverable win that finally gives a real reward
+        gradient). The two sources are merged and sub-sampled.
+
+        Prefixes are replayed faithfully on the env's own physics on reset (see
+        ``NppEnvironment._maybe_apply_start_state``), so a survivor always
+        re-activates the switch (and the harvested suffix re-traverses the return
+        leg) there too."""
+        import nclone_native
+
+        # Phase 1: discover prefixes that reach the switch position.
+        switch_cur = cls.generate(map_data, goal_kind="switch", n_states=n_states,
+                                  max_iter=max_iter, kext=kext, seed=seed, log=log)
+        if not switch_cur.states:
+            return cls(goal_kind="exit")
+
+        fs = FreeSpaceDistanceSource(list(map_data))
+        sim = nclone_native.Simulator.load(list(map_data))
+
+        def switch_consumed() -> bool:
+            # The exit switch (entity_type 4) is ``active`` until touched; once
+            # the ninja activates it the flag flips to False and the exit opens.
+            return any(e.entity_type == 4 and not e.active
+                       for e in sim.get_state().entities)
+
+        def exit_progress(x, y) -> float:
+            c = fs.cost_to_go(x, y, True)  # switch_activated=True -> exit leg
+            return c if math.isfinite(c) else fs._d_max_exit
+
+        # Phase 2: validate each prefix on FULL physics; keep switch-consuming
+        # ones (re-tagged by exit cost-to-go) and track the best-connected one as
+        # the anchor for the exit-guided tree.
+        coarse: List[Tuple[List[int], float]] = []
+        anchor_prefix: Optional[List[int]] = None
+        anchor_cost = 1e18
+        for prefix, _ in switch_cur.states:
+            sim.fast_reset()
+            ok = True
+            for a in prefix:
+                hin, jin = ACT.get(int(a), (0, 0))
+                sim.tick(hin, jin)
+                if sim.has_died():
+                    ok = False
+                    break
+                if sim.has_won():
+                    break
+            if not ok or not switch_consumed():
+                continue
+            px, py = sim.get_ninja_pos()
+            cost = exit_progress(px, py)
+            coarse.append((list(prefix), cost))
+            if cost < anchor_cost:
+                anchor_cost, anchor_prefix = cost, list(prefix)
+
+        if not coarse:
+            log("  post-switch curriculum: 0 switch-consuming prefixes found")
+            return cls(goal_kind="exit")
+
+        # Phase 3: harvest the exit-guided tree from the best anchor's post-switch
+        # state -> graduated near-exit..full-leg states (the missing coverage).
+        tree_states: List[Tuple[List[int], float]] = []
+        if anchor_prefix is not None:
+            try:
+                nodes, _exit_xy = _exit_guided_tree(
+                    map_data, fs, anchor_prefix, max_iter=b_max_iter,
+                    kext=kext, seed=seed, log=log)
+            except Exception as exc:  # noqa: BLE001 - never break the build
+                nodes = None
+                log(f"  post-switch tree failed: {exc}")
+            if nodes:
+                for ni in range(1, len(nodes)):  # skip root (== anchor, in coarse)
+                    nx, ny = nodes[ni][1], nodes[ni][2]
+                    suffix = _node_prefix(nodes, ni, kext)
+                    tree_states.append((anchor_prefix + suffix, exit_progress(nx, ny)))
+
+        tagged = coarse + tree_states
+        tagged.sort(key=lambda t: t[1])
+        if len(tagged) > n_states:
+            idx = np.linspace(0, len(tagged) - 1, n_states).astype(int)
+            tagged = [tagged[i] for i in idx]
+        max_p = max((p for _, p in tagged), default=1.0) or 1.0
+        log(f"  post-switch curriculum: {len(coarse)} switch states + "
+            f"{len(tree_states)} return-leg tree states -> {len(tagged)} total, "
+            f"exit-progress 0..{max_p:.0f}")
+        return cls(states=tagged, max_progress=max_p, goal_kind="exit")
