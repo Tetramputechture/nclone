@@ -300,7 +300,7 @@ class StartStateCurriculum:
 
     @classmethod
     def generate_post_switch(cls, map_data, *, n_states: int = 400,
-                             max_iter: int = 120000, b_max_iter: int = 200000,
+                             max_iter: int = 120000, b_max_iter: int = 40000,
                              kext: int = 4, seed: int = 0,
                              log=lambda m: None) -> "StartStateCurriculum":
         """Build a POST-SWITCH return-leg reverse curriculum.
