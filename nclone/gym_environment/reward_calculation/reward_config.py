@@ -19,6 +19,8 @@ from .reward_constants import (
     R_ALL_GOLD,
     GOLD_FRAME_VALUE,
     HWM_ALPHA,
+    LATTICE_PBRS_WEIGHT,
+    LATTICE_PBRS_GAMMA,
     TIME_PENALTY_PER_STEP,
     TRUNCATION_PENALTY,
 )
@@ -72,6 +74,115 @@ class RewardConfig:
     # Opening a non-necessary door pays nothing (no detour incentive).
     enable_locked_door_rewards: bool = False
     _locked_door_switch_reward_override: Optional[float] = None
+
+    # --- Lattice / free-space PBRS (reward_constants LATTICE_PBRS_* block) ---
+    # When True, a true policy-invariant potential-based shaping term
+    # F = pbrs_weight * (pbrs_gamma * Phi(s') - Phi(s)), with
+    # Phi(s) = -normalized cost-to-completion from the env's reachability source,
+    # REPLACES the HWM ratchet + backtrack penalty as the sole dense extrinsic
+    # signal. Requires the env's ReachabilityConfig.use_lattice_potential so the
+    # substituted (lattice/free-space) cost-to-completion reaches the obs
+    # distances; the trainer wires that automatically when this is set.
+    enable_lattice_pbrs: bool = False
+    _pbrs_weight_override: Optional[float] = None
+    _pbrs_gamma_override: Optional[float] = None
+    # Fixed reference for the PBRS potential normalization (D0 = cost-to-completion
+    # denominator), in the same units as the active cost-to-go source. Default None
+    # = per-EPISODE D0 (the spawn cost-to-completion), which makes the per-step
+    # shaping magnitude scale as 1/route-length: on a long route (e.g. the tight
+    # mine-morph rungs, D0~4438) a forward step earns ~6x less than on a short one
+    # (D0~763), so the dense gradient fades exactly where it is needed most. Set a
+    # FIXED reference (e.g. the hardest rung's D0) so per-step magnitude is
+    # ROUTE-LENGTH-INVARIANT across a geometry-morphing curriculum — each pixel of
+    # progress pays the same reward on every rung (the total return then scales with
+    # route length, which the value head absorbs). Still policy-invariant within an
+    # episode (a constant rescale of a state-only potential). See the
+    # geometry-morphing curriculum docs.
+    _pbrs_d0_ref_override: Optional[float] = None
+    # Fraction of the terminal PBRS potential paid on DEATH (a true terminal).
+    #   1.0 = strict policy-invariant: death pays -w*Phi(s_last) so shaping
+    #         telescopes to a constant +w for every terminal (no approach gradient
+    #         survives death -> on a hard exploration level the agent collapses to
+    #         a fast-death local optimum, empirically observed).
+    #   0.0 = exploration-friendly (DEFAULT): death pays NO terminal potential, so
+    #         the dense approach reward w*(Phi(s_last)+1) the agent earned on the
+    #         way IS BANKED -> dying nearer the goal is strictly better than dying
+    #         at spawn, giving a per-episode gradient that rewards reaching deeper.
+    #         Not policy-invariant, but a desired exploration bias when the agent
+    #         cannot otherwise leave spawn. (Win always pays the FULL terminal
+    #         potential, so completion's +w bonus is unaffected.)
+    pbrs_death_clawback: float = 0.0
+
+    # --- Goal-distance reverse curriculum ---
+    # Move the GOAL closer to spawn early, then outward. The "near goal" is a
+    # cost-to-go THRESHOLD on the (reachable) free-space path: the episode SUCCEEDS
+    # (pays the exit reward + terminates) as soon as the agent's cost-to-completion
+    # drops to <= C_spawn*(1-goal_distance_fraction), where C_spawn is the spawn
+    # cost-to-completion. goal_distance_fraction=1.0 -> true goal only (off);
+    # f=0.3 -> succeed after covering 30% of the path. Annealed low->1.0 as the
+    # agent learns. Bootstraps long-horizon (FAR_OBJECTIVE) + makes the sparse
+    # terminal reachable + shortens early episodes (helps value stability).
+    enable_goal_distance_curriculum: bool = False
+    goal_distance_fraction: float = 1.0
+
+    # --- Per-leg waypoint PBRS (docs/LONG_HORIZON_DISTANCE_HANDOFF.md) ---
+    # When True, a per-leg potential term F = pbrs_weight*(pbrs_gamma*Phi(s') - Phi(s))
+    # with Phi(s) = -clamp(waypoint_leg_distance / waypoint_leg_scale, 0, 1) shapes
+    # progress toward the CURRENT local waypoint (from a WaypointTracker, fed into obs
+    # as ``waypoint_leg_distance`` + ``waypoint_index``). The potential basis is REBASED
+    # every time ``waypoint_index`` advances, so each leg is short and the per-step
+    # gradient is ROUTE-LENGTH-INVARIANT -- the long-horizon distance-dropoff fix
+    # (decompose one far goal into a chain of near subgoals). Mutually exclusive with the
+    # HWM ratchet and the lattice/free-space PBRS: ``hwm_alpha`` is forced to 0 and the
+    # backtrack penalty is skipped (the per-leg term already penalizes regress
+    # symmetrically). Reuses ``pbrs_weight`` / ``pbrs_gamma``.
+    enable_waypoint_pbrs: bool = False
+    waypoint_leg_scale: float = 96.0  # px; denominator for the per-leg potential
+    # Explicit per-waypoint REACH BONUS: paid each time the WaypointTracker cursor
+    # advances forward (monotonic; the tracker never retreats so it cannot be
+    # farmed). Unlike the policy-invariant per-leg PBRS, this is a concrete dense
+    # progress reward on the long return leg -- exactly where the agent times out.
+    # 0.0 = off (pure PBRS). A densified route is ~48px/leg, so e.g. 0.05 pays
+    # ~0.05 every 48px of forward route progress, route-length-invariant.
+    waypoint_reach_bonus: float = 0.0
+
+    # --- Frontier watermark bonus (long-horizon "loop"-level commitment) ---
+    # On long loop levels the agent times out wandering a safe basin instead of
+    # committing to the long climb to the goal: the dense free-space cost-to-go
+    # PBRS is correct but its per-step gradient over 600-1100px is too weak to
+    # overcome the discount. When True, a small one-sided bonus pays the agent
+    # ONLY when it reaches a strictly new closest-approach (a new minimum
+    # free-space cost-to-go) to the current live objective this episode -- the
+    # switch pre-activation, the exit post-activation. The bonus is
+    # ``frontier_bonus_weight * (best_prev - now)`` (positive, proportional to the
+    # improvement); a non-improving step pays nothing, so basin-wandering earns 0
+    # while monotonic progress around the loop is rewarded. It REUSES the same
+    # phase-aware cost-to-go (``current_goal_dist``) the PBRS potential is built
+    # from -- no new distance source -- so the two signals stay consistent. The
+    # episode watermark is reset on episode reset and REBASED (no spurious bonus)
+    # when the live objective changes switch->exit, exactly like the waypoint
+    # rebase. Off by default; additive (does not change behavior when off).
+    # ``frontier_bonus_weight`` is in the same reward units as the per-step PBRS
+    # term and is intentionally MUCH smaller than the sparse switch/exit rewards.
+    enable_frontier_bonus: bool = False
+    frontier_bonus_weight: float = 0.02
+
+    # --- Dense mine-hazard avoidance PBRS (T3/T4 mine-death fix) ---
+    # On long mine levels the agent dies threading the mines (~65% of T3/T4 FAR
+    # episodes) because the ONLY mine signal in the reward is the TERMINAL death
+    # penalty (-3.5) — there is no per-step gradient to steer AROUND a mine, and
+    # with pbrs_death_clawback=0 a deep death even BANKS the approach reward, so
+    # "die deeper" out-scores "die at spawn". This adds a policy-invariant PBRS
+    # term on the normalized nearest-deadly-mine distance d in [0,1] (1=safe,
+    # 0=touching), read from game_state: Phi_haz = d, F = w*(Phi' - Phi) with
+    # gamma=1 (pure telescoping -> exactly 0 when no mine is near, so no survival
+    # drift). Moving away from a mine pays +, moving toward pays - — a dense
+    # avoidance gradient the agent can act on BEFORE dying. Deliberately a SHAPING
+    # gradient, NOT a bigger terminal penalty (run-220/221 showed a larger death
+    # penalty causes passive risk-aversion). Requires the policy to SEE mines
+    # locally (HazardEncoder spatial readout) to be exploitable. Off by default.
+    enable_hazard_pbrs: bool = False
+    hazard_pbrs_weight: float = 0.5
 
     SUCCESS_THRESHOLD_MID: float = 0.15
     SUCCESS_THRESHOLD_LATE: float = 0.40
@@ -169,10 +280,32 @@ class RewardConfig:
 
     @property
     def hwm_alpha(self) -> float:
-        """HWM shaping weight. Zero when HWM is disabled (e.g. value-function-only mode)."""
+        """HWM shaping weight. Zero when HWM is disabled (e.g. value-function-only mode).
+
+        Forced to 0 when ``enable_lattice_pbrs`` or ``enable_waypoint_pbrs`` is
+        set: those dense PBRS terms REPLACE the HWM ratchet, never stack with it.
+        """
+        if self.enable_lattice_pbrs or self.enable_waypoint_pbrs:
+            return 0.0
         if self._hwm_alpha_override is not None:
             return self._hwm_alpha_override
         return HWM_ALPHA
+
+    @property
+    def pbrs_weight(self) -> float:
+        """Weight on the lattice/free-space PBRS term (only used when
+        ``enable_lattice_pbrs``)."""
+        if self._pbrs_weight_override is not None:
+            return self._pbrs_weight_override
+        return LATTICE_PBRS_WEIGHT
+
+    @property
+    def pbrs_gamma(self) -> float:
+        """Discount inside the PBRS shaping term (only used when
+        ``enable_lattice_pbrs``). Match the PPO gamma for strict invariance."""
+        if self._pbrs_gamma_override is not None:
+            return self._pbrs_gamma_override
+        return LATTICE_PBRS_GAMMA
 
     @property
     def entropy_coefficient(self) -> float:
@@ -318,6 +451,11 @@ class RewardConfig:
             "death_penalty": self.death_penalty,
             "level_completion_reward": self.level_completion_reward,
             "switch_activation_reward": self.switch_activation_reward,
+            # PBRS shaping knobs (consumed by npp-rl PBRSLoggingCallback for the
+            # curriculum/* TB panel). These are @property values, surfaced here.
+            "pbrs_objective_weight": self.pbrs_objective_weight,
+            "pbrs_normalization_scale": self.pbrs_normalization_scale,
+            "time_penalty_per_step": self.time_penalty_per_step,
             "hwm_alpha": self.hwm_alpha,
             "entropy_coefficient": self.entropy_coefficient,
             "action_masking_mode": self.action_masking_mode,
@@ -326,6 +464,15 @@ class RewardConfig:
             "eta_bsrs": self.eta_bsrs,
             "bsrs_gamma": self.bsrs_gamma,
             "beta_blend": self.beta_blend(),
+            "enable_lattice_pbrs": self.enable_lattice_pbrs,
+            "enable_waypoint_pbrs": self.enable_waypoint_pbrs,
+            "waypoint_leg_scale": self.waypoint_leg_scale,
+            "pbrs_weight": self.pbrs_weight,
+            "pbrs_gamma": self.pbrs_gamma,
+            # Fixed PBRS D0 reference (None = per-episode spawn D0). Surfaced so the
+            # geometry-morphing curriculum's route-length-invariant calibration is
+            # visible in TB.
+            "pbrs_d0_ref": self._pbrs_d0_ref_override,
         }
 
     def __str__(self) -> str:

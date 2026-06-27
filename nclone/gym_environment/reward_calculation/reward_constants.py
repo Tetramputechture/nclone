@@ -41,7 +41,14 @@ GLOBAL_REWARD_SCALE = 1.0
 # TIME_PENALTY increased to -0.001 (from -0.0005): with R_DEATH=-0.5, standing still for
 # 500 steps costs -0.5 (same as one death), creating a strong incentive to act efficiently.
 R_SWITCH = 0.5  # L1.5 phase-transition bonus (C_PHASE); replaces prior 1.0 sparse switch reward
-R_EXIT = 5.0
+# Raised 5.0 -> 10.0 for COMPLETION DOMINANCE on long levels. Under PBRS (not HWM)
+# the persistent un-farmable shaping an agent can bank WITHOUT winning is ~PBRS
+# terminal (w*cost_spawn/D0 ≈ 1.8) + waypoint-reach (~1.3) ≈ 3.1; with the old
+# R_EXIT=5 the completion margin over "approach-and-time-out" was thin, and an
+# over-scaled frontier bonus (now D0-normalized) could exceed it entirely. A
+# +10 win gives a clear, unconditional preference for finishing over any bounded
+# shaping the agent can accrue by merely approaching the goal.
+R_EXIT = 10.0
 # Per-NECESSARY-locked-door-switch activation bonus. Each necessary locked-door
 # switch is a required sub-goal on the path to completion (the planner's
 # door-dependency solver decides necessity), so it earns a milestone bonus like
@@ -60,6 +67,32 @@ R_DEATH_MINE = -3.0
 
 # HWM shaping weight (constant throughout training per spec Section 7)
 HWM_ALPHA = 3.0
+
+# =============================================================================
+# LATTICE / FREE-SPACE PBRS (gated by RewardConfig.enable_lattice_pbrs)
+# =============================================================================
+# A true, policy-invariant potential-based shaping term that REPLACES the HWM
+# ratchet + backtrack penalty when enabled. The potential is the negative
+# normalized cost-to-completion supplied by the env's reachability source
+# (surface lattice d_comb where available, else the mine-aware free-space grid):
+#
+#     Phi(s) = -clamp(completion_cost(s) / D0, 0, 1)        in [-1, 0]
+#     F(s, s') = w * (gamma * Phi(s') - Phi(s))             added each step
+#
+# D0 is the spawn cost-to-completion (the existing optimal_path_length), so
+# Phi(spawn) = -1 and Phi(complete) = 0. Unlike HWM, F is symmetric (rewards
+# progress AND penalizes regress every frame) and telescopes to w*(Phi_T - Phi_0)
+# over an episode, giving a dense per-frame gradient without the ratchet's blind
+# spot. Weight matches HWM_ALPHA so the dense scale is comparable on day one.
+LATTICE_PBRS_WEIGHT = 3.0
+# Discount used INSIDE the shaping term. Default 1.0 (NOT the PPO gamma): for a
+# heuristic cost-to-go potential, gamma=1.0 gives pure telescoping F = w*(Phi'-Phi)
+# = a clean per-step progress delta, exactly the codebase convention for heuristic
+# potentials (see PBRSConfig.pbrs_gamma docs). gamma<1 instead adds a constant
+# (gamma-1)*Phi survival drift (e.g. +0.03/step at spawn with w=3, gamma=0.99 —
+# empirically observed), which rewards stalling near spawn. Policy invariance
+# holds for ANY gamma in the episodic setting, so 1.0 is the clean choice.
+LATTICE_PBRS_GAMMA = 1.0
 
 # =============================================================================
 # TIME PENALTY (the "fewest frames" pressure — gold value is calibrated to it)
