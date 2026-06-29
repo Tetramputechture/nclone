@@ -13,11 +13,23 @@ from typing import Dict, Any, Optional, Tuple
 
 
 from ..constants import MAP_TILE_HEIGHT, MAP_TILE_WIDTH
-from ..constants.physics_constants import LEVEL_WIDTH_PX, LEVEL_HEIGHT_PX
+from ..constants.physics_constants import (
+    LEVEL_WIDTH_PX,
+    LEVEL_HEIGHT_PX,
+    MAX_HOR_SPEED,
+)
 from .constants import (
     GAME_STATE_CHANNELS,
     GAME_STATE_SWITCH_ACTIVATED_IDX,
-    GAME_STATE_GOLD_REMAINING_IDX,
+    GAME_STATE_SWITCH_VEC_IDX,
+    GAME_STATE_EXIT_VEC_IDX,
+    GAME_STATE_RAYCAST_IDX,
+    GAME_STATE_RAYCAST_DIM,
+    GAME_STATE_FREE_SPACE_NAV_IDX,
+    GAME_STATE_NEAREST_MINE_IDX,
+    GAME_STATE_CLOSING_SPEED_IDX,
+    LEVEL_WIDTH,
+    LEVEL_HEIGHT,
     LEVEL_DIAGONAL,
     HAZARD_MAP_CHANNELS,
     HAZARD_MAP_HEIGHT,
@@ -74,6 +86,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             enable_animation=self.config.render.enable_animation,
             enable_logging=self.config.enable_logging,
             enable_debug_overlay=self.config.render.enable_debug_overlay,
+            panel_width=self.config.render.panel_width,
             seed=self.config.seed,
             eval_mode=self.config.eval_mode,
             pbrs_gamma=self.config.pbrs.pbrs_gamma,
@@ -89,6 +102,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             enable_layer3_macro_action_mask=self.config.enable_layer3_macro_action_mask,
             layer3_duration_bins=self.config.layer3_duration_bins,
             layer3_all_masked_fallback=self.config.layer3_all_masked_fallback,
+            enable_route_visualization=self.config.enable_route_visualization,
         )
 
         self.layer3_masker: Optional[Layer3MacroActionMasker]
@@ -115,13 +129,33 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             {"debug": self.config.graph.debug or self.config.reachability.debug}
         )
 
-        # Rust mine SDF engine powering the 1-channel `hazard_map` Layer 1 key.
-        self._mine_threat_map_rs = MineThreatMap()
-        # Layer 1 1-channel deadly-mine hazard map cache (NPP-46).
+        # Rust mine SDF engines powering the 2-channel `hazard_map` Layer 1 key.
+        # One engine per class (deadly / safe) so each keeps its own change-detect
+        # state; both emit a row-major (H, W) buffer the env transposes to (W, H).
+        self._mine_threat_map_deadly_rs = MineThreatMap()
+        self._mine_threat_map_safe_rs = MineThreatMap()
+        # Per-class transposed (W, H) channel caches and the stacked (2, W, H) map.
+        self._hazard_deadly_chan = np.zeros(
+            (HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT), dtype=np.float32
+        )
+        self._hazard_safe_chan = np.zeros(
+            (HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT), dtype=np.float32
+        )
         self._hazard_map_cache = np.zeros(
-            (HAZARD_MAP_CHANNELS, HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH),
+            (HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
             dtype=np.float32,
         )
+        # Cheap mine-state signature for the hazard map. When it is unchanged
+        # (the common case — a static mine field never toggles) we skip the whole
+        # per-step prep (classify + build the (x,y) lists over ~1.7k mines + the
+        # Rust change-detect) and return the cached SDF directly.
+        self._hazard_sig = None
+
+        # Deadly-mine position array (Nx2) + its mine signature, for the scalar
+        # nearest-deadly-mine game_state feature. Recomputed only when the deadly
+        # set changes (a toggle); otherwise the per-step cost is a vectorized min.
+        self._deadly_mine_xy: Optional[np.ndarray] = None
+        self._deadly_xy_sig = None
 
         # Cached tile grid for the current level (computed once per level load, reused each step)
         self._cached_tile_grid: Optional[np.ndarray] = None
@@ -233,7 +267,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         obs_spaces["hazard_map"] = box.Box(
             low=-1.0,
             high=1.0,
-            shape=(HAZARD_MAP_CHANNELS, HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH),
+            shape=(HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
             dtype=np.float32,
         )
 
@@ -245,6 +279,23 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                    "expose_lattice_features", False):
             obs_spaces["lattice_nav"] = box.Box(
                 low=-1.0, high=1.0, shape=(LATTICE_NAV_DIM,), dtype=np.float32,
+            )
+
+        # Optional waypoint-subgoal nav hint (same 4-dim contract as lattice_nav).
+        # Off by default; enabled via ReachabilityConfig.expose_waypoint_features.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_waypoint_features", False):
+            obs_spaces["waypoint_nav"] = box.Box(
+                low=-1.0, high=1.0, shape=(LATTICE_NAV_DIM,), dtype=np.float32,
+            )
+
+        # Optional cost-to-go map (Phase-2 O2): the free-space cost-to-completion
+        # field as a low-res spatial channel co-registered with hazard_map.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_cost_to_go_map", False):
+            obs_spaces["cost_to_go_map"] = box.Box(
+                low=0.0, high=1.0,
+                shape=(1, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT), dtype=np.float32,
             )
 
         return SpacesDict(obs_spaces)
@@ -317,6 +368,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         info["player_yspeed"] = ninja_vel[1]
         info["airborne"] = self.nplay_headless.sim.ninja.airborn
         info["ninja_state"] = self.nplay_headless.sim.ninja.state
+        # True whenever the ninja is touching a wall (wall_normal != 0), in ANY
+        # state — the real wall-jump precondition (a REGULAR wall jump fires while
+        # walled even when not in the wall-slide state). FiGAR uses this to
+        # interrupt macros on wall contact so wall-jumps stay frame-actionable.
+        info["ninja_walled"] = self.nplay_headless.sim.ninja.walled
 
         # Mine approach distance for FiGAR macro-action safety interrupts
         info["nearest_approaching_deadly_mine_distance"] = (
@@ -447,6 +503,30 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             logger.debug(f"Failed to compute level surface area: {e}")
             return None
 
+    def _spawn_cost_to_completion(self) -> Optional[float]:
+        """Best-effort free-space cost-to-completion from spawn (~pixels).
+
+        Used to give long, winding levels a path-length-aware truncation limit.
+        Builds the (disk-cached, ~ms) free-space source for the current map and
+        queries the spawn cost. Returns ``None`` on any failure or non-finite cost
+        so the caller falls back to the surface-area formula.
+        """
+        try:
+            md = getattr(self.nplay_headless, "current_map_data", None)
+            pos = self.nplay_headless.ninja_position()
+            if not md or pos is None:
+                return None
+            from ..value_function.free_space_distance import FreeSpaceDistanceSource
+
+            fs = FreeSpaceDistanceSource(md)
+            if not getattr(fs, "available", False):
+                return None
+            c = fs.cost_to_completion(float(pos[0]), float(pos[1]), False)
+            return float(c) if c is not None and c < float("inf") else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"spawn cost-to-completion unavailable: {e}")
+            return None
+
     def reset(self, seed=None, options=None):
         """Reset the environment with planning components and visualization."""
 
@@ -519,6 +599,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._action_sequence = []
             self._checkpoint_replay_in_progress = False
             self._checkpoint_route = []
+            self._checkpoint_source = None
             self._from_checkpoint = False
             self._checkpoint_base_reward = 0.0
             self._checkpoint_source_frame_skip = self.frame_skip
@@ -527,6 +608,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._switch_activation_step = None
             self.current_route = []
             self._warned_about_position = False
+            # Force a hazard-map recompute on the first step of the new episode
+            # (the level/mine field may have changed) — content-based after that.
+            self._hazard_sig = None
             self._deterministic_mask_applied_count = 0
             self._total_steps_count = 0
 
@@ -587,6 +671,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             # Reset position tracking for route visualization (BaseNppEnvironment.reset line 1515-1516)
             self.current_route = []
             self._warned_about_position = False
+            # Force a hazard-map recompute on the first step of the new episode
+            # (the level/mine field may have changed) — content-based after that.
+            self._hazard_sig = None
 
             self._reset_reward_calculator()
 
@@ -708,7 +795,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         surface_area = self._compute_level_surface_area()
         if surface_area is not None:
             truncation_limit = self.truncation_checker.set_level_truncation_limit(
-                surface_area, 0
+                surface_area, 0, cost_to_completion=self._spawn_cost_to_completion()
             )
             if self.enable_logging:
                 logger.info(
@@ -750,13 +837,33 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         This is the basis for a reverse curriculum (start near the goal, schedule
         the start back toward spawn) for fine-tuning hard levels, and for
         restart-state diversity in generalized training."""
-        if not options or not isinstance(options, dict):
-            return
-        ss = options.get("start_state")
+        ss = None
+        if options and isinstance(options, dict):
+            ss = options.get("start_state")
+            if ss is None:
+                cur = options.get("start_state_curriculum")
+                if cur is not None and hasattr(cur, "sample"):
+                    ss = cur.sample(options.get("start_state_difficulty", 1.0))
+        # Lazy POST-SWITCH reverse curriculum (FAR_OBJECTIVE loop levels): on the
+        # first reset of a gated-bucket level, build (disk-cached) a per-level pool
+        # of switch-already-activated start states and seed from it. Fixes the
+        # return-to-exit leg never being practised (exit_given_switch == 0).
+        if ss is None and getattr(self.config, "post_switch_curriculum", False):
+            ss = self._maybe_sample_post_switch(options)
+        # Fall back to a STORED curriculum (set via set_start_state_curriculum) so
+        # the reverse curriculum also fires on VecEnv AUTO-resets, where SB3 calls
+        # reset() with no options -- this is what drives it during RL rollouts.
         if ss is None:
-            cur = options.get("start_state_curriculum")
+            cur = getattr(self, "_ssc", None)
+            if cur is None:
+                ssc_map = getattr(self, "_ssc_map", None)
+                if ssc_map:
+                    lvl = getattr(
+                        getattr(self, "map_loader", None), "current_map_name", None
+                    )
+                    cur = ssc_map.get(lvl)
             if cur is not None and hasattr(cur, "sample"):
-                ss = cur.sample(options.get("start_state_difficulty", 1.0))
+                ss = cur.sample(float(getattr(self, "_ssc_difficulty", 1.0)))
         if not ss:
             return
         actions = ss.get("start_actions") if isinstance(ss, dict) else ss
@@ -775,6 +882,57 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         for attr in ("_lattice_episode_decided", "_freespace_episode_decided"):
             if hasattr(self, attr):
                 setattr(self, attr, False)
+
+    def _maybe_sample_post_switch(self, options):
+        """Lazily build+sample a per-level POST-SWITCH start state.
+
+        Gated to the buckets in ``config.post_switch_curriculum_buckets`` (the
+        FAR_OBJECTIVE loop levels). The per-level pool is generated on first
+        encounter and disk-cached (keyed by map_data hash), so multi-level
+        training pays the RRT-build cost once per level, shared across workers.
+        Returns a start-state dict (``{'start_actions': [...], ...}``) or ``None``
+        when the level isn't gated, has no map_data this reset, or yields no
+        switch-consuming prefix."""
+        if not options or not isinstance(options, dict):
+            return None
+        bucket = options.get("bucket")
+        gated = getattr(self.config, "post_switch_curriculum_buckets", ())
+        if bucket is None or str(bucket) not in {str(b) for b in gated}:
+            return None
+        map_data = options.get("map_data")
+        if not map_data:
+            return None
+        try:
+            from .post_switch_curriculum_cache import get_or_build
+
+            cur = get_or_build(
+                list(map_data),
+                n_states=int(getattr(self.config, "post_switch_curriculum_n_states", 300)),
+                max_iter=int(getattr(self.config, "post_switch_curriculum_max_iter", 120000)),
+            )
+        except Exception:
+            return None
+        if not cur or len(cur) == 0:
+            return None
+        # The reverse-curriculum difficulty is annealed by the trainer callback
+        # via set_start_state_difficulty (default 1.0 == full return leg).
+        return cur.sample(float(getattr(self, "_ssc_difficulty", 1.0)))
+
+    def set_start_state_curriculum(self, cur) -> None:
+        """Store a single StartStateCurriculum (single-level reverse curriculum).
+        Used on VecEnv auto-resets via the stored-curriculum fallback above."""
+        self._ssc = cur
+
+    def set_start_state_curricula(self, mapping: dict) -> None:
+        """Store a {level_id: StartStateCurriculum} map (multi-level/curriculum
+        reverse curriculum). The env applies the curriculum matching the level it
+        just loaded, so only the hard levels we precomputed routes for get it."""
+        self._ssc_map = dict(mapping or {})
+
+    def set_start_state_difficulty(self, d: float) -> None:
+        """Reverse-curriculum difficulty in [0,1] (0=near goal, 1=spawn). The
+        callback anneals this UP as the agent's success on the hard bucket rises."""
+        self._ssc_difficulty = float(d)
 
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
@@ -797,14 +955,70 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._profile_end("obs_npp_physics_derived", t_phys)
 
         # L1.4: phase indicator for policy (same source as obs["switch_activated"])
+        switch_activated = bool(self.nplay_headless.exit_switch_activated())
         self._game_state_buffer[GAME_STATE_SWITCH_ACTIVATED_IDX] = float(
-            self.nplay_headless.exit_switch_activated()
+            switch_activated
         )
 
-        # Gold objective: fraction of gold still remaining (built in base env).
-        self._game_state_buffer[GAME_STATE_GOLD_REMAINING_IDX] = float(
-            obs.get("gold_fraction_remaining", 0.0)
+        # Goal geometry: ninja-relative vectors to the exit switch and exit door,
+        # normalized by level extent and clipped to [-1, 1]. Static entities sit on
+        # a 6px grid, so these are exact (the 24px overlay tile would otherwise
+        # quantize the goal to 1 of 16 sub-positions). Exposing both keeps the
+        # policy's goal geometry continuous across the switch->exit phase change.
+        nx, ny = self.nplay_headless.ninja_position()
+        sx = float(obs.get("switch_x", nx))
+        sy = float(obs.get("switch_y", ny))
+        ex = float(obs.get("exit_door_x", nx))
+        ey = float(obs.get("exit_door_y", ny))
+        self._game_state_buffer[GAME_STATE_SWITCH_VEC_IDX] = np.clip(
+            (sx - nx) / LEVEL_WIDTH, -1.0, 1.0
         )
+        self._game_state_buffer[GAME_STATE_SWITCH_VEC_IDX + 1] = np.clip(
+            (sy - ny) / LEVEL_HEIGHT, -1.0, 1.0
+        )
+        self._game_state_buffer[GAME_STATE_EXIT_VEC_IDX] = np.clip(
+            (ex - nx) / LEVEL_WIDTH, -1.0, 1.0
+        )
+        self._game_state_buffer[GAME_STATE_EXIT_VEC_IDX + 1] = np.clip(
+            (ey - ny) / LEVEL_HEIGHT, -1.0, 1.0
+        )
+
+        # Surface ray-casts: distance to the nearest grounded platform in 8 compass
+        # directions (blind-jump / gap verification beyond the 24px tile view).
+        t_ray = self._profile_start("obs_npp_raycasts")
+        self._game_state_buffer[
+            GAME_STATE_RAYCAST_IDX : GAME_STATE_RAYCAST_IDX + GAME_STATE_RAYCAST_DIM
+        ] = self._compute_surface_raycasts()
+        self._profile_end("obs_npp_raycasts", t_ray)
+
+        # Free-space nav hint: physics-free steepest-descent direction toward the
+        # current objective that rounds obstacles (vs the straight-line goal vectors
+        # above). Observation only — never reused as a reward potential.
+        t_fsn = self._profile_start("obs_npp_free_space_nav")
+        self._refresh_free_space_nav(nx, ny, switch_activated)
+        self._game_state_buffer[
+            GAME_STATE_FREE_SPACE_NAV_IDX : GAME_STATE_FREE_SPACE_NAV_IDX + 4
+        ] = getattr(self, "_cached_free_space_nav", np.zeros(4, dtype=np.float32))
+        self._profile_end("obs_npp_free_space_nav", t_fsn)
+
+        # Scalar nearest-deadly-mine distance (danger gauge for the MLP stream).
+        self._game_state_buffer[GAME_STATE_NEAREST_MINE_IDX] = (
+            self._compute_nearest_deadly_mine_distance_norm()
+        )
+
+        # Closing speed toward the current objective (switch pre-activation, else
+        # exit): the rate at which the ninja is approaching the live goal.
+        gx, gy = (ex, ey) if switch_activated else (sx, sy)
+        gdx, gdy = gx - nx, gy - ny
+        gmag = (gdx * gdx + gdy * gdy) ** 0.5
+        if gmag > 1e-6:
+            vx, vy = self.nplay_headless.ninja_velocity()
+            closing = (vx * gdx + vy * gdy) / gmag  # px/frame toward goal
+            self._game_state_buffer[GAME_STATE_CLOSING_SPEED_IDX] = float(
+                np.clip(closing / MAX_HOR_SPEED, -1.0, 1.0)
+            )
+        else:
+            self._game_state_buffer[GAME_STATE_CLOSING_SPEED_IDX] = 0.0
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 
@@ -856,6 +1070,25 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 getattr(self, "_cached_lattice_nav", np.zeros(LATTICE_NAV_DIM)),
                 copy=True, dtype=np.float32,
             )
+
+        # Waypoint subgoal feed (long-horizon distance fix).  Reward-only distance +
+        # index drive the per-leg waypoint PBRS (stripped from the policy obs in
+        # _process_observation); the 4-dim nav hint is exposed to the policy only when
+        # expose_waypoint_features is set.  See ReachabilityConfig.enable_waypoint_tracker.
+        if getattr(self, "_waypoint_leg_distance", None) is not None:
+            obs["waypoint_leg_distance"] = self._waypoint_leg_distance
+            obs["waypoint_index"] = self._waypoint_index
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_waypoint_features", False):
+            obs["waypoint_nav"] = np.array(
+                getattr(self, "_cached_waypoint_nav", np.zeros(LATTICE_NAV_DIM)),
+                copy=True, dtype=np.float32,
+            )
+
+        # Cost-to-go map (Phase-2 O2): global route field for the policy.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_cost_to_go_map", False):
+            obs["cost_to_go_map"] = self._compute_cost_to_go_map(switch_activated)
 
         # Return full observation - conversion to Layer 1 dict happens in
         # _process_observation(). This ensures the reward calculator has
@@ -977,33 +1210,182 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         return features
 
+    # 8 compass directions in (tile_dx, tile_dy) screen space (+x east, +y south),
+    # order [E, NE, N, NW, W, SW, S, SE] to match COMPASS_DIRECTIONS.
+    _RAYCAST_DIRS = (
+        (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1),
+    )
+    _RAYCAST_NORM_PX = 500.0  # distance normalizer; 1.0 = nearest surface >= 500px
+
+    def _compute_surface_raycasts(self) -> np.ndarray:
+        """8-dir normalized distance to the nearest solid surface (wall / floor).
+
+        Order [E, NE, N, NW, W, SW, S, SE]; 0.0 = adjacent surface, 1.0 = none
+        within 500px. Ray-marches the cached tile grid (cheap: <=42 int8 lookups
+        per direction) from the ninja's tile to the first non-empty tile, treating
+        the enclosing border as a wall. Lets the policy sense walls / verify
+        landing surfaces and gaps beyond the local view. Memoized per ninja tile
+        (24px) in ``current_graph_data`` (auto-invalidated on level change)."""
+        from ..constants.physics_constants import (
+            MAP_TILE_HEIGHT,
+            MAP_TILE_WIDTH,
+            TILE_PIXEL_SIZE,
+        )
+
+        grid = getattr(self, "_cached_tile_grid", None)
+        if grid is None:
+            return np.ones(GAME_STATE_RAYCAST_DIM, dtype=np.float32)
+
+        ninja = self.nplay_headless.sim.ninja
+        ntx = int(ninja.xpos / TILE_PIXEL_SIZE) - 1
+        nty = int(ninja.ypos / TILE_PIXEL_SIZE) - 1
+
+        graph_data = getattr(self, "current_graph_data", None)
+        memo = None
+        if graph_data is not None:
+            memo = graph_data.get("_raycast_memo")
+            if memo is None:
+                memo = {}
+                graph_data["_raycast_memo"] = memo
+            cached = memo.get((ntx, nty))
+            if cached is not None:
+                return cached
+
+        out = np.ones(GAME_STATE_RAYCAST_DIM, dtype=np.float32)
+        ts = float(TILE_PIXEL_SIZE)
+        for i, (dtx, dty) in enumerate(self._RAYCAST_DIRS):
+            tx, ty, steps = ntx, nty, 0
+            while True:
+                tx += dtx
+                ty += dty
+                steps += 1
+                if not (0 <= tx < MAP_TILE_WIDTH and 0 <= ty < MAP_TILE_HEIGHT):
+                    break  # enclosing border acts as a wall
+                if grid[tx, ty] != 0:
+                    break  # first non-empty tile = surface
+            diag = 1.41421356 if (dtx and dty) else 1.0
+            out[i] = min(steps * ts * diag / self._RAYCAST_NORM_PX, 1.0)
+
+        if memo is not None:
+            memo[(ntx, nty)] = out
+        return out
+
+    def _compute_cost_to_go_map(self, switch_activated: bool) -> np.ndarray:
+        """Phase-2 (O2): the free-space cost-to-go FIELD as a (1, W, H) spatial map,
+        co-registered with hazard_map (6px grid). Phase-aware (cost-to-switch pre-
+        activation, cost-to-exit after), normalized by the PBRS K and clamped to
+        [0,1]; solid/unreachable cells read 1.0 (max cost). Reuses the per-level
+        FreeSpaceDistanceSource already built for the nav hint (line ~943), so this
+        is a cheap slice — no extra Dijkstra. All-1.0 if the source is unavailable."""
+        W, H = HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT
+        K = float(getattr(self, "_cost_to_go_map_k", 1000.0))
+        src = getattr(self, "_free_space_nav_source", None)
+        if src is None or not getattr(src, "available", False):
+            return np.ones((1, W, H), dtype=np.float32)
+        field = getattr(src, "_d_exit" if switch_activated else "_d_switch", None)
+        if field is None:
+            return np.ones((1, W, H), dtype=np.float32)
+        m = np.asarray(field, dtype=np.float32)[:W, :H]   # (W,H), co-registered 6px
+        out = np.clip(m / K, 0.0, 1.0)
+        out[~np.isfinite(m)] = 1.0
+        return out[None, :, :]
+
     def _compute_hazard_map(self) -> np.ndarray:
-        """NPP-46: 1-channel deadly-mine SDF at 6px (hazard_map key).
+        """NPP-46: 2-channel mine SDF at 6px (hazard_map key).
 
-        Canonical Layer 1 hazard channel: `deadly_sdf = clip((d - 14) / 24, -1, 1)`
-        where `d` is the Euclidean distance from each 6px cell center to the
-        nearest currently-deadly toggle mine. Positive outside the 14px kill
-        zone, zero at the boundary, negative inside. Shape: (1, H, W).
+        Each channel is `sdf = clip((d - 14) / 24, -1, 1)` where `d` is the
+        Euclidean distance from each 6px cell center to the nearest mine of that
+        class. Positive outside the 14px kill zone, zero at the boundary, negative
+        inside. Channels: ch0 = deadly (toggled) mines, ch1 = safe (untoggled)
+        mines. Shape: (2, W, H) — same axis order as tile_grid / entity_overlays.
 
-        Recomputes only when the deadly-mine set changes vs the last call.
+        Recomputes a channel only when its mine set changes vs the last call.
         Classification uses the shared ``classify_mines_by_state`` helper so the
         overlay and the hazard map never disagree after a mid-episode toggle.
         """
         toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
-        deadly_mines, _ = classify_mines_by_state((*toggle_mines, *toggled_mines))
-        deadly = [(float(m.xpos), float(m.ypos)) for m in deadly_mines]
-
-        flat = self._mine_threat_map_rs.compute_hazard_map_if_changed(deadly)
-        if flat is None:
-            return self._hazard_map_cache
-
-        arr = np.asarray(flat, dtype=np.float32).reshape(
-            HAZARD_MAP_CHANNELS,
-            HAZARD_MAP_HEIGHT,
-            HAZARD_MAP_WIDTH,
+        # Fast path: a cheap (#deadly, #safe) signature. type-21 (toggled) mines
+        # are always deadly; type-1 (toggle) mines are deadly when state==0. On a
+        # field that never toggles this is constant after step 1, so we skip the
+        # full rebuild entirely. (A simultaneous opposite-toggle that keeps both
+        # counts stable would leave a 1-step-stale hazard OBS — harmless, self-heals
+        # next step.) MINE_STATE_DEADLY == 0.
+        n_deadly = len(toggled_mines) + sum(
+            1 for m in toggle_mines if getattr(m, "state", 1) == 0
         )
-        self._hazard_map_cache = arr
-        return arr
+        n_safe = len(toggle_mines) + len(toggled_mines) - n_deadly
+        sig = (len(toggle_mines), len(toggled_mines), n_deadly, n_safe)
+        if sig == self._hazard_sig and self._hazard_map_cache is not None:
+            return self._hazard_map_cache
+        self._hazard_sig = sig
+
+        deadly_mines, safe_mines = classify_mines_by_state(
+            (*toggle_mines, *toggled_mines)
+        )
+        # Blind the hazard SDF to mines sealed away from reachable space.
+        deadly_mines = self._filter_relevant_mines(deadly_mines)
+        safe_mines = self._filter_relevant_mines(safe_mines)
+        deadly = [(float(m.xpos), float(m.ypos)) for m in deadly_mines]
+        safe = [(float(m.xpos), float(m.ypos)) for m in safe_mines]
+
+        # Each Rust engine emits a row-major (H, W) flat buffer (or None when its
+        # mine set is unchanged); transpose to (W, H) so both channels co-register
+        # with tile_grid / entity_overlays, then stack.
+        deadly_flat = self._mine_threat_map_deadly_rs.compute_hazard_map_if_changed(
+            deadly
+        )
+        safe_flat = self._mine_threat_map_safe_rs.compute_hazard_map_if_changed(safe)
+        if deadly_flat is not None:
+            self._hazard_deadly_chan = (
+                np.asarray(deadly_flat, dtype=np.float32)
+                .reshape(HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH)
+                .T.copy()
+            )
+        if safe_flat is not None:
+            self._hazard_safe_chan = (
+                np.asarray(safe_flat, dtype=np.float32)
+                .reshape(HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH)
+                .T.copy()
+            )
+        self._hazard_map_cache = np.stack(
+            (self._hazard_deadly_chan, self._hazard_safe_chan)
+        )
+        return self._hazard_map_cache
+
+    # Normalizer for the scalar nearest-deadly-mine feature: 7 tiles. Near-mine
+    # resolution is fine; threats beyond this saturate to 1.0 (effectively "safe").
+    _NEAREST_MINE_NORM_PX = 168.0
+
+    def _get_deadly_mine_xy(self) -> np.ndarray:
+        """(N, 2) array of deadly-mine pixel centers, cached by mine signature.
+
+        Recomputed only when the deadly set changes (a toggle / level change);
+        otherwise the per-step nearest-mine read is just a vectorized min."""
+        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
+        n_deadly = len(toggled_mines) + sum(
+            1 for m in toggle_mines if getattr(m, "state", 1) == 0
+        )
+        sig = (len(toggle_mines), len(toggled_mines), n_deadly)
+        if sig == self._deadly_xy_sig and self._deadly_mine_xy is not None:
+            return self._deadly_mine_xy
+        self._deadly_xy_sig = sig
+        pts = [
+            (float(m.xpos), float(m.ypos))
+            for m in self._filter_relevant_mines([*toggle_mines, *toggled_mines])
+            if getattr(m, "state", 1) == 0  # STATE_TOGGLED = 0, deadly
+        ]
+        self._deadly_mine_xy = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+        return self._deadly_mine_xy
+
+    def _compute_nearest_deadly_mine_distance_norm(self) -> float:
+        """Normalized [0, 1] distance to the nearest deadly mine (1.0 = none /
+        beyond the local normalizer, 0.0 = at the ninja center)."""
+        arr = self._get_deadly_mine_xy()
+        if arr.shape[0] == 0:
+            return 1.0
+        ninja = self.nplay_headless.sim.ninja
+        d2 = ((arr[:, 0] - ninja.xpos) ** 2 + (arr[:, 1] - ninja.ypos) ** 2).min()
+        return float(min((d2 ** 0.5) / self._NEAREST_MINE_NORM_PX, 1.0))
 
     def _compute_nearest_approaching_deadly_mine_distance(self) -> float:
         """Distance in pixels to the nearest deadly mine the ninja is approaching.
@@ -1022,7 +1404,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
 
         min_dist = float("inf")
-        for mine in (*toggle_mines, *toggled_mines):
+        for mine in self._filter_relevant_mines([*toggle_mines, *toggled_mines]):
             if getattr(mine, "state", 1) != 0:  # STATE_TOGGLED = 0, deadly
                 continue
             dx = mine.xpos - ninja_x
@@ -1460,7 +1842,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             processed_obs["hazard_map"] = obs.get(
                 "hazard_map",
                 np.zeros(
-                    (HAZARD_MAP_CHANNELS, HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH),
+                    (HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
                     dtype=np.float32,
                 ),
             )
@@ -1472,6 +1854,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             "_graph_data",
             "_cached_switch_distance",
             "_cached_exit_distance",
+            "waypoint_leg_distance",
+            "waypoint_index",
             "necessary_doors_open",
             "switch_states_dict",
             "level_data",
@@ -1479,6 +1863,36 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         ]
         for key in internal_only_keys:
             processed_obs.pop(key, None)
+
+        # Final safety net: the policy/value network must NEVER see a non-finite
+        # input. A graph-OOB query makes path_distance_calculator return inf,
+        # which can reach a normalized obs feature (e.g. the reachability path-
+        # distance dims) and produce NaN logits / a NaN critic output -> NaN SIL
+        # priorities -> crash. Distances are sanitized at the reward boundary, but
+        # the OBS path is independent, so clamp every float feature array here.
+        for key, val in processed_obs.items():
+            if isinstance(val, np.ndarray) and val.dtype.kind == "f":
+                if not np.isfinite(val).all():
+                    # Capture the level BEFORE sanitizing (bad procgen or a
+                    # graph/grid logic error); best-effort, deduped, gated.
+                    try:
+                        from .invalid_value_capture import capture_invalid_value
+
+                        capture_invalid_value(
+                            f"nonfinite_obs_{key}",
+                            getattr(self.nplay_headless, "current_map_data", None),
+                            {
+                                "obs_key": key,
+                                "shape": list(val.shape),
+                                "n_nonfinite": int((~np.isfinite(val)).sum()),
+                                "step": int(getattr(self, "_episode_step", -1)),
+                            },
+                        )
+                    except Exception:
+                        pass
+                    np.nan_to_num(
+                        val, copy=False, nan=0.0, posinf=1.0, neginf=0.0
+                    )
 
         return processed_obs
 
