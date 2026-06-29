@@ -1,14 +1,22 @@
 """Layer 1 observation processor.
 
-After the strict Layer 1 cleanup the policy observation dict is exactly four
-tensors produced inside :class:`NppEnvironment` (plus control masks):
+The policy observation dict is exactly four tensors produced inside
+:class:`NppEnvironment` (plus control masks), scoped to the generalist agent's
+mechanics {toggle mines, one exit switch, one exit door, one player spawn, tiles}:
 
-* ``tile_grid`` — ``Box(0, 33, (42, 23), int8)``
-* ``entity_overlays`` — ``Box(0, 1, (8, 42, 23), float32)`` (ch 5 = remaining gold,
-  ch 6 = closed locked-door barriers, ch 7 = uncollected locked-door switches)
-* ``hazard_map`` — ``Box(-1, 1, (1, 168, 92), float32)``
-* ``game_state`` — ``Box(-1, 1, (29,), float32)`` — see
-  :data:`nclone.gym_environment.constants.GAME_STATE_CHANNELS`.
+* ``tile_grid`` — ``Box(0, 37, (42, 23), int8)`` — raw tile IDs, axis order (W, H)
+* ``entity_overlays`` — ``Box(0, 1, (5, 42, 23), float32)`` — ch0 ninja, ch1 exit
+  switch, ch2 exit door (all bilinear sub-tile splats), ch3 deadly-mine density,
+  ch4 safe-mine density; axis order (C, W, H)
+* ``hazard_map`` — ``Box(-1, 1, (2, 168, 92), float32)`` — ch0 deadly-mine SDF,
+  ch1 safe-mine SDF at 6px; axis order (C, W, H) to co-register with the grids
+* ``game_state`` — ``Box(-1, 1, (49,), float32)`` — see
+  :data:`nclone.gym_environment.constants.GAME_STATE_CHANNELS` (23 ninja physics +
+  time_remaining + 3 physics-derived + switch_activated + ninja-relative switch
+  vector (2) + ninja-relative exit vector (2) + 8 surface ray-casts (compass
+  distance to nearest solid surface) + 4-dim free-space nav hint
+  ``[dx_hop, dy_hop, cost_norm, phase]`` toward the current objective +
+  nearest-deadly-mine distance (1) + closing speed toward the objective (1)).
 
 and the masks ``action_mask`` / ``duration_mask`` used for valid-action filtering
 and FiGAR macro-actions. This processor:
@@ -50,6 +58,8 @@ class ObservationProcessor:
         "entity_overlays",
         "hazard_map",
         "lattice_nav",  # optional d* nav hint (only present when enabled)
+        "waypoint_nav",  # optional waypoint-subgoal nav hint (only when enabled)
+        "cost_to_go_map",  # optional Phase-2 O2 global cost-to-go field (only when enabled)
         "action_mask",
         "duration_mask",
     )

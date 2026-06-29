@@ -28,6 +28,9 @@ from .constants import (
     GAME_STATE_FREE_SPACE_NAV_IDX,
     GAME_STATE_NEAREST_MINE_IDX,
     GAME_STATE_CLOSING_SPEED_IDX,
+    GAME_STATE_JUMP_HELD_IDX,
+    GAME_STATE_JUMP_USELESS_IDX,
+    GAME_STATE_LAUNCHPAD_BUFFER_IDX,
     LEVEL_WIDTH,
     LEVEL_HEIGHT,
     LEVEL_DIAGONAL,
@@ -1019,6 +1022,34 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             )
         else:
             self._game_state_buffer[GAME_STATE_CLOSING_SPEED_IDX] = 0.0
+
+        # Jump-execution features (precise jump / wall-jump timing). The feed-forward
+        # policy can't track its own action history, so expose: whether jump was held
+        # last frame (jumps fire only on the rising edge), whether a jump now would be
+        # useless, and the launch-pad buffer window (the 4th buffer). Read straight off
+        # the ninja (both python + native expose these fields).
+        _ninja = self.nplay_headless.sim.ninja
+        self._game_state_buffer[GAME_STATE_JUMP_HELD_IDX] = (
+            1.0 if _ninja.jump_input_old != 0 else -1.0
+        )
+        _has_buf = (
+            -1 < _ninja.jump_buffer < 5
+            or -1 < _ninja.floor_buffer < 5
+            or -1 < _ninja.wall_buffer < 5
+            or -1 < _ninja.launch_pad_buffer < 4
+        )
+        _jump_useless = (
+            bool(_ninja.airborn)
+            and _ninja.state != 3
+            and _ninja.jump_input_old != 0
+            and not _has_buf
+        )
+        self._game_state_buffer[GAME_STATE_JUMP_USELESS_IDX] = (
+            1.0 if _jump_useless else -1.0
+        )
+        self._game_state_buffer[GAME_STATE_LAUNCHPAD_BUFFER_IDX] = (
+            (max(_ninja.launch_pad_buffer, 0) / 4.0) * 2 - 1
+        )
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
 
