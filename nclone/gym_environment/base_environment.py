@@ -31,6 +31,8 @@ from .entity_overlay_utils import (
     classify_mines_by_state,
     compute_entity_overlays,
     ENTITY_OVERLAY_CHANNELS,
+    ENTITY_OVERLAY_CH_MINE_DEADLY,
+    ENTITY_OVERLAY_CH_MINE_SAFE,
 )
 from .observation_processor import ObservationProcessor
 from .profiling_mixin import ProfilingMixin
@@ -68,6 +70,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         enable_animation: bool = False,
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
+        panel_width: int = 0,
         seed: Optional[int] = None,
         eval_mode: bool = False,
         custom_map_path: Optional[str] = None,
@@ -87,6 +90,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         layer3_duration_bins: Optional[tuple[int, ...]] = None,
         layer3_all_masked_fallback: str = "noop",
         profiling_console_interval: Optional[float] = None,
+        enable_route_visualization: bool = False,
     ):
         """
         Initialize the base N++ environment.
@@ -117,8 +121,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         self.render_mode = render_mode
         self.enable_animation = enable_animation
+        self.panel_width = panel_width
         self.enable_logging = enable_logging
         self.debug_mode = enable_logging
+        # Gate the expensive per-episode-end route-visualization info population
+        # (tile dict + mine/door lists + trajectory + planner next-hop path, all
+        # pickled through the worker pipe). Only the route-viz callback consumes it.
+        self.enable_route_visualization = enable_route_visualization
         self.custom_map_path = custom_map_path
         self.test_dataset_path = test_dataset_path
         self.eval_mode = eval_mode
@@ -146,7 +155,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 enable_logging=enable_logging,
                 enable_debug_overlay=enable_debug_overlay,
                 seed=seed,
-                enable_rendering=(render_mode == "human"),
+                enable_rendering=(render_mode in ("human", "rgb_array")),
             )
         elif sim_backend == "python":
             self.nplay_headless = NPlayHeadless(
@@ -154,8 +163,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 enable_animation=enable_animation,
                 enable_logging=enable_logging,
                 enable_debug_overlay=enable_debug_overlay,
+                panel_width=panel_width,
                 seed=seed,
-                enable_rendering=(render_mode == "human"),
+                enable_rendering=(render_mode in ("human", "rgb_array")),
             )
         else:
             raise ValueError(
@@ -233,6 +243,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._checkpoint_source_frame_skip: int = (
             frame_skip  # Frame skip used to create checkpoint (1=demo, 4=agent)
         )
+        # Provenance of the active checkpoint ("agent" / "demo" / "retroactive" /
+        # None when this is a fresh spawn episode). Drives the route-viz label.
+        self._checkpoint_source: Optional[str] = None
         self._checkpoint_replay_frame_count: int = 0  # Frames executed during checkpoint replay (to subtract from episode length)
 
         # Initialize entity extractor
@@ -296,8 +309,29 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_doors: Optional[list] = None
         self._cached_locked_door_switches: Optional[list] = None
         self._cached_toggle_mines: Optional[list] = None
+        # Cached (2, W, H) deadly/safe mine overlay channels + their cheap
+        # (counts + #deadly) signature. On a static mine field these channels never
+        # change, so we skip classify + rasterizing ~1.7k mines every step.
+        self._entity_mine_channels_cache = None
+        self._entity_mine_sig = None
         self._cached_gold: Optional[list] = None  # static gold entity list (active flag toggles)
+        self._cached_one_ways: Optional[list] = None  # static one-way platform list
         self._cached_tile_grid: Optional[np.ndarray] = None
+        # Relevant-mine cull (perf + obs de-noising on mine-dense levels): the
+        # set of (round(x), round(y)) keys for mines that border player-reachable
+        # space. Computed once per level from the FULL sim mine set; all derived
+        # views (overlays, hazard map, level_data/graph, signature) are filtered
+        # through it so unreachable mines are blind to the model and skipped in
+        # per-step O(num_mines) work. ``sim.entity_dic`` itself is left intact so
+        # recomputation always sees every mine. Cached by map name.
+        self._relevant_mine_keys: Optional[set] = None
+        self._relevant_mine_keys_map: Optional[str] = None
+        # One-shot guards so a mine-cull outcome is logged ONCE per env instance
+        # instead of once per reset. A regression here previously wrote ~18M
+        # identical warning lines (a 2.9GB log) and starved throughput; the
+        # success line doubles as a startup assertion that culling is active.
+        self._mine_cull_logged: bool = False
+        self._mine_cull_failed_logged: bool = False
 
         # Load the initial map (skipped when benchmark / payload-driven code will load
         # on first reset via ``map_loader.load_map_data``).
@@ -513,6 +547,16 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 )
 
                 self.current_ep_reward += reward
+
+                # Goal-distance reverse curriculum: the reward calculator flags
+                # when the agent reached the curriculum's intermediate (closer)
+                # goal. Treat it as a win — end the episode and record success
+                # (the exit reward was already paid by the calculator).
+                if getattr(
+                    self.reward_calculator, "_reached_intermediate_goal", False
+                ):
+                    player_won = True
+                    terminated = True
             else:
                 reward = 0.0
             self._profile_end("reward_calc", t_reward)
@@ -525,6 +569,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Build episode info
             t_info = self._profile_start("info_build")
             info = self._build_episode_info(player_won, terminated, truncated)
+            # Cost-to-go auxiliary-task target (normalized cost-to-completion in
+            # [0,1], or -1 to mask). One float; negligible pipe payload.
+            info["cost_to_go_norm"] = float(
+                getattr(self.reward_calculator, "_last_cost_to_go_norm", -1.0)
+            )
             self._profile_end("info_build", t_info)
 
             # DIAGNOSTIC: Store reward breakdown in info for route visualization
@@ -969,6 +1018,16 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         return int(base_limit * multiplier)
 
+    def set_goal_distance_fraction(self, fraction: float) -> float:
+        """Set the goal-distance reverse-curriculum fraction (callable via
+        ``VecEnv.env_method``). 1.0 = true goal; <1.0 = nearer intermediate goal.
+        """
+        try:
+            self.reward_calculator.config.goal_distance_fraction = float(fraction)
+        except Exception:  # noqa: BLE001
+            pass
+        return float(fraction)
+
     def _update_dynamic_truncation_if_needed(self):
         """Update dynamic truncation limit if the level surface area can be computed now.
 
@@ -986,6 +1045,22 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         Subclasses can override this to add custom info fields.
         """
+        # Re-emit Go-Explore checkpoint provenance EVERY step. These are set once at
+        # episode start (when a checkpoint restore happens) but the route-viz
+        # callback reads info at episode END — without re-emitting them here they
+        # were lost, so the "go" (checkpoint-replay) path and checkpoint markers
+        # never rendered. total_cumulative_reward = checkpoint's banked reward +
+        # this episode's agent reward, so the route-viz headline R: shows the FULL
+        # route reward for checkpoint episodes (not just the post-checkpoint tail).
+        info["from_checkpoint"] = self._from_checkpoint
+        info["checkpoint_route"] = list(self._checkpoint_route)
+        info["checkpoint_base_reward"] = self._checkpoint_base_reward
+        info["checkpoint_source"] = self._checkpoint_source
+        info["total_cumulative_reward"] = (
+            self._checkpoint_base_reward + self.current_ep_reward
+            if self._from_checkpoint
+            else None
+        )
         return
 
     def _track_position_after_step(self):
@@ -1091,6 +1166,18 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # (None if switch was never activated this episode)
             "switch_activation_frame": self._switch_activation_frame,
             "switch_activation_step": self._switch_activation_step,
+            # Live phase-aware cost-to-goal (the mine-threading / lattice
+            # cost-to-completion that drives the PBRS potential). Exposed every step
+            # so Go-Explore can advance its frontier on TRUE mine-faithful progress
+            # instead of the (previously stubbed-to-inf) distance. None on terminal
+            # steps, where last_components holds terminal fields and Go-Explore skips
+            # checkpoint creation anyway.
+            "distance_to_goal": (
+                self.reward_calculator.last_components.get("completion_cost")
+                if getattr(self, "reward_calculator", None) is not None
+                and getattr(self.reward_calculator, "last_components", None)
+                else None
+            ),
         }
 
         info.update(
@@ -1119,19 +1206,26 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         if terminated or truncated:
             route_length = len(self.current_route)
             if route_length > 0:
-                info["episode_route"] = list(self.current_route)
                 info["route_length"] = route_length
 
-                # Precompute the level-cache shortest path from the episode's starting
-                # position so the route visualization callback can overlay it without
-                # needing an env_method call from an async thread.
-                episode_switch_activated = self.nplay_headless.exit_switch_activated()
-                info["episode_next_hop_path"] = (
-                    self._get_next_hop_path_for_visualization(
-                        self.current_route[0],
-                        switch_activated=episode_switch_activated,
+                # Route trajectory + next-hop planner path are ONLY consumed by the
+                # route-visualization callback and are expensive to pickle through
+                # the worker pipe on every episode end (a planner call + the full
+                # trajectory). Skip them unless route viz is enabled.
+                if self.enable_route_visualization:
+                    info["episode_route"] = list(self.current_route)
+                    # Precompute the level-cache shortest path from the episode's
+                    # starting position so the callback can overlay it without an
+                    # env_method call from an async thread.
+                    episode_switch_activated = (
+                        self.nplay_headless.exit_switch_activated()
                     )
-                )
+                    info["episode_next_hop_path"] = (
+                        self._get_next_hop_path_for_visualization(
+                            self.current_route[0],
+                            switch_activated=episode_switch_activated,
+                        )
+                    )
 
                 # CRITICAL: Clear route immediately after copying to prevent accumulation
                 # This fixes a bug where routes would leak across episodes if reset()
@@ -1178,11 +1272,17 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # With VecEnv, the environment auto-resets after done=True, so by the time
             # the callback runs, a NEW level may already be loaded (curriculum).
             # We must capture the CURRENT level's data here in the info dict.
-            info["episode_tiles"] = self.get_route_visualization_tile_data()
-            info["episode_mines"] = self.get_route_visualization_mine_data()
-            info["episode_locked_doors"] = (
-                self.get_route_visualization_locked_door_data()
-            )
+            # Gated: this builds a full tile dict (~hundreds of entries) + mine /
+            # locked-door lists and pickles them through the worker pipe on EVERY
+            # episode end — the dominant SubprocVecEnv round-trip cost during early
+            # training (short episodes -> frequent dones). Only the route-viz
+            # callback reads it, so skip it entirely when route viz is disabled.
+            if self.enable_route_visualization:
+                info["episode_tiles"] = self.get_route_visualization_tile_data()
+                info["episode_mines"] = self.get_route_visualization_mine_data()
+                info["episode_locked_doors"] = (
+                    self.get_route_visualization_locked_door_data()
+                )
 
         # DIAGNOSTIC: Validate episode stats are reasonable
         if (terminated or truncated) and self.enable_logging:
@@ -1209,6 +1309,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if hasattr(self.reward_calculator, "get_episode_reward_metrics"):
                 info["episode_reward_metrics"] = (
                     self.reward_calculator.get_episode_reward_metrics()
+                )
+            # Active reward-shaping config (phase, pbrs weight/scale, time penalty)
+            # for the npp-rl PBRSLoggingCallback curriculum/* panel. Previously a
+            # dead read — the callback expected this key but the env never sent it.
+            if hasattr(self.reward_calculator, "get_config_state"):
+                info["reward_config_state"] = (
+                    self.reward_calculator.get_config_state()
                 )
 
         return info
@@ -1303,6 +1410,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Reset checkpoint route for visualization (will be populated if checkpoint replay)
         self._checkpoint_route = []
+        self._checkpoint_source = None
 
         # Reset checkpoint episode tracking (will be set if checkpoint used)
         self._from_checkpoint = False
@@ -1342,7 +1450,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._cached_locked_door_switches = None
         self._cached_toggle_mines = None
         self._cached_gold = None
+        self._cached_one_ways = None
         self._cached_tile_grid = None
+        self._entity_mine_channels_cache = None
+        self._entity_mine_sig = None
 
         # Check if map loading should be skipped (e.g., curriculum already loaded one)
         skip_map_load = False
@@ -1810,6 +1921,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Store checkpoint route for inclusion in episode end info
         # This persists through the episode so route visualization can access it
         self._checkpoint_route = checkpoint_route
+        self._checkpoint_source = getattr(checkpoint, "source", "unknown")
 
         # Track position after replay for current_route (exploration phase starts here)
         actual_position = None
@@ -1952,6 +2064,72 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             logger.warning(f"get_state_snapshot failed: {exc}")
             return None
 
+    # The 6 discrete actions span the FULL input space: horizontal in {-1,0,1}
+    # crossed with jump in {0,1}. "Regardless of input" therefore means "for all
+    # six of these", so a one-frame branch over them is exhaustive.
+    _DOOMED_INPUTS = ((0, 0), (-1, 0), (1, 0), (0, 1), (-1, 1), (1, 1))
+
+    def is_current_state_doomed(self, lookahead_frames: int = 1) -> bool:
+        """Return ``True`` iff the ninja's CURRENT state is unrecoverable: for
+        EVERY possible discrete input it dies within ``lookahead_frames`` physics
+        frames.
+
+        Go-Explore uses this to discard only *truly hopeless* checkpoints. The old
+        heuristic discarded every "falling" (airborne + downward) state, which on
+        an aerial mine-threading level is essentially the whole route — so the
+        archive stayed empty. A mid-air state where at least one input survives the
+        next frame is recoverable and worth keeping; only a state that dies under
+        every input is genuinely doomed.
+
+        State-preserving: snapshots the sim, branches each input off that snapshot,
+        and restores the exact pre-call state (including the python-side tick
+        counter) before returning. Uses the FULL ``tick`` so mine/entity collisions
+        register faithfully. Returns ``False`` (never discard) if the backend
+        cannot snapshot, so this can only ever *reduce* what the old rule discarded.
+        """
+        nplay = self.nplay_headless
+        # Already terminal: a dead state is doomed; a won state never is.
+        if getattr(nplay, "ninja_has_died", None) and nplay.ninja_has_died():
+            return True
+        if getattr(nplay, "ninja_has_won", None) and nplay.ninja_has_won():
+            return False
+        getter = getattr(nplay, "get_state_snapshot", None)
+        setter = getattr(nplay, "set_state_snapshot", None)
+        ticker = getattr(nplay, "tick", None)
+        if getter is None or setter is None or ticker is None:
+            return False  # cannot evaluate -> be permissive (never discard)
+        try:
+            snap = getter()
+        except Exception:  # noqa: BLE001 - never let the doomed check crash a step
+            return False
+        if snap is None:
+            return False
+        saved_tick = getattr(nplay, "current_tick", None)
+        depth = max(1, int(lookahead_frames))
+        doomed = True
+        try:
+            for hor, jump in self._DOOMED_INPUTS:
+                setter(snap)
+                survived = True
+                for _ in range(depth):
+                    ticker(hor, jump)
+                    if nplay.ninja_has_died():
+                        survived = False
+                        break
+                if survived:
+                    doomed = False
+                    break
+        except Exception:  # noqa: BLE001 - on any failure, never discard
+            doomed = False
+        finally:
+            try:
+                setter(snap)  # restore the exact pre-check state
+            except Exception:  # noqa: BLE001
+                pass
+            if saved_tick is not None:
+                nplay.current_tick = saved_tick
+        return doomed
+
     def _restore_from_snapshot(
         self, checkpoint
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -1995,6 +2173,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.current_route = (
             [(float(current_pos[0]), float(current_pos[1]))] if current_pos else []
         )
+        # Snapshot restores have no replayed prefix path; the checkpoint "route" is
+        # just the restored point. Persist provenance so episode-end info (and the
+        # route-viz "go" marker) reflect that this episode began from a checkpoint.
+        self._checkpoint_route = list(self.current_route)
+        self._checkpoint_source = getattr(checkpoint, "source", "unknown")
 
         initial_obs = self._get_observation()
         processed_obs = self._process_observation(initial_obs)
@@ -2323,6 +2506,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Store checkpoint route for inclusion in episode end info
         # This persists through the episode so route visualization can access it
         self._checkpoint_route = checkpoint_route
+        self._checkpoint_source = getattr(checkpoint, "source", "unknown")
 
         # Track position after replay for current_route (exploration phase starts here)
         actual_position = None
@@ -2518,14 +2702,20 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 self.nplay_headless.locked_door_switches()
             )
         if self._cached_toggle_mines is None:
-            self._cached_toggle_mines = self.nplay_headless.sim.entity_dic.get(
-                EntityType.TOGGLE_MINE, []
+            self._cached_toggle_mines = self._filter_relevant_mines(
+                self.nplay_headless.sim.entity_dic.get(EntityType.TOGGLE_MINE, [])
             )
         if self._cached_gold is None:
             # Gold positions are static; only the per-entity `active` flag changes
             # as gold is collected, so cache the list once and filter live below.
             self._cached_gold = self.nplay_headless.sim.entity_dic.get(
                 EntityType.GOLD, []
+            )
+        if self._cached_one_ways is None:
+            # One-way platforms are fully static (position + orientation), so the
+            # list is cached once for the episode.
+            self._cached_one_ways = self.nplay_headless.sim.entity_dic.get(
+                EntityType.ONE_WAY, []
             )
 
         if self._cached_tile_grid is None:
@@ -2567,8 +2757,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         entities.extend(self._cached_toggle_mines)
 
         # Toggled mines need fresh lookup (state can change during episode)
-        toggled_mines = self.nplay_headless.sim.entity_dic.get(
-            EntityType.TOGGLE_MINE_TOGGLED, []
+        toggled_mines = self._filter_relevant_mines(
+            self.nplay_headless.sim.entity_dic.get(
+                EntityType.TOGGLE_MINE_TOGGLED, []
+            )
         )
         entities.extend(toggled_mines)
         entities.extend(locked_doors)
@@ -2593,19 +2785,30 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._profile_end("obs_base_prep", t_obs_prep)
 
         t_ov = self._profile_start("obs_entity_overlays")
-        # Classify mines by live `state`, not by entity type, so the overlay
-        # agrees with `_compute_hazard_map` after any mid-episode toggle.
-        deadly_mines, safe_mines = classify_mines_by_state(
-            (*(self._cached_toggle_mines or []), *toggled_mines)
+        # Cheap mine signature (counts + #deadly): type-21 toggled mines are always
+        # deadly; type-1 toggle mines are deadly when state==0. Unchanged => reuse
+        # the cached deadly/safe overlay channels and skip both classify and the
+        # rasterization of ~1.7k mines. MINE_STATE_DEADLY == 0.
+        _tog = self._cached_toggle_mines or []
+        _mine_sig = (
+            len(_tog),
+            len(toggled_mines),
+            len(toggled_mines) + sum(1 for m in _tog if getattr(m, "state", 1) == 0),
         )
-        # Remaining (uncollected) gold; the `active` flag flips on collection.
-        gold_positions = [
-            (float(g.xpos), float(g.ypos))
-            for g in (self._cached_gold or [])
-            if getattr(g, "active", True)
-        ]
+        if _mine_sig == self._entity_mine_sig and self._entity_mine_channels_cache is not None:
+            deadly_mines, safe_mines = (), ()  # unused; channels come from cache
+            _cached_mine_channels = self._entity_mine_channels_cache
+        else:
+            # Classify mines by live `state`, not by entity type, so the overlay
+            # agrees with `_compute_hazard_map` after any mid-episode toggle.
+            deadly_mines, safe_mines = classify_mines_by_state((*_tog, *toggled_mines))
+            _cached_mine_channels = None
+        # Gold is out of the generalist scope and no longer in the overlay, but the
+        # gold_fraction info field is still surfaced for any reward-side consumer.
         total_gold = len(self._cached_gold or [])
-        gold_remaining = len(gold_positions)
+        gold_remaining = sum(
+            1 for g in (self._cached_gold or []) if getattr(g, "active", True)
+        )
         gold_fraction_remaining = (
             gold_remaining / total_gold if total_gold > 0 else 0.0
         )
@@ -2616,9 +2819,17 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             exit_pos=exit_pos,
             deadly_mines=deadly_mines,
             safe_mines=safe_mines,
-            gold_positions=gold_positions,
-            locked_doors=locked_doors,
+            cached_mine_channels=_cached_mine_channels,
         )
+        # Cache the freshly-rasterized mine channels for reuse while unchanged.
+        if _cached_mine_channels is None:
+            self._entity_mine_channels_cache = np.stack(
+                (
+                    entity_overlays[ENTITY_OVERLAY_CH_MINE_DEADLY],
+                    entity_overlays[ENTITY_OVERLAY_CH_MINE_SAFE],
+                )
+            ).copy()
+            self._entity_mine_sig = _mine_sig
         self._profile_end("obs_entity_overlays", t_ov)
 
         # Extract jump_duration_remaining from ninja_state (index 11, 0-indexed)
@@ -2817,6 +3028,100 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         """
         pass
 
+    def _get_relevant_mine_keys(self) -> Optional[set]:
+        """Return the set of ``(round(x), round(y))`` keys for mines that border
+        player-reachable space, computed once per level from the FULL sim mine
+        set. Returns ``None`` if there is nothing worth filtering (so callers
+        fall back to the unfiltered list). Cached by map name.
+
+        Mines absent from this set are sealed away from reachable space; they can
+        never be touched and never change reachability, so all derived views drop
+        them (blind to the model + skipped in per-step processing). The native
+        physics sim still simulates every mine, so death correctness is unchanged.
+        """
+        map_name = getattr(self.map_loader, "current_map_name", None)
+        if self._relevant_mine_keys is not None and self._relevant_mine_keys_map == map_name:
+            return self._relevant_mine_keys
+
+        try:
+            from ..graph.reachability.mine_relevance import compute_relevant_mine_keys
+
+            nplay = self.nplay_headless
+            # Source the FULL mine population. Prefer the raw-snapshot accessor
+            # (native) which bypasses the cull so we never compute keys from an
+            # already-filtered set; fall back to entity_dic (python backend).
+            if hasattr(nplay, "get_all_mine_positions"):
+                # MINE_STATE_DEADLY == 0; type 21 (TOGGLE_MINE_TOGGLED) is always deadly.
+                raw = nplay.get_all_mine_positions()
+                mine_positions = [(x, y) for (x, y, _s, _t) in raw]
+                deadly_positions = [
+                    (x, y) for (x, y, s, t) in raw if s == 0 or t == 21
+                ]
+                n_mines = len(raw)
+            else:
+                from .entity_overlay_utils import classify_mines_by_state
+
+                entity_dic = nplay.sim.entity_dic
+                toggle = entity_dic.get(EntityType.TOGGLE_MINE, []) or []
+                toggled = entity_dic.get(EntityType.TOGGLE_MINE_TOGGLED, []) or []
+                all_mines = [*toggle, *toggled]
+                deadly, _safe = classify_mines_by_state(all_mines)
+                mine_positions = [(m.xpos, m.ypos) for m in all_mines]
+                deadly_positions = [(m.xpos, m.ypos) for m in deadly]
+                n_mines = len(all_mines)
+
+            # Below this many mines the per-mine work is negligible and the
+            # flood-fill is not worth it — leave everything unfiltered (also
+            # keeps small parity-test maps byte-identical across backends).
+            if n_mines < 256:
+                self._relevant_mine_keys = None
+                self._relevant_mine_keys_map = map_name
+                return None
+
+            spawn = nplay.ninja_position()
+            keys = compute_relevant_mine_keys(
+                mine_positions, deadly_positions, (float(spawn[0]), float(spawn[1]))
+            )
+            self._relevant_mine_keys = keys
+            self._relevant_mine_keys_map = map_name
+            # Push the cull to the entity_dic SOURCE so the per-tick proxy build,
+            # mine-state scan, and every downstream view skip culled mines too.
+            if hasattr(nplay, "set_relevant_mine_keys"):
+                nplay.set_relevant_mine_keys(keys)
+            # Log the cull outcome ONCE per env instance. On a mine-dense map this
+            # line is also a startup assertion that culling is active (the broken
+            # path silently fell back to all ~13k mines and tanked throughput), so
+            # fire it at INFO regardless of enable_logging when the saving is large.
+            if not self._mine_cull_logged and (self.enable_logging or n_mines >= 1024):
+                logger.info(
+                    f"[mine-cull] {map_name}: {len(keys)}/{n_mines} mines "
+                    f"relevant ({len(keys) / max(1, n_mines) * 100:.1f}%); "
+                    "remainder blind to model + skipped per-step"
+                )
+                self._mine_cull_logged = True
+            return keys
+        except Exception as exc:  # noqa: BLE001 — filtering is best-effort
+            # One-shot warning: a per-reset warning here once produced a 2.9GB log.
+            if not self._mine_cull_failed_logged:
+                _nm = locals().get("n_mines", "?")
+                logger.warning(
+                    f"[mine-cull] relevance computation failed: {exc}; using ALL "
+                    f"{_nm} mines — this is a throughput regression on mine-dense "
+                    "maps (suppressing repeats)"
+                )
+                self._mine_cull_failed_logged = True
+            self._relevant_mine_keys = None
+            self._relevant_mine_keys_map = map_name
+            return None
+
+    def _filter_relevant_mines(self, mines: list) -> list:
+        """Drop mines that are sealed away from player-reachable space. No-op when
+        the level has no cullable mines (returns the input list unchanged)."""
+        keys = self._get_relevant_mine_keys()
+        if not keys:
+            return mines
+        return [m for m in mines if (round(m.xpos), round(m.ypos)) in keys]
+
     def _extract_level_data(self) -> LevelData:
         """
         Extract level structure data for graph construction.
@@ -2836,6 +3141,20 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Extract entities
         entities = self.entity_extractor.extract_graph_entities()
+
+        # Cull mines sealed away from reachable space so the graph blocking,
+        # mine-state signature, and reachability all operate on the relevant
+        # subset only. Reachability-preserving by construction; non-mine
+        # entities pass through untouched.
+        relevant_keys = self._get_relevant_mine_keys()
+        if relevant_keys:
+            _mine_types = (EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED)
+            entities = [
+                e
+                for e in entities
+                if e.get("type") not in _mine_types
+                or (round(e.get("x", 0.0)), round(e.get("y", 0.0))) in relevant_keys
+            ]
 
         # Extract ninja spawn position from map_data
         start_position = extract_start_position_from_map_data(
