@@ -45,7 +45,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from .reward_config import RewardConfig
 from .hwm_shaping import EpisodeRewardState
 from .reward_constants import GLOBAL_REWARD_SCALE, BACKTRACK_PENALTY
-from ..constants import GAME_STATE_NEAREST_MINE_IDX
+from ..constants import GAME_STATE_NEAREST_MINE_IDX, NINJA_STATE_DIM
 
 from ...constants.physics_constants import (
     EXIT_SWITCH_RADIUS,
@@ -176,6 +176,7 @@ class RewardCalculator:
         # See RewardConfig.enable_hazard_pbrs.
         self._prev_hazard_potential: Optional[float] = None
         self.episode_hazard_pbrs_reward: float = 0.0
+        self.episode_speed_bonus_reward: float = 0.0
 
         # Gold collection (gated by config.enable_gold_rewards): track the
         # running collected count so we can reward the per-step delta, plus a
@@ -372,6 +373,22 @@ class RewardCalculator:
                 terminal_reward += self.config.switch_activation_reward
             terminal_reward += gold_reward
             terminal_reward += door_reward
+            # Completion SPEED bonus: pay extra for finishing with more time left
+            # (a faster, more direct route). Terminal-only, so it never touches the
+            # per-step PBRS telescoping; read the normalized time_remaining
+            # (game_state[NINJA_STATE_DIM-1] in [0,1]). Kept < R_EXIT so a slow win
+            # still beats dying.
+            speed_bonus = 0.0
+            if self.config.completion_speed_bonus > 0.0:
+                gs = obs.get("game_state")
+                if gs is not None and len(gs) >= NINJA_STATE_DIM:
+                    t_rem = float(gs[NINJA_STATE_DIM - 1])
+                    if t_rem == t_rem:  # not NaN
+                        speed_bonus = self.config.completion_speed_bonus * min(
+                            max(t_rem, 0.0), 1.0
+                        )
+                        terminal_reward += speed_bonus
+            self.episode_speed_bonus_reward = speed_bonus
             # PBRS terminal: Phi(terminal) = 0, so F = w*(gamma*0 - Phi(s)) =
             # -w*Phi(s) >= 0. This completes the telescoping sum to
             # w*(Phi_T - Phi_0) and pays a clean completion bonus (up to pbrs_weight).
@@ -818,6 +835,7 @@ class RewardCalculator:
         self._frontier_phase = None
         self._prev_hazard_potential = None
         self.episode_hazard_pbrs_reward = 0.0
+        self.episode_speed_bonus_reward = 0.0
         self._prev_gold_collected = None
         self._all_gold_bonus_paid = False
         self._prev_necessary_doors_open = None

@@ -184,6 +184,18 @@ class RewardConfig:
     enable_hazard_pbrs: bool = False
     hazard_pbrs_weight: float = 0.5
 
+    # --- Completion SPEED bonus (encourage direct + fast successful routes) ---
+    # A terminal bonus paid ONLY on a real WIN, scaling with the normalized time
+    # remaining at completion (game_state time_remaining in [0,1]): finishing with
+    # more time left -> bigger bonus -> the agent is rewarded for the FASTER, more
+    # DIRECT route among winning routes. Theoretically sound: it is a pure terminal
+    # reward, so it does NOT touch the per-step PBRS telescoping / policy-invariance;
+    # it never pays on death or timeout, so completion always dominates dying; and
+    # kept BELOW R_EXIT so winning slowly still beats dying (no speed-vs-survival
+    # inversion). 0.0 = off. Complements the per-step time penalty (which discourages
+    # dawdling) with a positive pull toward fast wins.
+    completion_speed_bonus: float = 0.0
+
     SUCCESS_THRESHOLD_MID: float = 0.15
     SUCCESS_THRESHOLD_LATE: float = 0.40
 
